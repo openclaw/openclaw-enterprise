@@ -19,8 +19,10 @@ import { createRepositoryGitRequests } from "../../apps/controller/src/drivers/r
 import type { ModelGatewayConfiguration } from "../../deploy/examples/strands-box/driver/model-gateway.ts";
 import {
   applyModelRevocation,
+  enrollmentRefusal,
   harnessModelView,
   parseOwner,
+  type RecordView,
   relayEnrollment,
   verifyRelease,
   wiringConfiguration as hostWiring,
@@ -332,7 +334,9 @@ export async function pairedFixture(
   const startTicks = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19];
   const host = {
     present: true,
-    state: "starting" as "starting" | "running",
+    state: "starting" as "starting" | "running" | "failed",
+    /** The host retires the execution (`DELETE`): nothing more is relayed into it. */
+    retiring: false,
     bearerSha256: sha(bearer),
     processInstanceId: `${boot.trim()}:${process.pid}:${startTicks}`,
     generationSha256: sha("reservation"),
@@ -496,15 +500,24 @@ export async function pairedFixture(
         return;
       }
       if (req.method === "POST" && req.url === "/v1/enrollment" && host.present) {
-        // The host's relay (host/control.ts relayEnrollment) for its held, gate-released run.
+        // The host's route (host/control.ts): its own state check, then its relay, for its held,
+        // gate-released run.
         const input = JSON.parse(bytes.toString()) as Record<string, unknown>;
         host.enrollments.push(input);
-        const { owner: _owner, requirementsDigest: _digest, executionId: held, ...data } = input;
-        if (held !== executionId || host.startup === undefined) {
-          reply(409, { error: "enrollment_outside_held_execution" });
+        const { owner, requirementsDigest, executionId: held, ...data } = input;
+        const refusal = enrollmentRefusal(
+          { retiring: host.retiring, live: true, view: record() as unknown as RecordView },
+          {
+            owner: parseOwner(owner),
+            executionId: held,
+            requirementsDigest: String(requirementsDigest),
+          },
+        );
+        if (refusal !== undefined) {
+          reply(409, { error: refusal });
           return;
         }
-        if (host.state !== "starting" || host.enrollment === undefined) {
+        if (host.enrollment === undefined) {
           reply(409, { error: "harness_enrollment_unavailable" });
           return;
         }

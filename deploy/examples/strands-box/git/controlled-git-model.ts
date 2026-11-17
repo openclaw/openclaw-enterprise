@@ -141,8 +141,9 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
   const tag = nonce.slice(0, 12);
   const dir = `${WORKSPACE}/x5-${tag}`;
   const url = (repository: string) => `https://github.com/${repository}.git`;
-  // Every git call names its repository (`git -C`): in Box a host binary does not start in the
-  // directory the shell's `cd` chose (finding 3318), so a bare `git` after `cd` finds no repository.
+  // Every git call names its repository (`git -C`). Without a `[tool]` table a host binary did not
+  // start in the directory the shell's `cd` chose (finding 3318); the host's git and gh tables now
+  // start them there (finding 3320), and these fixed steps keep not depending on it.
   const commit = [
     `git clone -q ${url(plan.repository)} ${dir}`,
     `git -C ${dir} switch -q -c ${plan.branch}`,
@@ -278,7 +279,13 @@ function execCall(callId: string, cmd: string): Obj {
 /** Codex's own patch tool call: freeform (custom) or function form, as the request offers it. */
 function patchCall(callId: string, tool: Obj, patch: string): Obj {
   return tool.type === "custom"
-    ? { id: `ctc_${randomUUID()}`, type: "custom_tool_call", call_id: callId, name: "apply_patch", input: patch }
+    ? {
+        id: `ctc_${randomUUID()}`,
+        type: "custom_tool_call",
+        call_id: callId,
+        name: "apply_patch",
+        input: patch,
+      }
     : {
         id: `fc_${randomUUID()}`,
         type: "function_call",
@@ -294,7 +301,8 @@ const SHA256 = /^[0-9a-f]{64}$/;
 
 /** The SHA-256 of the bearer an `Authorization` header carries, or `null`; never the bearer. */
 export function bearerDigest(header: unknown): string | null {
-  if (typeof header !== "string" || !header.startsWith("Bearer ") || header.length > 4_103) return null;
+  if (typeof header !== "string" || !header.startsWith("Bearer ") || header.length > 4_103)
+    return null;
   return createHash("sha256").update(header.slice("Bearer ".length)).digest("hex");
 }
 
@@ -321,7 +329,10 @@ export function controlledGitModelRequests(
   const answered = new Set<string>();
   if (peer.pathPrefix !== undefined && !PATH_PREFIX.test(peer.pathPrefix))
     throw new Error("pathPrefix must be plain path segments.");
-  const served = new Set(["/v1/responses", ...(peer.pathPrefix === undefined ? [] : [`${peer.pathPrefix}/v1/responses`])]);
+  const served = new Set([
+    "/v1/responses",
+    ...(peer.pathPrefix === undefined ? [] : [`${peer.pathPrefix}/v1/responses`]),
+  ]);
   return async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const presented = bearerDigest(req.headers.authorization);
@@ -391,7 +402,8 @@ export function controlledGitModelRequests(
       );
       const result = results.at(-1);
       if (result !== undefined && step === "gateway-loop") {
-        const text = typeof result.output === "string" ? result.output : JSON.stringify(result.output);
+        const text =
+          typeof result.output === "string" ? result.output : JSON.stringify(result.output);
         const blocked = gitOutcome(text) === undefined;
         if (!blocked && results.length < LOOP_CALLS) {
           // Same call again: no progress, so the Gateway's loop policy decides the next one.
@@ -404,7 +416,14 @@ export function controlledGitModelRequests(
         const callId = String(result.call_id);
         if (!answered.has(callId)) {
           answered.add(callId);
-          receipt({ stage: "tool_result", nonce, step, callId, answer, output: text.slice(0, 600) });
+          receipt({
+            stage: "tool_result",
+            nonce,
+            step,
+            callId,
+            answer,
+            output: text.slice(0, 600),
+          });
         }
         reply(res, answer);
         return;
@@ -436,7 +455,10 @@ export function controlledGitModelRequests(
         reply(res, answer);
         return;
       }
-      if (!Array.isArray(body.tools) || !body.tools.some((tool) => obj(tool).name === "exec_command")) {
+      if (
+        !Array.isArray(body.tools) ||
+        !body.tools.some((tool) => obj(tool).name === "exec_command")
+      ) {
         res.writeHead(409).end();
         return;
       }
@@ -451,7 +473,9 @@ export function controlledGitModelRequests(
         nonce,
         step,
         callId,
-        ...(step === "outside-write" ? { via: patchTool ? `apply_patch:${String(patchTool.type)}` : "exec_command" } : {}),
+        ...(step === "outside-write"
+          ? { via: patchTool ? `apply_patch:${String(patchTool.type)}` : "exec_command" }
+          : {}),
       });
       reply(
         res,
@@ -524,7 +548,11 @@ function start(path: string) {
   );
   // TCP connections too: a refused model request must open none.
   server.on("connection", (socket) =>
-    log({ at: new Date().toISOString(), stage: "connection", fromBox: socket.remoteAddress === data.boxAddress }),
+    log({
+      at: new Date().toISOString(),
+      stage: "connection",
+      fromBox: socket.remoteAddress === data.boxAddress,
+    }),
   );
   server.maxConnections = 8;
   server.listen(port, string(data.address), () =>

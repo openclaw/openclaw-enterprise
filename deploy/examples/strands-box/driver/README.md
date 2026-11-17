@@ -38,8 +38,8 @@ dependencies. API and Worker must load the same selected package and
 configuration.
 
 Add the `sandbox` selection to the stock Kubernetes Compute Installation. The
-following values illustrate the shape. Replace the certificate, addresses,
-digest, Namespace and selectors with the actual operator-owned values.
+following values illustrate the shape. Replace them with the actual
+operator-owned values.
 
 ```yaml
 drivers:
@@ -105,11 +105,11 @@ Box verifies the model endpoint's certificate against its built-in public
 roots, so a private IPv4 or `.svc.cluster.local` name cannot complete TLS.
 Name the endpoint with an operator DNS name and pin one private address:
 
-| Field | Value |
-|---|---|
+| Field          | Value                                                                                                           |
+| -------------- | --------------------------------------------------------------------------------------------------------------- |
 | `modelBaseUrl` | `https://<name or private IPv4>[:<port>]/v1`, as Compute normalizes it: lowercase, no trailing slash, no `:443` |
-| `address` | The private IPv4 address the name resolves to on the Box host. Required for a name |
-| `caSha256` | Only with a host upstream CA bundle: its SHA-256 |
+| `address`      | The private IPv4 address the name resolves to on the Box host. Required for a name                              |
+| `caSha256`     | Only with a host upstream CA bundle: its SHA-256                                                                |
 
 Set the same route here, in Compute's model provider `baseUrl`, and in the
 host's `controlledInference` (`url`, `address`, `caSha256`). Approval of
@@ -193,7 +193,10 @@ The registration provides:
   needs OCE's `requests` port. No token is delivered to the host. After the
   revision activates, OCE prepares the installation token, and the Worker
   confirms each version, the first and every renewal, as ready to be asked for.
-  It confirms only while the host reports the live `box run` asking it.
+  It confirms only while the host reports the live `box run` asking it. Before
+  activation, a route OCE observes with the live Box but no material is ready,
+  as core's `awaiting_material`; so is a binding withdrawn before activation,
+  whose revision then activates with every GitHub request refused (fails closed).
 
 Box injects GitHub credentials itself and asks for each request. The host
 starts the released `box run` with one request-time credential source,
@@ -270,9 +273,11 @@ its own Secret and attaches it as `strands-box-model:<sourceId>`. The wiring
 (16 MiB body cap), and one route on the model host and port, path
 `<base>/responses`, header `Authorization: Bearer`, placeholder
 `OPENAI_API_KEY`. The host checks the target, drops headers and body, and
-queues only the target. The Driver answers only for the execution OCE confirmed,
-re-observed per request, and reads the Secret of the Namespace and source in
-OCE's committed plan, never those the host reports. It also checks the bearer
+queues only the target. The Driver answers only for OCE's committed installation
+of this execution, re-observed per request: before OCE confirms the recipient, at
+the fence of its first model ask and with the live Box; after, at the confirmed
+fence. It reads the Secret of the Namespace and source in OCE's committed plan,
+never those the host reports. It also checks the bearer
 and the host's live, unrevoked attachment, and sends a 4 s send-by (the host
 allows 5 s). `withdraw` posts `POST /v1/model-revoke`; the host writes a receipt
 for the revision and source in `protectedModel.revocationDir`, with or without

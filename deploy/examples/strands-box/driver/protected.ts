@@ -251,7 +251,7 @@ interface Recipient {
    * Box asking, and the route never had material (OCE prepares it only for the active revision;
    * finding 3313): ready to activate, as core's own `awaiting_material` routes (finding 2139).
    */
-  awaitingMaterial?: true;
+  awaitingMaterial?: true | undefined;
   version?: RepositoryGitMaterialVersion;
   /** When the first version became ready; renewals do not reset the workspace connection. */
   settledAt?: number;

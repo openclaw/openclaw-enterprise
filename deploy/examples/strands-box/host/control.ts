@@ -391,6 +391,44 @@ export function verifyRelease(
 const TRANSPORT_BEARER = /^[A-Za-z0-9\-._~+/]+=*$/;
 
 /**
+ * Whether the host's `POST /v1/enrollment` may relay into this held execution, and why not (one
+ * check for the installed route and its paired test fixture, finding 3316): the same owner,
+ * execution and requirements digest, an execution that runs and does not retire, its repository
+ * recipient, the host's own gate opened on Compute's verified release, and not failed. Once Codex
+ * listens (`state` is no longer `starting`) the bridge is closed and nothing is relayed.
+ * `view` is the host's observed view of `held`.
+ */
+export function enrollmentRefusal(
+  held:
+    { readonly retiring: boolean; readonly live: boolean; readonly view: RecordView } | undefined,
+  supplied: {
+    readonly owner: Owner;
+    readonly executionId: unknown;
+    readonly requirementsDigest: string;
+  },
+): "enrollment_outside_held_execution" | "harness_enrollment_unavailable" | undefined {
+  const view = held?.view;
+  if (
+    held === undefined ||
+    view === undefined ||
+    held.retiring ||
+    !held.live ||
+    !sameOwner(view.owner, supplied.owner) ||
+    view.executionId !== supplied.executionId ||
+    view.requirementsDigest !== supplied.requirementsDigest ||
+    view.repositoryRecipient === undefined ||
+    // Only after the host's own gate opened on Compute's verified release.
+    view.protectedStartup?.startupSha256 === undefined ||
+    view.state === "failed"
+  ) {
+    return "enrollment_outside_held_execution";
+  }
+  // Codex listens and the bridge is closed: the program was released.
+  if (view.state !== "starting") return "harness_enrollment_unavailable";
+  return undefined;
+}
+
+/**
  * The host's `POST /v1/enrollment`: one of the two requests of the stock protected program's own
  * enrollment, relayed into Box for the paired Driver (`SandboxDriver.enrollHarness`). Without
  * `release` it reads the program's startup challenge; with it, it delivers Compute's signed
@@ -1213,7 +1251,9 @@ function admitted(
     throw new Error("unadmitted_enrollment_environment");
   if (
     harnessModel !== undefined &&
-    (needsControlledInference || observed.has(MODEL_KEY_ENV) || config.controlledInference === undefined)
+    (needsControlledInference ||
+      observed.has(MODEL_KEY_ENV) ||
+      config.controlledInference === undefined)
   )
     throw new Error("inference_outside_owner_route");
   // The model route is the same operator route either way: credential-free for the controlled
@@ -1366,9 +1406,7 @@ function admitted(
     readOnly: [],
     writable: [...mounts.keys(), ...config.writableState],
     egress,
-    ...(config.nativeHookRelay === undefined
-      ? {}
-      : { nativeHookDirectory: NATIVE_HOOK_DIRECTORY }),
+    ...(config.nativeHookRelay === undefined ? {} : { nativeHookDirectory: NATIVE_HOOK_DIRECTORY }),
     ...(config.upstreamCa === undefined ? {} : { upstreamCa: config.upstreamCa }),
     ...(separateNode === undefined && typeof setupCode === "string" && expiresAt !== undefined
       ? { workspaceNodeSetupCode: setupCode, workspaceNodeSetupExpiresAt: expiresAt }
@@ -1928,26 +1966,24 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       const view = held === undefined ? undefined : observedView(held);
       const recipient = view?.repositoryRecipient;
       const execution = held?.execution;
+      const refusal = enrollmentRefusal(
+        held === undefined || view === undefined
+          ? undefined
+          : {
+              retiring: held.retiring,
+              live: execution !== undefined && startup !== undefined,
+              view,
+            },
+        { owner: supplied, executionId: data.executionId, requirementsDigest },
+      );
       if (
+        refusal !== undefined ||
         held === undefined ||
-        view === undefined ||
-        held.retiring ||
         execution === undefined ||
         startup === undefined ||
-        !sameOwner(held.view.owner, supplied) ||
-        held.view.executionId !== data.executionId ||
-        held.view.requirementsDigest !== requirementsDigest ||
-        recipient === undefined ||
-        // Only after the host's own gate opened on Compute's verified release.
-        view.protectedStartup?.startupSha256 === undefined ||
-        view.state === "failed"
+        recipient === undefined
       ) {
-        reply(response, 409, { error: "enrollment_outside_held_execution" });
-        return;
-      }
-      // Codex listens and the bridge is closed: the program was released.
-      if (view.state !== "starting") {
-        reply(response, 409, { error: "harness_enrollment_unavailable" });
+        reply(response, 409, { error: refusal ?? "enrollment_outside_held_execution" });
         return;
       }
       const relay = {

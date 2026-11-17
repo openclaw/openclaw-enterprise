@@ -49,7 +49,7 @@ import {
   nestedChildArguments,
   splitStockCommand,
 } from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
-import { stockGitPolicy } from "../../deploy/examples/strands-box/host/stock-git.ts";
+import { ensureWorkspaceCodex } from "../../deploy/examples/strands-box/host/stock-git.ts";
 import {
   applyModelRevocation,
   boxDialedRoutes,
@@ -58,6 +58,7 @@ import {
   readModelRevocation,
   confirmControlledInference,
   digest,
+  enrollmentRefusal,
   observedView,
   profileDigest,
   protectedWiring,
@@ -68,7 +69,10 @@ import {
   stockHarnessCommand,
   validateInstalledGrants,
 } from "../../deploy/examples/strands-box/host/control.ts";
-import type { serveInstalledControl } from "../../deploy/examples/strands-box/host/control.ts";
+import type {
+  RecordView,
+  serveInstalledControl,
+} from "../../deploy/examples/strands-box/host/control.ts";
 import {
   approve,
   currentController,
@@ -353,6 +357,109 @@ test(
     }
   },
 );
+
+test("the host makes the workspace's .codex, which git and gh deny, and refuses one that is not a directory", () => {
+  // Finding 3320: Box refuses a deny path that does not exist at start.
+  const root = temporary();
+  try {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace, { mode: 0o700 });
+    ensureWorkspaceCodex(workspace);
+    const made = lstatSync(join(workspace, ".codex"));
+    assert.ok(made.isDirectory());
+    assert.equal(made.mode & 0o777, 0o700);
+    // A directory already there is kept as it is, with what it holds.
+    writeFileSync(join(workspace, ".codex", "config.toml"), "", { mode: 0o600 });
+    ensureWorkspaceCodex(workspace);
+    assert.deepEqual(readdirSync(join(workspace, ".codex")), ["config.toml"]);
+    // A link (to a directory or nowhere) or a file refuses the start.
+    for (const [name, make] of [
+      ["link", (path: string) => symlinkSync(root, path, "dir")],
+      ["dangling link", (path: string) => symlinkSync(join(root, "absent"), path)],
+      ["file", (path: string) => writeFileSync(path, "", { mode: 0o600 })],
+    ] as const) {
+      const other = join(root, name.replace(" ", "-"));
+      mkdirSync(other, { mode: 0o700 });
+      make(join(other, ".codex"));
+      assert.throws(
+        () => ensureWorkspaceCodex(other),
+        { message: "workspace_codex_refused" },
+        name,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the installed host relays enrollment only into a held, gate-released execution that still starts", () => {
+  // Finding 3316: the route's own state check (host/control.ts), which the paired fixture shares.
+  const owner = parseOwner({
+    driverId: "strands-box-pilot",
+    implementation: "@openclaw-enterprise/example-strands-box-driver@0.1.6",
+    namespaceId: "ns_example",
+    namespaceName: "agent-example",
+    agentId: "agt_example",
+    revisionId: "rev_example",
+  });
+  const view = {
+    owner,
+    requirementsDigest: "a".repeat(64),
+    executionId: "box-execution",
+    state: "starting",
+    repositoryRecipient: { bearerSha256: "b".repeat(64), processInstanceId: "boot:1:2" },
+    protectedStartup: {
+      plan: {},
+      reservedAt: "2026-11-17T00:00:00.000Z",
+      generationSha256: "c".repeat(64),
+      startupId: randomUUID(),
+      startupSha256: "d".repeat(64),
+    },
+  } as unknown as RecordView;
+  const supplied = { owner, executionId: "box-execution", requirementsDigest: "a".repeat(64) };
+  const held = { retiring: false, live: true, view };
+  assert.equal(enrollmentRefusal(held, supplied), undefined);
+  const outside = "enrollment_outside_held_execution";
+  for (const [name, refused] of [
+    ["no execution", enrollmentRefusal(undefined, supplied)],
+    ["retiring", enrollmentRefusal({ ...held, retiring: true }, supplied)],
+    ["not running", enrollmentRefusal({ ...held, live: false }, supplied)],
+    [
+      "another Agent",
+      enrollmentRefusal(held, { ...supplied, owner: { ...owner, agentId: "agt_other" } }),
+    ],
+    ["another execution", enrollmentRefusal(held, { ...supplied, executionId: "other" })],
+    [
+      "other requirements",
+      enrollmentRefusal(held, { ...supplied, requirementsDigest: "e".repeat(64) }),
+    ],
+    [
+      "no recipient",
+      enrollmentRefusal({ ...held, view: { ...view, repositoryRecipient: undefined } as never }, supplied),
+    ],
+    [
+      "gate not released",
+      enrollmentRefusal(
+        {
+          ...held,
+          view: {
+            ...view,
+            protectedStartup: { ...view.protectedStartup!, startupSha256: undefined } as never,
+          },
+        },
+        supplied,
+      ),
+    ],
+    ["failed", enrollmentRefusal({ ...held, view: { ...view, state: "failed" } }, supplied)],
+  ] as const) {
+    assert.equal(refused, outside, name);
+  }
+  // Codex listens: the bridge is closed, nothing is relayed.
+  assert.equal(
+    enrollmentRefusal({ ...held, view: { ...view, state: "running" } }, supplied),
+    "harness_enrollment_unavailable",
+  );
+});
 
 test(
   "the installed host's model revoke writes its own revision's durable receipt, with or without an execution",
@@ -1568,14 +1675,71 @@ test(
       const protectedPolicy = readFileSync(join(directory, "generated-policy.dw"), "utf8");
       assert.ok(protectedPolicy.includes(githubPolicy()));
       // Finding 3314: the protected run's shell may run exactly stock git and gh from the
-      // workspace, and write the workspace but not the Harness's own files there.
-      assert.ok(protectedPolicy.includes(stockGitPolicy(config.workspace)));
+      // workspace, and write the workspace but not the Harness's own files there. Literal text
+      // (finding 3323), every permit and forbid.
+      const w = JSON.stringify(config.workspace);
+      const below = JSON.stringify(`${config.workspace}/*`);
+      const inWorkspace = (field: string) =>
+        `(context.input.${field} == ${w} || context.input.${field} like ${below})`;
       assert.ok(
         protectedPolicy.includes(
-          `when { (context.input.program_path == "/usr/bin/git" || context.input.program_path == "/usr/local/bin/gh") && (context.input.cwd == ${JSON.stringify(config.workspace)} || context.input.cwd like ${JSON.stringify(`${config.workspace}/*`)}) && !(context.input has credential_reads) };`,
+          [
+            '@id("oce_workload_shell")',
+            'permit (principal, action == Box::Action::"shell:exec", resource);',
+            '@id("oce_workspace_read")',
+            'permit (principal, action == Box::Action::"fs:read", resource)',
+            `when { ${inWorkspace("path")} };`,
+            '@id("oce_workspace_write")',
+            'permit (principal, action == Box::Action::"fs:write", resource)',
+            `when { context.input.path like ${below} };`,
+            '@id("oce_dev_null")',
+            'permit (principal, action in [Box::Action::"fs:read", Box::Action::"fs:write"], resource)',
+            'when { context.input.path == "/dev/null" };',
+            '@id("oce_stock_git")',
+            'permit (principal, action == Box::Action::"shell:spawn", resource)',
+            `when { (context.input.program_path == "/usr/bin/git" || context.input.program_path == "/usr/local/bin/gh") && ${inWorkspace("cwd")} && !(context.input has credential_reads) };`,
+            '@id("oce_harness_files")',
+            'forbid (principal, action in [Box::Action::"fs:write", Box::Action::"fs:delete", Box::Action::"fs:move"], resource)',
+            `when { context.input.path == ${JSON.stringify(`${config.workspace}/.codex`)} || context.input.path like ${JSON.stringify(`${config.workspace}/.codex/*`)} || context.input.path == ${JSON.stringify(`${config.workspace}/.oce-model-marker`)} };`,
+            "",
+          ].join("\n"),
         ),
+        protectedPolicy,
       );
-      assert.match(protectedPolicy, /forbid[^;]*fs:write[^;]*\/\.codex"/);
+      // Finding 3320: git and gh run in their own boundaries, not the agent's: the workspace
+      // (gh read only, and the git file it runs), never the Codex home, the hook directory or
+      // the bridge; the workspace's .codex denied, and made before Box starts.
+      const deny = JSON.stringify([`${config.workspace}/.codex`]).replaceAll(",", ", ");
+      assert.ok(
+        generated.endsWith(
+          [
+            "[tool.git]",
+            'command = ["/usr/bin/git"]',
+            `env = { HOME = ${JSON.stringify(input.environment.HOME)} }`,
+            "[tool.git.filesystem]",
+            `read = [${w}]`,
+            `write = [${w}]`,
+            `deny = ${deny}`,
+            "[tool.git.network]",
+            "contain_egress = true",
+            "",
+            "[tool.gh]",
+            'command = ["/usr/local/bin/gh"]',
+            `env = { HOME = ${JSON.stringify(input.environment.HOME)} }`,
+            "[tool.gh.filesystem]",
+            `read = [${w}]`,
+            'read_file = ["/usr/bin/git"]',
+            `deny = ${deny}`,
+            "[tool.gh.network]",
+            "contain_egress = true",
+            "",
+          ].join("\n"),
+        ),
+        generated,
+      );
+      assert.deepEqual(generated.match(/^\[tool\.[^.\]]+\]$/gm), ["[tool.git]", "[tool.gh]"]);
+      assert.ok(lstatSync(join(config.workspace, ".codex")).isDirectory());
+      assert.equal(lstatSync(join(config.workspace, ".codex")).mode & 0o777, 0o700);
       assert.equal(
         readFileSync(join(directory, "bearer.sha256"), "utf8").split(" ")[0],
         createHash("sha256").update(bearer).digest("hex"),
@@ -1887,8 +2051,10 @@ test(
       );
       const plainPolicy = readFileSync(join(directory, "generated-policy.dw"), "utf8");
       assert.match(plainPolicy, /context.input.ip4 == "10.0.0.9"/);
-      // No protected repository source: no workload shell, git or gh rule (finding 3314).
+      // No protected repository source: no workload shell, git or gh rule (finding 3314), and
+      // no git or gh table (finding 3320).
       assert.doesNotMatch(plainPolicy, /shell:exec|oce_stock_git|fs:write/);
+      assert.doesNotMatch(generated, /^\[tool\./m);
       const rows = generated.split("\n").filter((row) => /^(read|write|exec) = \[/.test(row));
       const grants = rows.flatMap((row) => JSON.parse(row.slice(row.indexOf("["))) as string[]);
       for (const grant of grants) {

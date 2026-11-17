@@ -6,6 +6,7 @@ import {
   copyFileSync,
   constants,
   existsSync,
+  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -32,7 +33,7 @@ import {
   smokeInput,
   start,
 } from "../../deploy/examples/strands-box/host/launch.ts";
-import { PORT } from "../../deploy/examples/strands-box/host/transport.ts";
+import { enrollmentBridge, PORT } from "../../deploy/examples/strands-box/host/transport.ts";
 import type { EgressInstallation, ProxyPlan } from "../../packages/contracts/src/index.ts";
 import { modelSource, pairedFixture, sha } from "../helpers/strands-box-protected-fixture.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
@@ -273,6 +274,18 @@ async function challengeOf(held: HeldHarness, bearer: string) {
   }, "the program's challenge");
 }
 
+/** Whether a socket file still has a listener: "connected", or the connect error's code. */
+function connectOutcome(path: string): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ path });
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve("connected");
+    });
+    socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));
+  });
+}
+
 /** Raw bytes to the visible in-Box bridge path; what comes back before it closes. */
 async function raw(path: string, bytes: string): Promise<string> {
   const socket = createConnection({ path });
@@ -425,6 +438,10 @@ test(
     // The host dials only the inode it pinned before the gate: a socket put at the visible path
     // (as a workload could) gets neither the bearer nor a release, and the program still answers.
     const visible = held.enrollSocket;
+    // The test keeps box-agent's own socket inode linked, to see it closed after ready (3315).
+    const original = `${visible}.original`;
+    linkSync(visible, original);
+    assert.equal(await connectOutcome(original), "connected");
     const moved = `${visible}.moved`;
     renameSync(visible, moved);
     let impostorBytes = "";
@@ -502,6 +519,9 @@ test(
       () => (/source=inner stage=enrollment reason=closed/.test(held.log()) ? true : undefined),
       "box-agent closing the bridge",
     );
+    // box-agent's own bridge is gone, not just the host's pin (finding 3315): its socket inode,
+    // still linked here, has no listener, so nothing in Box can reach the program or Codex.
+    assert.equal(await connectOutcome(original), "ECONNREFUSED");
     const before = f.host.enrollments.length;
     f.host.state = "starting";
     await assert.doesNotReject(
@@ -762,4 +782,48 @@ test("the host relays a release only for the challenge it relayed, signed by Com
     document: { enrolled: true, startupId: challenge.startupId },
   });
   assert.deepEqual(sent.at(-1), { method: "POST", bearer: token, body: JSON.stringify(release) });
+});
+
+test("the bridge reads a request head no more loosely than the program's parser", async (t) => {
+  // Finding 3317: a continuation line, a space before the colon, a field name that is not a
+  // token, or a bare CR or LF anywhere in the head could make the bridge count a body the
+  // program's parser does not see as one. Each is closed unanswered and never reaches upstream.
+  const directory = await temporaryDirectory(t, "strands-bridge-");
+  const upstreamBytes: string[] = [];
+  const upstream = createServer((socket) => {
+    let bytes = "";
+    socket.on("data", (chunk: Buffer) => (bytes += chunk.toString("latin1")));
+    socket.on("end", () => upstreamBytes.push(bytes));
+    socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  t.after(() => upstream.close());
+  const bridge = enrollmentBridge(
+    { host: "127.0.0.1", port: (upstream.address() as { port: number }).port },
+    () => true,
+  );
+  const path = join(directory, "bridge.sock");
+  bridge.server.listen(path);
+  await once(bridge.server, "listening");
+  t.after(() => bridge.close());
+  // Each head below is otherwise one the bridge relays: a POST with a one-byte body, or a GET.
+  const post = `POST ${ENROLLMENT_PATH} HTTP/1.1\r\nHost: x\r\nContent-Length: 1`;
+  const get = `GET ${ENROLLMENT_PATH} HTTP/1.1\r\nHost: x`;
+  for (const [name, bytes] of [
+    ["SP continuation", `${post}\r\nX-A: a\r\n Content-Length: 1\r\n\r\n{`],
+    ["HT continuation", `${post}\r\nX-A: a\r\n\tContent-Length: 1\r\n\r\n{`],
+    ["space before colon", `${post}\r\nContent-Length : 1\r\n\r\n{`],
+    ["name not a token", `${post}\r\nX@A: a\r\n\r\n{`],
+    ["bare LF", `${get}\r\nX-A: a\nContent-Length: 5\r\n\r\n`],
+    ["bare CR", `${get}\r\nX-A: a\rContent-Length: 5\r\n\r\n`],
+  ] as const) {
+    assert.equal(await raw(path, bytes), "", name);
+  }
+  assert.deepEqual(upstreamBytes, []);
+  // The same bridge relays a well-formed request, with optional whitespace around the value.
+  const good = `${get}\r\nAuthorization:\tBearer t \r\n\r\n`;
+  assert.match(await raw(path, good), /^HTTP\/1\.1 200 /);
+  await until(() => (upstreamBytes.length > 0 ? true : undefined), "the relayed request");
+  assert.deepEqual(upstreamBytes, [good]);
 });

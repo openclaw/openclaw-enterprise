@@ -947,12 +947,28 @@ test(
     assert.equal(f.sandbox.repositoryAccess!.materialSettledAt(f.revision.id), undefined);
     assert.ok((await ask()).body?.credential === key, "the start-up ask did not get its own key");
     // Before the activation OCC finds no live session and answers `withdrawn`: the same, ready to
-    // activate with no material; Git asks still get nothing until a version is confirmed.
+    // activate with no material; Git asks still get nothing until a version is confirmed. A
+    // binding withdrawn before activation looks exactly like this, so its revision activates
+    // with a route that never gets material (finding 3324, documented in driver/README.md):
+    // every Git ask is refused, it fails closed.
     f.state.unprepared = false;
     f.state.withdrawn = true;
     await binding.reconcile!(signal);
     assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
     assert.equal(f.state.installs, 0);
+    const gitAsk = await askSource(
+      f.sourceSocket,
+      f.bearer,
+      boxModelRequest(requestId(), {
+        host: "github.com",
+        port: 443,
+        method: "GET",
+        path: "/example/review.git/info/refs",
+        query: "service=git-upload-pack",
+      }),
+    );
+    assert.equal(gitAsk.body?.refusal, "route_not_ready");
+    assert.equal(gitAsk.body?.credential, undefined);
     // The Box gone: pending again.
     f.host.sourceLive = false;
     await binding.reconcile!(signal);
@@ -977,7 +993,13 @@ test(
     reads = kube.calls.length;
     assert.equal((await ask()).body?.refusal, "route_not_ready");
     assert.deepEqual(secretReads(kube, reads), []);
+    // Nor is the route ready while OCE does not hold this recipient's installation (finding
+    // 3323): a pass where `observe` finds nothing resets it.
+    await binding.reconcile!(signal);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
     await f.custody.recordEgressInstallation(committed);
+    await binding.reconcile!(signal);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
     // Activated and confirmed: the same ask is answered against the confirmed fence.
     f.state.unprepared = false;
     await binding.reconcile!(signal);

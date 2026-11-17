@@ -51,7 +51,7 @@ import {
   workspaceVerifierPolicy,
   workspaceVerifierTool,
 } from "./workspace-verifier.ts";
-import { stockGitPolicy } from "./stock-git.ts";
+import { ensureWorkspaceCodex, stockGitPolicy, stockGitTools } from "./stock-git.ts";
 import {
   nativeHookPolicy,
   nativeHookProbe,
@@ -942,6 +942,8 @@ export function start(
           throw new Error("workspace_verifier_refused");
         verifyWorkspaceVerifier(verifier, config.workspace);
       }
+      // The git and gh tables deny the workspace's `.codex`, which must exist when Box starts.
+      if (source !== undefined) ensureWorkspaceCodex(config.workspace);
       writeFileSync(
         policyFile,
         policy(input.egress ?? [], source !== undefined) +
@@ -1029,7 +1031,11 @@ export function start(
                 path: modelSource.path,
               })) +
           (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)) +
-          (hooks === undefined ? "" : "\n" + nativeHookTool(config.workspace, hooks)),
+          (hooks === undefined ? "" : "\n" + nativeHookTool(config.workspace, hooks)) +
+          // A protected repository run: git and gh in their own boundaries (finding 3320).
+          (source === undefined
+            ? ""
+            : "\n" + stockGitTools(config.workspace, agentHome, verifier !== undefined)),
         ownerOnly,
       );
       if (input.workspaceNodeSetupCode !== undefined) {

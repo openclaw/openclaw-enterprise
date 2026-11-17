@@ -204,20 +204,30 @@ const ENROLLMENT_BODY_BYTES = 4_096;
 const ENROLLMENT_HEAD_BYTES = 4_096;
 const ENROLLMENT_ANSWER_BYTES = 8_192;
 
+/** An RFC 9110 field name (`token`). */
+const FIELD_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
 /**
  * The exact request a connection carries, or `undefined`: one of the two request lines, a
  * bounded head without `Upgrade` or `Transfer-Encoding`, and a `Content-Length` that is 0 or
  * absent for `GET` and at most 4 KiB for `POST`. Returns the head and the body length.
+ *
+ * The head is read no more loosely than the program's own HTTP parser (finding 3317): every line
+ * ends in CRLF (a bare CR or LF anywhere refuses), no line continues another (a line that starts
+ * with SP or HT refuses), and each field name is an RFC 9110 token directly followed by its
+ * colon. So the body length this bridge counts is the one the program reads.
  */
 function enrollmentHead(head: Buffer): { readonly length: number } | undefined {
   const lines = head.toString("latin1").split("\r\n");
+  if (lines.some((line) => /[\r\n]/.test(line))) return undefined;
   if (!(ENROLLMENT_REQUEST_LINES as readonly string[]).includes(lines[0]!)) return undefined;
   let length: number | undefined;
   for (const line of lines.slice(1)) {
+    // A token holds no SP or HT, so a continuation line and a space before the colon refuse.
     const colon = line.indexOf(":");
-    if (colon < 1) return undefined;
-    const name = line.slice(0, colon).trim().toLowerCase();
-    const value = line.slice(colon + 1).trim();
+    if (colon < 1 || !FIELD_NAME.test(line.slice(0, colon))) return undefined;
+    const name = line.slice(0, colon).toLowerCase();
+    const value = line.slice(colon + 1).replace(/^[ \t]+|[ \t]+$/g, "");
     if (name === "upgrade" || name === "transfer-encoding" || name === "expect") return undefined;
     if (name === "connection" && value.toLowerCase() !== "close") return undefined;
     if (name === "content-length") {
@@ -263,7 +273,8 @@ export function enrollmentBridge(
           if (received.length > ENROLLMENT_HEAD_BYTES) client.destroy();
           return;
         }
-        const parsed = end > ENROLLMENT_HEAD_BYTES ? undefined : enrollmentHead(received.subarray(0, end));
+        const parsed =
+          end > ENROLLMENT_HEAD_BYTES ? undefined : enrollmentHead(received.subarray(0, end));
         if (parsed === undefined) {
           client.destroy();
           return;

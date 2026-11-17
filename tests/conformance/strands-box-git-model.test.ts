@@ -36,8 +36,8 @@ test("the scripted dry-run model asks only for stock git and gh against GitHub's
     gitCommand(plan, nonce, "push"),
     /git -C \/home\/node\/workspace\/x5-[0-9a-f]{12} push https:\/\/github\.com\/example\/review\.git HEAD:refs\/heads\/review\/agent/,
   );
-  // Finding 3318: in Box a host binary does not start where the shell's `cd` went, so every git
-  // call names its repository and no step relies on `cd` for git or gh.
+  // Finding 3318: every git call names its repository and no step relies on `cd` for git or gh,
+  // so the scripted steps do not depend on where Box starts a host binary.
   for (const step of GIT_STEPS) {
     const command = gitCommand(plan, nonce, step);
     assert.doesNotMatch(command, /(?:^|&& |; )cd /, step);
