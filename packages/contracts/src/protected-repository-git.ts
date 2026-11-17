@@ -193,8 +193,7 @@ export interface GitHubRequestView {
 }
 
 export type GitHubRequestOperation =
-  | PreparedGitHubUseRequest["operation"]
-  | PreparedGitHubInstallationUseRequest["operation"];
+  PreparedGitHubUseRequest["operation"] | PreparedGitHubInstallationUseRequest["operation"];
 
 /**
  * What the Agent may be told, never a token, installation or host:

@@ -135,7 +135,11 @@ type Refused = {
 };
 
 export type GitHubRequestOutcome<Decision> =
-  | { readonly kind: "allowed"; readonly operation: GitHubRequestOperation; readonly decision: Decision }
+  | {
+      readonly kind: "allowed";
+      readonly operation: GitHubRequestOperation;
+      readonly decision: Decision;
+    }
   | Refused;
 
 type AllowedDecision =
@@ -164,7 +168,9 @@ export async function decideGitHubRequest<Decision extends AllowedDecision>(opti
 }): Promise<GitHubRequestOutcome<Decision>> {
   const { request, binding, signal, deadlineAt } = options;
   const refuse = (refusal: GitHubRequestRefusal, operation?: GitHubRequestOperation): Refused =>
-    operation === undefined ? { kind: "refused", refusal } : { kind: "refused", refusal, operation };
+    operation === undefined
+      ? { kind: "refused", refusal }
+      : { kind: "refused", refusal, operation };
   const selection = selectGitHubRequest(
     { ...request, target: { ...request.target, reportedScheme: "https" } },
     binding,

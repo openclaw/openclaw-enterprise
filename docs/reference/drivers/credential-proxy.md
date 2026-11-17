@@ -35,7 +35,7 @@ these operations:
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `sourceControl`                             | Admission and preparation use its Backend, sender, resolver and provider identities. `assertAvailable(signal, profile?)` checks the configured counterpart.             | Required property, not a method. Discovery alone is not installed enforcement evidence.                  |
 | `bindExchange(createCredentialProxy)`       | API composition supplies a factory. Call it once with the transport's `EgressExchangeOwner`; receive only the five exchange methods. Return a binding with `close()`.   | Optional on the base interface; required to connect a request-time exchange transport.                   |
-| `bindRepositoryGit(authority)`              | Worker composition supplies `ProtectedRepositoryGitAuthority`; return a binding with `close()`.                                                                         | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
+| `bindRepositoryGit(authority, requests)`    | Worker composition supplies `ProtectedRepositoryGitAuthority` and OCE's GitHub request decisions; return a binding with `close()`.                                      | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
 | `configureRevision(context)`                | Compute preparation supplies Namespace, revision, admitted plan and cancellation signal. Return `ProxyWiring` with that exact plan and nonsecret Sandbox configuration. | Required. Cannot broaden the admitted plan.                                                              |
 | `wiringStatus(context, prepared)`           | Compute observes the prepared installation. Return authenticated `EgressInstallation` evidence or `undefined`.                                                          | Required. An accepted configuration request is not sufficient evidence.                                  |
 | `verifyInstallation(context, installation)` | Compute rechecks the counterpart before release, including after recording custody. Return whether the exact evidence remains valid.                                    | Required. A stored receipt is not a readiness lease.                                                     |
@@ -183,6 +183,18 @@ permit binds exchange, request digest and material, with an exclusive
 The `online` authority instead returns `replyBy`: deliver the allow by that
 boundary. An already authorized online request may finish after withdrawal.
 Neither decision proves delivery or the provider outcome.
+
+### GitHub request decisions
+
+Use `requests` (`RepositoryGitRequests`) instead of GitHub rules of your own.
+`requests.authorize({ route, profile, authorization, request, signal })` reads the
+installed material, classifies the request with the bundled OpenShell route's code
+(smart HTTP and its pushed refs, GitHub REST and GraphQL, the draft pull request
+create), records one use and returns `allow` or `refused`. `request` is what the bundled
+supervisor sends OCE before injection: the target, lowercase headers without credential,
+routing or framing headers, and the buffered body up to 4 MiB. On `allow`, add `inject`
+to exactly that request before `sendBy`; an injector need not forward it. Show the Agent
+`reasonCode`. Never retry.
 
 ### Cancellation, retries and uncertainty
 

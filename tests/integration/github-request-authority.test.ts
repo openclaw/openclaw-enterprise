@@ -131,7 +131,11 @@ const journeys: Record<Profile, [string, Request, string][]> = {
     ["push discovery", discovery("example/project", "git-receive-pack"), "allow"],
     ["fetch", pack("example/project", fetchBody, "upload"), "allow"],
     ["push to the granted ref", pack("example/project", push(pushRef)), "allow"],
-    ["push to another ref", pack("example/project", push("refs/heads/main")), "request_not_allowed"],
+    [
+      "push to another ref",
+      pack("example/project", push("refs/heads/main")),
+      "request_not_allowed",
+    ],
     [
       "push that also updates another ref",
       pack("example/project", push(pushRef, "refs/heads/main")),
@@ -173,7 +177,8 @@ const journeys: Record<Profile, [string, Request, string][]> = {
     [
       "gh pr create (GraphQL mutation)",
       api("POST", "/graphql", {
-        query: "mutation($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { url } } }",
+        query:
+          "mutation($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { url } } }",
         variables: { input: { draft: true } },
       }),
       "allow",
@@ -389,7 +394,10 @@ async function installedInjector(t: TestContext, profile: Profile) {
   const owner = modelledAuthority(profile);
   // The Worker's own composition binds the package and hands it OCE's requests port.
   const bound = await bindRepositoryGitTransport(
-    { repositoryGitDriver: driver, protectedDriver: driver } as unknown as InstallationRuntimeDrivers,
+    {
+      repositoryGitDriver: driver,
+      protectedDriver: driver,
+    } as unknown as InstallationRuntimeDrivers,
     owner.authority,
     undefined as unknown as PostgresPool,
   );
