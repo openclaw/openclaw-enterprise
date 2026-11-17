@@ -24,12 +24,10 @@ override grants, and one action never implies another. See
 
 Publishing a Model Provider requires Installation `administer`. Agent creators can list available providers with `create` on the Namespace’s Agent collection.
 
-This is the set checked by current public operations. Fresh native IAM bootstrap
-grants these pairs to the human administrator and the non-Agent bootstrap service
-principal. Rerunning bootstrap does not add missing permissions to existing Roles.
 This is the set checked by current public operations. Native IAM bootstrap
 grants most of these pairs to the human administrator and the non-Agent bootstrap
-service principal. Grant `read_logs` and `read_audit` separately.
+service principal. Grant `read_logs` and `read_audit` separately. Rerunning
+bootstrap does not add missing permissions to existing Roles.
 
 | Resource kind                                   | Actions                                                                                                             | Scope checked                                                                                                                                                                                                                                                                                                                                              |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
