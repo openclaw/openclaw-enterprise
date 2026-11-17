@@ -70,7 +70,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 // Node's zlib renders other bytes. The harness image conformance test recomputes both;
 // re-pin only after reviewing a change.
 export const HARNESS_SPLIT_COMBINED_SHA256 =
-  "8c198da80b95507370c135d4ba0cedfe4ea07b29305429bd065789b5f966e11a";
+  "e35c4da5eb1c928a645cd4e5be81153e2733e41d172c06190b4b470882773d63";
 export const HARNESS_SPLIT_COMMAND_SHA256 =
   "3908f9eda8ea2f9ccb4acd257c5d5e13cec31f28331e97ae7378f321956c79cf";
 const BOOT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
