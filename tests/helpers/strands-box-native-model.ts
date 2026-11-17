@@ -160,7 +160,13 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
   });
   const provider = {
     connections: 0,
-    requests: [] as { method: string; path: string; authSha256: string; bodyBytes: number; bodySha256: string }[],
+    requests: [] as {
+      method: string;
+      path: string;
+      authSha256: string;
+      bodyBytes: number;
+      bodySha256: string;
+    }[],
   };
   const model = createServer({ key: leaf.key, cert: leaf.cert }, (req, res) => {
     const chunks: Buffer[] = [];
@@ -218,7 +224,12 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
     config: { authorized_base_url: route },
     secrets: { api_key: key },
   });
-  const revisionContext = { namespace, revision: f.revision, sources: [sourceContext.source], signal };
+  const revisionContext = {
+    namespace,
+    revision: f.revision,
+    sources: [sourceContext.source],
+    signal,
+  };
   assert.equal((await gateway.attachForRevision(revisionContext)).length, 1);
 
   let stopBox = async () => {};
@@ -249,7 +260,11 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
       { mode: 0o600 },
     );
     const policyFile = join(authority, "policy.dw");
-    const modelRoute = { kind: "controlled-inference" as const, url: route, address: inputs.modelAddress };
+    const modelRoute = {
+      kind: "controlled-inference" as const,
+      url: route,
+      address: inputs.modelAddress,
+    };
     await writeFile(policyFile, policy([modelRoute], true), { mode: 0o600 });
     const quoted = (value: string) => JSON.stringify(value);
     const node = process.execPath;
@@ -272,13 +287,19 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
       home,
       // git-remote-https's shared libraries (libcurl): /usr/lib64 on Fedora, the multiarch
       // directory on Ubuntu.
-      ...["/usr/share/git-core", "/usr/lib64", `/usr/lib/${process.arch === "x64" ? "x86_64" : "aarch64"}-linux-gnu`].filter(
-        (path) => existsSync(path),
-      ),
+      ...[
+        "/usr/share/git-core",
+        "/usr/lib64",
+        `/usr/lib/${process.arch === "x64" ? "x86_64" : "aarch64"}-linux-gnu`,
+      ].filter((path) => existsSync(path)),
     ];
     // git's helper programs: /usr/libexec/git-core (Fedora, Debian 13) or /usr/lib/git-core (Ubuntu).
-    const gitCore = ["/usr/libexec/git-core", "/usr/lib/git-core"].filter((path) => existsSync(path));
-    if (codex !== undefined) read.push(dirname(codex));
+    const gitCore = ["/usr/libexec/git-core", "/usr/lib/git-core"].filter((path) =>
+      existsSync(path),
+    );
+    if (codex !== undefined) {
+      read.push(dirname(codex));
+    }
     const write = [queue, f.workspace, home];
     const exec = [node, "/usr/bin/git", ...gitCore, ...(codex === undefined ? [] : [codex])];
     const boxFile = join(authority, "box.toml");
@@ -336,13 +357,19 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
     };
     const failWith = (what: string) => {
       // Box's output never holds the key (asserted below); still, show it only digest-checked.
-      for (const value of keys) assert.ok(!boxOutput.includes(value));
+      for (const value of keys) {
+        assert.ok(!boxOutput.includes(value));
+      }
       return new Error(`${what}\n--- box output ---\n${boxOutput}`);
     };
     const ready = await until("the Box workload", Date.now() + 90_000, async () => {
-      if (child.exitCode !== null) throw failWith(`box run exited ${child.exitCode}`);
+      if (child.exitCode !== null) {
+        throw failWith(`box run exited ${child.exitCode}`);
+      }
       return existsSync(join(queue, "ready"))
-        ? (JSON.parse(await readFile(join(queue, "ready"), "utf8")) as { env: Record<string, string> })
+        ? (JSON.parse(await readFile(join(queue, "ready"), "utf8")) as {
+            env: Record<string, string>;
+          })
         : undefined;
     });
     const boxPid = child.pid;
@@ -352,7 +379,9 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
       await writeFile(`${base}.tmp`, JSON.stringify({ argv, cwd: f.workspace, stdinEnv }));
       await rename(`${base}.tmp`, `${base}.cmd`);
       return until(`command ${argv[0]}`, Date.now() + 90_000, async () => {
-        if (child.exitCode !== null) throw failWith(`box run exited ${child.exitCode}`);
+        if (child.exitCode !== null) {
+          throw failWith(`box run exited ${child.exitCode}`);
+        }
         return existsSync(`${base}.out`)
           ? (JSON.parse(await readFile(`${base}.out`, "utf8")) as Result)
           : undefined;
@@ -360,7 +389,14 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
     };
     const call = async (url: string, method = "POST", size = 64): Promise<ClientResult> => {
       // Box denies writable+executable memory: Node runs without its JIT, as the runner does.
-      const result = await run([node, "--jitless", join(agent, "client.mjs"), url, method, String(size)]);
+      const result = await run([
+        node,
+        "--jitless",
+        join(agent, "client.mjs"),
+        url,
+        method,
+        String(size),
+      ]);
       assert.equal(result.code, 0, `${result.stderr}${result.error ?? ""}`);
       return JSON.parse(result.stdout) as ClientResult;
     };
@@ -427,8 +463,16 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
       ["path", `${route}/chat/completions`, "POST"],
       ["sub-path", `${route}/responses/compact`, "POST"],
       ["method", `${route}/responses`, "GET"],
-      ["host-ip-literal", `https://${inputs.modelAddress}:${inputs.modelPort}/v1/responses`, "POST"],
-      ["host-other-port", `https://${inputs.modelHost}:${inputs.modelPort + 1}/v1/responses`, "POST"],
+      [
+        "host-ip-literal",
+        `https://${inputs.modelAddress}:${inputs.modelPort}/v1/responses`,
+        "POST",
+      ],
+      [
+        "host-other-port",
+        `https://${inputs.modelHost}:${inputs.modelPort + 1}/v1/responses`,
+        "POST",
+      ],
     ] as const) {
       const result = await call(url, method, method === "GET" ? 0 : 64);
       refusedCalls[label] = result;
@@ -464,7 +508,12 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
     const over = await call(`${route}/responses`, "POST", 16 * 1024 * 1024 + 1);
     assert.notEqual(over.status, 200);
     assert.equal(provider.requests.length, beforeOver);
-    evidence.nearCap = { bodyBytes: near, status: big.status, totalMs: big.totalMs, providerSha256Match: true };
+    evidence.nearCap = {
+      bodyBytes: near,
+      status: big.status,
+      totalMs: big.totalMs,
+      providerSha256Match: true,
+    };
     evidence.overCap = { bodyBytes: over.bodyBytes, status: over.status, error: over.error };
 
     // 5. Repository-only withdrawal: OCE refuses GitHub; the model keeps working.
@@ -488,7 +537,10 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
       signal,
     });
     assert.equal(status.state, "revoked");
-    const beforeWithdrawn = { requests: provider.requests.length, connections: provider.connections };
+    const beforeWithdrawn = {
+      requests: provider.requests.length,
+      connections: provider.connections,
+    };
     const hostRefusedBefore = counts().refusedByHost;
     const answersBefore = f.host.answers;
     const withdrawn = await call(`${route}/responses`);
@@ -510,7 +562,11 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
     const files = await listFiles(join(root, "box-state"));
     for (const file of files) {
       const content = await readFile(file).catch(() => Buffer.alloc(0));
-      for (const value of keys) if (content.includes(value)) stateMatches++;
+      for (const value of keys) {
+        if (content.includes(value)) {
+          stateMatches++;
+        }
+      }
     }
     evidence.boxStateFiles = files.length;
     evidence.boxStateKeyMatches = stateMatches;
@@ -537,8 +593,11 @@ async function listFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) out.push(...(await listFiles(path)));
-    else if (entry.isFile()) out.push(path);
+    if (entry.isDirectory()) {
+      out.push(...(await listFiles(path)));
+    } else if (entry.isFile()) {
+      out.push(path);
+    }
   }
   return out;
 }

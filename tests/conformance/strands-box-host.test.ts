@@ -891,7 +891,10 @@ test("the native hook route is the workspace node's Gateway hook prefix: POST, o
   assert.throws(
     () =>
       nativeHookRoute(
-        parseRoute({ url: "https://fixture.invalid:8444/v1", address: "10.2.3.4" }, "controlled-inference"),
+        parseRoute(
+          { url: "https://fixture.invalid:8444/v1", address: "10.2.3.4" },
+          "controlled-inference",
+        ),
       ),
     { message: "invalid_fixed_egress" },
   );
@@ -911,8 +914,7 @@ test("the native hook route is the workspace node's Gateway hook prefix: POST, o
     ["native-hook"],
   );
   assert.throws(
-    () =>
-      assertUpstreamCaScope({ sha256: "b".repeat(64), pem: "" }, [nativeHookRoute(node)]),
+    () => assertUpstreamCaScope({ sha256: "b".repeat(64), pem: "" }, [nativeHookRoute(node)]),
     { message: "upstream_ca_route_not_declared" },
   );
 });

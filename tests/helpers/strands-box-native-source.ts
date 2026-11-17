@@ -48,7 +48,11 @@ export interface Result {
   readonly error?: string;
 }
 
-export async function until<T>(what: string, deadline: number, probe: () => Promise<T | undefined>) {
+export async function until<T>(
+  what: string,
+  deadline: number,
+  probe: () => Promise<T | undefined>,
+) {
   for (;;) {
     const value = await probe();
     if (value !== undefined) {
@@ -133,7 +137,9 @@ export async function stageBRealBox(
       ].filter((path) => existsSync(path)),
     ];
     const write = [queue, f.workspace, home];
-    const gitCore = ["/usr/libexec/git-core", "/usr/lib/git-core"].filter((path) => existsSync(path));
+    const gitCore = ["/usr/libexec/git-core", "/usr/lib/git-core"].filter((path) =>
+      existsSync(path),
+    );
     const exec = [node, "/usr/bin/git", ...gitCore, inputs.gh];
     const boxFile = join(authority, "box.toml");
     await writeFile(

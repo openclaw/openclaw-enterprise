@@ -459,12 +459,21 @@ export async function pairedFixture(
       if (req.method === "POST" && req.url === "/v1/model-revoke" && model !== undefined) {
         // As host/control.ts: the receipt is written durably first, then the view shows it.
         const input = JSON.parse(bytes.toString()) as Record<string, unknown>;
-        if (!host.present || input.executionId !== executionId || input.sourceId !== MODEL_SOURCE_ID) {
+        if (
+          !host.present ||
+          input.executionId !== executionId ||
+          input.sourceId !== MODEL_SOURCE_ID
+        ) {
           reply(409, { error: "revoke_outside_execution" });
           return;
         }
         host.modelRevokes++;
-        const receipt = recordModelRevocation(hostConfig, hostOwner(), executionId, MODEL_SOURCE_ID);
+        const receipt = recordModelRevocation(
+          hostConfig,
+          hostOwner(),
+          executionId,
+          MODEL_SOURCE_ID,
+        );
         host.modelRevoked = { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
         reply(200, record());
         return;

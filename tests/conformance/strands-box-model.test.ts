@@ -14,10 +14,7 @@ import {
   parseModelRequest,
 } from "../../deploy/examples/strands-box/host/credential-source.ts";
 import { modelCredentials } from "../../deploy/examples/strands-box/host/egress.ts";
-import type {
-  AgentRevision,
-  CredentialSource,
-} from "../../packages/contracts/src/index.ts";
+import type { AgentRevision, CredentialSource } from "../../packages/contracts/src/index.ts";
 import {
   askSource,
   boxModelRequest,
@@ -103,7 +100,9 @@ async function gatewayFixture(t: TestContext) {
     },
     async revoke(_revisionId, sourceId) {
       live.revokes++;
-      if (live.attachment?.sourceId !== sourceId || live.receipt === undefined) return undefined;
+      if (live.attachment?.sourceId !== sourceId || live.receipt === undefined) {
+        return undefined;
+      }
       live.attachment = { sourceId, revoked: true };
       return { receiptId: live.receipt };
     },
@@ -143,19 +142,28 @@ test("the package's model Gateway keeps each source's key in its own Secret and 
     { type: MODEL_SOURCE_TYPE, config: { authorized_base_url: "http://10.0.0.9:8444/v1" } },
     { type: MODEL_SOURCE_TYPE, config: { ...config, extra: "x" } },
   ]) {
-    assert.throws(() => gateway.validateSourceConfig(refused), /model source type|authorized_base_url/);
+    assert.throws(
+      () => gateway.validateSourceConfig(refused),
+      /model source type|authorized_base_url/,
+    );
   }
 
   // Register: one named Secret per source, labelled and annotated with its owner.
   const key = testModelKey();
   const name = modelSecretName(namespace.id, MODEL_SOURCE_ID);
   assert.deepEqual(
-    await gateway.registerSource(context(), { type: MODEL_SOURCE_TYPE, config, secrets: { api_key: key } }),
+    await gateway.registerSource(context(), {
+      type: MODEL_SOURCE_TYPE,
+      config,
+      secrets: { api_key: key },
+    }),
     { state: "ready" },
   );
   const stored = kube.secrets.get(name)!;
   assert.equal(kube.value(name), key);
-  assert.deepEqual(stored.metadata.labels, { "app.kubernetes.io/managed-by": "openclaw-strands-box" });
+  assert.deepEqual(stored.metadata.labels, {
+    "app.kubernetes.io/managed-by": "openclaw-strands-box",
+  });
   assert.deepEqual(stored.metadata.annotations, {
     "openclaw.dev/credential-source-id": MODEL_SOURCE_ID,
     "openclaw.dev/namespace-id": namespace.id,
@@ -206,7 +214,11 @@ test("the package's model Gateway keeps each source's key in its own Secret and 
   const version = stored.metadata.resourceVersion;
   const rotated = testModelKey();
   assert.deepEqual(
-    await gateway.updateSource(context(), { type: MODEL_SOURCE_TYPE, config, secrets: { api_key: rotated } }),
+    await gateway.updateSource(context(), {
+      type: MODEL_SOURCE_TYPE,
+      config,
+      secrets: { api_key: rotated },
+    }),
     { state: "ready" },
   );
   assert.equal(kube.value(name), rotated);
@@ -227,7 +239,10 @@ test("the package's model Gateway keeps each source's key in its own Secret and 
     metadata: {
       name: foreignName,
       resourceVersion: "1",
-      annotations: { "openclaw.dev/credential-source-id": "cs_someone", "openclaw.dev/namespace-id": namespace.id },
+      annotations: {
+        "openclaw.dev/credential-source-id": "cs_someone",
+        "openclaw.dev/namespace-id": namespace.id,
+      },
     },
     data: { api_key: Buffer.from("foreign").toString("base64") },
   });
@@ -259,7 +274,11 @@ test("the model Gateway attaches exactly the dedicated Codex source for its rout
   const { gateway, live, context, signal } = await gatewayFixture(t);
   const key = testModelKey();
   const config = { authorized_base_url: MODEL_ROUTE };
-  await gateway.registerSource(context(), { type: MODEL_SOURCE_TYPE, config, secrets: { api_key: key } });
+  await gateway.registerSource(context(), {
+    type: MODEL_SOURCE_TYPE,
+    config,
+    secrets: { api_key: key },
+  });
   const attach = (revision = modelRevision(), sources = [source()]) =>
     gateway.attachForRevision({ namespace, revision, sources, signal });
   assert.deepEqual(await attach(), [
@@ -296,7 +315,12 @@ test("the model Gateway attaches exactly the dedicated Codex source for its rout
   ] as const) {
     await assert.rejects(attach(revision as AgentRevision, [...sources]), /attaches exactly/);
   }
-  await assert.rejects(attach(modelRevision({ harnessAuth: { ...modelSource, sourceId: "cs_none" } }), [source({ id: "cs_none" })]), /no stored key/);
+  await assert.rejects(
+    attach(modelRevision({ harnessAuth: { ...modelSource, sourceId: "cs_none" } }), [
+      source({ id: "cs_none" }),
+    ]),
+    /no stored key/,
+  );
 
   // Status: pending until the host shows the execution with this attachment; then ready.
   const statuses = () =>
@@ -314,15 +338,27 @@ test("the model Gateway attaches exactly the dedicated Codex source for its rout
     signal,
   };
   live.receipt = undefined;
-  assert.deepEqual(await gateway.withdraw(withdrawal), { sourceId: MODEL_SOURCE_ID, state: "pending" });
+  assert.deepEqual(await gateway.withdraw(withdrawal), {
+    sourceId: MODEL_SOURCE_ID,
+    state: "pending",
+  });
   live.receipt = "receipt-1";
-  assert.deepEqual(await gateway.withdraw(withdrawal), { sourceId: MODEL_SOURCE_ID, state: "revoked" });
+  assert.deepEqual(await gateway.withdraw(withdrawal), {
+    sourceId: MODEL_SOURCE_ID,
+    state: "revoked",
+  });
   assert.deepEqual(await statuses(), [{ sourceId: MODEL_SOURCE_ID, state: "revoked" }]);
   const revokes = live.revokes;
-  assert.deepEqual(await gateway.withdraw(withdrawal), { sourceId: MODEL_SOURCE_ID, state: "revoked" });
+  assert.deepEqual(await gateway.withdraw(withdrawal), {
+    sourceId: MODEL_SOURCE_ID,
+    state: "revoked",
+  });
   assert.equal(live.revokes, revokes, "an already revoked attachment is not revoked again");
   live.attachment = undefined;
-  assert.deepEqual(await gateway.withdraw(withdrawal), { sourceId: MODEL_SOURCE_ID, state: "absent" });
+  assert.deepEqual(await gateway.withdraw(withdrawal), {
+    sourceId: MODEL_SOURCE_ID,
+    state: "absent",
+  });
   await gateway.removeSource(context());
   assert.deepEqual(await statuses(), [{ sourceId: MODEL_SOURCE_ID, state: "absent" }]);
 });
@@ -342,11 +378,19 @@ test("the host's model source relays only the target of POST <route>/responses, 
   const prompt = Buffer.from(JSON.stringify({ model: "fixture-model", input: marker }));
 
   // Wrong bearer, no bearer: nothing parsed, nothing relayed.
-  assert.equal((await askSource(socket, randomBytes(32).toString("base64url"), boxModelRequest(requestId()))).status, 401);
+  assert.equal(
+    (await askSource(socket, randomBytes(32).toString("base64url"), boxModelRequest(requestId())))
+      .status,
+    401,
+  );
   assert.equal((await askSource(socket, undefined, boxModelRequest(requestId()))).status, 401);
   // Anything but the one route: refused by the host before the Worker is asked.
-  const refusal = async (target: Record<string, unknown>, overrides: Record<string, unknown> = {}) =>
-    (await askSource(socket, bearer, boxModelRequest(requestId(), target, prompt, overrides))).body?.refusal;
+  const refusal = async (
+    target: Record<string, unknown>,
+    overrides: Record<string, unknown> = {},
+  ) =>
+    (await askSource(socket, bearer, boxModelRequest(requestId(), target, prompt, overrides))).body
+      ?.refusal;
   assert.equal(await refusal({ host: "10.0.0.8" }), "route_unsupported");
   assert.equal(await refusal({ port: 443 }), "route_unsupported");
   assert.equal(await refusal({ path: "/v1/chat/completions" }), "route_unsupported");
@@ -371,20 +415,36 @@ test("the host's model source relays only the target of POST <route>/responses, 
     "requestId",
     "target",
   ]);
-  assert.deepEqual(ask.target, { host: "10.0.0.9", port: 8444, method: "POST", path: "/v1/responses", query: "" });
+  assert.deepEqual(ask.target, {
+    host: "10.0.0.9",
+    port: 8444,
+    method: "POST",
+    path: "/v1/responses",
+    query: "",
+  });
   assert.equal(ask.bearerSha256, sha(bearer));
   assert.equal(JSON.stringify(ask).includes(marker), false);
   assert.equal(JSON.stringify(ask).includes(prompt.toString("base64")), false);
   // A send-by beyond 5 s is not a model answer.
   const now = Date.now();
   assert.throws(
-    () => checkedAnswer({ host: "10.0.0.9", model: true }, { credential: "k", send_by_unix_ms: now + 6_000 }, now),
+    () =>
+      checkedAnswer(
+        { host: "10.0.0.9", model: true },
+        { credential: "k", send_by_unix_ms: now + 6_000 },
+        now,
+      ),
     /answer_invalid/,
   );
   const key = testModelKey();
   const sendBy = Date.now() + 5_000;
   assert.equal(relay.answer(ask.askId, { credential: key, send_by_unix_ms: sendBy }), true);
-  assert.deepEqual((await pending).body, { version: 1, request_id: id1, credential: key, send_by_unix_ms: sendBy });
+  assert.deepEqual((await pending).body, {
+    version: 1,
+    request_id: id1,
+    credential: key,
+    send_by_unix_ms: sendBy,
+  });
   assert.equal(relay.modelCounts.released, 1);
 
   // A Worker refusal passes through as a refusal; an over-long send-by becomes answer_invalid.
@@ -406,11 +466,18 @@ test("the host's model source relays only the target of POST <route>/responses, 
   relay.answer(bigAsk.askId, { credential: key, send_by_unix_ms: Date.now() + 5_000 });
   assert.equal((await big).body?.credential, key);
   assert.equal(
-    (await askSource(socket, bearer, boxModelRequest(requestId(), {}, Buffer.alloc(MODEL_MAX_BODY_BYTES + 1)))).body?.refusal,
+    (
+      await askSource(
+        socket,
+        bearer,
+        boxModelRequest(requestId(), {}, Buffer.alloc(MODEL_MAX_BODY_BYTES + 1)),
+      )
+    ).body?.refusal,
     "body_too_large",
   );
   assert.equal(
-    parseModelRequest(Buffer.from(JSON.stringify(boxModelRequest(requestId(), {}, prompt))), route).bodyBytes,
+    parseModelRequest(Buffer.from(JSON.stringify(boxModelRequest(requestId(), {}, prompt))), route)
+      .bodyBytes,
     prompt.length,
   );
 
@@ -459,8 +526,12 @@ test("the host renders one model credential route: Box's source, the placeholder
       "",
     ].join("\n"),
   );
-  assert.throws(() => modelCredentials({ ...route, kind: "workspace-node" }, {} as never), /invalid_model_route/);
-  assert.throws(() => modelCredentials({ ...route, url: "http://10.0.0.9:8444/v1" }, {} as never));
+  assert.throws(() => modelCredentials({ ...route, kind: "workspace-node" }, {} as never), {
+    message: "invalid_model_route",
+  });
+  assert.throws(() => modelCredentials({ ...route, url: "http://10.0.0.9:8444/v1" }, {} as never), {
+    message: "invalid_fixed_egress",
+  });
   // The wiring names the model delivery only for a plan with a model source.
   assert.deepEqual(hostWiring("github", true), {
     version: 4,
@@ -469,172 +540,205 @@ test("the host renders one model credential route: Box's source, the placeholder
       hosts: ["github.com", "api.github.com"],
       delivery: "box-source-v1",
     },
-    harnessModel: { delivery: "box-source-v1", method: "POST", path: "/responses", placeholder: "OPENAI_API_KEY" },
+    harnessModel: {
+      delivery: "box-source-v1",
+      method: "POST",
+      path: "/responses",
+      placeholder: "OPENAI_API_KEY",
+    },
   });
 });
 
-test("the paired Driver admits the protected plan with exactly its one model attachment and the empty artifact policy", { timeout: 60_000 }, async (t) => {
-  const kube = await fakeKubernetesSecrets(t);
-  const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
-  assert.ok(f.gateway);
-  const wiring = await f.release.configure(f.context);
-  assert.deepEqual(wiring.configuration, hostWiring("github", true));
-  const installed = await f.release.observe(f.context, wiring);
-  assert.ok(installed);
-  const refusedBy = async (change: (h: typeof f.harness) => typeof f.harness, message: RegExp) =>
-    assert.rejects(
-      f.sandbox.enrollHarness!(change(f.harness), installed, async () => {
-        throw new Error("release must not be requested");
-      }),
-      message,
+test(
+  "the paired Driver admits the protected plan with exactly its one model attachment and the empty artifact policy",
+  { timeout: 60_000 },
+  async (t) => {
+    const kube = await fakeKubernetesSecrets(t);
+    const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
+    assert.ok(f.gateway);
+    const wiring = await f.release.configure(f.context);
+    assert.deepEqual(wiring.configuration, hostWiring("github", true));
+    const installed = await f.release.observe(f.context, wiring);
+    assert.ok(installed);
+    const refusedBy = async (change: (h: typeof f.harness) => typeof f.harness, message: RegExp) =>
+      assert.rejects(
+        f.sandbox.enrollHarness!(change(f.harness), installed, async () => {
+          throw new Error("release must not be requested");
+        }),
+        message,
+      );
+    const requirements = (value: Record<string, unknown>) => (h: typeof f.harness) =>
+      ({ ...h, requirements: { ...h.requirements, ...value } }) as typeof f.harness;
+    const revision = (value: Record<string, unknown>) => (h: typeof f.harness) =>
+      ({ ...h, revision: { ...h.revision, ...value } }) as typeof f.harness;
+    const attachment = { sourceId: MODEL_SOURCE_ID, ref: modelAttachmentRef(MODEL_SOURCE_ID) };
+    const scope = /protected one-repository revision/;
+    await refusedBy(requirements({ credentialAttachments: [] }), scope);
+    await refusedBy(requirements({ credentialAttachments: [attachment, attachment] }), scope);
+    await refusedBy(
+      requirements({ credentialAttachments: [{ ...attachment, ref: "openshell:x" }] }),
+      scope,
     );
-  const requirements = (value: Record<string, unknown>) => (h: typeof f.harness) =>
-    ({ ...h, requirements: { ...h.requirements, ...value } }) as typeof f.harness;
-  const revision = (value: Record<string, unknown>) => (h: typeof f.harness) =>
-    ({ ...h, revision: { ...h.revision, ...value } }) as typeof f.harness;
-  const attachment = { sourceId: MODEL_SOURCE_ID, ref: modelAttachmentRef(MODEL_SOURCE_ID) };
-  const scope = /protected one-repository revision/;
-  await refusedBy(requirements({ credentialAttachments: [] }), scope);
-  await refusedBy(requirements({ credentialAttachments: [attachment, attachment] }), scope);
-  await refusedBy(requirements({ credentialAttachments: [{ ...attachment, ref: "openshell:x" }] }), scope);
-  await refusedBy(
-    requirements({ credentialAttachments: [{ ...attachment, requestScope: { host: "x", port: 443, path: "/", scopes: [] } }] }),
-    scope,
-  );
-  await refusedBy(requirements({ loginMode: "chatgpt" }), scope);
-  await refusedBy(revision({ harnessAuth: { ...modelSource, sourceId: "cs_other" } }), scope);
-  const policy = f.revision.sandboxPolicy!;
-  await refusedBy(revision({ sandboxPolicy: undefined }), /empty protected artifact policy/);
-  await refusedBy(
-    revision({
-      sandboxPolicy: {
-        ...policy,
-        additions: [{ name: "x", host: "example.com", ports: [443] }],
-      },
-    }),
-    /empty protected artifact policy/,
-  );
-  await refusedBy(revision({ sandboxPolicy: { ...policy, defaults: { a: 1 } } }), /empty protected artifact policy/);
-  await refusedBy(revision({ sandboxPolicy: { ...policy, driverId: "openshell" } }), /empty protected artifact policy/);
-  // A plan whose source belongs to another Gateway is not this registration's plan.
-  const foreign = {
-    ...f.plan,
-    harnessCredentialSource: { ...modelSource, credentialGatewayId: "openshell" },
-  };
-  await assert.rejects(f.release.configure({ ...f.context, plan: foreign as never }), /no longer owns|one online-request/);
-  assert.equal(f.host.releases.length, 0);
-  // The exact admitted shape enrolls.
-  assert.equal(
-    await f.release.enroll(
-      f.context,
-      wiring,
-      f.custody,
-      async () => true,
-      async () => f.harness,
-      (startupId, current) => signComputeExecutionRelease(f.keys.privateKey, startupId, current),
-    ),
-    true,
-  );
-  assert.equal(f.host.releases.length, 1);
-});
+    await refusedBy(
+      requirements({
+        credentialAttachments: [
+          { ...attachment, requestScope: { host: "x", port: 443, path: "/", scopes: [] } },
+        ],
+      }),
+      scope,
+    );
+    await refusedBy(requirements({ loginMode: "chatgpt" }), scope);
+    await refusedBy(revision({ harnessAuth: { ...modelSource, sourceId: "cs_other" } }), scope);
+    const policy = f.revision.sandboxPolicy!;
+    await refusedBy(revision({ sandboxPolicy: undefined }), /empty protected artifact policy/);
+    await refusedBy(
+      revision({
+        sandboxPolicy: {
+          ...policy,
+          additions: [{ name: "x", host: "example.com", ports: [443] }],
+        },
+      }),
+      /empty protected artifact policy/,
+    );
+    await refusedBy(
+      revision({ sandboxPolicy: { ...policy, defaults: { a: 1 } } }),
+      /empty protected artifact policy/,
+    );
+    await refusedBy(
+      revision({ sandboxPolicy: { ...policy, driverId: "openshell" } }),
+      /empty protected artifact policy/,
+    );
+    // A plan whose source belongs to another Gateway is not this registration's plan.
+    const foreign = {
+      ...f.plan,
+      harnessCredentialSource: { ...modelSource, credentialGatewayId: "openshell" },
+    };
+    await assert.rejects(f.release.configure({ ...f.context, plan: foreign as never }), {
+      message: /no longer owns|one online-request/,
+    });
+    assert.equal(f.host.releases.length, 0);
+    // The exact admitted shape enrolls.
+    assert.equal(
+      await f.release.enroll(
+        f.context,
+        wiring,
+        f.custody,
+        async () => true,
+        async () => f.harness,
+        (startupId, current) => signComputeExecutionRelease(f.keys.privateKey, startupId, current),
+      ),
+      true,
+    );
+    assert.equal(f.host.releases.length, 1);
+  },
+);
 
-test("the Worker answers a Box model request from the package's Secret: bearer, live attachment, route, 5 s; withdrawal, restart and rotation", { timeout: 90_000 }, async (t) => {
-  const kube = await fakeKubernetesSecrets(t);
-  const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
-  const gateway = f.gateway!;
-  const signal = AbortSignal.timeout(80_000);
-  const { binding } = await activateStageB(f, signal);
-  t.after(() => binding.close());
-  const sourceContext = {
-    namespace,
-    source: source(),
-    signal,
-  };
-  const key = testModelKey();
-  await gateway.registerSource(sourceContext, {
-    type: MODEL_SOURCE_TYPE,
-    config: { authorized_base_url: MODEL_ROUTE },
-    secrets: { api_key: key },
-  });
-  const revisionContext = { namespace, revision: f.revision, sources: [source()], signal };
-  assert.deepEqual(await gateway.attachForRevision(revisionContext), [
-    { sourceId: MODEL_SOURCE_ID, ref: modelAttachmentRef(MODEL_SOURCE_ID) },
-  ]);
-  assert.deepEqual(await gateway.attachmentStatus(revisionContext), [
-    { sourceId: MODEL_SOURCE_ID, state: "ready" },
-  ]);
-  const ask = async (bearer: string | undefined = f.bearer) => {
-    const id1 = requestId();
-    const reply = await askSource(f.modelSocket, bearer, boxModelRequest(id1));
-    return { ...reply, requestId: id1 };
-  };
-  const credential = async () => {
-    const reply = await ask();
-    assert.equal(reply.status, 200);
-    assert.equal(reply.body?.request_id, reply.requestId);
-    return reply.body;
-  };
-
-  // Allowed: the stored key, with a send-by within 5 s.
-  const first = await credential();
-  assert.equal(first?.credential, key);
-  assert.ok(Number(first?.send_by_unix_ms) - Date.now() <= 5_000);
-  assert.equal(f.host.answered.at(-1), "credential");
-  assert.equal((await ask(randomBytes(32).toString("base64url"))).status, 401);
-
-  // Rotation: the next request gets the new key; nothing restarts.
-  const rotated = testModelKey();
-  await gateway.updateSource(sourceContext, {
-    type: MODEL_SOURCE_TYPE,
-    config: { authorized_base_url: MODEL_ROUTE },
-    secrets: { api_key: rotated },
-  });
-  assert.equal((await credential())?.credential, rotated);
-  assert.equal(f.host.deletes, 0);
-
-  // Repository-only withdrawal: OCE refuses GitHub, the model keeps working.
-  f.state.withdrawn = true;
-  assert.equal((await credential())?.credential, rotated);
-  f.state.withdrawn = false;
-
-  // Model withdrawal: the host's receipt; refused by the host before the Worker or provider.
-  const before = { ...f.source.modelCounts };
-  assert.deepEqual(
-    await gateway.withdraw({
+test(
+  "the Worker answers a Box model request from the package's Secret: bearer, live attachment, route, 5 s; withdrawal, restart and rotation",
+  { timeout: 90_000 },
+  async (t) => {
+    const kube = await fakeKubernetesSecrets(t);
+    const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
+    const gateway = f.gateway!;
+    const signal = AbortSignal.timeout(80_000);
+    const { binding } = await activateStageB(f, signal);
+    t.after(() => binding.close());
+    const sourceContext = {
       namespace,
-      revision: f.revision,
-      sandbox: { id: "box-execution" } as never,
-      sourceId: MODEL_SOURCE_ID,
+      source: source(),
       signal,
-    }),
-    { sourceId: MODEL_SOURCE_ID, state: "revoked" },
-  );
-  assert.equal(f.host.modelRevokes, 1);
-  const [receiptFile] = readdirSync(f.revocationDir);
-  assert.match(receiptFile!, /^model-revoked-[0-9a-f]{64}\.json$/);
-  const receipt = JSON.parse(readFileSync(join(f.revocationDir, receiptFile!), "utf8")) as Record<string, unknown>;
-  assert.equal(receipt.sourceId, MODEL_SOURCE_ID);
-  assert.equal(JSON.stringify(receipt).includes(rotated), false);
-  const answersBefore = f.host.answers;
-  const withdrawn = await credential();
-  assert.equal(withdrawn?.refusal, "access_withdrawn");
-  assert.equal(withdrawn?.credential, undefined);
-  assert.equal(f.host.answers, answersBefore, "the Worker was not asked");
-  assert.equal(f.source.modelCounts.refusedByHost, before.refusedByHost + 1);
-  assert.deepEqual(await gateway.attachmentStatus(revisionContext), [
-    { sourceId: MODEL_SOURCE_ID, state: "revoked" },
-  ]);
-  // A host restart reloads the receipt: still refused.
-  f.host.modelRevoked = undefined;
-  f.restartHostModelView();
-  assert.ok(f.host.modelRevoked);
-  assert.equal((await credential())?.refusal, "access_withdrawn");
-  // Even if the host view lost it, the Worker reads the host's view per request: a view without
-  // the receipt but with the source removed is refused by the Worker from the store.
-  f.host.modelRevoked = undefined;
-  await gateway.removeSource(sourceContext);
-  assert.equal((await credential())?.refusal, "access_withdrawn");
-  assert.equal(f.host.answered.at(-1), "access_withdrawn");
-  // Digests only in the Worker's own records.
-  t.diagnostic(`key sha256 ${valueDigest(key).slice(0, 12)}, rotated ${valueDigest(rotated).slice(0, 12)}; host model asks ${JSON.stringify(f.source.modelCounts)}`);
-});
+    };
+    const key = testModelKey();
+    await gateway.registerSource(sourceContext, {
+      type: MODEL_SOURCE_TYPE,
+      config: { authorized_base_url: MODEL_ROUTE },
+      secrets: { api_key: key },
+    });
+    const revisionContext = { namespace, revision: f.revision, sources: [source()], signal };
+    assert.deepEqual(await gateway.attachForRevision(revisionContext), [
+      { sourceId: MODEL_SOURCE_ID, ref: modelAttachmentRef(MODEL_SOURCE_ID) },
+    ]);
+    assert.deepEqual(await gateway.attachmentStatus(revisionContext), [
+      { sourceId: MODEL_SOURCE_ID, state: "ready" },
+    ]);
+    const ask = async (bearer: string | undefined = f.bearer) => {
+      const id1 = requestId();
+      const reply = await askSource(f.modelSocket, bearer, boxModelRequest(id1));
+      return { ...reply, requestId: id1 };
+    };
+    const credential = async () => {
+      const reply = await ask();
+      assert.equal(reply.status, 200);
+      assert.equal(reply.body?.request_id, reply.requestId);
+      return reply.body;
+    };
+
+    // Allowed: the stored key, with a send-by within 5 s.
+    const first = await credential();
+    assert.equal(first?.credential, key);
+    assert.ok(Number(first?.send_by_unix_ms) - Date.now() <= 5_000);
+    assert.equal(f.host.answered.at(-1), "credential");
+    assert.equal((await ask(randomBytes(32).toString("base64url"))).status, 401);
+
+    // Rotation: the next request gets the new key; nothing restarts.
+    const rotated = testModelKey();
+    await gateway.updateSource(sourceContext, {
+      type: MODEL_SOURCE_TYPE,
+      config: { authorized_base_url: MODEL_ROUTE },
+      secrets: { api_key: rotated },
+    });
+    assert.equal((await credential())?.credential, rotated);
+    assert.equal(f.host.deletes, 0);
+
+    // Repository-only withdrawal: OCE refuses GitHub, the model keeps working.
+    f.state.withdrawn = true;
+    assert.equal((await credential())?.credential, rotated);
+    f.state.withdrawn = false;
+
+    // Model withdrawal: the host's receipt; refused by the host before the Worker or provider.
+    const before = { ...f.source.modelCounts };
+    assert.deepEqual(
+      await gateway.withdraw({
+        namespace,
+        revision: f.revision,
+        sandbox: { id: "box-execution" } as never,
+        sourceId: MODEL_SOURCE_ID,
+        signal,
+      }),
+      { sourceId: MODEL_SOURCE_ID, state: "revoked" },
+    );
+    assert.equal(f.host.modelRevokes, 1);
+    const [receiptFile] = readdirSync(f.revocationDir);
+    assert.match(receiptFile!, /^model-revoked-[0-9a-f]{64}\.json$/);
+    const receipt = JSON.parse(readFileSync(join(f.revocationDir, receiptFile!), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(receipt.sourceId, MODEL_SOURCE_ID);
+    assert.equal(JSON.stringify(receipt).includes(rotated), false);
+    const answersBefore = f.host.answers;
+    const withdrawn = await credential();
+    assert.equal(withdrawn?.refusal, "access_withdrawn");
+    assert.equal(withdrawn?.credential, undefined);
+    assert.equal(f.host.answers, answersBefore, "the Worker was not asked");
+    assert.equal(f.source.modelCounts.refusedByHost, before.refusedByHost + 1);
+    assert.deepEqual(await gateway.attachmentStatus(revisionContext), [
+      { sourceId: MODEL_SOURCE_ID, state: "revoked" },
+    ]);
+    // A host restart reloads the receipt: still refused.
+    f.host.modelRevoked = undefined;
+    f.restartHostModelView();
+    assert.ok(f.host.modelRevoked);
+    assert.equal((await credential())?.refusal, "access_withdrawn");
+    // Even if the host view lost it, the Worker reads the host's view per request: a view without
+    // the receipt but with the source removed is refused by the Worker from the store.
+    f.host.modelRevoked = undefined;
+    await gateway.removeSource(sourceContext);
+    assert.equal((await credential())?.refusal, "access_withdrawn");
+    assert.equal(f.host.answered.at(-1), "access_withdrawn");
+    // Digests only in the Worker's own records.
+    t.diagnostic(
+      `key sha256 ${valueDigest(key).slice(0, 12)}, rotated ${valueDigest(rotated).slice(0, 12)}; host model asks ${JSON.stringify(f.source.modelCounts)}`,
+    );
+  },
+);

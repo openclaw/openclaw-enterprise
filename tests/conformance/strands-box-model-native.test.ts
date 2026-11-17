@@ -19,13 +19,18 @@ test(
     const modelHost = process.env.STRANDS_BOX_MODEL_HOST;
     const modelAddress = process.env.STRANDS_BOX_MODEL_ADDRESS;
     assert.ok(boxBin, "set STRANDS_BOX_SOURCE_BOX to a strands-box built with credential sources");
-    assert.ok(modelHost && modelAddress, "set STRANDS_BOX_MODEL_HOST and STRANDS_BOX_MODEL_ADDRESS");
+    assert.ok(
+      modelHost && modelAddress,
+      "set STRANDS_BOX_MODEL_HOST and STRANDS_BOX_MODEL_ADDRESS",
+    );
     const result = await modelRealBox(t, {
       boxBin,
       modelHost,
       modelAddress,
       modelPort: Number(process.env.STRANDS_BOX_MODEL_PORT ?? 9444),
-      ...(process.env.STRANDS_BOX_MODEL_CODEX ? { codexBin: process.env.STRANDS_BOX_MODEL_CODEX } : {}),
+      ...(process.env.STRANDS_BOX_MODEL_CODEX
+        ? { codexBin: process.env.STRANDS_BOX_MODEL_CODEX }
+        : {}),
     });
     t.diagnostic(JSON.stringify(result));
   },
