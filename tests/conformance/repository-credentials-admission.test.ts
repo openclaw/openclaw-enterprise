@@ -9,7 +9,7 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { ShutdownSummary } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 
 type Hooks = {

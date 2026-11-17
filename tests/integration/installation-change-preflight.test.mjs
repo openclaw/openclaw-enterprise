@@ -7,12 +7,12 @@ import { captureChild } from "../helpers/child-processes.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration as installation,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import {
   chartTooling,
   parseProductionChart,
   renderProductionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import {
   chartListeners,

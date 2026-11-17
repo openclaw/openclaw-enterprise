@@ -53,7 +53,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
-    sha256: "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
+    sha256: "3e400cc9d0fc4a457ff58a4fa62f188c24fe63ecf5b0f7140f7a0cffa2c03889",
   },
   {
     file: "openclaw-google-worker-placeholder.patch",
@@ -62,6 +62,22 @@ const appliedPatches: readonly AppliedPatch[] = [
   {
     file: "openclaw-node-setup-renewal.patch",
     sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
+  },
+  {
+    file: "openclaw-planned-completion.patch",
+    sha256: "c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4",
+  },
+  {
+    file: "openclaw-native-turn-settlement.patch",
+    sha256: "5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6",
+  },
+  {
+    file: "openclaw-chat-main-session-start.patch",
+    sha256: "483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4",
+  },
+  {
+    file: "openclaw-chat-absent-selected-agent.patch",
+    sha256: "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
   },
 ];
 const runtimePaths = [

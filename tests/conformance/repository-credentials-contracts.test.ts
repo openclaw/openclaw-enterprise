@@ -9,9 +9,9 @@ import type {
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import { startTokenServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import {
   startStaticTokenService,
   writeSessionClientConfiguration,

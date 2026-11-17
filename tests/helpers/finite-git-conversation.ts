@@ -6,7 +6,7 @@ import {
   gatewayProbeCommand,
   verifyFirstAgentModel,
 } from "../../scripts/first-agent-model.ts";
-import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
+import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.ts";
 import {
   ConversationReplyError,
   createGatewaySessionEvidence,

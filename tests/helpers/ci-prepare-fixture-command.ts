@@ -577,6 +577,10 @@ async function fakeCommand({
         state.runtime,
         "localhost/openclaw-ci-main/runtime:bbbbbbbbbbbb",
       ]);
+      if (scenario === "warm-runtime-tag-failed") {
+        stderr("Error response from daemon: synthetic runtime retention failure\n");
+        return exit(1);
+      }
       return finish();
     }
     if (equals(args.slice(0, 3), ["build", "--pull=false", "-t"]) && args.length === 5) {

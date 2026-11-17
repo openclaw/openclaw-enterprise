@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { chartTooling, helmTemplate } from "../helpers/production-chart.mjs";
+import { chartTooling, helmTemplate } from "../helpers/production-chart.ts";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);

@@ -236,7 +236,7 @@ export function profileNetworkWorkload(
     `network-${role}`,
     ownership,
     namespace,
-    `${role}:local`,
+    { runtime: `${role}:local`, workspaceSetup: "openclaw-enterprise/gateway-fixture:local" },
     `network-${role}`,
     role,
     {},

@@ -1,0 +1,88 @@
+diff --git a/ui/src/pages/chat/chat-history-state.ts b/ui/src/pages/chat/chat-history-state.ts
+index d86329f1b..fdd18683c 100644
+--- a/ui/src/pages/chat/chat-history-state.ts
++++ b/ui/src/pages/chat/chat-history-state.ts
+@@ -260,6 +260,14 @@ export function getChatHistoryLoadState(state: ChatState): ChatHistoryLoadState
+   return requests.historyLoad;
+ }
+ 
++/** A global key routes to the selected agent, so another agent's read proves nothing about it. */
++function isAcceptedForSelectedAgent(state: ChatState, requestAgentId: string | undefined) {
++  return (
++    !isUiSelectedGlobalSessionKey(state, state.sessionKey) ||
++    resolveUiSelectedSessionAgentId(state) === requestAgentId
++  );
++}
++
+ /** Same-session refreshes retain the accepted transcript's identity until replacement commits. */
+ export function getAcceptedChatHistorySession(state: ChatState) {
+   const accepted = chatHistoryRequests(state).acceptedHistory;
+@@ -269,8 +277,7 @@ export function getAcceptedChatHistorySession(state: ChatState) {
+     state.sessions === accepted.sessions &&
+     state.connectionEpoch === accepted.connectionEpoch &&
+     state.sessionKey === accepted.sessionKey &&
+-    (!isUiSelectedGlobalSessionKey(state, state.sessionKey) ||
+-      resolveUiSelectedSessionAgentId(state) === accepted.requestAgentId) &&
++    isAcceptedForSelectedAgent(state, accepted.requestAgentId) &&
+     accepted.sessionInfo?.sessionId &&
+     state.currentSessionId === accepted.sessionInfo.sessionId
+     ? accepted.sessionInfo
+@@ -290,7 +297,8 @@ export function isChatSessionProvenAbsent(
+     state.sessions === accepted.sessions &&
+     state.connectionEpoch === accepted.connectionEpoch &&
+     state.sessionKey === sessionKey &&
+-    accepted.sessionKey === sessionKey
++    accepted.sessionKey === sessionKey &&
++    isAcceptedForSelectedAgent(state, accepted.requestAgentId)
+   );
+ }
+ 
+@@ -320,8 +328,7 @@ export function isInitialChatHistoryUnavailable(state: ChatState): boolean {
+     state.sessions === accepted.sessions &&
+     (!state.connected || state.connectionEpoch === accepted.connectionEpoch) &&
+     accepted.sessionKey === state.sessionKey &&
+-    (!isUiSelectedGlobalSessionKey(state, state.sessionKey) ||
+-      resolveUiSelectedSessionAgentId(state) === accepted.requestAgentId) &&
++    isAcceptedForSelectedAgent(state, accepted.requestAgentId) &&
+     accepted.sessionInfo?.sessionId === state.currentSessionId
+   ) {
+     return false;
+diff --git a/ui/src/pages/chat/chat-main-session-absent.test.ts b/ui/src/pages/chat/chat-main-session-absent.test.ts
+index e2ac1d004..bf37593ab 100644
+--- a/ui/src/pages/chat/chat-main-session-absent.test.ts
++++ b/ui/src/pages/chat/chat-main-session-absent.test.ts
+@@ -53,3 +53,34 @@ it("gates the first turn on proven absence only until the session has a row", as
+   host.connectionEpoch += 1;
+   expect(canSend()).toBe(false);
+ });
++
++it("keeps one agent's empty history from opening another agent's global conversation", async () => {
++  let refuse = false;
++  const host = makeChatHost({
++    sessionKey: "global",
++    assistantAgentId: "main",
++    hello: sessionMutationGatewayHello(["operator.sessions.write"]),
++    requestHandlers: {
++      "chat.history": () => {
++        if (refuse) {
++          throw new Error("history unavailable");
++        }
++        return { messages: [] };
++      },
++    },
++  });
++  const snapshot = createApplicationGatewaySnapshot({
++    client: host.client,
++    phase: "connected",
++    hello: host.hello,
++  });
++  const canSend = () => readChatPaneRouteMutationAccess(snapshot, host).composeScope.allowed;
++
++  await loadChatHistory(host);
++  expect(canSend()).toBe(true);
++  // Same connection and key, another agent: its read fails, so nothing proves absence.
++  refuse = true;
++  host.assistantAgentId = "research";
++  await loadChatHistory(host).catch(() => undefined);
++  expect(canSend()).toBe(false);
++});

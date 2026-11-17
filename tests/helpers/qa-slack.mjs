@@ -3,10 +3,12 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
+import { asRecord } from "../../packages/utils/src/objects.ts";
+import { dumpYaml, loadYaml, yamlDocuments, yamlMapping } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
 import { protectedText, grantQaSecret } from "./qa-secrets.ts";
-import { slackApi } from "./harness-topology-k3d-real.mjs";
-import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.mjs";
+import { slackApi } from "./slack-web-api.ts";
+import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.ts";
 import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
 import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 
@@ -15,7 +17,8 @@ export async function prepareQaSlack(f) {
   if (f.controlPlane === "compose") {
     const path = join(f.stateDirectory, "compose.yaml");
     const compose = loadYaml(await readFile(path, "utf8"));
-    compose.services["gateway-proxy"] = {
+    const services = yamlMapping(compose, "services");
+    services["gateway-proxy"] = {
       image: f.controllerDockerImage,
       entrypoint: ["node", "apps/controller/src/gateway-proxy.ts"],
       environment: { NODE_ENV: "production", OCC_GATEWAY_PROXY_PORT: "3128" },
@@ -33,7 +36,7 @@ export async function prepareQaSlack(f) {
     ].IPAddress;
     const proxyUrl = `http://${ip}:3128`;
     configuration.runtime.proxy = { proxyUrl };
-    compose.services.controller.environment.OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
+    yamlMapping(services, "controller", "environment").OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
     await writeFile(path, dumpYaml(compose), { mode: 0o600 });
   } else {
     const hostname = `openclaw-enterprise-gateway-proxy.${f.state.platformNamespace}.svc`;
@@ -65,11 +68,12 @@ export async function prepareQaSlack(f) {
     ]);
     const selected = yamlDocuments(manifests)
       .filter((doc) => {
-        const object = loadYaml(doc);
+        const object = asRecord(loadYaml(doc));
+        const name = asRecord(object?.metadata)?.name;
         return (
-          object?.metadata?.name?.includes("gateway-proxy") ||
-          (["Deployment", "NetworkPolicy"].includes(object?.kind) &&
-            object?.metadata?.name === "openclaw-enterprise-api")
+          (typeof name === "string" && name.includes("gateway-proxy")) ||
+          ((object?.kind === "Deployment" || object?.kind === "NetworkPolicy") &&
+            name === "openclaw-enterprise-api")
         );
       })
       .join("\n---\n");

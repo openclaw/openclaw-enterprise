@@ -20,12 +20,12 @@ import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
+import { listen } from "../fixtures/repository-credentials/process.ts";
 import {
   eventually,
   startTokenServiceScope,
 } from "../fixtures/repository-credentials/service-fixture.ts";
-import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
+import { appModule } from "../fixtures/repository-credentials/runtime.ts";
 import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.ts";
 
 const discovery = `/${fixtureRepository}.git/info/refs?service=git-upload-pack`;

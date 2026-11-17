@@ -503,7 +503,7 @@ export async function checkActivationWorkspaceNodeRefusals() {
     gatewayName,
     { namespaceId: tenant.id, agentId: revision.agentId },
     { name: kubernetesNamespaceName(tenant.id), plane: "control" },
-    options().images.gateway,
+    { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
     gatewayName,
     "gateway",
     {},

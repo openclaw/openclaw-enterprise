@@ -17,13 +17,13 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { GitHubTokenConfiguration } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import {
   cleanEnvironment,
   type createTlsMaterial,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 import type { GitHubFixture as RegistryGitHubFixture } from "../fixtures/repository-credentials/registry/provider.ts";
 import {
   gatewayRequest,

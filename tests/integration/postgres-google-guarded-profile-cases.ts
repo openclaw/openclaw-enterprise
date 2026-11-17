@@ -7,8 +7,8 @@ import {
   authRowCounts,
   currentSession,
   sessionCookieName,
-  type fakeGoogle,
 } from "../helpers/production-sign-in.mjs";
+import { type fakeGoogle, type GoogleAuthorization } from "../helpers/google-sign-in.ts";
 import {
   authOperation,
   accountPrincipalId,
@@ -27,11 +27,6 @@ import {
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 
-export type GoogleAuthorization = {
-  subject: string;
-  claims?: Record<string, unknown>;
-  key?: string;
-};
 export type GoogleSignIn = {
   callback: InjectedResponse;
   attemptId: string;

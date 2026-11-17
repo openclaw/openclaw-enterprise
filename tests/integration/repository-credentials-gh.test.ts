@@ -2,19 +2,18 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
-import type { ClientCommand } from "../fixtures/repository-credentials/clients.ts";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { appFunction } from "../fixtures/repository-credentials/app-functions.ts";
+import { exerciseLiveWorkflow } from "../fixtures/repository-credentials/live-workflow.ts";
+import type { SessionStatus } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import {
   createNativeClientMaterial,
   loadRepositoryClientModule,
 } from "../fixtures/repository-credentials/clients.ts";
-import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
-import {
-  cleanEnvironment,
-  run as runProcess,
-} from "../fixtures/repository-credentials/process.mjs";
+import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.ts";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import {
   startCredentialServiceFixture,
   gatewayRequest,
@@ -26,7 +25,6 @@ import {
   type ResourceCleanup,
 } from "../fixtures/repository-credentials/cleanup.ts";
 
-const run = runProcess as ClientCommand;
 function jsonObject(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Record<string, unknown>;
@@ -302,6 +300,180 @@ test("pinned gh uses selected development token routing for repository, issue an
 
 // The host case runs this entire file in the container, including this fault case.
 if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
+  for (const loseCommentReply of [false, true]) {
+    test(
+      loseCommentReply
+        ? "the shared smoke workflow cleans up after losing an accepted comment reply"
+        : "the shared smoke workflow cleans up after stock Git and gh succeed",
+      async (t) => {
+        // The operator stamps admissions with wall time, so the real socket
+        // and the operator must share the system clock for this case.
+        const createSystemClock = await appFunction(
+          "drivers/repo/access/clock",
+          "createSystemClock",
+        );
+        const fixture = await startCredentialServiceFixture(t, {
+          clock: createSystemClock(),
+          configuration: { pushRefAllowlist: ["refs/heads/credential-smoke/*"] },
+        });
+        const prefix = "/repos/fixture/repository";
+        const keepRef = "refs/heads/credential-smoke/unrelated";
+        const bare = { cwd: fixture.git.bare };
+        const git = (args: string[]) => run("/usr/bin/git", args, bare);
+        const main = await fixture.git.ref("refs/heads/main");
+        await git(["update-ref", keepRef, main]);
+        // The receiving Git repository records committed ref transitions, even
+        // when cleanup deletes the pushed ref before the test can read it.
+        const auditPath = join(fixture.git.bare, "ref-transactions");
+        await writeFile(
+          join(fixture.git.bare, "hooks", "reference-transaction"),
+          '#!/bin/sh\nif [ "$1" = committed ]; then cat >> ref-transactions; fi\n',
+          { mode: 0o755 },
+        );
+
+        const unrelatedIssue = await gatewayRequest(fixture, `${prefix}/issues`, {
+          method: "POST",
+          body: { title: "Unrelated issue", body: "Retain this issue" },
+        });
+        assert.equal(unrelatedIssue.status, 201);
+        const issueNumber = parseJsonObject(unrelatedIssue.body).number;
+        assert.equal(typeof issueNumber, "number");
+        const unrelatedComment = await gatewayRequest(
+          fixture,
+          `${prefix}/issues/${issueNumber}/comments`,
+          { method: "POST", body: { body: "Retain this comment" } },
+        );
+        assert.equal(unrelatedComment.status, 201);
+        const unrelatedPull = await gatewayRequest(fixture, `${prefix}/pulls`, {
+          method: "POST",
+          body: {
+            title: "Unrelated pull",
+            body: "Retain this pull",
+            base: "main",
+            head: "existing-branch",
+          },
+        });
+        assert.equal(unrelatedPull.status, 201);
+        const priorIssues = [...fixture.github.issues.entries()].map((entry) =>
+          structuredClone(entry),
+        );
+        const priorPulls = [...fixture.github.pulls.entries()].map((entry) =>
+          structuredClone(entry),
+        );
+        const priorComments = [...fixture.github.comments.entries()].map((entry) =>
+          structuredClone(entry),
+        );
+        const traceStart = fixture.github.trace.length;
+        const disposed: SessionStatus[] = [];
+        t.after(fixture.service.observeDisposal((status) => disposed.push(status)));
+        if (loseCommentReply) {
+          // All earlier writes complete. The provider records the comment and
+          // then disconnects, leaving the workflow without a comment ID.
+          fixture.github.disconnectAfterMutation(
+            "POST",
+            /^\/repos\/fixture\/repository\/issues\/\d+\/comments$/,
+          );
+        }
+        const work = exerciseLiveWorkflow(t, {
+          socket: fixture.config.gateway.controlSocket,
+          readPublicCa: () => readFile(fixture.tls.certFile),
+        });
+        if (loseCommentReply) {
+          await assert.rejects(work, /^Error: command failed \(exit 1\)$/);
+        } else {
+          await work;
+        }
+
+        const transitions = (await readFile(auditPath, "utf8")).trim().split("\n");
+        assert.equal(transitions.length, 2, "only the run-owned ref may be written");
+        const [addition, deletion] = transitions;
+        assert.ok(addition && deletion);
+        const [zero, commit, ref] = addition.split(" ");
+        assert.ok(commit && ref);
+        assert.match(commit, /^[a-f0-9]{40}$/);
+        assert.equal(zero, "0".repeat(40));
+        assert.match(ref, /^refs\/heads\/credential-smoke\/[a-f0-9]{32}$/);
+        assert.equal(deletion, `${commit} ${zero} ${ref}`);
+        assert.equal(
+          (await git(["show", "-s", "--format=%P%n%s", commit])).stdout.trim(),
+          `${main}\nCredential gateway smoke`,
+        );
+        assert.deepEqual(
+          (await git(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"])).stdout
+            .trim()
+            .split("\n"),
+          [`${keepRef} ${main}`, `refs/heads/existing-branch ${main}`, `refs/heads/main ${main}`],
+        );
+
+        const branch = ref.slice("refs/heads/".length);
+        const [pull] = [...fixture.github.pulls.values()].filter(
+          (value) => value.body === `<!-- ${branch}:pull -->`,
+        );
+        const [issue] = [...fixture.github.issues.values()].filter(
+          (value) => value.body === `<!-- ${branch}:issue -->`,
+        );
+        assert.ok(pull && issue);
+        assert.equal(fixture.github.pulls.size, priorPulls.length + 1);
+        assert.equal(fixture.github.issues.size, priorIssues.length + 1);
+        assert.equal(pull.state, "closed");
+        assert.equal(pull.title, "Credential gateway smoke checked");
+        assert.equal(issue.state, "closed");
+        assert.deepEqual([...fixture.github.comments], priorComments);
+        for (const [number, value] of priorIssues) {
+          assert.deepEqual(fixture.github.issues.get(number), value);
+        }
+        for (const [number, value] of priorPulls) {
+          assert.deepEqual(fixture.github.pulls.get(number), value);
+        }
+        const writes = fixture.github.trace
+          .slice(traceStart)
+          .flatMap(({ method, target, tokenIndex }) => {
+            if (method === "POST" || method === "PATCH" || method === "DELETE") {
+              assert.ok(tokenIndex, "the provider must authenticate each write");
+              return [`${method} ${target}`];
+            }
+            return [];
+          });
+        const [
+          createdPull,
+          updatedPull,
+          createdIssue,
+          createdComment,
+          deletedComment,
+          closedIssue,
+          closedPull,
+        ] = writes;
+        assert.deepEqual(
+          [createdPull, updatedPull, createdIssue, createdComment],
+          [
+            `POST ${prefix}/pulls`,
+            `PATCH ${prefix}/pulls/${pull.number}`,
+            `POST ${prefix}/issues`,
+            `POST ${prefix}/issues/${issue.number}/comments`,
+          ],
+        );
+        assert.ok(deletedComment?.startsWith(`DELETE ${prefix}/issues/comments/`));
+        assert.deepEqual(
+          [closedIssue, closedPull],
+          [`PATCH ${prefix}/issues/${issue.number}`, `PATCH ${prefix}/pulls/${pull.number}`],
+        );
+        assert.equal(writes.length, 7);
+
+        assert.equal(disposed.length, 1, "the work session must dispose before fixture shutdown");
+        const [status] = disposed;
+        assert.ok(status);
+        assert.notEqual(status.sessionId, fixture.opened.session.sessionId);
+        assert.equal(status.state, "DISPOSED");
+        assert.equal(status.activeUses, 0);
+        assert.equal(status.cleanup.active, 0);
+        assert.equal(status.cleanup.pending, 0);
+        assert.equal(status.cleanup.uncertain, 0);
+        assert.equal(status.cleanup.auxiliaryPending, false);
+        assert.deepEqual(fixture.github.errors, []);
+      },
+    );
+  }
+
   test("uncertain API POST, PATCH and DELETE requests are sent once", async (t) => {
     const fixture = await startCredentialServiceFixture(t);
     const prefix = "/repos/fixture/repository";

@@ -2,7 +2,7 @@ import type { Clock } from "../../../../apps/controller/src/drivers/repo/access/
 import type { ServiceConfig } from "../../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { loadGitHubRepositoryRegistry as LoadRegistry } from "../../../../apps/controller/src/composition/repository-credentials/registry.ts";
 import type { createPreparedGitHubRegistryFactory as CreateFactory } from "../../../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
-import type { createTlsMaterial } from "../process.mjs";
+import type { createTlsMaterial } from "../process.ts";
 import { createResourceScope, type FixtureOwner } from "../resources.ts";
 import { startServiceListeners } from "../service-resources.ts";
 

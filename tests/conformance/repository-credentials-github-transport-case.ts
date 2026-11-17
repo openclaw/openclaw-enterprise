@@ -3,7 +3,7 @@ import type { TestContext } from "node:test";
 import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   createProviderTransport,
   type ProviderAttempt,

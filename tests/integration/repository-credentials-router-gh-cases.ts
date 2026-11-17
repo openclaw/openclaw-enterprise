@@ -12,7 +12,7 @@ import {
   selectGhRepository,
   selectImplicitGhRepository,
 } from "../../apps/controller/src/drivers/repo/github/access/client/targets.ts";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import {
   clean,
   exec,

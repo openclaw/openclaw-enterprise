@@ -1147,6 +1147,10 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
             [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
             if ((resume)); then
               message="the $component application identity preflight failed: ${message}No additional OCC writer was stopped. Preserve the original evidence and writer freeze; reconcile the application connection before --resume."
+            elif grep -q '^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\.' \
+              "$evidence_dir/preflight-$component.log"; then
+              # Not an Installation refusal: the database, its sign-in or the egress that reaches it.
+              message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the database, the chart's database values (database.cidrs) or the network policies that admit this Pod's database egress, then start again with a new evidence directory."
             else
               message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the Installation and start again with a new evidence directory."
             fi
@@ -2472,17 +2476,41 @@ poll_deployment_status() (
   printf '%s\n' "$status"
 )
 
+# At the timeout, name each Agent whose deployment had not succeeded: its ID, its name and the
+# last status read (none when the deadline passed before the first poll), so the operator
+# knows which Agent to inspect.
+incomplete_agents() {
+  local namespace_id agent_id status agent_name observed
+  while IFS=' ' read -r namespace_id agent_id status; do
+    agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
+    observed="no status read"
+    [[ -z "$status" ]] || observed="last status $status"
+    printf '  - Agent %s %s: %s, waiting for succeeded\n' "$agent_id" "${agent_name:-(name unavailable)}" "$observed"
+  done
+}
+
 pending=$target_count
+incomplete=()
+while IFS= read -r deployment; do
+  json_fields "$deployment" namespace_id=namespaceId agent_id=agentId
+  incomplete+=("$namespace_id $agent_id")
+done <"$deployments"
 while ((pending > 0)); do
-  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
+  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout:
+$(printf '%s\n' "${incomplete[@]}" | incomplete_agents)
+Their last statuses are in $evidence_dir/status."
   pending=0
   failed=0
+  incomplete=()
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
     status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file")
     case "$status" in
-      queued | running) ((pending += 1)) ;;
+      queued | running)
+        ((pending += 1))
+        incomplete+=("$namespace_id $agent_id $status")
+        ;;
       succeeded) ;;
       failed) failed=1 ;;
     esac

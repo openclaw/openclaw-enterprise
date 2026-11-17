@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { availablePort } from "../available-port.ts";
-import { caAndLeaf } from "../certificates.mjs";
+import { caAndLeaf } from "../certificates.ts";
 import { ownPortForward } from "../port-forward-cleanup.ts";
 import { fixtureFetch } from "./custody-probes.ts";
 

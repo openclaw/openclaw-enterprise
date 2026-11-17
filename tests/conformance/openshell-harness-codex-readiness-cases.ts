@@ -20,7 +20,7 @@ import {
 } from "../../packages/occ/src/errors.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import {

@@ -11,7 +11,7 @@ import {
   proxyNativeAdminWebSocket,
   type NativeAdminWebSocketCloseCause,
 } from "../../apps/controller/src/gateway/native-admin-proxy.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { within } from "../helpers/wait-for.ts";

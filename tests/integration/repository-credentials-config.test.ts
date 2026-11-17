@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { readProtectedFile } from "../../apps/controller/src/composition/repository-credentials/protected-file.ts";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

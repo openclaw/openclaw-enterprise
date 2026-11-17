@@ -100,26 +100,7 @@ runs:
         CI_SELECTED_LANE: ${{ inputs.lane }}
         OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
-      run: |
-        node --input-type=module <<'NODE'
-        import { appendFileSync } from 'node:fs';
-        import { loadTestSuites } from './scripts/ci/test-suites.ts';
-        import { isOpenShellLane } from './scripts/ci/openshell-full-integration.ts';
-        const view = process.env.OCC_CI_SUITE_VIEW;
-        const name = process.env.CI_SELECTED_LANE;
-        const lanes = loadTestSuites('scripts/ci/test-suites.json', view).lanes;
-        if (!Object.hasOwn(lanes, name) || (view === 'full-integration' && !isOpenShellLane(name))) {
-          throw new Error('The selected lane does not belong to the action suite view.');
-        }
-        const lane = lanes[name];
-        const file = process.env.CI_SELECTED_TEST_FILE;
-        const sourceBuild = lane.prepare?.sourceBuildFiles?.some((path) =>
-          file ? path === file : lane.files.some((entry) => entry.path === path));
-        const selected = isOpenShellLane(name) &&
-          lane.prepare.selfProvisionedFiles.includes(file) && !sourceBuild;
-        appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);
-        appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
-        NODE
+      run: node scripts/ci/select-installer-image-mode.ts
     - name: Start memory sampling
       id: memory-sampler
       if: startsWith(inputs.lane, 'images-runtime-startup') || startsWith(inputs.lane, 'checks-browser')

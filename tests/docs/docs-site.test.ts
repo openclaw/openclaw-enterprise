@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
 
@@ -51,7 +51,7 @@ function entrySlugs(entry: unknown): string[] {
 }
 
 // Exercise the shipped CLI against the authored corpus and generated API.
-test("docs build renders every authored page and preserves repository ownership", async () => {
+test("docs build renders every authored page and preserves repository ownership", async (t) => {
   // `docs:build` indexes the site with the docs-site package's Pagefind, which only
   // `pnpm docs:install` provides (the CI docs step runs it before this lane).
   assert.ok(
@@ -96,6 +96,94 @@ test("docs build renders every authored page and preserves repository ownership"
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
   assert.match(index, /href="\/guides\/deploy\/local-setup\//);
+  // Existing bookmarks and the rendered guide links must resolve to executable downloads.
+  const quickstart = "snippets/openshell-quickstart";
+  const guides = [
+    ["deploy/local-setup", "configure-installation"],
+    ["integrations/codex-plugins", "inspect-linear-transcript"],
+  ] as const;
+  for (const [guide, script] of guides) {
+    const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
+    assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
+    if (guide === "deploy/local-setup") {
+      assert.ok(html.includes(`install -m 600 docs/${quickstart}/${script}.mts`));
+    }
+  }
+  for (const script of [
+    "configure-installation",
+    "inspect-linear-transcript",
+    "request",
+    "kubernetes/owner-listener",
+    "kubernetes/git-revision-audit",
+  ]) {
+    const download = join(root, "dist/docs", quickstart, script);
+    execFileSync(process.execPath, ["--check", download + ".mjs"], { encoding: "utf8" });
+    assert.equal(existsSync(download + ".mts"), false, "Do not publish a second typed download");
+  }
+  const quickstartAssets = "assets/openshell-quickstart";
+  const published = join(root, "dist/docs");
+  for (const script of ["chat", "verify-github-installation"]) {
+    const asset = join(published, quickstartAssets, script + ".mjs");
+    execFileSync(process.execPath, ["--check", asset], { encoding: "utf8" });
+    assert.equal(existsSync(join(published, quickstart, script + ".mts")), false);
+  }
+  const enrollment = await readFile(
+    join(published, "guides/repository-credentials/openshell-enrollment/index.html"),
+    "utf8",
+  );
+  const verifier = `${quickstartAssets}/verify-github-installation.mjs`;
+  assert.ok(enrollment.includes(`href="/${verifier}"`));
+  assert.ok(enrollment.includes(`installation_check=docs/${verifier}`));
+  assert.ok(
+    enrollment.includes(`installation_check:-docs/${quickstart}/verify-github-installation.mts`),
+  );
+
+  // Run the shipped staging command from both trees. The published shell must copy
+  // the historical download and use the same staged filename when sending a turn.
+  const stage = join("docs", quickstart, "stage-session.sh");
+  for (const { cwd, source, basename } of [
+    { cwd: root, source: `${quickstart}/chat.mts`, basename: "chat.mts" },
+    {
+      cwd: join(root, "dist"),
+      source: `${quickstartAssets}/chat.mjs`,
+      basename: "chat.mjs",
+    },
+  ]) {
+    const staged = await temporaryDirectory(t, "enterprise-quickstart-downloads-");
+    execFileSync("bash", ["-eu", stage], { cwd, env: { ...process.env, RUN_DIR: staged } });
+    const chat = await open(join(staged, basename), "r");
+    try {
+      assert.equal((await chat.stat()).mode & 0o777, 0o600);
+      assert.deepEqual(await chat.readFile(), await readFile(join(cwd, "docs", source)));
+    } finally {
+      await chat.close();
+    }
+    const session = await readFile(join(staged, "operator-session.sh"), "utf8");
+    assert.ok(session.includes(`< "$RUN_DIR/${basename}"`));
+  }
+
+  // A partial downloaded tree must fail at staging instead of silently queuing a turn.
+  const incomplete = await temporaryDirectory(t, "enterprise-quickstart-incomplete-");
+  await cp(join(published, quickstart), join(incomplete, "docs", quickstart), {
+    recursive: true,
+  });
+  const staged = await temporaryDirectory(t, "enterprise-quickstart-downloads-");
+  const stageResult = spawnSync("bash", ["-eu", stage], {
+    cwd: incomplete,
+    env: { ...process.env, RUN_DIR: staged },
+    encoding: "utf8",
+  });
+  if (stageResult.error) {
+    throw stageResult.error;
+  }
+  assert.equal(stageResult.status, 1, stageResult.stderr);
+  assert.match(stageResult.stderr, /assets\/openshell-quickstart\/chat\.mjs/);
+  assert.equal(existsSync(join(staged, "chat.mjs")), false);
+  // The published listener manifest and ConfigMap example must use the downloadable payload.
+  for (const caller of ["kubernetes/owner-listener.jq", "cluster-browser-access.md"]) {
+    const source = await readFile(join(root, "dist/docs", quickstart, caller), "utf8");
+    assert.ok(source.includes("/owner-listener.mjs"), caller);
+  }
   // A link out of docs/ points at the repository on GitHub.
   const specifications = await readFile(
     join(root, "dist/docs/contributing/specifications/index.html"),

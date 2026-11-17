@@ -15,7 +15,7 @@ import {
   type SyntheticEvent,
 } from "../fixtures/synthetic-egress-provider.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import {

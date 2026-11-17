@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { NamespaceId } from "../../packages/contracts/src/index.ts";
 import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   installObservabilityControlPlane,

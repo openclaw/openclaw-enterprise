@@ -11,10 +11,11 @@ import {
   invalidGatewayConfigurationLine,
   invalidGatewayConfigurationSecret,
   openClawConfigValidationRefusal,
-} from "../helpers/openclaw-config-validation.mjs";
+} from "../helpers/openclaw-config-validation.ts";
 import {
   GATEWAY_LOCAL_CODEX_TOOLS,
   codexGatewayConfig,
+  commandArgs,
   configPath,
   launchGateway,
   readConfig,
@@ -378,6 +379,22 @@ export function registerDedicatedGatewayCases() {
           intervals,
           console: { error: (message) => messages.push(message) },
         });
+        if (options.configValidationResponse !== undefined) {
+          // Check the observed command after the hold. The wrapper catches spawn errors.
+          const validationCalls = calls.filter(
+            ({ args }) => args?.[1] === "config" && args[2] === "validate",
+          );
+          assert.equal(validationCalls.length, 1, "run the validator once");
+          const [validation] = validationCalls;
+          assert.equal(validation?.command, "node");
+          assert.deepEqual(commandArgs(validation), [
+            "/app/openclaw.mjs",
+            "config",
+            "validate",
+            "--json",
+          ]);
+          assert.equal(validation?.options?.env?.OPENCLAW_CONFIG_READONLY, "1");
+        }
         assert.equal(
           calls.some(({ args }) => args?.[1] === "gateway"),
           false,

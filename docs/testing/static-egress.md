@@ -26,7 +26,7 @@ With installed workspace dependencies, run the focused source suites:
 ```sh
 pnpm test:files -- tests/integration/static-egress.test.mjs \
   tests/integration/egress-prepared-github-metadata.test.mjs \
-  tests/integration/egress-installation-exchange.test.mjs
+  tests/integration/egress-installation-exchange.test.ts
 ```
 
 This selects literal files without provisioning dependencies or preventing skips.
@@ -143,7 +143,7 @@ synthetic fixtures, not one installed Sandbox.
 With a migrated disposable database selected through `OCC_TEST_DATABASE_URL`, run:
 
 ```sh
-node --test tests/integration/postgres-static-egress.test.mjs
+node --test tests/integration/postgres-static-egress.test.ts
 ```
 
 Follow [database setup](postgresql.md): migrate with `occ_migrator`, run with `occ_app`.

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
-import { parseProductionChart, productionCollectorValues } from "../helpers/production-chart.mjs";
+import { parseProductionChart, productionCollectorValues } from "../helpers/production-chart.ts";
 import {
   render,
   tooling,

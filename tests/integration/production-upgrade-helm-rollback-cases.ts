@@ -30,7 +30,7 @@ import {
   injectedFault,
   newController,
 } from "../helpers/production-upgrade-recovery-tools.ts";
-import { loadYaml } from "../helpers/qa-utils.mjs";
+import { loadYaml } from "../helpers/kubernetes-yaml.ts";
 
 type ContainerPlacement = "containers" | "initContainers";
 type FixtureOptions = NonNullable<Parameters<RecoveryFixtureFactory>[1]>;

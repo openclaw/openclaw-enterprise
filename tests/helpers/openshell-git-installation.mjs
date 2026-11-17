@@ -18,7 +18,7 @@ import {
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { extractImageFile } from "../../scripts/lib/image-file.ts";
-import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.ts";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
 import { availablePort } from "./available-port.ts";
 import { listen } from "./listen.ts";

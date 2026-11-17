@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { prepareFile } from "../../scripts/ci/prepare.mjs";
+import { authorizedPrincipal } from "./development-iam-state.ts";
 import {
-  authorizedPrincipal,
   createBackendWorkerDrivers,
   createBackendController,
   ensureInstallation,
@@ -747,6 +747,10 @@ export function createWorkerRevisionFixtures(
         const admission = compute.admitRevision?.(freezeAgentRevision(candidate));
         if (admission !== undefined) {
           candidate.compute = { ...candidate.compute, admission };
+        }
+        const runtimeInputs = compute.snapshotRuntimeInputs?.(candidate);
+        if (runtimeInputs !== undefined) {
+          candidate.compute = { ...candidate.compute, runtimeInputs };
         }
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(

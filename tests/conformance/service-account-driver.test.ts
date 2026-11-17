@@ -28,7 +28,7 @@ import {
   ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import {
   createDevelopmentComputeDriver,
