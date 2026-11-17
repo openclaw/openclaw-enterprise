@@ -41,6 +41,16 @@ export const GIT_STEPS = [
   "tamper-interpreter",
   "tamper-forge",
 ] as const;
+/** Steps whose tool output the receipt keeps (bounded): none of them prints a credential. */
+const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
+  "placeholders",
+  "touch",
+  "verifier",
+  "tamper-config",
+  "tamper-credential",
+  "tamper-interpreter",
+  "tamper-forge",
+]);
 /** Bound on repeated calls for the gateway-loop step (the stock critical threshold is 20). */
 export const LOOP_CALLS = 30;
 export type GitStep = (typeof GIT_STEPS)[number];
@@ -292,8 +302,9 @@ export function controlledGitModelRequests(
             step,
             callId,
             answer,
-            // The placeholder step's output is digests, lengths and names only.
-            ...(step === "placeholders" && typeof result.output === "string"
+            // The placeholder step's output is digests, lengths and names only; the admission and
+            // tamper steps print exit codes, refusals, file names and byte counts, never a token.
+            ...(typeof result.output === "string" && RECORDED_OUTPUT.has(step)
               ? { output: result.output.slice(0, 4096) }
               : {}),
           });
