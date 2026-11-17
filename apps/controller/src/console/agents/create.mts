@@ -3787,11 +3787,6 @@ function renderAgentForm(
       // any other progress line spoke for the request that just ended (finding 1490).
       if (!terminal) {
         provisioningMeter.reset();
-        if (savedSecret || savedConfiguration || savedAgent) {
-          showSavedStatus();
-        } else {
-          savedStatus.textContent = "";
-        }
       }
       // Admission's channel reference refusal names the Configuration JSON's setting.
       refusedInConfiguration = !terminal && !outcomeUnknown && showChannelBindingRefusal(cause);
@@ -3856,7 +3851,17 @@ function renderAgentForm(
             // it, so the unlocked form submits a replacement instead of the deleted ID again.
             // The saved credential disables its inputs stickily, so they reset with it.
             const deleted = DELETED_PROVISIONING_RESOURCE.exec(error.serverMessage ?? "");
-            if (deleted?.[1] === "Secret" && savedSecret?.id === deleted[2]) {
+            if (deleted?.[1] === "Secret" && savedSecret && savedSecret.id === deleted[2]) {
+              // Restoring a password Preset makes its saved Secret the selected credential.
+              if (
+                modelCredentialSource?.kind === "secret" &&
+                modelCredentialSource.namespaceId === savedSecret.ref.namespaceId &&
+                modelCredentialSource.id === savedSecret.id
+              ) {
+                modelCredentialSource = null;
+                modelCredentialSecret = undefined;
+                modelCredentialPicker.refresh();
+              }
               savedSecret = undefined;
               authMethod.disabled = false;
               apiKey.disabled = false;
@@ -3869,6 +3874,13 @@ function renderAgentForm(
           }
         }
         admittedAttempt = requestAdmitted && attempt.statusUrl ? attempt : undefined;
+      }
+      if (!terminal) {
+        if (savedSecret || savedCredentialSource || savedConfiguration || savedAgent) {
+          showSavedStatus();
+        } else {
+          savedStatus.textContent = "";
+        }
       }
       // A job that names its Agent created one, which a kept draft must not create again.
       if (!terminal?.job.agentId) {
