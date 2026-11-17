@@ -5448,7 +5448,10 @@ export class OpenClawController {
     }
     const reference = await this.tokenService().register(registration, signal);
     const connectionStatus = await issuer.status(reference, signal);
-    if (connectionStatus.state !== "ready") {
+    const eligible =
+      connectionStatus.state === "ready" ||
+      (connectionStatus.state === "pending" && connectionStatus.schedule !== undefined);
+    if (!eligible) {
       throw new ResourceStateConflictError(
         "No eligible access token is prepared for this account.",
       );

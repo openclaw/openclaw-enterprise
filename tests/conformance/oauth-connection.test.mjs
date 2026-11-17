@@ -1215,3 +1215,211 @@ test("shipped OCC HTTP routes enforce callback session custody, non-renewable li
   );
   assert.equal(secretDriver.has(custodyBeforeDisconnect.secret), false);
 });
+
+test("OAuth callback accepts a scheduled pending status when a short-lived bearer expires during handoff and requires ready for schedule-less grants", async (t) => {
+  const origin = "https://console.oce.localhost";
+  const now = new Date("2026-01-01T00:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now });
+
+  const installationId = `ins_${randomUUID()}`;
+  const adminAuth = await createTestAuthPrincipal({
+    installationId,
+    baseURL: origin,
+    email: `admin-handoff-${randomUUID()}@example.com`,
+    password: `generated-password-${randomUUID()}`,
+    name: "OAuth Handoff Administrator",
+  });
+  const iamState = {
+    identities: [adminAuth.seed.principal],
+    groups: [],
+    memberships: [],
+    roles: adminAuth.seed.roles.map((role) => ({ ...role, permissions: [...role.permissions] })),
+    bindings: [
+      {
+        id: "binding-admin",
+        subjectKind: "identity",
+        subjectId: adminAuth.seed.principal.id,
+        roleId: adminAuth.seed.roles[0].id,
+      },
+    ],
+    restrictions: [],
+  };
+  const iamDriver = new NativeIAMDriver(
+    { loadNativeIAMState: async () => iamState },
+    { id: "iam-oauth-handoff-test" },
+  );
+  const auditSink = new InMemoryAuditSink();
+  const secretDriver = {
+    ...createTestSecretDriver({ id: "secret-oauth-handoff" }),
+    capability: "secret",
+  };
+  const state = new InMemoryPlatformState({
+    auditSink,
+    iamIdentities: [adminAuth.seed.principal],
+  });
+  const preparedTokens = new TokenService();
+  let controller;
+
+  const app = createControllerApp({
+    createController(installation) {
+      controller = new OpenClawController(installation, {
+        state,
+        preparedTokens,
+        recordOperations: false,
+      });
+      preparedTokens.registerIssuer(
+        new OAuthAccountTokens(
+          state,
+          secretDriver,
+          controller.resolveConnectionClient.bind(controller),
+        ),
+      );
+      return controller;
+    },
+    iamDriver,
+    computeDriver: createReadyComputeDriver("compute-oauth-handoff"),
+    configurationDriver: createTestConfigurationDriver({ id: "config-oauth-handoff" }),
+    secretDriver,
+    resolveHarness: resolveApprovedDevelopmentHarness,
+    auditSink,
+    publicOrigin: origin,
+    development: {
+      enabled: true,
+      installationId,
+      browserOrigin: origin,
+    },
+    auth: adminAuth.auth,
+  });
+  const adminSession = await signInToControllerApp(app, adminAuth, { origin });
+
+  const admin = async (method, url, payload) => {
+    const hasBody = payload !== undefined;
+    const response = await app.fetch(
+      new Request(`${origin}${url}`, {
+        method,
+        headers: {
+          ...authenticatedHeaders(adminSession),
+          ...(hasBody ? { "content-type": "application/json" } : {}),
+        },
+        ...(hasBody ? { body: JSON.stringify(payload) } : {}),
+      }),
+    );
+    const body = response.status === 204 ? "" : await response.text();
+    return {
+      statusCode: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+      body,
+      json() {
+        return JSON.parse(body);
+      },
+    };
+  };
+
+  await admin("POST", "/installation/bootstrap", { name: "OAuth Handoff Test" });
+  const nsRes = await admin("POST", "/namespaces", { name: "Handoff" });
+  const namespaceId = nsRes.json().data.id;
+  await controller.handleNamespaceLifecycle(adminAuth.seed.principal.id, namespaceId, "ready");
+
+  const issuer = "https://provider.example.test";
+  const tplRes = await admin("POST", "/connection-templates", {
+    namespaceId,
+    displayName: "Handoff Template",
+    mode: "manual",
+    issuer,
+    authorizationUrl: `${issuer}/authorize`,
+    tokenUrl: `${issuer}/token`,
+    destinations: [{ host: "api.provider.example.test", port: 443, path: "/v1/**" }],
+    scopes: ["read"],
+  });
+  const templateId = tplRes.json().data.id;
+
+  await admin("POST", "/oauth-clients", {
+    connectionTemplateId: templateId,
+    connectionTemplateVersion: tplRes.json().data.current.version,
+    displayName: "Public client",
+    clientId: "public-client-handoff",
+    tokenEndpointAuthMethod: "none",
+  });
+
+  // 1) Renewable grant (access_token + refresh_token) where initial bearer expires between Secret write and status read.
+  let tokenResponse = {
+    access_token: "short-lived-renewable-" + randomUUID(),
+    refresh_token: "refresh-token-" + randomUUID(),
+    token_type: "Bearer",
+    expires_in: 5,
+    scope: "read",
+  };
+  t.mock.method(globalThis, "fetch", async () => Response.json(tokenResponse));
+
+  // Advance clock by 10s right after the Secret write commits the initial grant material.
+  let advanceOnWrite = true;
+  const originalCompareAndSwap = secretDriver.compareAndSwap.bind(secretDriver);
+  t.mock.method(secretDriver, "compareAndSwap", async (secret, expected, replacement) => {
+    const success = await originalCompareAndSwap(secret, expected, replacement);
+    if (success && advanceOnWrite && typeof expected === "string" && expected === "pending") {
+      t.mock.timers.tick(10_000);
+    }
+    return success;
+  });
+
+  const renewableAttempt = await admin("POST", `/namespaces/${namespaceId}/connections`, {
+    connectionTemplateId: templateId,
+  });
+  const renewableState = new URL(renewableAttempt.json().data.authorizationUrl).searchParams.get(
+    "state",
+  );
+  assert.ok(renewableState);
+
+  const renewableCallback = await admin(
+    "GET",
+    `/oauth/callback?state=${encodeURIComponent(renewableState)}&code=auth-code-renewable`,
+  );
+  assert.equal(renewableCallback.statusCode, 303);
+  assert.match(String(renewableCallback.headers.location), /connection=connected/);
+
+  // The account was enrolled and scheduled for worker renewal despite the initial bearer expiring during handoff.
+  const connections = (await admin("GET", `/namespaces/${namespaceId}/connections`)).json().data;
+  assert.equal(connections.length, 1);
+  const renewableSourceId = connections[0].credentialSourceId;
+  const renewableSource = (
+    await admin("GET", `/namespaces/${namespaceId}/credential-sources/${renewableSourceId}`)
+  ).json().data;
+  assert.equal(renewableSource.state, "ready");
+  assert.equal(renewableSource.status.refresh.state, "pending");
+  assert.ok(renewableSource.status.refresh.nextRefreshAt);
+
+  const due = await state.read((view) =>
+    view.savedConnections.listDueConnectionTokens(installationId, 10),
+  );
+  assert.equal(due.length, 1);
+  assert.equal(due[0].credentialSourceId, renewableSourceId);
+
+  // 2) Schedule-less grant (access token only, no refresh token) where bearer expires between Secret write and status read:
+  // Must reject the callback because schedule-less grants require "ready" (no schedule exists to renew them).
+  tokenResponse = {
+    access_token: "short-lived-scheduleless-" + randomUUID(),
+    token_type: "Bearer",
+    expires_in: 5,
+    scope: "read",
+  };
+  const schedulelessAttempt = await admin("POST", `/namespaces/${namespaceId}/connections`, {
+    connectionTemplateId: templateId,
+  });
+  const schedulelessState = new URL(
+    schedulelessAttempt.json().data.authorizationUrl,
+  ).searchParams.get("state");
+  assert.ok(schedulelessState);
+
+  const schedulelessCallback = await admin(
+    "GET",
+    `/oauth/callback?state=${encodeURIComponent(schedulelessState)}&code=auth-code-scheduleless`,
+  );
+  assert.equal(schedulelessCallback.statusCode, 303);
+  assert.match(String(schedulelessCallback.headers.location), /reason=unavailable/);
+
+  // No saved connection was created for the expired schedule-less grant.
+  const finalConnections = (await admin("GET", `/namespaces/${namespaceId}/connections`)).json()
+    .data;
+  assert.equal(finalConnections.length, 1);
+  assert.equal(finalConnections[0].credentialSourceId, renewableSourceId);
+});
