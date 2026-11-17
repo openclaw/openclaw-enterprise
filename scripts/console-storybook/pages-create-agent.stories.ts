@@ -228,6 +228,10 @@ export const CreateMember = {
   ...story("createMember"),
   name: "Member with Agent create",
 };
+export const CreateMemberProvisioning = {
+  ...story("createMemberProvisioning"),
+  name: "Member provisions a Dedicated Agent",
+};
 export const CreateMemberGrantRefused = {
   ...story("createMemberGrantRefused"),
   name: "Member Agent created, opens its draft",

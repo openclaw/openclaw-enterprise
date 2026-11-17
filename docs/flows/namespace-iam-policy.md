@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-13
-last_updated_session: "authoring-run/91737212-2ec5-4aca-981d-501670320fd5"
+updated: 2026-11-16
+last_updated_session: "authoring-run/60b8dff5-ebea-43c3-ab5e-fd19b476733c"
 ---
 
 # Namespace IAM Policy Flow
@@ -219,8 +219,9 @@ behavior.
   `lockNamespace`, which AccessBinding deletes also take. `createNamespace`
   instead authorizes `create` on the Namespace collection at the Installation
   before it creates the Namespace.
-  `fenceAgentProvisioning` also takes the IAM configuration lock before
-  `lockNamespace`.
+  `fenceAgentProvisioning` takes the IAM configuration lock and holds the
+  requester's account through `holdPrincipalAccount` before `lockNamespace`,
+  so a disabled requester fails the step with `PROVISIONING_REJECTED`.
 - **Agent Backend selection.** `createAgent` resolves a supplied Backend ID and
   checks its type only after the second `agent:create` authorization. A caller
   without that grant receives `403` for both configured and unknown valid IDs.
@@ -230,7 +231,8 @@ behavior.
   resource row, in the same unit: `createNamespace`, `createAgent`,
   `createConfiguration`, `createSecret`, `createCredentialSource`,
   `createPreset`, `ensureNamespaceDefaultPresets`, `createServiceAccount`, and
-  `processAgentProvisioningConfiguration` for the requester.
+  `processAgentProvisioningConfiguration` for the requester. The worker's
+  controller takes the same `iam` configuration from the Installation.
   `bindCreator` skips the write without `ownerRole` or the Driver's
   `createOwnerBinding`, or with the `authorize` option. Otherwise the Driver
   writes `binding_owner_<resource-id>` through `createOCCBinding`, and
@@ -245,8 +247,9 @@ behavior.
   `grantDeployedAgentSources`, which collects the Agent's Secret and credential
   source references. For each reference that the caller can `operate` and the
   Agent ServicePrincipal cannot, `ensureAgentOperateGrants` writes the exact
-  binding, audited with `reason: "agent_deploy"`. A failed deploy rolls back
-  the grants.
+  binding, and `auditAgentOperateGrant` records it with `reason: "agent_deploy"`.
+  A failed deploy rolls back the grants. `processAgentProvisioningConfiguration`
+  writes and audits the same grants for the sources the requester operates.
 
 ## Debugging and Verification
 
@@ -298,6 +301,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-16 18:47: Admit guided provisioning without Installation administer; hold the requester's account and audit its grants. (authoring-run/60b8dff5-ebea-43c3-ab5e-fd19b476733c - 204c2a8c26d6f4b1492f258879bd47e7e4948b43)
 - 2026-11-13 06:59: Condense the Namespace IAM policy flow while retaining authorization and transaction boundaries. (authoring-run/91737212-2ec5-4aca-981d-501670320fd5 - 6192588c3a8fce971689a174fc34ae9deb1c8c80)
 - 2026-11-13 05:56: Authorize Agent creation before configured Backend lookup; preserve creator and catalog permissions, distinguish Namespace creation admission, and cover denial audit and unchanged State. (authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)

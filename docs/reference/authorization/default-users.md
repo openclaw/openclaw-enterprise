@@ -214,7 +214,10 @@ Each create or deploy that writes an Owner binding or a deploy-time grant holds
 the caller's session and the IAM configuration lock until COMMIT, and authorizes
 only after that. A sign-out, account disable, configuration apply, or delete of
 an AccessBinding that allowed the request commits either before it, so the
-request is refused and writes nothing, or after its COMMIT.
+request is refused and writes nothing, or after its COMMIT. Each guided
+provisioning step holds the requester's account instead of a session. If an
+administrator disables the account while the request waits, the work fails with
+`PROVISIONING_REJECTED` and writes nothing more.
 
 OCC writes no Owner binding when the selected IAM Driver has no
 `createOwnerBinding` member. A Driver that has it but does not join the platform
@@ -239,7 +242,10 @@ only the sources they own. OCC uses the Role
 and the binding ID `binding_<agent-id>_<source-id>_operate`. Each binding
 records `openclaw.iam.access_bindings.create` with the source as resource and
 `reason: "agent_deploy"` and `agentId` in details. The grants commit with the
-deployment; a refused deployment writes none.
+deployment; a refused deployment writes none. Guided provisioning writes the
+same grants, with the same audit records, when it creates the Agent. Its
+requester must `operate` each Secret the request binds and its harness
+credential source.
 
 A source that the caller cannot operate gets no grant. The Agent principal check
 then refuses the deploy until someone who can operate the source deploys, or an
@@ -260,10 +266,25 @@ model Secret as a credential source before it saves the Agent, as it does for
 an administrator. Without that source, a deploy on a Credential Gateway
 Installation is refused.
 
-The response omits only `agentProvisioning` because guided provisioning
-requires Installation `administer`. When the Installation enables browser
-access, the response includes `nativeAdmin: true`. The member deploys the draft
-to write the grants above. See [Agent browser access](../agent-native-admin.md).
+The response is the same as the Installation's capabilities. When the Compute
+Driver supports guided provisioning, it includes `agentProvisioning`, and the
+member's form provisions and deploys a Dedicated Agent as an administrator's
+does. Otherwise the member saves a draft and deploys it to write the grants
+above. When the Installation enables browser access, the response includes
+`nativeAdmin: true`. See [Agent browser access](../agent-native-admin.md).
+
+Guided provisioning needs Agent `create` and Configuration `create` in the
+Namespace, and no Installation grant. A request that turns off
+`gatewayManagedMode` also needs Installation `administer`, as Agent create does,
+and is refused with `403` otherwise. The worker, the status read, and a retry
+check that grant again, so the work fails with `PROVISIONING_REJECTED` if the
+requester loses it while the request waits.
+
+After it creates the Agent and Configuration, each provisioning step needs Agent
+`read`, `operate`, and `deploy` and Configuration `read` and `update`, which a
+member gets only from the Owner binding. If the Owner Role lacks them, the work
+fails with `PROVISIONING_REJECTED` after it creates the Agent and
+Configuration, and only an administrator can see or delete them.
 
 ## Current limits
 
@@ -274,7 +295,7 @@ These parts of the Default users design are not implemented:
 - Namespace-wide and Group bindings through the Namespace policy API.
 - Shared team Namespaces.
 - Removal of deploy-time grants when an Agent stops using a source.
-- CLI support for Default users and guided provisioning from a member's console.
+- CLI support for Default users.
 
 ## Related
 

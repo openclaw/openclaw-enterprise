@@ -873,10 +873,10 @@ export const NamespaceAgentCapabilitiesResponse = Type.Object(
   {
     data: Type.Object(
       {
-        capabilities: Type.Omit(InstallationCapabilitiesSchema, ["agentProvisioning"], {
+        capabilities: Type.Object(InstallationCapabilitiesSchema.properties, {
           additionalProperties: false,
           description:
-            "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration.",
+            "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them, including browser-access availability and guided provisioning.",
         }),
       },
       { additionalProperties: false },

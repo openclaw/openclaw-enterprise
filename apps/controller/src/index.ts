@@ -847,12 +847,15 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
           creatingAgent || operation.operationId === "provisionAgent" ? "namespace" : "requested",
       },
     ];
-    if (creatingAgent || operation.operationId === "updateAgent") {
+    if (operation.operationId !== "deployAgent") {
       permissions.push({
         action: "administer",
         resourceKind: "installation",
         scope: "installation",
-        condition: creatingAgent ? "gateway_managed_mode_disabled" : "gateway_managed_mode_changed",
+        condition:
+          operation.operationId === "updateAgent"
+            ? "gateway_managed_mode_changed"
+            : "gateway_managed_mode_disabled",
       });
     }
     if (operation.operationId === "validateAgentCreate") {
@@ -866,11 +869,6 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               action: "create" as const,
               resourceKind: "configuration" as const,
               scope: "namespace" as const,
-            },
-            {
-              action: "administer" as const,
-              resourceKind: "installation" as const,
-              scope: "requested" as const,
             },
           ]
         : [
@@ -909,20 +907,16 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         condition: "bound_secret",
       },
       // Mirrors OCC authorizeHarnessAuthSource and authorizeAgentCredentialSources. Agent
-      // provisioning refuses credential sources, so it needs no such grant.
-      ...(operation.operationId === "provisionAgent"
-        ? []
-        : [
-            {
-              action: "operate" as const,
-              resourceKind: "credential_source" as const,
-              scope:
-                operation.operationId === "createAgent"
-                  ? ("request_body" as const)
-                  : ("requested" as const),
-              condition: "bound_credential_source" as const,
-            },
-          ]),
+      // provisioning checks the harness credential source that its request names.
+      {
+        action: "operate" as const,
+        resourceKind: "credential_source" as const,
+        scope:
+          operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
+            ? ("request_body" as const)
+            : ("requested" as const),
+        condition: "bound_credential_source" as const,
+      },
       // Mirrors OCC createRevision and refuseRepositoryNetworkOverlap: refusals that name saved
       // network policy additions come after SandboxPolicy read (findings 2151, 2881).
       ...(operation.operationId === "deployAgent" || operation.operationId === "updateAgent"
@@ -946,7 +940,12 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { action: "create", resourceKind: "agent", scope: "namespace" },
       { action: "create", resourceKind: "configuration", scope: "namespace" },
-      { action: "administer", resourceKind: "installation", scope: "requested" },
+      {
+        action: "administer",
+        resourceKind: "installation",
+        scope: "installation",
+        condition: "gateway_managed_mode_disabled",
+      },
       ...(["read", "operate", "deploy"] as const).map((action) => ({
         action,
         resourceKind: "agent" as const,
@@ -970,6 +969,12 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         resourceKind: "secret",
         scope: "requested",
         condition: "bound_secret",
+      },
+      {
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+        condition: "bound_credential_source",
       },
     ];
   }
@@ -1192,14 +1197,15 @@ function permissionDescription(
   return description;
 }
 
-function clientInstallation(
-  installation: Readonly<Installation>,
+// GET /installation and the Namespace Agent capabilities report the same composed capabilities.
+function clientCapabilities(
+  capabilities: Installation["capabilities"],
   computeDriver: Readonly<ComputeDriver> | undefined,
   nativeAdminEnabled: boolean,
 ): Record<string, unknown> {
   const agentProvisioning = computeDriver?.agentProvisioning;
-  const capabilities = {
-    ...installation.capabilities,
+  return {
+    ...capabilities,
     ...(nativeAdminEnabled ? { nativeAdmin: true } : {}),
     ...(agentProvisioning === undefined
       ? {}
@@ -1207,6 +1213,18 @@ function clientInstallation(
           agentProvisioning: { executionModes: [...agentProvisioning.executionModes] },
         }),
   };
+}
+
+function clientInstallation(
+  installation: Readonly<Installation>,
+  computeDriver: Readonly<ComputeDriver> | undefined,
+  nativeAdminEnabled: boolean,
+): Record<string, unknown> {
+  const capabilities = clientCapabilities(
+    installation.capabilities,
+    computeDriver,
+    nativeAdminEnabled,
+  );
   return {
     id: installation.id,
     name: installation.name,
@@ -2528,10 +2546,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespaceAgentCapabilities") {
       reply.send({
         data: {
-          capabilities: {
-            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
-            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
-          },
+          capabilities: clientCapabilities(
+            await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId),
+            options.computeDriver,
+            options.nativeAdmin?.enabled === true,
+          ),
         },
         meta: { requestId: request.id },
       });

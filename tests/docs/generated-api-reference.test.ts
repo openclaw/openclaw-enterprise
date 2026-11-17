@@ -232,6 +232,10 @@ test("Agent and CredentialSource operations document the permissions they check"
   for (const [operationId, condition] of [
     ["createAgent", "gateway_managed_mode_disabled"],
     ["validateAgentCreate", "gateway_managed_mode_disabled"],
+    // Guided provisioning needs Installation administration only to turn the mode off.
+    ["provisionAgent", "gateway_managed_mode_disabled"],
+    ["getAgentProvisioning", "gateway_managed_mode_disabled"],
+    ["retryAgentProvisioning", "gateway_managed_mode_disabled"],
     ["updateAgent", "gateway_managed_mode_changed"],
   ] as const) {
     assert.deepEqual(
@@ -249,13 +253,22 @@ test("Agent and CredentialSource operations document the permissions they check"
     scope,
     condition: "bound_credential_source",
   });
-  // OCC authorizes the caller's operate on every listed or Harness source.
-  assert.ok(
-    permissions("createAgent").some((permission) =>
-      isDeepStrictEqual(permission, sourceOperate("request_body")),
-    ),
-  );
-  for (const operationId of ["updateAgent", "deployAgent"]) {
+  // OCC authorizes the caller's operate on every listed or Harness source. Guided provisioning
+  // checks the Harness source its request names, and its status read and retry check it again.
+  for (const operationId of ["createAgent", "provisionAgent"]) {
+    assert.ok(
+      permissions(operationId).some((permission) =>
+        isDeepStrictEqual(permission, sourceOperate("request_body")),
+      ),
+      operationId,
+    );
+  }
+  for (const operationId of [
+    "updateAgent",
+    "deployAgent",
+    "getAgentProvisioning",
+    "retryAgentProvisioning",
+  ]) {
     assert.ok(
       permissions(operationId).some((permission) =>
         isDeepStrictEqual(permission, sourceOperate("requested")),
@@ -263,12 +276,6 @@ test("Agent and CredentialSource operations document the permissions they check"
       operationId,
     );
   }
-  // Guided provisioning refuses credential sources outright.
-  assert.ok(
-    !permissions("provisionAgent").some(
-      (permission) => record(permission, "permission").resourceKind === "credential_source",
-    ),
-  );
   // Registration and update read each referenced Secret's value for the gateway.
   assert.deepEqual(permissions("createCredentialSource"), [
     { action: "create", resourceKind: "credential_source", scope: "namespace" },

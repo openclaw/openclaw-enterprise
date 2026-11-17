@@ -114,8 +114,16 @@ operation was not authorized.`
   bound Secret and `credential_source:operate` on each source. The deploy
   [writes the missing grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
   for each source the caller can operate.
-- Creating an Agent with [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode)
-  off or changing the setting also requires `installation:administer`.
+- [Guided provisioning](../api.md#post-namespacesnamespaceidagentsprovision)
+  requires `agent:create` and `configuration:create` in the Namespace,
+  `service_account:read` for an associated ServiceAccount, `secret:operate` on
+  each bound Secret, and `credential_source:operate` on a harness credential
+  source. Its status read and retry check the same grants. It
+  [writes the Agent's grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
+  as a deploy does.
+- Creating or provisioning an Agent with
+  [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode) off, or
+  changing the setting, also requires `installation:administer`.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
   [updating a credential source](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid)
   also requires `secret:operate` on each Secret it reads.

@@ -5435,14 +5435,16 @@ test("Agent provisioning API validates inline configuration with existing Secret
   };
   await assertPlanRefusalsDenied("without Agent create");
   fixture.state.restrictions.pop();
-  // Installation administer used to be checked only after the plan was validated and stored.
+  // Configuration create, the other Namespace grant provisioning needs, also precedes the plan.
   fixture.state.restrictions.push({
-    id: "deny-provisioning-installation-administer",
-    resourceKind: "installation",
-    action: "administer",
+    id: "deny-provisioning-configuration-create",
+    namespaceId: namespace.id,
+    resourceKind: "configuration",
+    resourceId: namespace.id,
+    action: "create",
     effect: "deny",
   });
-  await assertPlanRefusalsDenied("without Installation administer");
+  await assertPlanRefusalsDenied("without Configuration create");
   fixture.state.restrictions.pop();
   for (const { description, body, message } of planRefusals) {
     const refused = await provision(body);

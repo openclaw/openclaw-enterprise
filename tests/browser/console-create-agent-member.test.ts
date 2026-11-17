@@ -4,6 +4,7 @@ import {
   waitForCreateFormReads,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import type { Page, Route } from "playwright";
 
@@ -38,6 +39,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 import {
@@ -147,7 +149,8 @@ test("a member with Agent create completes the default Preset path without Insta
     tone: "info",
     body: `${ACCESS_FROM_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
   });
-  // The member cannot provision, so the line under the fields claims no deploy outcome.
+  // This Installation offers no guided provisioning, so the line under the fields claims no
+  // deploy outcome.
   assert.equal(
     await page.locator("#create-agent-capability-status").textContent(),
     "Agents you create here are saved as drafts for later deployment.",
@@ -202,6 +205,50 @@ test("a member with Agent create completes the default Preset path without Insta
     [],
   );
   assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+});
+
+test("a member provisions the default Preset's Agent when the Installation offers guided provisioning", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Member team", {
+    defaultPresets: [defaultCodexPreset],
+    agentProvisioning: true,
+  });
+  const secret = await fixture.createSecret(namespace.id, "Team OpenAI key", "sk-member-team");
+  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
+  const { page } = await newPage(t, fixture);
+  const answers = apiResponses(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
+  await fillDefaultPreset(page, secret, "Member Agent");
+
+  // The Namespace's Agent capabilities include guided provisioning (RFC-0026), so the member's
+  // form provisions and deploys a Dedicated Agent as an administrator's does.
+  assert.deepEqual(
+    answers.filter((answer) => answer.startsWith("GET /installation ")),
+    ["GET /installation 403"],
+  );
+  assert.equal(
+    await page.locator("#create-agent-capability-status").textContent(),
+    "Dedicated Agents are provisioned and deployed when created.",
+  );
+  // This in-memory console fixture cannot queue provisioning work, so the route admits a request
+  // that passes the provisioning schema as one queued job. The PostgreSQL member provisioning
+  // test proves the API's admission and the worker for a member.
+  const work = provisioningJob(namespace.id, `agent-provisioning:${randomUUID()}`);
+  const served = await routeProvisioningJob(page, fixture, work, [
+    work.job("queued", { phase: "admitted", attemptCount: 0 }),
+  ]);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await waitForCondition(() => served.submitted === 1, "the member's provisioning request");
+  // The provisioning request, which the route answered, was the console's only write: it saved no
+  // draft Configuration or Agent and sent no IAM request, since the worker grants the Agent its
+  // Secrets.
+  assert.deepEqual(
+    answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/")),
+    [],
+  );
+  assert.deepEqual(
+    answers.filter((answer) => answer.includes("/iam/")),
+    [],
+  );
 });
 
 test("a member without Agent create never sees the form, and Create Agent names why", async (t) => {

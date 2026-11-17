@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-13
-last_updated_session: authoring-run/6f9b8960-1432-46e9-97af-330142c01422
+updated: 2026-11-16
+last_updated_session: authoring-run/60b8dff5-ebea-43c3-ab5e-fd19b476733c
 ---
 
 # Agent provisioning flow
@@ -18,7 +18,7 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 
 - Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
 - API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
-- Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
+- Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority.
 
 ## Flow
 
@@ -69,7 +69,7 @@ Secret before source-backed provisioning. [Console recovery](../reference/consol
 reuses confirmed sources and safely retries uncertain registration.
 Installation discovery preserves catalog metadata.
 
-Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
+Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
 
 For a draft, Console creates the Configuration and Agent, then grants access to selected Slack Secrets. Retry credential access keeps that Agent.
 
@@ -83,7 +83,7 @@ For Harness authentication from a credential source, OCC reads the catalog entry
 from the recorded Gateway. Compute validates that same entry and its login mode
 for this admission. A later provisioning request reads the catalog again.
 
-OCC first authorizes Agent `create`, Configuration `create`, and Installation `administer` for the Namespace. Status and retry use the same grants; absence gives `403` regardless of the body. It validates Configuration, references, workspace inputs, execution mode, and current authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
+OCC first authorizes Agent `create` and Configuration `create` in the Namespace. Status and retry use the same grants; absence gives `403` regardless of the body. It validates Configuration, references, workspace inputs, execution mode, and current authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
 
 A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
@@ -99,7 +99,7 @@ The `202` response contains `data.provisioning`, with the work ID and status URL
 
 `packages/occ/src/index.ts:OpenClawController.processAgentProvisioning`
 
-Under its queue claim, the worker verifies ownership, Namespace readiness and authority before
+Under its queue claim, the worker verifies the requester's account, ownership, Namespace readiness and authority before
 effects and result commits. Retries reuse completed outputs. It creates the Configuration from the accepted inline
 values and bindings, then creates a stopped Agent, records the auth, provider, plugin, repository and
 workspace selections, and grants its service principal the exact Secret permissions.
@@ -237,6 +237,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 18:47: Let Default users provision; hold the requester's account. (authoring-run/60b8dff5-ebea-43c3-ab5e-fd19b476733c - 204c2a8c26d6f4b1492f258879bd47e7e4948b43)
 
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
 
