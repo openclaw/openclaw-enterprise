@@ -25,6 +25,7 @@ import { DriverSelectionError, ResourceStateConflictError } from "./errors.ts";
 /** One process-local owner. Its reference, unlike object identity, survives an API/worker handoff. */
 export class InstalledDriver {
   readonly ref: DriverRegistrationRef;
+  readonly credentialGatewayOwnerId: string | undefined;
   readonly capabilities: readonly DriverCapability[];
   readonly lifecycleDriver: Driver | undefined;
   readonly namespaceLifecycleHooks: NamespaceLifecycleHooks | undefined;
@@ -41,12 +42,14 @@ export class InstalledDriver {
       readonly configuration: unknown;
       /** @internal Process-local admission policy supplied only by bundled composition. */
       readonly retiredStaticProviderRefs?: readonly EgressRef[];
-      /** @internal Set only after bundled repository transport validation. */
+      /** @internal Set by composition for a validated repository-only Proxy owner. */
       readonly repositoryOnly?: boolean;
     },
     registration: DriverRegistration,
     // Installation composition supplies the configured identity for each capability.
     capabilityIds: Readonly<Partial<Record<DriverCapability, string>>> = {},
+    // Gateway ownership must not change when composition adds a repository-only Proxy identity.
+    gatewayConfiguration: unknown = selection.configuration,
   ) {
     const { id, implementation, configuration } = selection;
     this.#repositoryOnly = selection.repositoryOnly === true;
@@ -86,6 +89,22 @@ export class InstalledDriver {
       throw new DriverSelectionError("A Driver registration must provide a capability.");
     }
     this.capabilities = Object.freeze([...this.#views.keys()]);
+    const gateway = this.#views.get("credential_gateway");
+    this.credentialGatewayOwnerId =
+      gateway === undefined
+        ? undefined
+        : createHash("sha256")
+            .update("oce-credential-gateway-owner-v1\0")
+            .update(
+              canonicalProvisioningJson({
+                id,
+                implementation,
+                configuration: gatewayConfiguration,
+                sandboxId: this.#views.get("sandbox")?.id ?? null,
+                gatewayId: gateway.id,
+              }),
+            )
+            .digest("hex");
     const hooks: ComputeLifecycleHooks | undefined = registration.computeLifecycleHooks;
     if (hooks !== undefined) {
       const lifecycle = { id, implementation, capability: first, computeLifecycleHooks: hooks };

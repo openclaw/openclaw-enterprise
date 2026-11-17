@@ -156,7 +156,6 @@
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/agent-grant-rehearsal.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
-    "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.ts",
@@ -989,14 +988,6 @@
         "grant rehearsal requires a fresh denial without origin traffic or object arrival",
         "grant rehearsal requires a new model turn on the original Agent session",
         "grant rehearsal fails when an adapter returns after Git refusal"
-      ]
-    },
-    {
-      "path": "tests/integration/protected-driver-registration.test.ts",
-      "expectedTests": [
-        "one installed Driver owns both protected capabilities, lifecycle and verified release",
-        "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
     },
     {

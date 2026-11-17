@@ -8,7 +8,10 @@ import {
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationControllerOptions } from "./installation-config.ts";
+import {
+  installationControllerOptions,
+  installPackagedGatewayRegistration,
+} from "./installation-config.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
   createPostgresPool,
@@ -93,14 +96,35 @@ export interface CompositionDependencies {
   readonly passwordHasher?: PasswordHasher;
 }
 
-export async function composeProduction(
-  config: ProductionConfig,
-  dependencies: CompositionDependencies = {},
-) {
+function validateProductionStartup(config: ProductionConfig): void {
   if (config.mode !== "production") {
     throw new Error("Production OCC composition requires explicit production mode.");
   }
   validateAuthSecret(config.authSecret);
+  if (
+    (config.drivers.installation.drivers.service_account === undefined) !==
+    (config.serviceAccountDriverFactory === undefined)
+  ) {
+    throw new Error(
+      "The selected ServiceAccount Driver requires API-only PostgreSQL initialization.",
+    );
+  }
+  if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
+    throw new Error("Google sign-in does not support native administration.");
+  }
+}
+
+export async function composeProduction(
+  config: ProductionConfig,
+  dependencies: CompositionDependencies = {},
+) {
+  try {
+    validateProductionStartup(config);
+  } catch (error) {
+    // A refused startup still owns the packaged registration it was handed, so the process can exit.
+    await config.drivers?.packagedGatewayRegistration?.close().catch(() => {});
+    throw error;
+  }
   const {
     installation,
     computeDriver,
@@ -108,6 +132,7 @@ export async function composeProduction(
     secretDriver,
     sandboxDriver,
     credentialGatewayDriver,
+    packagedGatewayRegistration,
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
@@ -115,19 +140,8 @@ export async function composeProduction(
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
-  if (
-    (installation.drivers.service_account === undefined) !==
-    (config.serviceAccountDriverFactory === undefined)
-  ) {
-    throw new Error(
-      "The selected ServiceAccount Driver requires API-only PostgreSQL initialization.",
-    );
-  }
 
   const driverId = installation.drivers.iam.id;
-  if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("Google sign-in does not support native administration.");
-  }
 
   let phaseStartedAt = performance.now();
   const phaseCompleted = (phase: ProductionStartupPhase) => {
@@ -137,14 +151,25 @@ export async function composeProduction(
   };
 
   const auditEnabled = config.controlPlaneAuditEnabled === true;
-  const pool = await createPostgresPool(config.databaseUrl, {
-    ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
-    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
-  });
+  let pool: Awaited<ReturnType<typeof createPostgresPool>>;
+  try {
+    pool = await createPostgresPool(config.databaseUrl, {
+      ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+      ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
+    });
+  } catch (error) {
+    await packagedGatewayRegistration?.close().catch(() => {});
+    throw error;
+  }
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, protectedDriver, preparedGitHub, database);
+    closeResources(
+      exchange,
+      packagedGatewayRegistration ?? protectedDriver,
+      preparedGitHub,
+      database,
+    );
   try {
     const state = new PostgresPlatformState(pool, {
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
@@ -248,13 +273,20 @@ export async function composeProduction(
     controller.selectDriver("secret", secretDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    if (protectedDriver !== undefined) {
+    if (packagedGatewayRegistration !== undefined) {
+      installPackagedGatewayRegistration(controller, packagedGatewayRegistration, {
+        sandbox: sandboxDriver,
+        gateway: credentialGatewayDriver,
+        protectedOwner: protectedDriver,
+        proxy: config.drivers.proxyDriver,
+      });
+    } else if (protectedDriver !== undefined) {
       controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
     } else if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
     }
-    if (credentialGatewayDriver !== undefined) {
+    if (credentialGatewayDriver !== undefined && packagedGatewayRegistration === undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }

@@ -151,6 +151,13 @@ with only `NODE_ENV`, `OCC_CONFIG_PATH`, the API's optional `OCC_CONSOLE_THEME_D
 and the Installation, theme and repository mounts, so factories must defer other
 environment and file reads past construction.
 
+When Installation selects a packaged Credential Gateway, the Sandbox
+selection loads the package and owns its configuration. Gateway selection
+must name that Sandbox and have empty configuration. The same factory call
+supplies the exact Gateway and Sandbox views and, when selected, the
+Credential Proxy view. A missing or mismatched view, a bundled OpenShell
+Backend, or a bundled Credential Refresh selection stops startup.
+
 Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
 each configured host. Startup enforces the
@@ -184,6 +191,19 @@ startup checks persisted identities, including Secret and optional Sandbox,
 and attaches selected lifecycle owners once. Both processes pass the retained
 definitions into OCC; the worker also resolves the current policy contribution
 before live application.
+
+`apps/controller/src/composition/installation-config.ts:installPackagedGatewayRegistration`
+selects the package views as one owner in both processes. OCC accepts the
+Gateway without a Backend only when the selected Sandbox belongs to that
+same registration. Each process closes its owner once, including when the
+Proxy is omitted or startup fails. Worker shutdown waits for its pending work
+before closing the owner and database. The bundled OpenShell Backend keeps its
+own member selection and attachment path.
+
+OCC records each new packaged Credential Source's owner from the installed
+package version and accepted Sandbox configuration. The Worker checks that
+record before using or withdrawing a source. A matching ID cannot transfer
+ownership; changing only the Proxy selection preserves it.
 
 `apps/controller/src/composition/installation-config.ts:installationDriverConfigurations`
 forwards each selected identity and its retained redacted snapshot to the registry.
@@ -229,6 +249,7 @@ their existing Harness-owned runtime topology.
 ## Changelog
 
 - 2026-11-12 15:38: Document when startup loads the bundled OpenShell transport. (01a117f8-113d-7610-83db-37431b054e44 - d9233e2cde)
+- 2026-11-09 04:40: Trace explicit packaged Credential Gateway selection and process ownership. (authoring-run/c29622d1-92a5-42ec-958e-cbec5369c15a - 3ca42fd10642f75b3628bb9de918a39e52612f80)
 
 - 2026-10-29 17:21: Capture shared schema-redacted startup values before Driver construction. (01a1891d-5b6b-7071-b482-793a9dd01044 - 8585197fae261c7e45160b9420ffba7942d28e11)
 

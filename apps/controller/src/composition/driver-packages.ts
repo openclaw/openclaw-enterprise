@@ -451,29 +451,66 @@ export function createExternalDriver(
   return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
 }
 
-/** Load one package instance for the selected capabilities; the sandbox selection owns its configuration. */
-export function createExternalProtectedDriver(
+/** The Sandbox selection configures the one registration shared by the selected views.
+ * A registration this refuses is closed before the refusal returns, so a refused startup can exit. */
+export async function createExternalSandboxRegistration(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
+  selected: readonly ("credential_proxy" | "credential_gateway")[],
   // Composition that changes the installed authority must also change its durable identity.
   repositoryAuthorityIdentity?: string,
-): InstalledDriver {
+): Promise<InstalledDriver> {
   const { id, configuration } = selection;
+  const gatewayConfiguration = selected.includes("credential_gateway")
+    ? structuredClone(configuration)
+    : undefined;
   const registration = asRecord(
     implementation.createDriver({ id, configuration, implementation: selection.implementation }),
   );
-  if (!registration || !asRecord(registration.capabilities)) {
-    throw new Error(
-      "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
+  try {
+    if (!registration || !asRecord(registration.capabilities)) {
+      throw new Error("The selected Sandbox package must return one Driver registration.");
+    }
+    // A package that supplies the selected Gateway beside its own repository Git Proxy, with no
+    // static provider and an installed repository authority, is repository-only, as the bundled
+    // OpenShell owner is: ordinary model sources stay with its Gateway. A package without that
+    // transport keeps the static-provider rule; the InstalledDriver rechecks the transport.
+    const views = asRecord(registration.capabilities);
+    const proxyView = asRecord(views?.credential_proxy);
+    const providers = asRecord(proxyView?.sourceControl)?.providers;
+    const repositoryOnly =
+      repositoryAuthorityIdentity !== undefined &&
+      selected.includes("credential_gateway") &&
+      selected.includes("credential_proxy") &&
+      asRecord(asRecord(views?.sandbox)?.repositoryAccess) !== undefined &&
+      typeof proxyView?.bindRepositoryGit === "function" &&
+      Array.isArray(providers) &&
+      providers.length === 0;
+    const owner = new InstalledDriver(
+      repositoryAuthorityIdentity === undefined
+        ? selection
+        : {
+            ...selection,
+            configuration: { sandbox: configuration, repositoryAuthorityIdentity },
+            repositoryOnly,
+          },
+      registration as unknown as DriverRegistration,
+      {},
+      gatewayConfiguration,
     );
+    owner.require("sandbox");
+    for (const capability of selected) {
+      owner.require(capability);
+    }
+    return owner;
+  } catch (error) {
+    try {
+      if (typeof registration?.close === "function") {
+        await registration.close();
+      }
+    } catch {
+      // The refusal above is the startup error; a failed close does not replace it.
+    }
+    throw error;
   }
-  const owner = new InstalledDriver(
-    repositoryAuthorityIdentity === undefined
-      ? selection
-      : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
-    registration as unknown as DriverRegistration,
-  );
-  owner.require("sandbox");
-  owner.require("credential_proxy");
-  return owner;
 }

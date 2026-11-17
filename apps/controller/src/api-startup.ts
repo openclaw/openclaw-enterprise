@@ -422,79 +422,85 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
     environment: env,
     startupConfiguration,
   });
-  let serviceAccountDriverFactory: ServiceAccountDriverFactory | undefined;
-  const selectedServiceAccountDriver = drivers?.installation.drivers.service_account;
-  if (drivers !== undefined && selectedServiceAccountDriver !== undefined) {
-    if (settings.databaseUrl === undefined) {
-      throw new Error("Backend-managed ServiceAccounts require PostgreSQL persistence.");
-    }
-    const compute = drivers.computeDriver;
-    if (!supportsServiceAccountCredentials(compute)) {
-      throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");
-    }
-    const backendDefinition = drivers.installation.backend.find(
-      (backend): backend is ChatGPTBackendDefinition =>
-        backend.type === "chatgpt" &&
-        backend.drivers.service_account === selectedServiceAccountDriver.id,
-    );
-    if (backendDefinition === undefined) {
-      throw new Error("The selected ServiceAccount Driver requires an owning Backend.");
-    }
-    const { configuration } = backendDefinition;
-    let adminKey;
-    try {
-      adminKey = (await readFile(configuration.apiKeyPath, "utf8")).trim();
-    } catch {
-      throw new Error("The configured ChatGPT admin-key Secret is unavailable.");
-    }
-    if (adminKey.length === 0) {
-      throw new Error("The mounted ChatGPT admin key must be nonempty.");
-    }
-    const { ChatGPTClient } = await import("./backends/chatgpt.ts");
-    const { createChatGPTServiceAccountDriverFactory } =
-      await import("./drivers/service-account/chatgpt.ts");
-    const backend = {
-      id: backendDefinition.id,
-      drivers: backendDefinition.drivers,
-      client: new ChatGPTClient({
-        workspaceId: configuration.workspaceId,
-        adminKey,
-        ...(configuration.credentialTtlSeconds === undefined
-          ? {}
-          : { credentialTtlSeconds: configuration.credentialTtlSeconds }),
-      }),
-    };
-    serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(backend, compute);
-  }
-  const databaseUrl = settings.databaseUrl;
-  if (databaseUrl === undefined) {
-    throw new Error("OCC_DATABASE_URL must be explicitly configured in development.");
-  }
-  phaseCompleted("configuration");
   let app: Awaited<ReturnType<typeof composeProduction>>;
-  if (settings.mode === "production") {
-    if (drivers === undefined) {
-      throw new Error("Production Driver configuration is unavailable.");
+  try {
+    let serviceAccountDriverFactory: ServiceAccountDriverFactory | undefined;
+    const selectedServiceAccountDriver = drivers?.installation.drivers.service_account;
+    if (drivers !== undefined && selectedServiceAccountDriver !== undefined) {
+      if (settings.databaseUrl === undefined) {
+        throw new Error("Backend-managed ServiceAccounts require PostgreSQL persistence.");
+      }
+      const compute = drivers.computeDriver;
+      if (!supportsServiceAccountCredentials(compute)) {
+        throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");
+      }
+      const backendDefinition = drivers.installation.backend.find(
+        (backend): backend is ChatGPTBackendDefinition =>
+          backend.type === "chatgpt" &&
+          backend.drivers.service_account === selectedServiceAccountDriver.id,
+      );
+      if (backendDefinition === undefined) {
+        throw new Error("The selected ServiceAccount Driver requires an owning Backend.");
+      }
+      const { configuration } = backendDefinition;
+      let adminKey;
+      try {
+        adminKey = (await readFile(configuration.apiKeyPath, "utf8")).trim();
+      } catch {
+        throw new Error("The configured ChatGPT admin-key Secret is unavailable.");
+      }
+      if (adminKey.length === 0) {
+        throw new Error("The mounted ChatGPT admin key must be nonempty.");
+      }
+      const { ChatGPTClient } = await import("./backends/chatgpt.ts");
+      const { createChatGPTServiceAccountDriverFactory } =
+        await import("./drivers/service-account/chatgpt.ts");
+      const backend = {
+        id: backendDefinition.id,
+        drivers: backendDefinition.drivers,
+        client: new ChatGPTClient({
+          workspaceId: configuration.workspaceId,
+          adminKey,
+          ...(configuration.credentialTtlSeconds === undefined
+            ? {}
+            : { credentialTtlSeconds: configuration.credentialTtlSeconds }),
+        }),
+      };
+      serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(backend, compute);
     }
-    app = await composeProduction({
-      ...settings,
-      ...compositionSettings,
-      databaseUrl,
-      drivers,
-      ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
-      onStartupPhase: (phase, durationMs) => {
-        phasesMs[phase] = durationMs;
-      },
-    });
-    phaseStartedAt = performance.now();
-  } else {
-    const { composePostgresDevelopment } = await import("./composition/development-postgres.ts");
-    app = await composePostgresDevelopment(
-      { ...settings, ...compositionSettings, databaseUrl },
-      drivers,
-      serviceAccountDriverFactory,
-    );
-    phaseCompleted("composition");
+    const databaseUrl = settings.databaseUrl;
+    if (databaseUrl === undefined) {
+      throw new Error("OCC_DATABASE_URL must be explicitly configured in development.");
+    }
+    phaseCompleted("configuration");
+    if (settings.mode === "production") {
+      if (drivers === undefined) {
+        throw new Error("Production Driver configuration is unavailable.");
+      }
+      app = await composeProduction({
+        ...settings,
+        ...compositionSettings,
+        databaseUrl,
+        drivers,
+        ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
+        onStartupPhase: (phase, durationMs) => {
+          phasesMs[phase] = durationMs;
+        },
+      });
+      phaseStartedAt = performance.now();
+    } else {
+      const { composePostgresDevelopment } = await import("./composition/development-postgres.ts");
+      app = await composePostgresDevelopment(
+        { ...settings, ...compositionSettings, databaseUrl },
+        drivers,
+        serviceAccountDriverFactory,
+      );
+      phaseCompleted("composition");
+    }
+  } catch (error) {
+    // Production composition and this wrapper share the same once-only owner.
+    await drivers?.packagedGatewayRegistration?.close().catch(() => {});
+    throw error;
   }
 
   let closing = false;

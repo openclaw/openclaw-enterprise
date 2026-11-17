@@ -141,10 +141,9 @@ function startChild(port, overrides = {}) {
   return { child, output: () => output };
 }
 
-// Each case points OCC_DATABASE_URL at a closed port, so a case whose own check stopped
-// firing would still exit nonzero once startup tried the database (PERSISTENCE_UNAVAILABLE).
-// The startup-error code proves startup refused it before that. STARTUP_FAILED is the
-// catch-all code, so the bind and production cases prove only that much.
+// The missing-database case clears any inherited URL. The others use a closed port so
+// PERSISTENCE_UNAVAILABLE distinguishes reaching the database from an earlier refusal.
+// STARTUP_FAILED is a catch-all, so it cannot identify the exact reason for refusal.
 async function assertUnsafeStartupRejected(t) {
   const configuredDatabase = { OCC_DATABASE_URL: "postgresql://127.0.0.1:1/openclaw" };
   const installationPath = join(
@@ -159,7 +158,11 @@ async function assertUnsafeStartupRejected(t) {
     OCC_CONFIG_PATH: installationPath,
   };
   for (const [description, overrides, code] of [
-    ["missing development database", {}, "DATABASE_CONFIGURATION_INVALID"],
+    [
+      "missing development database",
+      { OCC_DATABASE_URL: undefined },
+      "DATABASE_CONFIGURATION_INVALID",
+    ],
     [
       "production mode",
       { ...configuredDatabase, NODE_ENV: "production", OCC_HOST: "192.0.2.10" },

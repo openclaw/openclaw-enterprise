@@ -60,6 +60,7 @@ import {
   repositoryGitAuthorization,
   credentialFreeMetadataType,
   credentialSourceMatchesSnapshot,
+  credentialSourceOwnedByGateway,
   revisionCredentialSourceSnapshot,
   credentialFreeProviderRef,
   pluginRuntimeHarnessRequirement,
@@ -304,7 +305,7 @@ import {
   requireFallbackProviders,
   resolveConfiguredHarnessId,
 } from "./configured-harness.ts";
-import type { ClaimedWork } from "./controller-work.ts";
+import type { ClaimedWork, ControllerWork } from "./controller-work.ts";
 import { requireDeployableRoster, withAgentIdentityName } from "./openclaw-roster.ts";
 import {
   capability,
@@ -1730,6 +1731,17 @@ const FIXED_PROTECTED_SOURCE_REFUSALS = Object.freeze({
     "This credential source holds a prepared or credential-free protected grant, which is not rotated in place. To replace it, create a new source, bind it in place of this one, then delete this one.",
 });
 
+function workMatchesRevision(
+  work: ControllerWork,
+  revision: Pick<AgentRevision, "id" | "namespaceId" | "agentId">,
+): boolean {
+  return (
+    work.namespaceId === revision.namespaceId &&
+    work.agentId === revision.agentId &&
+    work.revisionId === revision.id
+  );
+}
+
 /**
  * The provisioning status message for a worker failure. Only the shared duplicate-name,
  * Compute refusal, Secret Driver ownership, missing ChatGPT Backend, repository and Credential
@@ -2572,6 +2584,12 @@ export class OpenClawController {
   }
 
   async validateBackendConfiguration(): Promise<void> {
+    const gatewayOwner = this.selections.get("credential_gateway")?.owner;
+    if (gatewayOwner !== undefined && gatewayOwner !== this.selections.get("sandbox")?.owner) {
+      throw new DriverSelectionError(
+        "The selected packaged Credential Gateway and Sandbox must come from the same registered Driver.",
+      );
+    }
     const selected = Object.fromEntries(
       [...this.selections.entries()].map(([capability, selection]) => [
         capability,
@@ -2590,6 +2608,7 @@ export class OpenClawController {
       this.backends,
       selected,
       this.selections.has("credential_proxy") ? this.selectedProxyOwner() : undefined,
+      gatewayOwner,
     );
   }
 
@@ -4049,9 +4068,11 @@ export class OpenClawController {
     const deployment = await state.operations.findWork(key);
     if (
       deployment === undefined ||
-      deployment.namespaceId !== record.namespaceId ||
-      deployment.agentId !== record.agentId ||
-      deployment.revisionId !== revisionId ||
+      !workMatchesRevision(deployment, {
+        namespaceId: record.namespaceId,
+        agentId: record.agentId,
+        id: revisionId,
+      }) ||
       !(await this.canRead(principalId, {
         kind: "agent_revision",
         id: revisionId,
@@ -6134,11 +6155,7 @@ export class OpenClawController {
         for (const revision of readable) {
           const key = `agent_revision:${revision.id}:reconcile`;
           const work = await state.operations.findWork(key);
-          const matches =
-            work !== undefined &&
-            work.namespaceId === revision.namespaceId &&
-            work.agentId === revision.agentId &&
-            work.revisionId === revision.id;
+          const matches = work !== undefined && workMatchesRevision(work, revision);
           // Only queued work no claim has counted needs its evidence to tell a waiting deploy
           // from a started one; a counted attempt already reads as running.
           const attempt =
@@ -6357,12 +6374,7 @@ export class OpenClawController {
     return this.read(async (state) => {
       const idempotencyKey = `agent_revision:${revision.id}:reconcile`;
       const work = await state.operations.findWork(idempotencyKey);
-      if (
-        work === undefined ||
-        work.namespaceId !== revision.namespaceId ||
-        work.agentId !== revision.agentId ||
-        work.revisionId !== revision.id
-      ) {
+      if (work === undefined || !workMatchesRevision(work, revision)) {
         throw new DependencyUnavailableError(
           "The deployment reconciliation record is unavailable.",
         );
@@ -6401,11 +6413,7 @@ export class OpenClawController {
     if (cleanup === undefined) {
       return null;
     }
-    if (
-      cleanup.namespaceId !== revision.namespaceId ||
-      cleanup.agentId !== revision.agentId ||
-      cleanup.revisionId !== revision.id
-    ) {
+    if (!workMatchesRevision(cleanup, revision)) {
       throw new ScopeViolationError("Deployment cleanup does not match its revision.");
     }
     // A started cleanup stays running between its attempts, as a deployment does (finding 2466).
@@ -8782,6 +8790,8 @@ export class OpenClawController {
         egress === undefined
           ? await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs)
           : {};
+      const gatewayOwnerId =
+        this.selections.get("credential_gateway")?.owner?.credentialGatewayOwnerId;
 
       const registering = await state.credentialSources.createCredentialSource(
         Object.freeze({
@@ -8792,8 +8802,15 @@ export class OpenClawController {
           type: type.type,
           config,
           secrets: secretRefs,
-          ownerCapability: protectedType ? "credential_proxy" : "credential_gateway",
-          driverId: protectedType ? protectedType.driver.id : selected!.id,
+          ...(protectedType
+            ? { ownerCapability: "credential_proxy" as const, driverId: protectedType.driver.id }
+            : {
+                ownerCapability: "credential_gateway" as const,
+                driverId: selected!.id,
+                ...(gatewayOwnerId === undefined
+                  ? {}
+                  : { credentialGatewayOwnerId: gatewayOwnerId }),
+              }),
           state: "registering",
           createdAt: this.timestamp(),
         }),
@@ -17281,7 +17298,8 @@ export class OpenClawController {
    */
   private ownedCredentialGatewayDriver(source: CredentialSource): CredentialGatewayDriver {
     const driver = this.credentialGatewayDriver();
-    if (source.ownerCapability !== "credential_gateway" || driver.id !== source.driverId) {
+    const ownerId = this.selections.get("credential_gateway")?.owner?.credentialGatewayOwnerId;
+    if (!credentialSourceOwnedByGateway(source, driver.id, ownerId)) {
       throw new CredentialSourceDriverError();
     }
     return driver;

@@ -204,6 +204,7 @@
     "helpers/production-chart-quantity-cases.ts",
     "helpers/production-chart-renderer-refusal-cases.ts",
     "helpers/production-chart-resource.ts",
+    "helpers/production-values-template.ts",
     "helpers/bounded-teardown.ts",
     "helpers/strands-box-shell-probe.ts",
     "helpers/environment.ts",

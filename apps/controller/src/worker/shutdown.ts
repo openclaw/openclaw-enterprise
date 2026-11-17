@@ -18,6 +18,13 @@ export interface WorkerComposition {
   readonly worker: { stopLoop(): Promise<void>; stop(): Promise<void> };
 }
 
+export interface WorkerStartupHooks {
+  readonly connect?: () => Promise<void>;
+  readonly afterStart?: () => void;
+}
+
+const closingCompositions = new WeakMap<WorkerComposition, Promise<void>>();
+
 /**
  * Close the worker composition in dependency order, preserving the first failure. Every step
  * runs after an earlier one fails: a receipt listener left open kept the worker process alive
@@ -26,8 +33,12 @@ export interface WorkerComposition {
  * the worker's database pool closes last (finding 2997).
  */
 export function closeWorkerComposition(composition: WorkerComposition): Promise<void> {
+  const existing = closingCompositions.get(composition);
+  if (existing !== undefined) {
+    return existing;
+  }
   const { readinessPath } = composition;
-  return closeResources(
+  const closing = closeResources(
     { close: () => composition.worker.stopLoop() },
     readinessPath === undefined
       ? undefined
@@ -39,4 +50,27 @@ export function closeWorkerComposition(composition: WorkerComposition): Promise<
     composition.preparedGitHub,
     { close: () => composition.worker.stop() },
   );
+  closingCompositions.set(composition, closing);
+  return closing;
+}
+
+/** Transfer the already-acquired resources to the Worker, or settle them on startup refusal. */
+export async function startWorkerComposition(
+  composition: WorkerComposition & {
+    readonly worker: WorkerComposition["worker"] & {
+      start(hooks: WorkerStartupHooks): Promise<void>;
+    };
+  },
+  connect?: () => Promise<void>,
+  afterStart?: () => void,
+): Promise<void> {
+  try {
+    await composition.worker.start({
+      ...(connect === undefined ? {} : { connect }),
+      ...(afterStart === undefined ? {} : { afterStart }),
+    });
+  } catch (error) {
+    await closeWorkerComposition(composition).catch(() => {});
+    throw error;
+  }
 }
