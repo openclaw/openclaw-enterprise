@@ -6256,6 +6256,16 @@ export class ControllerWorker {
     let code = "PREDECESSOR_COMPLETION_RECHECK";
     let delayMs = this.stopYieldRecheckMs(claim);
     let claimLost = false;
+    const deferClaim = async () => {
+      try {
+        await this.queue.defer(claim, { code }, { delayMs });
+      } catch (error) {
+        // Keep the original claim loss when deferral also refuses the stale token.
+        if (!claimLost || !(error instanceof WorkClaimLostError)) {
+          throw error;
+        }
+      }
+    };
     try {
       const { namespace, agent, previous, revision } = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
@@ -6322,14 +6332,7 @@ export class ControllerWorker {
       // The ordinary pass owns refusal handling, physical stop and candidate preparation.
       // Releasing this claim refunds its attempt, including after committing the stop boundary.
       if (!this.stopping) {
-        try {
-          await this.queue.defer(claim, { code }, { delayMs });
-        } catch (error) {
-          // Keep the original claim loss when deferral also refuses the stale token.
-          if (!claimLost || !(error instanceof WorkClaimLostError)) {
-            throw error;
-          }
-        }
+        await deferClaim();
       }
     }
   }
@@ -6416,6 +6419,7 @@ export class ControllerWorker {
     void this.health(false);
     const workerContext = AsyncLocalStorage.snapshot();
     let renewal: Promise<void> | undefined;
+    let outcome: { value: T } | { error: unknown };
     try {
       // The worker is serial: Compute may end an optional in-pass wait early
       // when other Work could be claimed, instead of holding it back (D221).
@@ -6424,7 +6428,7 @@ export class ControllerWorker {
       // superseded version's own yielded stop, whose next pass just rechecks its drain; a
       // deployment whose predecessor's drain ended deploys next. Every wait that asks is optional and bounded, so this only lets it
       // run to its own end (findings 1093, 1090, 1108).
-      return await withComputeAbortSignal(operation.signal, () =>
+      const value = await withComputeAbortSignal(operation.signal, () =>
         withComputeWorkWaiting(
           async (wait) => {
             if (wait !== "predecessor-completion") {
@@ -6447,16 +6451,23 @@ export class ControllerWorker {
           () => effect(operation.signal),
         ),
       );
+      outcome = { value };
+    } catch (error) {
+      outcome = { error };
     } finally {
       await renewal;
       clearInterval(heartbeat);
       this.abort.signal.removeEventListener("abort", stopping);
       await pending.catch(() => {});
       clearTimeout(lapse);
-      if (lost !== undefined) {
-        throw new ClaimLeaseLostError(lost);
-      }
     }
+    if (lost !== undefined) {
+      throw new ClaimLeaseLostError(lost);
+    }
+    if ("error" in outcome) {
+      throw outcome.error;
+    }
+    return outcome.value;
   }
 
   private async observe(
