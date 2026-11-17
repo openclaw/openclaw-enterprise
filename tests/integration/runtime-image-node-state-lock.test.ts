@@ -9,7 +9,8 @@ import {
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { followContainer } from "../helpers/docker-follow.ts";
 import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
-import { image, imageTestOptions, runDocker } from "../helpers/runtime-image-startup.mjs";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
 
 // Each container stands in for one Harness Pod of a dedicated Agent: the Kubernetes
 // container command (tini with the runtime wrapper) runs OCE's whole Harness launcher

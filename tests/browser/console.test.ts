@@ -1683,7 +1683,7 @@ test("a session replaced by another tab signs this tab out instead of being adop
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
 
-test("an abandoned GitHub attempt does not turn password sign-in into a GitHub failure", async (t) => {
+test("an abandoned Google attempt does not turn password sign-in into a Google failure", async (t) => {
   const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
@@ -1691,14 +1691,14 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByLabel("Email", { exact: true }).waitFor();
-  // Models returning from github.com without completing the callback.
-  await page.evaluate(() => sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43)));
+  // Models returning from accounts.google.com without completing the callback.
+  await page.evaluate(() => sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43)));
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/agents/);
-  assert.equal(requests.includes("/api/auth/providers/github/result"), false);
-  await expectNoText(page, /Could not (?:finish signing|sign) in with GitHub/, async () => {
+  assert.equal(requests.includes("/api/auth/providers/google/result"), false);
+  await expectNoText(page, /Could not (?:finish signing|sign) in with Google/, async () => {
     await page.locator(settledView).waitFor();
     await waitForIdleFetches(page);
   });
@@ -1716,7 +1716,7 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
   });
   // This controller has no Google configuration; discovery and start are modelled here.
   await page.route("**/api/auth/providers", (route) =>
-    route.fulfill(envelope({ github: false, google: true, sessionBinding: true })),
+    route.fulfill(envelope({ google: true, sessionBinding: true })),
   );
   const attemptId = "b".repeat(43);
   const starts = [
@@ -1749,7 +1749,7 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
   // the text does not offer it (finding 2555).
   assert.equal(refused.status(), 403);
   await page.getByText(GOOGLE_PROVIDER_GONE, { exact: true }).waitFor();
-  assert.equal(requests.includes("/api/auth/providers/github/result"), false);
+  assert.equal(requests.includes("/api/auth/providers/oidc/result"), false);
 
   await page.goto(`${fixture.origin}/console/?authError=google`);
   await page.getByText("Could not sign in with Google. Try again or use your password.").waitFor();
@@ -1963,7 +1963,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
     body: JSON.stringify({ data, meta: { requestId: "browser-sign-in" } }),
   });
   await page.route("**/api/auth/providers", (route) =>
-    route.fulfill(envelope({ github: false, google: true, sessionBinding: true })),
+    route.fulfill(envelope({ google: true, sessionBinding: true })),
   );
   const starts = [limited(1), failure(403, "FORBIDDEN", UNTRUSTED_ORIGIN_MESSAGE)];
   await page.route("**/api/auth/providers/google/start", (route) => {
@@ -2020,7 +2020,6 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   });
   const endpoint = "https://sso.example.test/realms/acme/protocol/openid-connect/auth";
   let discovery = {
-    github: false,
     google: false,
     oidc: true,
     oidcSignIn: { label: "Acme SSO", authorizationUrl: endpoint },
@@ -2074,54 +2073,28 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   await expectNoText(page, /Continue with Acme SSO/, () => waitForIdleFetches(page));
 });
 
-test("GitHub allowlist refusals tell the person why, and other reasons stay generic", async (t) => {
+test("unknown provider callback reasons keep the generic refusal", async (t) => {
   const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
   let password = true;
-  // Discovery models GitHub sign-in with password sign-in for everyone, then recovery-only.
   await page.route("**/api/auth/providers", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: { github: true, google: false, password, sessionBinding: true },
-        meta: { requestId: "browser-github-allowlist" },
-      }),
-    }),
+    route.fulfill({ json: { data: { google: true, password, sessionBinding: true }, meta: {} } }),
   );
-  const cases: [string, string, string][] = [
-    [
-      "membership",
-      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access or use your password.",
-      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access.",
-    ],
-    [
-      "membership-unavailable",
-      "Could not check your GitHub organization membership. Try again later or use your password.",
-      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an Installation administrator.",
-    ],
-    [
-      "toString",
-      "Could not sign in with GitHub. Try again or use your password.",
-      "Could not sign in with GitHub. Try again, or ask an Installation administrator to attach your GitHub identity to your account.",
-    ],
-  ];
-  for (const [reason, withPassword, recoveryOnly] of cases) {
-    for (const [available, message] of [
-      [true, withPassword],
-      [false, recoveryOnly],
-    ] satisfies [boolean, string][]) {
+  // Obsolete or attacker-supplied reasons must not invent a provider-specific diagnosis.
+  for (const reason of ["membership", "membership-unavailable", "toString"]) {
+    for (const available of [true, false]) {
       password = available;
-      await page.goto(`${fixture.origin}/console/?authError=github&authReason=${reason}`);
-      await page.getByText(message, { exact: true }).waitFor();
+      await page.goto(`${fixture.origin}/console/?authError=google&authReason=${reason}`);
+      await page
+        .getByText(
+          available
+            ? "Could not sign in with Google. Try again or use your password."
+            : "Could not sign in with Google. Try again, or ask an Installation administrator to attach your Google identity to your account.",
+          { exact: true },
+        )
+        .waitFor();
     }
   }
-  // The reason applies only to GitHub's own error.
-  password = true;
-  await page.goto(`${fixture.origin}/console/?authError=google&authReason=membership`);
-  await page.getByRole("button", { name: "Sign in" }).waitFor();
-  await expectNoText(page, /organization/, () => waitForIdleFetches(page));
 });
 
 test("a disabled account's provider sign-in says the account is disabled", async (t) => {
@@ -2134,17 +2107,14 @@ test("a disabled account's provider sign-in says the account is disabled", async
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        data: { github: true, google: true, password, sessionBinding: true },
+        data: { google: true, password, sessionBinding: true },
         meta: { requestId: "browser-account-disabled" },
       }),
     }),
   );
   // Any provider's callback may carry it; neither a retry, a password nor an attach can help,
   // so the advice names only an administrator, with or without password sign-in.
-  for (const [provider, label] of [
-    ["github", "GitHub"],
-    ["google", "Google"],
-  ]) {
+  for (const [provider, label] of [["google", "Google"]]) {
     for (const available of [true, false]) {
       password = available;
       await page.goto(
@@ -2177,7 +2147,6 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
       contentType: "application/json",
       body: JSON.stringify({
         data: {
-          github: true,
           google: true,
           oidc: true,
           oidcSignIn: {
@@ -2195,7 +2164,6 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByRole("button", { name: "Continue with Acme SSO" }).waitFor();
   for (const [provider, label] of [
-    ["github", "GitHub"],
     ["google", "Google"],
     ["oidc", "Acme SSO"],
   ]) {
@@ -2240,28 +2208,30 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        data: { github: true, google: false, password: false, sessionBinding: true },
+        data: { google: true, password: false, sessionBinding: true },
         meta: { requestId: "browser-recovery-only" },
       }),
     }),
   );
-  await page.route("**/api/auth/providers/github/start", (route) =>
+  await page.route("**/api/auth/providers/google/start", (route) =>
     route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
   );
-  await page.goto(`${fixture.origin}/console/?authError=github`);
+  await page.goto(`${fixture.origin}/console/?authError=google`);
   const recovery = page.getByRole("button", { name: "Recovery sign-in" });
   await recovery.waitFor();
+  // Recovery is also offered before discovery has answered.
+  await page.getByRole("button", { name: "Continue with Google" }).waitFor();
   // Without the form, the line that describes its email field is hidden too.
   assert.equal(await page.locator("#username-hint").isVisible(), false);
   // Without a password to fall back on, the provider error points to an administrator.
   await page
     .getByText(
-      "Could not sign in with GitHub. Try again, or ask an Installation administrator to attach your GitHub identity to your account.",
+      "Could not sign in with Google. Try again, or ask an Installation administrator to attach your Google identity to your account.",
     )
     .waitFor();
   assert.equal(await page.getByLabel("Password").isVisible(), false);
-  await page.getByRole("button", { name: "Continue with GitHub" }).click();
-  await page.getByText("GitHub sign-in is unavailable. Try again later.").waitFor();
+  await page.getByRole("button", { name: "Continue with Google" }).click();
+  await page.getByText("Google sign-in is unavailable. Try again later.").waitFor();
 
   await recovery.click();
   assert.equal(await recovery.isVisible(), false);
@@ -2287,13 +2257,13 @@ test("password sign-in stays visible unless discovery reports it recovery-only",
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        data: { github: true, google: false, sessionBinding: true },
+        data: { google: true, sessionBinding: true },
         meta: { requestId: "browser-password-default" },
       }),
     }),
   );
   await page.goto(`${fixture.origin}/console/login`);
-  await page.getByRole("button", { name: "Continue with GitHub" }).waitFor();
+  await page.getByRole("button", { name: "Continue with Google" }).waitFor();
   assert.equal(await page.getByLabel("Password").isVisible(), true);
   assert.equal(await page.getByRole("button", { name: "Recovery sign-in" }).isVisible(), false);
 });
@@ -3070,16 +3040,19 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
   });
   let sessionKey: string | undefined;
   await page.route("**/api/auth/providers", (route) =>
-    route.fulfill(envelope({ github: true, sessionBinding: true })),
+    route.fulfill(envelope({ google: true, sessionBinding: true })),
   );
-  await page.route("**/api/auth/providers/github/start", (route) =>
+  await page.route("**/api/auth/providers/google/start", (route) =>
     route.fulfill(
-      envelope({ url: "https://github.com/login/oauth/authorize?client_id=fixture", attemptId }),
+      envelope({
+        url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture",
+        attemptId,
+      }),
     ),
   );
   // Model the external provider and result exchange; the cookie and session are issued by
   // the real controller. Provider callback and receipt enforcement are covered separately.
-  await page.route("https://github.com/**", async (route) => {
+  await page.route("https://accounts.google.com/**", async (route) => {
     assert.equal(new URL(route.request().url()).searchParams.has("return"), false);
     const signedIn = await page.context().request.post(`${fixture.origin}/api/auth/sign-in/email`, {
       headers: { origin: fixture.origin },
@@ -3093,7 +3066,7 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
     sessionKey = key;
     await route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } });
   });
-  await page.route("**/api/auth/providers/github/result", async (route) => {
+  await page.route("**/api/auth/providers/google/result", async (route) => {
     const submitted: unknown = route.request().postDataJSON();
     assert.equal(jsonObject(submitted).attemptId, attemptId);
     await route.fulfill(envelope({ sessionKey }));
@@ -3101,7 +3074,7 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
   await page.goto(
     `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials&token=discard-me`,
   );
-  await page.getByRole("button", { name: "Continue with GitHub" }).click();
+  await page.getByRole("button", { name: "Continue with Google" }).click();
   await page.waitForURL(
     `**/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
@@ -3149,7 +3122,7 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
   ]) {
     await page.evaluate(
       ({ attemptId, stored }) => {
-        sessionStorage.setItem("occ.console.githubAttempt", attemptId);
+        sessionStorage.setItem("occ.console.googleAttempt", attemptId);
         sessionStorage.setItem("occ.console.loginIntent", JSON.stringify(stored));
       },
       { attemptId, stored },
@@ -3466,21 +3439,21 @@ test("a refused provider exchange discards its pending login destination", async
     body: JSON.stringify({ data, meta: { requestId: "browser-refusal" } }),
   });
   await page.route("**/api/auth/providers", (route) =>
-    route.fulfill(envelope({ github: true, sessionBinding: true })),
+    route.fulfill(envelope({ google: true, sessionBinding: true })),
   );
-  await page.route("**/api/auth/providers/github/start", (route) =>
+  await page.route("**/api/auth/providers/google/start", (route) =>
     route.fulfill(
       envelope({
-        url: "https://github.com/login/oauth/authorize?client_id=fixture",
+        url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture",
         attemptId: "e".repeat(43),
       }),
     ),
   );
-  await page.route("https://github.com/**", (route) =>
+  await page.route("https://accounts.google.com/**", (route) =>
     route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } }),
   );
   // The answer for an attempt that expired or that another sign-in replaced.
-  await page.route("**/api/auth/providers/github/result", (route) =>
+  await page.route("**/api/auth/providers/google/result", (route) =>
     route.fulfill({
       status: 401,
       contentType: "application/json",
@@ -3488,10 +3461,10 @@ test("a refused provider exchange discards its pending login destination", async
     }),
   );
   await page.goto(`${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Continue with GitHub" }).click();
+  await page.getByRole("button", { name: "Continue with Google" }).click();
   await page
     .getByText(
-      "Could not finish signing in with GitHub. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with GitHub to start again.",
+      "Could not finish signing in with Google. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Google to start again.",
     )
     .waitFor();
   assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);

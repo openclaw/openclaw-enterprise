@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, writeSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -14,7 +14,6 @@ const testedSha = "1".repeat(40);
 
 type FileEntry = { path: string; expectedTests: string[] };
 type Lane = { files: FileEntry[] };
-type Suite = { lanes: Record<string, Lane>; groups: Record<string, string[]> };
 type Result = {
   version: number;
   command: string;
@@ -44,16 +43,63 @@ function command(script: string, args: string[], view = "default") {
   return result;
 }
 
-const runner = "scripts/ci/run-tests.mjs";
+const runner = "scripts/ci/run-tests.ts";
 const fullView = "full-integration";
 
-function assertIssue(result: ReturnType<typeof command>, code: string) {
+function assertIssue(
+  result: ReturnType<typeof command>,
+  code: string,
+  expected?: { lane: string; file: string },
+) {
   assert.equal(result.status, 1, result.stderr);
-  const summary: { issues: { code: string }[] } = JSON.parse(result.stdout);
+  const summary: { issues: { code: string; lane?: string; file?: string }[] } = JSON.parse(
+    result.stdout,
+  );
   assert.ok(
-    summary.issues.some((issue) => issue.code === code),
+    summary.issues.some(
+      (issue) =>
+        issue.code === code &&
+        (!expected || (issue.lane === expected.lane && issue.file === expected.file)),
+    ),
     JSON.stringify(summary.issues),
   );
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+  return Object.fromEntries(Object.entries(value));
+}
+
+function readSuite(view = "default") {
+  const suite = record(loadTestSuites(join(root, manifest), view));
+  const lanes = record(suite.lanes);
+  const groups = record(suite.groups);
+  return {
+    lane(name: string): Lane {
+      const lane = record(lanes[name]);
+      const files = lane.files;
+      assert.ok(Array.isArray(files));
+      return {
+        ...lane,
+        files: files.map((file: unknown) => {
+          const entry = record(file);
+          const { path, expectedTests } = entry;
+          assert.ok(typeof path === "string");
+          assert.ok(
+            Array.isArray(expectedTests) &&
+              expectedTests.every((test: unknown) => typeof test === "string"),
+          );
+          return { ...entry, path, expectedTests };
+        }),
+      };
+    },
+    lanes,
+    group(name: string): string[] {
+      const group = groups[name];
+      assert.ok(Array.isArray(group) && group.every((lane: unknown) => typeof lane === "string"));
+      return group;
+    },
+  };
 }
 
 function present<T>(value: T | undefined): T {
@@ -66,20 +112,36 @@ function writeJson(path: string, data: unknown) {
 }
 
 test("Full Integration partitions OpenShell without changing the default focused caller", (t) => {
-  const legacy: Suite = loadTestSuites(join(root, manifest));
-  const selected: Suite = loadTestSuites(join(root, manifest), fullView);
-  const canonical = present(legacy.lanes.openshell);
-  const shards = present(selected.groups.openshell);
+  const legacy = readSuite();
+  const selected = readSuite(fullView);
+  const canonical = legacy.lane("openshell");
+  const shards = selected.group("openshell");
   assert.deepEqual(shards, ["openshell-policy", "openshell-installers"]);
   assert.equal(selected.lanes.openshell, undefined);
-  const allFiles = shards.flatMap((name) => present(selected.lanes[name]).files);
+  assert.ok(
+    selected
+      .lane("openshell-installers")
+      .files.some(
+        ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
+      ),
+    "tests/integration/openshell-git-finite-removal-real.test.ts must be in openshell-installers",
+  );
+  assert.ok(
+    !selected
+      .lane("openshell-policy")
+      .files.some(
+        ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
+      ),
+    "tests/integration/openshell-git-finite-removal-real.test.ts must be absent from openshell-policy",
+  );
+  const allFiles = shards.flatMap((name) => selected.lane(name).files);
   assert.equal(allFiles.length, canonical.files.length);
   assert.deepEqual(
     [...allFiles].sort((a, b) => a.path.localeCompare(b.path)),
     [...canonical.files].sort((a, b) => a.path.localeCompare(b.path)),
   );
   for (const name of shards) {
-    const lane = present(selected.lanes[name]);
+    const lane = selected.lane(name);
     const paths = new Set(lane.files.map(({ path }) => path));
     assert.deepEqual(lane, {
       ...canonical,
@@ -133,6 +195,16 @@ test("Full Integration partitions OpenShell without changing the default focused
       assert.deepEqual(receipt.phases[phase], { elapsedMs: 10, outcome: "success" });
     }
     assert.equal(receipt.residualMs, 0);
+    if (lane === "openshell-policy") {
+      const { elapsedMs, residualMs, phases } = receipt;
+      assert.notEqual(timing.stdout, "", "MISSING_POLICY_TIMING_NOTICE");
+      assert.equal(
+        timing.stdout,
+        `::notice title=OpenShell policy phase timing::${JSON.stringify({ elapsedMs, residualMs, phases })}\n`,
+      );
+    } else {
+      assert.equal(timing.stdout, "");
+    }
   }
 
   const select = (lane: string, view?: string) =>
@@ -154,8 +226,8 @@ test("Full Integration partitions OpenShell without changing the default focused
 
 test("the full view refuses canonical overlap and the audit detects omitted files", (t) => {
   const directory = temporaryDirectorySync(t, "openshell-view-audit-");
-  const source: Suite = loadTestSuites(join(root, manifest));
-  const original = present(source.lanes.openshell);
+  const source = readSuite();
+  const original = source.lane("openshell");
   for (const { path } of original.files) {
     const file = join(directory, path);
     mkdirSync(dirname(file), { recursive: true });
@@ -181,8 +253,8 @@ test("the full view refuses canonical overlap and the audit detects omitted file
 
 test("both complete OpenShell receipts are required by targeted and full aggregation", (t) => {
   const directory = temporaryDirectorySync(t, "openshell-view-aggregate-");
-  const suite: Suite = loadTestSuites(join(root, manifest), fullView);
-  const lanes = present(suite.groups.openshell);
+  const suite = readSuite(fullView);
+  const lanes = suite.group("openshell");
   const makeReceipt = (lane: string): Result => ({
     version: 1,
     command: "run",
@@ -191,7 +263,7 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
     sourceSha: testedSha,
     status: "passed",
     exitCode: 0,
-    files: present(suite.lanes[lane]).files.map(({ path, expectedTests }) => ({
+    files: suite.lane(lane).files.map(({ path, expectedTests }) => ({
       path,
       status: "passed",
       counts: { total: expectedTests.length },
@@ -241,5 +313,207 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
     const cleanup = makeReceipt(installers);
     present(cleanup.files[0]).cleanup.status = "failed";
     reject(cleanup, "cleanup-failed");
+    // A successful lane receipt cannot omit the finite-removal file's complete evidence.
+    const missingFile = makeReceipt(installers);
+    missingFile.files = missingFile.files.filter(
+      ({ path }) => path !== "tests/integration/openshell-git-finite-removal-real.test.ts",
+    );
+    writeJson(receiptPath, missingFile);
+    assertIssue(aggregate(group), "missing-lane-evidence", {
+      lane: "openshell-installers",
+      file: "tests/integration/openshell-git-finite-removal-real.test.ts",
+    });
   }
+});
+
+test("gateway installation preserves settled phases, operation outcomes and the receipt cap", async () => {
+  const { observeGatewayInstallation } = await import("../helpers/openshell-installation.ts");
+  const { collectInstallationPhases, installationPhase, maxInstallationInvocations } =
+    await import("../../scripts/ci/openshell-installation-phase.ts");
+  const raw = {
+    kind: "openshell-installation",
+    stage: "workspace-helm",
+    outcome: "entered",
+    invocation: 1,
+    offsetMs: 0,
+  };
+  for (const invalid of [
+    { ...raw, detail: "untrusted" },
+    { ...raw, stage: "untrusted" },
+    { ...raw, offsetMs: -1 },
+    { ...raw, invocation: 10 },
+  ]) {
+    assert.equal(installationPhase(invalid), undefined);
+  }
+  const receipt = collectInstallationPhases();
+  const writes: unknown[] = [];
+  // Validate outside the best-effort writer so diagnostic failures cannot swallow assertions.
+  const acceptWrites = () => {
+    for (const row of writes.splice(0)) {
+      const valid = installationPhase(row);
+      assert.ok(valid);
+      receipt.accept(valid);
+    }
+  };
+  let clock = 0;
+  const observe = observeGatewayInstallation(
+    (row) => writes.push(row),
+    () => clock++,
+  );
+  const failure = new Error("installation failed");
+  const ok = async () => 7;
+  const values = { overrides: ["workspace.enabled=true"] };
+  const gatewayValues = async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    return values;
+  };
+  const gatewayHelm = async (received: typeof values) => {
+    assert.equal(received, values);
+  };
+  const fail = async () => {
+    throw failure;
+  };
+  await assert.rejects(observe(ok, gatewayValues, fail, ok), (error) => error === failure);
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  acceptWrites();
+  assert.deepEqual(receipt.result(), {
+    phases: [
+      { invocation: 1, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
+      { invocation: 1, stage: "gateway-helm", enteredMs: 3, outcome: "failed", elapsedMs: 1 },
+      { invocation: 2, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
+      { invocation: 2, stage: "gateway-helm", enteredMs: 3, outcome: "passed", elapsedMs: 1 },
+      { invocation: 2, stage: "gateway-pod-ready", enteredMs: 5, outcome: "passed", elapsedMs: 1 },
+    ],
+    truncated: false,
+  });
+  for (let invocation = 3; invocation <= maxInstallationInvocations; invocation++) {
+    assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  }
+  acceptWrites();
+  // Overflow still performs installation, but emits only one marker across later invocations.
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  assert.deepEqual(writes, [
+    {
+      kind: "openshell-installation",
+      stage: "workspace-helm",
+      outcome: "entered",
+      invocation: maxInstallationInvocations + 1,
+      offsetMs: 1,
+    },
+  ]);
+  acceptWrites();
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  assert.equal(writes.length, 0);
+  assert.equal(receipt.result().truncated, true);
+  assert.equal(receipt.result().phases.length, 3 * maxInstallationInvocations - 1);
+
+  const valuesFailure = new Error("gateway values failed");
+  const failingValues = observeGatewayInstallation(
+    (row) => writes.push(row),
+    () => clock++,
+  );
+  const laterOperations: string[] = [];
+  await assert.rejects(
+    failingValues(
+      ok,
+      async () => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        throw valuesFailure;
+      },
+      async () => laterOperations.push("gateway-helm"),
+      async () => laterOperations.push("gateway-pod-ready"),
+    ),
+    (error) => error === valuesFailure,
+  );
+  assert.deepEqual(laterOperations, []);
+  const failedReceipt = collectInstallationPhases();
+  for (const row of writes.splice(0)) {
+    const valid = installationPhase(row);
+    assert.ok(valid);
+    failedReceipt.accept(valid);
+  }
+  assert.deepEqual(failedReceipt.result(), {
+    phases: [
+      { invocation: 1, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
+    ],
+    truncated: false,
+  });
+  const readOnly = openSync(import.meta.filename, "r");
+  try {
+    for (const sink of [undefined, () => writeSync(readOnly, "diagnostic")]) {
+      const install = observeGatewayInstallation(sink);
+      assert.equal(await install(ok, gatewayValues, gatewayHelm, ok), 7);
+      await assert.rejects(
+        install(ok, gatewayValues, gatewayHelm, fail),
+        (error) => error === failure,
+      );
+    }
+  } finally {
+    closeSync(readOnly);
+  }
+});
+
+test("the runner retains an unknown gateway readiness outcome after the test child terminates", (t) => {
+  const directory = temporaryDirectorySync(t, "installation-progress-");
+  const file = "tests/integration/installation.test.ts";
+  mkdirSync(join(directory, dirname(file)), { recursive: true });
+  mkdirSync(join(directory, "scripts/ci"), { recursive: true });
+  writeFileSync(
+    join(directory, "scripts/ci/prepare.mjs"),
+    `import { writeFileSync } from "node:fs";
+export function prepareFile({ statePath }) {
+  return { cleanup: () => writeFileSync(statePath + ".cleaned", "completed") };
+}`,
+  );
+  const helper = new URL("../helpers/openshell-installation.ts", import.meta.url).href;
+  writeFileSync(
+    join(directory, file),
+    `import test from "node:test";
+import { runGatewayInstallation } from ${JSON.stringify(helper)};
+test("terminated readiness", () => runGatewayInstallation(
+  async () => {}, async () => {}, async () => {},
+  async () => { process.kill(process.pid, "SIGTERM"); await new Promise(() => {}); },
+));
+`,
+  );
+  const suite = join(directory, "suite.json");
+  const state = join(directory, "state.json");
+  const results = join(directory, "results.json");
+  writeJson(suite, { version: 1, lanes: { openshell: { files: [{ path: file }] } }, groups: {} });
+  const result = command(runner, [
+    "run",
+    "openshell",
+    "--root",
+    directory,
+    "--manifest",
+    suite,
+    "--state",
+    state,
+    "--results",
+    results,
+  ]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const [entry] = JSON.parse(readFileSync(results, "utf8")).files;
+  assert.equal(entry.status, "failed");
+  assert.equal(entry.nodeExitCode, 1);
+  assert.equal(entry.fileFailure.error.signal, "SIGTERM");
+  assert.deepEqual(entry.cleanup, { status: "passed" });
+  assert.equal(readFileSync(state + ".cleaned", "utf8"), "completed");
+  assert.equal(entry.installationPhases.truncated, false);
+  const phases: {
+    invocation: number;
+    stage: string;
+    enteredMs: number;
+    outcome: string;
+    elapsedMs?: number;
+  }[] = entry.installationPhases.phases;
+  assert.deepEqual(
+    phases.map(({ invocation, stage, outcome }) => [invocation, stage, outcome]),
+    [
+      [1, "workspace-helm", "passed"],
+      [1, "gateway-helm", "passed"],
+      [1, "gateway-pod-ready", "unknown"],
+    ],
+  );
+  assert.equal(present(phases[2]).elapsedMs, undefined);
 });

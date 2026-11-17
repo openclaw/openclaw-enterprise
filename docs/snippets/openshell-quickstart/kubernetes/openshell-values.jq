@@ -24,7 +24,7 @@
     "image": {
       "registry": $registry,
       "repository": $repository,
-      "digest": "sha256:9ca31b210cb0811db12bb52783de74f1fe279722cbc70cc24588e56811616e0d",
+      "digest": "sha256:ed4fe731bb7c3a7fca794b0671e618b60170a42a4c8107b2567ed596621a8014",
       "pullPolicy": "IfNotPresent"
     }
   },
@@ -32,7 +32,7 @@
     "image": {
       "registry": $registry,
       "repository": $repository,
-      "digest": "sha256:c931744fd5755e714972f594dc3d65f917bf41fb89af81d0f8ecad66cdc2adc0",
+      "digest": "sha256:d833a81ff771feeb2067dc9958595ee1cceec1903d4513fc57997972ae4d2bf3",
       "pullPolicy": "IfNotPresent"
     }
   },
@@ -40,7 +40,7 @@
     "image": {
       "registry": $registry,
       "repository": $repository,
-      "digest": "sha256:8128d88fb564497d6c0281295e87eae57f11d21cdc95ac69025a670de5e52c7d",
+      "digest": "sha256:21c0c9000f4eaf3fb7c5b97b3e0a3bb1c01a77fb3f773b4aa7b7c90ff6db2b98",
       "pullPolicy": "IfNotPresent"
     }
   },

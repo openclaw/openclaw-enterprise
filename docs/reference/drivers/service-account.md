@@ -93,15 +93,19 @@ It stores the private Namespace binding in PostgreSQL and asks selected Compute
 credential storage to write the token and workspace identity to an account-owned
 Secret. Issuance and deletion recheck Backend, Driver, and workspace ownership.
 A missing binding makes provider deletion a no-op; conflicting ownership fails.
-Backend and Secret creation register compensation with OCC; a create whose
-reply is lost is not compensated, since nothing proves which account it made.
-A credential reply that fails validation revokes the credential it names under
-the requested account in this workspace. A Secret create that fails removes the
-Secret it may have stored, only when that Secret holds this request's token.
-A later failure's compensation runs after the account lock is released, when
-another issuance may already hold the same Secret name, so it also deletes the
-Secret only while it holds this request's token, with uid and resourceVersion
-preconditions.
+An upstream account create whose reply is lost is not compensated, since nothing
+proves which account it made. A credential reply that fails validation revokes
+the credential it names under the requested account in this workspace.
+Once issuance receives a valid credential, the Driver registers one compensation
+with OCC: confirm revocation of that exact credential, then delete only the
+account-owned Secret holding both its token and credential ID. If revocation is
+unconfirmed, the Secret remains available for recovery. Compensation runs after
+the account lock is released, so exact deletion also uses uid and
+resourceVersion preconditions to protect a later issuance.
+If a Kubernetes Secret create fails, Compute reads the deterministic name.
+Matching ownership, token, credential ID, uid, and resourceVersion confirm the
+stored state and allow issuance to continue without repeating the create.
+Otherwise the create failure stands, and the Driver owns any compensation.
 The Secret also records the provider credential ID. A crash or an unknown
 COMMIT that failed runs no compensation, so under the account lock, with no
 credential recorded, issuance and deletion first revoke the credential a

@@ -178,6 +178,6 @@ Retain further successor obligations with explicit owners: authority/Work owns r
 [validation]: ../../../apps/controller/src/backends/repository-credentials/control-client.ts
 [driver]: ../../../apps/controller/src/drivers/repo/github/driver.ts
 [limits]: ../../../docs/reference/repository-credentials.md#client-routing-and-limits
-[routes]: ../../../apps/controller/src/drivers/repo/github/credentials/routes/classification.ts
+[routes]: ../../../apps/controller/src/drivers/repo/github/access/routes/classification.ts
 [main]: https://github.com/openclaw/openclaw-enterprise/commit/724dcb5cb80b5e76a62e8267a21185a2e91a85c2
 [consumer-base]: https://github.com/openclaw/openclaw-enterprise/commit/41548ac1dbfb67908c7dfcf407085a6c29ba1921

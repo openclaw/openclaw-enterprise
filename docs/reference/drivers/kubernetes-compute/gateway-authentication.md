@@ -85,9 +85,10 @@ the route removes), and the Gateway refuses any trusted-proxy request without it
 `401` on HTTP, and a WebSocket connect falls back to device authentication. The
 requirement proves the header is present, not who set it: an ingress that forwards
 a client's `x-openclaw-scopes` still lets a person claim `operator.admin` on those
-APIs. The operator HTTPRoute sets the header to `operator.admin` for the machine
-identity. On WebSocket upgrades the header caps the union of device and identity
-grants.
+APIs. The administration HTTPRoute sets the header to `operator.admin` for the
+machine identity. The [OCC browser chat route](../../agent-native-admin.md) uses
+the same identity with `operator.sessions.write`, which includes session reads.
+On WebSocket upgrades the header caps the union of device and identity grants.
 
 Private routing can remain enabled. Its operator HTTPRoute always replaces
 `x-occ-identity` with the machine identity, so human traffic needs a separate

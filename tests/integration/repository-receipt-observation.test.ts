@@ -8,24 +8,24 @@ import { buffer } from "node:stream/consumers";
 import test from "node:test";
 import { createSecureContext } from "node:tls";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import type { BoundPreparedRepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
+import type { BoundPreparedRepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import {
   createControlAdmission,
   handleControl,
-} from "../../apps/controller/src/drivers/repo/credentials/control.ts";
+} from "../../apps/controller/src/drivers/repo/access/control.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
-import { createAgentHandler } from "../../apps/controller/src/drivers/repo/credentials/transport/agent.ts";
-import { createGatewayAuthentication } from "../../apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts";
-import { planDraftPull } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-draft-pull.ts";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { createAgentHandler } from "../../apps/controller/src/drivers/repo/access/transport/agent.ts";
+import { createGatewayAuthentication } from "../../apps/controller/src/drivers/repo/github/access/gateway-authentication.ts";
+import { planDraftPull } from "../../apps/controller/src/drivers/repo/github/access/prepared-draft-pull.ts";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import {
   createTlsMaterial,
   listen as listenOrigin,
-} from "../fixtures/repository-credentials/process.mjs";
-import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+} from "../fixtures/repository-credentials/process.ts";
+import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 
 async function listen(server: Server, path: string) {
   server.listen(path);
@@ -399,7 +399,9 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     });
     assert.deepEqual(opened.session.binding, binding);
     assert.equal(opened.session.deadlineWallMs, startWall + 30_000);
-    resources.after(() => service.close(opened.session.sessionId));
+    resources.after(() => {
+      service.close(opened.session.sessionId);
+    });
     if (stage === "dispatch") {
       // Invalid digest syntax must stop before either owner authorization or sender entry.
       let senderEntries = 0;

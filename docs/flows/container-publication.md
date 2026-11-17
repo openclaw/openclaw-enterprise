@@ -1,27 +1,26 @@
 ---
 created: 2026-09-21
-updated: 2026-11-09
-last_updated_session: authoring-run/0cf74a54-fba6-49b1-950c-18d296f43bd9
+updated: 2026-11-14
+last_updated_session: authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e
 ---
 
 # Container publication flow
 
 ## Overview
 
-Manual Enterprise publication builds controller and runtime OCI archives for
-Linux amd64 and arm64, checks both variants, and transfers the tested bytes to
-public GHCR packages. Each package receives one multi-platform index digest.
-With `publish_chart: true`, a separate protected job tags those digests with the
-OCE version and publishes a Helm chart. Image-only publication is the default.
+Manual publication verifies Linux amd64 and arm64 controller and runtime images
+and publishes their indexes to public GHCR packages. Image-only is the default.
+With `publish_chart: true`, a separate protected job tags both indexes with
+the OCE version and publishes the Helm chart.
 
 ## Entry Points
 
 - `.github/workflows/container-publish.yml:jobs.validate`: manual dispatch on
   `main` with its exact source SHA, successful main-push CI run ID, publish flag,
   optional mutable image tag, and opt-in chart flag.
-- `scripts/ci/container-release.mjs:main`: validation, smoke, seal, and publication
+- `scripts/ci/container-release.ts:main`: validation, smoke, seal, and publication
   commands called by the workflow.
-- `scripts/ci/chart-release.mjs:publish`: version-tag and chart publication after
+- `scripts/ci/chart-release.ts:publish`: version-tag and chart publication after
   the image receipt exists.
 - Publication requires pre-existing public packages. The manual dispatch
   authorizes publication without a separate environment approval. GitHub grants
@@ -34,7 +33,11 @@ graph TD
   A["Operator selects main SHA and successful CI"] --> B["Validate source, CI and approved base"]
   B --> C["Pin timestamps to the source commit"]
   C --> D["Build controller and runtime on native AMD64 and ARM64"]
-  D --> E["Verify each native image and run smoke"]
+  D -->|controller| E["Verify native image and run smoke"]
+  D -->|runtime| T["Install selected tools and record client identities"]
+  T --> R["Retain untested OCI build"]
+  R --> S["Fresh native runner verifies build and runs smoke"]
+  S --> H
   E --> H["Canonicalize descriptors and assemble OCI indexes"]
   H -->|either fails| X["Stop before publication"]
   H -->|both pass| F["Seal and upload each archive"]
@@ -54,14 +57,14 @@ Source review does not prove a hosted build or registry transfer succeeded.
 
 ### 1. Admit the source and initialize preparation
 
-`scripts/ci/container-release.mjs:validate` verifies the trusted workflow, exact
-main source and successful CI identity, approved Node base digest, and the optional
-image tag. An empty tag selects `latest`; invalid or reserved tags fail before
-preparation. No-push preparation accepts private or public source only when
-`PUBLISH` is the exact string `"false"`. Publication and recovery require the
-public Enterprise repository and public packages. Publication also checks the
-main-only environment branch policy. No-push preparation has no package write
-permission or protected-environment credentials.
+`scripts/ci/container-release/admission.ts:validate` checks the trusted workflow, exact
+main SHA, successful CI identity, approved Node base digest, and [optional image alias](../release/containers.md#prepare-and-publish).
+A blank alias selects `latest`. Invalid or reserved aliases stop preparation.
+No-push preparation accepts private and public source only when `PUBLISH` is
+exactly `"false"`. Publication and recovery require the public Enterprise
+repository and public packages. Publication checks the main-only environment
+branch policy. No-push preparation lacks package write permission and
+protected-environment credentials.
 
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
@@ -77,60 +80,54 @@ docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-Runtime jobs first build the explicit `openclaw-bridge-tests` target, which runs
-the broad bridge suites, CUA tests, and source typechecks. The subsequent image
-assembly uses the same checkout, source build arguments, base, and platform.
-Verification failure prevents assembly, smoke checks, and artifact upload through
-the normal required-step failure path. Local image assembly has no dependency on
-this target; see [local source verification](../../deploy/runtime/README.md#verify-runtime-source).
+`openclaw-bridge-tests` typechecks and tests bridge and CUA assembly inputs.
+Coverage includes native turn settlement, approval discovery after reconnect,
+HTTP rejection and native handoff during late writes. Failure blocks smoke and
+upload. Local builds can run independently.
 
-Each job checks its architecture and logs CPU, memory, and available disk.
-The reported runner label alone is not evidence of allocated capacity.
-`scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
-for both native Linux architectures before runtime smoke tests.
-The standard AMD64 override requires 36 GiB free and, only below that, runs
-guarded toolchain cleanup that checks required roots and skips unsafe paths.
-Larger runners do not depend on deleting preinstalled SDKs.
+The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
+Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
+smaller or unknown limits. Before smoke, `scripts/ci/setup-tools.sh` installs
+checksum-pinned kubectl, k3d, Helm and yq. See [build settings](../release/configuration.md#build-settings).
 
-Each Buildx builder runs at most two steps concurrently. The default Blacksmith
-runners retain BuildKit layers on a sticky disk scoped by image and architecture,
-so builds do not export the large intermediate cache over the network. A custom
-non-Blacksmith runner uses the GitHub Actions cache with the same scope.
-Maintainers can also dispatch `container-check.yml`, or a manual `CI` run that
-calls it, on a branch for native image verification. It has no publication job or
-package-write permission. Standalone checks use the source's CI base; publication
-and manual `CI` use the approved repository base. Publication verifies it matches
-the source. Builds export OCI directories without registry credentials.
-Before Buildx runs, the workflow derives `SOURCE_DATE_EPOCH` from the exact
-OCE source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
-so wall-clock time does not change the image manifests on a cold-cache rebuild.
+Buildx runs up to two steps at once and caches by image and architecture on
+Blacksmith sticky disks or in GitHub Actions. Standalone `container-check.yml`
+uses the source's CI base. Manual `CI` and publication use the approved
+repository base. BuildKit sets `SOURCE_DATE_EPOCH` from the OCE commit to
+normalize image and filesystem timestamps, including cold-cache rebuilds.
+It exports OCI directories without registry credentials.
 
-`scripts/lib/openclaw-source.mjs:readOpenclawSource` resolves the runtime's commit,
-archive checksum, and build timestamp from `deploy/runtime/openclaw-source.json`.
-The Dockerfile rejects missing, malformed, or conflicting build arguments before
-downloading source. Manifest changes invalidate build caches; credential-service
-targets remain independent.
+`scripts/lib/openclaw-source.ts` reads the commit, archive checksum, and timestamp
+from `deploy/runtime/openclaw-source.json`. The Dockerfile verifies build arguments
+against the manifest before downloading source. Manifest changes invalidate runtime
+build caches independently of credential-service targets.
 
-`deploy/runtime/Dockerfile:openclaw-source` verifies the OpenClaw source archive
-and applies the checksum-verified patches described in the
-[runtime recipe](../../deploy/runtime/README.md). Both installs use
-frozen lockfiles and upstream's selected-plugin manifests, retaining required
-bundled plugins plus Codex and Slack. The standalone Codex command links to the
-plugin's installation. Build stages use full Bookworm; final images use separately
-pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
-`deploy/runtime/Dockerfile` checks both bases and its runtime, for Node 24.22.1+
-within the 24 series. Older explicit overrides fail. Both bases apply available
-Debian updates; image digests do not freeze Debian repositories. Every package-index
-refresh uses `apt-get update --error-on=any`, so any failed index download stops
-the build before installation or upgrade can use stale indexes.
+The `openclaw-source` stage verifies and patches the archive. Then
+`scripts/build-runtime-assets.ts inputs` copies preparation manifests and lists
+required bundled plugins, Codex, and Slack for the frozen production install.
+The standalone Codex command uses the plugin's installation. Build stages use full Bookworm; final images use separately
+pinned slim bases. The controller requires Node 24.22.1+ within the 24 series.
+The runtime requires matching Node 24.22.1 Bookworm bases. Its `node-source` stage checks
+the archive and patch digests in `deploy/runtime/node/source.json` before applying the
+worker-termination repair. `node-compiled` builds native Node with full ICU and runs
+the worker regression and adjacent loader tests. Slim Bookworm repeats the tests
+with the copied executable. Missing libraries, ABI changes or regression failures
+stop assembly. The repository-credential service retains its original base.
+Both bases apply updates from mutable Debian repositories, even with pinned image digests.
+Every index refresh uses
+`apt-get update --error-on=any` to stop builds on incomplete downloads.
 
-`deploy/runtime/Dockerfile` and
-`deploy/runtime/repository-credentials/Dockerfile.client` download the pinned
-GitHub CLI archive and checksum manifest with at most six retries, including
-partial-transfer errors. Curl resets regular output files before retrying.
-Permanent errors also consume this retry budget, then fail the build. The pinned
-manifest digest and its archive checksum must both pass before extraction or
-execution; checksum mismatches are not retried.
+`deploy/runtime/node/build.sh` records the source, patch, ABI and executable digest.
+The `inventory` command checks its running executable's digest
+before recording `node` in final runtime provenance. Image startup compares that
+record with the checkout and installed executable. Native qualification requires
+packaged Gateway restart tests.
+
+`deploy/runtime/Dockerfile` and `deploy/runtime/repository-credentials/Dockerfile.client`
+retry pinned GitHub CLI archive and manifest downloads up to six times, including partial
+transfers and permanent errors. Curl resets partial files. Before extraction or execution,
+both recipes check the pinned manifest digest, then its archive checksum.
+Exhausted retries or a checksum failure stop the build immediately.
 
 Publication builds use the default package registries. Operators building from
 source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
@@ -157,25 +154,28 @@ checks remain unchanged. The final image records the patch checksums in its
 provenance.
 
 The [Codex profile patch](../../deploy/runtime/openclaw-codex-full-access-profile.patch)
-requires the requested named profile before returning a thread. Refusals for profiles
-other than `:danger-full-access` report fixed request-source, selector-agreement and
-response-comparison categories, without profile names or configuration. Missing metadata
-and a different returned ID remain refusals. The message directs the caller to ask
-the workspace administrator to verify profile availability and runtime compatibility
-before retrying.
+requires the requested named profile before returning a thread. Non-full-access
+refusals report fixed request-source, selector-agreement and response-comparison
+categories, omitting profile names and configuration. Missing metadata or a
+different returned ID fails. The message asks administrators to check profile
+availability and runtime compatibility before retrying. Full-access refusals
+classify sandbox or response-shape mismatches; acceptance still requires
+`sandbox.type` equal to `dangerFullAccess`.
 
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
 
-`scripts/build-runtime-assets.mjs` prunes development/QA files and unreachable
-pnpm entries, retaining runtime templates, skills, help, and importer-specific
-dependencies. It writes provenance with the manifest's commit and archive
-checksum plus patch, lockfile, and inventory hashes. The runtime copies this
-tree without gzip or a second Codex installation. After permission normalization,
-inventory mode updates `contents.json`, `runtimeContentsSha256`, and Codex
-package/binary identity. Upstream import-closure and native-addon checks remain;
-see the [runtime recipe](../../deploy/runtime/README.md).
-`org.openclaw.image.revision` must match packaged provenance;
+`deploy/runtime/native-tools/fetch.ts` downloads artifacts pinned by version
+and SHA-256 for the selected architecture and [tool paths](../../deploy/runtime/README.md#select-optional-native-tools).
+`scripts/ci/download-pinned.sh` rejects failed downloads and checksum mismatches.
+`deploy/runtime/native-tools/install.sh` installs the verified files offline.
+Cargo adds `gcc` and `libc6-dev` from signed Debian repositories.
+
+`scripts/build-runtime-assets.ts` packages the pruned tree. After normalizing
+permissions, its `inventory` command records the path and SHA-256 of each
+download client's native executable alongside the contents digest and Codex
+identity. Missing files, unexpected paths, or scripts stop the build.
+`org.openclaw.image.revision` identifies the packaged OpenClaw source.
 `org.opencontainers.image.revision` and receipt `sourceSha` identify OCE.
 
 Final image checks require `@openclaw/proc-safe/reaper` to return true from
@@ -183,41 +183,45 @@ Final image checks require `@openclaw/proc-safe/reaper` to return true from
 
 ### 2. Verify and assemble both platform variants
 
-`scripts/ci/container-release.mjs:smoke` requires a native runner matching the
-selected platform. It binds the OCI export to the build output digest, loads it
-with Skopeo, checks the loaded config and architecture, and runs the existing
-startup suite by immutable image ID with native deadlines. For the containerd
-store, `scripts/upgrade-image-identity.py` exports and hash-verifies the selected
-manifest/config; its config digest must match the original OCI config, which
-binds configuration and ordered layer diff IDs. Docker's manifest/index ID is
-not a config digest. The legacy store retains its direct config-ID check. A success receipt binds the platform digest
-to the source, workflow, run/attempt, CI evidence, image, and build base. Failed
-smokes cannot upload platform artifacts. The temporary loaded image is removed.
+Fresh native runners execute `.github/workflows/container-check.yml:jobs.runtime-smoke`.
+`scripts/ci/container-release/oci.ts:runtimeBuild` binds `build.json` (`native: false`) to source,
+workflow, run/attempt, CI, base, platform and digest. Receivers verify that identity
+and referenced OCI blobs, rejecting preexisting `platform.json`.
+`built-runtime-*` cannot qualify for publication. Controllers retain one-job build/smoke.
 
-`.github/workflows/container-publish.yml:jobs.assemble` downloads both successful
-platform artifacts from this exact run/attempt. `container-release.mjs:assemble`
-rejects mismatched receipts, platform configs, blob sizes, or hashes before linking
-blobs into one OCI layout. It retains only the manifest media type, digest, size,
-and platform in each assembled descriptor, excluding exporter-only annotations
-such as the build time and local reference name. It writes the multi-platform
-index and archive without rebuilding either variant, then removes the temporary layouts.
-`readArchivePlatforms` checks the archive contains exactly one AMD64 and one ARM64
-Linux manifest with matching config and content digests. Publication still consumes
-this sealed archive; registry access is not needed during assembly.
+`scripts/ci/container-release/native-smoke.ts:smoke` requires the selected native architecture.
+It binds the OCI export to the build digest, loads it with Skopeo, checks the
+loaded config and architecture, and runs startup tests by immutable image ID
+with native deadlines. For containerd, `scripts/upgrade-image-identity.py` exports
+and hash-verifies the manifest/config against the original OCI config, binding
+configuration and ordered layer diff IDs. The legacy store compares config IDs
+directly. Runtime startup rehashes each download client. The default Agent
+user runs the selected tools with fresh state and networking disabled. Smoke
+checks Rustup, compiles and runs Rust and Go programs, and evaluates JavaScript
+with Bun. Success writes `platform.json`, binding source, workflow, run/attempt,
+CI, image, base and platform digest. Failure blocks `platform-*` uploads.
+Recovery requires both runtime smoke jobs to pass.
 
-Before runtime smoke, `scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports
-the verified loaded image ID into a disposable k3d cluster. It reuses the Images and
-Packaging lane's reviewed Codex seccomp derivation and sandbox probes, then passes
-the resulting profile and ownership state to the Docker tests. This preparation
-does not rebuild the runtime. Cleanup removes the owned cluster and temporary
-image tag on success or failure; a workflow cleanup step also runs after an
-interrupted smoke command.
+`.github/workflows/container-publish.yml:jobs.assemble` downloads both qualified
+platform artifacts from this run/attempt. `scripts/ci/container-release/oci.ts:assemble`
+rejects receipt, platform, size or hash mismatches before linking blobs into one
+OCI layout. Descriptors retain media type, digest, size and platform, excluding
+exporter annotations such as timestamps and local names. Assembly writes the
+index and archive without rebuilding, then removes temporary layouts.
+`readArchivePlatforms` verifies exactly one AMD64 and one ARM64 Linux manifest
+with matching configs and digests. Assembly needs no registry access.
+
+`scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports the verified image into
+disposable k3d. It reuses the Images and Packaging lane's Codex seccomp derivation
+and sandbox probes, passing profile and ownership state to Docker tests. Smoke
+cleans up on exit. After command interruption, the workflow attempts cleanup if
+the runner remains available; runner loss can prevent cleanup.
 
 ### 3. Seal and enter publication
 
-`scripts/ci/container-release.mjs:seal` rechecks the platform contents and records
-the archive hash, multi-platform index digest, platform list, source, workflow,
-run attempt, CI identity, and approved base. Both prepared artifacts must exist
+`scripts/ci/container-release/publication.ts:seal` rechecks the platform contents and records
+the archive hash, index digest, each platform’s manifest and config digests,
+source, workflow run and attempt, CI identity, and approved base. Both prepared artifacts must exist
 before `.github/workflows/container-publish.yml:jobs.publish` can start. The
 publish job runs only when the operator selected `publish: true`.
 
@@ -226,11 +230,12 @@ for retention and package access.
 
 ### 4. Publish and hand off immutable references
 
-`scripts/ci/container-release.mjs:publishPrepared` checks both seals, archive hashes,
-index digests, and destinations before copying either image. It repeats source,
-CI, environment branch policy, and package checks during transfer. A matching existing source tag is retained;
-a conflicting tag or ambiguous registry error fails. An absent tag receives the
-entire index and both child manifests through Skopeo `--all --preserve-digests`.
+`scripts/ci/container-release/publication.ts:publishPrepared` checks the selected alias,
+both seals, archive hashes, index digests, and destinations before either copy.
+During transfer it rechecks source, CI, environment branch policy, and packages.
+It keeps matching source tags and fails on conflicts or ambiguous registry errors.
+For an absent tag, Skopeo `--all --preserve-digests` copies the index and both
+child manifests.
 After both source tags verify, ordinary publication copies each sealed archive to
 `latest` or the selected custom alias, then checks both source and alias digests.
 The custom alias replaces `latest` for that dispatch; recovery does not move an
@@ -248,15 +253,20 @@ same retained multi-platform archives and original producer identity; it does
 not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 
 The optional `jobs.publish-chart` downloads this run/attempt's image receipt only
-after `jobs.publish` succeeds. `scripts/ci/chart-release.mjs` requires
+after `jobs.publish` succeeds. `scripts/ci/chart-release.ts` requires
 both entries to match the current source, producer run, CI run, package names,
 and immutable digests. Root `package.json`, the chart version, and appVersion
 must agree before a version tag is written. The staged chart carries the source
 SHA and both digest references in annotations; its default controller image is
 the verified controller digest. Operator values can override that default.
 
-Both jobs share the protected environment. Workflow-level concurrency retains
-the publication lock across preparation and both writes; jobs never reacquire it.
+The [client projection](../guides/deploy/published-images.md#read-runtime-download-client-identities)
+checks image and executable provenance against the authenticated receipt.
+`scripts/ci/runtime-download-client-projection.ts:selectNativeArtifact` supplies the
+separate AMD64 smoke ZIP selection. Gateway builds use both outputs.
+
+The jobs share the protected environment and hold the workflow lock from
+preparation through publication.
 The chart publisher checks image version tags and any existing chart before writing. Existing tags must resolve to the receipt's digests;
 an existing chart version must have identical packaged files. It rechecks the trusted
 source, CI, environment, and public chart package before each write. After
@@ -277,7 +287,7 @@ owns package-write access and coordination.
 
 - For rejected source arguments, [resolve the manifest values](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
   and rebuild without bypassing checksum verification.
-- Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
+- Run `node --test tests/integration/container-{release,resume,promote}.test.ts`
   for platform/archive validation and release gate coverage. The archive case uses
   real OCI blobs and tar; recovery uses transport fixtures.
 - Run the [registry integration](../testing/docker.md#container-publication-registry-proof)
@@ -305,13 +315,27 @@ owns package-write access and coordination.
 
 ## Changelog
 
+- 2026-11-14 22:54: Document native ZIP selection. (authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e - e2ca224aa9657568ded513872d2fe6315d8d5301)
+
+- 2026-11-14 15:07: Document optional native tool selection, image verification, and published client identities. (authoring-run/b93b80a6-de4f-4ade-b2de-0a80efedde44 - 1c56c61909b9f480845f4579e2add893207fa759)
+
+- 2026-11-12 19:30: Document shared publisher alias validation. (authoring-run/3d91deeb-c702-4376-b918-2394dc2e27ff - 3b0efb219416109116f50ff643e7979ac2233711)
+
+- 2026-11-10 04:12: Separate runtime OCI construction from native smoke with an unqualified artifact handoff. (authoring-run/72ec367a-a73a-495d-a83b-4cd72345f6d4 - 8719eb3a5ca0adf5016e8123b6f17e51032987c8)
+
+- 2026-11-10 00:50: Select ARM runtime compiler parallelism from observed capacity. (authoring-run/fa776ae0-d057-4981-a158-368024f6a38f - 13f2bf05a5c39bf01c35290583122f08ed7ae5ab)
+
 - 2026-11-09 05:23: Bind native smoke to the original OCI config with either Docker image store. (authoring-run/0cf74a54-fba6-49b1-950c-18d296f43bd9 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 
 - 2026-11-08 11:56: Retry partial GitHub CLI downloads without weakening checksum verification. (authoring-run/47fd7930-a5df-419c-91d9-0d56b7476cc0 - 4566d20b8ef66a3268e27bceac946765ecd5d336)
 
+- 2026-11-08 10:25: Integrate Node termination repair with current source verification and strict package-index refresh. (authoring-run/303c3a8b-1e62-44ed-b31f-e7ab26a94c0f - 0d828be256d49c5cad9f57a25d716e472347ec6b)
+
 - 2026-11-07 00:55: Stop image builds when Debian package indexes cannot refresh. (authoring-run/8cbd0aef-172d-4a4f-baa0-cd6d0d75025c - c8a9a5f66d138afa4ded680080fad0dc821a5af6)
 
 - 2026-11-06 10:40: Separate local runtime assembly from required native CI source verification. (authoring-run/67960fd7-f16d-459d-83ae-8dc02997f0d5 - a239e6df5946cc62367ab7872791e4c0edf358bc)
+
+- 2026-11-05 20:42: Document the source-built Node termination repair, final executable provenance and native full/slim verification. (authoring-run/e800e024-db39-481b-a057-372ef95213de - 0eab6d6c320f8f4e522ccb1b1ebfd3ad7e400e6a)
 
 - 2026-11-05 19:00: Categorize named-profile refusals without exposing profile values. (authoring-run/d159cc84-e825-40d4-a8db-8adc7ca9ce42 - 0ecbe50bfe)
 

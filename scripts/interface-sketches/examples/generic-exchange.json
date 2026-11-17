@@ -1,11 +1,11 @@
 {
-  "title": "02 Who sends a protected request?",
+  "title": "Who sends a protected request?",
   "width": 1180,
   "height": 640,
   "items": [
     {
       "kind": "text",
-      "text": "02 Who sends a protected request?",
+      "text": "Who sends a protected request?",
       "x": 20,
       "y": 33,
       "size": 28,
@@ -48,12 +48,12 @@
     },
     {
       "kind": "node",
-      "id": "warm",
+      "id": "token",
       "x": 270,
       "y": 125,
       "w": 205,
       "h": 56,
-      "lines": ["PreparedTokenIssuer", "Eligible prepared token"],
+      "lines": ["Token Service", "Reuse or prepare a token"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -157,14 +157,14 @@
         { "node": "exchange", "side": "top" },
         [257.5, 222],
         [372.5, 222],
-        { "node": "warm", "side": "bottom" }
+        { "node": "token", "side": "bottom" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
       "kind": "text",
-      "text": "readWarm",
+      "text": "resolve",
       "x": 382,
       "y": 208,
       "size": 14,
@@ -214,8 +214,8 @@
       "kind": "line",
       "points": [
         { "node": "capture", "side": "left" },
-        [640, 292.5],
-        [640, 407],
+        [668, 292.5],
+        [668, 407],
         { "node": "listener", "side": "right" }
       ],
       "dashed": false,
@@ -316,7 +316,7 @@
     },
     {
       "kind": "text",
-      "text": "At API startup, the selected Driver can bind the exchange to OCC. A route that uses no credential skips both material readers.",
+      "text": "At API startup, the selected Driver can bind the exchange to OCC. A route that uses no credential skips both credential lookups.",
       "x": 20,
       "y": 562,
       "size": 14,
@@ -324,7 +324,7 @@
     },
     {
       "kind": "text",
-      "text": "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git uses the separate worker path in 01.",
+      "text": "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git requests use a separate worker path.",
       "x": 20,
       "y": 584,
       "size": 14,

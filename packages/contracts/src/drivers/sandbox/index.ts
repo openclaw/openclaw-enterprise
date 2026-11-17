@@ -1,5 +1,6 @@
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
+import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
@@ -167,6 +168,11 @@ export type SandboxHarnessObservation =
 
 /** The selected Sandbox owns the repository recipient, including proof after a worker restart. */
 export interface SandboxRepositoryAccess {
+  /** Read-only prospective assessment, including when called from a separate API process. */
+  repositoryWorkerRestartDisposition?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<RepositoryWorkerRestartDisposition>;
+
   /** Throws OCC's RepositoryExecutionRequiresRedeployError only when durable evidence
    * proves repository access cannot resume on this execution. Missing evidence remains undefined. */
   verifyExecution(

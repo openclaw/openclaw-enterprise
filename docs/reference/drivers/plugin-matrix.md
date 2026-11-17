@@ -17,7 +17,7 @@ runtime results from the current verification gap.
 
 <!-- plugin-matrix:start -->
 
-<!-- Generated from docs/assets/plugin-driver-matrix.json; run node scripts/generate-plugin-matrix.mjs. -->
+<!-- Generated from docs/assets/plugin-driver-matrix.json; run node scripts/generate-plugin-matrix.ts. -->
 
 Reviewed 2026-09-17 at [c4ecf32727aef09a6b4caeec16870bf391f7a505](https://github.com/openclaw/openclaw-enterprise/tree/c4ecf32727aef09a6b4caeec16870bf391f7a505).
 
@@ -45,8 +45,8 @@ enforcement separate from API acceptance and preserve proof limitations.
 From the repository root, regenerate and validate:
 
 ```sh
-node scripts/generate-plugin-matrix.mjs
-node scripts/generate-plugin-matrix.mjs --check
+node scripts/generate-plugin-matrix.ts
+node scripts/generate-plugin-matrix.ts --check
 pnpm docs:check
 pnpm docs:build
 ```

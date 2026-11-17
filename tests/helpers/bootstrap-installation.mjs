@@ -23,7 +23,8 @@ export function developmentBootstrapEnvironment({
   email,
   password,
   authSecret,
-  authBaseURL = "http://127.0.0.1",
+  authBaseURL = "https://console.oce.localhost",
+  agentDomain = "agents.oce.localhost",
   installationName,
   serviceKeyFile = "initial-admin-service-key.json",
   environment = process.env,
@@ -34,6 +35,7 @@ export function developmentBootstrapEnvironment({
     OCC_DATABASE_URL: databaseUrl,
     OCC_AUTH_SECRET: authSecret,
     OCC_AUTH_BASE_URL: authBaseURL,
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     OPENCLAW_DEV_EMAIL: email,
     OPENCLAW_DEV_PASSWORD: password,
     OPENCLAW_DEV_INSTALLATION_NAME: installationName,
@@ -46,7 +48,8 @@ export function productionBootstrapEnvironment({
   directory,
   email,
   authSecret,
-  authBaseURL = "http://127.0.0.1:0",
+  authBaseURL = "https://console.oce.localhost",
+  agentDomain = "agents.oce.localhost",
   installationName,
   environment = process.env,
 }) {
@@ -56,6 +59,7 @@ export function productionBootstrapEnvironment({
     OCC_DATABASE_URL: databaseUrl,
     OCC_AUTH_SECRET: authSecret,
     OCC_AUTH_BASE_URL: authBaseURL,
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     OCC_BOOTSTRAP_ADMIN_EMAIL: email,
     OCC_BOOTSTRAP_PASSWORD_FILE: join(directory, "initial-admin-password"),
     OCC_BOOTSTRAP_SERVICE_KEY_FILE: join(directory, "initial-admin-service-key.json"),
@@ -65,12 +69,16 @@ export function productionBootstrapEnvironment({
 
 export async function runBootstrapInstallation(environment, options = {}) {
   try {
-    const result = await run(process.execPath, ["scripts/bootstrap-installation.mjs"], {
-      cwd: repository,
-      env: environment,
-      timeout: options.timeout ?? 20_000,
-      maxBuffer: options.maxBuffer ?? 1024 * 1024,
-    });
+    const result = await run(
+      process.execPath,
+      ["scripts/bootstrap-installation.mjs", ...(options.args ?? [])],
+      {
+        cwd: repository,
+        env: environment,
+        timeout: options.timeout ?? 20_000,
+        maxBuffer: options.maxBuffer ?? 1024 * 1024,
+      },
+    );
     return { ok: true, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
     return {

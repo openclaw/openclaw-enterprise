@@ -1,8 +1,10 @@
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
+import { createAgentAuditReader } from "./http/agent-audit.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import {
+  API_REQUEST_AUDIT_ACTIONS,
   AgentDeploymentDiagnosticsResponse,
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
@@ -26,6 +28,7 @@ import {
   SecretResponse,
   type Agent,
   type AgentRuntimeLogsQuery,
+  type ApiRequestAuditObservation,
   type AuditEvent,
   type AuditEventKind,
   type AuthorizationEvidence,
@@ -51,18 +54,19 @@ import {
   AuthAccountRoleInvalidError,
   AuthAccountRoleNotFoundError,
   NativeIAMDriver,
-  type AuthPrincipalSeed,
 } from "@openclaw-enterprise/iam";
 import {
   AgentPrincipalAuthorizationError,
+  AuditAppendUnavailableError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
-  ResourceConflictError,
+  PostgresCommitOutcomeUnknownError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -97,7 +101,7 @@ import {
   ServiceKeyNameRefused,
   type ClientAddressConfiguration,
   type ControllerAuth,
-  type PreparedAuthAccount,
+  type ProvisionAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
 import { createBootstrapResources } from "./composition/installation-bootstrap.ts";
@@ -111,6 +115,7 @@ import {
   type ControllerWorkspaceFilesAccess,
   type ControllerWorkspaceFileWriteResult,
 } from "./gateway/contracts.ts";
+import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
@@ -136,6 +141,9 @@ import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/jso
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
+  nativeAdminLaunchOperation,
+  nativeAdminConfirmOperation,
+  nativeAdminLaunchSchema,
   nativeAdminStatusSchema,
   nativeAdminReturnOperation,
   nativeAdminReturnSchema,
@@ -205,6 +213,9 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
+  /** Durable sink for required HTTP admission and result records. */
+  readonly durableRequestAuditSink?: AuditSink;
+  readonly agentAuditCursorSecret?: string;
   readonly backendSummaries?: readonly BackendSummary[];
   readonly observabilityUrl?: string;
   readonly development: DevelopmentAdmission;
@@ -225,12 +236,7 @@ export interface ControllerAppOptions {
   readonly agentRuntimeLogs?: AgentRuntimeLogsConfig;
   readonly publicOrigin?: string;
   /** Writes the prepared account with its Principal, bindings and enrolment atomically. */
-  readonly provisionAuthAccount?: (
-    seed: AuthPrincipalSeed,
-    auditEvent: AuditEvent,
-    prepared: PreparedAuthAccount,
-    external?: { readonly providerId: string; readonly subject: string },
-  ) => Promise<void>;
+  readonly provisionAuthAccount?: ProvisionAuthAccount;
   readonly auditEventFactory?: AuditEventFactory;
   readonly logger?: FastifyBaseLogger;
   /** Production proxies allowed to send forwarded headers; admission ignores those headers. */
@@ -544,6 +550,7 @@ function operationTarget(
   if (
     (operation.operationId === "createAgent" ||
       operation.operationId === "validateAgentCreate" ||
+      operation.operationId === "getNamespaceAgentCapabilities" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
     namespaceId
@@ -606,6 +613,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     [
       "getAgentSandboxPolicy",
       "getAgentSandboxRecommendations",
+      "validateAgentSandboxPolicy",
       "updateAgentSandboxPolicy",
       "applyAgentSandboxPolicy",
     ].includes(operation.operationId)
@@ -1055,6 +1063,9 @@ function permissionDescription(
   permissions: readonly RequiredPermission[],
   operation?: OccApiRoute,
 ): string {
+  if (operation?.operationId === "listAgentAuditEvents") {
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";
+  }
   if (operation?.operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
   }
@@ -1400,7 +1411,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const admissions = new WeakMap<FastifyRequest, AdmittedCaller>();
   const contexts = new WeakMap<FastifyRequest, RequestContext>();
   const requestStartedAt = new WeakMap<FastifyRequest, bigint>();
+  const requestAuditState = new WeakMap<
+    FastifyRequest,
+    {
+      denialObserved: boolean;
+      resultSelected: boolean;
+      readTarget?: ResourceRef;
+      commitOutcomeUnknown?: true;
+    }
+  >();
+  const requestAuditSink = options.durableRequestAuditSink;
   const factory = options.auditEventFactory ?? new AuditEventFactory();
+  const readAgentAudit =
+    options.agentAuditCursorSecret === undefined
+      ? undefined
+      : createAgentAuditReader(options.agentAuditCursorSecret);
   const createAuthAccountOperation = {
     operationId: "createAuthAccount",
     method: "POST",
@@ -1421,12 +1446,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           password: { type: "string", minLength: 12, maxLength: 128 },
           name: { type: "string", minLength: 1, maxLength: 200 },
           roleId: { type: "string", minLength: 1, maxLength: 200 },
-          github: {
-            type: "object",
-            additionalProperties: false,
-            required: ["subject"],
-            properties: { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } },
-          },
         },
       },
     },
@@ -1638,7 +1657,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         abort("The HTTP client disconnected before the workspace file request completed.");
       }
     };
-    if (request.raw.aborted) {
+    if (request.raw.aborted || reply.raw.destroyed) {
       abort("The HTTP client disconnected before the workspace file request.");
     }
     request.raw.once("aborted", onRequestAborted);
@@ -1722,12 +1741,28 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     context: RequestContext,
   ) {
     const target: ResourceRef = { kind: "installation", id: installationId };
-    let selected: IAMDriver;
+    const selected = selectedIAMDriver();
+    const decision = await installationAdminDecision(selected, context.actorId, target);
+    if (!decision.allowed) {
+      await denial(operation, request, "authorization_denial", context, decision.evidence);
+      throw failure(
+        403,
+        "FORBIDDEN",
+        callerDenialMessage({ action: "administer", resource: target }),
+      );
+    }
+    return { selected, target, decision };
+  }
+
+  async function installationAdminDecision(
+    selected: IAMDriver,
+    actorId: string,
+    target: ResourceRef,
+  ) {
     let decision;
     try {
-      selected = selectedIAMDriver();
       decision = await selected.authorize({
-        principalId: context.actorId,
+        principalId: actorId,
         action: "administer",
         resource: target,
       });
@@ -1743,15 +1778,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       throw dependencyUnavailable();
     }
-    if (!decision.allowed) {
-      await denial(operation, request, "authorization_denial", context, decision.evidence);
-      throw failure(
-        403,
-        "FORBIDDEN",
-        callerDenialMessage({ action: "administer", resource: target }),
-      );
-    }
-    return { selected, target, decision };
+    return decision;
   }
 
   // Report the primary IAM decision without auditing a mutation the caller never attempted.
@@ -1794,8 +1821,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       readonly decisionReason: string;
       readonly reasonCode?: string;
       readonly details: Readonly<Record<string, unknown>>;
+      readonly requireAuditWrite?: true;
     },
   ): Promise<void> {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.denialObserved = true;
+    }
     try {
       await options.auditSink.append(
         event(
@@ -1809,12 +1841,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           authorization,
         ),
       );
-    } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+    } catch (error) {
+      if (audit !== undefined && controller !== undefined) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+        if (explanation?.requireAuditWrite !== true) {
+          return;
+        }
+      }
+      throw dependencyUnavailable();
     }
   }
 
@@ -1836,12 +1870,77 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           { outcome: "failure", reasonCode },
         ),
       );
-    } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
+    } catch (error) {
+      if (requestAuditState.has(request) && controller !== undefined) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+        return;
+      }
+      throw dependencyUnavailable();
+    }
+  }
+
+  function logRequestAuditFailure(
+    request: FastifyRequest,
+    operation: OccApiRoute,
+    action: string,
+    error: unknown,
+  ): void {
+    let code = "AUDIT_WRITE_FAILED";
+    if (error instanceof PostgresCommitOutcomeUnknownError) {
+      code = "AUDIT_COMMIT_OUTCOME_UNKNOWN";
+    } else if (error instanceof AuditAppendUnavailableError && error.reasonCode !== undefined) {
+      code = error.reasonCode;
+    }
+    app.log.error({
+      event: "http.audit_append_failed",
+      requestId: request.id,
+      action,
+      operationId: operation.operationId,
+      code,
+    });
+  }
+
+  async function appendRequestAudit(
+    sink: AuditSink,
+    request: FastifyRequest,
+    operation: OccApiRoute,
+    observation: ApiRequestAuditObservation,
+  ): Promise<boolean> {
+    const context = contexts.get(request);
+    const resource: ResourceRef = ("readTarget" in observation
+      ? observation.readTarget
+      : undefined) ?? { kind: "installation", id: installationId };
+    try {
+      await sink.append(
+        factory.create({
+          installationId,
+          ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
+          kind: "api_request",
+          action: observation.action,
+          outcome: observation.outcome,
+          resource,
+          actor: context === undefined ? { unresolved: true } : { principalId: context.actorId },
+          requestId: request.id,
+          ...(context === undefined ? {} : { admissionDecisionId: context.admissionDecisionId }),
+          ...("reasonCode" in observation ? { reasonCode: observation.reasonCode } : {}),
+          details: {
+            operationId: operation.operationId,
+            method: request.method === "HEAD" ? "HEAD" : operation.method,
+            ...("statusCode" in observation ? { statusCode: observation.statusCode } : {}),
+          },
+        }),
       );
+      return true;
+    } catch (error) {
+      logRequestAuditFailure(request, operation, observation.action, error);
+      return false;
+    }
+  }
+
+  function setAuditReadTarget(request: FastifyRequest, resource: ResourceRef): void {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.readTarget = resource;
     }
   }
 
@@ -1885,6 +1984,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (await nativeAdmin.interceptHttp(request, reply)) {
       return;
     }
+    if ("auditManagementRequest" in request.routeOptions.config) {
+      requestAuditState.set(request, { denialObserved: false, resultSelected: false });
+    }
     const contentLength = request.headers["content-length"];
     if (
       typeof contentLength === "string" &&
@@ -1912,6 +2014,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       method: request.method,
       route: request.routeOptions.url ?? "unmatched",
       status: reply.statusCode,
+      nativeAdmissionReason: nativeAdmin.httpAdmissionReason(request),
       ...(durationMs === undefined ? {} : { durationMs: Math.round(durationMs * 1000) / 1000 }),
     });
   });
@@ -1939,7 +2042,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
-        operation.operationId === "bootstrapInstallation")
+        operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents")
     ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
     }
@@ -1951,6 +2055,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
       operation.operationId !== "listAgentRevisions" &&
+      operation.operationId !== "listAgentAuditEvents" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {
@@ -2066,11 +2171,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         admitted.admittedScope.namespaceId !== params.namespaceId)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     admissions.set(request, admitted);
@@ -2079,11 +2180,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     const admitted = admissions.get(request);
     if (!admitted) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     let selected: IAMDriver;
     let identity;
@@ -2103,11 +2200,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
       );
     } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     if (
@@ -2210,11 +2303,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   ): Promise<void> {
     const context = contexts.get(request);
     if (!context) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
@@ -2234,11 +2323,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
         );
         if (!options.createController) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         const installation: Installation = {
           id: installationId,
@@ -2317,7 +2402,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }),
           meta: {
             requestId: request.id,
-            ...(connectionOrigin ? { redirectUri: `${connectionOrigin}/oauth/callback` } : {}),
+            ...(connectionRedirectUri ? { redirectUri: connectionRedirectUri } : {}),
           },
           discover: options.discoverMcpAuthorization ?? discoverMcpAuthorization,
           controller: controller!,
@@ -2427,8 +2512,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
     if (operation.operationId === "getNamespace") {
+      const namespace = await controller.getNamespace(context.actorId, namespaceId);
+      setAuditReadTarget(request, {
+        kind: "namespace",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
       reply.send({
-        data: await controller.getNamespace(context.actorId, namespaceId),
+        data: namespace,
         meta: { requestId: request.id },
       });
       return;
@@ -2437,10 +2528,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespaceAgentCapabilities") {
       reply.send({
         data: {
-          capabilities: await controller.getNamespaceAgentCapabilities(
-            context.actorId,
-            namespaceId,
-          ),
+          capabilities: {
+            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
+            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
+          },
         },
         meta: { requestId: request.id },
       });
@@ -2704,6 +2795,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        setAuditReadTarget: (resource) => setAuditReadTarget(request, resource),
         callerMay: (action, resource) => callerMay(context.actorId, action, resource),
         transactIAM: async (work) => {
           const admitted = admissions.get(request);
@@ -2748,6 +2840,29 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (operation.operationId === "listAgentAuditEvents") {
+      const admitted = admissions.get(request);
+      if (admitted?.method !== "session") {
+        throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
+      }
+      if (readAgentAudit === undefined) {
+        throw failure(501, "NOT_IMPLEMENTED", "Agent audit is disabled.");
+      }
+      await readAgentAudit({
+        controller,
+        auth: options.auth,
+        session: admitted.session,
+        factory,
+        actorId: context.actorId,
+        admissionDecisionId: admitted.decisionId,
+        namespaceId,
+        agentId,
+        request,
+        reply,
+      });
+      return;
     }
 
     if (operation.operationId === "getAgentCallerPermissions") {
@@ -3027,6 +3142,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
         const writeBody = body as unknown as UpdateWorkspaceFileBody;
         validateWorkspaceFileBody(writeBody);
+        const appendWorkspaceAudit = async (
+          event: AuditEvent,
+          onAbort?: () => Error,
+        ): Promise<void> => {
+          try {
+            await withWorkspaceFileRequestSignal(signal, options.auditSink.append(event), onAbort);
+          } catch (error) {
+            if (requestAuditState.has(request)) {
+              logRequestAuditFailure(request, operation, operation.action, error);
+            }
+            throw error;
+          }
+        };
         let result: ControllerWorkspaceFileWriteResult;
         try {
           if (signal.aborted) {
@@ -3049,14 +3177,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         } catch (error) {
           if (error instanceof ControllerWorkspaceFileUnknownOutcomeError) {
             try {
-              await withWorkspaceFileRequestSignal(
-                signal,
-                options.auditSink.append(
-                  workspaceFileAuditEvent(operation, request, target, context, filename, {
-                    outcome: "failure",
-                    reasonCode: "UNKNOWN_OUTCOME",
-                  }),
-                ),
+              await appendWorkspaceAudit(
+                workspaceFileAuditEvent(operation, request, target, context, filename, {
+                  outcome: "failure",
+                  reasonCode: "UNKNOWN_OUTCOME",
+                }),
                 () => new ControllerWorkspaceFileUnknownOutcomeError(error.message),
               );
             } catch {
@@ -3065,14 +3190,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(503, "UNKNOWN_OUTCOME", error.message);
           }
           try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "DEPENDENCY_UNAVAILABLE",
-                }),
-              ),
+            await appendWorkspaceAudit(
+              workspaceFileAuditEvent(operation, request, target, context, filename, {
+                outcome: "failure",
+                reasonCode: "DEPENDENCY_UNAVAILABLE",
+              }),
             );
           } catch {
             throw dependencyUnavailable();
@@ -3081,30 +3203,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
         if (result.status === "missing") {
           try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "FILE_MISSING",
-                }),
-              ),
+            await appendWorkspaceAudit(
+              workspaceFileAuditEvent(operation, request, target, context, filename, {
+                outcome: "failure",
+                reasonCode: "FILE_MISSING",
+              }),
             );
           } catch {
-            throw dependencyUnavailable();
+            if (!requestAuditState.has(request)) {
+              throw dependencyUnavailable();
+            }
           }
           throw failure(404, "NOT_FOUND", "The requested workspace file was not found.");
         }
         if (result.status === "unavailable") {
           try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "DEPENDENCY_UNAVAILABLE",
-                }),
-              ),
+            await appendWorkspaceAudit(
+              workspaceFileAuditEvent(operation, request, target, context, filename, {
+                outcome: "failure",
+                reasonCode: "DEPENDENCY_UNAVAILABLE",
+              }),
             );
           } catch {
             throw dependencyUnavailable();
@@ -3112,13 +3230,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           throw dependencyUnavailable();
         }
         try {
-          await withWorkspaceFileRequestSignal(
-            signal,
-            options.auditSink.append(
-              workspaceFileAuditEvent(operation, request, target, context, filename, {
-                outcome: "success",
-              }),
-            ),
+          await appendWorkspaceAudit(
+            workspaceFileAuditEvent(operation, request, target, context, filename, {
+              outcome: "success",
+            }),
             () =>
               new ControllerWorkspaceFileUnknownOutcomeError(
                 "The workspace file was written, but its final audit outcome could not be persisted before the request ended.",
@@ -3169,6 +3284,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
       };
       reply.raw.once("close", onClose);
+      if (request.raw.aborted || reply.raw.destroyed) {
+        onClose();
+      }
       try {
         if (operation.operationId === "getAgentDeploymentRuntime") {
           const description = await controller!.describeAgentRuntime(
@@ -3574,9 +3692,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           response: responses({
             type: "object",
             additionalProperties: false,
-            required: ["github", "google", "oidc", "password", "sessionBinding"],
+            required: ["google", "oidc", "password", "sessionBinding"],
             properties: {
-              github: { type: "boolean" },
               google: { type: "boolean" },
               oidc: { type: "boolean" },
               oidcSignIn: {
@@ -3602,20 +3719,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => {
         reply.header("cache-control", "no-store");
-        const github = options.auth.githubEnabled === true;
         const google = options.auth.googleEnabled === true;
         const oidc = options.auth.oidcEnabled === true;
         const password = options.auth.passwordSignIn !== "recovery-only";
         return {
           data: {
-            github,
             google,
             oidc,
             ...(oidc && options.auth.oidcSignIn !== undefined
               ? { oidcSignIn: options.auth.oidcSignIn }
               : {}),
             password,
-            sessionBinding: github || google || oidc,
+            sessionBinding: google || oidc,
           },
           meta: { requestId: request.id },
         };
@@ -3623,7 +3738,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
     // Handlers resolve on each request, as before: options.auth is read lazily.
     const externalSignInProviders = [
-      { name: "github", label: "GitHub", article: "a", operation: "GitHub" },
       { name: "google", label: "Google", article: "a", operation: "Google" },
       { name: "oidc", label: "OIDC", article: "an", operation: "Oidc" },
     ] as const;
@@ -3727,7 +3841,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return failure(
         409,
         "RESOURCE_CONFLICT",
-        "Account controls require GitHub, Google or OIDC sign-in; the password-only profile does not support them.",
+        "Account controls require Google or OIDC sign-in; the password-only profile does not support them.",
       );
     }
     async function humanAccountActor(
@@ -3944,12 +4058,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const accountOperations = [
       {
-        operationName: "github",
-        path: "/api/auth/accounts/:userId/providers/github",
-        operationId: "attachGitHubIdentity",
-        summary: "Attach an exact GitHub identity to an existing account",
-      },
-      {
         operationName: "google",
         path: "/api/auth/accounts/:userId/providers/google",
         operationId: "attachGoogleIdentity",
@@ -4026,16 +4134,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               type: "object",
               additionalProperties: false,
               required:
-                operationName === "github" || operationName === "google" || operationName === "oidc"
+                operationName === "google" || operationName === "oidc"
                   ? ["subject", "expectedVersion"]
                   : ["expectedVersion"],
               properties: {
                 expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
-                ...(operationName === "github"
-                  ? { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } }
-                  : operationName === "google" || operationName === "oidc"
-                    ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
-                    : {}),
+                ...(operationName === "google" || operationName === "oidc"
+                  ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
+                  : {}),
               },
             },
             response: {
@@ -4069,13 +4175,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw accountControlsUnsupported();
           }
           const { expectedVersion } = request.body as { expectedVersion: number };
-          if (operationName === "github") {
-            if (!options.auth.attachGitHub || !options.auth.githubEnabled) {
-              throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");
-            }
-            const { subject } = request.body as { subject: string };
-            await options.auth.attachGitHub(userId, subject, actor, expectedVersion);
-          } else if (operationName === "google") {
+          if (operationName === "google") {
             if (!options.auth.attachGoogle || !options.auth.googleEnabled) {
               throw failure(409, "RESOURCE_CONFLICT", "Google sign-in is not configured.");
             }
@@ -4448,15 +4548,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => options.auth.session(request, reply),
     );
-    routes.post(
+    routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       "/api/auth/accounts",
       {
+        config: { rateLimit: new RequestRateLimiter(10, 1 / 6) },
         schema: {
           ...createAuthAccountOperation.schema,
           operationId: createAuthAccountOperation.operationId,
           summary: createAuthAccountOperation.summary,
           description:
-            "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled. An optional github.subject attaches that GitHub identity in the same transaction; it conflicts when GitHub sign-in is not configured or the identity is already assigned.",
+            "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",
           tags: [...createAuthAccountOperation.tags],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4467,9 +4568,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             409: { description: "Conflict", ...error },
+            429: {
+              description: "Too many account creation requests; wait for Retry-After",
+              ...error,
+            },
             ...bodyErrors,
           },
-        },
+        } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, createAuthAccountOperation),
         preValidation: async (request) => {
           // Passwords are hashed before persistence; their existing schema and hashing
@@ -4487,18 +4592,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       async (request, reply) => {
         const context = contexts.get(request);
         if (!context) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         if (options.provisionAuthAccount === undefined) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
 
         const body = request.body as Record<string, unknown> | undefined;
@@ -4506,13 +4603,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         const password = body?.password;
         const name = body?.name;
         const roleId = body?.roleId;
-        const github = body?.github as { subject?: unknown } | undefined;
         if (
           !isNonEmptyString(email) ||
           !isNonEmptyString(password) ||
           (roleId !== undefined && !isNonEmptyString(roleId)) ||
-          (name !== undefined && !isNonEmptyString(name)) ||
-          (github !== undefined && !isNonEmptyString(github.subject))
+          (name !== undefined && !isNonEmptyString(name))
         ) {
           throw failure(
             400,
@@ -4521,22 +4616,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           );
         }
 
-        const { target, decision } = await requireInstallationAdmin(
+        const { selected, target, decision } = await requireInstallationAdmin(
           request,
           createAuthAccountOperation,
           context,
         );
 
-        const githubProviderId = options.auth.githubEnabled
-          ? options.auth.githubProviderId
-          : undefined;
-        if (github !== undefined && githubProviderId === undefined) {
-          throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");
+        // Charge the authorized Principal before hashing; new sessions and target
+        // email addresses must not reset an administrator's account-creation budget.
+        const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+        if (retryAfter !== undefined) {
+          reply.header("retry-after", String(retryAfter));
+          throw failure(
+            429,
+            "RATE_LIMITED",
+            "Too many account creation requests. Wait before retrying.",
+          );
         }
-        const external =
-          github === undefined
-            ? undefined
-            : { providerId: githubProviderId!, subject: github.subject as string };
+
         const prepared = await options.auth.prepareAccount({
           email,
           password,
@@ -4560,39 +4657,74 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           decision.evidence,
         );
         // Record who was enrolled and what they were granted; never the email or password.
+        const accountDetails = {
+          principalId: seed.principal.id,
+          ...(roleId === undefined ? { grant: "none" } : { roleId }),
+          ...(groupIds.length === 0 ? {} : { groupIds }),
+        };
         const auditEvent: AuditEvent = {
           ...baseAuditEvent,
-          details: {
-            ...baseAuditEvent.details,
-            principalId: seed.principal.id,
-            ...(roleId === undefined ? { grant: "none" } : { roleId }),
-            ...(groupIds.length === 0 ? {} : { groupIds }),
-          },
+          details: { ...baseAuditEvent.details, ...accountDetails },
         };
         try {
-          await options.provisionAuthAccount(seed, auditEvent, prepared, external);
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw dependencyUnavailable();
+          }
+          if (admitted.method !== "session") {
+            throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
+          }
+          const session = admitted.session;
+          const provision = () =>
+            options.provisionAuthAccount!(seed, auditEvent, prepared, undefined, {
+              holdSession: (unit: PlatformUnitOfWork) =>
+                options.auth.holdSession(unit, session, request),
+              authorize: async () => {
+                // State calls this after its authority locks, on the account's original unit.
+                // Let the HTTP error handler audit a denial after that unit rolls back.
+                const current = await installationAdminDecision(selected, context.actorId, target);
+                if (!current.allowed) {
+                  throw new AuthorizationDeniedError(
+                    current.reason,
+                    current.evidence,
+                    { action: "administer", resource: target },
+                    context.actorId,
+                  );
+                }
+                return event(
+                  createAuthAccountOperation,
+                  request,
+                  target,
+                  "mutation",
+                  context,
+                  current.evidence,
+                  { outcome: "success", details: accountDetails },
+                );
+              },
+            });
+          await options.auth.withSessionAuthority(session, provision);
         } catch (error) {
           // The account, Principal and audit commit in one transaction, so nothing is
           // compensated here. Dependency errors keep their class: an unknown COMMIT
           // outcome must reach the caller as unknown, never as a plain outage.
-          throw error instanceof RequestFailure || error instanceof DependencyUnavailableError
+          throw error instanceof RequestFailure ||
+            error instanceof AuthorizationDeniedError ||
+            error instanceof DependencyUnavailableError
             ? error
             : error instanceof UserAlreadyExistsError
               ? failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.")
-              : external !== undefined && error instanceof ResourceConflictError
-                ? failure(409, "RESOURCE_CONFLICT", "The external identity is already assigned.")
-                : error instanceof AuthAccountRoleNotFoundError ||
-                    error instanceof AuthAccountRoleInvalidError
-                  ? failure(
-                      400,
-                      "INVALID_REQUEST",
-                      "The request does not match the operation contract.",
-                    )
-                  : Object.assign(
-                      new DependencyUnavailableError("Auth account provisioning failed."),
-                      // The API log names the cause's class and code, never its message.
-                      { cause: error },
-                    );
+              : error instanceof AuthAccountRoleNotFoundError ||
+                  error instanceof AuthAccountRoleInvalidError
+                ? failure(
+                    400,
+                    "INVALID_REQUEST",
+                    "The request does not match the operation contract.",
+                  )
+                : Object.assign(
+                    new DependencyUnavailableError("Auth account provisioning failed."),
+                    // The API log names the cause's class and code, never its message.
+                    { cause: error },
+                  );
         }
         const account = prepared;
         reply.status(201).send({
@@ -4666,7 +4798,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         getController: () => controller,
         getContext: (request) => contexts.get(request),
         auditEvent: (request, context, target) =>
-          event(connectionCallbackOperation, request, target, "mutation", context),
+          event(
+            connectionCallbackOperation,
+            request,
+            target,
+            "mutation",
+            context,
+            undefined,
+            undefined,
+            {
+              action: "create",
+              // OCC supplies the saved connection after consuming and authorizing its attempt.
+              resource: {
+                kind: "credential_source",
+                id: target.namespaceId!,
+                namespaceId: target.namespaceId!,
+              },
+            },
+          ),
         auditFailure: (request, context, reasonCode) =>
           rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
       }),
@@ -4679,7 +4828,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       preHandler: async (request) => resolveIdentity(request, nativeAdminStatusOperation),
       handler: nativeAdmin.status,
     });
+    for (const [operation, handler, confirm] of [
+      [nativeAdminLaunchOperation, nativeAdmin.launch, false],
+      [nativeAdminConfirmOperation, nativeAdmin.confirm, true],
+    ] as const) {
+      routes.route({
+        method: "POST",
+        url: operation.path,
+        schema: nativeAdminLaunchSchema(confirm),
+        onRequest: async (request, reply) => {
+          reply.header("cache-control", "no-store");
+          reply.header("referrer-policy", "no-referrer");
+          await admit(request, operation);
+        },
+        preHandler: async (request) => resolveIdentity(request, operation),
+        handler,
+      });
+    }
     for (const operation of occApiRoutes) {
+      // Bootstrap has its own transactional evidence. Runtime log reads have their own
+      // disclosure gate and can also return a download.
+      const routeAuditSink =
+        operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "getAgentDeploymentRuntimeLogs"
+          ? undefined
+          : requestAuditSink;
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
         ...operation.schema,
@@ -4688,13 +4861,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         description: permissionDescription(permissions, operation),
         tags: [...operation.tags],
         "x-openclaw-permissions": permissions,
-        ...(operation.operationId === "bootstrapInstallation"
+        ...(operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents"
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route({
+      routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
         method: operation.method as HTTPMethods,
         url: operation.path,
+        ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" ||
@@ -4740,7 +4915,69 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => performFenced(request, reply, operation),
+        handler: async (request, reply) => {
+          if (routeAuditSink === undefined) {
+            return performFenced(request, reply, operation);
+          }
+          // Admission here means the request can enter the handler. The handler still
+          // checks the caller's permission for the exact operation and target.
+          if (
+            controller !== undefined &&
+            requestAuditState.has(request) &&
+            !(await appendRequestAudit(routeAuditSink, request, operation, {
+              action: API_REQUEST_AUDIT_ACTIONS.admitted,
+              outcome: "success",
+            }))
+          ) {
+            throw dependencyUnavailable();
+          }
+          if (controller === undefined) {
+            await performFenced(request, reply, operation);
+          } else {
+            await controller.withRequestAuditId(request.id, () =>
+              performFenced(request, reply, operation),
+            );
+          }
+          // Wait for an asynchronous onSend hook when perform called reply.send().
+          return reply;
+        },
+        ...(routeAuditSink === undefined
+          ? {}
+          : {
+              onSend: async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
+                const audit = requestAuditState.get(request);
+                if (audit === undefined || audit.resultSelected || controller === undefined) {
+                  return payload;
+                }
+                // A later transport or reply error can re-enter onSend. Record the first selected
+                // response once, including when its append fails.
+                audit.resultSelected = true;
+                const statusCode = reply.statusCode;
+                let outcome: "success" | "denied" | "failure" = "success";
+                if (
+                  statusCode < 500 &&
+                  (audit.denialObserved || statusCode === 401 || statusCode === 403)
+                ) {
+                  outcome = "denied";
+                } else if (statusCode >= 400) {
+                  outcome = "failure";
+                }
+                const readTarget =
+                  outcome === "success" && statusCode === 200 ? audit.readTarget : undefined;
+                // Preserve the selected response if the append fails. The handler may have
+                // committed its change or already denied the request.
+                await appendRequestAudit(routeAuditSink, request, operation, {
+                  action: API_REQUEST_AUDIT_ACTIONS.result,
+                  outcome,
+                  statusCode,
+                  ...(readTarget === undefined ? {} : { readTarget }),
+                  ...(audit.commitOutcomeUnknown === true
+                    ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
+                    : {}),
+                });
+                return payload;
+              },
+            }),
       });
     }
   });
@@ -4766,7 +5003,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
       reply.header("cache-control", "no-store");
     }
-    reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
+    const nativeFormOrigin =
+      options.nativeAdmin?.enabled &&
+      options.nativeAdmin.sessionMode === "host-only-exchange" &&
+      publicOrigin
+        ? ` https://*.${normalizeNativeAdminDomain(options.nativeAdmin.domain)}${new URL(publicOrigin).port ? `:${new URL(publicOrigin).port}` : ""}`
+        : "";
+    reply.header(
+      "content-security-policy",
+      CONSOLE_CONTENT_SECURITY_POLICY.replace(
+        "form-action 'self'",
+        `form-action 'self'${nativeFormOrigin}`,
+      ),
+    );
     reply.header("content-type", asset.contentType);
     reply.header("content-length", asset.body.length);
     if (asset.variesByEncoding) {
@@ -4909,6 +5158,35 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));
     }
+    if (error instanceof DeviceAuthorizationScopeMismatchError) {
+      const context = contexts.get(request);
+      if (
+        context &&
+        (context.operation.operationId === "pollAgentDeviceAuthorization" ||
+          context.operation.operationId === "pollSavedAgentDeviceAuthorization" ||
+          context.operation.operationId === "cancelAgentDeviceAuthorization" ||
+          context.operation.operationId === "cancelSavedAgentDeviceAuthorization")
+      ) {
+        try {
+          await denial(
+            context.operation,
+            request,
+            "authorization_denial",
+            context,
+            undefined,
+            undefined,
+            {
+              decisionReason: "The device login does not belong to the requested scope.",
+              reasonCode: "DEVICE_AUTHORIZATION_SCOPE_MISMATCH",
+              details: {},
+              requireAuditWrite: true,
+            },
+          );
+        } catch (auditError) {
+          mapped = requestFailure(auditError);
+        }
+      }
+    }
     if (isAuthorizationDenied(error) && !isDependencyUnavailable(error)) {
       const context = contexts.get(request);
       if (context) {
@@ -5033,7 +5311,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         code: mapped.code,
       });
     }
+    const operation = contexts.get(request)?.operation;
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined && operation !== undefined) {
+      if (error instanceof AuditAppendUnavailableError) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+      } else if (error instanceof PostgresCommitOutcomeUnknownError) {
+        audit.commitOutcomeUnknown = true;
+        app.log.error({
+          event: "http.commit_outcome_unknown",
+          requestId: request.id,
+          operationId: operation.operationId,
+          code: "COMMIT_OUTCOME_UNKNOWN",
+        });
+      }
+    }
     canonicalFailure(reply, mapped);
+    return reply;
   });
 
   return app;

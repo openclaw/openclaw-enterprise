@@ -51,7 +51,8 @@ async function packages(t: TestContext) {
 }
 
 async function dockerCase(t: TestContext) {
-  const { runDocker, image } = await import("../helpers/runtime-image-startup.mjs");
+  const { runDocker } = await import("../helpers/runtime-image-docker.ts");
+  const { image } = await import("../helpers/runtime-image-startup.ts");
   const root = await packages(t);
   const container = `oce-native-boundary-${randomUUID()}`;
   t.after(() => runDocker(["rm", "-f", container]));

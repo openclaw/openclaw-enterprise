@@ -5,7 +5,12 @@ const installerFiles = new Set([
   "tests/integration/local-first-agent-openshell-real.test.mjs",
   "tests/integration/dev-up-openshell-k3d-real.test.mjs",
   "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  "tests/integration/openshell-git-finite-removal-real.test.ts",
 ]);
+
+export function isOpenShellInstallerFile(file: string | undefined) {
+  return file !== undefined && installerFiles.has(file);
+}
 
 export function isOpenShellLane(lane: string) {
   return lane === "openshell" || lane === policyLane || lane === installerLane;
@@ -29,23 +34,26 @@ function hasFiles(lane: unknown): lane is { files: { path: string }[] } {
 
 export function projectFullIntegrationOpenShell(manifest: {
   lanes: Record<string, unknown>;
-  groups: Record<string, string[]>;
+  groups?: unknown;
 }) {
   const { openshell: original, ...otherLanes } = manifest.lanes;
-  const full = manifest.groups?.full;
+  const groups = manifest.groups;
   if (
     !hasFiles(original) ||
-    !Array.isArray(full) ||
-    full.filter((lane) => lane === "openshell").length !== 1 ||
+    typeof groups !== "object" ||
+    groups === null ||
+    !("full" in groups) ||
+    !Array.isArray(groups.full) ||
+    groups.full.filter((lane: unknown) => lane === "openshell").length !== 1 ||
     policyLane in otherLanes ||
     installerLane in otherLanes ||
-    "openshell" in manifest.groups
+    "openshell" in groups
   ) {
     throw new Error("Full Integration requires the canonical OpenShell lane exactly once.");
   }
   const paths = new Set(original.files.map(({ path }) => path));
-  const installers = original.files.filter(({ path }) => installerFiles.has(path));
-  const shared = original.files.filter(({ path }) => !installerFiles.has(path));
+  const installers = original.files.filter(({ path }) => isOpenShellInstallerFile(path));
+  const shared = original.files.filter(({ path }) => !isOpenShellInstallerFile(path));
   if (
     paths.size !== original.files.length ||
     installers.length !== installerFiles.size ||
@@ -61,8 +69,10 @@ export function projectFullIntegrationOpenShell(manifest: {
       [installerLane]: { ...original, files: installers },
     },
     groups: {
-      ...manifest.groups,
-      full: full.flatMap((lane) => (lane === "openshell" ? [policyLane, installerLane] : [lane])),
+      ...groups,
+      full: groups.full.flatMap((lane: unknown) =>
+        lane === "openshell" ? [policyLane, installerLane] : [lane],
+      ),
       openshell: [policyLane, installerLane],
     },
   };

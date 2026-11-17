@@ -43,6 +43,9 @@ results. For triggers and failure consequences across workflows, use the
 | [Observability Demo](ci/observability-demo.md) | Verify fixture telemetry and rendered monitoring dashboards.                 |
 | [Local k3d Quickstart](ci/k3d-quickstart.md)   | Exercise browser onboarding, Linear, and Git on one Agent.                   |
 
+For account-creation races, see the
+[PostgreSQL account provisioning checks](../flows/local-password-authentication.md#debugging-and-verification).
+
 Published-image qualification is a [release operation](../release/README.md#release-guides).
 It does not establish CI test coverage or staging installation readiness.
 

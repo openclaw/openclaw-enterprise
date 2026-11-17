@@ -27,6 +27,10 @@ import {
   installationSettingFailureCode,
 } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
+import {
+  controlPlaneAuditDatabaseOptions,
+  controlPlaneAuditEnabled,
+} from "./composition/control-plane-audit.ts";
 
 function configuration() {
   const mode = process.env.NODE_ENV;
@@ -48,6 +52,10 @@ function configuration() {
   return {
     mode,
     databaseUrl,
+    controlPlaneAuditEnabled: controlPlaneAuditEnabled(
+      mode,
+      process.env.OCC_CONTROL_PLANE_AUDIT_ENABLED,
+    ),
     ...workerEnvironmentSettings(process.env),
   };
 }
@@ -99,6 +107,7 @@ let receiptServer;
 let repositoryGitTransport;
 let preparedRepositoryGit;
 let preparedGitHub;
+let protectedDriver;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -162,6 +171,7 @@ try {
     }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
+  protectedDriver = drivers?.protectedDriver;
   let computeDriver;
   if (drivers === undefined && mode === "development") {
     const { createDevelopmentDockerComputeDriver } =
@@ -171,7 +181,22 @@ try {
       await computeDriver.preflight();
     }
   }
-  pool = await createPostgresPool(databaseUrl, workerDatabasePoolOptions(databaseTimeoutMs));
+  const databasePoolOptions = workerDatabasePoolOptions(databaseTimeoutMs);
+  pool = await createPostgresPool(databaseUrl, {
+    ...databasePoolOptions,
+    ...(options.controlPlaneAuditEnabled
+      ? {
+          connectionTimeoutMillis: Math.min(
+            databasePoolOptions.connectionTimeoutMillis,
+            controlPlaneAuditDatabaseOptions.connectionTimeoutMillis,
+          ),
+          query_timeout: Math.min(
+            databasePoolOptions.query_timeout,
+            controlPlaneAuditDatabaseOptions.query_timeout,
+          ),
+        }
+      : {}),
+  });
   const repositoryOwner = drivers?.repositoryOwner;
   if (repositoryOwner?.controlSocket !== undefined) {
     receiptServer = await startRepositoryReceiptServer({
@@ -281,9 +306,11 @@ try {
     await unlink(readinessPath).catch(() => {});
   }
   if (worker !== undefined) {
+    // The worker closes its protected Driver; before it exists, close the loaded registration.
     await worker.stop().catch(() => {});
-  } else if (pool !== undefined) {
-    await pool.end();
+  } else {
+    await protectedDriver?.close().catch(() => {});
+    await pool?.end();
   }
   try {
     const mode = process.env.NODE_ENV === "production" ? "production" : "development";

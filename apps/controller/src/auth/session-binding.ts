@@ -26,7 +26,7 @@ export function sessionBindingKey(secret: string, sessionId: string): string {
   return mac(secret, "occ-session-key", sessionId);
 }
 
-/** Public identifier for one GitHub login attempt, derived from its private state. */
+/** Public identifier for one external login attempt, derived from its private state. */
 export function loginAttemptId(secret: string, stateHash: string): string {
   return mac(secret, "occ-login-attempt", stateHash);
 }

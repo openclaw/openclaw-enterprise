@@ -1,22 +1,35 @@
+import { hasResourceId, record } from "./egress-observation-values.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import pg from "pg";
+import {
+  runSkipperOperation,
+  skipperOperationDiagnostic,
+} from "../../scripts/ci/skipper-release.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
   assertConnectedResponse,
+  assertSecretReference,
   serializeConnectedRequest,
   sendConnectedRequest,
   validateConnectedDatabaseUrl,
 } from "./egress-connected-inputs.mjs";
-import { codexRepositoryEvidenceScript } from "./normal-agent-tools.mjs";
+import { parseNativeObservation } from "./normal-agent-observation-receipts.ts";
+import { codexRepositoryEvidenceScript } from "./normal-agent-codex-evidence.ts";
 
 const exec = promisify(execFile);
+/** @param {unknown} value */
+function identified(value) {
+  assert.ok(hasResourceId(value), "expected an identified controller resource");
+  return value;
+}
+
 export async function waitFor(description, observe, timeout = 120_000) {
   const end = Date.now() + timeout;
   do {
@@ -27,6 +40,19 @@ export async function waitFor(description, observe, timeout = 120_000) {
     await delay(500);
   } while (Date.now() < end);
   assert.fail("timed out: " + description);
+}
+
+/**
+ * @param {import("./egress-upgrade-contracts.ts").ConnectedApi} api
+ * @param {string} agentPath
+ */
+export async function configureSkipperTransport(api, agentPath) {
+  const path = agentPath + "/runtime-credentials";
+  const { transportConfigured } = record(await api("GET", path));
+  assert.equal(typeof transportConfigured, "boolean", "expected boolean transportConfigured");
+  if (transportConfigured === false) {
+    await api("POST", path, {});
+  }
 }
 
 /** Operate only the supplied fresh, local Compute installation and its synthetic model. */
@@ -54,11 +80,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   assert.equal(modelContainer, "oce-first-agent-smoke-model");
   assert.match(clusterUID, /^[a-f0-9-]{36}$/);
   assert.equal(input.sourceCommit, (await exec("git", ["rev-parse", "HEAD"])).stdout.trim());
-  const kubectl = (...args) =>
+  const kubectlWithTimeout = (timeout, ...args) =>
     exec("kubectl", ["--kubeconfig", kubeconfig, "--context", context, ...args], {
       maxBuffer: 8 * 1024 * 1024,
-      timeout: 240_000,
+      timeout,
     });
+  const kubectl = (...args) => kubectlWithTimeout(240_000, ...args);
   const kc = async (...args) => (await kubectl(...args)).stdout;
   const resource = async (...args) => JSON.parse(await kc("get", ...args, "-o", "json"));
   const uid = async () => (await resource("namespace", "kube-system")).metadata.uid;
@@ -90,6 +117,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     statement_timeout: 10000,
   });
   const inst = await api("GET", "/installation");
+  assert.ok(hasResourceId(inst), "expected the Installation ID");
   assert.equal(inst.id, (await pool.query("SELECT id FROM occ.installation")).rows[0].id);
   const { items: nss } = await resource(
     "namespaces",
@@ -130,6 +158,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     name: "skipper-compute-model-" + id,
     value: "sk-synthetic-qualification-" + id,
   });
+  assertSecretReference(secret);
+  assert.ok(hasResourceId(secret), "expected the model Secret ID");
   const values = createHarnessConfiguration("codex", defaultAgentModel);
   values.agents.defaults.workspace = "/home/node/workspace";
   Object.assign(values.plugins.entries.codex.config.appServer, {
@@ -138,13 +168,16 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     remoteWorkspaceRoot: "/home/node/workspace",
   });
   const config = await create("configurations", { kind: "agent", values });
-  const agent = await create("agents", {
-    name: "skipper-compute-" + id,
-    configurationId: config.id,
-    executionMode: "dedicated",
-    harnessAuth: { method: "api_key", source: secret.ref },
-    repositoryBindings: [{ repositoryRef, profile: "git-write" }],
-  });
+  assert.ok(hasResourceId(config), "expected the configuration ID");
+  const agent = identified(
+    await create("agents", {
+      name: "skipper-compute-" + id,
+      configurationId: config.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: secret.ref },
+      repositoryBindings: [{ repositoryRef, profile: "git-write" }],
+    }),
+  );
   const agentPath = root + "/agents/" + agent.id;
   const query = (text, params) => pool.query(text, params);
   const pods = () => resource("pods", "-A", "-l", "openclaw.dev/agent=" + agent.id);
@@ -176,6 +209,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     name: "skipper-compute-model-" + id,
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
+  assert.ok(hasResourceId(role), "expected the role resource identity");
   await create("iam/access-bindings", {
     subjectKind: "identity",
     subjectId: agent.servicePrincipalId,
@@ -183,28 +217,26 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     resourceKind: "secret",
     resourceId: secret.id,
   });
-  const runtime = await api("GET", agentPath + "/runtime-credentials");
-  if (!runtime.transportConfigured) {
-    await api("POST", agentPath + "/runtime-credentials", {});
-  }
+  await configureSkipperTransport(api, agentPath);
   await checkpoint("deploy-request-started", { agentId: agent.id });
-  const revision = await api("POST", agentPath + "/deploy", undefined, 202);
-  assert.equal(revision.harness.mode, "dedicated");
-  assert.equal(revision.harness.id, "codex");
+  const revision = identified(await api("POST", agentPath + "/deploy", undefined, 202));
+  const harnessSelection = record(revision.harness);
+  assert.equal(harnessSelection.mode, "dedicated");
+  assert.equal(harnessSelection.id, "codex");
   assert.equal(revision.sandboxDriverId, undefined);
-  assert.deepEqual(revision.repositoryCredentials.bindings, [
+  assert.deepEqual(record(revision.repositoryCredentials).bindings, [
     { repositoryRef, profile: "git-write" },
   ]);
   const deploymentPath = agentPath + "/deployments/" + revision.id;
   await waitFor(
     "the admitted Compute-owned deployment to succeed with its revision active",
     async () => {
-      const deployment = await api("GET", deploymentPath);
+      const deployment = record(await api("GET", deploymentPath));
       assert.notEqual(deployment.status, "failed", "Compute deployment failed");
       if (deployment.status !== "succeeded") {
         return false;
       }
-      const current = await api("GET", agentPath);
+      const current = record(await api("GET", agentPath));
       return current.activeRevisionId === revision.id && current.desiredRuntimeState === "running";
     },
     720_000,
@@ -304,7 +336,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       live.harness.status.containerStatuses.map((c) => c.containerID),
       harness.status.containerStatuses.map((c) => c.containerID),
     );
-    assert.equal((await api("GET", agentPath)).activeRevisionId, revision.id);
+    assert.equal(record(await api("GET", agentPath)).activeRevisionId, revision.id);
   };
   const gatewayTarget = [
     gateway.metadata.name,
@@ -345,79 +377,35 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     revisionId: revision.id,
     seccomp,
   });
-  const chat = async (prompt) => {
-    // Readiness isn't a model turn. Record a bounded, content-free failure at the real receiver
-    // before cleanup; never replay a turn whose effect might be unknown.
-    const before = (await modelEvents()).length;
-    const since = new Date().toISOString();
-    const text = await enter(
-      "node",
-      "-e",
-      `(${inGateway.toString()})(process.argv[1], process.argv[2])`,
-      prompt,
-      "agent:main:skipper-acceptance-" + id,
-    );
-    const { status, category, content } = JSON.parse(text);
-    if (status !== 200) {
-      const events = (await modelEvents()).slice(before);
-      const nonce = prompt.match(/OCE_SMOKE_[a-f0-9-]+/)?.[0];
-      // Do not retain runtime logs. An allowlisted signal can distinguish a native thread
-      // sandbox failure before the first model request from an observed transport failure.
-      const runtimeSignal = await Promise.all(
-        [
-          [gateway, "gateway"],
-          [harness, "agent"],
-        ].map(([pod, container]) =>
-          kc(
-            "logs",
-            pod.metadata.name,
-            "-n",
-            pod.metadata.namespace,
-            "-c",
-            container,
-            "--since-time=" + since,
-            "--tail=200",
-            "--limit-bytes=65536",
+  const chat = (marker, gatewayChatPhase) =>
+    sendSkipperChat({
+      gatewayChatPhase,
+      marker,
+      sessionKey: "agent:main:skipper-acceptance-" + id,
+      enter,
+      modelEvents,
+      checkpoint,
+      runtimeLogs: (since) =>
+        Promise.all(
+          [
+            [gateway, "gateway"],
+            [harness, "agent"],
+          ].map(([pod, container]) =>
+            kubectlWithTimeout(
+              10_000,
+              "logs",
+              pod.metadata.name,
+              "-n",
+              pod.metadata.namespace,
+              "-c",
+              container,
+              "--since-time=" + since,
+              "--tail=200",
+              "--limit-bytes=65536",
+            ).then(({ stdout }) => stdout),
           ),
         ),
-      ).then(
-        (logs) => {
-          const raw = logs.join("\n");
-          if (
-            /fs sandbox helper|bwrap:.*(?:permission denied|operation not permitted)/i.test(raw)
-          ) {
-            return "thread-filesystem-sandbox-denied";
-          }
-          if (/thread\/start|failed to start.*thread/i.test(raw)) {
-            return "thread-start";
-          }
-          if (
-            /websocket.*failed|tls.*failed|certificate verify failed|unable to get local issuer/i.test(
-              raw,
-            )
-          ) {
-            return "model-transport";
-          }
-          return "no-known-signal";
-        },
-        () => "logs-unavailable",
-      );
-      await checkpoint("gateway-chat-refused", {
-        httpStatus: status,
-        category,
-        runtimeSignal,
-        modelTurns: events.filter((e) => e.event === "request" && e.turn).length,
-        modelAnswers: events.filter((e) => e.event === "turn-answered").length,
-        expectedNonceAnswered: Boolean(
-          nonce &&
-          events.some((e) => e.event === "turn-answered" && e.status === 200 && e.text === nonce),
-        ),
-        tlsErrors: events.filter((e) => e.event === "tls-error").length,
-      });
-      assert.fail("gateway chat did not return 200; content-free status and model counts recorded");
-    }
-    return content;
-  };
+    });
   const native = async (marker) => {
     // The observer can exceed Linux's per-argument limit. Send its source over stdin
     // and keep the marker and expected commands in their normal node -e positions.
@@ -434,7 +422,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     // kubectl can close the pipe early; its exit status reports the failure.
     observation.child.stdin.on("error", () => {});
     observation.child.stdin.end(codexRepositoryEvidenceScript);
-    const t = JSON.parse((await observation).stdout);
+    const t = parseNativeObservation((await observation).stdout);
     assert.equal(t.status, "completed");
     assert.equal(
       t.commands.length,
@@ -442,6 +430,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       "exactly one native command on this Agent turn; never replay",
     );
     const [command] = t.commands;
+    assert.ok(command);
     assert.equal(command.status, "completed");
     assert.equal(command.exitCode, 0, "native command failed on the Agent");
     assert.ok(t.threadId && t.turnId);
@@ -451,23 +440,30 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     (await exec("docker", ["logs", modelContainer], { maxBuffer: 8 * 1024 * 1024, signal })).stdout
       .trim()
       .split("\n")
-      .filter((l) => l.startsWith("{"))
-      .map((l) => JSON.parse(l));
+      .filter(Boolean)
+      .map((line) => {
+        const event = JSON.parse(line);
+        assert.ok(event && !Array.isArray(event) && typeof event.event === "string");
+        assert.ok(event.event !== "request" || typeof event.turn === "boolean");
+        return event;
+      });
   const controlFile = join(modelDirectory, "skipper-command.json");
   const sendScript = async (cmd, label) => {
     const marker = "skipper-" + randomUUID();
-    const text = JSON.stringify({ cmd, id: marker });
-    await writeFile(controlFile + ".next", text, { mode: 0o644 });
-    await chmod(controlFile + ".next", 0o644);
-    await rename(controlFile + ".next", controlFile);
+    const text = JSON.stringify({ cmd, id: marker, expiresAt: Date.now() + 170_000 });
+    await runSkipperOperation("command-input", async () => {
+      await writeFile(controlFile + ".next", text, { mode: 0o644 });
+      await chmod(controlFile + ".next", 0o644);
+      await rename(controlFile + ".next", controlFile);
+    });
     await checkpoint("native-command-started", { label });
-    const reply = await chat("Perform the authorized disposable private Git task " + marker);
+    const reply = await runSkipperOperation("gateway-chat", () => chat(marker, "native-git"));
     const expected = "SKIPPER_COMPUTE_DONE_" + marker;
     if (reply !== expected) {
       // Only counts and booleans leave the private journey log. Diagnostics must not
       // replace the completion assertion if the model log or ledger is unavailable.
       const observations = await modelEvents(AbortSignal.timeout(10_000))
-        .then((events) => events.filter((e) => e.id === marker))
+        .then((events) => (events.length ? events.filter((e) => e.id === marker) : undefined))
         .catch(() => undefined);
       await checkpoint("native-command-completion-mismatch", {
         modelDiagnosticsAvailable: observations !== undefined,
@@ -477,6 +473,10 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
               modelRequests: observations.filter((e) => e.event === "skipper-native-request")
                 .length,
               modelResults: observations.filter((e) => e.event === "skipper-native-result").length,
+              nativePolls: observations.filter((e) => e.event === "skipper-native-poll").length,
+              nativeStatus: observations.at(-1)?.status,
+              nativeExitCode: observations.at(-1)?.exitCode,
+              nativeSessionPresent: observations.at(-1)?.sessionPresent,
               markerSeen: observations.some(
                 (e) => e.event === "skipper-native-result" && e.markerSeen === true,
               ),
@@ -484,10 +484,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       }).catch(() => {});
     }
     assert.equal(reply, expected);
-    const completed = await native(marker);
-    const observations = (await modelEvents()).filter((e) => e.id === marker);
+    const completed = await runSkipperOperation("native-observation", () => native(marker));
+    const observations = (
+      await runSkipperOperation("model-observation", () => modelEvents())
+    ).filter((e) => e.id === marker);
     assert.deepEqual(
-      observations.map((e) => e.event),
+      observations.filter((e) => e.event !== "skipper-native-poll").map((e) => e.event),
       ["skipper-native-request", "skipper-native-result"],
     );
     assert.equal(observations.at(-1).markerSeen, true);
@@ -497,12 +499,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       threadId: completed.threadId,
       turnId: completed.turnId,
     });
-    await unlink(controlFile);
+    await runSkipperOperation("command-cleanup", () => unlink(controlFile));
     return completed;
   };
-  async function ordinaryChat(label) {
+  async function ordinaryChat(label, gatewayChatPhase) {
     const nonce = "OCE_SMOKE_" + randomUUID();
-    assert.equal(await chat("Please reply with exactly " + nonce), nonce);
+    assert.equal(await chat(nonce, gatewayChatPhase), nonce);
     const matches = (await modelEvents()).filter(
       (e) => e.event === "turn-answered" && e.text === nonce && e.status === 200,
     );
@@ -529,31 +531,235 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   };
 }
 
+// A complete prefix from the same model process bounds this single chat. A generic
+// turn alone cannot distinguish its request from another turn in the same window.
+function modelRequestObservation(before, after, gatewayChatPhase, marker) {
+  const valid = (events) =>
+    Array.isArray(events) &&
+    events.every(
+      (event) =>
+        typeof event?.event === "string" &&
+        (event.event !== "request" || typeof event.turn === "boolean"),
+    );
+  const matches = (event) =>
+    gatewayChatPhase === "native-git"
+      ? event.event === "skipper-native-request" && event.id === marker
+      : event.event === "turn-answered" && event.status === 200 && event.text === marker;
+  if (
+    !marker ||
+    !valid(before) ||
+    !valid(after) ||
+    !before.some((event) => event.event === "listening") ||
+    !isDeepStrictEqual(after.slice(0, before.length), before) ||
+    before.some(matches)
+  ) {
+    return "unavailable";
+  }
+  const window = after.slice(before.length);
+  if (window.some((event) => event.event === "listening")) {
+    return "unavailable";
+  }
+  if (window.some(matches)) {
+    return "observed";
+  }
+  // A connection, failed handshake, or prewarm need not carry a model turn.
+  return window.every(
+    (event) =>
+      (event.event === "request" && event.turn === false) ||
+      ["connection", "secure", "tls-error", "prewarm", "turn-closed"].includes(event.event),
+  )
+    ? "none-in-window"
+    : "unavailable";
+}
+
+// Called only after the request observation verified both snapshots and their common prefix.
+function modelFixtureSelectedTerminalSuccess(before, after, marker) {
+  if (before.some((event) => event.id === marker)) {
+    return false;
+  }
+  const decisions = after
+    .slice(before.length)
+    .filter(
+      (event) =>
+        event.id === marker &&
+        ["skipper-native-request", "skipper-native-result"].includes(event.event),
+    );
+  return (
+    decisions.length === 2 &&
+    decisions[0].event === "skipper-native-request" &&
+    decisions[1].event === "skipper-native-result" &&
+    decisions[1].modelFixtureSelectedTerminalSuccess === true
+  );
+}
+
+export async function sendSkipperChat({
+  gatewayChatPhase,
+  marker,
+  sessionKey,
+  enter,
+  modelEvents,
+  runtimeLogs,
+  checkpoint,
+}) {
+  const snapshot = () => modelEvents(AbortSignal.timeout(10_000)).catch(() => undefined);
+  const prompt =
+    (gatewayChatPhase === "native-git"
+      ? "Perform the authorized disposable private Git task "
+      : "Please reply with exactly ") + marker;
+  const before = await snapshot();
+  const since = new Date().toISOString();
+  const invocationId = randomUUID();
+  const entryFrame = "\nskipper-gateway-entry:" + invocationId + "\n";
+  const text = await runSkipperOperation("gateway-exec", () =>
+    enter(
+      "node",
+      "-e",
+      `(${inGateway.toString()})(process.argv[1], process.argv[2], process.argv[3])`,
+      prompt,
+      sessionKey,
+      invocationId,
+    ),
+  ).catch(async (error) => {
+    try {
+      const diagnostic = error.openclawCiDiagnostic;
+      if (diagnostic?.operation === "gateway-exec") {
+        // The same failed exec already carries stderr. Keep only the exact entry observation.
+        if (typeof error.stderr === "string" && error.stderr.includes(entryFrame)) {
+          error.openclawCiDiagnostic = { ...diagnostic, helperEntered: true };
+        }
+        if (
+          gatewayChatPhase === "native-git" &&
+          modelRequestObservation(before, await snapshot(), gatewayChatPhase, marker) === "observed"
+        ) {
+          error.openclawCiDiagnostic = {
+            ...error.openclawCiDiagnostic,
+            modelRequestObservation: "observed",
+          };
+        }
+      }
+    } catch {
+      // Optional evidence must preserve even a frozen or unusual rejection.
+    }
+    throw error;
+  });
+  const { status, category, content, gatewayTransportCause } = JSON.parse(text);
+  if (status === 200 && category === undefined) {
+    return content;
+  }
+
+  // Attach only closed observations to this rejection. A later ledger row or
+  // another failing turn in the same chat phase cannot supply its evidence.
+  const [after, runtimeSignal] = await Promise.all([
+    snapshot(),
+    runtimeLogs(since).then(
+      (logs) => {
+        const raw = logs.join("\n");
+        if (/fs sandbox helper|bwrap:.*(?:permission denied|operation not permitted)/i.test(raw)) {
+          return "thread-filesystem-sandbox-denied";
+        }
+        if (/thread\/start|failed to start.*thread/i.test(raw)) {
+          return "thread-start";
+        }
+        if (
+          /websocket.*failed|tls.*failed|certificate verify failed|unable to get local issuer/i.test(
+            raw,
+          )
+        ) {
+          return "model-transport";
+        }
+        return "no-known-signal";
+      },
+      () => "logs-unavailable",
+    ),
+  ]);
+  const observation = modelRequestObservation(before, after, gatewayChatPhase, marker);
+  const failure = Object.assign(new Error("Gateway chat failed"), {
+    openclawCiDiagnostic: skipperOperationDiagnostic({
+      kind: "skipper-operation",
+      operation: "gateway-chat",
+      gatewayChatPhase,
+      gatewayCategory: category,
+      gatewayTransportCause,
+      httpStatus: status,
+      runtimeSignal,
+      modelRequestObservation: observation,
+      modelFixtureSelectedTerminalSuccess:
+        gatewayChatPhase === "native-git" &&
+        category === "transport" &&
+        status === 0 &&
+        observation === "observed" &&
+        modelFixtureSelectedTerminalSuccess(before, after, marker),
+    }),
+  });
+  await checkpoint("gateway-chat-refused", {
+    httpStatus: status,
+    category,
+    runtimeSignal,
+    modelRequestObservation: observation,
+  }).catch(() => {});
+  throw failure;
+}
+
 // Use the installed Agent Gateway, as a user of that Agent would. Never exec Git on the host.
-export async function inGateway(prompt, sessionKey) {
+export async function inGateway(prompt, sessionKey, invocationId) {
+  if (invocationId) {
+    // Build the frame here so an error echoing the exec arguments cannot supply it.
+    process.stderr.write("\nskipper-gateway-entry:" + invocationId + "\n");
+  }
   if (!process.env.OPENCLAW_GATEWAY_PASSWORD) {
     process.stdout.write(JSON.stringify({ status: 0, category: "gateway-credential-unavailable" }));
     return;
   }
-  const res = await fetch(
-    "http://127.0.0.1:" + (process.env.OPENCLAW_GATEWAY_PORT || 8080) + "/v1/chat/completions",
-    {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(170_000),
-      headers: {
-        authorization: "Bearer " + process.env.OPENCLAW_GATEWAY_PASSWORD,
-        "content-type": "application/json",
-        "x-openclaw-session-key": sessionKey,
+  const signal = AbortSignal.timeout(170_000);
+  let res;
+  try {
+    res = await fetch(
+      "http://127.0.0.1:" + (process.env.OPENCLAW_GATEWAY_PORT || 8080) + "/v1/chat/completions",
+      {
+        method: "POST",
+        redirect: "error",
+        signal,
+        headers: {
+          authorization: "Bearer " + process.env.OPENCLAW_GATEWAY_PASSWORD,
+          "content-type": "application/json",
+          "x-openclaw-session-key": sessionKey,
+        },
+        body: JSON.stringify({
+          model: "openclaw/default",
+          stream: false,
+          messages: [{ role: "user", content: prompt }],
+        }),
       },
-      body: JSON.stringify({
-        model: "openclaw/default",
-        stream: false,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    },
-  );
-  const raw = await res.text();
+    );
+  } catch (error) {
+    const category = signal.aborted && error === signal.reason ? "client-deadline" : "transport";
+    let gatewayTransportCause;
+    if (category === "transport") {
+      const code = error?.cause?.code ?? error?.code;
+      switch (code) {
+        case "UND_ERR_SOCKET":
+          gatewayTransportCause = "socket-closed";
+          break;
+        case "ECONNRESET":
+          gatewayTransportCause = "connection-reset";
+          break;
+        case "UND_ERR_HEADERS_TIMEOUT":
+          gatewayTransportCause = "headers-timeout";
+          break;
+        default:
+          gatewayTransportCause = "other";
+      }
+    }
+    process.stdout.write(JSON.stringify({ status: 0, category, gatewayTransportCause }));
+    return;
+  }
+  let raw;
+  try {
+    raw = await res.text();
+  } catch {
+    process.stdout.write(JSON.stringify({ status: res.status, category: "response-body" }));
+    return;
+  }
   // Only allowlisted categories can leave the receiver on failure; bodies may carry secrets.
   if (!res.ok) {
     const category =
@@ -568,7 +774,13 @@ export async function inGateway(prompt, sessionKey) {
     process.stdout.write(JSON.stringify({ status: res.status, category }));
     return;
   }
-  const body = JSON.parse(raw);
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    process.stdout.write(JSON.stringify({ status: res.status, category: "response-json" }));
+    return;
+  }
   process.stdout.write(
     JSON.stringify({ status: res.status, content: body?.choices?.[0]?.message?.content }),
   );

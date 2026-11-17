@@ -116,7 +116,7 @@ On controllers that support it, record the installation-wide deployment inventor
 ```
 
 Require this read to succeed. It requires Installation `administer` and read
-access to each Namespace and Agent. For a running Agent with a selected revision
+access to each Namespace and Agent. For an active, desired-running Agent with a selected revision
 and no deployment in progress, it also checks Agent `deploy` and revision read
 access. An authorization or connection failure does not mean the endpoint is
 unavailable on that release.
@@ -126,7 +126,7 @@ IDs, desired states and selected revisions from an independent inventory held by
 the resource or database owner. Include stopped Agents. Compare those records
 with the lists below before changing production. If an ID or state is missing
 or the expected inventory is unknown, stop. This fallback does not replace the
-deployment inventory required by the image helper for a runtime upgrade.
+deployment inventory required by the image helper for every upgrade.
 
 For either release, collect the remaining records in Bash:
 

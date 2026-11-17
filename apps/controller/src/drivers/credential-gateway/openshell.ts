@@ -928,12 +928,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     const credentials = providerCredentials(type, input);
     const name = openShellProviderName(context.source.id);
-    const existing = await client.getProvider(workspace, name, context.signal);
-    if (existing !== undefined && !openShellOwnedBy(existing, context.source.id)) {
-      throw new ScopeViolationError(
-        "An OpenShell provider with this source's name is not owned by the source.",
-      );
-    }
+    await this.getOwnedProvider(client, workspace, name, context);
     // Reject known collisions before changing the profile. These are separate RPCs:
     // orphan profiles and provider replacement after this read remain outside this check.
     await this.ensureProfile(
@@ -965,12 +960,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         throw error;
       }
       // Replay after an uncertain create adopts only this exact source's provider.
-      const existing = await client.getProvider(workspace, name, context.signal);
-      if (existing === undefined || !openShellOwnedBy(existing, context.source.id)) {
-        throw new ScopeViolationError(
-          "An OpenShell provider with this source's name is not owned by the source.",
-        );
-      }
+      await this.getOwnedProvider(client, workspace, name, context, true);
     }
     return { state: input.type === CODEX_OAUTH_TYPE ? "pending" : "ready" };
   }
@@ -993,14 +983,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const name = openShellProviderName(context.source.id);
-    const existing = await client.getProvider(workspace, name, context.signal);
+    const existing = await this.getOwnedProvider(client, workspace, name, context);
     if (existing === undefined) {
       return { state: "absent" };
-    }
-    if (!openShellOwnedBy(existing, context.source.id)) {
-      throw new ScopeViolationError(
-        "An OpenShell provider with this source's name is not owned by the source.",
-      );
     }
     // The profile follows the current configuration, so a narrowed binary list applies here.
     // Narrow first: if the credential update then fails, the old token is only less reachable.
@@ -1046,13 +1031,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const name = openShellProviderName(context.source.id);
     const client = this.client(context);
-    const existing = await client.getProvider(workspace, name, context.signal);
+    const existing = await this.getOwnedProvider(client, workspace, name, context);
     if (existing !== undefined) {
-      if (!openShellOwnedBy(existing, context.source.id)) {
-        throw new ScopeViolationError(
-          "An OpenShell provider with this source's name is not owned by the source.",
-        );
-      }
       await client.deleteProvider(workspace, name, context.signal);
       if ((await client.getProvider(workspace, name, context.signal)) !== undefined) {
         throw new OpenShellCredentialGatewayFailure("The OpenShell provider was not deleted.");
@@ -1086,6 +1066,25 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     context: CredentialGatewayContext & { readonly namespace: { name: string } },
   ): OpenShellGatewayPlacement | undefined {
     return this.backend.client.placement(context.namespace.name);
+  }
+
+  private async getOwnedProvider(
+    client: OpenShellGatewayClient,
+    workspace: string,
+    name: string,
+    context: CredentialSourceContext,
+    requireExisting = false,
+  ) {
+    const existing = await client.getProvider(workspace, name, context.signal);
+    if (
+      (existing === undefined && requireExisting) ||
+      (existing !== undefined && !openShellOwnedBy(existing, context.source.id))
+    ) {
+      throw new ScopeViolationError(
+        "An OpenShell provider with this source's name is not owned by the source.",
+      );
+    }
+    return existing;
   }
 
   private async ensureProfile(

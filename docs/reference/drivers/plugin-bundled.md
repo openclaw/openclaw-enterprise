@@ -57,11 +57,10 @@ backend authentication, separately from the operator's ordinary profile.
 `requestTimeoutMs` defaults to 10,000 milliseconds and accepts 1–60,000.
 This reader starts native app-server, calls `plugin/list`, and may update its cache.
 
-In hosted mode, Create Agent discovery hydrates entered PAT identity and reads GLOBAL
-plugin-service pages of up to 20 entries, fetching tools on demand. A
-same-Namespace Secret reference can supply the PAT; managed ServiceAccount
-references are unsupported. A nonempty query uses hosted search; the curated
-catalog searches its bundled entries.
+Hosted Create Agent discovery reads GLOBAL plugin-service pages (maximum 20),
+fetching tools on demand. App-only plugins need no `requires_local_executor` field.
+A same-Namespace Secret can supply the PAT; managed ServiceAccount references are
+unsupported. Queries use hosted search; the curated catalog searches its bundled entries.
 The console preloads the first page when a PAT is entered or selected in Create
 Agent, or an editable Agent's Plugins tab opens with a bound PAT Secret;
 **Configure plugins** reuses that page or its pending request. Replacing the PAT
@@ -98,14 +97,16 @@ Unavailable entries show the reported cause and a recovery link:
 | No recognized reason                               | Review workspace plugin access without assuming a specific cause.                                   |
 | Unsupported native components or no apps or skills | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
 
-Catalog access grants no runtime authority. Startup resolves the selections and
-requires the Agent’s projected credentials and provider access. Unknown configuration options, arbitrary sources or versions, and
+Catalog membership grants no access; catalog visibility and credentials do not
+establish native execution or policy enforcement. Startup independently resolves
+selections and still requires the Agent's projected credentials and provider
+access. Unknown configuration options, arbitrary sources or versions, and
 external PluginDriver packages are rejected.
 
 | Driver ID      | Implementation        | Agent Harness      | Catalog source                                                                                               |
 | -------------- | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------ |
-| `occ-plugin`   | `occ/openclaw-plugin` | Dedicated OpenClaw | Bundled [Google Workspace and Slack](../managed-openclaw-plugins.md) on Kubernetes.                          |
-| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw  | Bundled `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.                      |
+| `occ-plugin`   | `occ/openclaw-plugin` | Dedicated OpenClaw | Bundled [Google Workspace and Slack](../../guides/topics/openclaw-plugins.md) on Kubernetes.                 |
+| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw  | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.             |
 | `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex    | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
 
 Codex startup resolves current identity, release metadata, and concrete apps from
