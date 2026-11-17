@@ -165,11 +165,12 @@ state after admission.
   the lock holder stopped. The log line quotes OpenClaw's holder description.
   OpenClaw's own start can refuse after `config validate` passed, for example
   for the owner lease of a force-deleted Pod; it exits 1. A Kubernetes Gateway
-  that never served and exits 1 then runs the read-only `openclaw gateway
-  recover-lock --json` (never `--confirm`) and holds this check when holders
-  remain (`runtime-entrypoints.ts:holdGatewayStateLock`). It inspects again every
-  5 minutes and restarts its container on purpose (exit 75) once no holder
-  remains. A failed inspection, or one with no holder, exits 1 as before. Follow
+  that never served and exits 1 then runs the read-only
+  `openclaw gateway recover-lock --json` (never `--confirm`) and holds this
+  check when holders remain (`runtime-entrypoints.ts:holdGatewayStateLock`).
+  It inspects again every 5 minutes and restarts its container on purpose
+  (exit 75) once no holder remains. A failed inspection, or one with no holder,
+  exits 1 as before. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 - A dedicated Gateway held at `gateway-tool-policy` with code
   `INCOMPATIBLE_RESPONSE` can have a runtime image provenance failure.

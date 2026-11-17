@@ -93,7 +93,10 @@ export function registerGatewayStateLockCases(): void {
     // While the holder remains, the hold stays.
     recheck(gateway);
     assert.deepEqual(gateway.exits, []);
-    assert.equal(property(gateway.runtimeStatus(), "runtimeFailure", "check"), "gateway-state-lock");
+    assert.equal(
+      property(gateway.runtimeStatus(), "runtimeFailure", "check"),
+      "gateway-state-lock",
+    );
 
     // An operator who proved the holder stopped recovers the lock; the next inspection finds
     // it free and the container restarts on purpose, so its next start takes the lock. The
@@ -112,7 +115,10 @@ export function registerGatewayStateLockCases(): void {
 
   test("Kubernetes Gateway held on the state lock stops on SIGTERM", async (t) => {
     const gateway = await startRefusedGateway(t);
-    assert.equal(property(gateway.runtimeStatus(), "runtimeFailure", "check"), "gateway-state-lock");
+    assert.equal(
+      property(gateway.runtimeStatus(), "runtimeFailure", "check"),
+      "gateway-state-lock",
+    );
     // `occ agent stop`, the first recovery step, deletes the Pod.
     required(gateway.signalHandlers.SIGTERM)();
     assert.deepEqual(gateway.exits, [0]);
@@ -185,7 +191,14 @@ export function registerGatewayStateLockCases(): void {
       inspects: false,
     },
   ];
-  for (const { label, lockInspection, served = false, runtimeStatus = true, exit, inspects } of cases) {
+  for (const {
+    label,
+    lockInspection,
+    served = false,
+    runtimeStatus = true,
+    exit,
+    inspects,
+  } of cases) {
     test(`Kubernetes Gateway restarts after an exit with ${label}`, async (t) => {
       const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, { runtimeStatus });
       gateway.lockInspection = lockInspection;
