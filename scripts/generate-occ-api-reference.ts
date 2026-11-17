@@ -199,6 +199,30 @@ function schemaConstraints(schema: unknown) {
   return constraints.join("; ") || "—";
 }
 
+function objectVariants(schema: unknown, document: unknown): unknown[] | undefined {
+  const variants = optionalField(resolveSchema(schema, document), "anyOf");
+  if (
+    !Array.isArray(variants) ||
+    !variants.every((variant) => optionalField(resolveSchema(variant, document), "properties")) ||
+    !variants.some((variant) => schemaVariantLabel(variant, document))
+  ) {
+    return undefined;
+  }
+  return variants;
+}
+
+function schemaAnchor(schema: unknown) {
+  return `schema-${slugifySegment(field(schema, "title"))}`;
+}
+
+function linkedSchemaType(schema: unknown, document: unknown): string {
+  const resolved = resolveSchema(schema, document);
+  if (optionalField(schema, "$ref") && objectVariants(resolved, document)) {
+    return `[\`${field(resolved, "title")}\`](#${schemaAnchor(resolved)})`;
+  }
+  return `\`${schemaType(schema, document)}\``;
+}
+
 function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
   const resolvedSchema = resolveSchema(schema, document);
   const rows: string[] = [];
@@ -213,8 +237,18 @@ function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
           ? required.includes(name)
           : array(required).includes(name);
     rows.push(
-      `| \`${fieldName}\` | \`${schemaType(property, document)}\` | ${isRequired ? "Yes" : "No"} | ${schemaConstraints(resolvedProperty)} |`,
+      `| \`${fieldName}\` | ${linkedSchemaType(property, document)} | ${isRequired ? "Yes" : "No"} | ${schemaConstraints(resolvedProperty)} |`,
     );
+    const variants = objectVariants(resolvedProperty, document);
+    if (variants?.every((variant) => optionalField(variant, "$ref"))) {
+      for (const variant of variants) {
+        rows.push(
+          `| **\`${fieldName}\`: ${schemaType(variant, document)}** | — | — | Fields below apply to this variant. |`,
+        );
+        rows.push(...schemaRows(variant, document, fieldName));
+      }
+      continue;
+    }
     const type = field(resolvedProperty, "type");
     if (type === "object" && field(resolvedProperty, "properties")) {
       rows.push(...schemaRows(resolvedProperty, document, fieldName));
@@ -266,6 +300,7 @@ function schemaTable(schema: unknown, document: unknown): string {
 }
 
 const permissionScopeQualifiers: Record<string, string> = {
+  model_provider_filter: " (when filtering by `modelProviderId`)",
   associated_service_account: " (when associated)",
   existing_namespace: " (when selecting an existing namespace)",
   bound_secret: " (when bound)",
@@ -553,17 +588,28 @@ function referencePage(document: unknown, groups: Group[], operationList: Entry[
 
   const schemas = entries(optionalField(optionalField(document, "components"), "schemas") ?? {});
   if (schemas.length) {
+    const detailed = schemas.filter(([, schema]) => objectVariants(schema, document));
+    const detailedNames = new Set(detailed.map(([name]) => name));
     sections.push(
       "## Shared schemas",
       "Reusable schema names are referenced by operation request and response tables.",
       [
         "| Schema | Type |",
         "| --- | --- |",
-        ...schemas.map(
-          ([name, schema]) =>
-            `| \`${field(schema, "title") ?? name}\` | \`${schemaType(schema, document)}\` |`,
-        ),
+        ...schemas.map(([name, schema]) => {
+          const title = field(schema, "title") ?? name;
+          const label = detailedNames.has(name)
+            ? `[\`${title}\`](#${schemaAnchor(schema)})`
+            : `\`${title}\``;
+          const variants = objectVariants(schema, document);
+          return `| ${label} | \`${variants ? `${variants.length} object variants` : schemaType(schema, document)}\` |`;
+        }),
       ].join("\n"),
+      ...detailed.flatMap(([, schema]) => [
+        `### ${field(schema, "title")}`,
+        `<span id="${schemaAnchor(schema)}"></span>`,
+        schemaTable(schema, document),
+      ]),
     );
   }
 

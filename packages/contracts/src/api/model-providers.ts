@@ -1,6 +1,11 @@
 import { Type } from "typebox";
 import { ConnectionTemplateId, ModelProviderId, RequestId } from "./common.ts";
 
+export const InferenceBaseUrlSchema = Type.String({
+  maxLength: 2048,
+  pattern: "^https://",
+  description: "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+});
 export const InferenceProtocolSchema = Type.Union([
   Type.Literal("openai-responses"),
   Type.Literal("openai-completions"),
@@ -8,7 +13,7 @@ export const InferenceProtocolSchema = Type.Union([
 const strict = { additionalProperties: false };
 const modelId = Type.String({ minLength: 1, maxLength: 256, pattern: "^[^\\s\\x00-\\x1f\\x7f]+$" });
 const nonnegative = Type.Number({ minimum: 0 });
-const model = Type.Object(
+export const ModelProviderModelSchema = Type.Object(
   {
     id: modelId,
     name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
@@ -22,28 +27,47 @@ const model = Type.Object(
           cacheRead: nonnegative,
           cacheWrite: nonnegative,
         },
-        strict,
+        { ...strict, description: "Cost in USD per million tokens." },
       ),
     ),
   },
-  strict,
+  { ...strict, $id: "ModelProviderModel", title: "Model offered by this provider" },
 );
 const fields = {
   displayName: Type.String({ minLength: 1, maxLength: 200 }),
-  baseUrl: Type.String({ maxLength: 2048, pattern: "^https://" }),
+  baseUrl: InferenceBaseUrlSchema,
   protocol: InferenceProtocolSchema,
-  models: Type.Array(model, { minItems: 1, maxItems: 256 }),
-  defaultModelId: Type.Optional(modelId),
-  connectionTemplateId: ConnectionTemplateId,
+  models: Type.Array(Type.Ref("ModelProviderModel"), {
+    minItems: 1,
+    maxItems: 256,
+    description: "Models offered by this provider. Each model ID must be unique.",
+  }),
+  defaultModelId: Type.Optional(
+    Type.String({
+      ...modelId,
+      description: "Optional default from the models offered by this provider.",
+    }),
+  ),
+  connectionTemplateId: Type.String({
+    ...ConnectionTemplateId,
+    description: "Installation-wide static-key template matching the provider URL and protocol.",
+  }),
 };
-const settingsFingerprint = Type.String({ pattern: "^[a-f0-9]{64}$" });
+const settingsFingerprint = Type.String({
+  pattern: "^[a-f0-9]{64}$",
+  description: "Fingerprint of the saved settings, used for conditional updates.",
+});
 export const ModelProviderBody = Type.Object(fields, strict);
 export const UpdateModelProviderBody = Type.Object(
   { ...fields, expectedSettingsFingerprint: settingsFingerprint },
   strict,
 );
 export const ModelProviderParams = Type.Object({ modelProviderId: ModelProviderId }, strict);
-const provider = Type.Object({ id: ModelProviderId, ...fields, settingsFingerprint }, strict);
+export const ModelProviderSchema = Type.Object(
+  { id: ModelProviderId, ...fields, settingsFingerprint },
+  { ...strict, $id: "ModelProvider", title: "Model Provider" },
+);
+const provider = Type.Ref("ModelProvider");
 const meta = Type.Object({ requestId: RequestId }, strict);
 export const ModelProviderResponse = Type.Object({ data: provider, meta }, strict);
 export const ModelProviderListResponse = Type.Object({ data: Type.Array(provider), meta }, strict);

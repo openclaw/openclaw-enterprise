@@ -59,7 +59,8 @@ export const HarnessSettings = Type.Record(Type.String(), Type.Unknown(), {
 const octet = "(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])";
 const privateAddress = Type.String({
   pattern: `^(?:10\\.${octet}\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)${octet}\\.${octet}$`,
-  description: "One private IPv4 address for the approved HTTPS hostname.",
+  description:
+    "One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname.",
 });
 const dnsLabel = Type.String({
   minLength: 1,
@@ -75,30 +76,33 @@ const privateService = {
   namespace: dnsLabel,
   name: dnsLabel,
 };
-export const InferencePrivatePeerInputSchema = Type.Union([
-  privateServer,
-  Type.Object(privateService, { additionalProperties: false }),
-]);
-export const InferencePrivatePeerSchema = Type.Union([
-  privateServer,
-  Type.Object(
-    {
-      ...privateService,
-      uid: Type.String({ minLength: 1 }),
-      address: privateAddress,
-      targetPort: Type.Integer({ minimum: 1, maximum: 65535 }),
-      podSelector: Type.Record(Type.String(), Type.String(), { minProperties: 1 }),
-    },
-    { additionalProperties: false },
-  ),
-]);
+export const InferencePrivatePeerInputSchema = Type.Union(
+  [privateServer, Type.Object(privateService, { additionalProperties: false })],
+  { $id: "InferencePrivatePeerInput", title: "Private inference destination" },
+);
+export const InferencePrivatePeerSchema = Type.Union(
+  [
+    privateServer,
+    Type.Object(
+      {
+        ...privateService,
+        uid: Type.String({ minLength: 1 }),
+        address: privateAddress,
+        targetPort: Type.Integer({ minimum: 1, maximum: 65535 }),
+        podSelector: Type.Record(Type.String(), Type.String(), { minProperties: 1 }),
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  { $id: "InferencePrivatePeer", title: "Approved private inference receiver" },
+);
 export const RevisionHarnessSchema = Type.Object(
   {
     id: Type.String({ minLength: 1 }),
     version: Type.String({ minLength: 1 }),
     mode: HarnessExecutionModeSchema,
     modelProviderId: Type.Optional(ModelProviderId),
-    privateInferencePeer: Type.Optional(InferencePrivatePeerSchema),
+    privateInferencePeer: Type.Optional(Type.Ref("InferencePrivatePeer")),
     overrides: HarnessSettings,
     configuration: HarnessSettings,
   },
@@ -476,8 +480,19 @@ export const CreateCredentialSourceBody = Type.Object(
   {
     name: Name,
     type: CredentialSourceType,
-    connectionTemplateId: Type.Optional(ConnectionTemplateId),
-    connectionTemplateVersion: Type.Optional(Type.Integer({ minimum: 1 })),
+    connectionTemplateId: Type.Optional(
+      Type.String({
+        ...ConnectionTemplateId,
+        description:
+          "Static-key template approved for this credential; requires connectionTemplateVersion.",
+      }),
+    ),
+    connectionTemplateVersion: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description: "Approved template version; requires connectionTemplateId.",
+      }),
+    ),
     config: Type.Optional(CredentialSourceConfig),
     secrets: Type.Optional(CredentialSourceSecrets),
   },

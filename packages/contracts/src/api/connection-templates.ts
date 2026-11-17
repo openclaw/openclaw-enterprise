@@ -1,15 +1,10 @@
 import { Type } from "typebox";
 import { oauthScopeTokenPattern } from "../connection-templates.ts";
-import {
-  RequestId,
-  NamespaceId,
-  ConnectionTemplateId,
-  InferencePrivatePeerInputSchema,
-  InferencePrivatePeerSchema,
-} from "./common.ts";
+import { RequestId, NamespaceId, ConnectionTemplateId } from "./common.ts";
+
+import { InferenceBaseUrlSchema, InferenceProtocolSchema } from "./model-providers.ts";
 
 export { ConnectionTemplateId } from "./common.ts";
-import { InferenceProtocolSchema } from "./model-providers.ts";
 
 const HttpsUrl = Type.String({ maxLength: 2048, pattern: "^https://[^\\s/]" });
 export const OAuthScope = Type.String({
@@ -66,7 +61,7 @@ const fields = {
 };
 const staticBearer = {
   mode: Type.Literal("static_bearer"),
-  baseUrl: HttpsUrl,
+  baseUrl: InferenceBaseUrlSchema,
   protocol: InferenceProtocolSchema,
 };
 const manual = {
@@ -83,7 +78,11 @@ const create = { displayName: DisplayName, namespaceId: Type.Optional(NamespaceI
 const rename = { displayName: Type.Optional(DisplayName) };
 export const CreateConnectionTemplateBody = Type.Union([
   Type.Object(
-    { ...create, ...staticBearer, privatePeer: Type.Optional(InferencePrivatePeerInputSchema) },
+    {
+      ...create,
+      ...staticBearer,
+      privatePeer: Type.Optional(Type.Ref("InferencePrivatePeerInput")),
+    },
     strict,
   ),
   Type.Object({ ...create, ...fields, ...manual }, strict),
@@ -92,7 +91,11 @@ export const CreateConnectionTemplateBody = Type.Union([
 export const UpdateConnectionTemplateBody = Type.Union([
   Type.Object({ displayName: DisplayName }, strict),
   Type.Object(
-    { ...rename, ...staticBearer, privatePeer: Type.Optional(InferencePrivatePeerInputSchema) },
+    {
+      ...rename,
+      ...staticBearer,
+      privatePeer: Type.Optional(Type.Ref("InferencePrivatePeerInput")),
+    },
     strict,
   ),
   Type.Object({ ...rename, ...fields, ...manual }, strict),
@@ -170,34 +173,39 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
   },
   { $id: "OAuthConnectionTemplateVersion", title: "OAuth connection template version", ...strict },
 );
+export const StaticKeyConnectionTemplateVersionSchema = Type.Object(
+  {
+    ...staticBearer,
+    privatePeer: Type.Optional(Type.Ref("InferencePrivatePeer")),
+    templateId: ConnectionTemplateId,
+    version: Type.Integer({ minimum: 1 }),
+    createdAt: Type.String(),
+    destinations: Type.Array(
+      Type.Object(
+        {
+          host: Type.String(),
+          port: Type.Integer(),
+          path: Type.String(),
+          method: Type.Literal("POST"),
+        },
+        strict,
+      ),
+      { minItems: 1, maxItems: 1 },
+    ),
+  },
+  {
+    ...strict,
+    $id: "StaticKeyConnectionTemplateVersion",
+    title: "Static-key connection template version",
+  },
+);
 export const ConnectionTemplateSchema = Type.Object(
   {
     ...create,
     id: ConnectionTemplateId,
     current: Type.Union([
       Type.Ref("OAuthConnectionTemplateVersion"),
-      Type.Object(
-        {
-          ...staticBearer,
-          privatePeer: Type.Optional(InferencePrivatePeerSchema),
-          templateId: ConnectionTemplateId,
-          version: Type.Integer({ minimum: 1 }),
-          createdAt: Type.String(),
-          destinations: Type.Array(
-            Type.Object(
-              {
-                host: Type.String(),
-                port: Type.Integer(),
-                path: Type.String(),
-                method: Type.Literal("POST"),
-              },
-              strict,
-            ),
-            { minItems: 1, maxItems: 1 },
-          ),
-        },
-        strict,
-      ),
+      Type.Ref("StaticKeyConnectionTemplateVersion"),
     ]),
     createdAt: Type.String(),
   },
