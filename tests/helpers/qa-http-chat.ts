@@ -316,7 +316,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
       const streamed = await send(
         headers,
         message(
-          "List the numbers from one through forty, each on a separate line.",
+          "Without tools, preamble, commentary, or revisions, output the integers 1 through 40 separated by single spaces as one final answer. End with 40 and do not add a trailing newline.",
           undefined,
           true,
         ),

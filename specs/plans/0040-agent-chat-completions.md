@@ -158,6 +158,12 @@ completed one human JSON response and tool action. Its native turn trace verifie
 `danger-full-access` and `on-request`; its following SSE response contained a
 native application error. Structured native SSE diagnostics were added for the
 next retry. Service-key Codex turns remain unverified.
+A second dedicated-Codex run reproduced the native error: “Assistant output cannot
+be represented as an append-only response stream.” The pinned native encoder
+rejects unrepresentable replacements; OCC passes that failure through. One
+controlled final-answer-only, single-line request will distinguish that native
+output limit from a general inability to complete SSE. The original failure
+remains a recorded compatibility limit, not a passed case.
 
 The HTTP acceptance matrix remains incomplete.
 
