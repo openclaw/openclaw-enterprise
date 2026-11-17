@@ -30,6 +30,7 @@
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-protected-workspace-endpoint.test.ts",
+    "tests/conformance/strands-box-credential-source.test.ts",
     "tests/conformance/strands-box-driver.test.ts",
     "tests/conformance/strands-box-harness-image.test.ts",
     "tests/conformance/strands-box-host.test.ts",
@@ -273,6 +274,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-protected-workspace-endpoint.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-credential-source.test.ts"
     },
     {
       "path": "tests/conformance/strands-box-driver.test.ts"
