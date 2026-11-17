@@ -31,7 +31,9 @@ import { fileURLToPath } from "node:url";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
+  codexLaunchEntrypoint,
   EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
+  PROVIDER_CODEX_ONLY_PROGRAM,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -41,6 +43,7 @@ import {
   assertNodeInputs,
   assertPinnedDirectory,
   fileIdentity,
+  nestedChildArguments,
   splitStockCommand,
 } from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
 import {
@@ -479,6 +482,56 @@ test(
     }
   },
 );
+
+test("the file-only mode splits the protected Codex program into its own child, byte for byte", () => {
+  // A protected Codex whose model comes from a credential source: Compute renders the protected
+  // explicit-proxy program (Codex starts with unbounded connection retries disabled).
+  const received = (program: string) =>
+    inflateRawSync(Buffer.from(nodeProgramArguments(program).slice(1).join(""), "base64"));
+  const child = (launcher: readonly string[]) => {
+    assert.deepEqual(launcher.slice(0, RUNTIME_WRAPPER_COMMAND.length), RUNTIME_WRAPPER_COMMAND);
+    return inflateRawSync(
+      Buffer.from(launcher.slice(RUNTIME_WRAPPER_COMMAND.length + 1).join(""), "base64"),
+    ).toString();
+  };
+  const ordinary = received(EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT);
+  const protectedProgram = received(
+    codexLaunchEntrypoint({ providerOwned: true, protected: true, withNode: true, explicitProxy: true }),
+  );
+  assert.ok(!protectedProgram.equals(ordinary));
+  // The extraction reproduces the ordinary split the host has always used.
+  assert.deepEqual(
+    nestedChildArguments(ordinary.toString()),
+    nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM),
+  );
+  const ordinaryHarness = child(splitStockCommand(ordinary));
+  const protectedHarness = child(splitStockCommand(protectedProgram));
+  assert.doesNotMatch(ordinaryHarness, /unbounded_connection_retries/);
+  assert.match(protectedHarness, /"--disable", "unbounded_connection_retries"/);
+  for (const harness of [ordinaryHarness, protectedHarness]) {
+    assert.doesNotMatch(harness, /pair-or-reconnect|OPENCLAW_NODE_SETUP_CODE/);
+    assert.match(harness, /"HTTPS_PROXY", "https_proxy"/);
+  }
+  // Apart from the flag, the two children are the same program.
+  assert.equal(
+    protectedHarness.replace(/ *"--disable", "unbounded_connection_retries",\n/g, ""),
+    ordinaryHarness,
+  );
+  const piece = nestedChildArguments(protectedProgram.toString())[1]!;
+  assert.ok(protectedProgram.toString().includes(piece));
+  for (const modified of [
+    Buffer.concat([protectedProgram, Buffer.from("\nvoid 0;")]),
+    // The child travels compressed: one changed piece is another program.
+    Buffer.from(protectedProgram.toString().replace(piece, `${piece[0] === "A" ? "B" : "A"}${piece.slice(1)}`)),
+    received(codexLaunchEntrypoint({ providerOwned: true, protected: true, explicitProxy: true })),
+    received(codexLaunchEntrypoint({ providerOwned: false, protected: true, withNode: true })),
+  ]) {
+    assert.throws(() => splitStockCommand(modified), /unrecognized_combined_workspace_node_command/);
+  }
+  const twice = `${protectedProgram.toString()}\n    args: ["-e", "x", "y"],\n`;
+  assert.throws(() => nestedChildArguments(twice), /unrecognized_combined_workspace_node_command/);
+  assert.throws(() => nestedChildArguments("const a = 1;\n"), /unrecognized_combined_workspace_node_command/);
+});
 
 test("the file-only mode refuses modified stock commands and replacement mounts", () => {
   // Compute renders the explicit-proxy program for a provider-owned Sandbox other than OpenShell.

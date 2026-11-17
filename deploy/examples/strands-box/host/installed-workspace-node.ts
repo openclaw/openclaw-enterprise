@@ -15,6 +15,7 @@ import { isIP } from "node:net";
 import { basename, dirname, join, sep } from "node:path";
 import {
   CODEX_WORKSPACE_NODE_COMMANDS,
+  codexLaunchEntrypoint,
   EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
   PROVIDER_CODEX_ONLY_PROGRAM,
   RUNTIME_WRAPPER_COMMAND,
@@ -127,16 +128,58 @@ export function nodeInstallation(value: unknown): NodeInstallation {
   };
 }
 
-export function assertStockCombinedCommand(program: Buffer): void {
-  const stock = withoutLineComments(EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT);
-  if (!program.equals(Buffer.from(stock))) {
+/** The nested Codex child's `node -e` arguments, as the combined program spawns them. */
+export function nestedChildArguments(combined: string): readonly string[] {
+  const lines = [...combined.matchAll(/^ *args: (\[.*\]),$/gm)];
+  const parsed: unknown = lines.length === 1 ? JSON.parse(lines[0]![1]!) : undefined;
+  if (
+    !Array.isArray(parsed) ||
+    parsed[0] !== "-e" ||
+    parsed.length < 3 ||
+    !parsed.every((arg) => typeof arg === "string")
+  ) {
     throw new Error("unrecognized_combined_workspace_node_command");
   }
+  return parsed.slice(1) as string[];
+}
+
+/**
+ * The combined workspace-node programs Compute renders for a provider-owned Sandbox with an
+ * explicit egress proxy, each with the standalone Codex child it nests. A protected Codex whose
+ * model comes from a credential source (Compute's `protected-codex-no-connection-retry:v1`
+ * admission) gets the protected program: the same child with Codex's unbounded connection
+ * retries disabled. Both are matched byte for byte; nothing else is split.
+ */
+const STOCK_COMBINED: readonly { readonly program: Buffer; readonly child: readonly string[] }[] = [
+  {
+    program: Buffer.from(withoutLineComments(EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT)),
+    child: nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM),
+  },
+  (() => {
+    const combined = withoutLineComments(
+      codexLaunchEntrypoint({
+        providerOwned: true,
+        protected: true,
+        withNode: true,
+        explicitProxy: true,
+      }),
+    );
+    return { program: Buffer.from(combined), child: nestedChildArguments(combined) };
+  })(),
+];
+
+function stockCombined(program: Buffer): (typeof STOCK_COMBINED)[number] {
+  const stock = STOCK_COMBINED.find((candidate) => program.equals(candidate.program));
+  if (stock === undefined) throw new Error("unrecognized_combined_workspace_node_command");
+  return stock;
+}
+
+export function assertStockCombinedCommand(program: Buffer): void {
+  stockCombined(program);
 }
 
 export function splitStockCommand(program: Buffer): readonly string[] {
-  assertStockCombinedCommand(program);
-  return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM)];
+  return [...RUNTIME_WRAPPER_COMMAND, ...stockCombined(program).child];
 }
 
 function sha256(value: string | Buffer): string {
