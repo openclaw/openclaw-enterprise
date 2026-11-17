@@ -6,9 +6,9 @@ author: kevinlin-openai
 
 # Proposal: Native OpenClaw profiles for OIDC users
 
-- **ID:** RFC-0035
+- **ID:** RFC-0042
 - **Created:** 2026-11-10
-- **Implementation plan:** [Native profile delivery](../plans/0035-oidc-native-profiles.md)
+- **Implementation plan:** [Native profile delivery](../plans/0042-oidc-native-profiles.md)
 - **Related:** [OIDC sign-in](0001-oidc-sign-in.md), [OIDC Agent chat](0031-oidc-agent-chat.md), [OIDC enrollment](0032-oidc-account-enrollment.md)
 
 ## Summary
@@ -26,7 +26,7 @@ per-person Gateway configuration is required.
 **The decision is to delegate identity and request authority to OCC while keeping
 profiles in OpenClaw.** This needs a native authentication extension and a
 Compute Driver contract change. The code is implemented; the
-[plan](../plans/0035-oidc-native-profiles.md#delivery-record) records qualification
+[plan](../plans/0042-oidc-native-profiles.md#delivery-record) records qualification
 and review separately from this proposed decision.
 
 ## Why the current paths are insufficient
@@ -67,7 +67,7 @@ No provider-specific adapter or additional OIDC scope is needed.
 Derive a stable opaque subject from Installation ID and Principal ID. It survives
 email edits, supported identity attachment, reconnects, and redeployment. A new
 Principal gets a new subject. Keep its namespace independent of credentials and
-Agent revisions. The [plan](../plans/0035-oidc-native-profiles.md#identity-and-transport-contract)
+Agent revisions. The [plan](../plans/0042-oidc-native-profiles.md#identity-and-transport-contract)
 specifies the encoding.
 
 Each Gateway creates or reuses its own profile for that subject. Native profile
@@ -159,7 +159,7 @@ session policy; this feature adds no IdP revocation deadline.
 
 ## Acceptance Criteria
 
-The [verification plan](../plans/0035-oidc-native-profiles.md#verification) pairs
+The [verification plan](../plans/0042-oidc-native-profiles.md#verification) pairs
 these requirements with real dependencies and checks. The delivery record must distinguish source checks from completed runtime proof.
 
 - **AC-1 — Stable people:** Two enrolled OIDC users open one Agent and receive
@@ -187,13 +187,13 @@ would add separately administered authentication and policy. A copied native
 roster would require permission enumeration and synchronization; wildcard
 admission plus broad device grants would weaken the admission boundary.
 
-Use the [implementation plan](../plans/0035-oidc-native-profiles.md) for the native
+Use the [implementation plan](../plans/0042-oidc-native-profiles.md) for the native
 extension, Compute integration, and live proof. This RFC was submitted for human
 review in [PR #5320](https://github.com/openclaw/openclaw-enterprise/pull/5320)
 before Driver implementation. Qualify the native extension before enabling OCE
 delegation. The proposal's status does not claim acceptance or completed runtime proof.
 
-The [plan's delivery record](../plans/0035-oidc-native-profiles.md#delivery-record)
+The [plan's delivery record](../plans/0042-oidc-native-profiles.md#delivery-record)
 records the implementation and a dated verification checkpoint. The
 [native access reference](../../docs/reference/agent-native-admin.md) and
 [Compute reference](../../docs/reference/drivers/compute.md) own current behavior.

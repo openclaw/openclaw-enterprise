@@ -109,7 +109,8 @@ export function registerNativeAdminHttpIntegrityCases(
 ): void {
   test("native HTTP framing preserves bodyless requests and nominated lengths", async (t) => {
     const context = await createFixture(t, { upstream: { captureWire: true } });
-    const targetPrefix = "/native-browser/namespaces/" + context.namespaceId + "/agents/" + context.agentId;
+    const targetPrefix =
+      "/native-browser/namespaces/" + context.namespaceId + "/agents/" + context.agentId;
     const bodyless: { method: string; parsedRequests: number; body: string }[] = [];
     for (const method of ["GET", "HEAD"]) {
       const path = "/integrity-bodyless-" + method.toLowerCase();
@@ -297,11 +298,7 @@ export function registerNativeAdminHttpIntegrityCases(
     assert.match(String(parsedRequest.headers["x-occ-identity"]), /^test:/);
     assert.equal(parsedRequest.headers["x-occ-browser-key"], "server-browser-credential");
     assert.equal(parsedRequest.headers["x-openclaw-scopes"], "operator.admin");
-    for (const name of [
-      "cookie",
-      "authorization",
-      "x-forwarded-for",
-    ]) {
+    for (const name of ["cookie", "authorization", "x-forwarded-for"]) {
       assert.equal(parsedRequest.headers[name], undefined, name + " must not reach the peer");
     }
     const positiveControls = {

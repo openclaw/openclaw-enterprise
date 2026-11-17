@@ -167,7 +167,7 @@ OCC derives the selected version's target. An administrator viewing a non-runnin
 
 The target accompanies an [`unsupported` reason](../reference/agent-native-admin.md#unsupported-reasons). `not-enabled` means the Configuration did not opt this Agent into browser chat. `configuration` means another native setting prevents access.
 
-Compute `id` and `implementation` must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint or key lookup or transport. Both browser modes use `getGatewayBrowserRequest` with server-owned Installation and Principal IDs, mode, and an abort signal. Missing support or an invalid private `wss:` endpoint returns `unsupported` with reason `compute`; credential failures remain dependencies. Only `available` carries `gatewayBase`, the non-secret native subject, and private transport headers. `nativeAdminAvailabilityData` omits those transport values from browser responses. There is no machine fallback.
+After ownership checks, `getGatewayBrowserRequest` takes the revision, server-owned Installation/Principal IDs, mode and signal. Ownership or credential failure returns `503`; unsupported transport returns `unsupported` (`compute`). `nativeAdminAvailabilityData` omits endpoint, subject and credential headers from browser responses. No machine fallback.
 
 ### 4. OCC derives the isolated Agent host
 
@@ -256,19 +256,17 @@ identity, and scope headers. Over private HTTPS it preserves surviving
 `Content-Length`; otherwise, it uses chunked framing only when inbound headers
 specify framing.
 
-Compute supplies the delegated human subject, revision credential, and scope.
-The Gateway resolves its native profile before access. Native roles narrow the
-delegated ceiling; static identity and device grants cannot widen it. Profile or
-credential failure refuses access instead of selecting the machine identity.
+Compute supplies the human subject, revision credential and scope. Gateway profile
+resolution precedes access. Native roles can narrow authority; static/device grants
+cannot widen it. Profile or credential failure refuses access without machine fallback.
 
 The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, rewrites
 same-upstream redirects to the Agent origin, and strips upstream `Set-Cookie`
 and `Clear-Site-Data`.
 
-An upstream transfer failure stops the request. Before sending response headers,
-the proxy returns `503`; afterwards it aborts the response. An avatar `502`
-becomes an empty `404` for the initials fallback, and the proxy cancels its
-upstream body.
+An upstream transfer failure returns `503` before headers or aborts an already
+started response. Avatar `502` becomes empty `404` for initials; the proxy
+cancels its upstream body.
 
 ### 7. OCC proxies native WebSocket upgrades
 

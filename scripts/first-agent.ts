@@ -671,7 +671,6 @@ function nativeConfiguration(
                   userHeader: "x-occ-identity",
                   requiredHeaders: ["x-openclaw-scopes"],
                   allowUsers: ["occ-workspace-files"],
-                  requiredHeaders: ["x-openclaw-scopes"],
                 },
                 identityScopes: { "occ-workspace-files": ["operator.admin"] },
               }),

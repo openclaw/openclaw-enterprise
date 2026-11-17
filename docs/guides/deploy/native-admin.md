@@ -1,6 +1,6 @@
 # Deploy native admin UI access
 
-Enable native browser access for users with exact Agent `operate` or `administer` permission. They open chat or administration through OCC on an isolated per-Agent browser host using their ordinary OCE console session. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
+Expose native Agent chat or administration on an isolated Agent host through OCC. Access requires an OCE session and exact Agent `operate` or `administer` permission. Start with [Local development](#local-development), or [production installation](production-installation.md) and [workspace routing](workspace-routing.md) for existing clusters.
 
 ## Local development
 
@@ -160,7 +160,7 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. Select **Open draft** → **Configuration** → **Edit Configuration** to open the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), then merge the following JSON fields into the selected Agent's existing Configuration:
+A `200` response with `data.status: "unsupported"` can still supply `data.host`, `data.origin`, `data.activeRevisionId` and `data.url`. Copy the exact `data.origin`, including its port. Open **Open draft** → **Configuration** → **Edit Configuration** ([editor guide](../console/configuration-plugins-and-files.md#configuration-tab)), then merge these fields into the Agent's existing Configuration:
 
 ```json
 {
@@ -282,22 +282,22 @@ For retained overlong domains, follow [domain recovery](native-admin-domain-reco
 
 Match the refused request’s ID to `http.completed`. HTTP admission refusals carry `nativeAdmissionReason`; early guards and post-admission failures may omit it.
 
-| Symptom                                             | Check                                                                                                                                                                                                                     |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Helm render fails                                   | Native access requires private gateway routing. All browser sessions require HTTPS and an Agent DNS suffix sharing a non-public suffix with the Console.                                                                  |
-| An Agent root or chat link opens the console        | Sign in if prompted, then open chat from the Agent detail page. The link does not reopen the original chat session. A link that cannot be resolved lands on Agents with a notice.                                         |
-| Helm render fails on `auth.baseUrl`                 | `auth.baseUrl` must use HTTPS; Console and Agent hosts must share a non-public DNS suffix.                                                                                                                                |
-| API startup fails with `AUTH_BASE_URL_INVALID`      | Check that Console and Agent DNS hosts share a non-public suffix. IP addresses and missing Agent domains are refused.                                                                                                     |
-| API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                                                    |
-| API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | Native access enablement, Agent domain, public origin and private gateway routing.                                                                                                                                        |
-| Console panel is hidden                             | Feature enablement and exact Agent `operate` or `administer` permission.                                                                                                                                                  |
-| Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                                                   |
-| Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy.                                    |
-| Panel says browser chat is off                      | The selected version's Configuration does not turn on the browser UI. Add the settings in [Configure each Agent](#configure-each-agent), then deploy.                                                                     |
+| Symptom                                             | Check                                                                                                                                                                                                |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Helm render fails                                   | Native access requires private gateway routing. All browser sessions require HTTPS and an Agent DNS suffix sharing a non-public suffix with the Console.                                             |
+| An Agent root or chat link opens the console        | Sign in if prompted, then open chat from the Agent detail page. The link does not reopen the original chat session. A link that cannot be resolved lands on Agents with a notice.                    |
+| Helm render fails on `auth.baseUrl`                 | `auth.baseUrl` must use HTTPS; Console and Agent hosts must share a non-public DNS suffix.                                                                                                           |
+| API startup fails with `AUTH_BASE_URL_INVALID`      | Check that Console and Agent DNS hosts share a non-public suffix. IP addresses and missing Agent domains are refused.                                                                                |
+| API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                               |
+| API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | Native access enablement, Agent domain, public origin and private gateway routing.                                                                                                                   |
+| Console panel is hidden                             | Feature enablement and exact Agent `operate` or `administer` permission.                                                                                                                             |
+| Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                              |
+| Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy.               |
+| Panel says browser chat is off                      | The selected version's Configuration does not turn on the browser UI. Add the settings in [Configure each Agent](#configure-each-agent), then deploy.                                                |
 | Panel reports unsupported                           | Check the selected version's [native configuration requirements](../../reference/agent-native-admin.md#requirements) and Compute support for `getGatewayBrowserRequest` and its revision credential. |
-| Native tab cannot load                              | Browser wildcard DNS/TLS to API, the selected session mode, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                                                     |
-| Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                                                               |
-| Gateway stays unready after a container restart     | Run diagnostics reports a failed `peer-bridge-record` check; logs name `openclaw.json.oce-peer-bridge.json`. Delete the Pod to restore the managed snapshot; native edits are lost.                                       |
+| Native tab cannot load                              | Browser wildcard DNS/TLS to API, the selected session mode, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                                |
+| Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                                          |
+| Gateway stays unready after a container restart     | Run diagnostics reports a failed `peer-bridge-record` check; logs name `openclaw.json.oce-peer-bridge.json`. Delete the Pod to restore the managed snapshot; native edits are lost.                  |
 
 ### Repeated sign-in
 

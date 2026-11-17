@@ -1174,12 +1174,9 @@ export async function checkDedicatedModelCredentialPreparation(method: ModelCred
 }
 
 export async function checkStoppedRevisionCredentialCleanup(embedded: boolean) {
-  const fixture: CredentialWorkspace = workspaceSetupFixture(
-    embedded,
-    true,
-    undefined,
-    { gatewayRouting },
-  );
+  const fixture: CredentialWorkspace = workspaceSetupFixture(embedded, true, undefined, {
+    gatewayRouting,
+  });
   const { driver, namespace, objects } = fixture;
   const { harnessAuth, resolvedHarnessAuth } = modelAuthBindings(fixture, "api_key");
   const revision = {

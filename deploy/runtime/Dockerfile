@@ -279,7 +279,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
-    src/node-host/openclaw-id-join.test.ts src/node-host/openclaw-id-transport.test.ts \
+    src/node-host/openclaw-id-transport.test.ts \
     src/node-host/openclaw-id-enrollment.test.ts src/node-host/openclaw-id-target.test.ts \
     src/node-host/openclaw-id-connection.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \

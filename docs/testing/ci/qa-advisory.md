@@ -9,23 +9,22 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Scheduled QA runs Console Secret management on Compose/Kubernetes, OpenShell
-security and lifecycle files, local installation, and the native Agent browser workflow. Jobs use
-real dependencies on disposable installations. Results are advisory, not merge
-or publication gates.
+QA exercises Console Secrets on Compose/Kubernetes, OpenShell, local
+installation and native Agent browsing with real dependencies in disposable
+installations. Results are advisory, not merge or publication gates.
 
 <a id="when-it-runs"></a>
 
 ## Trigger
 
-| Trigger                                            | Jobs selected                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                              |
-| Manual run of `qa-advisory.yml` on `main`          | All four groups                                                              |
-| Eligible PR with `full-qa`                         | All four groups                                                              |
-| Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                       |
-| Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                             |
-| Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                      |
+| Trigger                                            | Jobs selected                                                                     |
+| -------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                                   |
+| Manual run of `qa-advisory.yml` on `main`          | All four groups                                                                   |
+| Eligible PR with `full-qa`                         | All four groups                                                                   |
+| Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                            |
+| Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                                  |
+| Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                           |
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, native Agent browser and all OpenShell jobs; no local installation job |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
