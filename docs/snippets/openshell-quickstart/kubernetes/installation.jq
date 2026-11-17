@@ -29,9 +29,7 @@
     "plugin": [
       {
         "id": "codex-plugin",
-        "configuration": {
-          "catalogSource": "openai-curated"
-        }
+        "configuration": {}
       }
     ],
     "configuration": {

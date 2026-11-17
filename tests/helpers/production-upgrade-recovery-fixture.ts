@@ -14,7 +14,6 @@ import { createRecoveryCommandHandler } from "./production-upgrade-recovery-comm
 import { evidenceFiles } from "./production-upgrade-recovery-evidence.ts";
 import { runPreflight, testCertificate } from "./production-upgrade-recovery-render.ts";
 import {
-  list,
   record,
   requireRecoveryPreflight,
   type CapabilityProbe,
@@ -400,7 +399,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       activeRevisionResponse,
       names = null,
       configurationValues = null,
-      pluginDrivers,
+      pluginDrivers = candidates ? [{ id: "codex-plugin", configuration: {} }] : undefined,
       candidatePluginDrivers,
       olderDraftRules = false,
       unavailableDraftResolver = false,
@@ -687,12 +686,6 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       assert.ok(drivers);
       if (candidatePluginDrivers) {
         drivers.plugin = candidatePluginDrivers;
-      } else {
-        const current = list(drivers.plugin ?? [], "installed Plugin drivers");
-        drivers.plugin = [
-          ...current,
-          { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
-        ];
       }
       await writeFile(join(directory, "candidate-values.json"), JSON.stringify(candidateValues), {
         mode: 0o600,

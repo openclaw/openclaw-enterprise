@@ -626,49 +626,13 @@ export function registerInstallationRecoveryCases({
     assert.ok(existsSync(join(f.evidence, "completed")));
   });
 
-  test("an image upgrade can select curated Codex while preserving both plugin registrations", async (t) => {
-    const pluginDrivers = [
-      { id: "occ-plugin", configuration: {} },
-      {
-        id: "codex-plugin",
-        configuration: {
-          catalogSource: "hosted",
-          codexExecutable: "/usr/bin/codex",
-          codexHome: "/var/lib/codex",
-        },
-      },
-    ] satisfies [PluginRegistration, PluginRegistration];
-    const candidatePluginDrivers = structuredClone(pluginDrivers);
-    candidatePluginDrivers[1].configuration.catalogSource = "openai-curated";
-    const f = await fixture(t, { candidates: true, pluginDrivers, candidatePluginDrivers });
-    await f.run();
-    const state = await f.state();
-    const installed: unknown = loadYaml(
-      decodedInstallation(mapping(mapping(state.secret).data)["installation.yaml"]),
-    );
-    assert.deepEqual(mappingAt(installed, "drivers").plugin, candidatePluginDrivers);
-  });
   // Existing installations can retain the former single-registration shape. Only
   // an explicit candidate may convert it, without changing the selected Driver.
   test("an image upgrade can explicitly wrap an existing plugin registration", async (t) => {
-    for (const selection of ["occ-plugin", "codex-plugin", "curated-codex"]) {
+    for (const selection of ["occ-plugin", "codex-plugin"]) {
       await t.test(selection, async (subtest) => {
-        const id = selection === "curated-codex" ? "codex-plugin" : selection;
-        const pluginDrivers = {
-          id,
-          configuration:
-            id === "codex-plugin"
-              ? {
-                  catalogSource: "hosted",
-                  codexExecutable: "/usr/bin/codex",
-                  codexHome: "/var/lib/codex",
-                }
-              : {},
-        };
+        const pluginDrivers = { id: selection, configuration: {} };
         const candidate = structuredClone(pluginDrivers);
-        if (selection === "curated-codex") {
-          candidate.configuration.catalogSource = "openai-curated";
-        }
         const candidatePluginDrivers = [candidate];
         const f = await fixture(subtest, {
           candidates: true,
@@ -689,8 +653,7 @@ export function registerInstallationRecoveryCases({
 
   test("wrapping a plugin registration preserves protected settings", async (t) => {
     for (const change of [
-      "executable",
-      "home",
+      "configuration",
       "driver",
       "extra-driver",
       "configuration-shape",
@@ -705,11 +668,7 @@ export function registerInstallationRecoveryCases({
       await t.test(change, async (subtest) => {
         const pluginDrivers: MalformedPluginRegistration = {
           id: "codex-plugin",
-          configuration: {
-            catalogSource: "hosted",
-            codexExecutable: "/usr/bin/codex",
-            codexHome: "/var/lib/codex",
-          },
+          configuration: {},
         };
         // Invalid installed registrations must not become accepted through wrapping.
         if (change === "unknown-installed-driver") {
@@ -726,11 +685,8 @@ export function registerInstallationRecoveryCases({
         }
         const candidate = structuredClone(pluginDrivers);
         const candidatePluginDrivers: (MalformedPluginRegistration | string)[] = [candidate];
-        if (change === "executable") {
-          mapping(candidate.configuration).codexExecutable = "/other/codex";
-        }
-        if (change === "home") {
-          mapping(candidate.configuration).codexHome = "/other/home";
+        if (change === "configuration") {
+          mapping(candidate.configuration).unexpected = true;
         }
         if (change === "driver") {
           candidate.id = "occ-plugin";

@@ -17,50 +17,20 @@ drivers:
     - id: occ-plugin
       configuration: {}
     - id: codex-plugin
-      configuration:
-        catalogSource: openai-curated
+      configuration: {}
 ```
 
-Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
-using a PAT or a Secret containing one. Hosted discovery needs API HTTPS to
-`auth.openai.com` and `chatgpt.com`. The
-[Codex profile](../../guides/deploy/installation-profiles.md#hosted-discovery-egress)
-renders matching Helm egress; manual YAML needs equivalent policy. The driver
-does not configure Kubernetes networking.
-
-The `openai-curated` setting above enables browsing without a credential or
-provider request.
-
-The curated catalog includes Linear, Slack, GitHub, Notion, Figma, Canva,
-Datadog, Sentry, Adobe, Coursera Learning, and Google Contacts. Their recorded
-entries omit tool inventory and account-specific availability, so set a default
-policy per plugin; per-tool controls need tool details. Notion, Figma, Canva, and
-Adobe include supported hosted apps with skills. Sentry is unavailable: its
-recorded release has no concrete hosted app. Details accept an entry's `remoteId`
-or `id`.
-
-An optional controller-side native `listCatalog` reader for hosted mode uses a
-separate Codex profile:
-
-```yaml
-drivers:
-  plugin:
-    - id: codex-plugin
-      configuration:
-        codexExecutable: /opt/codex/bin/codex
-        codexHome: /var/lib/occ/codex-catalog
-        requestTimeoutMs: 10000
-```
-
-Supply `codexExecutable` and `codexHome` together. Provision that home with Codex
-backend authentication, separately from the operator's ordinary profile.
-`requestTimeoutMs` defaults to 10,000 milliseconds and accepts 1–60,000.
-This reader starts native app-server, calls `plugin/list`, and may update its cache.
+Codex discovers plugins through its authenticated hosted catalog. Supply a
+Codex personal access token (PAT), a Secret containing one, or a supported saved
+ChatGPT credential source. OCC needs HTTPS egress to `auth.openai.com` and
+`chatgpt.com`. The [Codex profile](../../guides/deploy/installation-profiles.md#hosted-discovery-egress)
+renders matching Helm egress; manual Installation YAML needs equivalent policy.
+The Driver does not configure Kubernetes networking.
 
 Hosted Create Agent discovery reads GLOBAL plugin-service pages (maximum 20),
 fetching tools on demand. App-only plugins need no `requires_local_executor` field.
 A same-Namespace Secret can supply the PAT; managed ServiceAccount references are
-unsupported. Queries use hosted search; the curated catalog searches its bundled entries.
+unsupported. Queries use hosted search.
 The console preloads the first page when a PAT is entered or selected in Create
 Agent, or an editable Agent's Plugins tab opens with a bound PAT Secret;
 **Configure plugins** reuses that page or its pending request. Replacing the PAT
@@ -168,7 +138,7 @@ authenticated `codex_apps` names and connector ownership. Its
 when the connector IDs match. Unknown, unowned, or ambiguous IDs fail startup,
 as do two selected IDs targeting the same native tool.
 Catalog classifications are not required, and app defaults are not expanded into
-per-tool rules. The optional controller catalog reader still returns `tools:null`.
+per-tool rules.
 
 Supported plugins have concrete apps, skills, or both. Reported hooks, plugin MCP
 servers, scheduled tasks, and template-only plugins are unsupported. Startup checks

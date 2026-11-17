@@ -20,6 +20,7 @@ import {
 } from "./console-agents-browser-helpers.ts";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { mockHostedLinearCatalog } from "./console-hosted-plugin-fixture.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -467,9 +468,10 @@ test("repository rows and the Slack people search on Create Agent show an unclip
 });
 
 test("every stop in the Configure plugins dialog shows an unclipped token ring", async (t) => {
+  mockHostedLinearCatalog(t);
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Focus ring plugins", { ready: true });
@@ -480,6 +482,12 @@ test("every stop in the Configure plugins dialog shows an unclipped token ring",
     // No API key: Codex serves plugins only to ChatGPT logins.
     { executionMode: "dedicated", harnessAuth: null },
   );
+  const token = await fixture.createSecret(namespace.id, "Focus ring PAT", "at-focus-ring-pat");
+  await fixture.grantAgentSecretOperate(agent, token.ref);
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "codex_pat", source: token.ref },
+  });
   for (const viewport of consoleViewports) {
     const label = `Configure plugins at ${viewport.width}`;
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });

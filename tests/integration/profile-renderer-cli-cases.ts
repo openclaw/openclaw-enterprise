@@ -108,7 +108,7 @@ export function registerCliCases(): void {
     assert.equal(codex.summary.ok, true);
     assert.equal(codex.preflight.profile, "codex");
     assert.deepEqual(propertyAt(loadYaml(codex.installation), "drivers", "plugin"), [
-      { id: "codex-plugin", configuration: { catalogSource: "hosted" } },
+      { id: "codex-plugin", configuration: {} },
     ]);
     assert.doesNotMatch(codex.installation, /service_account: chatgpt-service-accounts/);
     assert.match(codex.values, /slackProxy:\n {2}enabled: true/);

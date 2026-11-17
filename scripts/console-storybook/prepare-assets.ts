@@ -54,17 +54,6 @@ await copyFile(
   new URL(license, assets),
 );
 
-await copyFile(
-  new URL("agents/plugin-fields.mjs", assets),
-  new URL("agents/plugin-fields.production.mjs", assets),
-);
-await writeFile(
-  new URL("agents/plugin-fields.mjs", assets),
-  stripTypeScriptTypes(
-    await readFile(new URL("./plugin-fields.storybook-wrapper.mts", import.meta.url), "utf8"),
-  ),
-);
-
 // Preview shipped Presets so screenshots follow their current contracts.
 for (const [name, file] of [
   ["default-codex", "default-codex"],

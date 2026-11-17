@@ -65,7 +65,7 @@ Choose unused local ports for the OCE API, HTTPS Console and Kubernetes API. The
 
 If you build from source and your network inspects HTTPS, [configure the proxy CA for source builds](../operate/troubleshooting.md#source-build-fails-tls-certificate-verification) before running `occ dev up`.
 
-The [plugin network policy](../../snippets/openshell-quickstart/plugin-network-policy.yaml), copied to `$RUN_DIR/artifacts.yaml`, grants the two pinned Codex binaries read-only HTTPS access to the listed package hosts.
+The [plugin network policy](../../snippets/openshell-quickstart/plugin-network-policy.yaml), copied to `$RUN_DIR/artifacts.yaml`, grants the two pinned Codex binaries read-only HTTPS access to the listed package hosts. For account-specific Codex plugin discovery, export `CODEX_DISCOVERY_CIDRS` before startup as a JSON array of reviewed IPv4 `/32` destinations for `auth.openai.com` and `chatgpt.com`. The launcher adds these to the API Pod's HTTPS egress. Without this setting, hosted discovery needs a separately configured egress policy. See the [DNS snapshot command](eks-openshell-setup.md#1-prepare-the-cluster-and-images).
 
 ```bash
 # Select an isolated state directory and the Kubernetes-only OpenShell profile.
@@ -87,7 +87,7 @@ The launcher enables Gateway TLS, mTLS and authentication before startup. Wait f
 
 ## 3. Configure Credential Gateway
 
-Run this from the matching release checkout. The configuration script removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
+Run this from the matching release checkout. The configuration script removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules. Codex plugin discovery uses the authenticated hosted catalog. Git access requires an explicit repository binding and its authorized installation profile.
 
 The [configuration script](../../snippets/openshell-quickstart/configure-installation.mts) checks that the generated rule matches the expected settings before changing it.
 

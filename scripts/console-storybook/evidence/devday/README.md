@@ -2,17 +2,7 @@
 
 ## Plugin configuration in the DevDay create flow
 
-Current source serves a Storybook-only curated plugin catalog in the DevDay
-create flow. It includes the 26 curated plugin suggestions, including Linear,
-Slack, GitHub, Figma, Notion, and Sentry, plus the existing simulated Calendar
-entry. The checkpoint now adds Linear, sets automatic review by default, and
-requires approval for Create issue. This remains simulated UI evidence, not live
-plugin access, credential readiness, or runtime policy enforcement.
-
-The current DevDay Storybook fixture keeps that catalog available regardless of
-the create path: Start with default Preset, every DevDay Preset, both standard
-Presets, new model Secret entry, and existing model Secret selection. The
-checkpoint exercises the same Linear policy steps and reaches the Workspace tab.
+The current DevDay Storybook flow uses the production plugin picker and loads a simulated hosted catalog after the operator selects a Codex service-account Secret. Linear has simulated search and create issue tools; the checkpoint adds Linear, sets automatic review by default, and requires approval for Create issue. This is simulated UI evidence, not live plugin access or runtime enforcement.
 
 Verified source `a27ec9ad9d032cba731b4703621a1dd44008f867`, rebased onto
 `fbbc0e42`, in headed Chromium on macOS on September 24, 2026. The manual

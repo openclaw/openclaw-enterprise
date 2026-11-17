@@ -6,7 +6,7 @@ kind: reference/driver
 
 ## Overview
 
-`PluginDriver` supplies a curated catalog, policy capabilities, and policy
+`PluginDriver` supplies a Harness-specific catalog, policy capabilities, and policy
 validation for an Agent Harness. OpenClaw Control Plane (OCC) owns Agent
 selections, authorization, and Agent revisions.
 Compute owns native installation, runtime connections, readiness, activation,
@@ -83,10 +83,9 @@ gates are not part of this metadata contract.
 Authorized `GET /installation` exposes each enabled catalog's Harness, Driver identity and policy capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
 
 There is no exported install, enable, policy-translation, or preparation method.
-The optional _backend reader_ in bundled Codex is different from the required
-`listCatalog` method: without that reader, an explicit catalog call fails, but
-saving Agent selections and deploying supported selections can still use the
-Agent runtime's discovery path.
+The required `listCatalog` method has no caller in the normal OCC plugin workflow.
+Bundled Codex does not implement this internal catalog read; use authenticated
+`discoverCatalog` and `getCatalogPlugin` instead.
 
 Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken?,
 cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
@@ -198,7 +197,7 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
 
 | Symptom                                                           | What to check                                                                                                                                                       |
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A catalog call fails                                              | Check that the selected Driver matches the Harness. Bundled Codex also needs its optional controller catalog reader configured for this method.                     |
+| A catalog call fails                                              | Check that the selected Driver matches the Harness. For Codex, use authenticated discovery and check API egress to the hosted catalog.                              |
 | A saved selection will not deploy                                 | Confirm the same Driver is still selected, the Harness is supported, and its native policy can represent the whole requested selection.                             |
 | Startup reports `PLUGIN_AUTH_REQUIRED` or `PLUGIN_INSTALL_FAILED` | Check the selected plugin and its Harness/provider access. Other startup errors are not translated into these warnings; consult the selected backend's diagnostics. |
 | A disabled plugin still appears installed                         | Installation and Agent-local execution are separate. Check effective Agent configuration and policy before treating the plugin as enabled.                          |

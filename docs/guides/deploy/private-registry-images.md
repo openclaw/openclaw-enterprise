@@ -18,9 +18,9 @@ alone does not establish the image contents. Publication smoke checks do not
 prove a production deployment. Select images that include the features you need
 and support the target node architectures.
 
-For the current production example, select a controller supporting the curated
-Codex catalog (`catalogSource: openai-curated`) and the
-[browser request origin check](../../reference/authentication.md#browser-request-origin).
+For the current production example, select a controller supporting authenticated
+Codex plugin discovery and the [browser request origin check](../../reference/authentication.md#browser-request-origin).
+Configure the API egress needed for hosted discovery.
 
 Use a clean checkout at that exact commit for the Helm chart, Installation
 examples, and helpers. From the repository root, compare `git rev-parse HEAD`

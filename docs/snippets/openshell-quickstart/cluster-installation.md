@@ -4,13 +4,12 @@ published: false
 
 ## 2. Install OpenShell and bootstrap OCC
 
-The templates use release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`. Keep these names; they match the staged policies.
+Use release `oce`, OpenShell `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system` to match staged policies.
 
-Exclude other install, upgrade and Job writers. Use a local chart and the matching CLI. Keep the new
-`$RUN_DIR/install-receipt` directory for [read-only handoff](production-handoff.md#resume-an-installation-in-progress).
-After an interrupted install, reconcile that receipt before any further writes.
+Exclude competing install, upgrade, and Job writers. Use the matching local chart and CLI. Keep
+`$RUN_DIR/install-receipt` for [read-only handoff](production-handoff.md#resume-an-installation-in-progress); reconcile the receipt before writing after an interruption.
 
-For CoreDNS, read the Kubernetes DNS zone below. For other DNS servers, get `CLUSTER_DOMAIN` from your cluster administrator. Confirm this DNS suffix before continuing.
+Read the DNS zone from CoreDNS below. For another DNS server, ask your administrator for `CLUSTER_DOMAIN`. Confirm the suffix.
 
 ```bash
 CLUSTER_DOMAIN=$(kubectl -n kube-system get configmap coredns -o json |
@@ -18,6 +17,8 @@ CLUSTER_DOMAIN=$(kubectl -n kube-system get configmap coredns -o json |
 export CLUSTER_DOMAIN
 printf 'Cluster DNS domain: %s\n' "$CLUSTER_DOMAIN"
 ```
+
+For hosted Codex discovery, set `CODEX_DISCOVERY_CIDRS` to approved [destinations](installation-profiles.md#hosted-discovery-egress).
 
 ```bash
 assets="$RUN_DIR/kubernetes"
@@ -39,7 +40,8 @@ jq -n --arg cluster "$CLUSTER_NAME" --arg runtime "${RUNTIME_IMAGE:?}" --arg sto
   > "$RUN_DIR/installation.json"
 jq -n --arg cluster "$CLUSTER_NAME" --arg controller "${CONTROLLER_IMAGE:?}" --arg email "${ADMIN_EMAIL:?}" \
   --arg hostname "$route_host" --argjson databaseCidrs "${DATABASE_CIDRS:?}" \
-  --argjson apiCidrs "${API_CIDRS:?}" -f "$assets/values.jq" > "$RUN_DIR/values.json"
+  --argjson apiCidrs "${API_CIDRS:?}" --argjson discoveryCidrs "${CODEX_DISCOVERY_CIDRS:-[]}" \
+  -f "$assets/values.jq" > "$RUN_DIR/values.json"
 ```
 
 <a id="set-the-production-browser-origins-before-installing-occ"></a>

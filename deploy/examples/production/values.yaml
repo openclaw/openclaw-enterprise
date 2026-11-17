@@ -34,7 +34,9 @@ api:
   # gateway proxy in installation.yaml, or enable slackProxy below.
   # See docs/guides/integrations/slack.md.
   # channelDirectoryProxyUrl: http://198.51.100.25:3128
-  # Optional; see model discovery in docs/reference/console/create-and-deploy.md.
+  # Required for Codex hosted plugin discovery: set reviewed IPv4 /32 destinations
+  # for auth.openai.com and chatgpt.com as seen by API Pods. The Codex profile
+  # renderer resolves a DNS snapshot; verify and refresh it when addresses change.
   modelDiscoveryCidrs: []
   # Optional MCP plugin discovery HTTPS hosts; see docs/guides/topics/plugins-configure.md.
   pluginDiscoveryCidrs: []

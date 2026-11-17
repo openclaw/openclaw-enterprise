@@ -161,7 +161,7 @@ outcomes either.
 For real-provider proof, use the Console for fresh device login, select the
 resulting source on a dedicated Codex Agent, and verify initial workspace files,
 an active deployment, a real model response, and a subsequent version using
-the same source. Select `codex-plugin` with `catalogSource: hosted` to verify
+the same source. Select `codex-plugin` to verify authenticated hosted
 directory discovery. Selected runtime plugins remain unsupported; discovery
 does not prove plugin execution. The remaining qualification boundaries are below.
 
