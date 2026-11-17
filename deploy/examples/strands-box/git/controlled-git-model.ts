@@ -138,19 +138,21 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
   const tag = nonce.slice(0, 12);
   const dir = `${WORKSPACE}/x5-${tag}`;
   const url = (repository: string) => `https://github.com/${repository}.git`;
+  // Every git call names its repository (`git -C`): in Box a host binary does not start in the
+  // directory the shell's `cd` chose (finding 3318), so a bare `git` after `cd` finds no repository.
   const commit = [
     `git clone -q ${url(plan.repository)} ${dir}`,
-    `cd ${dir}`,
-    `git switch -q -c ${plan.branch}`,
-    `printf '%s\\n' ${nonce} > x5-${tag}.txt`,
-    `git add x5-${tag}.txt`,
-    `git -c user.name=oce-dogfood-agent -c user.email=agent@example.invalid commit -q -m 'x5 dry run ${tag}'`,
+    `git -C ${dir} switch -q -c ${plan.branch}`,
+    `printf '%s\\n' ${nonce} > ${dir}/x5-${tag}.txt`,
+    `git -C ${dir} add x5-${tag}.txt`,
+    `git -C ${dir} -c user.name=oce-dogfood-agent -c user.email=agent@example.invalid commit -q -m 'x5 dry run ${tag}'`,
   ].join(" && ");
   switch (step) {
     case "push":
-      return `${commit} && git push ${url(plan.repository)} HEAD:refs/heads/${plan.branch} 2>&1 | tail -4`;
+      return `${commit} && git -C ${dir} push ${url(plan.repository)} HEAD:refs/heads/${plan.branch} 2>&1 | tail -4`;
     case "draft":
-      return `cd ${dir} && gh pr create --draft --repo ${plan.repository} --head ${plan.branch} --base ${plan.base} --title 'x5 dry run ${tag}' --body 'Synthetic Stage B dry run' 2>&1 | tail -3`;
+      // `--repo` and `--head` name the pull request without a local checkout.
+      return `gh pr create --draft --repo ${plan.repository} --head ${plan.branch} --base ${plan.base} --title 'x5 dry run ${tag}' --body 'Synthetic Stage B dry run' 2>&1 | tail -3`;
     case "placeholders":
       // Digests and lengths only: the values must be Box placeholders, never a credential.
       return [
@@ -164,7 +166,7 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
     case "other-repository-api":
       return `gh api repos/${plan.otherRepository} 2>&1 | tail -2`;
     case "other-ref":
-      return `cd ${dir} && git push ${url(plan.repository)} HEAD:refs/heads/${plan.otherRef} 2>&1 | tail -4`;
+      return `git -C ${dir} push ${url(plan.repository)} HEAD:refs/heads/${plan.otherRef} 2>&1 | tail -4`;
     case "after-withdrawal":
     case "worker-down":
       return `git ls-remote ${url(plan.repository)} 2>&1 | tail -2`;
