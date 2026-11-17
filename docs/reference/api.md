@@ -1639,7 +1639,48 @@ Create an Installation-wide or Namespace-scoped connection template
 
 **Content type:** `application/json`
 
-Schema: `object or object or object`.
+**`mode: "static_bearer"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `mode` | `"static_bearer"` | Yes | — |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `privatePeer` | `object or object` | No | — |
+| `protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+
+**`mode: "manual"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `authorizationParameters` | `object<string, string>` | No | max properties: 32 |
+| `authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `destinations` | `array<object>` | Yes | min items: 1 |
+| `destinations[].host` | `string` | Yes | min length: 1; max length: 253 |
+| `destinations[].path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
+| `destinations[].port` | `integer` | No | minimum: 1; maximum: 65535 |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `mode` | `"manual"` | Yes | — |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `scopes` | `array<string>` | Yes | unique items: true; Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
+| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+
+**`mode: "mcp_discovery"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `authorizationParameters` | `object<string, string>` | No | max properties: 32 |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `mode` | `"mcp_discovery"` | Yes | — |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `scopes` | `array<string>` | Yes | unique items: true; Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
+| `serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 
 Example request
 ```json
@@ -1966,7 +2007,51 @@ Rename a connection template, or create a version with new approved values
 
 **Content type:** `application/json`
 
-Schema: `object or object or object or object`.
+**Required fields: `displayName`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+
+**`mode: "static_bearer"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `displayName` | `string` | No | min length: 1; max length: 200 |
+| `mode` | `"static_bearer"` | Yes | — |
+| `privatePeer` | `object or object` | No | — |
+| `protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+
+**`mode: "manual"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `authorizationParameters` | `object<string, string>` | No | max properties: 32 |
+| `authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `destinations` | `array<object>` | Yes | min items: 1 |
+| `destinations[].host` | `string` | Yes | min length: 1; max length: 253 |
+| `destinations[].path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
+| `destinations[].port` | `integer` | No | minimum: 1; maximum: 65535 |
+| `displayName` | `string` | No | min length: 1; max length: 200 |
+| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `mode` | `"manual"` | Yes | — |
+| `oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `scopes` | `array<string>` | Yes | unique items: true; Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
+| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+
+**`mode: "mcp_discovery"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `authorizationParameters` | `object<string, string>` | No | max properties: 32 |
+| `displayName` | `string` | No | min length: 1; max length: 200 |
+| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `mode` | `"mcp_discovery"` | Yes | — |
+| `oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `scopes` | `array<string>` | Yes | unique items: true; Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
+| `serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 
 Example request
 ```json
