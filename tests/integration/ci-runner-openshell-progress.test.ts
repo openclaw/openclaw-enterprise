@@ -16,6 +16,12 @@ import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { readFileEvidence, type FileEvidence } from "../../scripts/ci/runner-reporter-output.ts";
 import {
+  observeDeadline,
+  pendingLine,
+  readinessReceipt,
+  timeoutReceipt,
+} from "../helpers/ci-runner-deadline.ts";
+import {
   createRunnerFixture,
   laneArgs,
   runnerEnv,
@@ -462,11 +468,15 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
     ["wrong-declaration", undefined, undefined],
     ["completed-wrapper-emitter", undefined, undefined],
     ["case-deadline", "activation", "unfinished"],
-    ["runner-deadline", "activation", "unfinished"],
+    ["runner-deadline", undefined, undefined],
+    ["runner-deadline-after-activation", "activation", "unfinished"],
+    ["runner-deadline-after-wrapper", undefined, undefined],
     ["success", undefined, undefined],
     ["activation", "activation", "failed", true],
     ["case-deadline", "activation", "unfinished", true],
-    ["runner-deadline", "activation", "unfinished", true],
+    ["runner-deadline", undefined, undefined, true],
+    ["runner-deadline-after-activation", "activation", "unfinished", true],
+    ["runner-deadline-after-wrapper", undefined, undefined, true],
     ["wrong-file", undefined, undefined, true],
     ["wrong-declaration", undefined, undefined, true],
     ["completed-wrapper-emitter", undefined, undefined, true],
@@ -482,8 +492,11 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const cleanupMarker = join(root, "state/cleanup");
       const activationPoll = join(root, "state/activation-poll");
       const caseDeadline = mode === "case-deadline";
-      const runnerDeadline = mode === "runner-deadline";
-      const pendingActivation = caseDeadline || runnerDeadline;
+      const wallDeadline = mode === "runner-deadline";
+      const completedWrapper = mode === "runner-deadline-after-wrapper";
+      const controlledDeadline = mode === "runner-deadline-after-activation" || completedWrapper;
+      const runnerDeadline = wallDeadline || controlledDeadline;
+      const pendingActivation = caseDeadline || controlledDeadline;
       const success = mode === "success";
       const name = mode === "wrong-case" ? "another case" : title;
       const upstreamLane = mode === "reconciliation" ? "openshell" : "openshell-installers";
@@ -510,8 +523,15 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
            import test from "node:test";
            import { emitOpenShellProgress, emitOpenShellReplacementCheckpoint } from ${JSON.stringify(progressModule)};
           `
-          : "";
-      const wrapperSource = `${earlierCase}await import("../helpers/${declaration}");\n`;
+          : completedWrapper
+            ? `import test from "node:test";
+               test(${JSON.stringify(join(runnerRoot, file))}, () => {});
+              `
+            : "";
+      // The wall-clock case holds the worker before it can register the selected case.
+      const wrapperSource = wallDeadline
+        ? "setInterval(() => {}, 1000);\nawait new Promise(() => {});\n"
+        : `${earlierCase}await import("../helpers/${declaration}");\n`;
       if (aliasedEntry) {
         const actualWrapper = join(root, upstreamFile);
         await writeFile(actualWrapper, wrapperSource);
@@ -580,6 +600,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
                  if (path === agentPath) {
                  if (${pendingActivation}) {
                    writeFileSync(${JSON.stringify(activationPoll)}, "polling");
+                   if (${controlledDeadline}) process.stdout.write(${JSON.stringify(pendingLine)});
                    // Keep Node alive while the real activation poll and its caller are pending.
                    const hold = setInterval(() => {}, 1000);
                    t.signal.addEventListener("abort", () => clearInterval(hold), { once: true });
@@ -617,7 +638,10 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const runner = await runRunnerAsync(
         laneArgs(runnerRoot, lane, state, results),
         { CI_RUNNER_TEST_TIMEOUT_MS: runnerDeadline ? "5000" : "10000" },
-        { timeout: 30_000 },
+        {
+          timeout: 30_000,
+          execArgv: runnerDeadline ? observeDeadline(controlledDeadline) : [],
+        },
       );
       assert.equal(runner.error, undefined);
       assert.equal(runner.status, success ? 0 : 1, runner.stderr);
@@ -625,6 +649,8 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const summary: {
         files: {
           status: string;
+          nodeExitCode: number | null;
+          signal: NodeJS.Signals | null;
           openShellReplacement?: { checkpoint: string; outcome: string };
           openShellUnfinishedStage?: string;
           cleanup: { status: string };
@@ -644,6 +670,68 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       assert.equal(result.status, success ? "passed" : "failed");
       if (pendingActivation) {
         assert.equal(await readFile(activationPoll, "utf8"), "polling");
+      }
+      if (runnerDeadline) {
+        const receipt: unknown = JSON.parse(await readFile(join(root, timeoutReceipt), "utf8"));
+        assert.ok(isRecord(receipt));
+        const { elapsedMs } = receipt;
+        assert.ok(typeof elapsedMs === "number" && Number.isFinite(elapsedMs) && elapsedMs >= 0);
+        assert.deepEqual(
+          receipt,
+          {
+            trigger: controlledDeadline ? "readiness" : "wall",
+            elapsedMs,
+            delay: 5000,
+            code: "ETIMEDOUT",
+            status: 1,
+            signal: null,
+            ...(controlledDeadline ? { orderedBeforeBarrier: true } : {}),
+          },
+          "the actual file timer must fire from the expected trigger",
+        );
+        // Node/libuv timers use millisecond ticks. Allow one tick of quantization.
+        assert.ok(controlledDeadline ? elapsedMs < 5000 : elapsedMs >= 4999);
+        assert.deepEqual([result.nodeExitCode, result.signal], [1, null]);
+      }
+      if (controlledDeadline) {
+        const receipt: unknown = JSON.parse(await readFile(join(root, readinessReceipt), "utf8"));
+        const entry = join(runnerRoot, upstreamFile);
+        const wrapper = join(root, upstreamFile);
+        assert.deepEqual(
+          receipt,
+          {
+            lifecycle: [
+              ["test:dequeue", entry, null, entry, 0, true],
+              ...(completedWrapper
+                ? [
+                    ["test:dequeue", wrapper, entry, entry, 0, true],
+                    ["test:complete", wrapper, entry, entry, 0, true],
+                  ]
+                : []),
+              ["test:dequeue", join(root, upstreamOutageCase.declaration), entry, title, 0, true],
+            ],
+            poll: 1,
+            progress: [
+              ...["installation", "exposure-auth", "initial-model"].flatMap((stage) =>
+                ["started", "passed"].map((outcome) => ({
+                  kind: "openshell-stage",
+                  stage,
+                  outcome,
+                })),
+              ),
+              {
+                kind: "openshell-stage",
+                stage: "replacement",
+                outcome: "started",
+              },
+              ...["redeploy-request", "activation"].map((checkpoint) => ({
+                kind: "openshell-replacement-checkpoint",
+                checkpoint,
+              })),
+            ],
+          },
+          "the native reporter must consume the exact lifecycle and nine ordered rows before timeout",
+        );
       }
       const expectedReplacement = checkpoint ? { checkpoint, outcome } : undefined;
       if (
@@ -669,6 +757,12 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         assert.deepEqual(result.openShellReplacement, expectedReplacement);
       }
       assert.equal(result.openShellUnfinishedStage, pendingActivation ? "replacement" : undefined);
+      if (runnerDeadline) {
+        assert.equal(
+          result.issues.some(({ code }) => code === "runner-error"),
+          false,
+        );
+      }
       assert.equal(
         result.issues.some(({ code }) => code === "test-timeout"),
         runnerDeadline,
@@ -687,17 +781,22 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       );
       assert.equal(
         replacement?.outcome,
-        pendingActivation ? undefined : success || mode === "later-stage" ? "passed" : "failed",
+        pendingActivation || wallDeadline
+          ? undefined
+          : success || mode === "later-stage"
+            ? "passed"
+            : "failed",
       );
       assert.equal(
         result.tests[0]?.error?.failureType,
         caseDeadline ? "testTimeoutFailure" : undefined,
       );
-      if (pendingActivation) {
+      if (caseDeadline || runnerDeadline) {
         const diagnostics: {
           failures: {
             reason: string;
             timeoutMs?: number;
+            elapsedMs?: number;
             interruptedTests?: { name: string }[];
           }[];
         } = JSON.parse(await readFile(`${state}.diagnostics.json`, "utf8"));
@@ -705,9 +804,10 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         assert.ok(failure);
         assert.equal(failure.reason, runnerDeadline ? "timeout" : "failed");
         assert.equal(failure.timeoutMs, runnerDeadline ? 5000 : undefined);
+        if (wallDeadline) assert.ok((failure.elapsedMs ?? -1) >= 4999);
         assert.deepEqual(
           failure.interruptedTests?.map(({ name }) => name),
-          runnerDeadline ? [title] : undefined,
+          controlledDeadline ? [title] : undefined,
         );
       }
       if (
@@ -827,7 +927,10 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
     { type: "test:pass", data: { ...prior, details: { type: "test" } } },
   ];
   const siblings = Array.from({ length: 21 }, (_, i) => "other-" + i);
-  const exactActivation = { checkpoint: "activation", outcome: "unfinished" } as const;
+  const exactActivation = {
+    checkpoint: "activation",
+    outcome: "unfinished",
+  } as const;
 
   type Cutoff = {
     events: Event[];
@@ -881,7 +984,10 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       unfinishedStage: "replacement",
     },
   };
-  type Interruption = Cutoff & { interruptedNames?: string[]; partialLine?: string };
+  type Interruption = Cutoff & {
+    interruptedNames?: string[];
+    partialLine?: string;
+  };
   const interruptions: Record<string, Interruption> = {
     "progress after interruption": {
       events: [...active, interrupted, activation],
@@ -914,7 +1020,12 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       events: [
         {
           type: "test:dequeue",
-          data: { name, nesting: 0, entryFile: absolutePath, file: testCase.file },
+          data: {
+            name,
+            nesting: 0,
+            entryFile: absolutePath,
+            file: testCase.file,
+          },
         },
         ...active.slice(1),
         interrupted,
