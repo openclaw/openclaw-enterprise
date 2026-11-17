@@ -8,7 +8,7 @@ author: freeqaz
 
 - **ID:** RFC-0040
 - **Created:** 2026-11-16
-- **Last updated:** 2026-11-16
+- **Last updated:** 2026-11-17
 - **RFC PR:** [#6346](https://github.com/openclaw/openclaw-enterprise/pull/6346)
 - **Related:** [Sandbox contract](../../docs/reference/drivers/sandbox.md),
   [Credential Proxy contract](../../docs/reference/drivers/credential-proxy.md),
@@ -22,61 +22,47 @@ author: freeqaz
 
 ## Summary
 
-An operator installs a Sandbox Driver package that runs each dedicated Codex Harness outside the Pods that Kubernetes
-Compute owns. The Harness runs on a host-level sandbox, and the host enforces filesystem and network confinement.
-The Agent works like any other OCE Agent: ordinary chat, workspace files, and protected repository access through the
-Worker's existing GitHub App token service, with withdrawal while the chat continues. This RFC defines that
-**external Sandbox profile** as one composition of existing and already proposed primitives. It adds only the pieces
-none of them owns: generic names and one binding format, a public export for the stock workspace-node launch,
-installed-package validation for every new member, an optional Worker control mount, the expected execution-credential
-pattern for a paired Credential Proxy, the Worker-supplied GitHub request decision, and a conformance kit that names
-no provider. Strands Box is the worked example.
-Strands-specific code stays in an installable example package.
+An operator installs a Sandbox Driver package that runs each dedicated Codex Harness on a host-level sandbox outside
+the Pods that Kubernetes Compute owns; the host enforces filesystem and network confinement. The Agent works like any
+other OCE Agent. This RFC defines that **external Sandbox profile** as a composition of existing and proposed
+primitives, and adds only what none of them owns (the "this RFC" rows of the contract surface). Strands Box is the
+worked example; its code stays in an installable example package.
 
 ## Motivation
 
-OCE is designed to confine Agents with different Sandboxes behind one set of contracts. OpenShell is bundled. The
-second implementation is an [example Driver for Strands Box](https://github.com/openclaw/openclaw-enterprise/tree/6beef115bc4f65f7ae0a4316cbcccb5bd8e86ebd/deploy/examples/strands-box).
-Strands Box is a Linux host sandbox built on user and network namespaces, Bubblewrap, and an egress gateway that
-intercepts every connection and can inject phantom credentials. The pilot reached a working ordinary chat, and it also
-found that core had absorbed provider-shaped names and private imports:
-- a trust directory `/etc/openclaw-box-owner`, a response header `x-openclaw-box-owner`, and the runtime patch
-  `openclaw-codex-box-owner.patch`;
-- a chart value `worker.strandsBoxControlClaimName` mounted at `/run/strands-box`;
-- the package's host helpers import `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts` by relative
-  path, which an installed package cannot do;
-- the installed-package validator (`packages/occ/src/driver-contract.ts`) checks `harnessHome` but none of the new
-  optional members.
+OCE is designed to confine Agents with different Sandboxes behind one set of contracts. OpenShell is bundled; the
+second implementation is an [example Driver for Strands Box](https://github.com/openclaw/openclaw-enterprise/tree/6beef115bc4f65f7ae0a4316cbcccb5bd8e86ebd/deploy/examples/strands-box),
+a Linux host sandbox whose egress gateway intercepts every connection. Its pilot reached ordinary chat, but put
+provider-shaped names into core and imported controller source, which an installed package cannot do.
 
-The work is too large to review as one change. It also has no agreed boundary between "a primitive any external
-Sandbox uses" and "this provider's adapter". Four proposals cover parts of the core: RFC-0030 (ordinary
-external workspace owner), RFC-0031 and the RFC-0023 amendment (protected workspace endpoint and pin), and the RFC-0016
-amendment (one package registration for Sandbox, Credential Gateway and Credential Proxy). None of them describes the
-profile as a whole or the parts listed above.
+Four proposals cover parts of the core: RFC-0030 (ordinary external workspace owner), RFC-0031 and the RFC-0023
+amendment (protected workspace endpoint and pin), and the RFC-0016 amendment (one package registration). None draws
+the line between "a primitive any external Sandbox uses" and "this provider's adapter", and the whole is too large to
+review as one change.
 
 <a id="scope"></a>
 
 ## Goals
 
 1. An external Sandbox package needs **no provider-specific code in core**. Every core member it uses has a generic
-   name, generic documentation and a conformance test that names no provider.
+   name, documentation and a provider-free conformance test.
 2. Ordinary chat and workspace files work on an external Sandbox, with the Gateway enforcing the binding to the
    original provider execution (RFC-0030).
 3. Protected repository access uses the **same GitHub App installation-token flow and request decision as
-   OpenShell**: the Worker's token service prepares a repository-scoped token, and OCE classifies and authorizes each
-   GitHub request. No token or key enters the workload. Withdrawal refuses fresh Git before any provider traffic while
+   OpenShell**. No token or key enters the workload. Withdrawal refuses fresh Git before any provider traffic while
    the chat continues.
 4. The package installs through the existing [Driver package loader](../../docs/reference/drivers/selection.md#select-the-installed-driver),
    and the loader validates every optional member it declares.
 
 ## Non-goals
 
-- A bundled, in-tree provider Driver (the earlier RFC-0024 draft, closed). The provider stays an installable package.
-- A separate credential issuer service, or any token flow parallel to the Worker's prepared-git owner.
+- A bundled, in-tree provider Driver (see the alternatives).
+- A separate credential issuer service, any token flow parallel to the Worker's prepared-git owner, or an OCE-run
+  forwarding sender: the Sandbox host injects.
 - Changing [native prepared Git](../../docs/reference/repository-credentials/prepared-native-git.md) admission, which
   still refuses a Sandbox selection.
-- Multi-node control transport between the Worker and an external host (see the unresolved questions).
-- Provider upstream changes. A provider's own gaps belong in its package's known-gaps list.
+- Multi-node control transport between the Worker and an external host (question 2).
+- Provider upstream changes; a provider's gaps belong in its package's known-gaps list.
 
 <a id="design"></a>
 
@@ -87,9 +73,9 @@ profile as a whole or the parts listed above.
 | Owner | Decides and holds | Never holds |
 |---|---|---|
 | Kubernetes Compute | Gateway workload, revision pins, signed release, activation, cleanup of what it created | provider host state |
-| Sandbox package, `sandbox` view (runs in API and Worker) | Harness provisioning on the host, execution identity, endpoint and status observations | the Gateway bearer (verifier only), repository tokens |
-| Sandbox host (outside the confinement) | the workload launch, its egress policy, a per-execution credential, workspace mounts, injection of the header OCE returns | App keys, GitHub request rules |
-| Sandbox package, `credential_proxy` view (Worker only) | execution authentication, relay of each held request to OCE's request decision | the App key, GitHub request rules |
+| Sandbox package, `sandbox` view (runs in API and Worker) | Harness provisioning on the host, execution identity, endpoint and status observations, the Gateway bearer during `harnessStatus` and enrollment | the bearer in Harness launch inputs (verifier only) or host state, repository tokens |
+| Sandbox host (outside the confinement) | the workload launch, its egress policy, the per-execution credential, workspace mounts, injection of the credential OCE releases | App keys, GitHub request rules, a stored repository token |
+| Sandbox package, `credential_proxy` view (Worker only) | execution authentication, relay of each held request to OCE's request decision | the App key, GitHub request rules, a credential from its own material read |
 | Worker prepared-git owner (existing) | GitHub App key, repository-scoped installation tokens, grant checks, request classification, ref and draft rules, use records | — |
 | Agent Gateway runtime | enforcement of the mounted binding on every native connection and turn | provider credentials |
 
@@ -100,57 +86,71 @@ The profile uses the existing Sandbox members `provisionHarness`, `harnessEndpoi
 
 | Member or behaviour | Owner of the decision |
 |---|---|
-| `SandboxDriver.harnessTransportCredential?: "verifier"`: Compute delivers the transport verifier, never the raw bearer, to a provider-owned dedicated Harness | this RFC ([#6345](https://github.com/openclaw/openclaw-enterprise/pull/6345)) |
-| `SandboxDriver.maintenanceIntervalMs?` with `existingHarnessOnly` on the Compute revision and Sandbox Harness contexts: periodic maintenance of an active revision reports a missing Harness and never recreates it; a Driver that declares the interval must implement `provisionHarness` | this RFC ([#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098)) |
+| `SandboxDriver.harnessTransportCredential?: "verifier"`: the Harness launch requirements carry the transport verifier, not the bearer Secret reference; read on every reconcile | this RFC ([#6345](https://github.com/openclaw/openclaw-enterprise/pull/6345)) |
+| `SandboxDriver.maintenanceIntervalMs?` and `existingHarnessOnly` in the Harness contexts: maintenance of an active revision reports a missing Harness and never recreates it | this RFC ([#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098)) |
 | `SandboxHarnessEndpoint.externalWorkspaceOwner.generationSha256` + Gateway external-sandbox turn policy | RFC-0030 |
 | Protected workspace capability, first-choice pin, consumer acknowledgment, bootstrap Gateway for the first node setup | RFC-0031, RFC-0023 amendment |
 | One package registration with `sandbox`, `credential_gateway` and `credential_proxy` views | RFC-0016 amendment |
 | `CredentialProxyDriver.bindRepositoryGit(authority, requests)`: the Worker supplies `requests.authorize`, OCE's GitHub request decision | this RFC ([#6350](https://github.com/openclaw/openclaw-enterprise/pull/6350)) |
-| Names, binding format, public node-launch export, validation, Worker mount, conformance kit | this RFC (below) |
+| Everything below | this RFC |
 
-**Names and one binding format.** Compute mounts the ordinary external-workspace binding at
-`/etc/openclaw-external-workspace/` as `binding.json` `{format: "external-workspace-v1", url, workspaceRoot,
-generationSha256}` plus `ca.pem`. The protected binding stays at the amendment's `/etc/openclaw-protected-workspace/`
-with `format: "protected-workspace-v1"`. The provider proves the generation with exactly one response header,
-`x-openclaw-workspace-generation`. `workspaceRoot` comes from the validated endpoint and is no longer hard-coded.
-The Gateway code that enforces the binding is a Codex-extension feature, so it ships upstream in OpenClaw first.
-OCE carries it as a downstream patch only until the pinned OpenClaw includes it.
+**Names and one binding format.** Compute mounts the ordinary binding at `/etc/openclaw-external-workspace/`:
+`ca.pem` and `binding.json` with exactly the keys `format: "external-workspace-v1"`, `url`, `workspaceRoot` and
+`generationSha256`, in any order. The amendment's protected binding would use `/etc/openclaw-protected-workspace/` and
+`protected-workspace-v1`; the prototype still shares the ordinary directory. The provider proves the generation with
+exactly one response header, `x-openclaw-workspace-generation`. `workspaceRoot` comes from the validated endpoint.
+The Gateway's enforcement ships upstream in OpenClaw first; OCE carries a downstream patch until the pinned OpenClaw
+includes it.
 
-**Public node-launch export.** The controller's Driver SDK package (`@openclaw-enterprise/occ`) exports the stock
-file-only workspace-node command allowlist and Codex-only entrypoint argv that Compute uses today. A package that
-runs the node outside a Pod uses that export rather than importing controller source.
+**Public node-launch export.** `@openclaw-enterprise/controller/workspace-node-launch` exports the stock file-only
+node command allowlist and the Codex-only and combined programs that Compute renders. A package that runs the node
+outside a Pod uses it instead of importing controller source.
 
-**Validation.** The installed loader refuses a registration whose optional members have the wrong type or value:
-`harnessTransportCredential` other than `"verifier"`, a protected capability with a missing observer or an unknown
-version, or an endpoint owner without a generation. Each contract addition in this profile adds its validator case.
+**Validation.** The installed loader refuses a registration whose optional members have the wrong type or value: a
+declared Harness hook that is not a function, `harnessTransportCredential` other than `"verifier"` or without
+`provisionHarness` and `harnessEndpoint`, `maintenanceIntervalMs` that is not a positive integer or lacks
+`provisionHarness`, or a protected capability with a missing observer or an unknown version. Compute refuses a
+malformed endpoint observation, such as an owner without a generation, before it pins, routes or releases. Each
+addition has its validator case.
 
-**Worker control mount (optional).** An external host often exposes its control plane on a local Unix socket. The
-chart gains `worker.sandboxControlClaimName`, an existing prebound PVC mounted read-only at
-`/run/openclaw-sandbox-control` in the Worker only. It requires `controlPlane.nodeSelector[kubernetes.io/hostname]`,
-refuses `executionCluster.enabled`, and refuses reuse of the bootstrap claim and any overlap with other mounts. Empty
-leaves the chart unchanged. The Driver's own configuration names the socket path under that directory.
+**Transport bearer.** The verifier keeps the bearer out of the Harness launch inputs only: the package's
+`harnessStatus` and protected enrollment still receive it. The package sends it only to the Harness after verifying
+the pinned TLS peer, as RFC-0030 requires of the Gateway, and never puts it in launch inputs, host state, logs or the
+workload.
 
-**Execution credential for a paired Credential Proxy.** A Sandbox whose egress gateway terminates TLS cannot carry
-client certificates from the workload, so the Proxy cannot identify the recipient by mTLS. The paired Sandbox
-therefore mints one random credential per admitted execution. It sends the credential only to its trusted host, whose
-egress presents it to the Proxy with each held request.
-It reports only the credential's SHA-256 and the live process identity. The Proxy compares a digest in constant time,
-binds the request to that execution and process, and rechecks the binding before it answers. As the
-Credential Proxy contract already says for protected inference, the principal is the
+**Worker control mount (optional).** For a host control plane on a local Unix socket, the chart gains
+`worker.sandboxControlClaimName`, an existing PVC claim mounted read-only at `/run/openclaw-sandbox-control` in the
+Worker only. It requires `controlPlane.nodeSelector[kubernetes.io/hostname]`, refuses `executionCluster.enabled`,
+reuse of the bootstrap claim and overlap with the database CA mount. Empty leaves the chart unchanged. The Driver's
+own configuration names the socket path under that directory.
+
+**Execution credential for a paired Credential Proxy.** Without mTLS (see the alternatives), the paired Sandbox mints
+one random credential per admitted execution and sends it only to its trusted host, whose egress presents it with each
+held request. The Sandbox reports only its SHA-256 and the live process identity. The Proxy compares digests in
+constant time, binds the request to that execution and process, and rechecks the binding before it answers. As for
+protected inference, the principal is the
 [whole admitted execution](../../docs/reference/drivers/credential-proxy.md#registration-and-execution-release),
-siblings included. This is a pattern inside one paired registration, not a new contract member; the conformance kit
-checks its externally visible behaviour.
+siblings included. The credential identifies the execution, not the request; per-request freshness comes from OCE's
+request decision. This is a pattern inside one paired registration, not a new contract member.
 
-**GitHub request decision.** The host's egress holds each GitHub request and asks the Proxy, which calls
-`requests.authorize` with the request before any credential: verified destination, method, path, query, headers
-without credential or framing, and the whole body, at most 4 MiB. OCE classifies it with the bundled route's code,
-records one possible use, and answers `allow` (`sendBy`, one `authorization` header) or `refused` with a reason code
-for the Agent. The grant owns the ref policy. The host adds the header to that request before `sendBy` and never
-retries or stores it. The header carries the grant's installation token, so `sendBy` bounds honest use only.
+**GitHub request decision.** The host's egress holds each GitHub request and asks the Proxy, which obtains a
+credential only from `requests.authorize`, never from its own material read. It passes the request without credentials
+(TLS-verified target, headers, the whole body up to 4 MiB) and a deadline at most 30 s ahead. OCE reads the material,
+classifies the request with the bundled route's code, authorizes it online, records one possible use, and answers
+`allow` or `refused` with a reason code for the Agent. The grant owns the ref policy. A refusal, a timeout or a passed
+`sendBy` ends the request before any provider byte. Current rules (questions 4 and 5): `allow` carries `sendBy` and
+one `authorization` header value, which the host adds to that request and never retries or stores; OCE allows uses
+only after the recipient confirms each material version (`beginInstall`, `confirmInstall`), again after renewal, which
+for a request-time recipient means it is ready to ask per request and holds no value.
+
+The value is the grant's installation token, so `sendBy` and the ref rules bind honest use only; OCE never promises
+the same credential twice. A standing token delivered to the host at start gets no per-request decision and does not
+meet this contract. A Sandbox whose trusted process shares the workload's kernel or serves any local process is an
+accepted gap, which its package documents with a deployment mitigation.
 
 **Conformance kit.** `tests/conformance/external-sandbox-*` uses a fixture package modelled on the existing
 protected-execution fixture, not a real provider. Each criterion below has one case there. A provider package runs the
-same cases against its own host when its host is available.
+same cases against its own host.
 
 ### Architecture
 
@@ -171,8 +171,9 @@ flowchart TB
     N["<b>Workspace node</b><br/>file-only, separately confined"]
   end
   R["<b>Repository provider</b>"]
-  C -.->|binding + CA, verifier| G
+  C -.->|binding + CA| G
   C -->|provision, enroll| S
+  C -.->|verifier in launch inputs| S
   S -.->|control socket| K
   K -.->|launch| W
   K -.->|launch| N
@@ -200,29 +201,28 @@ sequenceDiagram
   S->>H: launch held, mint execution credential
   H-->>S: reserved endpoint, generation, credential digest
   C->>C: pin endpoint, mount binding, wait for Gateway acknowledgment
-  C->>S: enrollHarness with signed release
+  C->>S: enrollHarness (signed release, bearer)
   S->>H: release, Codex starts
   G->>H: WSS turn (pinned CA, generation header)
   H->>P: held git push, execution credential
-  P->>T: requests.authorize after digest + execution check
-  T-->>P: allow with header (exact ref only)
+  P->>T: requests.authorize (deadline) after digest + execution check
+  T-->>P: allow: header, sendBy (exact ref only)
   P-->>H: header, host injects and sends
   Note over C,P: Operator withdraws the grant
   H->>P: held git fetch
+  P->>T: requests.authorize
+  T-->>P: refused, access_withdrawn
   P-->>H: refused before any provider connection
   G->>H: next chat turn still served
 ```
 
 ### Worked example: Strands Box
 
-The example package exports one registration. Its Sandbox view talks to a nonroot host service over a Unix socket on
-the Worker control mount. It creates a relay Deployment that the Agent Gateway reaches through
-`network.providerHarness`, and reports Box's run generation. The host runs Codex under `box run`, runs the file-only node
-under Bubblewrap outside Box, and pins each egress destination to host, port and IPv4. Box's egress gateway asks the
-Credential Proxy view about each GitHub request and injects the header that comes back. The view answers through
-`requests.authorize` and forwards nothing.
-Provider limits (public-root-only upstream trust, Linux ARM64 releases only, distribution AppArmor
-defaults) are listed in the package's known-gaps page with workarounds. They need no change in core.
+The example package exports one registration. Its Sandbox view drives a nonroot host service over the Worker control
+mount and creates a relay Deployment that the Gateway reaches through `network.providerHarness`. Box's egress gateway
+asks a request-time credential source on the host, which the Credential Proxy view answers through
+`requests.authorize`. Provider limits and accepted gaps are on the package's known-gaps page; none needs a change in
+core.
 
 ## Acceptance Criteria
 
@@ -231,50 +231,54 @@ fixture package (kit) or a real host (installed).
 
 - **AC-1 — Ordinary chat (Goal 2):** Given an Installation that selects the package with an ordinary dedicated Codex
   Agent, when the operator deploys and chats, then the reply comes from the confined Harness, the Agent reads and
-  writes a workspace marker, sibling paths are refused, and no Gateway bearer appears in the provider's launch inputs.
-  Verify with the kit case and one installed run.
-- **AC-2 — Binding enforcement (Goal 2):** A missing, duplicated or different generation header, a replaced execution,
-  or a changed binding file closes the Gateway connection before any native frame. Kit case.
+  writes a workspace marker, sibling paths are refused, and no Gateway bearer appears in the Harness launch inputs.
+  Kit case and one installed run.
+- **AC-2 — Binding and peer enforcement (Goal 2):** A missing, duplicated or different generation header, a replaced
+  execution, or a changed binding file closes the Gateway connection before the Gateway sends another native frame.
+  Neither the Gateway nor the package's readiness and enrollment clients send the bearer to an unverified TLS peer.
+  Kit case.
 - **AC-3 — Protected push (Goal 3):** Given a protected revision granted one repository, when the Agent pushes a branch
   and opens a draft, then the Worker token service minted the installation token, OCE's request decision recorded each
-  request, the provider sees the App as actor, the ref is the granted one, and no token or key exists in the
-  workload. Installed run with independent provider readback joined to OCE's use records.
+  request, the provider sees the App as actor and the granted ref, and no token or key exists in the workload.
+  Installed run with independent provider readback joined to OCE's use records.
 - **AC-4 — Refusal before egress (Goal 3):** A wrong repository, a wrong ref or a second draft is refused by OCE's
-  request decision, and a missing, replayed or replaced execution credential by the Proxy, without a provider
-  connection. Kit case: the fixture package and the bundled route decide alike.
+  request decision although the material is readable; a missing execution credential, or one from a replaced or ended
+  execution or another process, by the Proxy. Neither reaches the provider, and a second request from the live
+  execution succeeds. Kit case: the fixture package and the bundled route decide alike.
 - **AC-5 — Withdrawal (Goal 3):** After the operator withdraws the grant, a fresh fetch or push is refused before any
   provider traffic, and the next chat turn in the same conversation succeeds. Kit case and installed run.
-- **AC-6 — Loader validation (Goal 4):** Each malformed optional member is refused at registration with a typed
-  startup error. Controller lifecycle test.
+- **AC-6 — Validation (Goal 4):** Each malformed optional member is refused at registration with a typed startup
+  error (controller lifecycle test). A valid registration whose endpoint owner lacks a generation is refused by
+  Compute before pinning, routing or release (kit case).
 - **AC-7 — No provider in core (Goal 1):** The kit passes with the fixture package. Core and its tests contain no
   provider name, and OpenShell selections behave as before. Static check plus the existing OpenShell suites.
 
 ## Delivery and verification
 
-1. Verifier-only transport, with its validator and kit case (small, inert unless declared). Maintenance cadence for an active provider Harness (#6098) is equally inert unless declared.
-2. RFC-0030 implementation with the generic names, the upstream OpenClaw change, and the public node-launch export.
-3. RFC-0023 amendment implementation (first-choice pin, consumer acknowledgment, bootstrap Gateway), then the paired
-   registration of the RFC-0016 amendment.
-4. Optional Worker control mount, and the request decision port (#6350).
+1. Verifier-only transport (#6345; such a Harness also prepares its own Codex plugins) and maintenance cadence
+   (#6098), both inert unless declared.
+2. RFC-0030 implementation with the generic names and the upstream OpenClaw change (#6354), the node-launch export and
+   validators (#6353), and the kit (#6355).
+3. RFC-0023 amendment implementation, then the paired registration of the RFC-0016 amendment.
+4. Optional Worker control mount (#6356), and the request decision port (#6358, #6350).
 5. The example package with its own tests and manual lanes, after an installed AC-3 to AC-5 run.
 
-Nothing in this RFC has run yet. The pilot's ordinary chat on a real host and the local sender rehearsal are component
-evidence only.
+No installed run exists yet; the draft PRs' tests and the pilot's chat are component evidence only.
 
 <a id="alternatives-and-open-decisions"></a>
 
 ## Rationale and alternatives
 
-- **Keep provider names in core.** Smallest diff for the first provider. The second provider would then need its own
-  directory, header and chart value, and reviewers could not tell the contract from the adapter.
-- **A bundled in-tree Driver** (earlier RFC-0024 draft). It couples OCE releases to the provider's release cadence and
-  architecture, and it hides contract gaps inside one codebase.
-- **Admit native prepared Git with an ordinary external Sandbox.** It reuses the qualified broker, but it changes a
-  product rule and splits recipient identity between the broker and the Sandbox.
-- **A separate credential issuer service.** Rejected: it is new infrastructure parallel to the Worker token service.
+- **Keep provider names in core.** Smallest diff now, but each later provider adds its own directory, header and
+  chart value, and the contract blurs into the adapter.
+- **A bundled in-tree Driver** (earlier RFC-0024 draft). Couples OCE releases to the provider's cadence and
+  architecture, and hides contract gaps in one codebase.
+- **Admit native prepared Git with an ordinary external Sandbox.** Reuses the qualified broker, but changes a product
+  rule and splits recipient identity between broker and Sandbox.
+- **A separate credential issuer service.** Rejected: new infrastructure parallel to the Worker token service.
 - **An importable GitHub classifier.** Rejected: isolated Driver runtimes resolve only relative imports, and a copy
   drifts from the Worker's rules.
-- **Execution identity by client certificate.** Not available through a TLS-terminating egress gateway. A bearer bound
+- **Execution identity by client certificate.** Not available when the Sandbox's egress presents none. A bearer bound
   to the execution and process is the strongest identity such a Sandbox can present.
 
 ## Unresolved questions
@@ -282,18 +286,16 @@ evidence only.
 1. **Umbrella or consolidation** (RFC reviewers): keep RFC-0030, RFC-0031 and the RFC-0023 amendment as separate
    decisions indexed here, or fold them into this RFC. Either way, the generic names and the token-flow rule bind.
 2. **Worker control transport** (maintainers): accept the chart mount, or require an authenticated TCP control
-   endpoint, which lifts the same-node placement constraint. The mount stays opt-in and inert either way.
+   endpoint, which lifts the same-node constraint; today's node selector pins the whole control plane to that host.
 3. **Ordinary and protected binding directories** (RFC-0023 amendment owner): one directory with a `mode` field,
    or two fixed directories as proposed here.
-4. **Request-time release** (repository-credentials owners): an injector installs nothing, yet the decision requires
-   a confirmed installation. A readiness declaration, or per-request evidence?
-5. **Decision shape** (Sandbox owners): header or typed credential; whole body or receive-pack prefix; a
-   request-phase endpoint in core?
+4. **Request-time release** (repository-credentials owners): an injector installs nothing. Keep its readiness
+   declaration per material version, or add per-request release evidence?
+5. **Decision shape** (Sandbox owners): keep the header value, or return a typed credential (scheme, token, receipt)
+   that the Sandbox places by its own configuration? Whole body or receive-pack prefix? A request-phase endpoint in
+   core?
 
 ## References
 
-- Example package and pilot evidence:
-  [`deploy/examples/strands-box/`](https://github.com/openclaw/openclaw-enterprise/tree/6beef115bc4f65f7ae0a4316cbcccb5bd8e86ebd/deploy/examples/strands-box).
 - [Sandbox contract: Harness transport](../../docs/reference/drivers/sandbox.md#harness-transport).
-- [Credential Proxy contract](../../docs/reference/drivers/credential-proxy.md).
 - [Protected OpenShell Git](../../docs/reference/repository-credentials/protected-openshell-git.md) for the token flow being reused.
