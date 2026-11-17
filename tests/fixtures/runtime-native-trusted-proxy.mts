@@ -186,6 +186,17 @@ function connect(socket: ProxySocket, request: SocketRequest, nonce: string) {
   );
 }
 
+function sendOperation(socket: ProxySocket, request: SocketRequest) {
+  socket.send(
+    JSON.stringify({
+      type: "req",
+      id: "operation",
+      method: request.method,
+      params: request.params ?? {},
+    }),
+  );
+}
+
 function reply(
   socket: ProxySocket,
   request: SocketRequest,
@@ -201,14 +212,7 @@ function reply(
     return { status: "connect-error", body: JSON.stringify(frame.error) };
   }
   if (request.method) {
-    socket.send(
-      JSON.stringify({
-        type: "req",
-        id: "operation",
-        method: request.method,
-        params: request.params ?? {},
-      }),
-    );
+    sendOperation(socket, request);
     return undefined;
   }
   const { auth } = record(frame.payload, "Expected a Gateway hello");
@@ -216,6 +220,30 @@ function reply(
   assert.ok(isStringArray(scopes), "Expected granted scopes in the Gateway hello");
   assert.ok(deviceToken === undefined || typeof deviceToken === "string", "Invalid device token");
   return { status: "hello", scopes, hasDeviceToken: deviceToken !== undefined };
+}
+
+function subscriptionTargetChanged(request: SocketRequest, error: unknown): boolean {
+  if (
+    request.method !== "sessions.messages.subscribe" ||
+    typeof error !== "object" ||
+    error === null ||
+    !("code" in error) ||
+    error.code !== "INVALID_REQUEST" ||
+    !("details" in error)
+  ) {
+    return false;
+  }
+  const details = error.details;
+  return (
+    typeof details === "object" &&
+    details !== null &&
+    "code" in details &&
+    details.code === "SESSION_MUTATION_AUTHORIZATION_CHANGED" &&
+    "method" in details &&
+    details.method === request.method &&
+    "sessionKey" in details &&
+    details.sessionKey === request.params?.key
+  );
 }
 
 function ws(address: string, request: SocketRequest): Promise<SocketOutcome> {
@@ -231,12 +259,20 @@ function ws(address: string, request: SocketRequest): Promise<SocketOutcome> {
         ...(request.device ? { origin: "https://agent.example.test" } : {}),
       },
     });
+    let settled = false;
+    let subscriptionRetries = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
-      resolve({ status: "timeout" });
+      done({ status: "timeout" });
       socket.terminate();
     }, 15_000);
     function done(value: SocketOutcome) {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(retryTimer);
       resolve(value);
       socket.close();
     }
@@ -246,18 +282,40 @@ function ws(address: string, request: SocketRequest): Promise<SocketOutcome> {
     socket.on("error", (error) => done({ status: "error", body: error.message }));
     socket.on("close", (code, reason) => done({ status: "closed", code, body: String(reason) }));
     socket.on("message", (data) => {
+      if (settled) {
+        return;
+      }
       try {
         const frame = proxyFrame(String(data));
         if (frame?.type === "challenge") {
           connect(socket, request, frame.nonce);
         } else if (frame?.type === "reply") {
+          // Startup may invalidate a prepared read. Follow the Control UI contract,
+          // with at most three retries inside this socket's existing 15-second deadline.
+          // Never replay a mutation, permission denial, or another session's error.
+          if (
+            frame.id === "operation" &&
+            !frame.ok &&
+            subscriptionRetries < 3 &&
+            subscriptionTargetChanged(request, frame.error)
+          ) {
+            subscriptionRetries += 1;
+            retryTimer = setTimeout(() => {
+              if (!settled) {
+                sendOperation(socket, request);
+              }
+            }, 250);
+            return;
+          }
           const result = reply(socket, request, frame);
           if (result) {
             done(result);
           }
         }
       } catch (error) {
+        settled = true;
         clearTimeout(timer);
+        clearTimeout(retryTimer);
         reject(error);
         socket.terminate();
       }
