@@ -67,6 +67,14 @@ const appliedPatches: readonly AppliedPatch[] = [
     file: "openclaw-native-turn-settlement.patch",
     sha256: "5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6",
   },
+  {
+    file: "openclaw-chat-main-session-start.patch",
+    sha256: "483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4",
+  },
+  {
+    file: "openclaw-chat-absent-selected-agent.patch",
+    sha256: "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
+  },
 ];
 const runtimePaths = [
   "dist",

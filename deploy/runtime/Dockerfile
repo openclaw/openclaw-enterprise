@@ -256,6 +256,17 @@ COPY deploy/runtime/openclaw-native-turn-settlement.patch /tmp/openclaw-native-t
 RUN echo '5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6  /tmp/openclaw-native-turn-settlement.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-native-turn-settlement.patch
 
+# Remove this bridge when the pinned OpenClaw includes openclaw#197151: a
+# session-scoped member may open and start its Agent's unused main conversation.
+COPY deploy/runtime/openclaw-chat-main-session-start.patch /tmp/openclaw-chat-main-session-start.patch
+RUN echo '483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4  /tmp/openclaw-chat-main-session-start.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-chat-main-session-start.patch
+# Remove this bridge when the pinned OpenClaw includes openclaw#200358: the
+# empty-history proof above holds only for the Agent whose history was read.
+COPY deploy/runtime/openclaw-chat-absent-selected-agent.patch /tmp/openclaw-chat-absent-selected-agent.patch
+RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp/openclaw-chat-absent-selected-agent.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-chat-absent-selected-agent.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -312,6 +323,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     test/node-host-launcher.test.ts \
     src/plugins/computer-use-contract.test.ts \
     src/daemon/program-args.test.ts \
+    src/gateway/server-methods.session-main-start.test.ts \
+    src/gateway/server.chat-main-session-narrow.test.ts \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
@@ -340,7 +353,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
-    src/app/gateway-page-activation.test.ts
+    src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
+    src/pages/chat/chat-main-session-absent.test.ts src/pages/chat/chat-history-subscription-errors.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
