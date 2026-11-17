@@ -376,7 +376,9 @@ async function freezeLockHolder({
     let pid: unknown;
     try {
       const holder = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-      if (role === null || holder.role === role) pid = holder.pid;
+      if (role === null || holder.role === role) {
+        pid = holder.pid;
+      }
     } catch {
       // Not written yet.
     }
@@ -384,7 +386,9 @@ async function freezeLockHolder({
       process.kill(pid, "SIGSTOP");
       for (;;) {
         const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-        if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("T")) break;
+        if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("T")) {
+          break;
+        }
         await new Promise((resolve) => setTimeout(resolve, 1));
       }
       const handlesStop =
@@ -418,7 +422,9 @@ async function endStoppedHolder({
   for (;;) {
     const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
     const pending = /^ShdPnd:\s*([0-9a-f]+)$/m.exec(status)?.[1] ?? "0";
-    if ((BigInt("0x" + pending) & (1n << 14n)) !== 0n) break;
+    if ((BigInt("0x" + pending) & (1n << 14n)) !== 0n) {
+      break;
+    }
     if (Date.now() > deadline) {
       process.exitCode = 3;
       return;
@@ -501,7 +507,9 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
           budgetMs,
         ).catch(async (error: unknown) => {
           // The holder's end can stop the container, and this exec with it.
-          if ((await exited(Date.now() + 10_000)) === undefined) throw error;
+          if ((await exited(Date.now() + 10_000)) === undefined) {
+            throw error;
+          }
         });
         assert.ok(
           (await exited(Date.now() + budgetMs)) !== undefined,
@@ -526,6 +534,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       cpus: restartGatewayCpus,
       until: ({ events, output }: { events: unknown[]; output: string }) =>
         events.some(observedValue("ready", true)) || unverifiableOwner.test(output),
+      act: undefined,
     });
     await withStartupProbeEvidence(replacement, async () => {
       // Before the fix: "Waiting up to 95 seconds for the previous Gateway to
@@ -557,11 +566,15 @@ export function liveHolderKeepsStateTest(title: string): void {
     const live = await runStartupProbeScenario(t, {
       ...scenario,
       until: ({ events }: { events: unknown[] }) => events.some(observedValue("ready", true)),
+      act: undefined,
     });
     const readLock = async () => {
       const { stdout } = await runDocker(["exec", live.containerName, "cat", gatewayStateLock]);
       const lock: unknown = JSON.parse(stdout);
-      assert.ok(isRecord(lock) && typeof lock.pid === "number", "the live Gateway must hold its lock");
+      assert.ok(
+        isRecord(lock) && typeof lock.pid === "number",
+        "the live Gateway must hold its lock",
+      );
       return { pid: lock.pid, ownerId: lock.ownerId };
     };
     const before = await readLock();
@@ -587,7 +600,9 @@ export function liveHolderKeepsStateTest(title: string): void {
         const deadline = Date.now() + budgetMs;
         for (;;) {
           const { output, running } = await collect();
-          if (refused.test(output) || !running || Date.now() > deadline) break;
+          if (refused.test(output) || !running || Date.now() > deadline) {
+            break;
+          }
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
       },
