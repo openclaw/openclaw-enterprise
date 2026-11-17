@@ -2050,6 +2050,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const params = request.params as Record<string, unknown>;
     if (
       Object.keys(request.query as Record<string, unknown>).length > 0 &&
+      operation.operationId !== "listCredentialSources" &&
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
@@ -2322,6 +2323,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       (body?.mode === "static_bearer" &&
         (operation.operationId === "createConnectionTemplate" ||
           operation.operationId === "updateConnectionTemplate")) ||
+      (operation.operationId === "listCredentialSources" &&
+        (request.query as { modelProviderId?: string }).modelProviderId !== undefined) ||
       (operation.operationId === "createCredentialSource" &&
         body &&
         ("connectionTemplateId" in body || "connectionTemplateVersion" in body)) ||

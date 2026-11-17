@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { InferenceProtocol } from "./model-providers.ts";
 
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
@@ -238,7 +239,8 @@ export function connectionValuesChanged(
       current.mode !== "static_bearer" ||
       next.mode !== "static_bearer" ||
       current.baseUrl !== next.baseUrl ||
-      current.protocol !== next.protocol
+      current.protocol !== next.protocol ||
+      !isDeepStrictEqual(current.privatePeer, next.privatePeer)
     );
   }
   return (
