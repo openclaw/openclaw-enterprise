@@ -1,7 +1,7 @@
 ---
 created: "2026-11-16"
-updated: "2026-11-16"
-last_updated_session: "authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264"
+updated: "2026-11-17 01:37"
+last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
 ---
 
 # Agent HTTP chat flow
@@ -59,7 +59,9 @@ graph TD
 `apps/controller/src/index.ts:admit` and `resolveIdentity` use the existing
 session/CSRF or service-key verifier and selected IAM Driver. The HTTP route has
 no Namespace input. `packages/occ/src/index.ts:resolveAgentChat` finds stored
-ownership, enforces a service key's Namespace scope and authorizes `operate`.
+ownership once per check, enforces a service key's Namespace scope and authorizes `operate`.
+Denial audit uses the error's authoritative resource; the route does not copy
+stored ownership into request parameters.
 A caller with only `read` gets `403`; a hidden or absent Agent gets `404`.
 
 ### 2. Select the running revision and private route
@@ -89,10 +91,14 @@ request. No retry or redirect follows.
 
 `apps/controller/src/http/agent-chat.ts:relayAgentChat` streams bytes with
 backpressure. A timer reauthenticates and reauthorizes the pinned revision.
-A final bounded check repeats this before releasing terminal bytes, so a fast
+Periodic and terminal callers share one in-flight check; completed checks are
+cleared so later callers obtain a fresh decision. A final bounded check runs
+before releasing terminal bytes, so a fast
 stop or revocation cannot finish between the timer and response completion.
 Failure, revision change, client disconnect or deadline aborts the upstream
-connection. Before headers, OCC can return its error envelope; after headers,
+connection. One outer cleanup clears the timers and disconnect listeners, aborts
+the upstream and appends one terminal audit after admission. Before headers, OCC
+can return its error envelope; after headers,
 it closes the response. The final audit identifies the principal and revision
 without message content. An audit-write failure emits `http.audit_append_failed`.
 
@@ -116,6 +122,8 @@ without message content. An audit-write failure emits `http.audit_append_failed`
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-17 01:37: Share one admission recheck and relay cleanup owner; use stored denial resources. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 
 - 2026-11-16 23:42: Recheck authority before terminal delivery after the real stop-during-stream regression. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - 9f342c940)
 

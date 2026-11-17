@@ -31,8 +31,9 @@ services and the default kubeconfig. Do not use a shared database.
 
 When explicitly authorized for the test Agents, set
 `OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE=danger-full-access` with an exclusive
-`http-chat` scenario. The launcher verifies the
-[container boundary](../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification).
+`http-chat` scenario. The launcher reports workspace-write sandbox proof as
+[not applicable and not performed](../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification).
+It does not verify the container boundary at startup.
 The QA helper sets only the selected Codex Agents' native sandbox configuration
 to `danger-full-access` and disables their inner named workspace network profile,
 which otherwise overrides that selector. Kubernetes NetworkPolicies remain in

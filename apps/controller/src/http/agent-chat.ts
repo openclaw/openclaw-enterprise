@@ -32,6 +32,9 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
   const abort = new AbortController();
   let timedOut = false;
   let finished = false;
+  let recheck: ReturnType<typeof setInterval> | undefined;
+  let terminalAudit: (() => Promise<void>) | undefined;
+  let result: "completed" | "interrupted" | "failed" = "interrupted";
   const disconnect = () => {
     if (!finished) {
       abort.abort(failure(502, "BAD_GATEWAY", "The caller disconnected."));
@@ -172,9 +175,14 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       options.auditFailure(error);
       throw dependencyUnavailable();
     }
-    const verifyCurrentAdmission = async () => {
+    terminalAudit = () => audit(result);
+    let inFlightCheck: Promise<void> | undefined;
+    const verifyCurrentAdmission = (): Promise<void> => {
+      if (inFlightCheck !== undefined) {
+        return inFlightCheck;
+      }
       const deadline = setTimeout(() => abort.abort(), 5_000);
-      try {
+      inFlightCheck = (async () => {
         await current(options.reauthenticate());
         const latest = await current(
           controller.resolveAgentChat(
@@ -186,23 +194,17 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
         if (latest.endpoint.status !== "available" || latest.revision?.id !== revision.id) {
           throw dependencyUnavailable();
         }
-      } finally {
+      })().finally(() => {
         clearTimeout(deadline);
-      }
+        inFlightCheck = undefined;
+      });
+      return inFlightCheck;
     };
-    let checking = false;
-    const recheck = setInterval(() => {
-      if (checking || abort.signal.aborted) {
-        return;
+    recheck = setInterval(() => {
+      if (!abort.signal.aborted) {
+        void verifyCurrentAdmission().catch(() => abort.abort());
       }
-      checking = true;
-      void verifyCurrentAdmission()
-        .catch(() => abort.abort())
-        .finally(() => {
-          checking = false;
-        });
     }, 25_000);
-    let result: "completed" | "interrupted" | "failed" = "interrupted";
     try {
       const response = await new Promise<IncomingMessage>((resolve, reject) => {
         const upstream = (url.protocol === "https:" ? httpsRequest : httpRequest)(
@@ -306,22 +308,17 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
           timedOut ? "The Agent request deadline expired." : "The Agent request was interrupted.",
         );
       }
-    } finally {
-      clearTimeout(totalDeadline);
-      clearInterval(recheck);
-      request.raw.off("aborted", disconnect);
-      reply.raw.off("close", disconnect);
-      abort.abort();
-      try {
-        await audit(result);
-      } catch (error) {
-        options.auditFailure(error);
-      }
     }
   } finally {
     clearTimeout(totalDeadline);
+    clearInterval(recheck);
     request.raw.off("aborted", disconnect);
     reply.raw.off("close", disconnect);
     abort.abort();
+    try {
+      await terminalAudit?.();
+    } catch (error) {
+      options.auditFailure(error);
+    }
   }
 }

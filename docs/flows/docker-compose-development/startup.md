@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-16
-last_updated_session: authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264
+updated: "2026-11-17 01:37"
+last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
 ---
 
 # Compose development startup
@@ -212,13 +212,14 @@ for selector-matching Pods before removing their egress policy; probe or cleanup
 failure fails startup. Checks are point-in-time and single-node.
 
 An explicit `OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE=danger-full-access`
-selects `scripts/lib/codex-container-probe.mjs` through
-`prepareDevelopmentCodexSeccompProfile`. The credential-free probe checks native
-full-access execution and the container boundary, returning `Container` with no
-profile installed. Workspace-write isolation remains unverified. The selector
-does not rewrite presets; see [development verification](../../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification).
+returns from `internal/occdev/kubernetes.go:prepareDevelopmentCodexSandbox`
+without a custom profile. It reports workspace-write sandbox proof as not
+applicable and not performed. Startup does not verify the container boundary;
+real Agent QA owns that proof. The selector requires Sandbox `none` and does not
+rewrite presets; see [development verification](../../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification).
 
-Before Installation, `scripts/prepare-development-codex-seccomp.ts` probes
+In default workspace-write mode, before Installation,
+`scripts/prepare-development-codex-seccomp.ts` probes
 `RuntimeDefault` in a credential-free Pod. Confirmed denial triggers
 [verified, content-addressed Localhost profile derivation](../../guides/deploy/local-kubernetes-development.md#start-the-profile).
 Failure triggers cluster rollback. On readiness failure, writable stderr receives
@@ -423,6 +424,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-17 01:37: Remove the synthetic full-access startup probe; report workspace-write proof not performed. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 
 - 2026-11-16 22:56: Add explicit container-boundary development verification without changing workspace-write defaults. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - ac72edfbf884219d7392f32fd245173dffccf922)
 

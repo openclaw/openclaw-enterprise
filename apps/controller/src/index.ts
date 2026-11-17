@@ -1835,7 +1835,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event(
           operation,
           request,
-          operationTarget(operation, installationId, request.params as Record<string, unknown>),
+          authorization?.resource ??
+            operationTarget(operation, installationId, request.params as Record<string, unknown>),
           kind,
           context,
           evidence,
@@ -2333,14 +2334,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       const admission = admissions.get(request);
       if (controller === undefined || admission === undefined) {
         throw dependencyUnavailable();
-      }
-      // Derive the audit target from storage; no Namespace is accepted in this route's input.
-      const params = request.params as Record<string, string>;
-      const reference = await controller.resolveAgentReference(
-        (agent) => agent.id === params.agentId,
-      );
-      if (reference !== undefined) {
-        params.namespaceId = reference.namespaceId;
       }
       return relayAgentChat({
         installationId,

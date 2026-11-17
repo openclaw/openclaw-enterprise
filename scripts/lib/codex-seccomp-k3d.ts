@@ -73,7 +73,6 @@ type PreparationOptions = {
 };
 
 type DevelopmentPreparationOptions = {
-  verificationMode?: "workspace-write" | "danger-full-access";
   directory: string;
   image: string;
   execFile: ExecFile;
@@ -1248,7 +1247,6 @@ async function installDevelopmentProfile(
 }
 
 async function prepareDevelopmentCodexSeccompProfile({
-  verificationMode = "workspace-write",
   directory,
   image,
   execFile,
@@ -1290,71 +1288,6 @@ async function prepareDevelopmentCodexSeccompProfile({
       }
       await kubectl(selection, ["create", "namespace", namespace], options);
       namespaceCreated = true;
-      if (verificationMode === "danger-full-access") {
-        const name = "codex-container-boundary";
-        const pod = restrictedProbePod({ name, namespace, nodeName: nodes[0], image });
-        const policyPath = join(temporaryDirectory, "deny-all.json");
-        await writeFile(
-          policyPath,
-          JSON.stringify({
-            apiVersion: "networking.k8s.io/v1",
-            kind: "NetworkPolicy",
-            metadata: { name: "deny-all", namespace },
-            spec: { podSelector: {}, policyTypes: ["Ingress", "Egress"], ingress: [], egress: [] },
-          }),
-          { mode: 0o600 },
-        );
-        await kubectl(selection, ["apply", "-f", policyPath], options);
-        await applyManifest(
-          selection,
-          {
-            ...pod,
-            spec: {
-              ...pod.spec,
-              containers: pod.spec.containers.map((container) => ({
-                ...container,
-                resources: { limits: { cpu: "2", memory: "2Gi" } },
-              })),
-              volumes: pod.spec.volumes.map((volume) => ({
-                ...volume,
-                emptyDir: { sizeLimit: "128Mi" },
-              })),
-            },
-          },
-          options,
-        );
-        await waitForPodReady(selection, namespace, name, options);
-        const program = await readFile(
-          new URL("./codex-container-probe.mjs", import.meta.url),
-          "utf8",
-        );
-        const result = await execute(
-          options.kubectl,
-          kubectlArgs(selection, [
-            "exec",
-            name,
-            "--namespace",
-            namespace,
-            "--",
-            "node",
-            "--input-type=module",
-            "-e",
-            program,
-            codexVersion,
-          ]),
-          { timeoutMs: options.commandTimeoutMs },
-        );
-        const receipt = JSON.parse(result.stdout);
-        assert.equal(receipt.codexVersion, codexVersion);
-        assert.equal(receipt.sandbox, "dangerFullAccess");
-        assert.equal(receipt.containerBoundaryVerified, true);
-        assert.equal(receipt.workspaceIsolationVerified, false);
-        assert.equal(receipt.modelExecutionVerified, false);
-        process.stderr.write(
-          "Container boundary verified; workspace-write isolation deliberately not tested.\n",
-        );
-        return { mode: "Container", profileName: "" } as const;
-      }
       const baseline = await runtimeDefaultProfileForNode(
         selection,
         namespace,

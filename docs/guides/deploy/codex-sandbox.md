@@ -32,12 +32,10 @@ For an authorized disposable development run with Sandbox Driver `none`, set
 The default is `workspace-write`. This selector changes startup verification;
 it does not change Agent or Preset configuration.
 
-The alternate probe uses the pinned Codex process with `:danger-full-access`,
-`on-request`, and `auto_review`. It checks command execution as UID 1000 with
-no effective capabilities or privilege escalation, a read-only container root,
-bounded writable volumes and default-deny networking. It receives no credentials
-and makes no model calls. Its `Container` result explicitly leaves workspace-write
-isolation unverified; it does not install a node seccomp profile.
+The launcher reports workspace-write sandbox proof as not applicable and not
+performed. It installs no custom seccomp profile and does not verify the container
+boundary at startup. The real Agent workflow must verify its Pod security,
+NetworkPolicies and effective native turn policy.
 
 Configure each intended Codex Agent explicitly with
 `plugins.entries.codex.config.appServer.sandbox: danger-full-access` and disable

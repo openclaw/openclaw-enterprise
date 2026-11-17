@@ -5043,9 +5043,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return { status: "unsupported" };
     }
     const gateway = asRecord(configuration.gateway);
-    const auth = asRecord(gateway?.auth);
-    const trustedProxy = asRecord(auth?.trustedProxy);
-    const requiredHeaders = trustedProxy?.requiredHeaders;
+    const requiredHeaders = asRecord(asRecord(gateway?.auth)?.trustedProxy)?.requiredHeaders;
     const agents = asRecord(revision.configuration.agents);
     const entries = Object.keys(asRecord(agents?.entries) ?? {});
     const configuredTarget = asRecord(asRecord(agents?.defaults)?.systemAgent)?.agentId;
@@ -5063,10 +5061,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       this.options.executionCluster !== undefined ||
       this.options.runtime === undefined ||
-      auth?.mode !== "trusted-proxy" ||
-      trustedProxy?.userHeader !== TRUSTED_PROXY_HEADER ||
-      !Array.isArray(trustedProxy.allowUsers) ||
-      !trustedProxy.allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
       !Array.isArray(requiredHeaders) ||
       !requiredHeaders.some(
         (header) =>

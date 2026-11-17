@@ -110,7 +110,7 @@ These settings belong to the checkout's development stack. See
 for supported engines, images, and security restrictions.
 
 - `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `kubernetes` (default) or `docker`; the Docker preview cannot deploy Agents.
-- `OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE` — `workspace-write` (default) or explicit `danger-full-access`; selects [development startup proof](../../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification), without changing Agent presets.
+- `OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE` — `workspace-write` (default) or explicit `danger-full-access`; controls [workspace-write startup verification](../../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification), without changing Agent presets.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
 - `OCC_DEVELOPMENT_CONTROL_PLANE` — `kubernetes` or `compose`; the default follows the Compute Driver (`kubernetes` on Kubernetes Compute, `compose` on Docker Compute). Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.

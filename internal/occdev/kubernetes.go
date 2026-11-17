@@ -600,9 +600,13 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	}
 }
 
-// prepareDevelopmentCodexSandbox verifies the owned node before either local
-// control-plane profile selects a dedicated Codex runtime.
+// prepareDevelopmentCodexSandbox verifies workspace-write confinement unless the
+// caller explicitly selects full-access development verification.
 func (r *runner) prepareDevelopmentCodexSandbox(ctx context.Context, state *developmentState, runtimeImage string, timeoutSeconds int) (string, error) {
+	if r.env["OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE"] == "danger-full-access" {
+		fmt.Fprintln(r.opts.Out, "Workspace-write sandbox proof is not applicable and was not performed: danger-full-access was explicitly selected.")
+		return "", nil
+	}
 	fmt.Fprintln(r.opts.Out, "Verifying the dedicated Codex sandbox on the owned k3d node...")
 	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.ts", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
 	command.Stderr = r.opts.Err
@@ -617,7 +621,7 @@ func (r *runner) prepareDevelopmentCodexSandbox(ctx context.Context, state *deve
 	if err := json.Unmarshal(output, &result, json.RejectUnknownMembers(true)); err != nil {
 		return "", fmt.Errorf("invalid dedicated Codex sandbox preparation result: %w", err)
 	}
-	if (result.Mode == "Container") != (r.env["OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE"] == "danger-full-access") || !validDevelopmentCodexSeccompResult(result.Mode, result.ProfileName) {
+	if !validDevelopmentCodexSeccompResult(result.Mode, result.ProfileName) {
 		return "", fmt.Errorf("invalid dedicated Codex sandbox preparation result")
 	}
 	return result.ProfileName, nil

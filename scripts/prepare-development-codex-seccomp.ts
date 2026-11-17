@@ -17,10 +17,6 @@ if (
   );
 }
 
-const verificationMode = process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE || "workspace-write";
-if (verificationMode !== "workspace-write" && verificationMode !== "danger-full-access") {
-  throw new Error("Invalid OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE.");
-}
 const stderrLimit = 400;
 
 function failureReason(error: ExecFileException) {
@@ -73,7 +69,6 @@ const execFile: Parameters<typeof prepareDevelopmentCodexSeccompProfile>[0]["exe
 
 try {
   const result = await prepareDevelopmentCodexSeccompProfile({
-    verificationMode,
     directory,
     image,
     execFile,

@@ -120,6 +120,8 @@ test("HTTP chat conceals and audits an Agent outside a service key's Namespace",
     .slice(before)
     .find((event) => event.kind === "authorization_denial");
   assert.ok(denial, "credential-scope denials must retain attributable audit evidence");
+  assert.deepEqual(denial.resource, { kind: "agent", id: agent.id, namespaceId: other.id });
+  assert.equal(denial.namespaceId, other.id);
   assert.deepEqual(denial.authorization, {
     principalId: principal.data.id,
     action: "operate",
