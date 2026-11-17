@@ -804,7 +804,9 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         assert.ok(failure);
         assert.equal(failure.reason, runnerDeadline ? "timeout" : "failed");
         assert.equal(failure.timeoutMs, runnerDeadline ? 5000 : undefined);
-        if (wallDeadline) assert.ok((failure.elapsedMs ?? -1) >= 4999);
+        if (wallDeadline) {
+          assert.ok((failure.elapsedMs ?? -1) >= 4999);
+        }
         assert.deepEqual(
           failure.interruptedTests?.map(({ name }) => name),
           controlledDeadline ? [title] : undefined,

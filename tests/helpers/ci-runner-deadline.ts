@@ -34,13 +34,19 @@ const barrierMessage = openShellProgressPrefix + JSON.stringify(barrier) + "\n";
 function collectedBeforeBarrier(stdout: string, cwd: string) {
   try {
     const witness: unknown = JSON.parse(readFileSync(join(cwd, readinessReceipt), "utf8"));
-    if (!isRecord(witness) || !Array.isArray(witness.progress)) return false;
+    if (!isRecord(witness) || !Array.isArray(witness.progress)) {
+      return false;
+    }
     // runNode dispatches on the barrier in this same ordered stream.
     const progress: unknown[] = [];
     for (const line of stdout.split("\n").slice(0, -1)) {
-      if (!line) continue;
+      if (!line) {
+        continue;
+      }
       const row: unknown = JSON.parse(line);
-      if (isRecord(row) && row.type === "test:progress") progress.push(row.data);
+      if (isRecord(row) && row.type === "test:progress") {
+        progress.push(row.data);
+      }
     }
     return isDeepStrictEqual(progress, [...witness.progress, barrier]);
   } catch {
@@ -86,7 +92,9 @@ export const runNode: typeof runNative = async (args, options) => {
     const armedAt = performance.now();
     const expire = (trigger: Trigger) => {
       const elapsedMs = performance.now() - armedAt;
-      if (dispatch || (trigger === "readiness" && elapsedMs >= delay)) return;
+      if (dispatch || (trigger === "readiness" && elapsedMs >= delay)) {
+        return;
+      }
       dispatch = { trigger, elapsedMs, delay };
       callback();
     };
@@ -99,8 +107,11 @@ export const runNode: typeof runNative = async (args, options) => {
       ...options,
       onProgress(progress) {
         // The barrier's arrival here proves earlier reporter rows were collected.
-        if (controlled && isDeepStrictEqual(progress, barrier)) expireEarly?.();
-        else options.onProgress(progress);
+        if (controlled && isDeepStrictEqual(progress, barrier)) {
+          expireEarly?.();
+        } else {
+          options.onProgress(progress);
+        }
       },
     });
   } finally {
