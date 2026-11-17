@@ -51,6 +51,7 @@ import {
   workspaceVerifierPolicy,
   workspaceVerifierTool,
 } from "./workspace-verifier.ts";
+import { stockGitPolicy } from "./stock-git.ts";
 import {
   nativeHookPolicy,
   nativeHookProbe,
@@ -944,6 +945,8 @@ export function start(
       writeFileSync(
         policyFile,
         policy(input.egress ?? [], source !== undefined) +
+          // A protected repository run: the workload's shell runs stock git and gh (finding 3314).
+          (source === undefined ? "" : stockGitPolicy(config.workspace)) +
           (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)) +
           (hooks === undefined ? "" : nativeHookPolicy(config.workspace, hooks)),
         ownerOnly,

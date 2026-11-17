@@ -119,6 +119,22 @@ entries use the same four fields.
   repositories and permissions the Agent needs.
 - **Upstream status:** by design in Box v0.2.2.
 
+## The workload shell policy is not a code-execution boundary
+
+- **Symptom:** on a protected repository run, the Agent's shell may spawn only
+  `git` and `gh` in the workspace, yet Git runs programs the Agent writes:
+  hooks, aliases, `core.sshCommand`, the pager, the editor, `credential.helper`
+  and `gh` extensions all run.
+- **Cause:** Box decides `shell:spawn` once per program and does not mediate
+  that program's children. The policy narrows what the shell starts; Box's
+  sandbox is the code-execution boundary.
+- **Workaround:** treat any process in the execution as able to run arbitrary
+  code inside Box's sandbox. That makes the
+  [native hook credential gap](#the-whole-execution-can-read-the-native-hook-credential-and-forge-its-own-callbacks)
+  and the [shared-kernel placement gap](#boxs-trusted-process-shares-a-kernel-with-the-workload)
+  reachable from the Agent's commands; their workarounds apply.
+- **Upstream status:** Box behavior in v0.2.2; not reported.
+
 ## The whole execution can read the native hook credential and forge its own callbacks
 
 - **Symptom:** every process in the Box execution, including the agent's own

@@ -49,6 +49,7 @@ import {
   nestedChildArguments,
   splitStockCommand,
 } from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
+import { stockGitPolicy } from "../../deploy/examples/strands-box/host/stock-git.ts";
 import {
   applyModelRevocation,
   boxDialedRoutes,
@@ -1564,9 +1565,17 @@ test(
       for (const [name, value] of Object.entries(enrollmentEnvironment)) {
         assert.ok(generated.includes(`\n${name} = ${JSON.stringify(value)}\n`), name);
       }
+      const protectedPolicy = readFileSync(join(directory, "generated-policy.dw"), "utf8");
+      assert.ok(protectedPolicy.includes(githubPolicy()));
+      // Finding 3314: the protected run's shell may run exactly stock git and gh from the
+      // workspace, and write the workspace but not the Harness's own files there.
+      assert.ok(protectedPolicy.includes(stockGitPolicy(config.workspace)));
       assert.ok(
-        readFileSync(join(directory, "generated-policy.dw"), "utf8").includes(githubPolicy()),
+        protectedPolicy.includes(
+          `when { (context.input.program_path == "/usr/bin/git" || context.input.program_path == "/usr/local/bin/gh") && (context.input.cwd == ${JSON.stringify(config.workspace)} || context.input.cwd like ${JSON.stringify(`${config.workspace}/*`)}) && !(context.input has credential_reads) };`,
+        ),
       );
+      assert.match(protectedPolicy, /forbid[^;]*fs:write[^;]*\/\.codex"/);
       assert.equal(
         readFileSync(join(directory, "bearer.sha256"), "utf8").split(" ")[0],
         createHash("sha256").update(bearer).digest("hex"),
@@ -1876,10 +1885,10 @@ test(
         readFileSync(join(directory, "generated-ca.pem"), "utf8"),
         verified.trim() + "\n",
       );
-      assert.match(
-        readFileSync(join(directory, "generated-policy.dw"), "utf8"),
-        /context.input.ip4 == "10.0.0.9"/,
-      );
+      const plainPolicy = readFileSync(join(directory, "generated-policy.dw"), "utf8");
+      assert.match(plainPolicy, /context.input.ip4 == "10.0.0.9"/);
+      // No protected repository source: no workload shell, git or gh rule (finding 3314).
+      assert.doesNotMatch(plainPolicy, /shell:exec|oce_stock_git|fs:write/);
       const rows = generated.split("\n").filter((row) => /^(read|write|exec) = \[/.test(row));
       const grants = rows.flatMap((row) => JSON.parse(row.slice(row.indexOf("["))) as string[]);
       for (const grant of grants) {
