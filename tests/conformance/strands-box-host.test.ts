@@ -75,6 +75,7 @@ import {
   parseRoute,
   githubCredentials,
   githubPolicy,
+  modelCredentials,
   policy,
   routeView,
   sameRouteView,
@@ -1654,6 +1655,123 @@ test("the host admits only the paired one-repository plan for its own GitHub rou
     message: "unadmitted_protected_wiring",
   });
 });
+
+test(
+  "a protected start with a model source adds only Box's oce-model source and route, never a model value",
+  { skip: unsupported },
+  async () => {
+    const directory = temporary();
+    const runtimeDir = join(directory, "run");
+    const workspace = join(directory, "workspace");
+    const agentBuildDir = join(directory, "build");
+    for (const path of [runtimeDir, workspace, agentBuildDir]) {
+      mkdirSync(path, { mode: 0o700 });
+    }
+    for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
+      writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
+    }
+    const boxBin = join(directory, "fixture-box");
+    writeFileSync(
+      boxBin,
+      '#!/bin/sh\ncp -- "$3" ../generated-box.toml || exit 3\n' +
+        'policy=$(sed -n \'s/^policy = "\\(.*\\)"$/\\1/p\' "$3")\n' +
+        'cp -- "$policy" ../generated-policy.dw || exit 4\n' +
+        "env | cut -d= -f1 | sort > ../box-env\n" +
+        "sleep 2\nexit 2\n",
+      { mode: 0o700 },
+    );
+    const node = realpathSync(process.execPath);
+    const config = hostConfig({
+      boxBin,
+      nodeBin: node,
+      codexBin: node,
+      agentBuildDir,
+      runtimeDir,
+      workspace,
+      read: [],
+      exec: [],
+      linuxPreview: true,
+    });
+    const bearer = randomBytes(32).toString("base64url");
+    const reservationGeneration = "a".repeat(64);
+    const route = {
+      kind: "controlled-inference" as const,
+      url: "https://10.0.0.9:8444/v1",
+      address: "10.0.0.9",
+    };
+    const model = { socket: join(runtimeDir, "source", "model.sock"), path: "/v1/responses" };
+    const credentialSource = { socket: join(runtimeDir, "source", "oce.sock"), bearer, model };
+    const releaseGate = true as const;
+    const { input } = smokeInput(config);
+    const held = { ...input, egress: [route], releaseGate, reservationGeneration };
+    try {
+      for (const refused of [
+        { ...held, credentialSource, environment: { ...input.environment, OPENAI_API_KEY: "x" } },
+        { ...held, credentialSource, egress: [] },
+        { ...held, credentialSource, egress: [route, route] },
+        {
+          ...held,
+          credentialSource: { ...credentialSource, model: { ...model, path: "/v1/chat" } },
+        },
+        {
+          ...held,
+          credentialSource: {
+            ...credentialSource,
+            model: { ...model, socket: credentialSource.socket },
+          },
+        },
+        {
+          ...held,
+          credentialSource: {
+            ...credentialSource,
+            model: { ...model, socket: join(runtimeDir, "other", "model.sock") },
+          },
+        },
+        {
+          ...held,
+          credentialSource: {
+            ...credentialSource,
+            model: { ...model, socket: join(directory, "model.sock") },
+          },
+        },
+      ]) {
+        const scratch = join(directory, `refused-${randomBytes(4).toString("hex")}`);
+        mkdirSync(scratch, { mode: 0o700 });
+        const refusedExecution = start({ ...config, runtimeDir: scratch }, refused);
+        await assert.rejects(refusedExecution.ready, { message: "startup_refused:stage-inputs" });
+        await refusedExecution.done.catch(() => undefined);
+        assert.equal(refusedExecution.boxProcess(), undefined);
+      }
+      const execution = start(config, { ...held, credentialSource });
+      await execution.spawned;
+      await assert.rejects(execution.ready, { message: "startup_refused:wait-release" });
+      assert.equal(await execution.done, 2);
+      const generated = readFileSync(join(directory, "generated-box.toml"), "utf8");
+      assert.ok(
+        generated.includes(
+          modelCredentials(route, {
+            socket: model.socket,
+            bearerEnv: "OCE_SOURCE_BEARER",
+            timeoutMs: 5000,
+            maxBodyBytes: 16 * 1024 * 1024,
+            path: "/v1/responses",
+          }),
+        ),
+      );
+      assert.equal(generated.match(/\[gateway\.credential_source\./g)?.length, 2);
+      assert.doesNotMatch(generated, /\[agent\.env\][^[]*OPENAI_API_KEY/);
+      const policyText = readFileSync(join(directory, "generated-policy.dw"), "utf8");
+      assert.ok(
+        policyText.includes(
+          'context.input.method == "POST" && context.input.path == "/v1/responses"',
+        ),
+      );
+      assert.ok(!readFileSync(join(directory, "box-env"), "utf8").includes("OPENAI_API_KEY"));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 test("the host admits a Harness model source only from this Driver's Gateway, only with its model configuration", () => {
   const { owner, configured, plan } = protectedFixture();
