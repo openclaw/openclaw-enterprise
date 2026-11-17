@@ -638,11 +638,15 @@ export async function runWritableGatewayRestart(t: TestContext) {
   assert.notEqual(leaseHeld.ready, 200);
   const leaseLogs = await runDocker(["logs", leaseOnly.containerName]);
   const leaseText = leaseLogs.stderr + leaseLogs.stdout;
-  // OpenClaw's own start refused, after the tool policy step's validation passed.
-  assert.match(leaseText, /Gateway failed to start: cannot verify Gateway ownership/);
+  // OpenClaw's own start met the lease, after the tool policy step's validation passed; it
+  // exited after its wait, and the wrapper names the lock and OpenClaw's holder description.
   assert.match(
     leaseText,
-    /still holds the Gateway state lock.*OpenClaw reported: SQLite Gateway owner lease: holder \d+ at /,
+    /Waiting up to \d+ seconds for the previous Gateway to release state.*cannot verify Gateway ownership/,
+  );
+  assert.match(
+    leaseText,
+    /still holds the Gateway state lock.*OpenClaw reported: .*holder \d+ at [^ ]+\/pid-ns \d+/,
   );
   // The wrapper logs no confirmation, and the lease is still there: it only inspected.
   assert.doesNotMatch(leaseText, /recover-lock --confirm [0-9a-f]{64}/);
