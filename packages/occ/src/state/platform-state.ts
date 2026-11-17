@@ -1822,6 +1822,18 @@ function assertCredentialSource(source: CredentialSource): void {
   }
 }
 
+function namespaceResourceExists(
+  resources: Iterable<{ readonly namespaceId: string }>,
+  namespaceId: string,
+): boolean {
+  for (const resource of resources) {
+    if (resource.namespaceId === namespaceId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // A write stores an `immutableCopy` and returns that same value: it is a deep-frozen clone of
 // plain data, so the caller cannot change the stored state through it. That holds while the
 // stored contract types carry no Date, Map, Set or typed array (see `immutableSnapshot` in
@@ -1915,11 +1927,9 @@ function repositories(
       return immutableCopy(namespace);
     },
     hasAgents: async (namespaceId) =>
-      Array.from(snapshot.agents.values()).some((agent) => agent.namespaceId === namespaceId),
+      namespaceResourceExists(snapshot.agents.values(), namespaceId),
     hasConfigurations: async (namespaceId) =>
-      Array.from(snapshot.configurations.values()).some(
-        (configuration) => configuration.namespaceId === namespaceId,
-      ),
+      namespaceResourceExists(snapshot.configurations.values(), namespaceId),
     listConfigurationIds: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.configurations.values())
@@ -1931,17 +1941,13 @@ function repositories(
           .map((configuration) => configuration.id),
       ),
     hasPresets: async (namespaceId) =>
-      Array.from(snapshot.presets.values()).some((preset) => preset.namespaceId === namespaceId),
+      namespaceResourceExists(snapshot.presets.values(), namespaceId),
     hasServiceAccounts: async (namespaceId) =>
-      Array.from(snapshot.serviceAccounts.values()).some(
-        (account) => account.namespaceId === namespaceId,
-      ),
+      namespaceResourceExists(snapshot.serviceAccounts.values(), namespaceId),
     hasSecrets: async (namespaceId) =>
-      Array.from(snapshot.secrets.values()).some((secret) => secret.namespaceId === namespaceId),
+      namespaceResourceExists(snapshot.secrets.values(), namespaceId),
     hasCredentialSources: async (namespaceId) =>
-      Array.from(snapshot.credentialSources.values()).some(
-        (source) => source.namespaceId === namespaceId,
-      ),
+      namespaceResourceExists(snapshot.credentialSources.values(), namespaceId),
     transitionNamespaceStatus: async (namespaceId, expected, next) => {
       const key = namespaceId;
       const namespace = snapshot.namespaces.get(key);
@@ -1975,22 +1981,12 @@ function repositories(
         return immutableCopy(namespace);
       }
       if (
-        Array.from(snapshot.agents.values()).some((agent) => agent.namespaceId === namespaceId) ||
-        Array.from(snapshot.configurations.values()).some(
-          (configuration) => configuration.namespaceId === namespaceId,
-        ) ||
-        Array.from(snapshot.presets.values()).some(
-          (preset) => preset.namespaceId === namespaceId,
-        ) ||
-        Array.from(snapshot.serviceAccounts.values()).some(
-          (account) => account.namespaceId === namespaceId,
-        ) ||
-        Array.from(snapshot.secrets.values()).some(
-          (secret) => secret.namespaceId === namespaceId,
-        ) ||
-        Array.from(snapshot.credentialSources.values()).some(
-          (source) => source.namespaceId === namespaceId,
-        )
+        namespaceResourceExists(snapshot.agents.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.configurations.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.presets.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.serviceAccounts.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.secrets.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.credentialSources.values(), namespaceId)
       ) {
         throw new ScopeViolationError("A nonempty Namespace cannot be tombstoned.");
       }
