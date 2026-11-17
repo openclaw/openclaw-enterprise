@@ -10686,18 +10686,32 @@ export class KubernetesComputeDriver implements ComputeDriver {
       : ORDINARY_NETWORK_PROFILE;
   }
 
+  // The one decision for verifier delivery: Harness auth, activation and both sides of
+  // Codex plugin readiness read it. A declaration this revision cannot honour is refused,
+  // never answered with the bearer Secret reference.
   private deliversHarnessTransportVerifier(
-    revision: AgentRevision,
+    revision: Readonly<AgentRevision>,
     sandboxDriver: SandboxDriver | undefined,
   ): boolean {
+    const supported = revision.harness.id === "codex" || revision.harness.id === "openclaw";
+    const declared =
+      revision.harness.mode === "dedicated" &&
+      sandboxDriver?.harnessTransportCredential === "verifier";
+    if (
+      declared &&
+      (!supported ||
+        sandboxDriver.provisionHarness === undefined ||
+        sandboxDriver.harnessEndpoint === undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "SandboxDriver harnessTransportCredential requires a dedicated Codex or OpenClaw Harness it provisions and serves.",
+      );
+    }
     return (
-      (revision.harness.id === "codex" || revision.harness.id === "openclaw") &&
+      supported &&
       (revision.egressPlan !== undefined ||
         sandboxDriver?.implementation === "openshell" ||
-        (revision.harness.mode === "dedicated" &&
-          sandboxDriver?.provisionHarness !== undefined &&
-          sandboxDriver.harnessEndpoint !== undefined &&
-          sandboxDriver.harnessTransportCredential === "verifier"))
+        declared)
     );
   }
 
@@ -14880,6 +14894,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.usesOpenShellCodexLaunch(revision, this.sandboxDriver)
     ) {
       runtime = OPENSHELL_CODEX_LAUNCH + (runtime ?? "");
+    }
+    if (
+      revision.sandboxDriverId !== undefined &&
+      revision.sandboxDriverId === this.sandboxDriver?.id
+    ) {
+      this.deliversHarnessTransportVerifier(revision, this.sandboxDriver);
     }
     const provider = this.providerAdmission(revision);
     const admission =

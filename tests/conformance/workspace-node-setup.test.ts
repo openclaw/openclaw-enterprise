@@ -184,6 +184,29 @@ test("a selected external provider explicitly opts in to the native transport ve
   }
 });
 
+test("Compute refuses a verifier declaration it cannot honour instead of sending the bearer", async () => {
+  const fixture = providerEndpointFixture();
+  Object.assign(fixture.sandbox, {
+    implementation: "external",
+    harnessTransportCredential: "verifier",
+    harnessEndpoint: undefined,
+  });
+  const refusal = /harnessTransportCredential requires a dedicated Codex or OpenClaw Harness/;
+  assert.throws(() => admitRevisionHarness(fixture.driver, fixture.revision), refusal);
+  // A revision admitted before the declaration still refuses at its next reconcile.
+  Object.assign(fixture.sandbox, { harnessTransportCredential: undefined });
+  admitRevisionHarness(fixture.driver, fixture.revision);
+  Object.assign(fixture.sandbox, { harnessTransportCredential: "verifier" });
+  await assert.rejects(fixture.prepare(), refusal);
+  assert.equal(fixture.provisions.length, 0);
+  assert.equal(
+    fixture.writes.some(
+      ({ kind, metadata }) => kind === "Secret" && metadata.name.startsWith("harness-secrets-"),
+    ),
+    false,
+  );
+});
+
 function fixtureDigest(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
