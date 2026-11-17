@@ -31,6 +31,64 @@ interface AgentInput {
   projectionSocket?: string;
   /** Protected startup: wait here until the host verified Compute's signed release. */
   releaseSocket?: string;
+  /** The host's native hook self-check: this command line must answer exactly `expected`. */
+  nativeHookProbe?: { command: string; expected: string };
+}
+
+const PROBE_DEADLINE_MS = 20_000;
+
+/**
+ * Run the Gateway's native hook command through the same shell Codex uses for hooks (the first
+ * `sh` on PATH: Box's alias, which decides the spawn under the run's policy), in the Codex working
+ * directory, with empty input. Anything but the relay's own fail-closed answer means the hook
+ * cannot run here and stock Codex would run every tool call unadmitted. Nothing is forwarded:
+ * the result is one fixed reason.
+ */
+async function probeNativeHook(
+  probe: { command: string; expected: string },
+  workspace: string,
+  env: NodeJS.ProcessEnv,
+): Promise<"observed" | "hook-denied" | "hook-failed" | "hook-response" | "deadline"> {
+  if (
+    typeof probe?.command !== "string" ||
+    typeof probe.expected !== "string" ||
+    probe.command.length > 4096 ||
+    probe.expected.length > 4096
+  )
+    throw new Error("invalid_native_hook_probe");
+  const child = spawn("sh", ["-c", probe.command], {
+    cwd: workspace,
+    stdio: ["pipe", "pipe", "ignore"],
+    env,
+  });
+  const chunks: Buffer[] = [];
+  let length = 0;
+  child.stdout.on("data", (chunk: Buffer) => {
+    length += chunk.length;
+    if (length <= 8192) chunks.push(chunk);
+  });
+  child.stdin.on("error", () => {});
+  child.stdin.end();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, PROBE_DEADLINE_MS);
+  try {
+    const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+      child.once("error", () => resolve([null, null]));
+      child.once("close", (exit, sig) => resolve([exit, sig]));
+    });
+    if (timedOut) return "deadline";
+    // Strands Shell answers 126 for a refused spawn and 127 for a program it cannot find.
+    if (code === 126 || code === 127) return "hook-denied";
+    if (code !== 0 || signal !== null) return "hook-failed";
+    return Buffer.concat(chunks).toString("utf8") === probe.expected
+      ? "observed"
+      : "hook-response";
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -116,6 +174,12 @@ async function run(input: AgentInput): Promise<number> {
       report("inner", "projection", safeReason(error));
       throw error;
     }
+  }
+  if (input.nativeHookProbe !== undefined) {
+    report("inner", "native-hook", "entered");
+    const outcome = await probeNativeHook(input.nativeHookProbe, input.workspace, env);
+    report("inner", "native-hook", outcome);
+    if (outcome !== "observed") throw new Error("native_hook_unrunnable");
   }
   report("inner", "exec", "entered");
   const child = spawn(program, args, {

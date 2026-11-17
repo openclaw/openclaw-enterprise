@@ -11,6 +11,7 @@ const stages = [
   "input",
   "projection",
   "release",
+  "native-hook",
   "owner",
   "listener",
   "inner-socket",
@@ -57,6 +58,9 @@ const reasons = [
   "staging-root",
   "mount-view",
   "exec-dependency",
+  "hook-denied",
+  "hook-failed",
+  "hook-response",
 ] as const;
 
 type Source = (typeof sources)[number];

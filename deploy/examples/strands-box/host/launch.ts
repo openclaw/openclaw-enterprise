@@ -48,6 +48,12 @@ import {
   workspaceVerifierTool,
 } from "./workspace-verifier.ts";
 import {
+  nativeHookPolicy,
+  nativeHookProbe,
+  nativeHookTool,
+  verifyNativeHookCommand,
+} from "./native-hook.ts";
+import {
   bridge,
   INVALID_CAPABILITY,
   listen,
@@ -661,6 +667,9 @@ export function start(
           input.writable.some((path) => pathWithin(path, hooks) || pathWithin(hooks, path))
         )
           throw new Error("native_hook_directory");
+        // Box runs the hook command only under the exact permit and table below; the files it
+        // names must be root's alone.
+        verifyNativeHookCommand();
         // As the stock Harness does for its HOME: remove whatever is there (a link itself, never
         // its target) and start each execution with an empty private directory.
         rmSync(hooks, { recursive: true, force: true });
@@ -699,6 +708,8 @@ export function start(
           ...(input.releaseGate === true
             ? { releaseSocket: join(projectionDir, "release.sock") }
             : {}),
+          // The in-Box agent refuses to start Codex unless this exact hook command runs.
+          ...(hooks === undefined ? {} : { nativeHookProbe: nativeHookProbe(hooks) }),
         }),
         ownerOnly,
       );
@@ -720,7 +731,8 @@ export function start(
       writeFileSync(
         policyFile,
         policy(input.egress ?? [], source !== undefined) +
-          (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)),
+          (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)) +
+          (hooks === undefined ? "" : nativeHookPolicy(config.workspace, hooks)),
         ownerOnly,
       );
       // Only the CA bundle verified at host config load is written, into the authority directory
@@ -790,7 +802,8 @@ export function start(
                 timeoutMs: SOURCE_TIMEOUT_MS,
                 maxBodyBytes: SOURCE_MAX_BODY_BYTES,
               })) +
-          (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)),
+          (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)) +
+          (hooks === undefined ? "" : "\n" + nativeHookTool(config.workspace, hooks)),
         ownerOnly,
       );
       if (input.workspaceNodeSetupCode !== undefined) {
