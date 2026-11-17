@@ -9,6 +9,7 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import vm from "node:vm";
 
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
+import { EXITED_OPENCLAW_STATE_STOP_WAIT_MS as STOP_WAIT_MS } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
 import {
   OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION as CURRENT,
   OPENCLAW_STATE_DATABASE_SCHEMA_VERSION as STATE_CURRENT,
@@ -104,9 +105,9 @@ async function migrate(
       failures.push({ check, code });
       ends.push(`failure ${check}`);
     },
-    releaseExitedOpenClawState: (environment: NodeJS.ProcessEnv) => {
+    releaseExitedOpenClawState: (environment: NodeJS.ProcessEnv, waitMs: number) => {
       releases.push(environment);
-      ends.push("release");
+      ends.push(`release ${waitMs}`);
       return true;
     },
     setInterval: () => {
@@ -369,10 +370,10 @@ test("Gateway state migration stops Doctor with the signal it got and exits", as
   }
 });
 
-// A stop forwarded to Doctor reaches the CLI that OpenClaw's launcher respawns, which the
-// launcher kills about 2 s later, as does a kill or a crash: such a Doctor leaves the state
-// directory's owner lock, which a later Pod cannot verify stopped (finding 3345). A Kubernetes
-// wrapper releases its own dead child's records first; Docker keeps its recovery at start.
+// A Doctor stopped with its Pod, killed or crashed can leave the state directory's owner
+// lock, which a later Pod cannot verify stopped (finding 3345). A Kubernetes wrapper releases
+// its own child's records first; a stopped Doctor's CLI outlives OpenClaw's launchers while it
+// cleans up, so that release waits for it. Docker keeps its recovery at start.
 test("Kubernetes state migration releases a Doctor that did not complete before it exits or holds", async (t) => {
   const stopped: Doctor = (child, listeners) => {
     child.on("killed", (received) => child.emit("close", null, received));
@@ -381,9 +382,9 @@ test("Kubernetes state migration releases a Doctor that did not complete before 
     }
   };
   for (const [label, doctor, ends] of [
-    ["stopped", stopped, ["release", "exit 0"]],
-    ["killed", (child) => child.emit("close", null, "SIGKILL"), ["release", "failure state-migration"]],
-    ["exited 1", (child) => child.emit("close", 1, null), ["release", "failure state-migration"]],
+    ["stopped", stopped, [`release ${STOP_WAIT_MS}`, "exit 0"]],
+    ["killed", (child) => child.emit("close", null, "SIGKILL"), ["release 0", "failure state-migration"]],
+    ["exited 1", (child) => child.emit("close", 1, null), ["release 0", "failure state-migration"]],
     [
       "refused maintenance",
       (child) =>
@@ -391,7 +392,7 @@ test("Kubernetes state migration releases a Doctor that did not complete before 
           status: "error",
           maintenanceRefusal: { kind: "deferred", reason: "coordinator-contention" },
         }),
-      ["release", "failure state-migration"],
+      ["release 0", "failure state-migration"],
     ],
   ] satisfies Array<[label: string, doctor: Doctor, ends: string[]]>) {
     await t.test(label, async (t) => {

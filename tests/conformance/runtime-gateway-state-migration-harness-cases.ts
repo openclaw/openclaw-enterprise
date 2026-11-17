@@ -9,6 +9,7 @@ import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import vm from "node:vm";
 
+import { EXITED_OPENCLAW_STATE_STOP_WAIT_MS as STOP_WAIT_MS } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
 import { AGENT_WITH_NODE_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { OPENCLAW_STATE_DATABASE_SCHEMA_VERSION as STATE_CURRENT } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import {
@@ -69,9 +70,12 @@ interface HarnessOptions {
   env?: NodeJS.ProcessEnv;
   setup?: (options: SetupOptions) => SetupResult;
   bindError?: string;
-  // OpenClaw's read-only lock inspection, and the own-namespace release of an exited child.
+  // OpenClaw's read-only lock inspection, and the own-namespace release of an exited child:
+  // one result per attempt, the last repeated.
   lockInspection?: LockCommandResult;
-  exitRelease?: LockCommandResult;
+  exitRelease?: LockCommandResult | LockCommandResult[];
+  // The program's clock (Date.now), for a release that waits.
+  now?: () => number;
 }
 
 // One OpenClaw lock command the Harness ran: the release of its own exited child's records
@@ -110,6 +114,7 @@ async function runHarness(
     bindError,
     lockInspection = freeLock,
     exitRelease = released,
+    now,
   }: HarnessOptions = {},
 ) {
   const spawned: Array<{ name: HarnessChildName; env: NodeJS.ProcessEnv }> = [];
@@ -126,9 +131,17 @@ async function runHarness(
     stopped = true;
     for (const handler of [...stopHandlers]) handler();
   };
+  const releases = [exitRelease].flat();
   const context = {
     Buffer,
-    Date,
+    Date:
+      now === undefined
+        ? Date
+        : class extends Date {
+            static override now() {
+              return now();
+            }
+          },
     JSON,
     Math,
     Promise,
@@ -185,7 +198,7 @@ async function runHarness(
               namespace: JSON.parse(String(args[4])),
             });
             ends.push("release");
-            return exitRelease;
+            return releases.length > 1 ? releases.shift() : releases[0];
           }
           lockCalls.push({
             kind: "inspect",
@@ -576,19 +589,57 @@ function assertReleasedOwnNamespace(call: unknown, directory: string) {
   assert.ok("pidNsInode" in call.namespace && /^\d+$/.test(String(call.namespace.pidNsInode)));
 }
 
+// OpenClaw's launchers exit about 2 s after a forwarded stop; the Doctor CLI outlives them
+// while it cleans up, holding its locks, and the kernel would kill it when the wrapper exits.
+const stoppedDoctor: HarnessDoctor = (child, stop) => {
+  stop();
+  child.emit("close", null, "SIGTERM");
+};
+
 test("Harness releases the node state of a Doctor stopped with its Pod before it exits", async (t) => {
+  for (const [label, exitRelease, attempts] of [
+    ["the CLI already ended", released, 1],
+    // The release keeps the locks while their holder lives, then finds them released or the
+    // holder dead in this namespace.
+    ["the CLI still cleaning up", [keptLocks, keptLocks, released], 3],
+  ] satisfies Array<[string, LockCommandResult | LockCommandResult[], number]>) {
+    await t.test(label, async (t) => {
+      const directory = await workspaceNodeDirectory(t, STATE_CURRENT - 1);
+      const outcome = await runHarness(directory, stoppedDoctor, { exitRelease });
+      assert.deepEqual(
+        outcome.spawned.map(({ name }) => name),
+        ["doctor"],
+      );
+      assert.deepEqual(outcome.ends.slice(0, attempts + 1), [
+        ...Array<string>(attempts).fill("release"),
+        "exit 0",
+      ]);
+      for (const call of outcome.lockCalls.slice(0, attempts)) {
+        assertReleasedOwnNamespace(call, directory);
+      }
+      assert.equal(
+        outcome.errors.some((line) => line.includes("kept the state locks")),
+        false,
+      );
+    });
+  }
+});
+
+test("Harness exits within the stop's grace when its stopped Doctor's CLI keeps the locks", async (t) => {
   const directory = await workspaceNodeDirectory(t, STATE_CURRENT - 1);
-  const outcome = await runHarness(directory, (child, stop) => {
-    // OpenClaw's launcher kills the Doctor CLI it respawned about 2 s after the stop.
-    stop();
-    child.emit("close", null, "SIGKILL");
+  // Each reading of the clock advances it half the wait: the second attempt is the last.
+  let clock = 0;
+  const outcome = await runHarness(directory, stoppedDoctor, {
+    exitRelease: keptLocks,
+    now: () => (clock += STOP_WAIT_MS / 2),
   });
-  assert.deepEqual(
-    outcome.spawned.map(({ name }) => name),
-    ["doctor"],
+  assert.deepEqual(outcome.ends.slice(0, 3), ["release", "release", "exit 0"]);
+  assert.ok(
+    outcome.errors.includes(
+      "OpenClaw kept the state locks of the process that exited; see the recover-lock output above.",
+    ),
+    outcome.errors.join("\n"),
   );
-  assert.deepEqual(outcome.ends.slice(0, 2), ["release", "exit 0"]);
-  assertReleasedOwnNamespace(outcome.lockCalls[0], directory);
 });
 
 test("Harness holds a node state lock whose holder it cannot verify stopped, naming OpenClaw's holders", async (t) => {

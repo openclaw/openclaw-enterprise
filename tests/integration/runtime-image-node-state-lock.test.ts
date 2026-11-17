@@ -184,14 +184,15 @@ function baselineOutcomes(output: string): string[] {
 
 // A first Pod initializes the node state on the claim, so a later Pod with pending
 // maintenance runs Doctor on state that native setup created. Once setup has finished no
-// OpenClaw process holds the lock, so a kill leaves none.
+// OpenClaw process holds the lock, so ending the Pod, if its stand-in children have not
+// already, leaves none.
 async function initializedClaim(t: TestContext) {
   const claim = await workspaceClaim(t);
   const first = await startHarnessPod(t, claim);
   await waitForOutput(first, "first Pod finished native setup", (output) =>
     baselineOutcomes(output).includes("ok"),
   );
-  await runDocker(["kill", first.name]);
+  await runDocker(["stop", "--time", "0", first.name]);
   return claim;
 }
 
@@ -267,7 +268,8 @@ test(
     const claim = await initializedClaim(t);
     // A revision stopped or superseded while its Harness runs Doctor, as a rolled old
     // revision's Pod does on an upgrade that moves the state schema (finding 3345).
-    // OpenClaw's launcher kills the Doctor CLI about 2 s after the forwarded stop.
+    // OpenClaw's launchers exit about 2 s after the forwarded stop; the Doctor CLI outlives
+    // them while it cleans up, and the wrapper waits for it.
     const stopped = await startHarnessPod(t, claim, "stop", true);
     const stop = await waitForOutput(stopped, "stopped Pod exited", (_, running) => !running);
     assert.equal(stop.exitCode, 0, stop.output);

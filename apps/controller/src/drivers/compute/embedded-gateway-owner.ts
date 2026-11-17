@@ -57,8 +57,7 @@ export function embeddedGatewayRecoveryPreamble(namespace?: GatewayPidNamespace)
 // OpenClaw process that takes a state directory's locks: the native Gateway, and
 // Doctor and native setup before it. One that exits without a clean stop leaves its
 // records on retained state: a kill, or a stop signal before OpenClaw installs its
-// handler, which it does only after it takes the state lock; Doctor's launcher kills
-// the CLI it respawns about 2 s after forwarding a stop. A process in another
+// handler, which it does only after it takes the state lock. A process in another
 // container, such as a replacement Pod, cannot verify that holder and stays unready
 // until an operator recovers it (findings 3257, 3345). Call this once the wrapper has
 // reaped the process, with the environment it ran with. Given this namespace,
@@ -66,16 +65,31 @@ export function embeddedGatewayRecoveryPreamble(namespace?: GatewayPidNamespace)
 // PID dead here; any other holder, live or foreign, keeps every lock. It returns
 // false when OpenClaw kept the locks. Running it again is safe while this namespace
 // lives: with nothing left it recovers nothing and succeeds.
+//
+// waitMs retries until then while a holder lives. A stopped Doctor needs it: OpenClaw
+// starts its CLI through two launchers, each starting the next in a new process group,
+// and both exit about 2 s after a forwarded stop. The CLI, in its own group, outlives
+// them while it cleans up and releases its locks, about 7 s after the stop in a
+// reproduction of an in-place upgrade's rolled Pod. A wrapper that exited with its
+// launcher ended the container, and the kernel killed the CLI with its locks held
+// (finding 3345).
+export const EXITED_OPENCLAW_STATE_STOP_WAIT_MS = 20_000;
 export const EXITED_OPENCLAW_STATE_RELEASE = String.raw`
-function releaseExitedOpenClawState(environment) {
+function releaseExitedOpenClawState(environment, waitMs = 0) {
   let namespace;
   try { namespace = ${GATEWAY_NAMESPACE_PROBE}; } catch { return false; }
-  const released = require("node:child_process").spawnSync(process.execPath,
-    ["/app/openclaw.mjs", "gateway", "recover-lock", "--terminated-namespace", JSON.stringify(namespace), "--json"],
-    { env: environment, stdio: ["ignore", "inherit", "inherit"], timeout: 60000 });
-  if (released.status === 0) return true;
-  console.error("OpenClaw kept the state locks of the process that exited; see the recover-lock output above.");
-  return false;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const released = require("node:child_process").spawnSync(process.execPath,
+      ["/app/openclaw.mjs", "gateway", "recover-lock", "--terminated-namespace", JSON.stringify(namespace), "--json"],
+      { env: environment, stdio: ["ignore", "inherit", "inherit"], timeout: 60000 });
+    if (released.status === 0) return true;
+    if (Date.now() >= deadline) {
+      console.error("OpenClaw kept the state locks of the process that exited; see the recover-lock output above.");
+      return false;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  }
 }
 `;
 
