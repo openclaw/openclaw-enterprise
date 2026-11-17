@@ -10,13 +10,8 @@ import {
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.ts";
-import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.mjs";
-
-type ChartResource = {
-  kind?: string;
-  metadata?: { name?: string; namespace?: string };
-  spec?: { managedBy?: string; suspend?: boolean };
-};
+import { findChartJob } from "../helpers/production-chart-resource.ts";
+import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.ts";
 
 const selection = {
   kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
@@ -125,11 +120,7 @@ test(
 
     async function renderJob(isUpgrade: boolean) {
       const { stdout } = await renderProductionChart({}, { namespace, isUpgrade, release });
-      const resources: ChartResource[] = await parseProductionChart(stdout);
-      const job = resources.find(
-        (resource) => resource.kind === "Job" && resource.metadata?.name === name,
-      );
-      assert.ok(job?.metadata && job.spec);
+      const job = findChartJob(await parseProductionChart(stdout), name);
       job.metadata.namespace = namespace;
       return { manifest: job, spec: job.spec };
     }
@@ -562,11 +553,10 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     { "installation.attemptId": intent.attempt },
     { namespace, release, isUpgrade: true },
   );
-  const replacement = (await parseProductionChart(rendered.stdout)).find(
-    (item: ChartResource) => item.kind === "Job",
-  );
-  assert.ok(replacement);
-  assert.equal(replacement.metadata.annotations["openclaw.dev/installation-attempt"], undefined);
+  const replacement = findChartJob(await parseProductionChart(rendered.stdout));
+  const annotations = asRecord(replacement.metadata.annotations);
+  assert.ok(annotations, "Expected initialization Job annotations");
+  assert.equal(annotations["openclaw.dev/installation-attempt"], undefined);
   replacement.metadata.namespace = namespace;
   replacement.spec.suspend = true;
   await kubectl("-n", namespace, "delete", "job", name);

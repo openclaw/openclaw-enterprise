@@ -413,6 +413,7 @@ export function openshellHash(value, length = 12) {
   return sha256Hex(value, length);
 }
 
+/** @param {string} agentId */
 export function openShellAgentName(agentId) {
   return `agent-${openshellHash(agentId)}`;
 }
@@ -421,10 +422,21 @@ export function openShellGatewayName(agentId) {
   return `gateway-${openshellHash(agentId)}`;
 }
 
+/** @param {{agentId: string, id: string}} revision */
 export function openShellRevisionName(revision) {
   return `${openShellAgentName(revision.agentId)}-rev-${openshellHash(revision.id)}`;
 }
 
+/**
+ * @param {string} namespace
+ * @param {{namespaceId: string, agentId: string, id: string}} revision
+ * @param {{apiVersion: string, metadata: {namespace: string, name: string, uid: string, labels?: Record<string, string>}}} sandbox
+ * @param {Required<Pick<import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1Pod, "metadata">> &
+ *   {spec: Pick<import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1PodSpec,
+ *     "serviceAccountName" | "automountServiceAccountToken" | "volumes">}} pod
+ * @param {string} [profile] Untrusted profile names are rejected by this oracle.
+ * @param {string} [configuredServiceAccountName]
+ */
 export function assertOpenShellHarnessBinding(
   namespace,
   revision,

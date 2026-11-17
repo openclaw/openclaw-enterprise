@@ -11,7 +11,7 @@ import type {
 import { SandboxRevisionUnsupportedError, type ClaimedWork } from "../../packages/occ/src/index.ts";
 import type { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { deferWork, makeWorkDue } from "../helpers/postgres-worker-revision-queue.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 type RevisionFixtures = ReturnType<typeof createWorkerRevisionFixtures>;
 type RevisionFixture = Awaited<ReturnType<RevisionFixtures["setup"]>>;

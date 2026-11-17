@@ -11,7 +11,7 @@ import { type UpdateAgentInput, type CreateAgentInput } from "../../packages/occ
 import { registerAndSelectDrivers } from "../helpers/development.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { refusedAnswer } from "../helpers/refusal-answers.mjs";
+import { refusedAnswer } from "../helpers/refusal-answers.ts";
 import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
 
 export function registerAgentAdmissionCases(): void {
@@ -197,7 +197,8 @@ export function registerAgentAdmissionCases(): void {
     });
     // The denial names the one field that needs the grant (finding 2691).
     const denied = { status: 403, code: "FORBIDDEN", message: GATEWAY_MANAGED_MODE_DENIED };
-    const refused = (work: () => Promise<unknown>) => refusedAnswer(work, { actorId: member });
+    const refused = (work: () => Promise<unknown>) =>
+      refusedAnswer(work, { actorId: member, requested: () => false });
     const create = (principalId: string, name: string, mode: boolean | undefined) =>
       controller.createAgent(principalId, {
         namespaceId: namespace.id,

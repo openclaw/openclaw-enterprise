@@ -270,7 +270,10 @@ async function runFile(
   };
   let nodeElapsedMs: number | undefined;
   let agentActivity: Awaited<ReturnType<typeof startAgentNamespaceCapture>>;
-  const installationProgress = ["openshell", "openshell-policy"].includes(lane.name);
+  const installationProgress =
+    ["openshell", "openshell-policy"].includes(lane.name) ||
+    (lane.name === "openshell-installers" &&
+      relativePath === "tests/integration/openshell-upstream-real.test.ts");
   const installationPhases = collectInstallationPhases();
   let timeout: ReturnType<typeof fileTimeout> | undefined;
   let case2Directory: Case2Directory | undefined;

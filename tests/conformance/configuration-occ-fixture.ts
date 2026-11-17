@@ -19,7 +19,7 @@ import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
 } from "../helpers/development.ts";
-import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 export const administrator = "principal-configuration-administrator";

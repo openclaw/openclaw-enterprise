@@ -166,7 +166,7 @@ interface KubernetesFixtureMethods {
     name: string,
     owner: Ownership,
     target: Address,
-    image: string,
+    images: Readonly<{ runtime: string; workspaceSetup: string }>,
     serviceAccount: string,
     role: "gateway" | "agent",
     environment: Readonly<Record<string, string>>,

@@ -907,6 +907,14 @@ function workLogFields(claim: ClaimedWork): {
   };
 }
 
+function agentWorkLogFields(claim: ClaimedWork) {
+  return {
+    ...workLogFields(claim),
+    namespaceId: claim.namespaceId,
+    agentId: claim.agentId,
+  };
+}
+
 function workerPassErrorCode(error: unknown): string {
   if (error instanceof WorkClaimLostError) {
     return "CLAIM_LOST";
@@ -2171,6 +2179,37 @@ export class ControllerWorker {
       if (previous === undefined) {
         continue;
       }
+      const retargeted = await this.state.transactWithQueue(async (unit, queue) => {
+        const agent = await this.lockClaimAgent(unit, claim);
+        if ((await queue.heartbeat(claim)) === undefined) {
+          throw new WorkClaimLostError();
+        }
+        if (agent?.activeRevisionId !== previous.id || claim.revisionId === undefined) {
+          return;
+        }
+        const operation = await unit.agents.findPredecessorReplacement(
+          previous.namespaceId,
+          previous.agentId,
+        );
+        if (
+          operation?.predecessorRevisionId === previous.id &&
+          operation.phase === "pre-stop" &&
+          operation.candidateRevisionId !== claim.revisionId
+        ) {
+          // Release the live claim so the winning deployment can run immediately.
+          await queue.defer(claim, { code: "PREDECESSOR_STOP_RETARGETED" });
+          return true;
+        }
+        await unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
+          predecessorRevisionId: previous.id,
+          candidateRevisionId: claim.revisionId,
+          phase: "stopping",
+        });
+      }, this.queueOptions);
+      if (retargeted) {
+        // The transaction already released this claim and refunded its attempt.
+        throw new WorkClaimLostError();
+      }
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
@@ -2502,9 +2541,7 @@ export class ControllerWorker {
     this.reportRepositoryCleanupCause(claim, complete ? undefined : cause);
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: cleanupRevisionId,
       outcome: complete ? "success" : "pending",
       code: complete
@@ -2643,9 +2680,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.repository-cleanup-warning",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: repositoryCleanupRevisionId(claim),
       code: "REPOSITORY_CLEANUP_STALLED",
       cause,
@@ -2756,9 +2791,7 @@ export class ControllerWorker {
     this.passOutcome = result.outcome === "succeeded" ? "success" : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       outcome: this.passOutcome,
       code: result.outcome === "succeeded" ? "PROVISIONING_COMPLETED" : result.code,
       ...(result.outcome === "succeeded" ? { revisionId: result.revisionId } : {}),
@@ -3215,9 +3248,7 @@ export class ControllerWorker {
         this.passOutcome = "pending";
         this.emit({
           event: "worker.completed",
-          ...workLogFields(claim),
-          namespaceId: claim.namespaceId,
-          agentId: claim.agentId,
+          ...agentWorkLogFields(claim),
           outcome: "pending",
           code: "REPOSITORY_CLEANUP_PENDING",
         });
@@ -3256,9 +3287,7 @@ export class ControllerWorker {
         : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       // `result` is the Driver's classification; `outcome` the queue's decision, so a retry that
       // spent the attempt budget reads `permanent` here, as the hint says (finding 1694).
       result: result.outcome,
@@ -3362,9 +3391,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: result.revision?.id,
       // As for a deletion: `outcome` is the queue's decision (finding 1694).
       result: result.outcome,
@@ -3724,9 +3751,7 @@ export class ControllerWorker {
     this.passOutcome = terminal(result) ? "permanent" : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       // `outcome` is the queue's decision; a terminal retry (`permanent` here) has its recovery
       // series queued (finding 1694).
@@ -4184,9 +4209,7 @@ export class ControllerWorker {
     this.passOutcome = "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "success",
       outcome: "success",
@@ -4662,6 +4685,9 @@ export class ControllerWorker {
         this.compute.requiresStoppedPredecessors?.(revision) === true
           ? await this.heldRuntimeSuccessor(revision)
           : undefined;
+      // Pre-stop access does not authorize re-preparing the old runtime with a
+      // changed Installation. Safe maintenance during a wait needs Driver-owned
+      // immutable runtime inputs; preserve existing supersession until then.
       const supersededBy = successor ?? heldSuccessor;
       if (supersededBy !== undefined) {
         // A refusal decided after this check (lost repository authority, a Secret or
@@ -4906,9 +4932,7 @@ export class ControllerWorker {
             this.passOutcome = "pending";
             this.emit({
               event: "worker.completed",
-              ...workLogFields(claim),
-              namespaceId: claim.namespaceId,
-              agentId: claim.agentId,
+              ...agentWorkLogFields(claim),
               revisionId: revision.id,
               outcome: "pending",
               code,
@@ -4975,9 +4999,7 @@ export class ControllerWorker {
         this.passOutcome = "pending";
         this.emit({
           event: "worker.completed",
-          ...workLogFields(claim),
-          namespaceId: claim.namespaceId,
-          agentId: claim.agentId,
+          ...agentWorkLogFields(claim),
           revisionId: claim.revisionId,
           outcome: "pending",
           code,
@@ -5125,9 +5147,7 @@ export class ControllerWorker {
     this.passOutcome = deferred ? "pending" : "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: revision.id,
       outcome: this.passOutcome,
       code,
@@ -5236,9 +5256,7 @@ export class ControllerWorker {
       this.passOutcome = "success";
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: claim.revisionId,
         result: "success",
         outcome: "success",
@@ -6513,9 +6531,7 @@ export class ControllerWorker {
       : resolved;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: reported.outcome,
       outcome: reported.outcome,
@@ -6852,9 +6868,7 @@ export class ControllerWorker {
       this.passOutcome = outcome;
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: revision.id,
         outcome,
         code:
@@ -6879,9 +6893,7 @@ export class ControllerWorker {
     this.passOutcome = "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: revision.id,
       result: "success",
       outcome: "success",
@@ -6979,9 +6991,7 @@ export class ControllerWorker {
       this.passOutcome = "pending";
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: claim.revisionId,
         result: "pending",
         outcome: "pending",
@@ -6994,9 +7004,7 @@ export class ControllerWorker {
       // Like the pointer commit's lost race, this pass committed a retry (finding 1611).
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: claim.revisionId,
         result: "retry",
         outcome: "retry",
@@ -7013,9 +7021,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: result.outcome,
       outcome: result.outcome,
@@ -7098,9 +7104,7 @@ export class ControllerWorker {
     this.passOutcome = superseded ? "success" : "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "pending",
       outcome: "pending",
@@ -7176,9 +7180,7 @@ export class ControllerWorker {
     this.passOutcome = "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId,
       result: "retry",
       outcome: "retry",
@@ -7275,9 +7277,7 @@ export class ControllerWorker {
     this.passOutcome = "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "permanent",
       outcome: "permanent",

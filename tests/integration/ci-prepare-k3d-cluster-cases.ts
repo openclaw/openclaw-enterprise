@@ -17,7 +17,7 @@ import {
 } from "../helpers/ci-prepare-fixture.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.ts";
-import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
+import { waitFor, waitUntil, within } from "../helpers/wait-for.ts";
 import { interceptFixtureDocker, type ImageCommands } from "./ci-prepare-k3d-docker-fixture.ts";
 
 // Linux reports an exited but unreaped process as a zombie; it holds nothing.

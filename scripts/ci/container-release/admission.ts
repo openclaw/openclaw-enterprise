@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { loadTestSuites } from "../test-suites.ts";
 import { integerPattern, shaPattern, field, match } from "./metadata.ts";
@@ -142,14 +143,24 @@ export function validatePackage(
 
 export async function github(
   path: string,
-  { allowNotFound = false, retryNotFound = false } = {},
+  {
+    allowNotFound = false,
+    retryNotFound = false,
+    signal,
+  }: { allowNotFound?: boolean; retryNotFound?: boolean; signal?: AbortSignal } = {},
 ): Promise<unknown> {
   assert.ok(process.env.GH_TOKEN, "A GitHub workflow token is required.");
   const attempts = retryNotFound ? 6 : 3;
+  const waitBeforeRetry = () =>
+    signal
+      ? sleep(2_000, undefined, { signal })
+      : new Promise((resolve) => setTimeout(resolve, 2_000));
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    signal?.throwIfAborted();
     let response: Response;
     let body: string | undefined;
     try {
+      const timeout = AbortSignal.timeout(30_000);
       response = await fetch(`https://api.github.com/${path}`, {
         headers: {
           Authorization: `Bearer ${process.env.GH_TOKEN}`,
@@ -157,7 +168,7 @@ export async function github(
           "X-GitHub-Api-Version": "2022-11-28",
         },
         redirect: "error",
-        signal: AbortSignal.timeout(30_000),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
       // Reading the body can fail after headers arrive. Retry only this GET's
       // transport, never HTTP authorization errors or invalid JSON metadata.
@@ -165,14 +176,16 @@ export async function github(
         body = await response.text();
       }
     } catch {
+      signal?.throwIfAborted();
       if (attempt === attempts) {
         throw new Error(`GitHub GET ${path} transport failed after ${attempts} attempts.`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      await waitBeforeRetry();
       continue;
     }
+    signal?.throwIfAborted();
     if (response.status === 404 && retryNotFound && attempt < attempts) {
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      await waitBeforeRetry();
       continue;
     }
     if (allowNotFound && response.status === 404) {
@@ -189,10 +202,17 @@ export async function github(
   }
 }
 
-export async function githubPages(path: string, key?: string): Promise<unknown[]> {
+export async function githubPages(
+  path: string,
+  key?: string,
+  signal?: AbortSignal,
+): Promise<unknown[]> {
   const result: unknown[] = [];
   for (let page = 1; page <= 100; page += 1) {
-    const data = await github(`${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
+    const data = await github(
+      `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`,
+      signal ? { signal } : undefined,
+    );
     const entries = key ? field(data, key) : data;
     assert.ok(Array.isArray(entries), "Invalid GitHub pagination response.");
     result.push(...entries);

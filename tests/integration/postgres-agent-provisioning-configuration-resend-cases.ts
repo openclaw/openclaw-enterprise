@@ -17,7 +17,7 @@ import {
 import type { ControllerWorkState } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import type { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 

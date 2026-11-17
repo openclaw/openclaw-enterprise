@@ -5,13 +5,16 @@ import { composeProduction } from "../../apps/controller/src/composition/product
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
+  postgresSignInState,
+  installationRoles,
+} from "../helpers/postgres-sign-in-installation.ts";
+import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
   consoleOrigin as origin,
   createAccount,
   currentSession,
   defaultInstallSettings,
-  installationRoles,
   productionSignInConfiguration,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
@@ -22,7 +25,6 @@ import {
   first,
   injectLocalhost,
   passwordSignIn,
-  postgresState,
   record,
   text,
   type App,
@@ -43,7 +45,7 @@ test(
   requiresPostgres,
   async (t) => {
     const apps: { app?: App } = {};
-    const { pool } = postgresState(t, () => [apps.app]);
+    const { pool, state } = postgresSignInState(t, () => [apps.app]);
     const adminPassword = await bootstrapProductionInstallation(t, {
       databaseUrl,
       email: adminEmail,
@@ -86,7 +88,7 @@ test(
     let member: { id: string; email: string };
     await t.test("the administrator creates a password account with the exact Origin", async () => {
       const headers = await adminHeaders();
-      const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
+      const { reader: role } = await installationRoles(state, pool);
       const payload = { email: memberEmail, password: memberPassword, roleId: role.id };
       for (const refused of [
         { cookie: headers.cookie },

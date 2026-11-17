@@ -25,14 +25,14 @@ import type {
   GitHubTokenClass,
   GitHubTokenConfiguration,
 } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   githubConfigurationData,
   githubTokenConfigurationData,
-  requestHead,
   serviceConfigurationData,
   custodyLimits,
-} from "../fixtures/repository-credentials/builders.mjs";
+} from "../fixtures/repository-credentials/builders.ts";
+import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
 // Synthetic values: the prefix selects a class; nothing here is a real credential.
 const sentinel = (prefix: string) => `${prefix}${"x".repeat(36)}`;
@@ -84,13 +84,7 @@ function head(
   headers: RequestHead["headers"] = {},
   framing: RequestHead["framing"] = { kind: "none", bytes: undefined },
 ): RequestHead {
-  const {
-    headers: fields,
-    receivedMonoMs,
-    contentEncoding,
-  } = requestHead(method, rawTarget, headers);
-  assert.equal(contentEncoding, "identity");
-  return { method, rawTarget, headers: fields, receivedMonoMs, contentEncoding, framing };
+  return requestHead(method, rawTarget, headers, { framing });
 }
 
 function bind(

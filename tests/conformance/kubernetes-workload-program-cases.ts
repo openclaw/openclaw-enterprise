@@ -363,8 +363,12 @@ export async function checkRuntimeImageProvenance() {
   const driver = new KubernetesComputeDriver(options());
   const revision = routedRevision(driver);
   const commit = "a".repeat(40);
-  let generation = 1;
-  let mode: "ready" | "restart" | "missing" | "timeout" = "ready";
+  const openclawCommit = "b".repeat(40);
+  let podGeneration = 1;
+  let containerGeneration = 1;
+  let mode: "ready" | "restart" | "missing" | "timeout" | "container-restart" = "ready";
+  let buildMetadata: { commit?: string; openclawCommit?: string } = { commit, openclawCommit };
+  const restartedRoles = new Set<string>();
   const clients = {
     core: {
       async listNamespace() {
@@ -378,10 +382,10 @@ export async function checkRuntimeImageProvenance() {
         const labels = labelSelectorLabels(labelSelector);
         const role = labels["openclaw.dev/workload-role"];
         assert.ok(role);
-        return {
+        const result = {
           items: [
             {
-              metadata: { name: `${role}-pod`, namespace, labels, uid: `${role}-${generation}` },
+              metadata: { name: `${role}-pod`, namespace, labels, uid: `${role}-${podGeneration}` },
               spec: {
                 containers: [
                   { name: role, image: "runtime:mutable" },
@@ -393,7 +397,11 @@ export async function checkRuntimeImageProvenance() {
                 phase: "Running",
                 podIP: "10.42.0.13",
                 containerStatuses: [
-                  { name: role, imageID: "sha256:runtime", containerID: `${role}-${generation}` },
+                  {
+                    name: role,
+                    imageID: "sha256:runtime",
+                    containerID: `${role}-${containerGeneration}`,
+                  },
                   { name: "sidecar", imageID: "sha256:sidecar", containerID: "sidecar" },
                 ],
                 initContainerStatuses: [{ name: "initialize", imageID: "sha256:runtime" }],
@@ -401,10 +409,17 @@ export async function checkRuntimeImageProvenance() {
             },
           ],
         };
+        // Both private status lists see the new container after the outer list's snapshot.
+        if (mode === "container-restart" && !restartedRoles.has(role)) {
+          restartedRoles.add(role);
+          containerGeneration += 1;
+        }
+        return result;
       },
       async connectGetNamespacedPodProxyWithPath() {
         if (mode === "restart") {
-          generation += 1;
+          podGeneration += 1;
+          containerGeneration += 1;
         }
         if (mode === "missing") {
           throw Object.assign(new Error("not found"), { statusCode: 404 });
@@ -427,7 +442,7 @@ export async function checkRuntimeImageProvenance() {
             );
           });
         }
-        return { commit, openclawCommit: "b".repeat(40), private: "must not escape" };
+        return { ...buildMetadata, private: "must not escape" };
       },
     },
   };
@@ -442,14 +457,15 @@ export async function checkRuntimeImageProvenance() {
     ]),
   );
   assert.equal(images.filter((image) => image.commit === commit).length, 4);
-  assert.equal(images.filter((image) => image.openclawCommit === "b".repeat(40)).length, 4);
+  assert.equal(images.filter((image) => image.openclawCommit === openclawCommit).length, 4);
   assert.ok(
     images
       .filter((image) => image.container === "sidecar")
       .every((image) => image.commit === null && image.openclawCommit === null),
   );
   assert.doesNotMatch(JSON.stringify(images), /must not escape/);
-  for (mode of ["restart", "missing", "timeout"] as const) {
+  // Image identity survives source metadata failures and a restart in the same Pod.
+  for (mode of ["restart", "missing", "timeout", "container-restart"] as const) {
     const observed = await driver.getRuntimeImages(revision);
     assert.equal(observed.length, 6);
     assert.ok(
@@ -458,6 +474,29 @@ export async function checkRuntimeImageProvenance() {
       ),
       mode,
     );
+    assert.deepEqual(
+      observed.map((image) => image.imageId),
+      images.map((image) => image.imageId),
+      mode,
+    );
+  }
+
+  // Missing or malformed metadata for one source leaves the other source usable.
+  mode = "ready";
+  for (const scenario of [
+    { metadata: { commit, openclawCommit: "B".repeat(40) }, expected: [commit, null] },
+    { metadata: { openclawCommit }, expected: [null, openclawCommit] },
+  ]) {
+    buildMetadata = scenario.metadata;
+    const observed = await driver.getRuntimeImages(revision);
+    assert.equal(observed.length, 6);
+    for (const image of observed) {
+      assert.deepEqual(
+        [image.commit, image.openclawCommit],
+        image.container === "sidecar" ? [null, null] : scenario.expected,
+        [image.workload, image.container].join("/"),
+      );
+    }
   }
 }
 

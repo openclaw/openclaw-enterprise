@@ -20,7 +20,7 @@ import {
   type ServiceAccountCredential,
 } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   callerDenied,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,

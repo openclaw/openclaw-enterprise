@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
 import type { Browser, Page } from "playwright";
-import { textFromFrame, waitForStockUi } from "../../../tests/helpers/native-ui-chat.mjs";
+import { textFromFrame, waitForStockUi } from "../../../tests/helpers/native-ui-chat.ts";
 import { launchTrustingBrowser } from "../../../tests/helpers/trusted-chromium.ts";
 
 // Playwright runs these calls in the stock UI's page context.

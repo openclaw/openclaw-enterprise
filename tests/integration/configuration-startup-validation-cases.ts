@@ -7,7 +7,7 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.ts";
 
 type ValidationConfiguration = ReturnType<typeof installation> & {
   observability?: { url: string };

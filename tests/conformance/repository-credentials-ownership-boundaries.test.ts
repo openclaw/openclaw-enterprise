@@ -14,18 +14,18 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import type { RepositoryCredentialSessionResult } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
 import {
   fixtureRepository,
   startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
-import { requestHead } from "../fixtures/repository-credentials/builders.mjs";
-import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/github.ts";
+import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
+import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.ts";
 import {
   createServiceConfiguration,
   eventually,
-} from "../fixtures/repository-credentials/service.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
 
 const { createCredentialService } = await import("../fixtures/repository-credentials/service.ts");
 const completed = { kind: "completed", status: 200 } as const;
@@ -51,7 +51,7 @@ function fixtureHead(clock: Clock, rawTarget: string): RequestHead {
   const result = requestHead("GET", rawTarget, {}, { receivedMonoMs: clock.monotonicNow() });
   assert.equal(result.contentEncoding, "identity");
   assert.equal(result.framing.kind, "none");
-  return { ...result, contentEncoding: "identity", framing: { ...result.framing, kind: "none" } };
+  return result;
 }
 function requireStatus(service: CredentialServiceOwner, sessionId: string) {
   const result = service.status(sessionId);

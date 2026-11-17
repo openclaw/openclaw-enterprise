@@ -755,6 +755,7 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
       "/etc/openclaw/repository-ca",
       "/var/run/secrets/kubernetes.io/serviceaccount",
       "/run/openclaw/repository-control",
+      "/etc/openclaw/prepared-repository",
     ]) {
       reserved.add(path);
     }
@@ -2060,13 +2061,6 @@ function buildRendered(
       : {}),
   };
 
-  const codexSeccompProfile =
-    profile.name === "codex"
-      ? optionalString(runtime, ["runtime", "codexSeccompProfile"], diagnostics, {
-          validate: isCodexSeccompProfile,
-          description: "a relative localhost profile path without traversal or unconfined mode",
-        })
-      : undefined;
   const installation: RenderedInstallation = {
     occ: {
       cluster: clusterName,
