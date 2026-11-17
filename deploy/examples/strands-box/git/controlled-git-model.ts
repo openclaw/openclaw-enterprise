@@ -32,6 +32,14 @@ export const GIT_STEPS = [
   // call repeated until the Gateway's loop policy blocks it through PreToolUse.
   "touch",
   "gateway-loop",
+  // One permitted program (the workspace verifier): an ordinary tool call that runs to completion.
+  "verifier",
+  // Tamper attempts from the workload's own shell against Gateway tool admission: Codex's hook
+  // configuration, the hook credential directory, the hook's interpreter, and forged hook calls.
+  "tamper-config",
+  "tamper-credential",
+  "tamper-interpreter",
+  "tamper-forge",
 ] as const;
 /** Bound on repeated calls for the gateway-loop step (the stock critical threshold is 20). */
 export const LOOP_CALLS = 30;
@@ -45,6 +53,7 @@ export interface GitPlan {
 }
 const model = "gpt-5";
 const WORKSPACE = "/home/node/workspace";
+const HOOKS = "/home/node/.oce-native-hooks";
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/;
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$/;
 
@@ -112,6 +121,43 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
       return `printf '%s\\n' ${nonce} > ${WORKSPACE}/x5-touch-${tag}.txt && echo wrote`;
     case "gateway-loop":
       return `printf x5-loop-${tag}`;
+    case "verifier":
+      return "/opt/demo/verifier/oce-workspace-verifier";
+    // Each tamper command is a `;` list so that every operation is decided on its own.
+    case "tamper-config":
+      return [
+        `printf '[features]\\nhooks = false\\n' >> /home/node/.codex/config.toml`,
+        "rm /home/node/.codex/config.toml",
+        "mkdir /home/node/workspace/.codex",
+        `printf '[features]\\nhooks = false\\n' > /home/node/workspace/.codex/config.toml`,
+        `echo tamper-config-${tag}`,
+      ].join("; ");
+    case "tamper-credential":
+      return [
+        `ls -la ${HOOKS}`,
+        `cat ${HOOKS}/*.json | wc -c`,
+        `rm ${HOOKS}/*.json`,
+        `printf '{}' > ${HOOKS}/codex-${tag}.json`,
+        `ln -s ${WORKSPACE}/x5-${tag}.json ${HOOKS}/codex-${tag}.link.json`,
+        `echo tamper-credential-${tag}`,
+      ].join("; ");
+    case "tamper-interpreter":
+      return [
+        `mkdir ${WORKSPACE}/bin-${tag}`,
+        `cp /usr/local/bin/node ${WORKSPACE}/bin-${tag}/node`,
+        `export PATH=${WORKSPACE}/bin-${tag}:$PATH`,
+        "node --version",
+        `echo tamper-interpreter-${tag}`,
+      ].join("; ");
+    case "tamper-forge":
+      // The readable relay credential, then a forged permission request through the hook route:
+      // with the Shell's own client, and with the permitted relay command itself.
+      return [
+        `curl -sS -X POST -H "authorization: Bearer $(jq -r .token ${HOOKS}/*.json)" -d '{"event":"permission_request"}' "$(jq -r .url ${HOOKS}/*.json)"`,
+        `python3 -c 'print(1)'`,
+        `/usr/local/bin/node /app/node_modules/openclaw/dist/native-hook-relay/entry.js hooks relay --provider codex --relay-id codex-${"0".repeat(40)} --remote-credential ${HOOKS}/codex-${"0".repeat(40)}.00000000-0000-4000-8000-000000000000.json --generation 00000000-0000-4000-8000-000000000000 --event permission_request --timeout 5000 <<< '{"tool_name":"Bash","tool_input":{"command":"true"}}'`,
+        `echo tamper-forge-${tag}`,
+      ].join("; ");
   }
 }
 

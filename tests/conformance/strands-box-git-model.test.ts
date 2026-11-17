@@ -113,6 +113,18 @@ test("only the latest user prompt picks a step; an ordinary follow-up gets a pla
   assert.equal(rows.length, 1);
 });
 
+test("the admission checks: one permitted program and tamper lists decided command by command", () => {
+  assert.equal(gitCommand(plan, nonce, "verifier"), "/opt/demo/verifier/oce-workspace-verifier");
+  for (const step of ["tamper-config", "tamper-credential", "tamper-interpreter", "tamper-forge"] as const) {
+    const parts = gitCommand(plan, nonce, step).split("; ");
+    assert.ok(parts.length >= 3, step);
+    assert.equal(parts.at(-1), `echo ${step}-a1a1a1a1a1a1`);
+  }
+  assert.match(gitCommand(plan, nonce, "tamper-credential"), /rm \/home\/node\/\.oce-native-hooks\/\*\.json; /);
+  assert.match(gitCommand(plan, nonce, "tamper-credential"), /ln -s /);
+  assert.match(gitCommand(plan, nonce, "tamper-forge"), /--event permission_request --timeout 5000 <<< /);
+});
+
 test("the hook checks: a marker write and one no-progress call the dry-run model repeats", () => {
   assert.match(gitCommand(plan, nonce, "touch"), /^printf '%s\\n' (?:a1)+ > \/home\/node\/workspace\/x5-touch-a1a1a1a1a1a1\.txt && echo wrote$/);
   assert.equal(gitCommand(plan, nonce, "gateway-loop"), "printf x5-loop-a1a1a1a1a1a1");
