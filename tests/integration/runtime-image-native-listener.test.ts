@@ -32,6 +32,7 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 
 type BindSettings = {
   bind?: "loopback" | "custom" | "tailnet" | "lan" | "auto";
@@ -696,11 +697,17 @@ test(
       const outcomes = observations(remote.stdout, requests.length).map(asRecord);
       for (const [position, [request, expected]] of requests.entries()) {
         const outcome = outcomes[position];
-        const description = `${label}: ${request.operation ?? request.kind ?? "http"} ${request.identity} with ${
+        const operation =
+          request.kind === "ws" ? (request.method ?? "connect") : (request.operation ?? "http");
+        const description = `${label}: ${operation} ${request.identity} with ${
           request.scopes === undefined ? "no scope header" : `x-openclaw-scopes=${request.scopes}`
         }`;
         assert.ok(outcome, description);
-        assert.equal(outcome.status, expected.status, description);
+        assert.equal(
+          outcome.status,
+          expected.status,
+          `${description}: ${redactLogLine(JSON.stringify(outcome), [], 2048)}`,
+        );
         if (expected.body !== undefined) {
           assert.ok(
             typeof outcome.body === "string" && expected.body.test(outcome.body),

@@ -53,8 +53,8 @@ Unattributed owners need operator confirmation.
 OpenClaw normalizes newly created owner-only Linux directories that inherit
 setgid and reports invalid plugin settings during startup. The build runs the
 upstream private-store regressions.
-`openclaw-native-turn-settlement.patch` carries [upstream #185180](https://github.com/openclaw/openclaw/pull/185180).
-When Codex releases a long-running turn, the Gateway gives final delivery its normal progress window.
+The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
+final delivery retains its progress window after a long Codex turn.
 
 `openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
 or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
@@ -83,9 +83,9 @@ and which hosted PR CI does not run (it runs only under `container-check`
 `workflow_dispatch` or `container-publish`). Validating a change to either patch means
 building that stage (or dispatching `container-check`), not the normal PR checks.
 
-`openclaw-chat-main-session-start.patch` (OpenClaw #197151) lets chat-only members start
-an Agent's unused main conversation; `openclaw-chat-absent-selected-agent.patch`
-(#200358) limits that to the selected Agent.
+The pin includes OpenClaw #197151: chat-only members can start an unused main conversation.
+The #200358 follow-up is still required; `openclaw-chat-absent-selected-agent.patch`
+binds empty-history proof to the selected Agent.
 
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
@@ -133,7 +133,7 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The upstream package version is `2026.10.10`. Identify the custom build by
+The upstream package version is `2026.11.4`. Identify the custom build by
 `/opt/oce/runtime/provenance.json`. It records
 the source commit, archive, patch and lockfile hashes, package manager, plugins,
 architecture, Codex package identity, and SHA-256 of `contents.json`. That file
@@ -217,7 +217,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/513c12703ad9a9161cc123e0b8ed4ecb811aa6b3/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/b58996d69286d55d1bbbd9b5c03b4ad837baac45/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing

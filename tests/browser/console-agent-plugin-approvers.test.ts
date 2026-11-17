@@ -44,6 +44,7 @@ import {
   SLACK_LOOKUP_DENIED,
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.ts";
+import { within } from "../helpers/wait-for.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -305,7 +306,7 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
     const beta = dialog.getByRole("button", { name: "Beta", exact: true });
     const search = dialog.getByLabel("Search plugins");
     await alpha.click();
-    await requested.promise;
+    await within(requested.promise, "the held plugin details read");
     await alpha.focus();
     await page.keyboard.press("Tab");
     const isFocused = (node: Element) => node === node.ownerDocument.activeElement;
@@ -528,7 +529,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await people.press("ArrowDown");
   await people.press("Enter");
   // Hold name resolution at the first selected frame. The search result already identified this person.
-  await lookupStarted.promise;
+  await within(lookupStarted.promise, "the held name lookup for the selected person");
   const chip = page.locator(".slack-directory-chip");
   assert.equal(await chip.locator("span").innerText(), "Freeman Example (@freeman)");
   await chip

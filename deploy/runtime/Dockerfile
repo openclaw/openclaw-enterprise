@@ -233,16 +233,16 @@ COPY --from=openclaw-source /source/ ./
 # Exercise the original caller through the public RPC before and after the
 # placement acknowledgment, including revocation, against this exact source.
 COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo '5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+RUN echo 'b6261ce5be40e7d3c8f2d263aba7320301cbdd66381540edbb4362e95794139a  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo '21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo 'e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
-RUN echo '3e400cc9d0fc4a457ff58a4fa62f188c24fe63ecf5b0f7140f7a0cffa2c03889  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+RUN echo '09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
 # Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
@@ -252,7 +252,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Issue first-install node setup from the Gateway's own pairing store before it starts.
@@ -262,21 +262,11 @@ RUN echo '279b270ad09f2ef7d5ea24e3de733b1856b7bc9150eb5e8854e2b0523aac42f2  /tmp
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
 COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
-RUN echo 'c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
+RUN echo 'c3985dc0e7e79c10590be553b59f03a005324e3f06ec49be73f69bd65ea9ea96  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
-# Remove this backport when the pinned core includes upstream openclaw/openclaw#185180.
-COPY deploy/runtime/openclaw-native-turn-settlement.patch /tmp/openclaw-native-turn-settlement.patch
-RUN echo '5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6  /tmp/openclaw-native-turn-settlement.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-native-turn-settlement.patch
-
-# Remove this bridge when the pinned OpenClaw includes openclaw#197151: a
-# session-scoped member may open and start its Agent's unused main conversation.
-COPY deploy/runtime/openclaw-chat-main-session-start.patch /tmp/openclaw-chat-main-session-start.patch
-RUN echo '483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4  /tmp/openclaw-chat-main-session-start.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-chat-main-session-start.patch
 # Remove this bridge when the pinned OpenClaw includes openclaw#200358: the
-# empty-history proof above holds only for the Agent whose history was read.
+# native empty-history proof holds only for the Agent whose history was read.
 COPY deploy/runtime/openclaw-chat-absent-selected-agent.patch /tmp/openclaw-chat-absent-selected-agent.patch
 RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp/openclaw-chat-absent-selected-agent.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-chat-absent-selected-agent.patch
@@ -303,6 +293,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/node-host/runner.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
+    src/node-host/openclaw-id-join.test.ts \
     src/cli/node-cli/register.test.ts \
     src/cli/node-cli/gateway-options.test.ts \
     src/cli/connect-cli.test.ts \

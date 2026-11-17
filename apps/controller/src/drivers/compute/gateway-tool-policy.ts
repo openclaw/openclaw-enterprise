@@ -155,7 +155,7 @@ const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
 
 // Reviewed core, automation and Codex adapter enforcement. Update together
 // with the runtime source pin and archive provenance.
-export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "513c12703ad9a9161cc123e0b8ed4ecb811aa6b3";
+export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "b58996d69286d55d1bbbd9b5c03b4ad837baac45";
 
 type SettingError = (setting: string, requirement: string) => Error;
 
@@ -426,7 +426,7 @@ function requireGatewayToolPolicyRuntime() {
 // refusal as its root read issue, which names OpenClaw's GatewayLockNamespaceError.
 class GatewayStateLockError extends Error {
   constructor(refusal) {
-    super("The dedicated Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds the Gateway state lock, and this container cannot verify that it stopped. It remains unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes for an unverifiable state owner. OpenClaw reported: " + refusal);
+    super("The Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds the Gateway state lock, and this container cannot verify that it stopped. It remains unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes for an unverifiable state owner. OpenClaw reported: " + refusal);
   }
 }
 function gatewayStateLockRefusal(stdout) {
