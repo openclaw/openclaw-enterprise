@@ -1794,6 +1794,25 @@ export async function renderAgentDetail(
     edit = false,
     ...options
   }: { animate?: boolean; deploy?: boolean | undefined; edit?: boolean | undefined } = {}) {
+    function deferFocusUntilDetails(target: () => Element | null, retry: () => void) {
+      const tab = selectedTab;
+      void Promise.resolve(details).then(
+        () => {
+          const focused = document.activeElement;
+          if (
+            context.isCurrent() &&
+            !deleting &&
+            selectedTab === tab &&
+            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
+            target()
+          ) {
+            retry();
+          }
+        },
+        () => {},
+      );
+    }
+
     // Edit current Configuration opens the draft with its Configuration editor open, in view and
     // focused. It switched to the draft at the top of the page, and the editor still needed an
     // Edit Configuration click far below (finding 2061).
@@ -1804,22 +1823,7 @@ export async function renderAgentDetail(
       detailPane.querySelector<HTMLButtonElement>('button[data-opens="configuration-editor"]');
     const editStart = edit ? editorTarget() : null;
     if (edit && !editStart && !detailLoadFinished) {
-      const tab = selectedTab;
-      void Promise.resolve(details).then(
-        () => {
-          const focused = document.activeElement;
-          if (
-            context.isCurrent() &&
-            !deleting &&
-            selectedTab === tab &&
-            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
-            editorTarget()
-          ) {
-            openVersionDetail({ ...options, edit });
-          }
-        },
-        () => {},
-      );
+      deferFocusUntilDetails(editorTarget, () => openVersionDetail({ ...options, edit }));
     }
     if (editStart && !editStart.disabled) {
       // Entering the editor focuses it without scrolling; the editor is then brought into view.
@@ -1848,26 +1852,12 @@ export async function renderAgentDetail(
     // Deploy again opens the draft at its deploy step, whose card can end below a phone's
     // fold when the version detail is at the top: the card is brought to the top, with its
     // Deploy new version focused when the reader can press it (finding 1898).
-    const actions = deploy ? versionSummary.querySelector(":scope > .agent-draft-actions") : null;
+    const deployTarget = () => versionSummary.querySelector(":scope > .agent-draft-actions");
+    const actions = deploy ? deployTarget() : null;
     if (deploy && !actions && !detailLoadFinished) {
       // The card is built once the draft's own reads land: open it then, unless the reader has
       // moved on (another tab, or focus taken elsewhere) in the meantime.
-      const tab = selectedTab;
-      void Promise.resolve(details).then(
-        () => {
-          const focused = document.activeElement;
-          if (
-            context.isCurrent() &&
-            !deleting &&
-            selectedTab === tab &&
-            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
-            versionSummary.querySelector(":scope > .agent-draft-actions")
-          ) {
-            openVersionDetail({ ...options, deploy });
-          }
-        },
-        () => {},
-      );
+      deferFocusUntilDetails(deployTarget, () => openVersionDetail({ ...options, deploy }));
     }
     const deployButton = actions?.querySelector<HTMLButtonElement>("button.primary");
     if (deployButton && !isUnavailable(deployButton)) {
