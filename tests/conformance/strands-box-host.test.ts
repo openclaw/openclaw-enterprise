@@ -1653,6 +1653,47 @@ test("the host admits only the paired one-repository plan for its own GitHub rou
   });
 });
 
+test("the host admits a Harness model source only from this Driver's Gateway, only with its model configuration", () => {
+  const { owner, configured, plan } = protectedFixture();
+  const source = {
+    method: "credential_source",
+    sourceId: "cs_model",
+    sourceType: "openai",
+    credentialGatewayId: owner.driverId,
+    loginMode: "api_key",
+  };
+  const modelPlan = { ...plan, harnessCredentialSource: source };
+  const wiring = { plan: modelPlan, configuration: wiringConfiguration("github", true) };
+  assert.deepEqual(protectedWiring(configured, wiring, owner, true), modelPlan);
+  for (const [refused, model] of [
+    // A host without protectedModel admits no model source.
+    [wiring, false],
+    // The wiring must name the model delivery exactly when the plan has a source.
+    [{ ...wiring, configuration: wiringConfiguration("github") }, true],
+    [{ plan, configuration: wiringConfiguration("github", true) }, true],
+    [{ ...wiring, configuration: { ...wiringConfiguration("github", true), version: 3 } }, true],
+    // Another Gateway's source, another type or login mode, or an extra member.
+    ...[
+      { credentialGatewayId: "openshell" },
+      { sourceType: "anthropic" },
+      { loginMode: "chatgpt" },
+      { method: "runtime" },
+      { sourceId: "../x" },
+      { extra: true },
+    ].map(
+      (change) =>
+        [
+          { ...wiring, plan: { ...modelPlan, harnessCredentialSource: { ...source, ...change } } },
+          true,
+        ] as const,
+    ),
+  ] as const) {
+    assert.throws(() => protectedWiring(configured, refused, owner, model), {
+      message: "unadmitted_protected_wiring",
+    });
+  }
+});
+
 test("only Compute's signed release for this held box run opens the startup gate", () => {
   const { plan } = protectedFixture();
   const keys = generateKeyPairSync("ed25519");

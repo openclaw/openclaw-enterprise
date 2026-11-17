@@ -176,8 +176,9 @@ The registration provides:
 
 - the protected Sandbox Driver (`provisionHarness`, `protectedWorkspaceEndpoint`,
   `enrollHarness`, `repositoryAccess`). It admits only a protected v5 revision
-  with one online-request GitHub repository plan, no other egress route, no
-  credential attachments and a dedicated Codex Harness. It sends the host a
+  with one online-request GitHub repository plan, no other egress route, a
+  dedicated Codex Harness and the empty protected artifact policy it
+  acknowledged. Its only credential attachment is its own model source's. It sends the host a
   fresh 256-bit execution bearer in `PUT /v1/execution`. The host keeps only
   its SHA-256 and reports it with the host control process identity: together
   they are the recipient that Compute commits. `enrollHarness` relays
@@ -229,6 +230,23 @@ nothing is retried. Renewal needs no restart: the next ask gets the new token.
 After the repository assignment is withdrawn, OCE refuses the next request with
 `access_withdrawn` before Box sends it, and the Box execution and its chat keep
 running.
+
+### Protected model route
+
+With `modelGateway` (`secretNamespace`, optional `kubernetes` overrides) and
+`controlledInference`, the registration also returns a Credential Gateway view
+(select it as `drivers.credential_gateway`). It offers one source type,
+`openai` (API key, `authorized_base_url` = `modelBaseUrl`), keeps each key in
+its own Secret and attaches it as `strands-box-model:<sourceId>`. The wiring
+(version 4) adds `harnessModel`. The host starts `box run` with a second source,
+`[gateway.credential_source.oce-model]` on `<runtimeDir>/source/model.sock`
+(16 MiB body cap), and one route on the model host and port, path
+`<base>/responses`, header `Authorization: Bearer`, placeholder
+`OPENAI_API_KEY`. The host checks the target, drops headers and body, and
+queues only the target. The Driver answers from the Secret, read per request,
+after checking the bearer and the host's live, unrevoked attachment, with a 5 s
+send-by. `withdraw` posts `POST /v1/model-revoke`; the host writes a receipt in
+`protectedModel.revocationDir` and refuses later model requests itself.
 
 The Agent Gateway sends a protected Box turn with the same
 `externalSandbox` policy and `networkAccess: "restricted"` as an ordinary Box

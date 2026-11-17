@@ -202,6 +202,48 @@ entries use the same four fields.
   (host-assigned sandbox identity). A request-time credential source in the Box
   fork keeps the token out of `box run` and lets OCE refuse each request.
 
+## The package keeps the protected model key at rest
+
+- **Symptom:** a protected Agent's model API key exists in a Kubernetes Secret
+  the package owns, beside OCE's own copy.
+- **Cause:** the package's Credential Gateway view gets the value only at
+  `registerSource` and `updateSource`, in the API, and the Worker answers each
+  Box model request later. It keeps one Secret per source in
+  `modelGateway.secretNamespace`; the [Role](model-gateway-rbac.yaml) grants the
+  API and Worker only what that needs.
+- **Workaround:** use a namespace that holds nothing else, and grant no one else
+  `get` on Secrets there. Removing the source deletes its Secret.
+- **Upstream status:** an OCE question: a Worker-side read of OCE's own Secret
+  would remove the copy.
+
+## Code that escapes Box can use the model key too
+
+- **Symptom:** the [shared-kernel gap](#boxs-trusted-process-shares-a-kernel-with-the-workload)
+  now covers the model key as well as the GitHub token.
+- **Cause:** `box run` holds each released key in memory while it sends that
+  request, on the workload's kernel.
+- **Workaround:** as above. Use a model key you can revoke, scoped to this Agent.
+- **Upstream status:** as above.
+
+## Protected model requests are limited to 16 MiB
+
+- **Symptom:** a model request body over 16 MiB fails inside Box, before any
+  byte reaches the provider.
+- **Cause:** Box sends the whole body to the host's model source and caps it at
+  16 MiB. The host checks the target and discards the body.
+- **Workaround:** keep conversations under the cap; compact long ones.
+- **Upstream status:** Box's own limit; not reported.
+
+## Codex remote plugin bundles have no route in protected Box
+
+- **Symptom:** a Codex remote plugin bundle download fails in a protected
+  execution.
+- **Cause:** a protected execution gets only its GitHub routes, the model
+  route and the Gateway routes. The empty protected artifact policy adds no
+  other destination, as with OpenShell's default.
+- **Workaround:** use plugins already in the runtime image.
+- **Upstream status:** by design.
+
 ## Box refuses protocol upgrades on HTTP egress
 
 - **Symptom:** a WebSocket or other `Upgrade` request from inside Box fails.

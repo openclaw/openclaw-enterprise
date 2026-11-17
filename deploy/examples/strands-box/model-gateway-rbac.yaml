@@ -1,0 +1,67 @@
+# Least-privilege RBAC for the paired Strands Box package's model Credential Gateway (store "S1").
+# The package keeps each model source's API key in its own Kubernetes Secret, one Secret per
+# source, named strands-box-model-<40 hex> and annotated with the OCE Namespace and source IDs.
+# Use a namespace that holds nothing else: Kubernetes cannot limit `create` by name, so the
+# namespace is the boundary. Set `modelGateway.secretNamespace` to it.
+#
+# Replace OCE_RELEASE_NAMESPACE with the namespace of the OCE release, and the ServiceAccount
+# names if your release does not use the chart's defaults (openclaw-enterprise-<component>).
+# Both processes need the ServiceAccount token mounted and egress to the Kubernetes API.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: oce-strands-model
+  labels:
+    app.kubernetes.io/managed-by: openclaw-strands-box
+---
+# The API registers, rotates and removes model sources (registerSource, updateSource,
+# removeSource): it reads, creates, replaces and deletes those Secrets. No list or watch.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: strands-box-model-keys-write
+  namespace: oce-strands-model
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "delete"]
+---
+# The Worker reads the key for each Box model request, checks it at attach and status, and
+# removes a source's Secret when OCC retires the source there. No create, update, list or watch.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: strands-box-model-keys-read
+  namespace: oce-strands-model
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strands-box-model-keys-api
+  namespace: oce-strands-model
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: strands-box-model-keys-write
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-enterprise-api
+    namespace: OCE_RELEASE_NAMESPACE
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strands-box-model-keys-worker
+  namespace: oce-strands-model
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: strands-box-model-keys-read
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-enterprise-worker
+    namespace: OCE_RELEASE_NAMESPACE

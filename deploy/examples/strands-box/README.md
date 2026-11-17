@@ -217,6 +217,38 @@ Box v0.2.2's HTTP egress proxy
 so the file node has a separate route to the Agent Gateway. The Box Harness
 still connects to the Gateway over the installed relay.
 
+## Give a protected Agent a model
+
+With `protectedRepository`, the paired registration can also supply a
+Credential Gateway view for one model source type, `openai` (API key). Box then
+injects the key on each `POST <model route>/v1/responses` request, and the
+workload's `OPENAI_API_KEY` holds only Box's placeholder.
+
+1. Apply [model-gateway-rbac.yaml](model-gateway-rbac.yaml) with your release
+   namespace. Set the Sandbox Driver's `modelGateway.secretNamespace` to its
+   namespace, and set `controlledInference.modelBaseUrl` (and `address`) to the
+   model route. In the Installation, select the package as the Credential
+   Gateway: `drivers.credential_gateway: { id: <Sandbox Driver ID>, configuration: {} }`.
+   The API and Worker must reach the Kubernetes API.
+2. On the Box host, add `protectedModel: { revocationDir }` to the host
+   configuration: a private directory outside every grant and the runtime
+   directory. Revoke receipts are kept there across host restarts.
+3. Store the API key as an OCE Secret, then register the source:
+   `POST /namespaces/:namespaceId/credential-sources` with
+   `"type": "openai"`, `"config": { "authorized_base_url": <modelBaseUrl> }`
+   and `"secrets": { "api_key": <Secret ref> }`. See
+   [credential sources](../../../docs/reference/credential-sources.md#register-a-source).
+   The package copies the value into its own Secret.
+4. List the source in the Agent's `credentialSources`, set `harnessAuth` to
+   `{ "method": "credential_source", "sourceId": <source ID> }` and the model
+   provider's `baseUrl` to the same route, then deploy.
+
+Each model request is answered only for this execution's Box, while the
+attachment is live. Withdrawing the source refuses the next request before any
+byte reaches the provider; the host keeps the receipt. `updateSource` reaches
+the next request without a restart. Withdrawing the repository leaves the
+model working, and the reverse. See the [known gaps](KNOWN-GAPS.md#the-package-keeps-the-protected-model-key-at-rest).
+
 ## Verify chat and repository access
 
 Use the approved model connection. Ask the Agent in its ordinary chat to read a
