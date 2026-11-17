@@ -36,9 +36,9 @@ resource in its Namespace, for any Role.
 
 Today every capability starts with an Installation administrator:
 
-- **Accounts.** External sign-in admits only identities that an administrator
-  attached to an account created first. Unknown identities fail, and no default
-  Role exists ([external sign-in](../../docs/reference/authentication/external-sign-in.md)).
+- **Accounts.** Google sign-in admits only identities attached to accounts an
+  administrator created. [OIDC enrollment](../../docs/reference/authentication/team-enrollment.md)
+  creates accounts but gives every admitted login the same Role and Groups.
 - **Creation.** Only the bootstrap administrator's binding grants `create`,
   because each IAM API binding names one existing resource and one identity.
   A create grants its creator nothing.
