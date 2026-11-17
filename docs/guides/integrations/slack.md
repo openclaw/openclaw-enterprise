@@ -138,7 +138,9 @@ independently; entering exact IDs does not verify directory lookup.
    setup saves only with both. Exact-ID entry remains available without name lookup.
    Enable Slack and choose **Channels**, then select **Specific people** or
    **Everyone in these channels** under channel access. Leave **Require a mention**
-   enabled for this setup. New Slack setups use
+   enabled for this setup. To receive messages without a mention, follow
+   [Enable channel messages without mentions](#enable-channel-messages-without-mentions-optional).
+   New Slack setups use
    [threaded channel replies](../../reference/configuration/secrets.md#native-channel-configuration).
    Choose **Disabled** under **Direct-message policy** for channel-only access,
    or keep **Allowlist** and select **Allowed people in direct messages**.
@@ -173,6 +175,46 @@ references; non-Socket settings, wildcard channel maps, mixed per-channel
 mention settings, mixed per-channel sender lists, and sender IDs that cannot be
 represented in a comma-separated field may need an API edit.
 
+## Enable channel messages without mentions (optional)
+
+Consider model token costs before disabling **Require a mention**. Slack event
+subscriptions control delivery; the channel's mention setting controls admission
+to model turns. With this setting enabled, ordinary channel text without a
+mention is rejected before model dispatch. Replies in threads where the bot
+participates can count as implicit mentions. Disabling the setting lets other
+messages trigger model turns, increasing input tokens for messages and context
+and output tokens for generated responses. This can increase costs substantially
+in busy channels. Receiving a Slack event alone does not consume model tokens;
+calling the model does.
+
+Disabling **Require a mention** changes the Agent's message filter. It does not
+change the Slack app's event subscriptions. The bot token's scopes and the app's
+bot event subscriptions must both permit channel messages:
+
+1. Open [Your Slack Apps](https://api.slack.com/apps), select the Agent's app,
+   then open **Features → Event Subscriptions → Subscribe to bot events**.
+   Select **Add Bot User Event** and add the event for each channel type you use:
+
+   | Channel type | Bot event                                                                       | Required bot token scope |
+   | ------------ | ------------------------------------------------------------------------------- | ------------------------ |
+   | Public       | [`message.channels`](https://docs.slack.dev/reference/events/message.channels/) | `channels:history`       |
+   | Private      | [`message.groups`](https://docs.slack.dev/reference/events/message.groups/)     | `groups:history`         |
+
+   Keep `app_mention` and select **Save Changes**.
+
+2. Under **OAuth & Permissions → Bot Token Scopes**, confirm the required scopes.
+   Add any missing scopes, then select **Install App → Reinstall to Workspace**
+   if you added scopes.
+3. In the Console, open **Channels → Edit Slack**, clear **Require a mention**,
+   save, and deploy a new version. If the running Agent already has this setting
+   disabled, changing the Slack event subscriptions does not require another
+   Agent deployment.
+4. From an allowed user account, send a new top-level message without an
+   `@mention` in a configured channel where the bot is a member. Ask the Agent
+   to repeat a short unique phrase and confirm that its reply contains that
+   phrase. Do not use an existing thread where the bot has participated; its
+   implicit mention handling can admit the message even when mentions are required.
+
 ## Enable direct messages (optional)
 
 Channel mentions do not deliver direct messages, even if the user mentions the
@@ -201,6 +243,9 @@ bot. To enable one-to-one messages:
   operator to check gateway network access if it cannot connect.
 - **Some messages never reach the Agent:** check whether another Agent connects
   to the same Slack app. Give each Agent its own app and use that app's tokens.
+- **The Agent replies only to mentions after Require a mention is disabled:**
+  check the app's bot event subscriptions as well as its bot token scopes. Follow
+  [Enable channel messages without mentions](#enable-channel-messages-without-mentions-optional).
 - **Channel messages work but direct messages do not:** check the
   `message.im` subscription, the installed bot token's `im:history` scope,
   and whether the sender's Slack user ID is allowed by the native `allowFrom`

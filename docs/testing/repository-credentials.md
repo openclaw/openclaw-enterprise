@@ -17,12 +17,12 @@ The controlled tests use disposable fixtures and do not use ambient GitHub crede
 ## Run controlled tests
 
 ```sh
-node scripts/verify-repository-credentials-boundary.mjs
-node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs \
-  tests/conformance/repository-credentials-backend-conformance.test.mjs
-node --test tests/integration/repository-credentials-git.test.mjs \
-  tests/integration/repository-credentials-native-paths.test.mjs \
-  tests/integration/repository-credentials-service-loss.test.mjs
+node scripts/verify-repository-credentials-boundary.ts
+node --test tests/conformance/repository-credentials-fixture-ownership.test.ts \
+  tests/conformance/repository-credentials-backend-conformance.test.ts
+node --test tests/integration/repository-credentials-git.test.ts \
+  tests/integration/repository-credentials-native-paths.test.ts \
+  tests/integration/repository-credentials-service-loss.test.ts
 ```
 
 The source Git tests require a `node:24-bookworm` image and `gh` **2.103.2**
@@ -55,8 +55,8 @@ authorized equivalent environment.
 For native selection and routing, run:
 
 ```sh
-node --test tests/integration/repository-credentials-client-config.test.mjs \
-  tests/integration/repository-credentials-router.test.mjs
+node --test tests/integration/repository-credentials-client-config.test.ts \
+  tests/integration/repository-credentials-router.test.ts
 ```
 
 ### Protected repository metadata reads
@@ -80,15 +80,15 @@ Build before running the source and materialization checks:
 ```sh
 pnpm build
 node --test tests/integration/repository-credentials-admission.test.mjs \
-  tests/integration/repository-credentials-driver.test.mjs \
-  tests/integration/repository-runtime-materialization.test.mjs \
-  tests/integration/repository-credentials-router.test.mjs
+  tests/integration/repository-credentials-driver.test.ts \
+  tests/integration/repository-runtime-materialization.test.ts \
+  tests/integration/repository-credentials-router.test.ts
 ```
 
 For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
-Run `postgres-repository-sessions.test.mjs`,
-`postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
+Run `postgres-repository-sessions.test.ts`,
+`postgres-repository-broker-receipts.test.ts`, and the relevant restart and
 worker version tests with `OCC_TEST_DATABASE_URL` set. The
 `postgres-openshell-standing-selected-repository.test.ts` case follows one
 `github-repository` binding through approval, deployment, its original session
@@ -105,7 +105,7 @@ and clock skew; it asserts material erasure without a revocation request.
 pnpm credentials:build
 node --test tests/integration/repository-credentials-package.test.ts
 REPOSITORY_CREDENTIALS_APP_ROOT="$PWD/.build/repository-credentials/client/dist" \
-  node --test tests/integration/repository-credentials-router.test.mjs
+  node --test tests/integration/repository-credentials-router.test.ts
 ```
 
 This verifies the emitted service and client without workspace source or runtime
@@ -122,8 +122,8 @@ docker build --builder default --load --pull=false \
   -f tests/fixtures/repository-credentials/Dockerfile.qualification \
   -t repository-credentials-qualification:test .
 REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
-  node --test tests/integration/repository-credentials-container.test.mjs \
-    tests/integration/repository-credentials-gh.test.mjs
+  node --test tests/integration/repository-credentials-container.test.ts \
+    tests/integration/repository-credentials-gh.test.ts
 ```
 
 The combined suite runs the emitted service/client cases, native Git paths, pinned
@@ -140,7 +140,7 @@ Build the runtime image from the candidate source and follow the
 
 ```sh
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
-  node --test tests/integration/repository-runtime-volume.test.mjs
+  node --test tests/integration/repository-runtime-volume.test.ts
 ```
 
 This tests the image-installed client and Docker mounts. An unset selector skips
@@ -153,7 +153,7 @@ With both delivered images built, run:
 ```sh
 REPOSITORY_CREDENTIALS_SERVICE_IMAGE=repository-credentials:local \
 REPOSITORY_CREDENTIALS_CLIENT_IMAGE=repository-credentials-client:local \
-  node --test tests/integration/repository-credentials-isolation.test.mjs
+  node --test tests/integration/repository-credentials-isolation.test.ts
 ```
 
 The test checks credential custody and Git/`gh` access through separate running
@@ -185,6 +185,15 @@ The failure summary prefers the runner's failed-case or file-failure record over
 generic lane issues. It publishes only known source coordinates and fixed error
 categories; absent or malformed records retain the bounded fallback summary.
 
+Receiver failures distinguish transport, interrupted response bodies, and invalid
+JSON without printing response content. A failed `kubectl exec` reports
+`gateway-exec` with its available exit code or signal. Model observations are
+best-effort: unavailable or replaced log history appears as `unknown`, and each
+optional model or Pod log read has a ten-second timeout. Diagnostic failures do
+not replace the failed request. The receiver category and HTTP status remain in
+the runner summary even when the optional journey log cannot be written or parsed. These categories identify where the check failed;
+they do not establish why the Gateway or native command failed.
+
 To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
 prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)
 and `images.controller`, `images.runtime`, and `images.repository` (the broker), each
@@ -193,7 +202,7 @@ these expected values from the release selection, not from the receipt being che
 From that release checkout, run:
 
 ```sh
-node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed \
+node scripts/ci/run-tests.ts aggregate skipper-prepared-git-installed \
   --results-dir /path/to/results --release-selection /path/to/release.json
 ```
 
@@ -297,7 +306,7 @@ Run the `image-pair-qualification` lane using the
 current and incompatible older controller and broker images against disposable
 fixtures, checks the admission protocol, and rejects incompatible pairs. It does
 not prove credential disposal or a live Agent workflow. See the
-[qualification test](../../tests/integration/production-image-real-qualification.test.mjs)
+[qualification test](../../tests/integration/production-image-real-qualification.test.ts)
 for fixture setup and expected probe exchanges.
 
 ## Run an authorized live smoke
@@ -312,7 +321,7 @@ REPOSITORY_CREDENTIALS_LIVE=1 \
 REPOSITORY_CREDENTIALS_LIVE_AUTHORIZED=1 \
 REPOSITORY_CREDENTIALS_LIVE_CONTROL_SOCKET=/run/credential-service/control.sock \
 REPOSITORY_CREDENTIALS_LIVE_CA=/run/credential-service/public-ca.pem \
-  node --test tests/integration/repository-credentials-live.test.mjs
+  node --test tests/integration/repository-credentials-live.test.ts
 ```
 
 This exercises a real provider through the development-token sender, not OCC Agent
@@ -352,6 +361,6 @@ another. Historical results apply to the artifacts that produced them.
 The native package excludes App signing and token issuance. Its detached package
 checks cover prepared configuration and explicit development-token clients.
 The prepared native workflow is verified in
-`tests/integration/postgres-prepared-repository-git-broker.test.mjs`, including
+`tests/integration/postgres-prepared-repository-git-broker.test.ts`, including
 exact-ref enforcement, draft creation, response loss and no replay. That suite
 requires real PostgreSQL; package checks and simulated providers do not replace it.

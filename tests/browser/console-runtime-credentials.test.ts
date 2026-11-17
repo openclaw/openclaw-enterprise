@@ -55,7 +55,7 @@ import {
   SLACK_RETRY_GRANTED,
   unreadableSlackTokenRefusal,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type Requests = ReturnType<typeof apiRequests>;

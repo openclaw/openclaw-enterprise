@@ -35,6 +35,7 @@ export const PluginPolicyListRefused = story("pluginPolicyListRefused");
 export const KubernetesEntryKeyVariantRefused = story("kubernetesEntryKeyVariantRefused");
 export const CodexPluginsDisabledRefused = story("codexPluginsDisabledRefused");
 export const TrustedProxyAllowUsersRefused = story("trustedProxyAllowUsersRefused");
+export const CodexGatewayPasswordMissingRefused = story("codexGatewayPasswordMissingRefused");
 export const KubernetesEntryKeyVariantChecking = story("kubernetesEntryKeyVariantChecking");
 export const KubernetesEntryKeyVariantCreateDenied = story("kubernetesEntryKeyVariantCreateDenied");
 export const GatewayPasswordAllowlistOmits = story("gatewayPasswordAllowlistOmits");
@@ -183,6 +184,14 @@ export const ConfigurationError = {
 export const ConfigurationReadDeniedReloadRefocus = {
   ...story("configurationReadDeniedReloadRefocus"),
   name: "Configuration read denied across reload and refocus",
+};
+export const ConfigurationReadInterruptedOnRefocus = {
+  ...story("configurationReadInterruptedOnRefocus", { openInNewTab: true }),
+  name: "Recover a Configuration read on tab return",
+};
+export const ConfigurationReadUnavailableOnRefocus = {
+  ...story("configurationReadUnavailableOnRefocus", { openInNewTab: true }),
+  name: "Retry an unavailable Configuration on tab return",
 };
 export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration");
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");

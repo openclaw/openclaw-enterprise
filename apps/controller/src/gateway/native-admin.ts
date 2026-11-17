@@ -6,9 +6,9 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { unsupportedNativeGatewayAuthFields } from "./auth-fields.ts";
-import { deriveNativeAdminHost } from "./native-admin-host.mjs";
+import { deriveNativeAdminHost } from "./native-admin-host.ts";
 
-export { deriveNativeAdminHost } from "./native-admin-host.mjs";
+export { deriveNativeAdminHost };
 
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;
@@ -102,6 +102,28 @@ export function nativeAdminConfigurationSupported(
     ui.allowedOrigins.includes(origin) &&
     ui.dangerouslyDisableDeviceAuth !== true &&
     ui.dangerouslyAllowHostHeaderOriginFallback !== true
+  );
+}
+
+/**
+ * Whether the Configuration has turned on browser chat for this Agent at all, correct or not.
+ * The opt-in turns on Control UI and adds the Agent's origin and trusted-proxy auth. Control UI
+ * with neither, as the default Preset's loopback-only port-forward access, is not the opt-in.
+ */
+export function nativeAdminBrowserChatTurnedOn(
+  revision: Readonly<AgentRevision>,
+  origin: string,
+): boolean {
+  const gateway = asRecord(revision.configuration.gateway);
+  const ui = asRecord(gateway?.controlUi);
+  const auth = asRecord(gateway?.auth);
+  if (ui?.enabled !== true) {
+    return false;
+  }
+  return (
+    (Array.isArray(ui.allowedOrigins) && ui.allowedOrigins.includes(origin)) ||
+    auth?.mode === "trusted-proxy" ||
+    asRecord(auth?.trustedProxy) !== undefined
   );
 }
 

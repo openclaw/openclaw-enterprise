@@ -1,6 +1,9 @@
-import { isAbsolute, resolve } from "node:path";
 import type { ServiceConfig, ServiceLimits } from "./service-contracts.ts";
-import { hasControlCharacter } from "./client-contracts.ts";
+import {
+  controlRequestBodyMaxBytes,
+  hasControlCharacter,
+  isCanonicalUnixSocketPath,
+} from "./client-contracts.ts";
 
 const defaults: ServiceLimits = Object.freeze({
   sessions: 16,
@@ -22,7 +25,7 @@ const defaults: ServiceLimits = Object.freeze({
   gitFetchExchangeMs: 300000,
   apiInputBytes: 1048576,
   apiResponseBytes: 8388608,
-  controlBodyBytes: 16384,
+  controlBodyBytes: controlRequestBodyMaxBytes,
   headerMs: 5000,
   connectMs: 5000,
   stallMs: 5000,
@@ -78,11 +81,7 @@ function validateGateway(gateway: Record<string, unknown>): ServiceConfig["gatew
   }
   const controlSocket = string(gateway.controlSocket);
   // Bytes, not characters: the control client and the Driver schema refuse paths over 103 bytes.
-  if (
-    Buffer.byteLength(controlSocket) > 103 ||
-    !isAbsolute(controlSocket) ||
-    resolve(controlSocket) !== controlSocket
-  ) {
+  if (!isCanonicalUnixSocketPath(controlSocket)) {
     throw new Error("invalid-configuration");
   }
   return Object.freeze({ publicOrigin, listen, controlSocket });

@@ -28,9 +28,11 @@ has four fields:
 Role IDs and Group names are 1–63 lowercase letters, digits, `_`, or `-`. A
 permission must be one that some operation checks, as the
 [permissions cheat sheet](../cheatsheets/permissions.md) lists, and cannot be an
-`installation` permission. A binding names a configured Role. A Group named in a
-binding but not in `defaultUserGroups` gets no members. Startup refuses a
-configuration that breaks these rules. This example lets Default users create
+`installation` permission. A binding names a configured Role. Only Groups in
+`defaultUserGroups` receive members through account creation in the accounts API.
+OIDC enrollment can add members to other Installation Groups by exact Group ID.
+Startup refuses a configuration that breaks the ID, permission, or Role rules
+above. This example lets Default users create
 Agents in `default` and Namespaces of their own, and own what they create:
 
 ```yaml
@@ -143,11 +145,15 @@ configured Role as `roleId`.
 
 Each account that `POST /api/auth/accounts` creates joins every
 `defaultUserGroups` Group in the transaction that creates it. Its
-`openclaw.auth.accounts.create` audit event lists them in `groupIds`. Signing in
-does not change membership.
+`openclaw.auth.accounts.create` audit event lists them in `groupIds`. The accounts
+API applies these defaults only when it creates an account.
 
-There is no API to add or remove a member. An account created before a Group was
-listed does not join it.
+With [OIDC enrollment](../authentication/team-enrollment.md#select-admission-and-initial-access)
+configured, each admitted login adds missing memberships to new and existing
+accounts. If the enrollment policy omits `groupIds`, OCC uses
+`defaultUserGroups`. An explicit `groupIds` list replaces those defaults for
+enrollment, and `[]` adds no memberships. OCC preserves all other memberships.
+OCC applies an initial Role binding only if enrollment creates the account.
 
 Removing a Group binding and disabling an account have different results:
 
@@ -254,22 +260,21 @@ model Secret as a credential source before it saves the Agent, as it does for
 an administrator. Without that source, a deploy on a Credential Gateway
 Installation is refused.
 
-The answer omits guided provisioning and native admin UI setup, which need
-Installation `administer`. A member's console saves a draft, opens it, and
-offers no **Enable Native admin UI**. The member deploys the draft, and the
-deploy writes the grants above.
+The response omits only `agentProvisioning` because guided provisioning
+requires Installation `administer`. When the Installation enables browser
+access, the response includes `nativeAdmin: true`. The member deploys the draft
+to write the grants above. See [Agent browser access](../agent-native-admin.md).
 
 ## Current limits
 
 These parts of the Default users design are not implemented:
 
-- Identity provider group mappings, membership changes at sign-in, and an API
-  to add or remove Group members.
+- Identity provider group mappings, automatic removal of Group memberships at
+  sign-in, and an API to add or remove Group members.
 - Namespace-wide and Group bindings through the Namespace policy API.
 - Shared team Namespaces.
 - Removal of deploy-time grants when an Agent stops using a source.
-- CLI support for Default users, and native admin UI setup or guided
-  provisioning from a member's console.
+- CLI support for Default users and guided provisioning from a member's console.
 
 ## Related
 

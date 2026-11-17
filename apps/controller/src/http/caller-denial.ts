@@ -140,34 +140,68 @@ export function requestedValues(request: {
 }): (value: string) => boolean {
   const found = new Set<string>();
   let budget = 4096;
-  const reference = (value: unknown) => {
+  const remember = (value: unknown) => {
     if (typeof value === "string") {
       found.add(value);
-    } else if (Array.isArray(value)) {
-      for (const item of value.slice(0, 256)) {
-        if (typeof item === "string") {
-          found.add(item);
-        }
-      }
     }
   };
-  const visit = (value: unknown, depth: number) => {
-    if (budget <= 0 || depth > 24 || value === null || typeof value !== "object") {
+  const visit = (value: unknown, depth: number, referenceList = false) => {
+    if (
+      budget <= 0 ||
+      value === null ||
+      typeof value !== "object" ||
+      (depth > 24 && !referenceList)
+    ) {
       return;
     }
-    budget -= 1;
-    for (const [key, item] of Array.isArray(value)
-      ? value.map((entry) => ["", entry] as const)
-      : Object.entries(value)) {
-      if (key !== "" && REFERENCE_FIELD.test(key)) {
-        reference(item);
+    if (Array.isArray(value)) {
+      // A reference field at the depth bound still names its first 256 direct string IDs.
+      const length = depth > 24 ? Math.min(value.length, 256) : value.length;
+      for (let index = 0; index < length && budget > 0; index += 1) {
+        budget -= 1;
+        const item: unknown = value[index];
+        if (referenceList && index < 256) {
+          remember(item);
+        }
+        if (depth <= 24) {
+          visit(item, depth + 1);
+        }
       }
-      visit(item, depth + 1);
+      return;
+    }
+    if (depth > 24) {
+      return;
+    }
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) {
+        continue;
+      }
+      if (budget <= 0) {
+        return;
+      }
+      budget -= 1;
+      const item = (value as Record<string, unknown>)[key];
+      const reference = REFERENCE_FIELD.test(key);
+      if (reference) {
+        remember(item);
+      }
+      visit(item, depth + 1, reference);
     }
   };
   if (request.params !== null && typeof request.params === "object") {
-    for (const [key, value] of Object.entries(request.params)) {
-      reference(value);
+    for (const key in request.params) {
+      if (!Object.hasOwn(request.params, key)) {
+        continue;
+      }
+      if (budget <= 0) {
+        break;
+      }
+      budget -= 1;
+      const value = (request.params as Record<string, unknown>)[key];
+      remember(value);
+      if (Array.isArray(value)) {
+        visit(value, 25, true);
+      }
       // An Agent's SandboxPolicy ID is derived from the Agent's (`sbp_` plus its UUID), so a path
       // that carries the Agent ID carries its policy's too (finding 2594).
       if (key === "agentId" && typeof value === "string" && value.startsWith("agt_")) {

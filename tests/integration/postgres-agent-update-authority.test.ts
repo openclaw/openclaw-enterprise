@@ -6,7 +6,7 @@ import { setTimeout } from "node:timers/promises";
 import type { Pool } from "pg";
 
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 import {
   accountPrincipalId,
   assertConsoleSignIn,
@@ -16,12 +16,6 @@ import {
   oidcUpgradeSettings,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
-
-interface Account {
-  readonly id: string;
-  readonly email: string;
-  readonly password: string;
-}
 
 interface ResourceResponse {
   readonly data?: { readonly id: string; readonly configurationId?: string };
@@ -71,14 +65,15 @@ test(
       },
     });
     const { pool, state } = fixture;
-    const onboarded = await fixture.onboard({
+    const {
+      admin,
+      accounts: { first, second },
+    } = await fixture.onboard({
       accounts: {
         first: { email: "agent-update-first@example.test" },
         second: { email: "agent-update-second@example.test" },
       },
     });
-    const admin = onboarded.admin as Account;
-    const { first, second } = onboarded.accounts as Record<"first" | "second", Account>;
     const app = await fixture.composeApp(oidcUpgradeSettings(admin.id));
     apps.push(app);
     const adminHeaders = await signedInHeaders(app, origin, admin);

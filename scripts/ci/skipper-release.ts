@@ -24,6 +24,30 @@ export function skipperInstalledProof(teamReview: boolean): string[] {
   ];
 }
 
+export function skipperTestCheckpoints(teamReview: boolean): string[] {
+  return [
+    ...skipperInstalledProof(teamReview).slice(0, -1), // Retirement can follow a failure before proof.
+    "create-synthetic-model-secret",
+    "deploy-request-started",
+    "observe-installed-agent-readonly-skill-directories",
+    "gateway-chat-refused",
+    "native-command-started",
+    "repository-binding-withdrawn-discovery-released",
+    "native-command-completion-mismatch",
+    "native-command-and-model-observed",
+  ];
+}
+
+export function skipperSelectedFailure(resultText: string) {
+  const files = record(JSON.parse(resultText)).files;
+  assert.ok(Array.isArray(files));
+  const file = files.map(record).find((entry) => entry.path === installedTestPath);
+  assert.ok(file && Array.isArray(file.tests));
+  const failed = file.tests.map(record).find((entry) => entry.status === "failed");
+  const fileFailure = failed?.error == null ? record(file.fileFailure) : undefined;
+  return { error: record(failed?.error ?? fileFailure?.error), fileFailure };
+}
+
 function record(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Record<string, unknown>;
@@ -95,6 +119,160 @@ export function projectSkipperRunnerReceipt(value: unknown) {
   };
 }
 
+export const skipperOperations = [
+  "command-input",
+  "gateway-chat",
+  "gateway-exec",
+  "native-observation",
+  "model-observation",
+  "command-cleanup",
+] as const;
+type SkipperOperation = (typeof skipperOperations)[number];
+export const skipperGatewayChatPhases = [
+  "before-private-git",
+  "native-git",
+  "after-withdrawal",
+] as const;
+
+/** Only this closed projection may leave the installed test's private result. */
+export function skipperOperationDiagnostic(value: unknown) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const diagnostic = value as Record<string, unknown>;
+  if (
+    diagnostic.kind !== "skipper-operation" ||
+    !skipperOperations.some((operation) => operation === diagnostic.operation)
+  ) {
+    return undefined;
+  }
+  const { operation, exitCode, signal, code, gatewayCategory, httpStatus } = diagnostic;
+  const gatewayChatPhase = skipperGatewayChatPhases.find(
+    (phase) => phase === diagnostic.gatewayChatPhase,
+  );
+  const { runtimeSignal, modelRequestObservation, gatewayTransportCause, helperEntered } =
+    diagnostic;
+  const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
+  return {
+    ...(attributed &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    gatewayCategory === "transport" &&
+    modelRequestObservation === "observed" &&
+    diagnostic.modelFixtureSelectedTerminalSuccess === true
+      ? { modelFixtureSelectedTerminalSuccess: true as const }
+      : {}),
+    ...(attributed &&
+    typeof runtimeSignal === "string" &&
+    [
+      "thread-filesystem-sandbox-denied",
+      "thread-start",
+      "model-transport",
+      "no-known-signal",
+      "logs-unavailable",
+    ].includes(runtimeSignal)
+      ? { runtimeSignal }
+      : {}),
+    ...(operation === "gateway-exec" && modelRequestObservation === "observed"
+      ? { modelRequestObservation }
+      : {}),
+    ...(operation === "gateway-exec" && helperEntered === true ? { helperEntered } : {}),
+    ...(attributed &&
+    httpStatus === 0 &&
+    gatewayCategory === "transport" &&
+    typeof gatewayTransportCause === "string" &&
+    ["socket-closed", "connection-reset", "headers-timeout", "other"].includes(
+      gatewayTransportCause,
+    )
+      ? { gatewayTransportCause }
+      : {}),
+    ...(attributed &&
+    typeof modelRequestObservation === "string" &&
+    ["observed", "none-in-window", "unavailable"].includes(modelRequestObservation)
+      ? { modelRequestObservation }
+      : {}),
+    kind: "skipper-operation",
+    operation: operation as SkipperOperation,
+    ...(operation === "gateway-chat" && gatewayChatPhase ? { gatewayChatPhase } : {}),
+    ...(typeof gatewayCategory === "string" &&
+    [
+      "gateway-credential-unavailable",
+      "authentication",
+      "permission",
+      "workspace",
+      "agent-runtime",
+      "timeout",
+      "unavailable",
+      "unclassified",
+      "transport",
+      "client-deadline",
+      "response-body",
+      "response-json",
+    ].includes(gatewayCategory)
+      ? { gatewayCategory }
+      : {}),
+    ...(typeof httpStatus === "number" &&
+    (httpStatus === 0 || (Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599))
+      ? { httpStatus }
+      : {}),
+    ...(Number.isInteger(exitCode) &&
+    typeof exitCode === "number" &&
+    exitCode >= 0 &&
+    exitCode <= 255
+      ? { exitCode }
+      : {}),
+    ...(typeof signal === "string" && ["SIGTERM", "SIGKILL", "SIGABRT"].includes(signal)
+      ? { signal }
+      : {}),
+    ...(typeof code === "string" &&
+    [
+      "ERR_ASSERTION",
+      "ENOENT",
+      "EACCES",
+      "E2BIG",
+      "ETIMEDOUT",
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    ].includes(code)
+      ? { code }
+      : {}),
+  };
+}
+
+/** Preserve the original rejection, including asynchronous subprocess errors without user frames. */
+export async function runSkipperOperation<T>(
+  operation: SkipperOperation,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (cause) {
+    const error =
+      cause instanceof Error ? cause : new Error("Installed Skipper operation failed", { cause });
+    try {
+      const fields = error as Error & {
+        code?: unknown;
+        signal?: unknown;
+        openclawCiDiagnostic?: unknown;
+      };
+      // Keep the innermost known operation when a caller adds its broader context.
+      if (!skipperOperationDiagnostic(fields.openclawCiDiagnostic)) {
+        Object.assign(error, {
+          openclawCiDiagnostic: skipperOperationDiagnostic({
+            kind: "skipper-operation",
+            operation,
+            exitCode: typeof fields.code === "number" ? fields.code : undefined,
+            code: typeof fields.code === "string" ? fields.code : undefined,
+            signal: fields.signal,
+          }),
+        });
+      }
+    } catch {
+      // A frozen or unusual Error must keep its original failure.
+    }
+    throw error;
+  }
+}
+
 /** Keep the selected failure's location and category together, without publishing its text. */
 export function skipperFailureSummary(resultText: string, root: string, fallback: string): string {
   const coordinate = (value: unknown): value is number =>
@@ -102,17 +280,27 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
   let text = fallback;
   let site;
   let category;
+  let operationDetail;
   try {
-    const files = record(JSON.parse(resultText)).files;
-    assert.ok(Array.isArray(files));
+    const { error, fileFailure } = skipperSelectedFailure(resultText);
     const path = installedTestPath;
-    const file = files.map(record).find((entry) => entry.path === path);
-    assert.ok(file && Array.isArray(file.tests));
-    const failed = file.tests.map(record).find((entry) => entry.status === "failed");
-    const fileFailure = failed?.error == null ? record(file.fileFailure) : undefined;
-    const error = record(failed?.error ?? fileFailure?.error);
     const cause = record(error.cause ?? {});
     const location = record(error.location ?? {});
+    const diagnostic = skipperOperationDiagnostic(error.diagnostic);
+    if (diagnostic) {
+      operationDetail = [
+        `operation=${diagnostic.operation}`,
+        diagnostic.exitCode === undefined ? undefined : `child-exit=${diagnostic.exitCode}`,
+        diagnostic.signal === undefined ? undefined : `signal=${diagnostic.signal}`,
+        diagnostic.code === undefined ? undefined : `code=${diagnostic.code}`,
+        diagnostic.httpStatus === undefined ? undefined : `gateway-status=${diagnostic.httpStatus}`,
+        diagnostic.gatewayCategory === undefined
+          ? undefined
+          : `gateway-category=${diagnostic.gatewayCategory}`,
+      ]
+        .filter(Boolean)
+        .join(", ");
+    }
     // Commit selected state only after its nested records validate. Never pair
     // one case's location with another case's error from the lane output.
     text = [error.message, error.frame].filter((value) => typeof value === "string").join("\n");
@@ -149,7 +337,9 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
     )?.[0] ??
     category ??
     text.match(/ERR_ASSERTION|expected-test-not-passed/)?.[0];
-  return `${site ?? "location unavailable"}, ${category ?? "unclassified"}`;
+  return [site ?? "location unavailable", category ?? "unclassified", operationDetail]
+    .filter(Boolean)
+    .join(", ");
 }
 
 function digest(value: unknown): string {

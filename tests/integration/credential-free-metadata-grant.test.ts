@@ -11,6 +11,7 @@ import {
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { parseJson } from "../helpers/egress-observation-values.ts";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
@@ -127,12 +128,15 @@ test("credential-free metadata exchange accepts a reordered Driver grant", async
   const resolution = await f.resolve(captured);
   assert.ok(resolution.ready_without_material);
   const permit = f.permitRequest(captured, resolution.ready_without_material, { noMaterial: true });
-  assert.equal((await f.authorize(permit)).allowed.no_material_required, true);
+  const { allowed } = await f.authorize(permit);
+  assert.ok(allowed);
+  assert.equal(allowed.no_material_required, true);
   const identity = { id: 7311, full_name: "fixture/credential-free" };
   f.setResponse({ status: 200, body: { ...identity, private: "must not escape" } });
   const released = await f.protect(captured, await f.send(captured, { credential_headers: [] }));
+  assert.ok("response_complete" in released);
   assert.equal(released.response_complete, true);
-  assert.deepEqual(JSON.parse(released.body), identity);
+  assert.deepEqual(parseJson(released.body.toString("utf8")), identity);
   assert.equal(f.providerRequests.length, 1);
   assert.equal(f.providerRequests[0]?.authorization, undefined);
   assert.equal(f.secretReads, reads);

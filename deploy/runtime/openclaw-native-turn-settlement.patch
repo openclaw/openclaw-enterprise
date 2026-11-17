@@ -1,0 +1,213 @@
+diff --git a/src/agents/embedded-agent-runner/runs.liveness.test.ts b/src/agents/embedded-agent-runner/runs.liveness.test.ts
+index 82f84f92fdf..1205c0dd924 100644
+--- a/src/agents/embedded-agent-runner/runs.liveness.test.ts
++++ b/src/agents/embedded-agent-runner/runs.liveness.test.ts
+@@ -177,8 +177,14 @@ it("reports quiet runtime waits without scheduling abort", async () => {
+     expect(recover).not.toHaveBeenCalled();
+     expect(abort).not.toHaveBeenCalled();
+ 
++    // Release between diagnostic heartbeats so the controller timer reaches the stall first.
++    await vi.advanceTimersByTimeAsync(10_000);
+     runtimeOwnsLiveness = false;
++    // Releasing runtime liveness starts a fresh semantic window, not a retroactive stall.
+     await vi.advanceTimersByTimeAsync(30_000);
++    expect(abort).not.toHaveBeenCalled();
++    expect(operation.watchdog.snapshot().recovery).toBeUndefined();
++    await vi.advanceTimersByTimeAsync(6 * 60_000);
+     expect(recover).not.toHaveBeenCalled();
+     expect(operation.watchdog.snapshot().recovery).toMatchObject({ status: "pending" });
+     expect(events.filter((event) => event.type.startsWith("session.recovery."))).toEqual([]);
+@@ -230,7 +236,8 @@ it("waits in bounded slices, then reclaims host-owned work without a millisecond
+     );
+ 
+     runtimeOwnsLiveness = false;
+-    vi.advanceTimersByTime(1_000);
++    // The released native turn finalizes in a fresh semantic window before host work is reclaimed.
++    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1_000);
+     const result = await waiting;
+     expect(operation.result).toMatchObject({ kind: "failed", code: "run_stalled" });
+     expect(result.status).toBe("owned");
+diff --git a/src/agents/embedded-agent-runner/runs.ts b/src/agents/embedded-agent-runner/runs.ts
+index 156a359eb05..86f5e099c10 100644
+--- a/src/agents/embedded-agent-runner/runs.ts
++++ b/src/agents/embedded-agent-runner/runs.ts
+@@ -962,8 +962,9 @@ export function attachActiveEmbeddedRun(
+   attachNativeAttempt(attachment);
+   handle[embeddedRunCleanupAttachment] = attachment;
+   if (watchdogAttempt && handle.ownsLiveness) {
+-    const wait = watchdogAttempt.beginWait({
++    attachment.closeWatchdogWait = watchdogAttempt.beginWait({
+       kind: "runtime_owned",
++      releaseStartsSemanticWindow: true,
+       isCurrent: () => {
+         if (
+           getEmbeddedRunAttachment(handle) !== attachment ||
+@@ -974,8 +975,7 @@ export function attachActiveEmbeddedRun(
+         toolAuthority?.assertActive();
+         return handle.ownsLiveness?.() === true && !handle.isAborted?.() && !handle.isStopped?.();
+       },
+-    });
+-    attachment.closeWatchdogWait = () => wait.close();
++    }).close;
+   }
+   if (operation) {
+     if (toolAuthority?.sourceTurnId) {
+diff --git a/src/sessions/session-controller.watchdog-state.ts b/src/sessions/session-controller.watchdog-state.ts
+index a5160663026..c0b3eec818f 100644
+--- a/src/sessions/session-controller.watchdog-state.ts
++++ b/src/sessions/session-controller.watchdog-state.ts
+@@ -11,6 +11,20 @@ export type SessionWatchdogWaitKind =
+   | "runtime_owned"
+   | "retry"
+   | "backend";
++export type OwnedWait = {
++  kind: SessionWatchdogWaitKind;
++  deadlineAtMs?: number;
++  rateLimitStopMessage?: string;
++  /** A runtime-owned wait whose release hands a finished turn back to its run. */
++  releaseStartsSemanticWindow?: boolean;
++  isCurrent: () => boolean;
++};
++export type OwnedExecution = {
++  deadlineAtMs?: number;
++  getDeadlineAtMs?: () => number | undefined;
++  recoverDeadline?: () => Promise<boolean>;
++};
++
+ export type SessionWatchdogPhase = "active" | "finishing" | "terminal" | "settled";
+ export type SessionWatchdogSnapshot = Readonly<{
+   current: boolean;
+diff --git a/src/sessions/session-controller.watchdog.test.ts b/src/sessions/session-controller.watchdog.test.ts
+index 1b8804e8b00..291722915a0 100644
+--- a/src/sessions/session-controller.watchdog.test.ts
++++ b/src/sessions/session-controller.watchdog.test.ts
+@@ -18,6 +18,7 @@ import type {
+ import {
+   SESSION_WATCHDOG_CLEANUP_MS,
+   SESSION_WATCHDOG_QUIET_TOOL_MS,
++  SESSION_WATCHDOG_WARNING_MS,
+ } from "./session-controller.watchdog-state.js";
+ import {
+   createSessionControllerWatchdog,
+@@ -392,6 +393,30 @@ describe("operation-owned watchdog through controller admission", () => {
+     },
+   );
+ 
++  it("starts the semantic horizon when a native runtime-owned wait releases, never retroactively", async () => {
++    const { operation, cancel } = running();
++    let live = true;
++    operation.watchdog.beginWait({
++      kind: "runtime_owned",
++      releaseStartsSemanticWindow: true,
++      isCurrent: () => live,
++    });
++    const releasedAt = abortMs * 4;
++    await tickAt(operation.watchdog, releasedAt);
++    expect(cancel).not.toHaveBeenCalled();
++    live = false; // The native turn completed and released liveness.
++    await operation.watchdog.tick();
++    expect(cancel).not.toHaveBeenCalled();
++    expect(operation.watchdog.decide().action).toBe("observe");
++    await tickAt(operation.watchdog, releasedAt + SESSION_WATCHDOG_WARNING_MS);
++    expect(operation.watchdog.decide().action).toBe("warn");
++    await tickAt(operation.watchdog, releasedAt + abortMs - 1);
++    expect(cancel).not.toHaveBeenCalled();
++    // A finalization that then makes no semantic progress is still stopped.
++    await tickAt(operation.watchdog, releasedAt + abortMs);
++    expectStalled(operation, cancel);
++  });
++
+   it("uses actual approval expiry and revocation, without a second timeout", async () => {
+     const { operation, cancel } = running();
+     const expiry = abortMs * 3;
+diff --git a/src/sessions/session-controller.watchdog.ts b/src/sessions/session-controller.watchdog.ts
+index dc1b30a6fce..b3aecb4778b 100644
+--- a/src/sessions/session-controller.watchdog.ts
++++ b/src/sessions/session-controller.watchdog.ts
+@@ -10,28 +10,18 @@ import {
+   SESSION_WATCHDOG_CLEANUP_MS,
+   SESSION_WATCHDOG_QUIET_TOOL_MS,
+   SESSION_WATCHDOG_WARNING_MS,
++  type OwnedExecution,
++  type OwnedWait,
+   type SessionWatchdogDecision,
+   type SessionWatchdogPhase,
+   type SessionWatchdogSnapshot,
+-  type SessionWatchdogWaitKind,
+ } from "./session-controller.watchdog-state.js";
+ 
+ type SessionWatchdogProgress = "semantic" | "transport" | "source_arrival" | "finalization";
+-type OwnedWait = {
+-  kind: SessionWatchdogWaitKind;
+-  deadlineAtMs?: number;
+-  rateLimitStopMessage?: string;
+-  isCurrent: () => boolean;
+-};
+-type OwnedExecution = {
+-  deadlineAtMs?: number;
+-  getDeadlineAtMs?: () => number | undefined;
+-  recoverDeadline?: () => Promise<boolean>;
+-};
+ const executionDeadline = (execution: OwnedExecution) =>
+   execution.getDeadlineAtMs ? execution.getDeadlineAtMs() : execution.deadlineAtMs;
+ export type SessionWatchdogWait = {
+-  close(): void;
++  close: () => void;
+   updateDeadline(deadlineAtMs: number): void;
+ };
+ export type SessionControllerWatchdogAttempt = {
+@@ -128,8 +118,16 @@ export function createSessionControllerWatchdog(params: {
+   const stagnationCurrent = (at: number) =>
+     stagnation &&
+     !(semanticSequence > stagnation.semanticSequence && at - stagnation.observedAtMs >= 60_000);
++  // While an opted-in runtime-owned wait is live, the native runtime owns liveness, so
++  // that interval is never semantically stale. Its release (a native turn that just
++  // completed) starts the semantic horizon; it must not make the masked interval
++  // retroactively expire and stop a run that is finalizing. Other waits keep their
++  // retroactive horizon and publish progress themselves when they end.
++  let runtimeOwnedThroughAt: number | undefined;
+   const progressOrigin = (at: number) =>
+-    stagnationCurrent(at) ? stagnation!.startedAtMs : semanticAt;
++    stagnationCurrent(at)
++      ? stagnation!.startedAtMs
++      : Math.max(semanticAt, runtimeOwnedThroughAt ?? semanticAt);
+   let retryAllowanceAt: number | undefined;
+   let requestRecoveryAt: number | undefined;
+   let cleanupAt: number | undefined;
+@@ -223,18 +221,24 @@ export function createSessionControllerWatchdog(params: {
+   };
+   const snapshot = (at = now()): SessionWatchdogSnapshot => {
+     const isCurrent = current();
+-    const liveWaits = [...waits]
+-      .filter((wait) => live(wait.isCurrent))
+-      .map((wait) => ({
+-        kind: wait.kind,
+-        // Mechanical traffic/retry rearming never moves the logical semantic horizon.
+-        deadlineAtMs:
+-          wait.kind === "backend"
+-            ? Math.min(wait.deadlineAtMs!, semanticDeadline(at))
+-            : wait.kind === "retry"
+-              ? Math.min(wait.deadlineAtMs!, retryAllowanceAt!)
+-              : wait.deadlineAtMs,
+-      }));
++    const currentWaits = [...waits].filter((wait) => live(wait.isCurrent));
++    if (
++      isCurrent &&
++      !recovery &&
++      currentWaits.some((wait) => wait.kind === "runtime_owned" && wait.releaseStartsSemanticWindow)
++    ) {
++      runtimeOwnedThroughAt = Math.max(runtimeOwnedThroughAt ?? at, at);
++    }
++    const liveWaits = currentWaits.map((wait) => ({
++      kind: wait.kind,
++      // Mechanical traffic/retry rearming never moves the logical semantic horizon.
++      deadlineAtMs:
++        wait.kind === "backend"
++          ? Math.min(wait.deadlineAtMs!, semanticDeadline(at))
++          : wait.kind === "retry"
++            ? Math.min(wait.deadlineAtMs!, retryAllowanceAt!)
++            : wait.deadlineAtMs,
++    }));
+     const pendingAssessment = assessment.pendingWait();
+     if (pendingAssessment) {
+       liveWaits.push(pendingAssessment);

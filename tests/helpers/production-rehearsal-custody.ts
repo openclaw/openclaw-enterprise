@@ -19,6 +19,34 @@ export type FixtureRun = (
   options?: CommandOptions,
 ) => Promise<string>;
 
+type FixtureCommandOutcome = {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  interrupted: boolean;
+  spawned: boolean;
+  terminationFailed: boolean;
+};
+
+export class FixtureCommandError extends Error {
+  readonly outcome: FixtureCommandOutcome;
+
+  constructor(message: string, outcome: FixtureCommandOutcome) {
+    super(message);
+    this.name = "FixtureCommandError";
+    this.outcome = outcome;
+  }
+
+  get settled() {
+    return (
+      !this.outcome.timedOut &&
+      !this.outcome.interrupted &&
+      !this.outcome.terminationFailed &&
+      (!this.outcome.spawned || (this.outcome.exitCode !== null && this.outcome.signal === null))
+    );
+  }
+}
+
 const activeCommands = new Set<(signal: NodeJS.Signals) => void>();
 let interruptionTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingDefaultSignal: "SIGINT" | "SIGTERM" | undefined;
@@ -104,7 +132,16 @@ export function runFixtureCommand(
 ): Promise<string> {
   assert.ok(!protectedInput || !allowFailure);
   if (interruptionTimer) {
-    return Promise.reject(new Error("cannot start a fixture command during interruption"));
+    return Promise.reject(
+      new FixtureCommandError("cannot start a fixture command during interruption", {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        interrupted: true,
+        spawned: false,
+        terminationFailed: false,
+      }),
+    );
   }
   return new Promise((resolve, reject) => {
     const childEnv = env ? { ...process.env, ...env } : undefined;
@@ -130,12 +167,23 @@ export function runFixtureCommand(
     let closed = false;
     let killed = false;
     let cleanupFailed = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    const outcome = (): FixtureCommandOutcome => ({
+      exitCode,
+      signal: exitSignal,
+      timedOut,
+      interrupted,
+      spawned: child.pid !== undefined,
+      terminationFailed: cleanupFailed,
+    });
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     const timeoutError = () =>
-      new Error(
+      new FixtureCommandError(
         cleanupFailed
           ? `${command} could not terminate a timed-out fixture operation`
           : `${command} timed out${protectedInput ? " during a protected fixture operation" : ""}`,
+        outcome(),
       );
     const signal = (name: NodeJS.Signals) => {
       try {
@@ -156,10 +204,11 @@ export function runFixtureCommand(
       child.stderr.destroy();
     };
     const interruptedError = () =>
-      new Error(
+      new FixtureCommandError(
         cleanupFailed
           ? `${command} could not terminate an interrupted fixture operation`
           : `${command} interrupted${protectedInput ? " during a protected fixture operation" : ""}`,
+        outcome(),
       );
     const finishInterrupted = () => {
       clearTimeout(cleanupTimer);
@@ -221,11 +270,18 @@ export function runFixtureCommand(
       }
       clearTimeout(timer);
       releaseCommand();
-      reject(
-        protectedInput ? new Error(`${command} could not start a protected operation`) : error,
+      const failure = new FixtureCommandError(
+        protectedInput ? `${command} could not start a protected operation` : error.message,
+        outcome(),
       );
+      if (!protectedInput && "code" in error) {
+        Object.assign(failure, { code: error.code });
+      }
+      reject(failure);
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
       closed = true;
       clearTimeout(timer);
       if (interrupted) {
@@ -249,7 +305,12 @@ export function runFixtureCommand(
         const output = protectedInput
           ? " during a protected fixture operation"
           : redact(`: ${stderr}\n${stdout}`);
-        reject(new Error(`${command} failed (${code})${bounded ? output.slice(-4000) : output}`));
+        reject(
+          new FixtureCommandError(
+            `${command} failed (${code})${bounded ? output.slice(-4000) : output}`,
+            outcome(),
+          ),
+        );
       }
     });
     child.stdin.on("error", () => {});
@@ -353,6 +414,10 @@ if uid != 0 or not (name == "dockerd" or (pid == 1 and name == "systemd")):
     sys.exit("the Docker socket peer is not the local daemon")
 `;
 
+export async function assertLocalRehearsalDaemon(run: FixtureRun) {
+  await run("python3", ["-c", verifyDockerPeer, dockerSocket], { timeout: 10_000 });
+}
+
 const uidPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
 const uidOutput = "jsonpath={.metadata.uid}";
 const versionedUIDOutput = "jsonpath={.metadata.uid}{' '}{.metadata.resourceVersion}";
@@ -414,7 +479,7 @@ export async function bindLocalRehearsalCluster(
   const kubectl = (...args: string[]) =>
     run("kubectl", [...kubeArgs, "--request-timeout=15s", ...args]);
   const inspectServer = async () => {
-    await run("python3", ["-c", verifyDockerPeer, dockerSocket], { timeout: 10_000 });
+    await assertLocalRehearsalDaemon(run);
     const server = JSON.parse(
       await docker("container", "inspect", "--format", serverFormat, node),
     ) as K3dServer;
@@ -494,12 +559,186 @@ export async function bindLocalRehearsalCluster(
     selection: { kubeconfigPath, kubernetesContext },
     node,
     nodeUID,
+    clusterUID,
+    serverID: server.id,
     async assertCluster() {
       assert.deepEqual(await inspectServer(), server, "the local k3d server was replaced");
       assert.ok(
         (await internalUID()) === clusterUID && (await externalUID()) === clusterUID,
         "the selected Kubernetes cluster was replaced",
       );
+    },
+    // Compare this projection again immediately before calling the CI cleanup owner.
+    // A same-name replacement or a shared attachment must be reconciled separately.
+    async cleanupIdentity() {
+      await this.assertCluster();
+      const lines = (output: string) => output.trim().split(/\r?\n/u).filter(Boolean).sort();
+      const clusterLabel = "label=k3d.cluster=" + cluster;
+      assert.deepEqual(lines(await docker("ps", "-aq", "--no-trunc", "--filter", clusterLabel)), [
+        server.id,
+      ]);
+      const networkName = "k3d-" + cluster;
+      // k3d labels its server, but its network has only app=k3d. Bind the
+      // network through the already verified server's sole attachment.
+      const networks = JSON.parse(
+        await docker(
+          "container",
+          "inspect",
+          "--format",
+          "{{json .NetworkSettings.Networks}}",
+          server.id,
+        ),
+      );
+      assert.deepEqual(Object.keys(networks), [networkName]);
+      const networkID = networks[networkName].NetworkID;
+      assert.ok(networkID && containerIDPattern.test(networkID));
+      assert.equal(
+        (await docker("network", "inspect", "--format", "{{.Name}}", networkID)).trim(),
+        networkName,
+      );
+      assert.deepEqual(
+        lines(
+          await docker(
+            "network",
+            "inspect",
+            "--format",
+            "{{range $id, $_ := .Containers}}{{println $id}}{{end}}",
+            networkID,
+          ),
+        ),
+        [server.id],
+      );
+      const named = networkName + "-images";
+      const volumes = lines(
+        await docker(
+          "container",
+          "inspect",
+          "--format",
+          '{{range .Mounts}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}}',
+          server.id,
+        ),
+      );
+      assert.ok(
+        volumes.includes(named) && volumes.every((v) => v === named || containerIDPattern.test(v)),
+      );
+      assert.deepEqual(lines(await docker("volume", "ls", "-q", "--filter", clusterLabel)), [
+        named,
+      ]);
+      const metadata = [];
+      for (const volume of volumes) {
+        assert.deepEqual(
+          lines(await docker("ps", "-aq", "--no-trunc", "--filter", "volume=" + volume)),
+          [server.id],
+        );
+        const info = JSON.parse(
+          await docker(
+            "volume",
+            "inspect",
+            "--format",
+            '[{{json .Name}},{{json .Driver}},{{json .Scope}},{{json .CreatedAt}},{{json (index .Labels "k3d.cluster")}}]',
+            volume,
+          ),
+        );
+        assert.ok(
+          info[0] === volume &&
+            info[1] === "local" &&
+            info[2] === "local" &&
+            typeof info[3] === "string" &&
+            info[3],
+        );
+        if (volume === named) {
+          assert.equal(info[4], cluster);
+        }
+        metadata.push({ name: volume, createdAt: info[3] });
+      }
+      return { networkID, volumes: metadata };
+    },
+    async pullPublishedImage(image: string) {
+      // This staging path only uses public packages, under their selected index names.
+      // The ordinary local CI importer creates a different local repository reference.
+      assert.match(
+        image,
+        /^(?:ghcr\.io\/openclaw\/[a-z0-9]+(?:[._/-][a-z0-9]+)*|docker\.io\/library\/(?:postgres|node))@sha256:[a-f0-9]{64}$/u,
+      );
+      await this.assertCluster();
+      await run(
+        "docker",
+        [
+          dockerHost,
+          "exec",
+          server.id,
+          "ctr",
+          "-n",
+          "k8s.io",
+          "images",
+          "pull",
+          "--platform",
+          "linux/amd64",
+          image,
+        ],
+        { protectedInput: true, timeout: 600_000 },
+      );
+    },
+    async assertStagedImage(identity: {
+      image: string;
+      rootDigest: string;
+      manifestDigest: string;
+      configDigest: string;
+    }) {
+      await this.assertCluster();
+      const digest = /^sha256:[a-f0-9]{64}$/u;
+      const { image, rootDigest, manifestDigest, configDigest } = identity;
+      assert.ok(
+        image.endsWith("@" + rootDigest) &&
+          [rootDigest, manifestDigest, configDigest].every((v) => digest.test(v)),
+      );
+      const inspect = (...args: string[]) =>
+        run("docker", [dockerHost, "exec", server.id, ...args], { timeout: 15_000 });
+      const rows = (await inspect("ctr", "-n", "k8s.io", "images", "list"))
+        .trim()
+        .split("\n")
+        .map((row) => row.trim().split(/\s+/u))
+        .filter(([name]) => name === image);
+      assert.ok(
+        rows.length === 1 && rows[0]?.[2] === rootDigest,
+        "selected image root missing on owned node",
+      );
+      // Hash inside the server so no metadata gets decoded or re-encoded by the command runner.
+      for (const expected of new Set([rootDigest, manifestDigest, configDigest])) {
+        const output = await inspect(
+          "sh",
+          "-ec",
+          'set -o pipefail; ctr -n k8s.io content get "$1" | sha256sum',
+          "verify-image",
+          expected,
+        );
+        assert.equal(
+          output.trim().split(/\s+/u)[0],
+          expected.slice(7),
+          "owned node image content differs",
+        );
+      }
+    },
+    async runtimeInventory() {
+      await this.assertCluster();
+      const inspect = (...args: string[]) =>
+        run("docker", [dockerHost, "exec", server.id, ...args], {
+          protectedInput: true,
+          timeout: 15000,
+        });
+      const containers = protectedJSON<{ containers: { id: string }[] }>(
+        await inspect("crictl", "ps", "-a", "-o", "json"),
+      ).containers;
+      const sandboxes = protectedJSON<{ items: { id: string }[] }>(
+        await inspect("crictl", "pods", "-o", "json"),
+      ).items;
+      const tasks = (await inspect("ctr", "-n", "k8s.io", "tasks", "ls", "-q")).trim().split(/\s+/);
+      const accounted = new Set([...containers, ...sandboxes].map((item) => item.id));
+      assert.ok(
+        tasks.every((id) => /^[a-f0-9]{64}$/.test(id) && accounted.has(id)),
+        "unaccounted live containerd task on the fixture node",
+      );
+      return { containers, tasks };
     },
     async runningConfigDigest(containerID: string, podUID: string) {
       const id = /^containerd:\/\/([a-f0-9]{64})$/u.exec(containerID)?.[1];
@@ -548,7 +787,13 @@ type DatabaseSecret = FixtureObject & {
 };
 const databaseKeys = Object.keys(databaseUsers) as DatabaseKey[];
 
-function fixtureDatabaseURL(value: string, namespace: string, database: string, key: DatabaseKey) {
+export function fixtureDatabaseURL(
+  value: string,
+  namespace: string,
+  database: string,
+  key: DatabaseKey,
+  requireTLS = false,
+) {
   let url: URL;
   try {
     url = new URL(Buffer.from(value, "base64").toString("utf8"));
@@ -562,7 +807,11 @@ function fixtureDatabaseURL(value: string, namespace: string, database: string, 
       url.pathname === `/${database}` &&
       url.username === databaseUsers[key] &&
       url.password &&
-      !url.search &&
+      (requireTLS
+        ? url.searchParams.size === 2 &&
+          url.searchParams.get("sslmode") === "verify-full" &&
+          url.searchParams.get("sslrootcert") === "/etc/openclaw/database-ca/ca.pem"
+        : !url.search) &&
       !url.hash,
     "database Secret must target the owned PostgreSQL Service and expected database",
   );
@@ -617,6 +866,7 @@ export function createRehearsalCustody({
   release,
   suffix,
   cluster,
+  requireTLS = false,
   waitFor,
 }: {
   run: FixtureRun;
@@ -624,6 +874,7 @@ export function createRehearsalCustody({
   namespace: string;
   release: string;
   suffix: string;
+  requireTLS?: boolean;
   cluster: Pick<LocalRehearsalCluster, "node" | "assertCluster">;
   waitFor: WaitFor;
 }) {
@@ -719,7 +970,7 @@ export function createRehearsalCustody({
       "the acknowledged fixture database Secret was replaced or modified",
     );
     for (const key of databaseKeys) {
-      fixtureDatabaseURL(secret.data?.[key], namespace, database, key);
+      fixtureDatabaseURL(secret.data?.[key], namespace, database, key, requireTLS);
     }
     return secret;
   };
@@ -946,7 +1197,7 @@ export function createRehearsalCustody({
     async restoredMigrationURL(restored: string) {
       const { secret } = await assertPostgres();
       const key = "migration-url";
-      const url = fixtureDatabaseURL(secret.data[key], namespace, database, key);
+      const url = fixtureDatabaseURL(secret.data[key], namespace, database, key, requireTLS);
       url.pathname = `/${restored}`;
       return Buffer.from(url.toString()).toString("base64");
     },
@@ -959,7 +1210,7 @@ export function createRehearsalCustody({
         { mode: 0o600, flag: "wx" },
       );
       for (const key of databaseKeys) {
-        const url = fixtureDatabaseURL(secret.data[key], namespace, database, key);
+        const url = fixtureDatabaseURL(secret.data[key], namespace, database, key, requireTLS);
         url.pathname = `/${restored}`;
         secret.data[key] = Buffer.from(url.toString()).toString("base64");
       }

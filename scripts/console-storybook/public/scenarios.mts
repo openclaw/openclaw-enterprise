@@ -88,6 +88,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     nativeAdminUrl?: string;
     nativeAdminSessionMode?: "host-only-exchange";
     nativeAdminMode?: "admin" | "chat";
+    nativeAdminReason?: "not-enabled" | "configuration" | "compute";
     observabilityUrl?: string;
     observabilityDenied?: boolean;
     readOnlyPermissionSummary?: boolean;
@@ -1284,7 +1285,10 @@ const authoredScenarios = {
     nativeAdmin: "available",
     nativeAdminMode: "chat",
     observabilityDenied: true,
-    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    rules: [
+      { path: "/installation", status: 403, code: "FORBIDDEN" },
+      { suffix: "/native-admin", skip: 1, delayMs: 1500 },
+    ],
     agentPermissionSummary: {
       update: false,
       deploy: false,
@@ -1303,7 +1307,8 @@ const authoredScenarios = {
       "An operator opens chat through the Agent’s restricted browser route. The card explains the shared conversations without promising administrative access. API responses are simulated.",
     steps: [
       "Open chat and confirm the simulated native page opens in another tab.",
-      "Return to the Agent and refresh access.",
+      "Return to the Agent, Tab to Refresh access, and press Enter. While Checking access… shows, Open chat is disabled and focus stays on Refresh access.",
+      "When the check finishes, confirm Open chat is a link again.",
     ],
   } satisfies LocalScenario,
   nativeAdmin: {
@@ -1353,7 +1358,47 @@ const authoredScenarios = {
     path: revision,
     deployed: true,
     nativeAdmin: "unsupported",
+    nativeAdminReason: "compute",
     description: "The selected runtime does not expose a supported native admin endpoint.",
+  } satisfies LocalScenario,
+  nativeBrowserChatOff: {
+    group: "Components/Native admin",
+    name: "Browser chat off",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "unsupported",
+    nativeAdminReason: "not-enabled",
+    description:
+      "The Agent was created with Enable browser chat unchecked. The panel says browser chat is off and links an editor to the draft Configuration and the browser chat settings (finding 3168). API responses are simulated.",
+    steps: [
+      "Read the panel: it names browser chat, not a version or Compute problem, and does not tell you to ask someone else.",
+      "Confirm Open draft opens the draft Configuration and Browser chat settings opens the setup guide in a new tab.",
+    ],
+    gap: "The fixture does not save or deploy the browser chat settings.",
+  } satisfies LocalScenario,
+  nativeBrowserChatOffReader: {
+    group: "Components/Native admin",
+    name: "Browser chat off, read-only caller",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "unsupported",
+    nativeAdminReason: "not-enabled",
+    agentPermissionSummary: {
+      update: false,
+      deploy: false,
+      operate: true,
+      delete: false,
+      administer: false,
+      configurationRead: true,
+      configurationUpdate: false,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+      readLogs: false,
+    },
+    description:
+      "An operator who cannot edit the Configuration is told that browser chat is off and to ask someone who can edit the Configuration. No settings link is shown. API responses are simulated.",
   } satisfies LocalScenario,
   nativeDenied: {
     group: "Components/Native admin",
@@ -1734,6 +1779,9 @@ const authoredScenarios = {
     actions: [click("Delete Agent")],
     description:
       "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
+    steps: [
+      "Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
+    ],
   } satisfies LocalScenario,
   deleting: {
     group: "Components/Deletion",

@@ -1,20 +1,13 @@
 import type { IncomingMessage } from "node:http";
 import type { HeaderFields } from "../backend-contracts.ts";
+import { TRANSPORT_HEADER_NAMES } from "./transport-header-names.ts";
 
 const UNSAFE = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-connection",
+  ...TRANSPORT_HEADER_NAMES,
   "proxy-authenticate",
-  "proxy-authorization",
   "authorization",
   "set-cookie",
   "www-authenticate",
-  "transfer-encoding",
-  "content-length",
-  "content-encoding",
-  "trailer",
-  "upgrade",
 ]);
 export function responseHeaders(
   message: IncomingMessage,
