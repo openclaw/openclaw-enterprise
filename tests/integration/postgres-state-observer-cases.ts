@@ -257,4 +257,144 @@ export async function acceptCanonicalObserverTimestamp(context: TestContext): Pr
     [workId, "targetResolution", "observedAt"],
   );
   assert.deepEqual(persisted.rows, [{ observed_at: targetResolution.observedAt }]);
+
+  const completedProgress = {
+    targetResolution,
+    observer: {
+      observerContainerId: "e".repeat(64),
+      createdAt: "2026-11-15T17:00:01.000Z",
+    },
+    readiness: {
+      targetContainerId: targetResolution.targetContainerId,
+      interfaceName: createInput.plan.observationScope.interfaceName,
+      filterIdentity: createInput.plan.observationScope.filterIdentity,
+      readyAt: "2026-11-15T17:00:02.000Z",
+    },
+    terminal: {
+      startedAt: "2026-11-15T17:00:02.000Z",
+      captureDeadlineAt: "2026-11-15T17:01:02.000Z",
+      captureStoppedAt: "2026-11-15T17:00:03.000Z",
+      terminalCompletedAt: "2026-11-15T17:00:04.000Z",
+      startOutcome: "succeeded" as const,
+      stopOutcome: "succeeded" as const,
+      boundsReached: [],
+      capturedRecordCount: 1,
+      encodedOutputBytes: 100,
+    },
+    cleanup: {
+      terminationRequestedAt: "2026-11-15T17:00:04.000Z",
+      graceDeadline: "2026-11-15T17:00:09.000Z",
+      forceRemovalOutcome: "not_required" as const,
+      absenceVerifiedAt: "2026-11-15T17:00:09.000Z",
+      targetTeardownAuthorized: true as const,
+    },
+  };
+
+  const releasedObserverClaim = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, claim_token = NULL, lease_expires_at = NULL, available_at = clock_timestamp(), updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $3 AND state = $4 AND claim_token = $5::uuid",
+    [workId, "queued", "observer", "claimed", claimToken],
+  );
+  assert.equal(releasedObserverClaim.rowCount, 1, "test must release the exact observer claim");
+
+  const lifecycleQueue = new PostgresWorkQueue(pool);
+  const deletionWorkId = "agent:" + agentId + ":reconcile:deleted";
+  await lifecycleQueue.enqueue({
+    idempotencyKey: deletionWorkId,
+    namespaceId,
+    agentId,
+    actorId,
+    agentTarget: "deleted",
+    availableAt: new Date(0),
+  });
+  await pool.query(
+    "UPDATE occ.agents SET desired_runtime_state = $3, status = $4 WHERE namespace_id = $1 AND id = $2",
+    [namespaceId, agentId, "stopped", "deleting"],
+  );
+  const deletionClaimToken = randomUUID();
+  const claimedDeletion = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND agent_target = $6 AND state = $7 RETURNING idempotency_key",
+    [deletionWorkId, "claimed", deletionClaimToken, "10 minutes", "lifecycle", "deleted", "queued"],
+  );
+  assert.equal(claimedDeletion.rowCount, 1, "test must claim the exact Agent deletion work");
+  const deletionClaim = { idempotencyKey: deletionWorkId, claimToken: deletionClaimToken };
+  assert.equal(
+    await lifecycleQueue.completeAgentDeletion(deletionClaim, namespaceId, agentId),
+    "cleanup-pending",
+  );
+  const retainedForObserverCleanup = await pool.query(
+    "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1 AND id = $2) AS agent_exists, EXISTS (SELECT 1 FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2 AND id = $3) AS revision_exists, EXISTS (SELECT 1 FROM occ.observer_invocations WHERE work_id = $4) AS invocation_exists, EXISTS (SELECT 1 FROM occ.controller_work WHERE idempotency_key = $4 AND work_kind = $5) AS observer_work_exists",
+    [namespaceId, agentId, revisionId, workId, "observer"],
+  );
+  assert.deepEqual(retainedForObserverCleanup.rows, [
+    {
+      agent_exists: true,
+      revision_exists: true,
+      invocation_exists: true,
+      observer_work_exists: true,
+    },
+  ]);
+
+  await lifecycleQueue.defer(deletionClaim, { code: "OBSERVER_CLEANUP_PENDING" }, { delayMs: 1 });
+  const cleanupClaimToken = randomUUID();
+  const claimedObserverCleanup = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND state = $6 RETURNING idempotency_key",
+    [workId, "claimed", cleanupClaimToken, "10 minutes", "observer", "queued"],
+  );
+  assert.equal(
+    claimedObserverCleanup.rowCount,
+    1,
+    "test must reclaim the exact observer work for cleanup",
+  );
+  const cleaned = await state.transact((unit) =>
+    unit.observer.checkpoint(
+      { idempotencyKey: workId, claimToken: cleanupClaimToken },
+      {
+        completedPhase: "cleanup",
+        status: "succeeded",
+        progress: completedProgress,
+      },
+    ),
+  );
+  assert.equal(cleaned.completedPhase, "cleanup");
+  assert.equal(cleaned.status, "succeeded");
+
+  await pool.query(
+    "UPDATE occ.controller_work SET available_at = clock_timestamp(), updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $2 AND state = $3",
+    [deletionWorkId, "lifecycle", "queued"],
+  );
+  const finalDeletionClaimToken = randomUUID();
+  const reclaimedDeletion = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND agent_target = $6 AND state = $7 RETURNING idempotency_key",
+    [
+      deletionWorkId,
+      "claimed",
+      finalDeletionClaimToken,
+      "10 minutes",
+      "lifecycle",
+      "deleted",
+      "queued",
+    ],
+  );
+  assert.equal(reclaimedDeletion.rowCount, 1, "test must reclaim the Agent deletion work");
+  assert.equal(
+    await lifecycleQueue.completeAgentDeletion(
+      { idempotencyKey: deletionWorkId, claimToken: finalDeletionClaimToken },
+      namespaceId,
+      agentId,
+    ),
+    "completed",
+  );
+  const removedAfterObserverCleanup = await pool.query(
+    "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1 AND id = $2) AS agent_exists, EXISTS (SELECT 1 FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2 AND id = $3) AS revision_exists, EXISTS (SELECT 1 FROM occ.observer_invocations WHERE work_id = $4) AS invocation_exists, EXISTS (SELECT 1 FROM occ.controller_work WHERE idempotency_key = $4) AS observer_work_exists, EXISTS (SELECT 1 FROM occ.controller_work WHERE idempotency_key = $5) AS deletion_work_exists",
+    [namespaceId, agentId, revisionId, workId, deletionWorkId],
+  );
+  assert.deepEqual(removedAfterObserverCleanup.rows, [
+    {
+      agent_exists: false,
+      revision_exists: false,
+      invocation_exists: false,
+      observer_work_exists: false,
+      deletion_work_exists: false,
+    },
+  ]);
 }
