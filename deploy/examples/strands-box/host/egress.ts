@@ -1,47 +1,219 @@
+import { createHash, X509Certificate } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
+import { isAbsolute, normalize } from "node:path";
 
 export const CONTROLLED_INFERENCE_MARKER = "openclaw-strands-controlled-inference-v1";
+
+/** The top-level box.toml key a Box build with an operator route CA reads. Stock Box refuses it. */
+export const BOX_UPSTREAM_CA_KEY = "upstream_ca_files";
+
+const SHA256 = /^[a-f0-9]{64}$/;
+const MAX_CA_BYTES = 65_536;
+const MAX_CA_CERTIFICATES = 8;
+const CERTIFICATE = /-----BEGIN CERTIFICATE-----[\sA-Za-z0-9+/=]+-----END CERTIFICATE-----/g;
+
+/** An extra upstream trust anchor for one route, verified and held in memory at config load. */
+export interface RouteCa {
+  readonly sha256: string;
+  readonly pem: string;
+}
 
 export interface EgressRoute {
   readonly kind: "workspace-node" | "controlled-inference";
   readonly url: string;
   readonly address: string;
+  readonly ca?: RouteCa;
 }
 
-export function parseRoute(value: unknown, kind: EgressRoute["kind"]): EgressRoute {
+/** The nonsecret route identity that the Driver, the operator approval and the host compare. */
+export interface RouteView {
+  readonly url: string;
+  readonly address: string;
+  readonly caSha256?: string;
+}
+
+export function privateIPv4(address: string): boolean {
+  return isIPv4(address) && /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2[0-9]|3[01])\.)/.test(address);
+}
+
+/** An operator DNS name: at least two LDH labels, no trailing dot, not an address spelling. */
+export function operatorDnsName(hostname: string): boolean {
+  const labels = hostname.split(".");
+  return (
+    hostname.length <= 253 &&
+    labels.length >= 2 &&
+    labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) &&
+    !/^[0-9]+$/.test(labels.at(-1)!) &&
+    labels.at(-1) !== "localhost"
+  );
+}
+
+function exactRoute(url: string, address: string, kind: EgressRoute["kind"]): URL {
+  const parsed = new URL(url);
+  const hostname = parsed.hostname;
+  if (
+    !privateIPv4(address) ||
+    (isIPv4(hostname) ? hostname !== address : !operatorDnsName(hostname)) ||
+    !/^\/(?:[A-Za-z0-9._~-]+\/)*[A-Za-z0-9._~-]*$/.test(parsed.pathname) ||
+    url !== parsed.toString() ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    (kind === "workspace-node"
+      ? parsed.protocol !== "wss:"
+      : parsed.protocol !== "https:" || parsed.pathname !== "/v1")
+  ) {
+    throw new Error("invalid_fixed_egress");
+  }
+  return parsed;
+}
+
+function routeCa(value: unknown): RouteCa {
   if (
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    Object.keys(value).sort().join(",") !== "address,url" ||
+    Object.keys(value).sort().join(",") !== "file,sha256" ||
+    !("file" in value) ||
+    !("sha256" in value) ||
+    typeof value.file !== "string" ||
+    typeof value.sha256 !== "string" ||
+    !SHA256.test(value.sha256) ||
+    !isAbsolute(value.file) ||
+    normalize(value.file) !== value.file
+  )
+    throw new Error("invalid_route_ca");
+  const file = value.file;
+  const expected = value.sha256;
+  const link = lstatSync(file);
+  if (!link.isFile()) throw new Error("invalid_route_ca");
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let bytes: Buffer;
+  try {
+    const stat = fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.ino !== link.ino ||
+      stat.dev !== link.dev ||
+      stat.size > MAX_CA_BYTES ||
+      (stat.mode & 0o022) !== 0 ||
+      (stat.uid !== 0 && stat.uid !== process.getuid?.())
+    )
+      throw new Error("invalid_route_ca");
+    bytes = readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  if (bytes.length > MAX_CA_BYTES) throw new Error("invalid_route_ca");
+  // The digest names the exact operator-reviewed bytes; any other file is a mismatch.
+  if (createHash("sha256").update(bytes).digest("hex") !== expected)
+    throw new Error("route_ca_mismatch");
+  const pem = bytes.toString("utf8");
+  const certificates = pem.match(CERTIFICATE);
+  if (
+    certificates === null ||
+    certificates.length > MAX_CA_CERTIFICATES ||
+    pem.replace(CERTIFICATE, "").trim() !== "" ||
+    !certificates.every((certificate) => {
+      try {
+        return new X509Certificate(certificate).ca;
+      } catch {
+        return false;
+      }
+    })
+  )
+    throw new Error("invalid_route_ca");
+  return { sha256: expected, pem };
+}
+
+export function parseRoute(value: unknown, kind: EgressRoute["kind"]): EgressRoute {
+  const keys =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? Object.keys(value).sort().join(",")
+      : "";
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    (keys !== "address,url" && !(kind === "controlled-inference" && keys === "address,ca,url")) ||
     !("url" in value) ||
     !("address" in value) ||
     typeof value.url !== "string" ||
     typeof value.address !== "string"
   )
     throw new Error("invalid_fixed_egress");
-  const url = new URL(value.url);
-  const hostname = url.hostname;
-  const address = value.address;
-  const ipv4Private =
-    isIPv4(address) && /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2[0-9]|3[01])\.)/.test(address);
-  if (
-    !ipv4Private ||
-    (isIPv4(hostname) && hostname !== address) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(hostname) ||
-    !/^\/(?:[A-Za-z0-9._~-]+\/)*[A-Za-z0-9._~-]*$/.test(url.pathname) ||
-    value.url !== url.toString() ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    (kind === "workspace-node"
-      ? url.protocol !== "wss:"
-      : url.protocol !== "https:" || url.pathname.replace(/\/$/, "") !== "/v1")
-  ) {
-    throw new Error("invalid_fixed_egress");
+  const url = exactRoute(value.url, value.address, kind);
+  const ca = "ca" in value ? routeCa(value.ca) : undefined;
+  return { kind, url: url.toString(), address: value.address, ...(ca === undefined ? {} : { ca }) };
+}
+
+export function routeView(route: EgressRoute): RouteView {
+  return {
+    url: route.url,
+    address: route.address,
+    ...(route.ca === undefined ? {} : { caSha256: route.ca.sha256 }),
+  };
+}
+
+/** True only for the exact route view, with no extra or missing fields. */
+export function sameRouteView(value: unknown, route: EgressRoute): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const expected = routeView(route);
+  const supplied = value as Record<string, unknown>;
+  return (
+    Object.keys(supplied).sort().join(",") === Object.keys(expected).sort().join(",") &&
+    supplied.url === expected.url &&
+    supplied.address === expected.address &&
+    supplied.caSha256 === expected.caSha256
+  );
+}
+
+type Lookup = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+) => Promise<readonly { address: string; family: number }[]>;
+
+/**
+ * Refuse before start when this host resolves the operator name to anything but the pinned
+ * address. This is an early, operator-readable check; Box's own pinned-address policy below
+ * is the enforcement, because Box resolves the name again in its trusted process.
+ */
+export async function assertPinnedResolution(
+  route: EgressRoute,
+  resolve: Lookup = lookup as unknown as Lookup,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const hostname = new URL(route.url).hostname;
+  if (isIPv4(hostname)) return;
+  let answers: readonly { address: string; family: number }[];
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    // The control socket answers within seconds; a slow resolver refuses instead of waiting.
+    answers = await Promise.race([
+      resolve(hostname, { all: true, verbatim: true }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+      }),
+    ]);
+  } catch {
+    throw new Error("egress_name_unresolved");
+  } finally {
+    clearTimeout(timer);
   }
-  return { kind, url: url.toString(), address };
+  if (
+    answers.length === 0 ||
+    !answers.every(({ address, family }) => family === 4 && address === route.address)
+  )
+    throw new Error("egress_name_not_pinned");
+}
+
+/** The verified PEM bytes that a route-CA Box build adds to its upstream trust, if any. */
+export function upstreamCaPem(routes: readonly EgressRoute[]): string | undefined {
+  const pems = routes.flatMap((route) => (route.ca === undefined ? [] : [route.ca.pem.trim()]));
+  return pems.length === 0 ? undefined : `${[...new Set(pems)].join("\n")}\n`;
 }
 
 // Box's own egress policy checks hostname+port before DNS and the exact IP
@@ -52,15 +224,14 @@ export function policy(routes: readonly EgressRoute[]): string {
     "// Default deny; only these installed, credential-free destinations are eligible.",
   ];
   for (const route of routes) {
-    const exact = parseRoute({ url: route.url, address: route.address }, route.kind);
-    const url = new URL(exact.url);
+    const url = exactRoute(route.url, route.address, route.kind);
     const port = url.port || "443";
     const condition = `context.input.host == ${JSON.stringify(url.hostname)} && context.input.port == ${port}`;
-    const ws = exact.kind === "workspace-node";
-    const path = ws ? url.pathname : `${url.pathname.replace(/\/$/, "")}/responses`;
+    const ws = route.kind === "workspace-node";
+    const path = ws ? url.pathname : `${url.pathname}/responses`;
     text.push(
       'permit (principal, action == Box::Action::"net:connect", resource)',
-      `when { ${condition} && !(context.input has ip6) && (!(context.input has ip4) || (context.input has ip4 && context.input.ip4 == ${JSON.stringify(exact.address)})) };`,
+      `when { ${condition} && !(context.input has ip6) && (!(context.input has ip4) || (context.input has ip4 && context.input.ip4 == ${JSON.stringify(route.address)})) };`,
       'permit (principal, action == Box::Action::"http:request", resource)',
       `when { ${condition} && context.input.method == "${ws ? "GET" : "POST"}" && context.input.path == ${JSON.stringify(path)} && context.input.intercepted == true };`,
     );
