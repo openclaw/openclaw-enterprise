@@ -45,6 +45,11 @@ Current behavior is documented in the [Agent plugins reference](../../docs/refer
 7. **End-to-end Console and runtime qualification:** Prove the complete launch workflow on ordinarily deployed Agents.
    - Resolve the Slack tool-assembly failure reported in #4673, then verify live Slack search, Google CLI, selection changes, renewal, worker replacement, withdrawal, and multi-account isolation. Update the owning current documentation as work ships.
    - **Status:** Not done; [#4819](https://github.com/openclaw/openclaw-enterprise/issues/4819) tracks the connected-account lifecycle portion. Imports and multi-account proof belong to steps 4–6.
+8. **Codex Plugin Driver catalog cleanup:** Use authenticated hosted discovery as the only Codex catalog source.
+   - Remove the hardcoded `openai-curated` catalog, `catalogSource` selector, controller-side reader, and its `codexExecutable`, `codexHome`, and `requestTimeoutMs` settings. The Codex Driver configuration becomes `{}`. Preserve native `openai-curated-remote` IDs and Harness installation.
+   - Update production profiles, quickstarts, upgrade checks, Console fixtures, and current documentation. Ensure OCC can reach the hosted catalog. Verify account-specific discovery with valid authentication, rejection of missing or invalid credentials and obsolete settings, and native installation on the Harness.
+   - Audit the unused shared `PluginDriver.listCatalog(context)` contract separately; remove it only through a reviewed contract change that updates all implementations.
+   - **Status:** Not done; independent of steps 1–7. This RFC proposes the Codex Driver configuration change.
 
 ## Acceptance gates
 
