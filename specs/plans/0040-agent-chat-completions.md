@@ -70,11 +70,11 @@ and [database](../../docs/testing/postgresql.md) procedures.
 
 | Required outcome | Real check | Result or remaining proof |
 | --- | --- | --- |
-| AC-1 intake | Normal provisioning through Fastify/PostgreSQL/IAM; human and service JSON/SSE; harmless tool action; OCC outside Kubernetes | Unverified: real QA stopped during sandbox setup |
-| AC-2 authority | Denied credentials/grants/routing inputs cause no turn; direct Gateway and other private-route paths fail closed | Unverified: real QA stopped during sandbox setup |
-| AC-3 conversations | Fresh defaults, same-principal continuation, cross-principal/Agent separation, service-key rotation | Unverified: real QA stopped during sandbox setup |
-| AC-4 failures | Live revocation/revision/stop/disconnect/deadline/body-size cases; ordered statuses with no forwarding or retries | Unverified: real QA stopped during sandbox setup |
-| AC-5 deployment | Each supported Harness mode, default/explicit auth, opt-out, isolation and content-free audit outcomes; Docker/SSH unsupported | Unverified: real QA stopped during sandbox setup |
+| AC-1 intake | Normal provisioning through Fastify/PostgreSQL/IAM; human and service JSON/SSE; harmless tool action; OCC outside Kubernetes | Partial: see the authorized retry record below |
+| AC-2 authority | Denied credentials/grants/routing inputs cause no turn; direct Gateway and other private-route paths fail closed | Partial: see the authorized retry record below |
+| AC-3 conversations | Fresh defaults, same-principal continuation, cross-principal/Agent separation, service-key rotation | Partial: see the authorized retry record below |
+| AC-4 failures | Live revocation/revision/stop/disconnect/deadline/body-size cases; ordered statuses with no forwarding or retries | Partial: see the authorized retry record below |
+| AC-5 deployment | Each supported Harness mode, default/explicit auth, opt-out, isolation and content-free audit outcomes; Docker/SSH unsupported | Partial: see the authorized retry record below |
 | Static and generated contracts | Build/typecheck, lint, format, workspace, OpenAPI generation/check, CI selection audit, docs/link/length checks | Passed: build, typecheck, lint, format, workspace, OpenAPI, CI registration and documentation checks |
 | Independent review | Shared autoreview against the final scoped diff | Blocked: reviewer authentication failed before pass 1 produced a report |
 
@@ -160,12 +160,56 @@ native application error. Structured native SSE diagnostics were added for the
 next retry. Service-key Codex turns remain unverified.
 A second dedicated-Codex run reproduced the native error: “Assistant output cannot
 be represented as an append-only response stream.” The pinned native encoder
-rejects unrepresentable replacements; OCC passes that failure through. One
-controlled final-answer-only, single-line request will distinguish that native
-output limit from a general inability to complete SSE. The original failure
-remains a recorded compatibility limit, not a passed case.
+rejects unrepresentable replacements; OCC passes that failure through. The controlled final-answer-only, single-line request at `9c6ad48d9` reproduced
+the same error. The exact producer/normalization cause remains unverified.
+The error is emitted by the pinned native
+[`openai-compatible-http.ts`](https://github.com/openclaw/openclaw/blob/513c12703ad9a9161cc123e0b8ed4ecb811aa6b3/src/gateway/openai-compatible-http.ts),
+which rejects replacements of already-streamed text. No native error was hidden,
+no buffered JSON was presented as successful SSE, and no upstream code or image
+pin was changed. Codex SSE needs a qualified native-runtime fix/configuration
+before the remaining dependent proof can pass.
 
-The HTTP acceptance matrix remains incomplete.
+The latest dedicated run reported four passing test nodes, six failures including
+parent aggregates, and zero skips. It completed one human JSON response and one
+verified tool action; successful SSE responses were zero. Native turn evidence
+again showed `danger-full-access` and `on-request`. This does not establish that
+every Codex SSE request is unsupported, only that qualification failed for both
+selected request forms on this pin.
+
+The HTTP acceptance matrix remains incomplete. Kubernetes-hosted OCC, the three
+fixture cases, full connect/total-deadline coverage, independent upstream-failure
+coverage, and complete persisted audit qualification remain unverified. The
+reviewer authentication route also remains unavailable; no independent report
+covers these implementation commits.
+
+## Retry handoff
+
+- Last combined real run: `625a3f77d413e25e4be0aad5e0e67898f0c2def0`,
+  Compose OCC, PostgreSQL/IAM, loopback k3d 1.36.4 and both Harness presets.
+  OpenClaw passed its selected scenario; the complete run reported 11 passes,
+  six failures including parent aggregates, and zero skips because Codex SSE failed.
+- Latest controlled Codex run: `9c6ad48d9285f95201964d1b3371f583cadc4cb6`. Four test nodes passed,
+  six failed including parent aggregates, and zero skipped. Human JSON/tool
+  execution and native full-access/on-request policy passed. SSE returned the
+  native append-only error; later dependent cases remain unverified.
+- Controller image: `sha256:c3b7cc5bfaebb849b91798b23e51575a07f62429b2c92777f7aa2ccc103c87e8`.
+  The native image digest above remains unchanged. Internal provider request
+  counts are unobserved; report HTTP completion counts and startup/smoke proof separately.
+- Final local build/type, lint, format, workspace, OpenAPI, documentation, flow
+  and Go formatting/vet checks passed. The four admission and two advisory tests
+  passed; the earlier 455-test conformance result remains scoped to its candidate.
+- CI on the merged candidate exposed stale admission/configuration and QA-matrix
+  expectations. Updated fixtures and deduplicated shared QA credential requirements.
+  Affected local coverage passed 245 non-database tests, four pinned-image tests
+  and the real PostgreSQL persistence test, with no skips. The database used a
+  migrated limited application role and its disposable container was removed.
+- All seven recorded QA environments have no remaining containers, volumes or
+  networks. Run-owned private state and the temporary model credential copy were
+  removed. Default kubeconfig and unrelated resources are unchanged; images,
+  caches and non-credential evidence remain available.
+- Completion needs a qualified native streaming fix/configuration and working
+  reviewer authentication. No upstream source, global auth/security setting,
+  default Preset, merge or force push was changed to bypass either blocker.
 
 ## Manual Notes
 

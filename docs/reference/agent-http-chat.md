@@ -74,6 +74,11 @@ headers and network isolation enforce that boundary. Its completion route
 matches only the exact POST. Model-list, embedding and Responses routes are not
 exposed by OCC chat.
 
+A native SSE error can arrive after HTTP `200` and still end with `[DONE]`.
+Clients must inspect error events; the terminator alone does not prove success.
+Dedicated Codex streaming remains subject to the
+[current qualification limit](../testing/agent-http-chat.md#current-pinned-runtime-qualification-limit).
+
 Admission audit must succeed before forwarding. Terminal records identify the
 request, principal, authentication method, Agent, Namespace, revision, timing,
 streaming mode and result. They exclude prompts, responses, credentials and raw

@@ -153,7 +153,9 @@ export function selectQaMatrix(env = process.env) {
       name === "OpenClaw" ||
       selectedScenarios.some((scenario) => ["http-chat", "codex-search-config"].includes(scenario))
     ) {
-      requiredEnv.push("OCC_TEST_QA_OPENAI_KEY_FILE");
+      if (!requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE")) {
+        requiredEnv.push("OCC_TEST_QA_OPENAI_KEY_FILE");
+      }
     }
     if (
       name === "Codex" &&

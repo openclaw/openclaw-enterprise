@@ -69,3 +69,17 @@ the [implementation plan](../../specs/plans/0040-agent-chat-completions.md#verif
 The plan tracks the complete RFC acceptance criteria, including remaining
 network isolation, deadline, audit and topology qualification. Do not report
 those outcomes as passed merely because a narrower scenario succeeds.
+
+## Current pinned-runtime qualification limit
+
+The [delivery record](../../specs/plans/0040-agent-chat-completions.md#authorized-full-access-retry)
+contains the exact revisions, images and outcomes. Embedded OpenClaw passes the
+selected scenario. Dedicated Codex JSON/tool execution and full-access policy
+were verified, but repeated SSE attempts returned the native error
+“Assistant output cannot be represented as an append-only response stream.”
+An explicit final-answer-only request produced the same result.
+
+This remains a native streaming qualification blocker. Do not discard the error,
+convert buffered JSON into claimed streaming proof, or describe all Codex
+requests as unsupported. A compatible, qualified native-runtime change is needed
+before the dependent acceptance criteria can be marked complete.
