@@ -19,6 +19,8 @@ author: mrunalp
   [per-Agent sandbox policies](../../../docs/reference/sandbox-policies.md);
   [RFC-0023 Credential Proxy](../0023-egress-proxy-credential-lifecycle/index.md)
 
+The proposed [Installation credential ownership amendment](../0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md) covers grant custody, client registration secrets and token delivery for both owners.
+
 ## Summary
 
 Alice connects Gmail once in a Namespace and approves access with Google. Later
