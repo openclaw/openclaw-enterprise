@@ -496,7 +496,12 @@ test("the file-only mode splits the protected Codex program into its own child, 
   };
   const ordinary = received(EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT);
   const protectedProgram = received(
-    codexLaunchEntrypoint({ providerOwned: true, protected: true, withNode: true, explicitProxy: true }),
+    codexLaunchEntrypoint({
+      providerOwned: true,
+      protected: true,
+      withNode: true,
+      explicitProxy: true,
+    }),
   );
   assert.ok(!protectedProgram.equals(ordinary));
   // The extraction reproduces the ordinary split the host has always used.
@@ -522,15 +527,25 @@ test("the file-only mode splits the protected Codex program into its own child, 
   for (const modified of [
     Buffer.concat([protectedProgram, Buffer.from("\nvoid 0;")]),
     // The child travels compressed: one changed piece is another program.
-    Buffer.from(protectedProgram.toString().replace(piece, `${piece[0] === "A" ? "B" : "A"}${piece.slice(1)}`)),
+    Buffer.from(
+      protectedProgram
+        .toString()
+        .replace(piece, `${piece[0] === "A" ? "B" : "A"}${piece.slice(1)}`),
+    ),
     received(codexLaunchEntrypoint({ providerOwned: true, protected: true, explicitProxy: true })),
     received(codexLaunchEntrypoint({ providerOwned: false, protected: true, withNode: true })),
   ]) {
-    assert.throws(() => splitStockCommand(modified), /unrecognized_combined_workspace_node_command/);
+    assert.throws(
+      () => splitStockCommand(modified),
+      /unrecognized_combined_workspace_node_command/,
+    );
   }
   const twice = `${protectedProgram.toString()}\n    args: ["-e", "x", "y"],\n`;
   assert.throws(() => nestedChildArguments(twice), /unrecognized_combined_workspace_node_command/);
-  assert.throws(() => nestedChildArguments("const a = 1;\n"), /unrecognized_combined_workspace_node_command/);
+  assert.throws(
+    () => nestedChildArguments("const a = 1;\n"),
+    /unrecognized_combined_workspace_node_command/,
+  );
 });
 
 test("the file-only mode refuses modified stock commands and replacement mounts", () => {

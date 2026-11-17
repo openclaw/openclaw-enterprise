@@ -21,13 +21,21 @@ const plan = gitPlan({
 test("the scripted dry-run model asks only for stock git and gh against GitHub's canonical URLs", () => {
   for (const step of GIT_STEPS) {
     const command = gitCommand(plan, nonce, step);
-    assert.doesNotMatch(command, /insteadOf|credential\.|helper|askpass|auth login|token=|\/draft-pull/i);
+    assert.doesNotMatch(
+      command,
+      /insteadOf|credential\.|helper|askpass|auth login|token=|\/draft-pull/i,
+    );
     for (const url of command.match(/https:\/\/[^\s]+/g) ?? []) {
       assert.match(url, /^https:\/\/github\.com\/example\/(?:review|other)\.git$/);
     }
-    assert.ok(gitPromptFor(nonce, step).endsWith(`${step}: run the operator-scripted repository step.`));
+    assert.ok(
+      gitPromptFor(nonce, step).endsWith(`${step}: run the operator-scripted repository step.`),
+    );
   }
-  assert.match(gitCommand(plan, nonce, "push"), /git push https:\/\/github\.com\/example\/review\.git HEAD:refs\/heads\/review\/agent/);
+  assert.match(
+    gitCommand(plan, nonce, "push"),
+    /git push https:\/\/github\.com\/example\/review\.git HEAD:refs\/heads\/review\/agent/,
+  );
   assert.match(
     gitCommand(plan, nonce, "draft"),
     /gh pr create --draft --repo example\/review --head review\/agent --base main/,
@@ -37,9 +45,15 @@ test("the scripted dry-run model asks only for stock git and gh against GitHub's
   assert.match(placeholders, /printf %s "\$v" \| sha256sum \| cut -c1-16/);
   assert.equal(placeholders.split('"$v"').length, 3, "the value is only tested and hashed");
   assert.doesNotMatch(placeholders, /echo "?\$v|\$GITHUB_TOKEN/);
-  assert.throws(() => gitPlan({ ...plan, repository: "example/review; curl x" }));
-  assert.throws(() => gitPlan({ ...plan, branch: "a/../b" }));
-  assert.throws(() => gitPlan({ ...plan, otherRepository: plan.repository }));
+  assert.throws(() => gitPlan({ ...plan, repository: "example/review; curl x" }), {
+    message: "Use plain repository names and branch names.",
+  });
+  assert.throws(() => gitPlan({ ...plan, branch: "a/../b" }), {
+    message: "Use plain repository names and branch names.",
+  });
+  assert.throws(() => gitPlan({ ...plan, otherRepository: plan.repository }), {
+    message: "Use plain repository names and branch names.",
+  });
 });
 
 test("the dry-run result line carries the exit code and Box's refusal code only", () => {
@@ -55,20 +69,24 @@ test("the dry-run result line carries the exit code and Box's refusal code only"
     `BOX_GIT_REPRO_RESULT ${nonce} other-repository exit=128 refusal=request_not_allowed`,
   );
   assert.equal(gitOutcome("no header"), undefined);
-  assert.equal(gitAnswerFor(nonce, "push", undefined), `BOX_GIT_REPRO_RESULT ${nonce} push unparsed`);
+  assert.equal(
+    gitAnswerFor(nonce, "push", undefined),
+    `BOX_GIT_REPRO_RESULT ${nonce} push unparsed`,
+  );
 });
 
 test("only the latest user prompt picks a step; an ordinary follow-up gets a plain reply", async () => {
-  const { controlledGitModelRequests, gitPromptFor: promptFor } = await import(
-    "../../deploy/examples/strands-box/git/controlled-git-model.ts"
-  );
+  const { controlledGitModelRequests, gitPromptFor: promptFor } =
+    await import("../../deploy/examples/strands-box/git/controlled-git-model.ts");
   const rows: Record<string, unknown>[] = [];
   const handler = controlledGitModelRequests(nonce, plan, (row) => rows.push(row), {
     address: "10.0.0.9",
     authorization: "Bearer marker",
   });
   const call = async (input: unknown[]) => {
-    const body = Buffer.from(JSON.stringify({ model: "gpt-5", input, tools: [{ name: "exec_command" }] }));
+    const body = Buffer.from(
+      JSON.stringify({ model: "gpt-5", input, tools: [{ name: "exec_command" }] }),
+    );
     const req = Object.assign(
       (async function* () {
         yield body;
@@ -94,7 +112,9 @@ test("only the latest user prompt picks a step; an ordinary follow-up gets a pla
         return true;
       },
       end(chunk?: string) {
-        if (chunk) text += chunk;
+        if (chunk) {
+          text += chunk;
+        }
       },
       destroy() {},
     };
@@ -102,11 +122,20 @@ test("only the latest user prompt picks a step; an ordinary follow-up gets a pla
     return { status, text };
   };
   const user = (text: string) => ({ role: "user", content: [{ type: "input_text", text }] });
-  const first = await call([user("<environment_context>x</environment_context>"), user(promptFor(nonce, "push"))]);
+  const first = await call([
+    user("<environment_context>x</environment_context>"),
+    user(promptFor(nonce, "push")),
+  ]);
   assert.equal(first.status, 200);
   assert.match(first.text, /exec_command/);
-  assert.deepEqual(rows.map((row) => [row.stage, row.step]), [["tool_intent", "push"]]);
-  const later = await call([user(promptFor(nonce, "push")), user("ordinary message after withdrawal")]);
+  assert.deepEqual(
+    rows.map((row) => [row.stage, row.step]),
+    [["tool_intent", "push"]],
+  );
+  const later = await call([
+    user(promptFor(nonce, "push")),
+    user("ordinary message after withdrawal"),
+  ]);
   assert.equal(later.status, 200);
   assert.doesNotMatch(later.text, /exec_command/);
   assert.match(later.text, /READY/);
@@ -115,25 +144,38 @@ test("only the latest user prompt picks a step; an ordinary follow-up gets a pla
 
 test("the admission checks: one permitted program and tamper lists decided command by command", () => {
   assert.equal(gitCommand(plan, nonce, "verifier"), "/opt/demo/verifier/oce-workspace-verifier");
-  for (const step of ["tamper-config", "tamper-credential", "tamper-interpreter", "tamper-forge"] as const) {
+  for (const step of [
+    "tamper-config",
+    "tamper-credential",
+    "tamper-interpreter",
+    "tamper-forge",
+  ] as const) {
     const parts = gitCommand(plan, nonce, step).split("; ");
     assert.ok(parts.length >= 3, step);
     assert.equal(parts.at(-1), `echo ${step}-a1a1a1a1a1a1`);
   }
-  assert.match(gitCommand(plan, nonce, "tamper-credential"), /rm \/home\/node\/\.oce-native-hooks\/\*\.json; /);
+  assert.match(
+    gitCommand(plan, nonce, "tamper-credential"),
+    /rm \/home\/node\/\.oce-native-hooks\/\*\.json; /,
+  );
   assert.match(gitCommand(plan, nonce, "tamper-credential"), /ln -s /);
-  assert.match(gitCommand(plan, nonce, "tamper-forge"), /--event permission_request --timeout 5000 <<< /);
+  assert.match(
+    gitCommand(plan, nonce, "tamper-forge"),
+    /--event permission_request --timeout 5000 <<< /,
+  );
 });
 
 test("the hook checks: a marker write and one no-progress call the dry-run model repeats", () => {
-  assert.match(gitCommand(plan, nonce, "touch"), /^printf '%s\\n' (?:a1)+ > \/home\/node\/workspace\/x5-touch-a1a1a1a1a1a1\.txt && echo wrote$/);
+  assert.match(
+    gitCommand(plan, nonce, "touch"),
+    /^printf '%s\\n' (?:a1)+ > \/home\/node\/workspace\/x5-touch-a1a1a1a1a1a1\.txt && echo wrote$/,
+  );
   assert.equal(gitCommand(plan, nonce, "gateway-loop"), "printf x5-loop-a1a1a1a1a1a1");
 });
 
 test("the outside-write step uses Codex's own patch tool to add one file under the Harness home", async () => {
-  const { controlledGitModelRequests, OUTSIDE_WRITE_PATH, outsideWritePatch } = await import(
-    "../../deploy/examples/strands-box/git/controlled-git-model.ts"
-  );
+  const { controlledGitModelRequests, OUTSIDE_WRITE_PATH, outsideWritePatch } =
+    await import("../../deploy/examples/strands-box/git/controlled-git-model.ts");
   assert.equal(OUTSIDE_WRITE_PATH, "/home/node/outside-workspace-check.txt");
   const patch = outsideWritePatch(nonce);
   assert.equal(
@@ -151,7 +193,12 @@ test("the outside-write step uses Codex's own patch tool to add one file under t
     const body = Buffer.from(
       JSON.stringify({
         model: "gpt-5",
-        input: [{ role: "user", content: [{ type: "input_text", text: gitPromptFor(nonce, "outside-write") }] }],
+        input: [
+          {
+            role: "user",
+            content: [{ type: "input_text", text: gitPromptFor(nonce, "outside-write") }],
+          },
+        ],
         tools,
       }),
     );
@@ -188,9 +235,8 @@ test("the outside-write step uses Codex's own patch tool to add one file under t
 
 test("with key digests the dry-run model accepts only those bearers and records each digest, never a key", async () => {
   const { createHash } = await import("node:crypto");
-  const { bearerDigest, controlledGitModelRequests } = await import(
-    "../../deploy/examples/strands-box/git/controlled-git-model.ts"
-  );
+  const { bearerDigest, controlledGitModelRequests } =
+    await import("../../deploy/examples/strands-box/git/controlled-git-model.ts");
   const sha = (value: string) => createHash("sha256").update(value).digest("hex");
   const key = `sk-test-${"k".repeat(40)}`;
   const rotated = `sk-test-${"r".repeat(40)}`;
@@ -265,14 +311,16 @@ test("the model-sibling step posts only to the planned URLs, with the placeholde
     "https://model.example.test:8444/route/v1/responses/x",
   ];
   const command = gitCommand(gitPlan({ ...plan, modelSiblings: siblings }), nonce, "model-sibling");
-  for (const url of siblings) assert.equal(command.split(` ${url}`).length, 3, "printed and posted once");
-  assert.deepEqual(
-    [...new Set(command.match(/https:\/\/[^\s"]+/g))].sort(),
-    [...siblings].sort(),
-  );
+  for (const url of siblings) {
+    assert.equal(command.split(` ${url}`).length, 3, "printed and posted once");
+  }
+  assert.deepEqual([...new Set(command.match(/https:\/\/[^\s"]+/g))].sort(), [...siblings].sort());
   assert.match(command, /-H "Authorization: Bearer \$k"/);
   assert.match(command, /-o \/dev\/null/);
-  assert.doesNotMatch(command, /echo[^;]*\$k\b|printf[^;]*\$k\b/, "the placeholder is never printed");
+  // The placeholder appears only in the case test and the Authorization headers.
+  assert.equal(command.match(/\$k\b/g)?.length, 1 + siblings.length);
+  assert.equal(command.split('"$k"').length, 2);
+  assert.equal(command.split('Bearer $k"').length, 1 + siblings.length);
   for (const bad of [
     ["http://model.example.test:8444/v1/responses"],
     ["https://model.example.test/v1/responses"],
@@ -282,30 +330,48 @@ test("the model-sibling step posts only to the planned URLs, with the placeholde
     [],
     Array(9).fill(siblings[0]),
   ]) {
-    assert.throws(() => gitPlan({ ...plan, modelSiblings: bad }), /modelSiblings/);
+    assert.throws(() => gitPlan({ ...plan, modelSiblings: bad }), {
+      message: "modelSiblings must list one to eight plain https URLs.",
+    });
   }
 });
 
 test("with a path prefix the dry-run model also serves the Responses path below it, and nothing next to it", async () => {
   const { createHash } = await import("node:crypto");
-  const { controlledGitModelRequests } = await import(
-    "../../deploy/examples/strands-box/git/controlled-git-model.ts"
-  );
+  const { controlledGitModelRequests } =
+    await import("../../deploy/examples/strands-box/git/controlled-git-model.ts");
   const key = `sk-test-${"p".repeat(40)}`;
   const sha = createHash("sha256").update(key).digest("hex");
   const rows: Record<string, unknown>[] = [];
-  const peer = { address: "10.0.0.9", bearerSha256: [sha], requests: (row: Record<string, unknown>) => rows.push(row) };
+  const peer = {
+    address: "10.0.0.9",
+    bearerSha256: [sha],
+    requests: (row: Record<string, unknown>) => rows.push(row),
+  };
   for (const bad of ["route", "/route/", "/a//b", "/../v1", "/%2e", "/a/b/c/d/e"]) {
-    assert.throws(() => controlledGitModelRequests(nonce, plan, () => {}, { ...peer, pathPrefix: bad }), /pathPrefix/);
+    assert.throws(
+      () => controlledGitModelRequests(nonce, plan, () => {}, { ...peer, pathPrefix: bad }),
+      { message: "pathPrefix must be plain path segments." },
+    );
   }
-  const handler = controlledGitModelRequests(nonce, plan, () => {}, { ...peer, pathPrefix: "/route" });
+  const handler = controlledGitModelRequests(nonce, plan, () => {}, {
+    ...peer,
+    pathPrefix: "/route",
+  });
   const call = async (url: string) => {
-    const body = Buffer.from(JSON.stringify({ model: "gpt-5", input: [{ role: "user", content: "hello" }] }));
+    const body = Buffer.from(
+      JSON.stringify({ model: "gpt-5", input: [{ role: "user", content: "hello" }] }),
+    );
     const req = Object.assign(
       (async function* () {
         yield body;
       })(),
-      { socket: { remoteAddress: "10.0.0.9" }, method: "POST", url, headers: { authorization: `Bearer ${key}` } },
+      {
+        socket: { remoteAddress: "10.0.0.9" },
+        method: "POST",
+        url,
+        headers: { authorization: `Bearer ${key}` },
+      },
     );
     let status = 200;
     const res = {
@@ -324,7 +390,13 @@ test("with a path prefix the dry-run model also serves the Responses path below 
   };
   assert.equal(await call("/route/v1/responses"), 200);
   assert.equal(await call("/v1/responses"), 200);
-  for (const sibling of ["/route/v1/responses/x", "/routex/v1/responses", "/route/v2/responses", "/other/v1/responses", "/route/v1/responses?x=1"]) {
+  for (const sibling of [
+    "/route/v1/responses/x",
+    "/routex/v1/responses",
+    "/route/v2/responses",
+    "/other/v1/responses",
+    "/route/v1/responses?x=1",
+  ]) {
     assert.equal(await call(sibling), 404, sibling);
   }
   assert.deepEqual(
