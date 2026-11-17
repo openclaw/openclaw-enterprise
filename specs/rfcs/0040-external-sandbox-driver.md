@@ -201,7 +201,7 @@ sequenceDiagram
   H-->>S: reserved endpoint, generation, credential digest
   C->>C: pin endpoint, mount binding, wait for Gateway acknowledgment
   C->>S: enrollHarness with signed release
-  S->>H: release; Codex starts
+  S->>H: release, Codex starts
   G->>H: WSS turn (pinned CA, generation header)
   H->>P: held git push, execution credential
   P->>T: requests.authorize after digest + execution check
