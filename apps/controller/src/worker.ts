@@ -915,6 +915,10 @@ function agentWorkLogFields(claim: ClaimedWork) {
   };
 }
 
+// The worker health check's steps, in order: the work queue read, the repository credential
+// broker's admission readiness, and the readiness report (the readiness file).
+type HealthDependency = "work-queue" | "repository-credential-broker" | "readiness-report";
+
 function workerPassErrorCode(error: unknown): string {
   if (error instanceof WorkClaimLostError) {
     return "CLAIM_LOST";
@@ -1249,6 +1253,9 @@ export class ControllerWorker {
   private closing = false;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
+  // Set once the first health check after start has ended: only that check may meet a
+  // dependency that is still starting, such as the broker sidecar's control socket.
+  private firstHealthCheckEnded = false;
   private lastProgressAt = 0;
   private pendingProgress = false;
   /**
@@ -1826,17 +1833,31 @@ export class ControllerWorker {
     }
     this.lastHealthAt = now;
     this.pendingHealth = (async () => {
-      const pending = await this.queue.pending();
-      await this.nativeRepositorySender?.checkAdmissionReady?.(AbortSignal.timeout(2000));
-      await this.onHealthy?.();
-      this.emit({ event: "worker.health", status: "ready", pending });
-    })()
-      .catch(() => {
-        this.emit({ event: "worker.error", code: "HEALTH_UNAVAILABLE" });
-      })
-      .finally(() => {
-        this.pendingHealth = undefined;
-      });
+      let dependency: HealthDependency = "work-queue";
+      try {
+        const pending = await this.queue.pending();
+        dependency = "repository-credential-broker";
+        await this.nativeRepositorySender?.checkAdmissionReady?.(AbortSignal.timeout(2000));
+        dependency = "readiness-report";
+        await this.onHealthy?.();
+        this.emit({ event: "worker.health", status: "ready", pending });
+      } catch (error) {
+        // Name the step that failed and the error's class, never its message, which can carry
+        // hosts or connection details (finding 3259). The first check after start only warns:
+        // a sidecar can still be starting. Every later failure is an error, so an outage that
+        // persists is reported as one by the next check.
+        this.emit({
+          event: this.firstHealthCheckEnded ? "worker.error" : "worker.health-warning",
+          code: "HEALTH_UNAVAILABLE",
+          dependency,
+          cause: loggedErrorClass(error),
+        });
+      } finally {
+        this.firstHealthCheckEnded = true;
+      }
+    })().finally(() => {
+      this.pendingHealth = undefined;
+    });
     return this.pendingHealth;
   }
 
