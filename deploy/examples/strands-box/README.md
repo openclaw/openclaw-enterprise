@@ -16,6 +16,8 @@ It stops at a held host response. The [Git sender tests](../../../tests/conforma
 use a local Git server. These checks do not establish an installed Box chat
 or a pull request on GitHub.
 
+Read the [known gaps](KNOWN-GAPS.md) before deploying.
+
 ## Prepare the host and verify Box
 
 Use a dedicated Linux ARM64 host, such as a Graviton EC2 instance, with a nonroot

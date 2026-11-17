@@ -34,6 +34,12 @@ export interface Pending {
   };
   /** The operator approves Box egress to the fixed-repository sender with the exact plan. */
   repositorySender?: { readonly url: string; readonly address: string };
+  /** The exact model route this approval admits: name, pinned address and route CA digest. */
+  controlledInference?: {
+    readonly url: string;
+    readonly address: string;
+    readonly caSha256?: string;
+  };
   counts: { environment: number; files: number; mounts: number };
   controller: ControllerIdentity;
 }

@@ -6,8 +6,17 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
-import { CONTROLLED_INFERENCE_MARKER, parseRoute, REPOSITORY_SENDER_BEARER } from "./egress.ts";
-import type { EgressRoute } from "./egress.ts";
+import {
+  assertPinnedResolution,
+  assertUpstreamCaScope,
+  CONTROLLED_INFERENCE_MARKER,
+  loadUpstreamCa,
+  parseRoute,
+  REPOSITORY_SENDER_BEARER,
+  routeView,
+  sameRouteView,
+} from "./egress.ts";
+import type { EgressRoute, RouteView, UpstreamCa } from "./egress.ts";
 import {
   ensureEmpty,
   fields,
@@ -89,6 +98,7 @@ interface InstalledConfig extends HostConfig {
   controlledInference?: EgressRoute;
   /** Box egress to the Worker's fixed-repository sender, authenticated by a phantom bearer. */
   repositorySender?: EgressRoute;
+  upstreamCa?: UpstreamCa;
 }
 
 export interface RecordView {
@@ -117,6 +127,7 @@ export interface RecordView {
     startupId?: string;
     startupSha256?: string;
   };
+  controlledInference?: RouteView;
 }
 
 interface LaunchPlan extends StartInput {
@@ -251,6 +262,24 @@ export function verifyRelease(
     throw new Error("release_outside_held_execution");
   }
   return { startupId, startupSha256: digest(release) };
+}
+
+/**
+ * The Driver states the exact route it was configured with. The host's own route stays the only
+ * one Box receives; a missing, extra or different statement refuses before anything starts.
+ */
+export function confirmControlledInference(
+  route: EgressRoute | undefined,
+  needed: boolean,
+  stated: unknown,
+): void {
+  if (needed !== (stated !== undefined)) throw new Error("controlled_inference_unconfirmed");
+  if (needed && (route === undefined || !sameRouteView(stated, route)))
+    throw new Error("controlled_inference_route_mismatch");
+}
+
+function inferenceRoute(plan: LaunchPlan): EgressRoute | undefined {
+  return plan.egress?.find((route) => route.kind === "controlled-inference");
 }
 
 function approvedWorkspaceNode(plan: LaunchPlan): Pending["workspaceNode"] {
@@ -472,6 +501,7 @@ function installedConfig(value: unknown): InstalledConfig {
     "separateWorkspaceNode",
     "controlledInference",
     "repositorySender",
+    "upstreamCa",
   ]);
   if (config.workspace !== WORKSPACE) throw new Error("unsupported_workspace_path");
   const endpoint = object(data.endpoint);
@@ -580,6 +610,15 @@ function installedConfig(value: unknown): InstalledConfig {
       }
     }
   }
+  const controlledInference =
+    data.controlledInference === undefined
+      ? undefined
+      : parseRoute(data.controlledInference, "controlled-inference");
+  const upstreamCa = data.upstreamCa === undefined ? undefined : loadUpstreamCa(data.upstreamCa);
+  assertUpstreamCaScope(
+    upstreamCa,
+    boxDialedRoutes({ workspaceNode, separateWorkspaceNode, controlledInference }),
+  );
   return {
     ...config,
     owner: ownerPin,
@@ -598,13 +637,30 @@ function installedConfig(value: unknown): InstalledConfig {
       : { workspaceSetupId: string(data.workspaceSetupId) }),
     ...(workspaceNode === undefined ? {} : { workspaceNode }),
     ...(separateWorkspaceNode === undefined ? {} : { separateWorkspaceNode }),
-    ...(data.controlledInference === undefined
-      ? {}
-      : { controlledInference: parseRoute(data.controlledInference, "controlled-inference") }),
+    ...(controlledInference === undefined ? {} : { controlledInference }),
+    ...(upstreamCa === undefined ? {} : { upstreamCa }),
     ...(data.repositorySender === undefined
       ? {}
       : { repositorySender: parseRoute(data.repositorySender, "repository-sender") }),
   };
+}
+
+/**
+ * Every configured route that Box itself may dial: the workspace node only when it runs inline
+ * (a separate file node dials from outside Box), and the controlled model. A new route kind that
+ * Box dials belongs here, and opts in to an upstream CA bundle by declaring its digest.
+ */
+export function boxDialedRoutes(config: {
+  readonly workspaceNode?: EgressRoute | undefined;
+  readonly separateWorkspaceNode?: unknown;
+  readonly controlledInference?: EgressRoute | undefined;
+}): EgressRoute[] {
+  return [
+    ...(config.workspaceNode !== undefined && config.separateWorkspaceNode === undefined
+      ? [config.workspaceNode]
+      : []),
+    ...(config.controlledInference === undefined ? [] : [config.controlledInference]),
+  ];
 }
 
 // Keep these exact literals pinned against the real Compute producer in conformance.
@@ -840,12 +896,12 @@ function admitted(
     (releasePublicKey === undefined || !observed.has(ENROLLMENT_REVISION_ENV))
   )
     throw new Error("unadmitted_enrollment_environment");
-  if (
-    phase === "start" &&
-    (needsControlledInference !== (request.controlledInference === true) ||
-      (request.controlledInference !== undefined && request.controlledInference !== true))
-  )
-    throw new Error("controlled_inference_unconfirmed");
+  if (phase === "start")
+    confirmControlledInference(
+      config.controlledInference,
+      needsControlledInference,
+      request.controlledInference,
+    );
   const egress: EgressRoute[] = [];
   const setupCode = request.workspaceNodeSetupCode;
   let expiresAt: number | undefined;
@@ -995,6 +1051,7 @@ function admitted(
     readOnly: [],
     writable: [...mounts.keys(), ...config.writableState],
     egress,
+    ...(config.upstreamCa === undefined ? {} : { upstreamCa: config.upstreamCa }),
     ...(separateNode === undefined && typeof setupCode === "string" && expiresAt !== undefined
       ? { workspaceNodeSetupCode: setupCode, workspaceNodeSetupExpiresAt: expiresAt }
       : {}),
@@ -1036,7 +1093,12 @@ function reply(
   body?:
     | RecordView
     | { error: string }
-    | { state: "held" | "approved"; owner: Owner; requirementsDigest: string },
+    | {
+        state: "held" | "approved";
+        owner: Owner;
+        requirementsDigest: string;
+        controlledInference?: RouteView;
+      },
 ): void {
   response.writeHead(code, {
     "Cache-Control": "no-store",
@@ -1278,43 +1340,60 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         requirements: data.requirements,
         ...(data.workspaceVolume === undefined ? {} : { workspaceVolume: data.workspaceVolume }),
       });
-      if (
+      const conflicting = () =>
         pending !== undefined &&
         (!sameOwner(pending.view.owner, supplied) ||
           pending.view.requirementsDigest !== requirementsDigest ||
-          pending.requirements !== exact)
-      ) {
+          pending.requirements !== exact);
+      if (conflicting()) {
         reply(response, 409, { error: "pending_admission_conflict" });
         return;
       }
       if (pending === undefined) {
         const plan = admitted(config, supplied, data, "observe");
-        const workspaceNode = approvedWorkspaceNode(plan);
-        const view: Pending = {
-          version: 1,
-          owner: supplied,
-          requirementsDigest,
-          profileSha256: profileDigest(data.requirements),
-          image: config.image,
-          commandSha256: digest(plan.command),
-          ...(workspaceNode === undefined ? {} : { workspaceNode }),
-          ...(config.repositorySender === undefined
-            ? {}
-            : {
-                repositorySender: {
-                  url: config.repositorySender.url,
-                  address: config.repositorySender.address,
-                },
-              }),
-          counts: {
-            environment: Object.keys(plan.environment).length,
-            files: plan.files?.length ?? 0,
-            mounts: config.mountIdentities.size,
-          },
-          controller,
-        };
-        durableRecord(config.runtimeDir, "pending.json", view);
-        pending = { view, requirements: exact };
+        const inference = inferenceRoute(plan);
+        if (inference !== undefined) {
+          await assertPinnedResolution(inference);
+          if (shuttingDown) {
+            reply(response, 503, { error: "host_stopping" });
+            return;
+          }
+          // Another request may have recorded the pending admission during the lookup: an
+          // identical request shares it, any other conflicts.
+          if (conflicting()) {
+            reply(response, 409, { error: "pending_admission_conflict" });
+            return;
+          }
+        }
+        if (pending === undefined) {
+          const workspaceNode = approvedWorkspaceNode(plan);
+          const view: Pending = {
+            version: 1,
+            owner: supplied,
+            requirementsDigest,
+            profileSha256: profileDigest(data.requirements),
+            image: config.image,
+            commandSha256: digest(plan.command),
+            ...(workspaceNode === undefined ? {} : { workspaceNode }),
+            ...(inference === undefined ? {} : { controlledInference: routeView(inference) }),
+            ...(config.repositorySender === undefined
+              ? {}
+              : {
+                  repositorySender: {
+                    url: config.repositorySender.url,
+                    address: config.repositorySender.address,
+                  },
+                }),
+            counts: {
+              environment: Object.keys(plan.environment).length,
+              files: plan.files?.length ?? 0,
+              mounts: config.mountIdentities.size,
+            },
+            controller,
+          };
+          durableRecord(config.runtimeDir, "pending.json", view);
+          pending = { view, requirements: exact };
+        }
       }
       const allowed =
         config.approvalDir === undefined || isApproved(config.approvalDir, pending.view);
@@ -1328,6 +1407,9 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
               workspaceNodeMode: pending.view.workspaceNode.mode,
               workspaceVolume: pending.view.workspaceNode.workspaceVolume,
             }),
+        ...(pending.view.controlledInference === undefined
+          ? {}
+          : { controlledInference: pending.view.controlledInference }),
       });
       return;
     }
@@ -1379,6 +1461,22 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         reply(response, 409, { error: "owner_admission_not_approved" });
         return;
       }
+      // Resolve again just before the one start attempt; Box pins the address it dials.
+      // Nothing below this lookup awaits, so the checks after it hold until Box starts.
+      if (pending.view.controlledInference !== undefined) {
+        if (config.controlledInference === undefined)
+          throw new Error("controlled_inference_admitted_route_changed");
+        await assertPinnedResolution(config.controlledInference);
+        if (shuttingDown || attempted || current !== undefined) {
+          reply(response, 409, { error: "execution_already_attempted" });
+          return;
+        }
+        // The operator may withdraw approval.json while the lookup runs.
+        if (config.approvalDir !== undefined && !isApproved(config.approvalDir, pending.view)) {
+          reply(response, 409, { error: "owner_admission_not_approved" });
+          return;
+        }
+      }
       const bearer = data.repositorySenderBearer;
       const input = withRepositorySender(
         config.repositorySender,
@@ -1388,6 +1486,11 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       const workspaceNode = approvedWorkspaceNode(input);
       if (workspaceNode?.planSha256 !== pending.view.workspaceNode?.planSha256) {
         throw new Error("file_node_admitted_plan_changed");
+      }
+      const inference = inferenceRoute(input);
+      const inferenceView = inference === undefined ? undefined : routeView(inference);
+      if (JSON.stringify(inferenceView) !== JSON.stringify(pending.view.controlledInference)) {
+        throw new Error("controlled_inference_admitted_route_changed");
       }
       const view: RecordView = {
         owner: supplied,
@@ -1410,6 +1513,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
               workspaceNodeMode: workspaceNode.mode,
               workspaceVolume: workspaceNode.workspaceVolume,
             }),
+        ...(inferenceView === undefined ? {} : { controlledInference: inferenceView }),
       };
       attempted = true;
       reserveExecution(config.runtimeDir, view);

@@ -65,7 +65,8 @@ drivers:
           podLabels:
             app.kubernetes.io/name: occ-worker
       controlledInference:
-        modelBaseUrl: https://model.pilot.svc.cluster.local/v1
+        modelBaseUrl: https://model.pilot.example.com:8444/v1
+        address: 10.0.0.9
 ```
 
 Use an existing ready OCE Agent Namespace. On a fresh control plane,
@@ -91,12 +92,46 @@ The socket and its parent directory must be owner-only and share the same
 owner. Do not mount the control socket into the relay or the workload.
 
 For a controlled inference fixture, set Compute's model provider to the same
-private HTTPS `/v1` endpoint. Save an ordinary API-key binding with the public
+HTTPS `/v1` origin. Save an ordinary API-key binding with the public
 marker `openclaw-strands-controlled-inference-v1`. The fixture origin must not
 require or authorize any real credential. The Driver checks the exact
-revision-owned projection and the admitted runtime manifest, and sends only a
-Boolean to the host. It never passes a model key or PAT to Box. Without the
-fixture selection it refuses model Secret projections.
+revision-owned projection and the admitted runtime manifest, and sends only the
+nonsecret route described below to the host. It never passes a model key or PAT
+to Box. Without the fixture selection it refuses model Secret projections.
+
+### Controlled inference route
+
+Box verifies the model endpoint's certificate against its built-in public
+roots, so a private IPv4 or `.svc.cluster.local` name cannot complete TLS.
+Name the endpoint with an operator DNS name and pin one private address:
+
+| Field | Value |
+|---|---|
+| `modelBaseUrl` | `https://<name or private IPv4>[:<port>]/v1`, as Compute normalizes it: lowercase, no trailing slash, no `:443` |
+| `address` | The private IPv4 address the name resolves to on the Box host. Required for a name |
+| `caSha256` | Only with a host upstream CA bundle: its SHA-256 |
+
+Set the same route here, in Compute's model provider `baseUrl`, and in the
+host's `controlledInference` (`url`, `address`, `caSha256`). Approval of
+`pending.json` admits that route. The Driver refuses a different host route
+before approval, Secret reads or relay creation, and on every later read; the
+host refuses a different Driver route before Box starts, and a name its
+resolver maps anywhere but the pinned address. Box's policy then permits only
+the name and port, then only the pinned `ip4`, never IPv6.
+
+For the certificate, use one of:
+
+- **A publicly trusted certificate** for the name. Resolve the name to the
+  pinned address on the Box host through a private zone or a root-owned
+  `/etc/hosts` entry. The name appears in Certificate Transparency logs.
+- **An upstream CA bundle**: host `upstreamCa` is `{ "file", "sha256" }`, CA
+  certificates only, owned by the host owner or root, not group- or
+  world-writable. The host names a verified copy in Box's private configuration
+  directory with the `upstream-ca-file` key of strands-agents/box#147, which
+  stock Box v0.2.2 refuses. Box trusts the bundle for every upstream it dials,
+  so every route Box dials must set `caSha256` to its digest or the host refuses
+  to start. An inline workspace node must opt in; a separate file node is
+  unaffected. Use a dedicated CA.
 
 ### Before enabling the Worker control claim
 

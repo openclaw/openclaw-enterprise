@@ -801,7 +801,7 @@ test(
     // The host no longer reports the execution: the next pass retires the recipient.
     f.state.withdrawn = false;
     f.host.present = false;
-    await binding.reconcile(signal);
+    await binding.reconcile!(signal);
     assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
     assert.equal((await f.call("/draft-pull", { title: "Again" })).status, 403);
     assert.equal(f.origin.writes.length, writes);
