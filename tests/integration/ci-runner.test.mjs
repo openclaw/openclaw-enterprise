@@ -1,3 +1,5 @@
+// @ts-check
+
 import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -23,13 +25,14 @@ import { registerProvenanceCases } from "./ci-runner-provenance-cases.ts";
 import { checkReporterRedaction } from "./ci-runner-reporter-redaction-case.ts";
 import { registerReporterCases } from "./ci-runner-reporter-cases.ts";
 import { registerResourceDiagnosticsCases } from "./ci-runner-resource-diagnostics-cases.ts";
+import {
+  parseRunnerRecord,
+  runnerArray,
+  runnerRecord,
+  runnerText,
+} from "./ci-runner-result-records.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-
-// The four environment cases still use the original fixture adapter.
-function run(root, args, env = {}, options = {}) {
-  return runRunnerSync(args, env, options);
-}
 
 registerProvenanceCases();
 
@@ -50,8 +53,15 @@ test("gateway routing preparation preserves infrastructure env without overridin
     },
     execFile: async (command, args) => {
       if (command === "openssl") {
-        await writeFile(args[args.indexOf("-out") + 1], "synthetic certificate");
-        await writeFile(args[args.indexOf("-keyout") + 1], "synthetic key");
+        const certificatePath = args.find((_, index) => args[index - 1] === "-out");
+        const keyPath = args.find((_, index) => args[index - 1] === "-keyout");
+        assert.ok(
+          certificatePath && !certificatePath.startsWith("-"),
+          "expected -out certificate path",
+        );
+        assert.ok(keyPath && !keyPath.startsWith("-"), "expected -keyout key path");
+        await writeFile(certificatePath, "synthetic certificate");
+        await writeFile(keyPath, "synthetic key");
       } else {
         assert.deepEqual(args.slice(0, 4), [
           "--kubeconfig",
@@ -65,9 +75,11 @@ test("gateway routing preparation preserves infrastructure env without overridin
   });
 
   // Shared routing preparation must leave opt-in selection to the runner's lane/file inputs.
-  assert.equal(prepared.env.OCC_TEST_SLACK_LIVE, undefined);
+  /** @type {NodeJS.ProcessEnv} */
+  const env = prepared.env;
+  assert.equal(env.OCC_TEST_SLACK_LIVE, undefined);
   const caDirectory = join(directory, "gateway-routing", "test-ca");
-  assert.deepEqual(prepared.env, {
+  assert.deepEqual(env, {
     OCC_TEST_GATEWAY_ROUTING_REAL: "1",
     OCC_TEST_ENVOY_GATEWAY_NAMESPACE: "envoy-gateway-system",
     OCC_TEST_CERT_MANAGER_NAMESPACE: "cert-manager",
@@ -84,9 +96,11 @@ test("runner applies file environment over real preparation defaults without rep
   const first = "tests/integration/first.test.mjs";
   const second = "tests/integration/second.test.mjs";
   const laneName = "checks-baseline-2";
-  const lane = JSON.parse(
+  const baseline = parseRunnerRecord(
     await readFile(join(repositoryRoot, "scripts/ci/test-suites/checks-baseline-2.json"), "utf8"),
+    laneName,
   );
+  const lane = { env: runnerRecord(baseline.env, "baseline lane environment") };
   // Use the real no-infrastructure preparer, including its persisted lane state.
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
@@ -144,11 +158,16 @@ test("sibling keeps lane defaults", () => {
     },
   });
 
-  const result = run(root, laneArgs(root, laneName, statePath, resultsPath));
+  const result = runRunnerSync(laneArgs(root, laneName, statePath, resultsPath));
   assert.equal(result.status, 0, result.stderr);
-  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const summary = parseRunnerRecord(await readFile(resultsPath, "utf8"), "runner summary");
   assert.deepEqual(summary.counts, { passed: 2, failed: 0, skipped: 0, todo: 0, total: 2 });
-  assert.ok(summary.files.every((file) => file.cleanup.status === "passed"));
+  assert.ok(
+    runnerArray(summary.files, "result files").every((file) => {
+      const { cleanup } = runnerRecord(file, "result file");
+      return runnerRecord(cleanup, "file cleanup").status === "passed";
+    }),
+  );
   await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" });
 });
 
@@ -223,8 +242,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
     ].join("\n"),
   );
 
-  const result = run(
-    root,
+  const result = runRunnerSync(
     laneArgs(root, "isolated", "state/isolated.jsonl", "results/isolated.json"),
     {
       KEEP: "1",
@@ -248,9 +266,16 @@ registerOpenShellSelectionCases();
 
 test("QA lane forwards selected models and observer input and retains outcomes at the requested path", async (t) => {
   const root = await fixture(t);
-  const lane = JSON.parse(
+  const qaMatrix = parseRunnerRecord(
     await readFile(join(repositoryRoot, "scripts/ci/test-suites/qa-matrix.json"), "utf8"),
+    "QA matrix lane",
   );
+  const lane = {
+    ...qaMatrix,
+    requiredEnv: runnerArray(qaMatrix.requiredEnv, "requiredEnv").map((name) =>
+      runnerText(name, "required environment variable name"),
+    ),
+  };
   const artifacts = join(root, "evidence");
   await mkdir(artifacts);
   const file = "tests/integration/qa-inputs.test.mjs";
@@ -286,7 +311,7 @@ test("QA inputs", async () => {
     lanes: { "qa-matrix": { ...lane, files: [{ path: file }] } },
     groups: { qa: ["qa-matrix"] },
   });
-  const result = run(root, laneArgs(root, "qa-matrix", "state/qa.json", "results/qa.json"), {
+  const result = runRunnerSync(laneArgs(root, "qa-matrix", "state/qa.json", "results/qa.json"), {
     ...Object.fromEntries(lane.requiredEnv.map((name) => [name, "fixture-input"])),
     OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
     OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
