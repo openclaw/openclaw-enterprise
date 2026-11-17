@@ -74,7 +74,7 @@ complete [normal Namespace provisioning](../../../../docs/guides/deploy/producti
 without the Box control mount or an Agent deployment. Return the Worker to
 zero before the checks below. In the assigned Kubernetes namespace, create the [private relay Service](../ingress/service.yaml) and read its ClusterIP.
 Set Compute's `network.providerHarness` to that namespace, the allocated ClusterIP,
-port 8443, and the Service peer labels `app.kubernetes.io/name: box-harness-relay`
+port 8443, and the Service peer labels `box.openclaw.dev/component: harness-relay`
 and `box.openclaw.dev/installation: pilot`. Install the relay image at the
 configured digest. Use the [verified Worker control mount](worker-control.md#mount-the-empty-control-directory).
 To verify each selected Pod belongs to the relay Deployment, the Worker also needs

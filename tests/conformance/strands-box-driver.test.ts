@@ -154,8 +154,8 @@ function objectApi() {
         assert.equal(kind, "Pod");
         assert.ok(
           [
-            "app.kubernetes.io/name=box-harness-relay,box.openclaw.dev/installation=pilot",
-            "app.kubernetes.io/name=box-harness-relay,box.openclaw.dev/installation=pilot,openclaw.dev/namespace=ns_pilot",
+            "box.openclaw.dev/component=harness-relay,box.openclaw.dev/installation=pilot",
+            "box.openclaw.dev/component=harness-relay,box.openclaw.dev/installation=pilot,openclaw.dev/namespace=ns_pilot",
           ].includes(String(options.at(-1))),
         );
         return { items: relayPods };
@@ -230,7 +230,7 @@ async function fixture(
                 address: "10.1.1.1",
                 port: 8443,
                 podLabels: {
-                  "app.kubernetes.io/name": "box-harness-relay",
+                  "box.openclaw.dev/component": "harness-relay",
                   "box.openclaw.dev/installation": "pilot",
                 },
               },
@@ -390,6 +390,8 @@ async function fixture(
     credentialAttachments: [],
     loginMode: "api_key",
     labels: {
+      // Compute labels every Harness Deployment template with its workload name.
+      "app.kubernetes.io/name": "agent-pilot",
       "openclaw.dev/agent": revision.agentId,
       "openclaw.dev/revision": revision.id,
       "openclaw.dev/workload-role": "agent",
@@ -489,7 +491,7 @@ function servingRelay(kube: ReturnType<typeof objectApi>, name: string) {
       clusterIP: "10.1.1.1",
       clusterIPs: ["10.1.1.1"],
       selector: {
-        "app.kubernetes.io/name": "box-harness-relay",
+        "box.openclaw.dev/component": "harness-relay",
         "box.openclaw.dev/installation": "pilot",
       },
       ports: [{ name: "native-wss", protocol: "TCP", port: 8443, targetPort: 8443 }],
