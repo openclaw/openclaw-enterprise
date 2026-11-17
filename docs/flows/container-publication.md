@@ -82,8 +82,8 @@ docker build -f deploy/runtime/Dockerfile \
 
 `openclaw-bridge-tests` typechecks and tests bridge and CUA assembly inputs.
 Coverage includes native turn settlement, approval discovery after reconnect,
-HTTP rejection and native handoff during late writes. Failure blocks smoke and
-upload. Local builds can run independently.
+HTTP rejection, native handoff during late writes and revision-scoped restart
+resume. Failure blocks smoke and upload. Local builds can run independently.
 
 The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
 Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
@@ -314,6 +314,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-17 23:51: Bridge tests cover revision-scoped restart resume. (finding 3347)
 
 - 2026-11-14 22:54: Document native ZIP selection. (authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e - e2ca224aa9657568ded513872d2fe6315d8d5301)
 

@@ -64,6 +64,10 @@ and pairing recovery. Remove this bridge when the selected source provides that 
 The pin includes OpenClaw #197151: chat-only members can start an unused main conversation.
 The #200358 follow-up is still required; `openclaw-chat-absent-selected-agent.patch`
 binds empty-history proof to the selected Agent.
+`openclaw-restart-resume-scope.patch` adds `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`.
+Restart markers carry the scope, and only a Gateway with the same scope resumes them.
+Kubernetes and Docker Compute set it to the revision ID, so a stopped, replaced or
+deleted revision's cut turn never runs again (finding 3347). The build runs its cases.
 Provenance `patches` records each patch's SHA-256 in order; tests compare
 `scripts/build-runtime-assets.ts` with the Dockerfile.
 

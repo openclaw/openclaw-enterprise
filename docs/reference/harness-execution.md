@@ -284,7 +284,9 @@ A Preset is checked when a launch creates its Configuration.
   A successful probe establishes model access at startup only. SSH checks process
   readiness. Neither establishes that a fallback model works.
 - Retained gateway state does not guarantee recovery of an interrupted turn.
-  Dedicated restart acceptance remains incomplete. For the workload and storage
+  Dedicated restart acceptance remains incomplete. Only a restart of the same
+  revision resumes a turn; a stop, replacement or deletion ends it
+  ([stop and resume](agents/deployment.md#stop-and-resume)). For the workload and storage
   boundaries, see [runtime isolation](security/runtime-isolation.md#agent-runtime-isolation).
 - Docker Compute rejects all current Harness authentication bindings and cannot
   deploy a new Agent. See [Docker Compute](drivers/docker-compute.md).

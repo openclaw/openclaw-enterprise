@@ -67,6 +67,10 @@ const appliedPatches: readonly AppliedPatch[] = [
     file: "openclaw-chat-absent-selected-agent.patch",
     sha256: "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
   },
+  {
+    file: "openclaw-restart-resume-scope.patch",
+    sha256: "a6bdacc4bab1baa4343c3f50246ecc42209095bfe62a6dbbc0770721b3ab0376",
+  },
 ];
 const runtimePaths = [
   "dist",

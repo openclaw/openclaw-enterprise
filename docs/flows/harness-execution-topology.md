@@ -267,7 +267,11 @@ activation retries, then one status read per retry. That wait and the pairing wa
 early when other Work is claimable.
 
 On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
-removal before stopping the Harness, allowing active work to finish. Idle
+removal before stopping the Harness. The Gateway's graceful shutdown aborts
+active turns and records them for restart recovery under its
+`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, the revision ID. Only a Gateway of the
+same revision resumes them; a stop, replacement or deletion never does
+([stop and resume](../reference/agents/deployment.md#stop-and-resume)). Idle
 Gateways and pre-start wrappers exit promptly. Forced termination requires proof
 the previous owner stopped before retained state can be reused.
 [Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
@@ -358,6 +362,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-17 23:51: A turn cut by stop, replacement or deletion does not resume; the Gateway's restart recovery is scoped to its revision. (finding 3347)
 
 - 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
 
