@@ -1399,73 +1399,51 @@ function storedCopy<T>(value: T): Readonly<T> {
   return copy;
 }
 
+function copyStoredMap<K, V>(source: ReadonlyMap<K, V>): Map<K, Readonly<V>> {
+  const copy = new Map<K, Readonly<V>>();
+  for (const [key, value] of source) {
+    copy.set(key, storedCopy(value));
+  }
+  return copy;
+}
+
 function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
     installation:
       snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
-    namespaces: new Map(
-      Array.from(snapshot.namespaces, ([key, namespace]) => [key, storedCopy(namespace)]),
-    ),
-    configurations: new Map(
-      Array.from(snapshot.configurations, ([key, configuration]) => [
-        key,
-        storedCopy(configuration),
-      ]),
-    ),
+    namespaces: copyStoredMap(snapshot.namespaces),
+    configurations: copyStoredMap(snapshot.configurations),
     connectionTemplates: new Map(snapshot.connectionTemplates),
     clientRegistrations: new Map(snapshot.clientRegistrations),
     oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
     connectionSessions: new Map(snapshot.connectionSessions),
-    presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
-    secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
+    presets: copyStoredMap(snapshot.presets),
+    secrets: copyStoredMap(snapshot.secrets),
     egressRejected: new Set(snapshot.egressRejected),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
-    egressInstallations: new Map(
-      Array.from(snapshot.egressInstallations, ([key, value]) => [key, storedCopy(value)]),
-    ),
+    egressInstallations: copyStoredMap(snapshot.egressInstallations),
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
-    credentialWithdrawals: new Map(
-      Array.from(snapshot.credentialWithdrawals, ([key, withdrawal]) => [
-        key,
-        storedCopy(withdrawal),
-      ]),
-    ),
-    credentialSources: new Map(
-      Array.from(snapshot.credentialSources, ([key, source]) => [key, storedCopy(source)]),
-    ),
-    serviceAccounts: new Map(
-      Array.from(snapshot.serviceAccounts, ([key, account]) => [key, storedCopy(account)]),
-    ),
-    agents: new Map(Array.from(snapshot.agents, ([key, agent]) => [key, storedCopy(agent)])),
-    predecessorReplacements: new Map(
-      Array.from(snapshot.predecessorReplacements, ([key, record]) => [key, storedCopy(record)]),
-    ),
-    sandboxPolicies: new Map(
-      Array.from(snapshot.sandboxPolicies, ([key, policy]) => [key, storedCopy(policy)]),
-    ),
-    workspaceSetups: new Map(
-      Array.from(snapshot.workspaceSetups, ([key, setup]) => [key, storedCopy(setup)]),
-    ),
+    credentialWithdrawals: copyStoredMap(snapshot.credentialWithdrawals),
+    credentialSources: copyStoredMap(snapshot.credentialSources),
+    serviceAccounts: copyStoredMap(snapshot.serviceAccounts),
+    agents: copyStoredMap(snapshot.agents),
+    predecessorReplacements: copyStoredMap(snapshot.predecessorReplacements),
+    sandboxPolicies: copyStoredMap(snapshot.sandboxPolicies),
+    workspaceSetups: copyStoredMap(snapshot.workspaceSetups),
     // Revisions are copied on ingress/egress; writes replace frozen history arrays.
     // A separate Map isolates this snapshot's future writes without copying history.
     revisions: new Map(snapshot.revisions),
     firstDeploymentDigests: new Map(snapshot.firstDeploymentDigests),
-    roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, storedCopy(role)])),
-    bindings: new Map(
-      Array.from(snapshot.bindings, ([key, binding]) => [key, storedCopy(binding)]),
-    ),
+    roles: copyStoredMap(snapshot.roles),
+    bindings: copyStoredMap(snapshot.bindings),
     servicePrincipals: new Map(snapshot.servicePrincipals),
     repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
     repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
     repositoryWithdrawals: new Map(snapshot.repositoryWithdrawals),
-    repositorySessions: new Map(
-      Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, storedCopy(attempt)]),
-    ),
-    repositoryBrokerReceipts: new Map(
-      Array.from(snapshot.repositoryBrokerReceipts, ([key, receipt]) => [key, storedCopy(receipt)]),
-    ),
+    repositorySessions: copyStoredMap(snapshot.repositorySessions),
+    repositoryBrokerReceipts: copyStoredMap(snapshot.repositoryBrokerReceipts),
     audit: snapshot.audit.map((event) => storedCopy(event)),
     operations: snapshot.operations.map((operation) => storedCopy(operation)),
   };
