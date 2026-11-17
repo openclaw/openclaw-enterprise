@@ -89,52 +89,92 @@ export async function acceptCanonicalObserverTimestamp(context: TestContext): Pr
     maximumCancellationGraceMs: 5_000,
   };
   const digest = "sha256:" + "a".repeat(64);
-  const created = await state.transact((unit) =>
-    unit.observer.create(
-      {
-        workId,
-        namespaceId,
-        agentId,
-        revisionId,
-        actorId,
-        requestId,
-        requestFingerprint: "b".repeat(64),
-        targetRole: "agent",
-        plan: {
-          backendVersion: qualification.backendVersion,
-          image: {
-            reference: "observer.test/runtime@" + digest,
-            digest,
-            qualificationId: qualification.imageQualificationId,
-          },
-          observationScope: {
-            kind: "dns",
-            interfaceName: "eth0",
-            filterIdentity: "dns-filter-v1",
-          },
-          limits: {
-            maximumDurationMs: 60_000,
-            maximumCapturedRecords: 100,
-            maximumEncodedOutputBytes: 100_000,
-          },
-          cancellation: { kind: "claim_abort", gracePeriodMs: 5_000 },
-          evidenceDestination: {
-            contractId: qualification.evidenceContractId,
-            destinationId: "observer-evidence-destination-v1",
-          },
-          cleanupPolicy: "observer_first",
-          securityProfile: {
-            profileId: qualification.securityProfileId,
-            capabilities: [],
-            privileged: false,
-          },
-        },
+  const createInput = {
+    workId,
+    namespaceId,
+    agentId,
+    revisionId,
+    actorId,
+    requestId,
+    requestFingerprint: "b".repeat(64),
+    targetRole: "agent" as const,
+    plan: {
+      backendVersion: qualification.backendVersion,
+      image: {
+        reference: "observer.test/runtime@" + digest,
+        digest,
+        qualificationId: qualification.imageQualificationId,
       },
-      qualification,
-    ),
-  );
+      observationScope: {
+        kind: "dns" as const,
+        interfaceName: "eth0",
+        filterIdentity: "dns-filter-v1",
+      },
+      limits: {
+        maximumDurationMs: 60_000,
+        maximumCapturedRecords: 100,
+        maximumEncodedOutputBytes: 100_000,
+      },
+      cancellation: { kind: "claim_abort" as const, gracePeriodMs: 5_000 },
+      evidenceDestination: {
+        contractId: qualification.evidenceContractId,
+        destinationId: "observer-evidence-destination-v1",
+      },
+      cleanupPolicy: "observer_first" as const,
+      securityProfile: {
+        profileId: qualification.securityProfileId,
+        capabilities: [] as const,
+        privileged: false as const,
+      },
+    },
+  };
+  const created = await state.transact((unit) => unit.observer.create(createInput, qualification));
   assert.equal(created.replayed, false);
   assert.equal(created.record.completedPhase, "admitted");
+
+  const replayWorkId = "observer:" + randomUUID();
+  const replayed = await state.transact((unit) =>
+    unit.observer.create({ ...createInput, workId: replayWorkId }, qualification),
+  );
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.record.workId, workId);
+  assert.deepEqual(replayed.record, created.record);
+  const [byRequest, byWorkId] = await state.read((unit) =>
+    Promise.all([
+      unit.observer.findByRequest(namespaceId, actorId, requestId),
+      unit.observer.findByWorkId(workId),
+    ]),
+  );
+  assert.deepEqual(byRequest, created.record);
+  assert.deepEqual(byWorkId, created.record);
+
+  const conflictingWorkId = "observer:" + randomUUID();
+  await assert.rejects(
+    state.transact((unit) =>
+      unit.observer.create(
+        {
+          ...createInput,
+          workId: conflictingWorkId,
+          requestFingerprint: "c".repeat(64),
+        },
+        qualification,
+      ),
+    ),
+    { name: "ResourceConflictError" },
+  );
+  const persistedReplayState = await pool.query(
+    "SELECT (SELECT count(*)::integer FROM occ.observer_invocations WHERE namespace_id = $1 AND actor_id = $2 AND request_id = $3) AS invocations, (SELECT count(*)::integer FROM occ.controller_work WHERE work_kind = $4 AND namespace_id = $1 AND agent_id = $5 AND revision_id = $6 AND actor_id = $2) AS work, (SELECT count(*)::integer FROM occ.controller_work WHERE idempotency_key = ANY($7::text[])) AS candidate_work",
+    [
+      namespaceId,
+      actorId,
+      requestId,
+      "observer",
+      agentId,
+      revisionId,
+      [replayWorkId, conflictingWorkId],
+    ],
+  );
+  assert.deepEqual(persistedReplayState.rows, [{ invocations: 1, work: 1, candidate_work: 0 }]);
 
   const claimToken = randomUUID();
   const claimed = await pool.query(

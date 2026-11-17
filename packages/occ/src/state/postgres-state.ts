@@ -5710,6 +5710,15 @@ export class PostgresPlatformState implements PlatformStateStore {
         ) => {
           const record = validateObserverInvocationCreate(input, qualification);
           await this.requireInitialized(context);
+          const replay = await this.repositories(context).observer.findByRequest(
+            record.namespaceId,
+            record.actorId,
+            record.requestId,
+          );
+          if (replay !== undefined) {
+            validateObserverInvocationReplay(replay, record);
+            return Object.freeze({ record: replay, replayed: true });
+          }
           await queue.enqueue({
             kind: "observer",
             idempotencyKey: record.workId,
