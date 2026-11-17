@@ -1,0 +1,13 @@
+{
+  "requiredEnv": ["OCC_TEST_STANDING_GIT_CODEX"],
+  "env": { "OCC_TEST_STRANDS_SENDER_REHEARSAL": "1" },
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/strands-sender-rehearsal.test.ts",
+      "expectedTests": [
+        "Strands sender refuses fresh Git after withdrawal while native Codex keeps its conversation"
+      ]
+    }
+  ]
+}

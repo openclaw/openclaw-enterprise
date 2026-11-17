@@ -97,32 +97,37 @@ directory from `harnessHome`. The Sandbox creates that owner-only directory
 outside the Harness workspace and file-transfer roots. Compute validates the path
 and owns the relay URL and authentication.
 
-Compute calls `harnessStatus(context)` with the Agent transport token. The
-Driver returns `serving` only after an authenticated handshake. It returns
-`starting` while startup is pending, or `failed` with evidence of a startup
-failure. Compute validates that evidence before it fails the revision. If the
-provider does not answer, Compute reports a transient dependency failure.
+Compute calls `harnessStatus(context)` with the transport token. After an
+authenticated handshake, the Driver returns `serving`, `starting`, or `failed`.
+Compute validates startup failure evidence. No answer produces a transient
+dependency failure.
 
-For Codex, when the Driver supplies a provider endpoint and `harnessStatus`,
-Compute checks status while the workspace node is pending and waits for
-`serving` before it activates the revision.
-For a dedicated OpenClaw worker, Compute checks status only before its node
-enrolls. After enrollment, `withdrawHarnessExposure(context)` removes the
-temporary status endpoint. The method resolves only after a read under the
-controller's identity confirms removal. A missing response does not confirm removal.
-Compute can also call this method for a serving or permanently failed revision.
+Compute waits for a Codex provider Harness to serve before activation, including
+while its workspace node is pending. For dedicated OpenClaw, Compute checks
+status before the node enrolls, then calls `withdrawHarnessExposure(context)`.
+The Driver must verify removal under the controller's identity before returning.
+Compute can also withdraw exposure from a serving or permanently failed revision.
 
 The endpoint can select `codexPermissionProfile: ":danger-full-access"` when the
 provider supplies the sandbox boundary. Kubernetes Compute projects the selection
 to the Gateway. Without it, the Codex bridge keeps its configured sandbox behavior.
 
-The endpoint can supply `tls.caBundle` with public PEM CA certificates for a WSS
-origin. It accepts no private keys, client credentials, or source paths. Without a bundle, the Gateway uses system trust. Kubernetes Compute mounts one combined `NODE_EXTRA_CA_CERTS`
-bundle read-only into the dedicated Agent Gateway. Certificate and hostname
-verification remain enabled. Compute creates the revision's ConfigMap with
-`immutable: true` before Gateway rollout and removes it after the revision
-workloads terminate.
-Changing its certificates requires a new revision.
+For WSS, `tls.caBundle` accepts public PEM CA certificates only. Otherwise
+the Gateway uses system trust. Kubernetes Compute mounts the combined
+`NODE_EXTRA_CA_CERTS` bundle from the revision's immutable ConfigMap before
+Gateway rollout. TLS verification stays enabled. Compute removes the ConfigMap
+after workloads terminate. Certificate changes require a new revision.
+
+A dedicated provider that owns the Harness endpoint can set
+`harnessTransportCredential: "verifier"` to receive `APP_TOKEN_SHA` in its
+workload requirements. The Gateway retains the bearer.
+
+For ordinary dedicated Codex with WSS trust, `externalWorkspaceOwner` binds
+`/home/node/workspace` to the provider execution. The provider supplies
+`ingressLeafSha256` from the issued generation-specific TLS leaf and
+`generationSha256` from the original execution receipt. The Driver and Gateway
+verify the CA, hostname, and DER leaf digest before sending the bearer, then
+verify the original generation on the upgrade before sending native frames.
 
 `enrollHarness(context, installation, release)` receives a callback from Compute.
 Compute commits and rechecks the verified installation before it signs the startup

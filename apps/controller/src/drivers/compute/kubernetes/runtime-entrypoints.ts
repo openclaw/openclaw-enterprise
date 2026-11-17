@@ -94,6 +94,7 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "-e",
 ]);
 export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
+export const EXTERNAL_WORKSPACE_OWNER_DIRECTORY = "/etc/openclaw-external-workspace-owner";
 // Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
 export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
 
@@ -680,7 +681,110 @@ function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
 
 `;
 
-function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+const OPENCLAW_PLUGIN_CONFIGURATION_APPLICATION_HELPERS = String.raw`function openClawPluginConfiguration(runtime, failures = [], base) {
+  if (runtime.manifest?.kind === "openclaw") {
+    return pluginRuntimeTranslator.openClawRuntimeArtifact(
+      runtime.manifest.selections ?? {},
+      failures,
+      runtime.manifest.pluginApprovers,
+      gatewayServesPublicOrigin(base),
+    ).configuration;
+  }
+  if (runtime.manifest?.kind === "codex") {
+    return pluginRuntimeTranslator.codexOpenClawConfiguration(
+      runtime.manifest.selections ?? {},
+      failures,
+      {
+        ...runtime.manifest,
+        dedicatedCodex: process.env.APP_SERVER_URL !== undefined,
+        baseProxyEnabled: base?.plugins?.entries?.codex?.config?.appServer?.networkProxy?.enabled === true,
+      },
+    );
+  }
+  return undefined;
+}
+
+class PluginApproverConfigurationError extends Error {
+  constructor() {
+    super("The selected OpenClaw gateway image cannot validate approvals.plugin.slack. Use a gateway image with Slack plugin approver support, or omit the Agent, plugin, and tool approver overrides.");
+  }
+}
+
+let validatedPluginApproverConfiguration;
+
+function validateOpenClawPluginApprovers(overlay) {
+  const candidate = JSON.stringify({ approvals: overlay.approvals });
+  if (candidate === validatedPluginApproverConfiguration) return;
+  let directory;
+  try {
+    directory = pluginMkdtempSync(pluginResolve(pluginTmpdir(), "oce-plugin-approvers-"));
+    const configPath = pluginResolve(directory, "openclaw.json");
+    pluginWriteFileSync(configPath, candidate, { mode: 0o600 });
+    // Probe only the exact generated approval policy: selected external plugins
+    // may not be installed yet, so a full-config check would reject them early.
+    const result = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
+      cwd: directory,
+      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    if (result.error !== undefined || result.status !== 0 || JSON.parse(result.stdout)?.valid !== true) {
+      throw new PluginApproverConfigurationError();
+    }
+    validatedPluginApproverConfiguration = candidate;
+  } catch {
+    throw new PluginApproverConfigurationError();
+  } finally {
+    if (directory !== undefined) {
+      pluginRmSync(directory, { recursive: true, force: true });
+    }
+  }
+}
+
+function holdPluginApproverConfigurationFailure(error) {
+  if (!(error instanceof PluginApproverConfigurationError)) return false;
+  publishRuntimeFailure("plugin-approvers", "INCOMPATIBLE_RESPONSE");
+  console.error(error.message);
+  // Keep startup evidence available without launching an invalid gateway or
+  // discarding the admitted policy through a restart loop.
+  setInterval(() => {}, 3600000);
+  return true;
+}
+
+function applyOpenClawPluginConfiguration(runtime, failures = [], options = {}) {
+  const base = readOpenClawConfig();
+  const overlay = openClawPluginConfiguration(runtime, failures, base);
+  if (overlay === undefined) return;
+  if (objectAtPath(overlay, ["approvals", "plugin", "slack"]) !== undefined) {
+    const slack = objectAtPath(base, ["channels", "slack"]);
+    if (slack === undefined || slack.enabled === false) {
+      // Stored approver policy applies when Slack is configured. Omitting this
+      // generated overlay preserves explicit deny lists in the admitted manifest.
+      delete overlay.approvals.plugin.slack;
+      if (Object.keys(overlay.approvals.plugin).length === 0) delete overlay.approvals.plugin;
+      if (Object.keys(overlay.approvals).length === 0) delete overlay.approvals;
+    } else {
+      validateOpenClawPluginApprovers(overlay);
+    }
+  }
+  // Native allow and alsoAllow are mutually exclusive. Keep grants in the
+  // configured policy form so both application and verification use that form.
+  if (base?.tools?.allow?.length > 0 && Array.isArray(overlay?.tools?.alsoAllow)) {
+    overlay.tools.allow = overlay.tools.alsoAllow;
+    delete overlay.tools.alsoAllow;
+  }
+  writeOpenClawConfig(mergeOpenClawPluginConfiguration(base, overlay, options));
+  return overlay;
+}
+
+`;
+
+function pluginRuntimeHelpers(
+  includeOpenClawInstaller: boolean,
+  preserveOpenShellCommand = false,
+): string {
   return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -1482,105 +1586,7 @@ function samePluginFailures(left, right) {
     JSON.stringify([...(right ?? [])].sort((a, b) => a.pluginId.localeCompare(b.pluginId)));
 }
 
-function openClawPluginConfiguration(runtime, failures = [], base) {
-  if (runtime.manifest?.kind === "openclaw") {
-    return pluginRuntimeTranslator.openClawRuntimeArtifact(
-      runtime.manifest.selections ?? {},
-      failures,
-      runtime.manifest.pluginApprovers,
-      gatewayServesPublicOrigin(base),
-    ).configuration;
-  }
-  if (runtime.manifest?.kind === "codex") {
-    return pluginRuntimeTranslator.codexOpenClawConfiguration(
-      runtime.manifest.selections ?? {},
-      failures,
-      {
-        ...runtime.manifest,
-        dedicatedCodex: process.env.APP_SERVER_URL !== undefined,
-        baseProxyEnabled: base?.plugins?.entries?.codex?.config?.appServer?.networkProxy?.enabled === true,
-      },
-    );
-  }
-  return undefined;
-}
-
-class PluginApproverConfigurationError extends Error {
-  constructor() {
-    super("The selected OpenClaw gateway image cannot validate approvals.plugin.slack. Use a gateway image with Slack plugin approver support, or omit the Agent, plugin, and tool approver overrides.");
-  }
-}
-
-let validatedPluginApproverConfiguration;
-
-function validateOpenClawPluginApprovers(overlay) {
-  const candidate = JSON.stringify({ approvals: overlay.approvals });
-  if (candidate === validatedPluginApproverConfiguration) return;
-  let directory;
-  try {
-    directory = pluginMkdtempSync(pluginResolve(pluginTmpdir(), "oce-plugin-approvers-"));
-    const configPath = pluginResolve(directory, "openclaw.json");
-    pluginWriteFileSync(configPath, candidate, { mode: 0o600 });
-    // Probe only the exact generated approval policy: selected external plugins
-    // may not be installed yet, so a full-config check would reject them early.
-    const result = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
-      cwd: directory,
-      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    if (result.error !== undefined || result.status !== 0 || JSON.parse(result.stdout)?.valid !== true) {
-      throw new PluginApproverConfigurationError();
-    }
-    validatedPluginApproverConfiguration = candidate;
-  } catch {
-    throw new PluginApproverConfigurationError();
-  } finally {
-    if (directory !== undefined) {
-      pluginRmSync(directory, { recursive: true, force: true });
-    }
-  }
-}
-
-function holdPluginApproverConfigurationFailure(error) {
-  if (!(error instanceof PluginApproverConfigurationError)) return false;
-  publishRuntimeFailure("plugin-approvers", "INCOMPATIBLE_RESPONSE");
-  console.error(error.message);
-  // Keep startup evidence available without launching an invalid gateway or
-  // discarding the admitted policy through a restart loop.
-  setInterval(() => {}, 3600000);
-  return true;
-}
-
-function applyOpenClawPluginConfiguration(runtime, failures = [], options = {}) {
-  const base = readOpenClawConfig();
-  const overlay = openClawPluginConfiguration(runtime, failures, base);
-  if (overlay === undefined) return;
-  if (objectAtPath(overlay, ["approvals", "plugin", "slack"]) !== undefined) {
-    const slack = objectAtPath(base, ["channels", "slack"]);
-    if (slack === undefined || slack.enabled === false) {
-      // Stored approver policy applies when Slack is configured. Omitting this
-      // generated overlay preserves explicit deny lists in the admitted manifest.
-      delete overlay.approvals.plugin.slack;
-      if (Object.keys(overlay.approvals.plugin).length === 0) delete overlay.approvals.plugin;
-      if (Object.keys(overlay.approvals).length === 0) delete overlay.approvals;
-    } else {
-      validateOpenClawPluginApprovers(overlay);
-    }
-  }
-  // Native allow and alsoAllow are mutually exclusive. Keep grants in the
-  // configured policy form so both application and verification use that form.
-  if (base?.tools?.allow?.length > 0 && Array.isArray(overlay?.tools?.alsoAllow)) {
-    overlay.tools.allow = overlay.tools.alsoAllow;
-    delete overlay.tools.alsoAllow;
-  }
-  writeOpenClawConfig(mergeOpenClawPluginConfiguration(base, overlay, options));
-  return overlay;
-}
-
-function assertConfigContainsOverlay(base, overlay, path) {
+${includeOpenClawInstaller || preserveOpenShellCommand ? OPENCLAW_PLUGIN_CONFIGURATION_APPLICATION_HELPERS : ""}function assertConfigContainsOverlay(base, overlay, path) {
   if (isPlainObject(overlay)) {
     if (!isPlainObject(base)) throw new Error("OpenClaw plugin effective config is missing an object.");
     for (const [key, value] of Object.entries(overlay)) {
@@ -2893,18 +2899,24 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
     "/home/node/openclaw-runtime-assets/plugin-skills", "/app/extensions/*/skills",
   ];
   const nodes = fileConfig.nodes ??= {};
-  if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
+  const externalWorkspace = existsSync(${JSON.stringify(EXTERNAL_WORKSPACE_OWNER_DIRECTORY + "/binding.json")});
+  if (externalWorkspace && Object.keys(nodes).some((id) => id !== workspaceNodeId)) {
+    throw new Error("An external workspace cannot use additional file node grants.");
+  }
+  if (externalWorkspace || (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined)) {
     // Native workspace.skills checks the source root for discovery, the skill directory for
     // resources and the instruction file for reads. This release needs exactly those paths.
-    const managedSkillPaths = managedPluginInstallations().flatMap(({ skills, skill }) =>
-      skill ? [skills, skill.directory, skill.instructions] : []);
+    const managedSkillPaths = externalWorkspace ? [] : managedPluginInstallations().flatMap(
+      ({ skills, skill }) => skill ? [skills, skill.directory, skill.instructions] : []);
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
         remoteRoot,
         remoteRoot + "/**",
-        "/home/node/.openclaw",
-        ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ...(externalWorkspace ? [] : [
+          "/home/node/.openclaw",
+          ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ]),
         ...managedSkillPaths,
       ],
       allowWritePaths: [
@@ -4102,6 +4114,7 @@ function agentRuntimeEntrypoint({
   computeOwned = false,
   withNode = false,
   patRecovery = false,
+  preserveOpenShellCommand = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4110,7 +4123,7 @@ const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${pluginRuntimeHelpers(!withNode)}
+${pluginRuntimeHelpers(!withNode, preserveOpenShellCommand)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
@@ -4881,6 +4894,13 @@ function completeSetupCode(payload) {
 }
 `;
 
+/** The exact commands of a dedicated Codex file-only workspace node. */
+export const CODEX_WORKSPACE_NODE_COMMANDS =
+  "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills";
+
+/** Stock Codex program when a provider runs the file-only node separately. */
+export const PROVIDER_CODEX_ONLY_ENTRYPOINT = agentRuntimeEntrypoint({ withNode: true });
+
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
 // It serves files while Codex restarts. Reuse Codex login/plugin initialization
@@ -5121,7 +5141,7 @@ delete codexEnv.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeDisplayName = process.env.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeCommands = [
   ...(nodeDisplayName ? ["--display-name", nodeDisplayName] : []),
-  "--commands", "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills",
+  "--commands", ${JSON.stringify(CODEX_WORKSPACE_NODE_COMMANDS)},
 ];
 // The kubelet swaps Secret volume contents atomically, but an empty, truncated
 // or otherwise undecodable code is treated as absent and never started.
@@ -5343,8 +5363,17 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
-const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
+// OpenShell compares the entire immutable command when adopting a Sandbox. Keep
+// the historical unused declarations in its versioned node-supervisor children.
+const providerCodexChild = agentRuntimeEntrypoint({
+  withNode: true,
+  preserveOpenShellCommand: true,
+});
+const protectedProviderCodexChild = agentRuntimeEntrypoint({
+  withNode: true,
+  protected: true,
+  preserveOpenShellCommand: true,
+});
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(providerCodexChild),
 );
@@ -5397,7 +5426,11 @@ export function codexLaunchEntrypoint(
   if (!protectedLaunch && openShellProgram === "pat") {
     if (withNode) {
       return (compactPatLaunch ??= compactWorkspaceNodeLaunch(
-        agentRuntimeEntrypoint({ withNode: true, patRecovery: true }),
+        agentRuntimeEntrypoint({
+          withNode: true,
+          patRecovery: true,
+          preserveOpenShellCommand: true,
+        }),
       ));
     }
     return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));

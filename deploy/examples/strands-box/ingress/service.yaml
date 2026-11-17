@@ -1,0 +1,20 @@
+# Set the existing Agent Namespace and a unique installation ID before creation.
+# Read the allocated ClusterIP and keep this Service through revision retirement.
+apiVersion: v1
+kind: Service
+metadata:
+  name: box-harness
+  namespace: pilot
+  labels:
+    app.kubernetes.io/name: box-harness-relay
+    box.openclaw.dev/installation: pilot-box
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: box-harness-relay
+    box.openclaw.dev/installation: pilot-box
+  ports:
+    - name: native-wss
+      protocol: TCP
+      port: 8443
+      targetPort: 8443

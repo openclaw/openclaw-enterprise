@@ -56,6 +56,7 @@
     "tests/integration/postgres-openshell-online-git-journey.test.ts",
     "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
+    "tests/integration/strands-box-deployment.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "tests/integration/postgres-openshell-standing-repository-set.test.ts",
@@ -522,6 +523,9 @@
         "uncertain preview release preserves fenced retirement with a fault after commit",
         "uncertain preview release preserves fenced retirement with a fault during worker replacement"
       ]
+    },
+    {
+      "path": "tests/integration/strands-box-deployment.test.ts"
     },
     {
       "path": "tests/integration/postgres-external-protected-git.test.ts",

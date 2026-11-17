@@ -1,0 +1,20 @@
+{
+  "name": "@openclaw-enterprise/example-strands-box-driver",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@openclaw-enterprise/occ": "0.1.0",
+    "@openclaw-enterprise/utils": "0.1.0",
+    "@openclaw-enterprise/contracts": "0.1.0"
+  },
+  "scripts": {
+    "build": "node build.ts"
+  }
+}

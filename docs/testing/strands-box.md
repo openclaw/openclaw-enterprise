@@ -1,0 +1,135 @@
+# Rehearse Strands repository withdrawal locally
+
+Use the fast harness to check the real Strands repository sender with
+native Codex, real Git, mutual TLS, and controlled local services. It uses the
+shared [Agent grant rehearsal](../../tests/helpers/agent-grant-rehearsal.ts).
+It does not start Box or an installed OpenClaw Enterprise (OCE) deployment.
+
+## Run the rehearsal
+
+Use Linux as a nonroot user, Node and dependencies from the
+[testing requirements](README.md#requirements-and-credentials), Git, OpenSSL,
+and the architecture-specific native Codex ELF executable from the version pinned in the [runtime image](../../deploy/runtime/Dockerfile).
+Set `OCC_TEST_STANDING_GIT_CODEX` to that executable's absolute path. The test
+does not download binaries, use account credentials, or call public providers.
+
+Use a checkout with no staged or unstaged changes to tracked files. The runner
+checks the tracked files and commit before starting and after cleanup. From the
+repository root, run all six sender and native-conversation checks:
+
+```sh
+node scripts/strands-fast.ts --codex "$OCC_TEST_STANDING_GIT_CODEX"
+```
+
+The harness runs the existing `strands-sender` lane and the five sender controls
+concurrently. Each selection owns its state file, temporary files and dynamically
+allocated loopback ports. It prints a fresh result directory containing the
+original CI receipts, logs and `summary.json`. Missing inputs, failing checks,
+skips or incomplete cleanup fail the command. No image build or guest boot is
+required. `--output` selects a directory that must not already exist.
+
+To measure the same checks repeatedly, including cleanup:
+
+```sh
+node scripts/strands-fast.ts --repeat 5
+node scripts/strands-fast.ts --repeat 5 --serial
+```
+
+The summary reports each sample, median and nearest-rank p90, plus total time
+including executable fingerprinting and setup. Repetitions stop on the first
+failed sample. The runner isolates its CI children from terminal interrupts. On
+Ctrl-C or SIGTERM, it starts no additional work and waits for active tests and
+cleanup. If a child produces no readable receipt, the summary reports failed
+selection and unverified cleanup. Inspect the original receipts before retrying.
+
+For only the native rehearsal:
+
+```sh
+OCC_TEST_STRANDS_SENDER_REHEARSAL=1 \
+  node --test tests/integration/strands-sender-rehearsal.test.ts
+```
+
+For the existing runner's result accounting, choose fresh result paths:
+
+```sh
+node scripts/ci/run-tests.ts run strands-sender \
+  --state "$RUN/state.json" --results "$RUN/results.json"
+```
+
+The lane sets the selector and requires the executable input. Without the
+selector, the ordinary test sweep skips this case. Once selected, missing
+inputs and runtime failures fail the case. No PostgreSQL or Kubernetes setup
+is required.
+
+Require one passing case for the native lane, or six for the fast harness, zero
+skips, and successful cleanup. The rehearsal asserts four observations. The CI
+runner does not retain those individual diagnostics on a passing run; use the
+direct native rehearsal command above to see them:
+
+1. `model-before`: the native process finishes a model turn and persists the reply.
+2. `git-fetched`: a fresh commit arrives through the real sender and matches the
+   independently read origin SHA.
+3. `git-refused`: after the controlled authority withdraws Git access, Git exits
+   128, the sender records `material-refused` with reason `withdrawn`, the new
+   commit stays absent, and no new provider connection or request occurs.
+4. `model-after`: a new turn finishes on the same process and session. Its
+   request includes the first reply, and the second reply is read back.
+
+Each attempt owns temporary repositories, certificates, loopback listeners and
+a native process. Teardown stops and joins the native process before removing
+its files and closing the model origin. Keep selected runs separate from broad
+integration sweeps.
+
+## Interpret the result
+
+The sender, Git protocol, TLS authentication, native process and conversation
+are exercised directly. The recipient observation, material authority, GitHub
+origin and model responses are fixtures. Agent and revision IDs label this
+local fixture; they are not records created through OCC.
+
+This catches sender regressions that permit a fresh fetch after withdrawal or
+break conversation continuity. It does not prove Box containment, Box policy
+reload, Worker reconciliation, production credential custody, Gateway chat,
+or an installed model turn. The existing
+[deployment test](../../tests/integration/strands-box-deployment.test.ts)
+separately checks the Worker and installed Driver's held admission with
+PostgreSQL and controlled Kubernetes and host peers.
+
+To extend the rehearsal to a Box runtime, follow
+[the runtime adapter contract](protected-repository-custody.md#reuse-the-rehearsal-with-another-runtime).
+Replace the fixture recipient and material authority with observations and
+withdrawal through the selected integration. Keep the model and Git origins
+outside Box, provide trusted fixture TLS through a supported host input, and
+observe policy denial in the actual Box journal. A host that cannot create
+Box's namespaces cannot qualify containment with this lane.
+
+## Reuse the controlled services
+
+Runtime adapters can start the services independently of the sender and native
+process fixtures:
+
+- [`strandsRehearsalModel(t)`](../../tests/helpers/strands-rehearsal-model.ts)
+  returns the Responses `baseUrl`, model name, synthetic credential, CA path and
+  bytes, and request and connection counters. Call `beginTurn("before")` or
+  `beginTurn("after")` for the prompt and expected answer. The second request
+  must include the first answer. This helper starts no runtime process.
+- [`strandsRepositoryOriginFixture(t)`](../../tests/helpers/strands-rehearsal-repository.ts)
+  returns the GitHub HTTPS listener address, canonical Git and API origins,
+  synthetic credential, CA, and a TLS-verifying `upstreamAgent`. It also exposes
+  the real repository, `publishCommit()`, request records in `writes`, and a
+  connection counter. Optional `loseDraft` and `losePush` fault controls retain
+  the lost-response cases. This helper creates no recipient or grant authority.
+
+Both listeners bind to loopback. A runtime adapter owns routing to them while
+preserving their TLS hostnames and CA trust. Register runtime cleanup before
+starting the fixtures so the runtime stops before its services and files are
+removed. The repository fixture drains active Git requests during cleanup.
+
+## Diagnose a failure
+
+Missing executable or execution permission fails before startup. A native RPC
+deadline reports bounded protocol event names and stderr; do not replay an
+uncertain turn. A model-origin rejection identifies a fixture contract failure.
+If withdrawal fails, inspect the sender's terminal receipt, provider counters,
+and object lookup before changing production behavior. Run the focused sender
+controls with `node --test tests/conformance/strands-box-git.test.ts`.

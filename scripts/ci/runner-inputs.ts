@@ -517,7 +517,10 @@ function gitHead(root: string) {
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
-export function sourceEvidence(root: string): { sha: string | null; issues: RunnerIssue[] } {
+export function sourceEvidence(
+  root: string,
+  { requireCleanTracked = false } = {},
+): { sha: string | null; issues: RunnerIssue[] } {
   const head = gitHead(root);
   const githubSha = process.env.GITHUB_SHA || null;
   if (head && githubSha && head !== githubSha) {
@@ -531,7 +534,47 @@ export function sourceEvidence(root: string): { sha: string | null; issues: Runn
       ],
     };
   }
-  return { sha: githubSha || head, issues: [] };
+  if (!requireCleanTracked) {
+    return { sha: githubSha || head, issues: [] };
+  }
+  if (!head) {
+    return {
+      sha: null,
+      issues: [issue("source-head-unavailable", "the checked-out source SHA is unavailable")],
+    };
+  }
+  const tracked = spawnSync("git", ["ls-files", "-v"], { cwd: root, encoding: "utf8" });
+  if (tracked.error || tracked.status !== 0) {
+    return {
+      sha: head,
+      issues: [issue("source-index-unavailable", "could not check the tracked source index")],
+    };
+  }
+  // Lowercase tags mark assume-unchanged paths, and S marks skip-worktree paths.
+  if (/^[a-zS] /m.test(tracked.stdout)) {
+    return {
+      sha: head,
+      issues: [issue("source-index-hidden", "the checkout hides tracked paths from Git checks")],
+    };
+  }
+  const status = spawnSync(
+    "git",
+    ["-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-uno", "--ignore-submodules=none"],
+    { cwd: root, encoding: "utf8" },
+  );
+  if (status.error || status.status !== 0) {
+    return {
+      sha: head,
+      issues: [issue("source-status-unavailable", "could not check the tracked source files")],
+    };
+  }
+  if (status.stdout) {
+    return {
+      sha: head,
+      issues: [issue("source-dirty", "the checkout has tracked source changes")],
+    };
+  }
+  return { sha: head, issues: [] };
 }
 
 export function mergeEnv(...objects: NodeJS.ProcessEnv[]): NodeJS.ProcessEnv {

@@ -1,0 +1,460 @@
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readlinkSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import type { BigIntStats } from "node:fs";
+import { join } from "node:path";
+import { readBoundedFile } from "../host/bounded-file.ts";
+import { answerFor, isNonce, promptFor, replyPrefix } from "./box-workload.ts";
+
+const workspace = "/home/node/workspace";
+const markerName = ".oce-model-marker";
+const gatewayUrl = "ws://127.0.0.1:18789";
+
+const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+type Obj = Record<string, unknown>;
+const obj = (x: unknown): Obj =>
+  x && typeof x === "object" && !Array.isArray(x) ? (x as Obj) : {};
+function privateInputPolicy(maxBytes: number, refusal = "PRIVATE_INPUT_REFUSED") {
+  return {
+    maxBytes,
+    refusal,
+    accepts: (stat: BigIntStats) =>
+      stat.nlink === 1n &&
+      (stat.mode & 0o077n) === 0n &&
+      stat.uid === BigInt(process.getuid?.() ?? -1) &&
+      stat.size > 0n,
+  };
+}
+function privateRead(file: string, maxBytes: number) {
+  return readBoundedFile(file, privateInputPolicy(maxBytes)).bytes.toString("utf8");
+}
+function save(path: string, row: Obj) {
+  writeFileSync(path, JSON.stringify(row) + "\n", { mode: 0o600, flag: "wx" });
+}
+function checkMarker(root: string) {
+  const { bytes, stat } = readBoundedFile(
+    join(root, markerName),
+    privateInputPolicy(49, "MARKER_IDENTITY_REFUSED"),
+  );
+  if (bytes.length !== 49) throw Error("MARKER_IDENTITY_REFUSED");
+  return {
+    markerSha256: sha(bytes),
+    device: stat.dev.toString(),
+    inode: stat.ino.toString(),
+  };
+}
+function seed(root: string, workspaceRoot: string, assertCurrent: () => void) {
+  writeFileSync(join(workspaceRoot, markerName), randomBytes(24).toString("hex") + "\n", {
+    mode: 0o600,
+    flag: "wx",
+  });
+  const seeded = checkMarker(workspaceRoot);
+  assertCurrent();
+  save(join(root, "expected.json"), {
+    ...seeded,
+    sessionKey: `agent:main:box-repro-${randomUUID()}`,
+    nonce: randomBytes(24).toString("hex"),
+  });
+}
+function textParts(message: Obj): string[] {
+  if (typeof message.content === "string") return [message.content];
+  return Array.isArray(message.content)
+    ? message.content
+        .map(obj)
+        .flatMap((part) =>
+          part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+        )
+    : [];
+}
+export function inspectHistory(
+  value: unknown,
+  key: string,
+  nonce: string,
+  digest: string,
+): boolean {
+  const result = obj(value);
+  if (
+    result.sessionKey !== key ||
+    result.windowReset === true ||
+    !Array.isArray(result.messages) ||
+    result.messages.length < 2 ||
+    result.messages.length > 8
+  )
+    return false;
+  const rows = result.messages.map(obj);
+  const users = rows.filter((message) => message.role === "user");
+  const outputs = rows
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => textParts(message).filter((text) => text.includes(replyPrefix)));
+  const last = rows.at(-1);
+  const userText = textParts(users[0] ?? {});
+  const finalText = textParts(last ?? {});
+  const expected = answerFor(nonce, digest);
+  return (
+    users.length === 1 &&
+    rows[0] === users[0] &&
+    userText.length === 1 &&
+    userText[0] === promptFor(nonce) &&
+    last?.role === "assistant" &&
+    finalText.length === 1 &&
+    finalText[0] === expected &&
+    outputs.length === 1 &&
+    outputs[0] === expected
+  );
+}
+export function inspectTerminal(value: unknown, runId: string): boolean {
+  const result = obj(value);
+  return result.runId === runId && result.status === "ok";
+}
+export function inspectFixture(
+  rows: unknown[],
+  nonce: string,
+  marker: { markerSha256: string; device: string; inode: string },
+): boolean {
+  const [namespace, intent, result] = rows.map(obj);
+  const callId = intent?.callId;
+  return (
+    rows.length === 3 &&
+    namespace?.stage === "same_network_namespace" &&
+    namespace.synthetic === true &&
+    namespace.nonce === nonce &&
+    intent?.stage === "tool_intent" &&
+    intent.nonce === nonce &&
+    typeof callId === "string" &&
+    /^call_[a-f0-9-]{36}$/.test(callId) &&
+    result?.stage === "tool_verified" &&
+    result.nonce === nonce &&
+    result.callId === callId &&
+    result.uid === 0 &&
+    result.device === marker.device &&
+    result.inode === marker.inode &&
+    result.markerSha256 === marker.markerSha256 &&
+    result.shellAlternateDenied === true &&
+    result.answer === answerFor(nonce, marker.markerSha256)
+  );
+}
+export function inspectPolicyRecords(raw: string) {
+  const path = "/opt/demo/verifier/oce-workspace-verifier";
+  let allow = 0,
+    deny = 0;
+  const rows = raw.trimEnd().split("\n");
+  if (rows.length > 10000) return false;
+  for (const line of rows) {
+    const root = obj(JSON.parse(line) as unknown);
+    for (const r of Array.isArray(root.resourceLogs) ? root.resourceLogs.map(obj) : [])
+      for (const scope of Array.isArray(r.scopeLogs) ? r.scopeLogs.map(obj) : [])
+        for (const log of Array.isArray(scope.logRecords) ? scope.logRecords.map(obj) : []) {
+          if (!Array.isArray(log.attributes)) continue;
+          const a = new Map(log.attributes.map(obj).map((entry) => [entry.key, obj(entry.value)]));
+          const text = (key: string) => a.get(key)?.stringValue;
+          if (
+            text("strands.box.policy.action") !== "shell:spawn" ||
+            text("process.command") !== path ||
+            text("process.working_directory") !== workspace
+          )
+            continue;
+          const fields = obj(a.get("process.command_args")?.arrayValue).values;
+          const args = Array.isArray(fields) ? fields.map(obj).map((arg) => arg.stringValue) : [];
+          if (
+            text("strands.box.policy.verdict") === "permit" &&
+            text("strands.box.policy.rule") === "oce_workspace_verifier" &&
+            args.length === 1 &&
+            args[0] === path
+          )
+            allow++;
+          if (
+            text("strands.box.policy.verdict") === "deny" &&
+            args.length === 2 &&
+            args[0] === path &&
+            args[1] === "--refused-alternate"
+          )
+            deny++;
+        }
+  }
+  return allow === 1 && deny === 1;
+}
+function executable(value: string | undefined) {
+  if (!value?.startsWith("/") || realpathSync(value) !== value || !lstatSync(value).isFile())
+    throw Error("PINNED_GATEWAY_CLI_REQUIRED");
+  return value;
+}
+function ownerReceipt(root: string, fresh: boolean) {
+  const path = join(root, "owner-wss.json");
+  const { bytes, stat } = readBoundedFile(path, privateInputPolicy(2048));
+  const row = obj(JSON.parse(bytes.toString("utf8")) as unknown);
+  if (
+    row.stage !== "original_box_wss" ||
+    row.verifiedTls !== true ||
+    typeof row.generationSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(row.generationSha256) ||
+    typeof row.ingressLeafSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(row.ingressLeafSha256) ||
+    (fresh && Math.abs(Date.now() - Number(stat.mtimeMs)) > 90000)
+  )
+    throw Error("LIVE_OWNER_RECEIPT_REQUIRED");
+  return { generationSha256: row.generationSha256, ingressLeafSha256: row.ingressLeafSha256 };
+}
+export function gatewayChatCall(
+  method: "chat.send" | "chat.history" | "agent.wait",
+  key: string,
+  runId: string,
+  nonce: string,
+  expectedUrl = gatewayUrl,
+) {
+  const params =
+    method === "chat.send"
+      ? {
+          sessionKey: key,
+          message: promptFor(nonce),
+          deliver: false,
+          timeoutMs: 90000,
+          idempotencyKey: runId,
+        }
+      : method === "chat.history"
+        ? { sessionKey: key, limit: 8 }
+        : { runId, timeoutMs: 5000 };
+  return [
+    "gateway",
+    "call",
+    method,
+    "--expect-url",
+    expectedUrl,
+    "--params",
+    JSON.stringify(params),
+    "--json",
+  ];
+}
+function callGateway(cli: string, args: string[]) {
+  const env = { ...process.env };
+  delete env.APP_SERVER_TOKEN;
+  delete env.APP_SERVER_URL;
+  return spawnSync(cli, args, { encoding: "utf8", maxBuffer: 128 * 1024, timeout: 10000, env });
+}
+function withDirectory<T>(
+  path: string | undefined,
+  refusal: string,
+  use: (pinnedPath: string, stat: BigIntStats, assertCurrent: () => void) => T,
+): T {
+  if (process.platform !== "linux" || !path?.startsWith("/")) throw Error(refusal);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    // Resolve the opened directory itself. Subsequent lookups walk from this FD.
+    const pinnedPath = `/proc/self/fd/${fd}`;
+    const original = fstatSync(fd, { bigint: true });
+    const assertCurrent = () => {
+      const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+      if (
+        readlinkSync(pinnedPath) !== path ||
+        !current ||
+        current.dev !== original.dev ||
+        current.ino !== original.ino ||
+        current.mode !== original.mode ||
+        current.uid !== original.uid
+      ) {
+        throw Error(refusal);
+      }
+    };
+    assertCurrent();
+    return use(pinnedPath, original, assertCurrent);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function withRunDirectory<T>(
+  root: string | undefined,
+  use: (pinnedPath: string, assertCurrent: () => void) => T,
+): T {
+  return withDirectory(root, "REPRO_ROOT_REFUSED", (pinnedPath, stat, assertCurrent) => {
+    if (stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o077n) !== 0n)
+      throw Error("REPRO_ROOT_REFUSED");
+    return use(pinnedPath, assertCurrent);
+  });
+}
+
+function selectedGateway(root: string) {
+  const path = join(root, "gateway.json");
+  const file = readBoundedFile(path, {
+    ...privateInputPolicy(2048),
+    allowMissing: true,
+  });
+  const assertCurrent = () => {
+    const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    if (
+      file
+        ? !current ||
+          current.dev !== file.stat.dev ||
+          current.ino !== file.stat.ino ||
+          current.ctimeNs !== file.stat.ctimeNs
+        : current !== undefined
+    ) {
+      throw Error("INSTALLED_GATEWAY_ORIGIN_REFUSED");
+    }
+  };
+  if (!file) return { url: gatewayUrl, assertCurrent };
+  const gateway = obj(JSON.parse(file.bytes.toString("utf8")) as unknown);
+  if (Object.keys(gateway).length !== 1 || typeof gateway.url !== "string") {
+    throw Error("INSTALLED_GATEWAY_ORIGIN_REFUSED");
+  }
+  const url = new URL(gateway.url);
+  if (
+    url.protocol !== "wss:" ||
+    url.href !== gateway.url ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    url.search
+  ) {
+    throw Error("INSTALLED_GATEWAY_ORIGIN_REFUSED");
+  }
+  return { url: url.href, assertCurrent };
+}
+export function seededNonce(root: string | undefined): string {
+  return withRunDirectory(root, (pinnedPath) => {
+    const expected = obj(
+      JSON.parse(privateRead(join(pinnedPath, "expected.json"), 2048)) as unknown,
+    );
+    if (!isNonce(expected.nonce)) throw Error("PROBE_NONCE_REFUSED");
+    return expected.nonce;
+  });
+}
+function operate(
+  root: string,
+  workspaceRoot: string,
+  mode: string | undefined,
+  arg: string | undefined,
+  assertCurrent: () => void,
+) {
+  if (mode === "seed" && !arg) {
+    seed(root, workspaceRoot, assertCurrent);
+    return;
+  }
+  const expected = obj(JSON.parse(privateRead(join(root, "expected.json"), 2048)) as unknown);
+  const nonce = expected.nonce;
+  if (!isNonce(nonce)) throw Error("PROBE_NONCE_REFUSED");
+  const gateway = selectedGateway(root);
+  const expectedUrl = gateway.url;
+  const current = checkMarker(workspaceRoot);
+  const assertInputsCurrent = () => {
+    gateway.assertCurrent();
+    assertCurrent();
+  };
+  const key = expected.sessionKey;
+  if (
+    current.markerSha256 !== expected.markerSha256 ||
+    current.device !== expected.device ||
+    current.inode !== expected.inode ||
+    typeof key !== "string" ||
+    !/^agent:main:box-repro-[a-f0-9-]{36}$/.test(key)
+  )
+    throw Error("ORIGINAL_MARKER_CHANGED");
+  if (mode === "submit") {
+    const cli = executable(arg);
+    const owner = ownerReceipt(root, true);
+    const runId = randomUUID();
+    assertInputsCurrent();
+    save(join(root, "intent.json"), {
+      stage: "one_chat_intent",
+      sessionKey: key,
+      ...owner,
+      runId,
+      nonce,
+      prompt: promptFor(nonce),
+      gatewayUrl: expectedUrl,
+    });
+    assertInputsCurrent();
+    const result = callGateway(cli, gatewayChatCall("chat.send", key, runId, nonce, expectedUrl));
+    const reply = result.status === 0 ? obj(JSON.parse(result.stdout) as unknown) : {};
+    const accepted =
+      reply.runId === runId && (reply.status === "started" || reply.status === "accepted");
+    save(join(root, "client-exit.json"), { code: result.status, signal: result.signal, accepted });
+    assertInputsCurrent();
+    if (!accepted) throw Error("CHAT_CLIENT_UNCERTAIN");
+    process.stdout.write("BOX_REPRO_CHAT_ACCEPTED\n");
+  } else if (mode === "verify") {
+    const cli = executable(arg);
+    const intent = obj(JSON.parse(privateRead(join(root, "intent.json"), 4096)) as unknown);
+    const owner = ownerReceipt(root, false);
+    if (
+      intent.stage !== "one_chat_intent" ||
+      intent.sessionKey !== key ||
+      intent.nonce !== nonce ||
+      intent.prompt !== promptFor(nonce) ||
+      (intent.gatewayUrl ?? gatewayUrl) !== expectedUrl ||
+      intent.generationSha256 !== owner.generationSha256 ||
+      intent.ingressLeafSha256 !== owner.ingressLeafSha256 ||
+      typeof intent.runId !== "string" ||
+      !/^[a-f0-9-]{36}$/.test(intent.runId)
+    )
+      throw Error("ORIGINAL_CHAT_INTENT_REQUIRED");
+    if (!inspectPolicyRecords(privateRead(join(root, "box-records.jsonl"), 1024 * 1024)))
+      throw Error("STOCK_POLICY_RECEIPT_REQUIRED");
+    assertInputsCurrent();
+    const waited = callGateway(
+      cli,
+      gatewayChatCall("agent.wait", key, intent.runId, nonce, expectedUrl),
+    );
+    if (waited.status !== 0 || !inspectTerminal(JSON.parse(waited.stdout) as unknown, intent.runId))
+      throw Error("ORIGINAL_CHAT_TERMINAL_REQUIRED");
+    assertInputsCurrent();
+    const read = callGateway(
+      cli,
+      gatewayChatCall("chat.history", key, intent.runId, nonce, expectedUrl),
+    );
+    if (
+      read.status !== 0 ||
+      !inspectHistory(JSON.parse(read.stdout) as unknown, key, nonce, current.markerSha256)
+    )
+      throw Error("ORDINARY_CHAT_RESULT_UNVERIFIED");
+    const records = privateRead(join(root, "controlled-chat.jsonl"), 8192)
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as unknown);
+    if (!inspectFixture(records, nonce, current)) throw Error("SAME_MARKER_TOOL_RECEIPT_REQUIRED");
+    assertInputsCurrent();
+    process.stdout.write(
+      JSON.stringify({
+        stage: "ordinary_chat_verified",
+        syntheticModel: true,
+        sameMarkerInode: true,
+        alternateArgumentDenied: true,
+      }) + "\n",
+    );
+  } else throw Error("USAGE_REFUSED");
+}
+function main() {
+  process.umask(0o077);
+  const [mode, run, arg] = process.argv.slice(2);
+  if (process.argv.length > 5) throw Error("USAGE_REFUSED");
+  withRunDirectory(run, (root, assertRunCurrent) => {
+    withDirectory(
+      workspace,
+      "WORKSPACE_PATH_REFUSED",
+      (workspaceRoot, _stat, assertWorkspaceCurrent) =>
+        operate(root, workspaceRoot, mode, arg, () => {
+          assertWorkspaceCurrent();
+          assertRunCurrent();
+        }),
+    );
+  });
+}
+if (import.meta.main)
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(
+      (error instanceof Error && /^[A-Z_]+$/.test(error.message)
+        ? error.message
+        : "BOX_REPRO_REFUSED") + "\n",
+    );
+    process.exitCode = 1;
+  }

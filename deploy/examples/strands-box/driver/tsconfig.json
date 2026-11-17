@@ -1,0 +1,26 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "rootDir": ".",
+    "outDir": "dist",
+    "paths": {
+      "@openclaw-enterprise/contracts": ["../../../../packages/contracts/src/index.ts"],
+      "@openclaw-enterprise/occ": ["../../../../packages/occ/src/index.ts"],
+      "@openclaw-enterprise/utils": ["../../../../packages/utils/src/index.ts"]
+    }
+  },
+  "references": [
+    {
+      "path": "../../../../packages/contracts"
+    },
+    {
+      "path": "../../../../packages/occ"
+    },
+    {
+      "path": "../../../../packages/utils"
+    }
+  ],
+  "include": ["*.ts"],
+  "exclude": ["build.ts", "dist"]
+}
