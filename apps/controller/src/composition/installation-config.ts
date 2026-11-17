@@ -1138,8 +1138,12 @@ export async function loadInstallationConfiguration(options: {
           packageRoot,
           options.packageRoot !== undefined,
         );
+  const boxPackage =
+    sandboxSelection?.id === "strands-box-sandbox" && sandboxPackage === undefined
+      ? await import("../drivers/sandbox/strands-box.ts")
+      : undefined;
   const bundledSandboxPackage =
-    sandboxSelection !== undefined && sandboxPackage === undefined
+    sandboxSelection !== undefined && sandboxPackage === undefined && boxPackage === undefined
       ? await loadBundledOpenShellSandboxDriver()
       : undefined;
 
@@ -1248,8 +1252,8 @@ export async function loadInstallationConfiguration(options: {
       : selected(
           sandboxSelection,
           "sandbox",
-          sandboxPackage?.implementation ?? "openshell",
-          sandboxPackage?.module ?? bundledSandboxPackage!,
+          sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
+          sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
         );
   if (sandbox?.package !== undefined && packageProxyId !== undefined) {
     // The package owns one startup configuration. Its Sandbox-only agent
@@ -1266,7 +1270,11 @@ export async function loadInstallationConfiguration(options: {
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
-  if (sandbox !== undefined && sandboxPackage === undefined && openShellBackend === undefined) {
+  if (boxPackage && (openShellBackend || proxySelection || !kubernetesCompute ||
+      (compute.configuration as unknown as KubernetesComputeDriverOptions).executionCluster !== undefined)) {
+    throw new Error("The Strands Box Pod driver requires same-cluster Kubernetes Compute and a sandbox-only installation.");
+  }
+  if (sandbox !== undefined && sandboxPackage === undefined && !boxPackage && openShellBackend === undefined) {
     throw new Error(
       "The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.",
     );
@@ -1453,6 +1461,12 @@ export async function loadInstallationConfiguration(options: {
           sandbox,
         ),
       };
+    }
+    if (boxPackage) {
+      return { sandboxDriver: new boxPackage.StrandsBoxSandboxDriver(
+        sandbox.configuration as unknown as import("../drivers/sandbox/strands-box.ts").StrandsBoxOptions,
+        { id: sandbox.id, authentication: (compute.configuration as unknown as KubernetesComputeDriverOptions).authentication },
+      ) };
     }
     if (sandboxPackage !== undefined) {
       if (proxySelection === undefined) {
