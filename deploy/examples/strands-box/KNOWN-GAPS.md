@@ -33,8 +33,7 @@ entries use the same four fields.
 - **Cause:** Box intercepts every `CONNECT` and builds both TLS legs without
   client authentication.
 - **Workaround:** none for mutual TLS. The paired registration identifies the
-  execution by a per-execution bearer whose digest the host reports, together
-  with the host control process, as the committed recipient.
+  execution by a per-execution bearer instead.
 - **Upstream status:** not yet reported to strands-agents/box.
 
 ## GitHub access needs the Box fork's request-time credential source
@@ -46,8 +45,7 @@ entries use the same four fields.
   and ask OCE for each request. After Box's policy permits a request, Box sends
   it to the host's credential source, the host relays it to the paired Driver
   in the Worker, and OCE's `requests.authorize` decides it and records the use.
-  Only a Box build with the request-time credential source can ask. Released
-  Box has no such hook.
+  Released Box has no such hook.
 - **Workaround:** build `strands-box`, `strands-box-sock-alias` and
   `strands-box-contain-trampoline` from the fork's `dogfood/main` and install
   them side by side. Use a fresh `box_dir`, because the fork writes record
@@ -83,9 +81,8 @@ entries use the same four fields.
   own. Only the Worker's paired Driver can ask OCE. The host refuses an ask that
   gets no answer within Box's 5-second timeout, and the Driver refuses an ask
   until OCE's current token version is confirmed for the execution.
-- **Workaround:** retry the command once the Worker is back. The Worker confirms
-  a renewed token on its next reconcile pass, about a second later. Box keeps
-  running throughout, so no restart is needed.
+- **Workaround:** retry once the Worker is back; it confirms a renewed token on
+  its next pass, about a second later. Box keeps running.
 - **Upstream status:** by design. The request-time source fails closed.
 
 ## Box connects to GitHub before it asks the source
@@ -210,32 +207,38 @@ entries use the same four fields.
 - **Cause:** the package's Credential Gateway view gets the value only at
   `registerSource` and `updateSource`, in the API, and the Worker answers each
   Box model request later. It keeps one Secret per source, for every Namespace,
-  in `modelGateway.secretNamespace`. The [Role](model-gateway-rbac.yaml) grants
-  `get`, so the API and the Worker can each read every stored key: RBAC has no
-  metadata-only read, and updates, removal preconditions and the ownership
-  check need `get`.
+  in `modelGateway.secretNamespace`.
 - **Workaround:** use a namespace that holds nothing else, and grant no one else
   `get` on Secrets there. Removing the source deletes its Secret.
 - **Upstream status:** an OCE question: a Worker-side read of OCE's own Secret
   would remove the copy.
 
+## The API can read the package's model key Secrets back
+
+- **Symptom:** the [Role](model-gateway-rbac.yaml) gives the API and the Worker
+  `get` on these Secrets: each can read every stored key, of every Namespace.
+- **Cause:** status reads, the ownership check, updates (`resourceVersion`) and
+  removal preconditions (`uid`, `resourceVersion`) need the Secret, and
+  Kubernetes has no metadata-only read.
+- **Workaround:** as above. The API already reads each value from OCE's own
+  store at register and rotation.
+- **Upstream status:** an OCE question, the same as the stored copy above.
+
 ## Code that escapes Box can obtain the model key
 
 - **Symptom:** the [shared-kernel gap](#boxs-trusted-process-shares-a-kernel-with-the-workload)
   covers the model key too, and that key does not expire.
-- **Cause:** `box run` holds each released key while it sends that request.
-  Host-account code can also present the execution bearer at `model.sock`, or
-  serve the Worker's control socket, and receive the key. The Worker answers
-  only for the source and execution OCE confirmed: this Agent's key, never
-  another Namespace's.
+- **Cause:** `box run` holds each released key while sending. Host-account code
+  can also present the execution bearer at `model.sock`, or serve the Worker's
+  control socket, and receive this Agent's key; the Worker releases only the
+  source OCE confirmed, never another Namespace's.
 - **Workaround:** keep the host dedicated. Give each Agent a revocable,
   rate-limited key from a model proxy, not a provider account key.
 - **Upstream status:** as above.
 
 ## A model revoke is permanent for its revision
 
-- **Symptom:** a revision whose model source was withdrawn never gets model
-  access on this host again, also after a host restart.
+- **Symptom:** a withdrawn revision never gets model access on this host again.
 - **Cause:** the host writes a receipt for the revision and source in
   `protectedModel.revocationDir`, with or without a running execution, and
   every start of that revision loads it.

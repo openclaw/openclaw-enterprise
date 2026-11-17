@@ -97,6 +97,12 @@ export function operatorDnsName(hostname: string): boolean {
   );
 }
 
+/**
+ * A model base path: `/v1`, optionally below a fixed prefix (`/openai/v1`), as Compute accepts an
+ * OpenAI-compatible base URL. No trailing slash, no empty or dot segments.
+ */
+export const MODEL_BASE_PATH = /^(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._~-]+)*\/v1$/;
+
 function exactRoute(url: string, address: string, kind: EgressRoute["kind"]): URL {
   const parsed = new URL(url);
   const hostname = parsed.hostname;
@@ -113,7 +119,7 @@ function exactRoute(url: string, address: string, kind: EgressRoute["kind"]): UR
       ? parsed.protocol !== "wss:"
       : kind === "native-hook"
         ? parsed.protocol !== "https:" || !parsed.pathname.endsWith(`/node${NATIVE_HOOK_ROUTE}`)
-        : parsed.protocol !== "https:" || parsed.pathname !== "/v1")
+        : parsed.protocol !== "https:" || !MODEL_BASE_PATH.test(parsed.pathname))
   ) {
     throw new Error("invalid_fixed_egress");
   }

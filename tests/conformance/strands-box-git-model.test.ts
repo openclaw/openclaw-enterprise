@@ -185,3 +185,75 @@ test("the outside-write step uses Codex's own patch tool to add one file under t
     ["apply_patch:custom", "apply_patch:function", "exec_command"],
   );
 });
+
+test("with key digests the dry-run model accepts only those bearers and records each digest, never a key", async () => {
+  const { createHash } = await import("node:crypto");
+  const { bearerDigest, controlledGitModelRequests } = await import(
+    "../../deploy/examples/strands-box/git/controlled-git-model.ts"
+  );
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const key = `sk-test-${"k".repeat(40)}`;
+  const rotated = `sk-test-${"r".repeat(40)}`;
+  assert.equal(bearerDigest(`Bearer ${key}`), sha(key));
+  assert.equal(bearerDigest(`token ${key}`), null);
+  assert.equal(bearerDigest(undefined), null);
+  const requests: Record<string, unknown>[] = [];
+  const handler = controlledGitModelRequests(nonce, plan, () => {}, {
+    address: "10.0.0.9",
+    bearerSha256: [sha(key), sha(rotated)],
+    requests: (row) => requests.push(row),
+  });
+  const call = async (authorization: string | undefined, url = "/v1/responses") => {
+    const body = Buffer.from(
+      JSON.stringify({
+        model: "gpt-5",
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
+        tools: [{ name: "exec_command" }],
+      }),
+    );
+    const req = Object.assign(
+      (async function* () {
+        yield body;
+      })(),
+      {
+        socket: { remoteAddress: "10.0.0.9" },
+        method: "POST",
+        url,
+        headers: authorization === undefined ? {} : { authorization },
+      },
+    );
+    let status = 200;
+    const res = {
+      headersSent: false,
+      writeHead(code: number) {
+        status = code;
+        return { end() {} };
+      },
+      setHeader() {},
+      write: () => true,
+      end() {},
+      destroy() {},
+    };
+    await handler(req as never, res as never);
+    return status;
+  };
+  assert.equal(await call(`Bearer ${key}`), 200);
+  assert.equal(await call(`Bearer ${rotated}`), 200);
+  assert.equal(await call("Bearer marker"), 404, "the public marker is not a key");
+  assert.equal(await call(`Bearer ${key}x`), 404);
+  assert.equal(await call(undefined), 404);
+  assert.equal(await call(`Bearer ${key}`, "/v1/chat/completions"), 404, "only the Responses path");
+  assert.deepEqual(
+    requests.map((row) => [row.path, row.bearerSha256, row.authorized]),
+    [
+      ["/v1/responses", sha(key), true],
+      ["/v1/responses", sha(rotated), true],
+      ["/v1/responses", sha("marker"), false],
+      ["/v1/responses", sha(`${key}x`), false],
+      ["/v1/responses", null, false],
+      ["/v1/chat/completions", sha(key), true],
+    ],
+  );
+  const recorded = JSON.stringify(requests);
+  assert.ok(!recorded.includes(key) && !recorded.includes(rotated), "only digests are recorded");
+});

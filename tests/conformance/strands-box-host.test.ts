@@ -1502,7 +1502,14 @@ test("a controlled inference DNS name is accepted only with its one pinned priva
     [{ url: "https://[fd00::9]/v1", address: "10.0.0.9" }, "controlled-inference"],
     // Compute never produces these spellings, so the host refuses them at load.
     [{ url: "https://model.pilot.example/v1/", address: "10.0.0.9" }, "controlled-inference"],
-    [{ url: "https://model.pilot.example/openai/v1", address: "10.0.0.9" }, "controlled-inference"],
+    [
+      { url: "https://model.pilot.example/openai/v1/", address: "10.0.0.9" },
+      "controlled-inference",
+    ],
+    [{ url: "https://model.pilot.example/openai/v2", address: "10.0.0.9" }, "controlled-inference"],
+    [{ url: "https://model.pilot.example/v1/openai", address: "10.0.0.9" }, "controlled-inference"],
+    [{ url: "https://model.pilot.example//v1", address: "10.0.0.9" }, "controlled-inference"],
+    [{ url: "https://model.pilot.example/a%2Fb/v1", address: "10.0.0.9" }, "controlled-inference"],
     // A route opts in to the upstream CA bundle by digest only; the bundle is execution-wide.
     [{ url: "wss://gateway.pilot.example/pair", address: "10.0.0.1", ca: {} }, "workspace-node"],
     [{ url, address: "10.0.0.9", caSha256: "A".repeat(64) }, "controlled-inference"],
@@ -1510,6 +1517,14 @@ test("a controlled inference DNS name is accepted only with its one pinned priva
   ] as const) {
     assert.throws(() => parseRoute(value, kind), { message: /invalid_fixed_egress/ });
   }
+});
+
+test("a controlled inference route may sit below a fixed path prefix, as Compute accepts it", () => {
+  const url = "https://model.pilot.example:8444/local/8000/v1";
+  const route = parseRoute({ url, address: "10.0.0.9" }, "controlled-inference");
+  assert.deepEqual(routeView(route), { url, address: "10.0.0.9" });
+  assert.match(policy([route]), /context.input.path == "\/local\/8000\/v1\/responses"/);
+  assert.doesNotMatch(policy([route]), /context.input.path == "\/v1\/responses"/);
 });
 
 test("the Driver's stated model route must equal the host route, including its CA digest", () => {
