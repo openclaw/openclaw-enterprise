@@ -6,6 +6,7 @@ import { mock } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
+  boundedProgressLines,
   openShellProgressPrefix,
   upstreamOutageCase,
 } from "../../scripts/ci/openshell-progress.mjs";
@@ -141,6 +142,12 @@ export default async function* deadlineReporter(source: Parameters<typeof report
   const lifecycle: unknown[][] = [];
   const progress: unknown[] = [];
   let poll = 0;
+  // Native test:stdout events expose chunks of the worker's stream.
+  const readPoll = boundedProgressLines((line: string) => {
+    if (line === pendingLine.slice(0, -1)) {
+      poll++;
+    }
+  });
   let selected = false;
   let announced = false;
   async function* observe() {
@@ -169,8 +176,13 @@ export default async function* deadlineReporter(source: Parameters<typeof report
         selected ||=
           event.type === "test:dequeue" && isDeepStrictEqual([file, entryFile, name], selectedCase);
       }
-      if (event.type === "test:stdout" && isRecord(data) && typeof data.message === "string") {
-        poll += data.message.split(pendingLine).length - 1;
+      if (
+        event.type === "test:stdout" &&
+        isRecord(data) &&
+        data.file === entry &&
+        typeof data.message === "string"
+      ) {
+        readPoll(data.message);
       }
       if (
         !announced &&
