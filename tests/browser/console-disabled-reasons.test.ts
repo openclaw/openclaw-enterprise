@@ -403,16 +403,16 @@ test("Save channel Secrets names an unbound Slack token as its reason", async (t
 // An Installation administrator's Credentials tab read the IAM policy and found no grant of the
 // saved authentication Secret to the Agent (finding 2260).
 const HARNESS_GRANT_MISSING =
-  "This Agent has no access to its authentication Secret, so deploying it would be refused. Select Save authentication source to grant it.";
+  "This Agent has no access to its authentication Secret yet. Deploying grants this Agent access, or select Save authentication source to grant it now.";
 // The same missing grant, read by a session whose Save authentication source is unavailable.
-const HARNESS_GRANT_MISSING_ASK =
-  "This Agent has no access to its authentication Secret, so deploying it would be refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
+const HARNESS_GRANT_MISSING_NO_RETRY =
+  "This Agent has no access to its authentication Secret yet. Deploying grants this Agent access.";
 
 // Finding 2949. While she administers the Installation, the warning names the Save that grants
 // the Agent its Secret. Her administration then ends: the newer permission answer refuses her
-// Agent update, so Save is unavailable, and the shown warning is reworded in place to name who
-// grants it instead of a Save she cannot use.
-test("a missing harness grant names the administrator once a revoke makes Save unavailable", async (t) => {
+// Agent update, so Save is unavailable, and the shown warning is reworded in place to offer only
+// the deploy, which writes the grant (RFC-0040), instead of a Save she cannot use.
+test("a missing harness grant offers only the deploy once a revoke makes Save unavailable", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revoked harness grant");
   const secret: unknown = await fixture.createSecret(
     namespace.id,
@@ -452,7 +452,7 @@ test("a missing harness grant names the administrator once a revoke makes Save u
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-  await page.getByText(HARNESS_GRANT_MISSING_ASK, { exact: true }).waitFor();
+  await page.getByText(HARNESS_GRANT_MISSING_NO_RETRY, { exact: true }).waitFor();
   assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
   assert.equal(await save.isDisabled(), true);
 });

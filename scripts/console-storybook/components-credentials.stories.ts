@@ -169,9 +169,9 @@ export const AuthSecretGrantParked = {
   ...story("authSecretGrantParked"),
   name: "Parked authentication grant",
 };
-export const AuthSecretGrantMemberUnverified = {
-  ...story("authSecretGrantMemberUnverified"),
-  name: "Member authentication saved, access not verified",
+export const AuthSecretGrantMemberAtDeploy = {
+  ...story("authSecretGrantMemberAtDeploy"),
+  name: "Member authentication saved, granted at deploy",
 };
 export const AuthSecretGrantLoading = {
   ...story("authSecretGrantLoading"),

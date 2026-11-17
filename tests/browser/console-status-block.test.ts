@@ -542,7 +542,7 @@ test("Authentication source save outcomes", async (t) => {
       // The rebuilt tab repeats the shared grant warning (finding 2259).
       const kept = page.getByRole("alert").filter({
         hasText:
-          "Authentication source saved, but the request to grant this Agent access to the selected Secret was refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source. Select Retry credential access once you have that access.",
+          "Authentication source saved, but the request to grant this Agent access to the selected Secret was refused. Deploying grants this Agent access.",
       });
       await kept.waitFor();
       assert.deepEqual(await statusTone(kept), {

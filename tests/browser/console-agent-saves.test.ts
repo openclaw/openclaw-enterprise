@@ -648,7 +648,8 @@ for (const c of inPlaceCases) {
     const control = await c.prepare(page, context);
     const place = await watchPlace(page, fixture, control);
     // A reloaded draft is announced before its bound-Secret grant read settles. Hold the real
-    // response to exercise that ordering even when Slack has just been disabled.
+    // response to exercise that ordering even when Slack has just been disabled: the read holds
+    // nothing, because the deploy writes each missing grant (RFC-0040).
     const grants = c.holdReloadGrants
       ? await holdRequests(
           t,
@@ -668,10 +669,7 @@ for (const c of inPlaceCases) {
     }
     if (grants) {
       await grants.requested;
-      assert.equal(
-        await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
-        true,
-      );
+      await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
       grants.release();
     }
     // The saved status, generation, focus and placement do not synchronize the grant gate.

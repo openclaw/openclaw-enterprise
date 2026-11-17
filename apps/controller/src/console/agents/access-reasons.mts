@@ -196,10 +196,11 @@ export const deployUnreadableSecretsReason = (count: number) =>
     ? `Deploying needs Secret operate on a bound Secret your access does not include reading. ${askForGrant("Secret read and operate on it")}`
     : `Deploying needs Secret operate on ${count} bound Secrets your access does not include reading. ${askForGrant("Secret read and operate on them")}`;
 // Only Installation administration writes the IAM policy that lets an Agent use a credential, so
-// a member's console sends no grant. The deploy checks the Agent's own access and names the grant
-// if it is missing (finding 2592), so a saved source says that, and who gives it (finding D748).
-export const credentialCheckedAtDeploy = (noun: "Secret" | "credential source") =>
-  `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ${ASK_INSTALLATION_ADMINISTRATOR} to give the Agent ${noun} operate on it.`;
+// a member's console sends no grant. The member's deploy writes the Agent's operate grant on each
+// source it uses that the member may operate (RFC-0040), so a member's save says that instead of
+// naming an administrator (finding D748). Deploy names a bound Secret the member may not operate.
+export const credentialGrantedAtDeploy = (credential: string) =>
+  `Deploying gives this Agent operate on ${credential}.`;
 
 // The network policy and its suggestions authorize Agent read and SandboxPolicy read on the
 // Agent's own policy; previews and saves authorize Agent manage_policy and SandboxPolicy update.

@@ -66,7 +66,7 @@ import {
   askAdministratorTo,
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
-  credentialCheckedAtDeploy,
+  credentialGrantedAtDeploy,
   DEPLOY_SANDBOX_POLICY_READ_DENIED,
   deployAcceptedVersionUnreadable,
   deployUnreadableSecretsReason,
@@ -121,7 +121,6 @@ import {
   harnessGrantSubject,
   createChannelSecretsPanel,
   CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
-  CHECKING_CREDENTIAL_ACCESS,
   channelBindingsToReplace,
   channelReplaceHint,
   channelReplaceRefusal,
@@ -488,7 +487,6 @@ const ACCESS_TAB_NEEDS_ADMINISTRATION =
 // A draft the caller can read but neither change nor save (finding 2421).
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
-const CHECKING_CREDENTIAL_ACCESS_STEP = "Checking credential access…";
 const CHECKING_COMPUTE_CONFIGURATION =
   "Checking the Configuration with this Installation's Compute before deploying.";
 const ENTRY_KEY_STEP = "Fix the plugin entry key";
@@ -3327,8 +3325,11 @@ export async function renderAgentDetail(
     let authenticationForm: HTMLElement | undefined;
     const retainedAuthentication = context.drafts.get("authentication") as
       AuthenticationDraft | undefined;
-    // A member's save is finished when it saves and is never retained, so it holds nothing
-    // (findings 2547, D748).
+    // A save whose outcome is unknown, or a saved source whose grant this page could not write or
+    // confirm, holds Deploy until Reload authentication source or Retry credential access: until
+    // then the page shows the Agent as read before that save. The grant itself holds nothing, as
+    // the deploy writes it (RFC-0040). A member's save is finished when it saves and is never
+    // retained, so it holds nothing (findings 2547, D748).
     let authenticationPending = Boolean(
       retainedAuthentication?.outcomeUnknown || retainedAuthentication?.savedAuthentication,
     );
@@ -3424,11 +3425,9 @@ export async function renderAgentDetail(
     activeCredentials = credentials;
     // An Installation administrator's Credentials tab reads whether the Agent may use its harness
     // authentication Secret or credential source, as it reads bound Slack Secrets' grants: a
-    // missing grant then blocks Deploy until Credentials grants it. The read runs once per draft;
-    // a failed or undecided read changes nothing (findings 1920, 2260).
-    let harnessGrantMissing = false;
-    // Deploy waits while that read is in flight (#3686 review).
-    let harnessGrantChecking = false;
+    // missing grant shows a warning there. It holds nothing, because the deploy writes the grant
+    // (RFC-0040). The read runs once per draft; a failed or undecided read changes nothing
+    // (findings 1920, 2260).
     let harnessGrantRead: Promise<boolean> | null = null;
     function readHarnessGrant() {
       const credential = harnessCredential(agent.harnessAuth, context.namespaceId);
@@ -3439,21 +3438,10 @@ export async function renderAgentDetail(
       ) {
         return Promise.resolve(false);
       }
-      harnessGrantChecking = true;
-      updateDeployControls();
-      return credentialOperateGrants(context, agent, credential.kind, [credential.id])
-        .then(
-          (grants) => grants.get(credential.id) === false && context.isCurrent(),
-          () => false,
-        )
-        .then((missing) => {
-          harnessGrantChecking = false;
-          harnessGrantMissing ||= missing;
-          if (context.isCurrent()) {
-            updateDeployControls();
-          }
-          return missing;
-        });
+      return credentialOperateGrants(context, agent, credential.kind, [credential.id]).then(
+        (grants) => grants.get(credential.id) === false && context.isCurrent(),
+        () => false,
+      );
     }
     // Deployment needs Secret operate on each Secret the draft binds: its Configuration's Secret
     // bindings and a Secret authentication source. The Secret operate answer names the bound ones
@@ -3569,8 +3557,6 @@ export async function renderAgentDetail(
         authenticationSaveState !== "idle" ||
         Boolean(deployReloadMessage) ||
         authenticationPending ||
-        harnessGrantMissing ||
-        harnessGrantChecking ||
         authenticationUnsaved ||
         retainedConfiguration.dirty ||
         retainedConfiguration.reloadRequired ||
@@ -3763,8 +3749,7 @@ export async function renderAgentDetail(
           channelCredentialBlockReason(values) !== null ||
           (Boolean(agent.harnessAuth) &&
             !authenticationPending &&
-            !harnessGrantMissing &&
-            (credentials?.canDeploy() || credentials?.checkingGrants()) === true);
+            credentials?.canDeploy() === true);
         setupCredentials.disabled = deployPending || Boolean(draftEditorNavigationBlock);
       }
       const secretReason = deploySecretsOperateReason(deploySecretsDenied);
@@ -3791,12 +3776,9 @@ export async function renderAgentDetail(
         } else if (authenticationSaveState === "uncertain") {
           deployStatus.textContent =
             "Authentication may have been saved. Reload this draft before deploying.";
-        } else if (harnessGrantChecking) {
-          // A read that settles within 250 ms never shows this text (finding 2576).
-          setDelayedText(deployStatus, "", CHECKING_CREDENTIAL_ACCESS);
-        } else if (authenticationPending || harnessGrantMissing) {
+        } else if (authenticationPending) {
           deployStatus.textContent =
-            "Confirm authentication and Secret access in Credentials before deploying.";
+            "Reload authentication source or select Retry credential access in Credentials before deploying.";
         } else if (authenticationUnsaved) {
           deployStatus.textContent =
             "Save or reload the authentication source in Credentials before deploying.";
@@ -3854,15 +3836,10 @@ export async function renderAgentDetail(
             : gate === "Ready to deploy."
               ? rejected
               : `${gate} ${rejected}`;
-          if (status === CHECKING_CREDENTIAL_ACCESS && !draftReadOnly()) {
-            // A read that settles within 250 ms never shows this text (finding 2576).
-            setDelayedText(deployStatus, "", status);
-          } else {
-            deployStatus.textContent =
-              draftReadOnly() && status !== "Ready to deploy." && !credentialRejected()
-                ? `${status} Your access does not include changing this version draft.`
-                : status;
-          }
+          deployStatus.textContent =
+            draftReadOnly() && status !== "Ready to deploy." && !credentialRejected()
+              ? `${status} Your access does not include changing this version draft.`
+              : status;
         }
       }
       // An unavailable Deploy is described by the line that says why, or by a refused
@@ -3919,12 +3896,7 @@ export async function renderAgentDetail(
         step.item.dataset.state = value;
         step.state.textContent = done ? "Done: " : "Not done: ";
       }
-      if (detail === CHECKING_CREDENTIAL_ACCESS_STEP) {
-        // Shown only if the grant read outlasts 250 ms (finding 2576).
-        setDelayedText(step.detail, "", detail);
-      } else {
-        setText(step.detail, detail);
-      }
+      setText(step.detail, detail);
     }
     function updateChecklist() {
       // A caller who can change nothing here and cannot deploy gets no editor's checklist
@@ -3954,7 +3926,6 @@ export async function renderAgentDetail(
         Boolean(agent.harnessAuth) &&
         authenticationSaveState === "idle" &&
         !authenticationPending &&
-        !harnessGrantMissing &&
         !authenticationUnsaved &&
         (runtimeAuth || Boolean(credentials?.credentialsReady()));
       setStep(
@@ -3970,9 +3941,7 @@ export async function renderAgentDetail(
                 ? "Saving…"
                 : authenticationSaveState === "uncertain"
                   ? "Reload this draft"
-                  : credentials?.checkingGrants()
-                    ? CHECKING_CREDENTIAL_ACCESS_STEP
-                    : "Finish in Credentials",
+                  : "Finish in Credentials",
       );
       setStep(checklistSteps[2], false, requestedDestination());
     }
@@ -4150,16 +4119,11 @@ export async function renderAgentDetail(
               "Channel Secret bindings changed. Refresh this Agent before deploying.";
             return;
           }
-          // A grant read that landed during these rereads can show a bound Secret the Agent may
-          // not use, which the worker would refuse: ask the Credentials panel again (#3686 review).
+          // A reread can change channel credential readiness: ask the Credentials panel again
+          // (#3686 review).
           if (!runtimeAuth && credentials?.canDeploy() !== true) {
             deployFeedback.textContent =
               credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
-            return;
-          }
-          if (harnessGrantMissing || harnessGrantChecking) {
-            deployFeedback.textContent =
-              "Confirm authentication and Secret access in Credentials before deploying.";
             return;
           }
           submitted = true;
@@ -4485,11 +4449,6 @@ export async function renderAgentDetail(
         updateNavigationControls();
       }
       return;
-    }
-    // Slack Secret grants this session could not verify block Deploy only until a reload, as
-    // Reload authentication source clears the harness path's (finding 2263).
-    if (outstandingChannelGrants?.problem === "unverified") {
-      setOutstandingChannelGrants(null);
     }
     if (fresh) {
       await refreshDraftInPlace({ agent: fresh, ...options });
@@ -5127,6 +5086,8 @@ export async function renderAgentDetail(
       const channelReplace = draft ? channelBindingsReplace() : null;
       // Whether the last save left a Secret grant outstanding, for its saved notice.
       let channelGrantOutstanding = false;
+      // Whether the last save bound Secrets whose grants a member's deploy writes.
+      let channelSecretsGrantedAtDeploy = false;
       const channels = renderChannels({
         values,
         executionMode,
@@ -5189,6 +5150,7 @@ export async function renderAgentDetail(
             throw new Error(refusal);
           }
           channelGrantOutstanding = false;
+          channelSecretsGrantedAtDeploy = false;
           let mutationStarted = false;
           let configurationSaved = false;
           try {
@@ -5221,19 +5183,11 @@ export async function renderAgentDetail(
             const ungranted = (options.changedSecrets ?? []).map((secret) => secret.ref);
             if (ungranted.length && context.installationAdmin === false) {
               // This session is known not to administer the Installation, so it sends no grant
-              // the API would refuse and audit. Credentials says nothing verified the Agent's
-              // access and names who grants it, as the harness path does (findings 2109, 2263).
-              const kept = (outstandingChannelGrants?.secrets ?? []).filter(
-                (secret) => !ungranted.some((next) => next.id === secret.id),
-              );
-              // A grant an earlier request left refused or unconfirmed keeps its problem and Retry.
-              setOutstandingChannelGrants({
-                secrets: [...kept, ...ungranted],
-                problem: kept.length
-                  ? (outstandingChannelGrants?.problem ?? "unverified")
-                  : "unverified",
-              });
-              channelGrantOutstanding = true;
+              // the API would refuse and audit. The member's deploy gives the Agent operate on
+              // each Secret this save bound, which the save already needed the member to operate
+              // (RFC-0040; findings 2109, 2263). A grant an earlier refusal left is written so too.
+              setOutstandingChannelGrants(null);
+              channelSecretsGrantedAtDeploy = true;
               if (context.isCurrent()) {
                 data.setDraftEditorState({ saving: false, outcomeUnknown: false });
                 context.drafts.forget("channels");
@@ -5353,7 +5307,11 @@ export async function renderAgentDetail(
         // A grant left outstanding is not a finished save: the tab's warning says what remains.
         onSaved: (focus) =>
           refreshDraftInPlace({
-            saved: channelGrantOutstanding ? "Configuration saved." : "Channels saved.",
+            saved: channelGrantOutstanding
+              ? "Configuration saved."
+              : channelSecretsGrantedAtDeploy
+                ? `Channels saved. ${credentialGrantedAtDeploy("the selected Slack Secrets")}`
+                : "Channels saved.",
             focus,
           }),
         // The section forgets its editor draft first unless a save conflict carried it.
@@ -5528,8 +5486,7 @@ export async function renderAgentDetail(
               ? "credential_source"
               : "secret",
           ),
-        ) +
-        (problem === "refused" ? " Select Retry credential access once you have that access." : "");
+        );
       const originalFields = retained?.originalFields ?? auth.capture();
       const bindingFields = ({
         method,
@@ -5558,8 +5515,7 @@ export async function renderAgentDetail(
       });
       let savedGrantMissing = false;
       // A reader whose Agent update is refused, such as an administrator whose administration
-      // ended after the IAM read, is told who saves the source instead of a Save they cannot
-      // use (finding 2949).
+      // ended after the IAM read, is not offered a Save they cannot use (finding 2949).
       const missingGrantWarning = (canSave = !updateDenied) =>
         grantWarning(
           "missing",
@@ -5643,8 +5599,8 @@ export async function renderAgentDetail(
         setStatusTone(feedback, "danger");
         feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
       }
-      // This administrator's console read the saved source's grant as missing: saving the source
-      // again grants it, which the shared wording names (finding 2260). The form is retained
+      // This administrator's console read the saved source's grant as missing: the deploy or a
+      // save of the source grants it, which the shared wording names (finding 2260). The form is retained
       // while another tab is shown, so the answer is applied even when this tab is parked.
       void data.harnessGrantMissing().then((missing) => {
         savedGrantMissing = missing;
@@ -5737,15 +5693,18 @@ export async function renderAgentDetail(
           if (credential && context.installationAdmin === false) {
             // Granting writes IAM policy, which needs Installation administration. The session
             // already knows this member lacks it, so it sends no grant that would be refused, and
-            // no IAM read either (findings 2109, 2259). The save is finished: the card rebuilds
-            // editable, with one status that says the deploy checks the Agent's access and who
-            // gives it, and Deploy is not held (findings 2547, D748).
+            // no IAM read either (findings 2109, 2259). The member's deploy gives the Agent
+            // operate on the source, which this save already needed the member to operate
+            // (RFC-0040). The save is finished: the card rebuilds editable, with one status that
+            // says so, and Deploy is not held (findings 2547, D748).
             if (context.isCurrent()) {
               context.drafts.forget("authentication");
               await refreshDraftInPlace({
                 agent: savedAgent,
-                saved: `Authentication source saved. ${credentialCheckedAtDeploy(
-                  credential.kind === "credential_source" ? "credential source" : "Secret",
+                saved: `Authentication source saved. ${credentialGrantedAtDeploy(
+                  credential.kind === "credential_source"
+                    ? "the selected credential source"
+                    : "the selected Secret",
                 )}`,
                 focus: "Save authentication source",
               });
@@ -5795,9 +5754,8 @@ export async function renderAgentDetail(
                 "warning",
               );
             } else {
-              // The shared classifier: a refused grant request (403) names who grants it and
-              // keeps Retry; a lost answer or a server error stays unconfirmed (findings 1920,
-              // 2259).
+              // The shared classifier: a refused grant request (403) keeps Retry; a lost answer or
+              // a server error stays unconfirmed (findings 1920, 2259).
               grantProblem = grantProblemFor(status) ?? "unconfirmed";
               say(
                 grantText(grantProblem) +

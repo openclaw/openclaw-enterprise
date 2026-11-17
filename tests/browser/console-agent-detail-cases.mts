@@ -4090,15 +4090,16 @@ export function registerSharingCredentialsAndChannelsCases(
       await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isVisible(),
       false,
     );
-    // No grant lets the Agent operate this source yet: the administrator's tab reads the IAM policy,
-    // names the step that grants it and holds Deploy (finding 2260).
+    // No grant lets the Agent operate this source yet: the administrator's tab reads the IAM policy
+    // and names the deploy and the step that grant it. Deploy is not held: the deploy writes the
+    // grant (RFC-0040; finding 2260).
     await page
       .getByText(
-        "This Agent has no access to its authentication credential source, so deploying it would be refused. Select Save authentication source to grant it.",
+        "This Agent has no access to its authentication credential source yet. Deploying grants this Agent access, or select Save authentication source to grant it now.",
         { exact: true },
       )
       .waitFor();
-    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+    await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
     const granted = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" && response.url().endsWith("/access-bindings"),
