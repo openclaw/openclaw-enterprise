@@ -304,28 +304,6 @@ export function protectedWiring(
   return plan;
 }
 
-/**
- * The runtime manifest a protected run's Harness gets inside Box. Compute's egress enrollment
- * (the plan the Harness would otherwise wait on, listening for Compute's signed release) is
- * consumed by the host, like the enrollment environment: the host verifies that release itself
- * and Box starts the command only after it, so the Harness starts released. The enrollment must
- * name this exact admitted plan; nothing else in the manifest changes.
- */
-export function releasedRuntimeManifest(content: string, plan: Record<string, unknown>): string {
-  const { egressEnrollment, ...released } = object(JSON.parse(content) as unknown);
-  const enrollment = object(egressEnrollment);
-  const reference = object(enrollment.plan);
-  if (
-    reference.id !== plan.id ||
-    reference.generation !== plan.generation ||
-    canonical(enrollment.execution) !== canonical(plan.execution) ||
-    enrollment.repositoryGitAuthorization !== plan.repositoryGitAuthorization
-  ) {
-    throw new Error("unadmitted_enrollment_manifest");
-  }
-  return JSON.stringify(released);
-}
-
 function releaseKey(value: string): KeyObject {
   try {
     const key = createPublicKey({
@@ -1314,14 +1292,7 @@ function admitted(
   return {
     command,
     environment,
-    files:
-      protectedPlan === undefined
-        ? files
-        : files.map((file) =>
-            file.name === "runtime.json"
-              ? { ...file, content: releasedRuntimeManifest(file.content, protectedPlan) }
-              : file,
-          ),
+    files,
     readOnly: [],
     writable: [...mounts.keys(), ...config.writableState],
     egress,
