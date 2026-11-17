@@ -455,6 +455,16 @@ function sanitizedEvent(
     ) {
       continue;
     }
+    if (key === "message" && eventName === "worker.compute-prepare-failed") {
+      // A Compute or Driver dependency message is prose: an apostrophe, comma or semicolon
+      // must not drop it ("Stop Agent; wait for shutdown"). Text that resembles a credential
+      // is still left out.
+      const text = typeof value === "string" ? loggedErrorText(value) : undefined;
+      if (text !== undefined && text !== WITHHELD_ERROR_TEXT) {
+        result.message = text;
+      }
+      continue;
+    }
     if (
       key === "candidatePreparationReached" &&
       (eventName !== "worker.compute-prepare-failed" || typeof value !== "boolean")

@@ -183,6 +183,19 @@ export function registerEventCases(): void {
     assert.equal(Object.hasOwn(logAt(output.lines, 1), "candidatePreparationReached"), false);
     assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
 
+    // Controller prose with punctuation stays: the operator recovery steps are the point.
+    const prose =
+      "Node credential unconfirmed. Stop Agent; wait for shutdown. Delete only node Secret ns-a/node-a, then redeploy.";
+    const before = output.lines.length;
+    emit({
+      event: "worker.compute-prepare-failed",
+      code: "KUBERNETES_DEPENDENCY_UNAVAILABLE",
+      step: "prepare_revision",
+      errorClass: "DependencyUnavailableError",
+      message: prose,
+    });
+    assert.equal(logAt(output.lines, before).message, prose);
+
     // A trusted Driver can accidentally return a printable URI in a preparation
     // diagnostic. The real worker emitter must contain it before writing stdout.
     const messages = [
