@@ -252,8 +252,14 @@ export interface SandboxDriver extends Driver {
    * hook credential directory, under it. Defaults to the Compute-owned Harness Pod's HOME.
    */
   readonly harnessHome?: string;
-  /** Consume only the native app-server transport verifier, never the Gateway's raw bearer.
-   * Applies to dedicated Harnesses whose endpoint the provider owns. */
+  /**
+   * Harness launch requirements (provisioning and activation) carry the transport token's
+   * verifier instead of the bearer Secret reference. Requires `provisionHarness` and
+   * `harnessEndpoint`; registration and Compute refuse it otherwise. The Driver's own hooks,
+   * such as `harnessStatus` and protected enrollment, still receive the transport token.
+   * Compute reads it on every reconcile, so a package upgrade that adds or removes it
+   * changes delivery for existing revisions at their next reconcile.
+   */
   readonly harnessTransportCredential?: "verifier";
   /**
    * Side-effect-free validation for initial workspace files this provider-owned Harness can
