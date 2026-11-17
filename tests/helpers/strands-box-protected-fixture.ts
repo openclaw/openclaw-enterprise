@@ -563,6 +563,9 @@ export async function pairedFixture(
     withdrawn: false,
     /** OCC's delivery-row fence: a new lease or a replaced delivery moves it. */
     fence: 1,
+    /** While set, `observe` waits for it: a slow OCE read the Worker must not outlive. */
+    observeHold: undefined as Promise<void> | undefined,
+    observeHeld: false,
     observed: 0,
     installs: 0,
     confirms: 0,
@@ -596,6 +599,10 @@ export async function pairedFixture(
     recipients: {
       async observe(installation) {
         state.observed++;
+        if (state.observeHold !== undefined) {
+          state.observeHeld = true;
+          await state.observeHold;
+        }
         // As OCC: no fence for an unknown recipient, for an installation other than the one it
         // committed for the revision, or while an install intent is pending.
         if (

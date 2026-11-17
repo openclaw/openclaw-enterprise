@@ -1005,6 +1005,23 @@ test(
     release();
     assert.deepEqual(await answered, { refusal: "execution_mismatch" });
     assert.deepEqual(secretReads(kube, reads), []);
+    // Retired while the Worker was reading OCE's state for the ask: refused after that read.
+    await binding.reconcile!(signal);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
+    let resume!: () => void;
+    f.state.observeHold = new Promise<void>((resolve) => (resume = resolve));
+    const during = f.forge(forged());
+    const observing = Date.now() + 10_000;
+    while (!f.state.observeHeld) {
+      assert.ok(Date.now() < observing, "the Worker did not read OCE's state");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const readsDuring = kube.calls.length;
+    assert.equal(await f.proxy.removeRevision!({ ...f.context, revision: f.revision } as never), true);
+    f.state.observeHold = undefined;
+    resume();
+    assert.deepEqual(await during, { refusal: "route_not_ready" });
+    assert.deepEqual(secretReads(kube, readsDuring), []);
   },
 );
 
