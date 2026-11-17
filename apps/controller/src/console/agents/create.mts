@@ -3951,6 +3951,23 @@ function renderAgentForm(
     clearSecretConflictFeedback();
     updateControls();
     feedback.textContent = "";
+    if (!savedAgent && body.modelProviderId) {
+      const chosenCredential = namedProviders.credential.value;
+      await namedProviders.loadCredentials(chosenCredential);
+      if (
+        !context.isCurrent() ||
+        !chosenCredential ||
+        namedProviders.credential.value !== chosenCredential
+      ) {
+        endCreate();
+        pending = false;
+        if (context.isCurrent()) {
+          updateControls();
+          namedProviders.credential.focus();
+        }
+        return;
+      }
+    }
     // A typed key becomes a new Secret that the next requests bind. It gets no Secret operate
     // grant of its own, so where operate is denied on a readable Secret (granted per Secret)
     // they would refuse it after the Secret and Configuration were saved: refuse it first, as

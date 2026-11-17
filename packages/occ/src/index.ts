@@ -1928,6 +1928,23 @@ function modelProviderView(provider: Readonly<ModelProvider>): ModelProviderView
   return { ...provider, settingsFingerprint };
 }
 
+function modelProviderGrantMatches(
+  provider: Readonly<ModelProvider>,
+  template: Readonly<ConnectionTemplate> | undefined,
+  grant: CredentialSource["staticKeyGrant"],
+): boolean {
+  return (
+    template?.current.mode === "static_bearer" &&
+    template.current.baseUrl === provider.baseUrl &&
+    template.current.protocol === provider.protocol &&
+    grant !== undefined &&
+    grant.connectionTemplateId === provider.connectionTemplateId &&
+    grant.baseUrl === provider.baseUrl &&
+    grant.protocol === provider.protocol &&
+    isDeepStrictEqual(grant.privatePeer, template.current.privatePeer)
+  );
+}
+
 async function requireModelProviderGrant(
   state: PlatformReadView,
   provider: Readonly<ModelProvider>,
@@ -1936,16 +1953,7 @@ async function requireModelProviderGrant(
   const template = await state.connectionTemplates.findConnectionTemplate(
     provider.connectionTemplateId,
   );
-  if (
-    template?.current.mode !== "static_bearer" ||
-    template.current.baseUrl !== provider.baseUrl ||
-    template.current.protocol !== provider.protocol ||
-    !grant ||
-    !isDeepStrictEqual(template.current.privatePeer, grant.privatePeer) ||
-    grant.connectionTemplateId !== provider.connectionTemplateId ||
-    grant.protocol !== provider.protocol ||
-    grant.baseUrl !== provider.baseUrl
-  ) {
+  if (!modelProviderGrantMatches(provider, template, grant)) {
     throw new ResourceStateConflictError(
       "The selected credential does not approve this Model Provider's Connection Template, destination, and API format.",
     );
@@ -9661,17 +9669,32 @@ export class OpenClawController {
   async listCredentialSources(
     principalId: string,
     namespaceId: string,
+    modelProviderId?: string,
   ): Promise<readonly Readonly<CredentialSourceMetadata>[]> {
     const namespace = await this.getNamespace(principalId, namespaceId);
+    if (modelProviderId !== undefined) {
+      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    }
     return this.read(async (state) => {
+      const provider =
+        modelProviderId === undefined
+          ? undefined
+          : await state.modelProviders.findModelProvider(modelProviderId);
+      if (modelProviderId !== undefined && !provider) {
+        throw new ScopeViolationError("The Model Provider does not exist.");
+      }
+      const template =
+        provider &&
+        (await state.connectionTemplates.findConnectionTemplate(provider.connectionTemplateId));
       const readable: Readonly<CredentialSourceMetadata>[] = [];
       for (const source of await state.credentialSources.listCredentialSources(namespace.id)) {
+        const target = { kind: "credential_source" as const, id: source.id, namespaceId };
         if (
-          await this.canRead(principalId, {
-            kind: "credential_source",
-            id: source.id,
-            namespaceId: namespace.id,
-          })
+          (await this.canRead(principalId, target)) &&
+          (!provider ||
+            (source.state === "ready" &&
+              modelProviderGrantMatches(provider, template, source.staticKeyGrant) &&
+              (await this.authorizationDecision(principalId, "operate", target)).decision.allowed))
         ) {
           readable.push(this.credentialSourceMetadata(source));
         }

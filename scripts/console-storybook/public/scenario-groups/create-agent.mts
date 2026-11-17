@@ -2593,7 +2593,7 @@ export const createAgentOutcomeScenarios = {
     credentialSourceTypes: modelCredentialSourceTypes,
     actions: form,
     description:
-      "Choose Internal vLLM. Register a key for its connection template in Credentials before creating the Agent.",
+      "Choose Internal vLLM. The credential picker directs you to register a key approved for the current connection template.",
   },
   createModels: {
     group: "Pages/Create Agent",

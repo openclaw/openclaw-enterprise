@@ -28,25 +28,23 @@ export function namedProviderChoices(context: CreateAgentContext, picker: HTMLSe
     }
     help.textContent = "Loading credentials…";
     try {
-      const sources = (await context.request(
-        ns + "/credential-sources",
+      const eligible = (await context.request(
+        ns + "/credential-sources?modelProviderId=" + encodeURIComponent(provider.id),
       )) as CredentialSourceMetadata[];
       if (!context.isCurrent() || request !== requestNumber || picker.value !== provider.id) {
         return;
       }
-      const eligible = sources.filter(
-        (source) =>
-          source.namespaceId === context.namespaceId &&
-          source.state === "ready" &&
-          source.staticKeyGrant?.connectionTemplateId === provider.connectionTemplateId &&
-          source.staticKeyGrant.baseUrl === provider.baseUrl &&
-          source.staticKeyGrant.protocol === provider.protocol,
-      );
       credential.append(...eligible.map((source) => option(source.id, source.name)));
       credential.value = eligible.some((source) => source.id === id) ? id : "";
-      help.textContent = eligible.length
-        ? ""
-        : "Register a key for this provider’s connection template in Credentials.";
+      if (id && !credential.value) {
+        help.textContent =
+          "The selected credential is no longer available for this provider. Choose an approved credential or register a key for its current connection template in Credentials.";
+      } else if (!eligible.length) {
+        help.textContent =
+          "Register a key for this provider’s current connection template in Credentials.";
+      } else {
+        help.textContent = "";
+      }
     } catch (error) {
       if (context.isCurrent() && request === requestNumber) {
         help.textContent =

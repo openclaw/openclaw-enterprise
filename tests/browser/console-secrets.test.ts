@@ -54,6 +54,7 @@ import {
   pathRequests,
   settledView,
 } from "./console-agents-browser-helpers.ts";
+import { grantMember } from "../helpers/console-app.mjs";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { responseTo } from "./console-action-helpers.ts";
 
@@ -131,6 +132,28 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     connectionTemplateVersion: 1,
   });
 
+  // A creator can discover approved sources without reading the admin template or raw Secret.
+  const member = await fixture.createNamespaceMember("provider-picker", namespace.id, [
+    ["read", "namespace"],
+    ["read", "credential_source"],
+  ]);
+  const memberSession = await fixture.signIn(member.credentials);
+  const filteredPath =
+    "/namespaces/" + namespace.id + "/credential-sources?modelProviderId=" + provider.id;
+  const memberChoices = () => fixture.request("GET", filteredPath, { session: memberSession });
+  assert.equal((await memberChoices()).status, 403);
+  grantMember(fixture, "provider-picker", [["create", "agent"]]);
+  assert.deepEqual((await memberChoices()).data, []);
+  grantMember(fixture, "provider-picker", [["operate", "credential_source"]]);
+  assert.deepEqual(
+    (await memberChoices()).data.map((item: CredentialSourceMetadata) => item.id),
+    [key.id],
+  );
+  assert.equal(
+    (await fixture.request("GET", "/connection-templates", { session: memberSession })).status,
+    403,
+  );
+
   // This Installation saves drafts. An existing approved key can be reused without registering another source.
   await page.goto(fixture.origin + "/console/agents/new?namespace=" + namespace.id);
   const start = page.getByRole("button", { name: "Start without Preset" });
@@ -146,6 +169,40 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     await page.getByLabel("Models offered by this provider").inputValue(),
     "research-model",
   );
+  const updateReceiver = async (address: string) => {
+    const edited = await fixture.request(
+      "PATCH",
+      "/connection-templates/" + provider.connectionTemplateId,
+      {
+        body: {
+          displayName: "Research key",
+          mode: "static_bearer",
+          baseUrl: modelProvider.baseUrl,
+          protocol: "openai-responses",
+          privatePeer: { kind: "private_ipv4", address },
+        },
+      },
+    );
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    return edited.data.current.version;
+  };
+  // A creator can leave this form open while an administrator changes the receiver.
+  // Recheck before the first write, remove the stale selection and explain reapproval.
+  const credentialPicker = page.getByLabel("Inference credential", { exact: true });
+  assert.equal(await updateReceiver("10.20.30.41"), 2);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByText("The selected credential is no longer available for this provider.", {
+      exact: false,
+    })
+    .waitFor();
+  assert.equal(await credentialPicker.inputValue(), "");
+  assert.equal(await credentialPicker.locator("option").filter({ hasText: key.name }).count(), 0);
+  // Reinstating the receiver approved in v1 makes that same credential eligible in v3.
+  assert.equal(await updateReceiver("10.20.30.40"), 3);
+  await providerPicker.selectOption("openai");
+  await providerPicker.selectOption({ label: "Research inference" });
+  await credentialPicker.selectOption({ label: key.name });
   const savedAgent = responseTo(
     page,
     "POST",

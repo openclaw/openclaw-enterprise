@@ -24,6 +24,8 @@ and uncertain-registration stories. An empty authorization uses OpenAI's default
 destination. Pending registration locks its configuration. Check registration before editing
 a refused request; uncertain registration reuses the same request. Switching to account authentication hides source configuration.
 
+In **Pages/Create Agent → Saved model provider without a credential**, select Internal vLLM and check that the picker directs the creator to Credentials for a key approved for the current template.
+
 ## Correct an edited model catalog
 
 Open **Pages/Create Agent → Model choices before credential entry**. Use the
