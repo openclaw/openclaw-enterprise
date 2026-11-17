@@ -225,7 +225,7 @@ for (const owner of owners) {
   });
 }
 
-test("protected repository startup closes an external registration it refuses", async () => {
+test("the external protected factory closes a registration it refuses", async () => {
   const selection = {
     id: "external-protected",
     implementation: "external-release-fixture",
@@ -234,22 +234,12 @@ test("protected repository startup closes an external registration it refuses", 
   };
   const { calls } = releaseFixture;
   const closed = calls.close;
-  // The release fixture has Sandbox and Credential Proxy, but no repository Git transport.
-  await assert.rejects(
-    createExternalProtectedDriver(releaseFixture, selection, "authority", true),
-    {
-      name: "DriverSelectionError",
-      message:
-        "Protected repository Git requires the selected Driver's Sandbox access and Credential Proxy transport.",
-    },
-  );
-  assert.equal(calls.close, closed + 1, "the refused registration is closed");
   const accepted = await createExternalProtectedDriver(releaseFixture, selection);
-  assert.equal(calls.close, closed + 1, "an accepted registration stays open");
+  assert.equal(calls.close, closed, "an accepted registration stays open");
   await accepted.close();
-  assert.equal(calls.close, closed + 2);
+  assert.equal(calls.close, closed + 1);
 
-  // A registration missing a capability is closed too, and a failing close keeps the refusal.
+  // A registration missing a capability is closed, and a failing close keeps the refusal.
   let closes = 0;
   const partial = (close: () => void) => ({
     ...releaseFixture,

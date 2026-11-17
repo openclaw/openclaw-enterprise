@@ -458,8 +458,6 @@ export async function createExternalProtectedDriver(
   selection: SelectedDriverConfiguration,
   // Composition that changes the installed authority must also change its durable identity.
   repositoryAuthorityIdentity?: string,
-  // Protected repository delivery selected this package as its repository Git sender.
-  repositoryGit = false,
 ): Promise<InstalledDriver> {
   const { id, configuration } = selection;
   const registration = asRecord(
@@ -479,9 +477,6 @@ export async function createExternalProtectedDriver(
     );
     owner.require("sandbox");
     owner.require("credential_proxy");
-    if (repositoryGit) {
-      owner.requireRepositoryGitTransport();
-    }
     return owner;
   } catch (error) {
     try {

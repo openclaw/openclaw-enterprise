@@ -845,7 +845,7 @@
         "external-repository-fixture registers its real structured validator and rejects malformed input safely",
         "github registers its real structured validator and rejects malformed input safely",
         "openshell registers its real structured validator and rejects malformed input safely",
-        "protected repository startup closes an external registration it refuses",
+        "the external protected factory closes a registration it refuses",
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
