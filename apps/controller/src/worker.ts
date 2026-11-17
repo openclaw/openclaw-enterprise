@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type { PredecessorReplacement } from "@openclaw-enterprise/occ";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
@@ -2266,6 +2268,7 @@ export class ControllerWorker {
     previous: Readonly<AgentRevision>,
     candidate: Readonly<AgentRevision>,
     executionIdentity?: string,
+    completionWindowMs?: number,
   ): Promise<Readonly<PredecessorReplacement> | undefined> {
     const saved = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
@@ -2291,6 +2294,15 @@ export class ControllerWorker {
         phase: "pre-stop",
         beginCompletion: true,
         ...(executionIdentity === undefined ? {} : { executionIdentity }),
+        ...(completionWindowMs === undefined
+          ? {}
+          : {
+              completionClaim: {
+                idempotencyKey: claim.idempotencyKey,
+                claimToken: claim.claimToken,
+                windowMs: completionWindowMs,
+              },
+            }),
       });
     }, this.queueOptions);
     if (saved !== undefined) {
@@ -2303,6 +2315,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     previous: Readonly<AgentRevision>,
     candidate: Readonly<AgentRevision>,
+    completionWindowMs?: number,
   ): Promise<void> {
     const report = (outcome: string) =>
       this.emit({
@@ -2321,7 +2334,13 @@ export class ControllerWorker {
       }
       return;
     }
-    const operation = await this.recordCompletionWait(claim, previous, candidate);
+    const operation = await this.recordCompletionWait(
+      claim,
+      previous,
+      candidate,
+      undefined,
+      completionWindowMs,
+    );
     if (operation?.completionStartedAt === undefined) {
       return;
     }
@@ -2340,10 +2359,20 @@ export class ControllerWorker {
             ? {}
             : { expectedExecutionIdentity: operation.executionIdentity }),
           recordExecutionIdentity: async (identity) =>
-            (await this.recordCompletionWait(claim, previous, candidate, identity))
-              ?.executionIdentity === identity,
+            (
+              await this.recordCompletionWait(
+                claim,
+                previous,
+                candidate,
+                identity,
+                completionWindowMs,
+              )
+            )?.executionIdentity === identity,
           commitStopping: async (identity) => {
-            if ((await this.recordPredecessorStop(claim, previous, identity)) === undefined) {
+            if (
+              (await this.recordPredecessorStop(claim, previous, identity, completionWindowMs)) ===
+              undefined
+            ) {
               throw new WorkClaimLostError();
             }
           },
@@ -2372,6 +2401,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     previous: Readonly<AgentRevision>,
     executionIdentity?: string,
+    completionWindowMs?: number,
   ): Promise<Readonly<PredecessorReplacement> | undefined> {
     const saved = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
@@ -2392,6 +2422,9 @@ export class ControllerWorker {
           (operation.completionStartedAt !== undefined &&
             operation.executionIdentity !== undefined))
       ) {
+        if (completionWindowMs !== undefined) {
+          return undefined;
+        }
         await queue.defer(claim, { code: "PREDECESSOR_STOP_RETARGETED" });
         return "retargeted" as const;
       }
@@ -2402,6 +2435,18 @@ export class ControllerWorker {
         predecessorRevisionId: previous.id,
         candidateRevisionId: claim.revisionId,
         phase: "stopping",
+        ...(completionWindowMs === undefined
+          ? {}
+          : {
+              completionClaim: {
+                idempotencyKey: claim.idempotencyKey,
+                claimToken: claim.claimToken,
+                windowMs: completionWindowMs,
+              },
+            }),
+        ...(completionWindowMs === undefined || executionIdentity === undefined
+          ? {}
+          : { executionIdentity }),
       });
     }, this.queueOptions);
     if (saved === "retargeted") {
@@ -3194,9 +3239,9 @@ export class ControllerWorker {
    * Stops a revision whose Gateway drain may yield: a stopped Agent's revision, or a predecessor
    * that exclusive replacement stops before its successor starts. While the work is younger than
    * the convergence deadline, the Gateway drain wait ends once other Work is due
-   * (ComputeStopYieldedError) and the work is deferred to repeat the stop. Older work
-   * yields only to replacement work with a recorded completion wait, so the serial worker can
-   * renew the other Gateway's lease. Age counts from the work's creation. Stops that yielded
+   * (ComputeStopYieldedError) and the work is deferred to repeat the stop. An overdue Gateway
+   * drain keeps its invocation and lets the worker renew another Gateway's recorded completion
+   * lease. Age counts from the work's creation. Stops that yielded
    * during their own drain do not count as due Work (see withClaimHeartbeat; finding 1093).
    */
   private stopYieldingDrain(claim: ClaimedWork, revision: Readonly<AgentRevision>): Promise<void> {
@@ -6197,6 +6242,84 @@ export class ControllerWorker {
     return true;
   }
 
+  private async renewWaitingPredecessor(): Promise<void> {
+    if (this.stopping) {
+      return;
+    }
+    const claim = await this.queue.claim({
+      predecessorCompletionWindowMs: PLANNED_COMPLETION_WAIT_MS,
+    });
+    if (claim === undefined) {
+      return;
+    }
+    this.workOrigins.set(claim, performance.now() - claim.ageMs);
+    let code = "PREDECESSOR_COMPLETION_RECHECK";
+    let delayMs = this.stopYieldRecheckMs(claim);
+    try {
+      const { namespace, agent, previous, revision } = await this.state.read(async (view) => {
+        const namespace = await view.namespaces.findNamespace(claim.namespaceId);
+        const agent = await view.agents.findAgent(claim.namespaceId, claim.agentId!);
+        const revision = await view.revisions.findRevision(
+          claim.namespaceId,
+          claim.agentId!,
+          claim.revisionId!,
+        );
+        const previous =
+          agent?.activeRevisionId === undefined
+            ? undefined
+            : await view.revisions.findRevision(
+                claim.namespaceId,
+                agent.id,
+                agent.activeRevisionId,
+              );
+        return { namespace, agent, previous, revision };
+      });
+      if (
+        namespace?.status !== "ready" ||
+        agent?.status !== "active" ||
+        agent.desiredRuntimeState !== "running" ||
+        revision === undefined ||
+        previous === undefined ||
+        previous.revision >= revision.revision ||
+        agent.servicePrincipalId !== revision.servicePrincipalId ||
+        this.compute.canWaitForPredecessorCompletion?.(previous, revision) !== true ||
+        !this.revisionPluginDriverAvailable(revision)
+      ) {
+        return;
+      }
+      if (revision.repositoryCredentials !== undefined) {
+        await this.assertRepositoryAuthority(claim, revision);
+        this.repositoryCredentials.validate(revision);
+      } else if (
+        (await this.authorizeRevision(claim, agent, revision)) !== undefined ||
+        (await this.resolveRevisionBackend(revision)) !== undefined
+      ) {
+        return;
+      }
+      const secretContext = await this.resolveRevisionSecretContext(revision);
+      if ("result" in secretContext) {
+        return;
+      }
+      this.validateExecutionAdmission(revision);
+      await this.waitForPlannedCompletion(claim, previous, revision, PLANNED_COMPLETION_WAIT_MS);
+      if (this.completionWaits.get(claim)?.phase === "stopping") {
+        delayMs = 1;
+      }
+    } catch (error) {
+      if (error instanceof PredecessorCompletionWaitingError) {
+        code = "PREDECESSOR_COMPLETION_WAITING";
+      } else if (!(error instanceof RepositoryCredentialAuthorityError)) {
+        throw error;
+      }
+    } finally {
+      // The ordinary pass owns refusal handling, physical stop and candidate preparation.
+      // Releasing this claim refunds its attempt, including after committing the stop boundary.
+      if (!this.stopping) {
+        await this.queue.defer(claim, { code }, { delayMs });
+      }
+    }
+  }
+
   private async withClaimHeartbeat<T>(
     claim: ClaimedWork,
     effect: (signal: AbortSignal) => Promise<T>,
@@ -6277,6 +6400,8 @@ export class ControllerWorker {
     // Readiness callbacks must not delay Compute or the next claim renewal.
     // health() serializes its own updates and reports failures separately.
     void this.health(false);
+    const workerContext = AsyncLocalStorage.snapshot();
+    let renewal: Promise<void> | undefined;
     try {
       // The worker is serial: Compute may end an optional in-pass wait early
       // when other Work could be claimed, instead of holding it back (D221).
@@ -6287,14 +6412,29 @@ export class ControllerWorker {
       // run to its own end (findings 1093, 1090, 1108).
       return await withComputeAbortSignal(operation.signal, () =>
         withComputeWorkWaiting(
-          (wait) =>
-            wait === "predecessor-completion"
-              ? this.queue.claimableWorkWaiting({ predecessorCompletionOnly: true })
-              : this.queue.claimableWorkWaiting({ except: this.stopYields.waiting(wait) }),
+          async (wait) => {
+            if (wait !== "predecessor-completion") {
+              return this.queue.claimableWorkWaiting({ except: this.stopYields.waiting(wait) });
+            }
+            // An overdue stop keeps its original deadline. Claim only renewal work so
+            // an older unrelated operation cannot occupy the only worker first.
+            renewal ??= workerContext(() => this.renewWaitingPredecessor())
+              .catch((error: unknown) => {
+                this.emit({
+                  event: "worker.error",
+                  code: workerPassErrorCode(error),
+                });
+              })
+              .finally(() => {
+                renewal = undefined;
+              });
+            return false;
+          },
           () => effect(operation.signal),
         ),
       );
     } finally {
+      await renewal;
       clearInterval(heartbeat);
       this.abort.signal.removeEventListener("abort", stopping);
       await pending.catch(() => {});

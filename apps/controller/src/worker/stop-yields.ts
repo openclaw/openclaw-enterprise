@@ -185,8 +185,8 @@ export function stopYieldedCode(error: unknown): StopYieldedCode | undefined {
  * Runs a Compute stop for work `ageMs` old. Before the convergence deadline its Gateway drain
  * wait ends once other Work is due (ComputeStopYieldedError), and the caller defers the work to
  * repeat the stop; the Harness's own waits never yield, so the Harness is deleted only after the
- * Gateway's Pods are gone. After the deadline, only a due predecessor completion can yield the
- * Gateway wait. Its fixed cutoff bounds how long that completion can take priority.
+ * Gateway's Pods are gone. After the deadline the Gateway poll lets the worker claim a due
+ * predecessor completion renewal while the stop continues.
  */
 export function stopWithDrainYield<Result>(
   ageMs: number,

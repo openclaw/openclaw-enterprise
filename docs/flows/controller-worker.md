@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-14"
-last_updated_session: "authoring-run/1be06605-515e-4261-8b21-d0d796809916"
+updated: "2026-11-16"
+last_updated_session: "authoring-run/8226412c-dab2-4991-8e9a-5ecd9677f5d2"
 ---
 
 # Controller Worker Flow
@@ -177,10 +177,9 @@ and rejects ownership or Compute-Driver mismatches before teardown.
 Namespace dispatch uses `OpenClawController.observeNamespaceLifecycle` and
 `packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle` for
 [ordered, claim-cancelled setup and cleanup](../reference/drivers/namespace-lifecycle.md).
-Results join claim-protected audit evidence. Version
-dispatch optionally binds the exact Agent, then calls `prepareRevision` with its
-immutable snapshot. A wrong owner or invalid observation fails permanently;
-a pending observation defers convergence.
+Results join claim-protected audit evidence. Version dispatch can bind the Agent
+before `prepareRevision` uses its immutable snapshot. A wrong owner or invalid
+observation fails permanently. A pending observation defers convergence.
 
 When Compute's `requiresStoppedPredecessors` capability is set,
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
@@ -195,18 +194,22 @@ against the immutable version; the
 [plugin startup warnings contract](../reference/drivers/compute.md#plugin-startup-warnings)
 defines when warnings permit deployment.
 
-Agent-stop dispatch captures and validates the Agent's versions on the current
-Compute. It stops the selected version first, then the rest, even without an
-active pointer, including terminal candidates and predecessors whose retirement
-failed. Other Computes' versions are excluded, but an active one fails closed.
-Before each shutdown, the worker rechecks the Agent owner and stopped desired state;
-later admissions are not added. Partial failure retries idempotent shutdowns,
-keeping the active pointer and retained workspace data. Before the convergence
-deadline, a stopped Agent's Gateway drain, here or in version work, yields to due
-work (`withYieldingGatewayDrain`) as `AGENT_STOP_YIELDED`, refunding the attempt.
-Drains ignore yielded stops. Overdue stops yield only to due
-[planned completion](../reference/agents/planned-replacement.md#bounded-predecessor-completion)
-work. Other waits ignore yielded stops except predecessors'.
+Agent-stop dispatch stops the selected revision first, then other owned revisions,
+including failed candidates and predecessors that failed retirement. It also works
+without a selected revision. It skips revisions on other Compute Drivers and fails
+if one is selected. Before each stop it checks that the Agent still wants to stop.
+It leaves later admissions, the selected revision pointer, and workspace data intact.
+Failures retry the same stops.
+
+Before the convergence deadline, `withYieldingGatewayDrain` lets a Gateway drain
+yield to due Work as `AGENT_STOP_YIELDED` and refunds the attempt. Drains ignore
+yielded stops. Other waits ignore them except for predecessor stops.
+
+An overdue Gateway drain continues while `ControllerWorker.renewWaitingPredecessor`
+claims one due [renewal](../reference/agents/planned-replacement.md#bounded-predecessor-completion)
+at a time. The worker rechecks authorization. PostgreSQL checks the
+claim, predecessor, candidate, process identity, and cutoff before renewal or
+committing `stopping`. Ordinary dispatch resumes physical stop and preparation.
 
 Before shutdown or retirement, including stopped-version recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
@@ -220,16 +223,13 @@ runtime credentials but cannot delete them fails permanently before binding or
 retirement. Compute retirement owns workload termination and Sandbox cleanup;
 the worker invokes neither independently.
 
-`withClaimHeartbeat()` renews before each effect and every third of the lease
-duration, so sequences of short effects cannot starve renewal. Lease loss,
-heartbeat failure, or shutdown aborts Compute and raises `WorkClaimLostError`;
-expired or replaced claim tokens cannot publish results. An unanswered renewal
-(such as on a silent database connection) cannot extend the claim: Compute aborts
-when the last confirmed lease, measured from that renewal's send time, runs out,
-before another worker could recover the claim; an in-flight request can still
-complete. Successful renewals
-request throttled health updates without delaying effects or renewal; health
-failure does not imply lease loss.
+`withClaimHeartbeat()` renews before each effect and at one-third lease intervals.
+Shutdown, renewal failure, or lease loss aborts Compute and raises
+`WorkClaimLostError`. An unanswered renewal leaves the last confirmed lease in
+effect, measured from its send time. Compute aborts when that lease runs out,
+before another worker can recover the claim. In-flight requests can still finish,
+but expired or replaced claims cannot publish results. Renewals request throttled
+health updates without waiting for them.
 
 The [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 and [Docker execution flow](docker-compose-development.md) own infrastructure and
@@ -424,6 +424,8 @@ the worker then rechecks permission to deploy.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 19:58: Describe renewal during an overdue Gateway drain. (authoring-run/8226412c-dab2-4991-8e9a-5ecd9677f5d2 - d23297ecc93aad925e3d64c30dd59463f851fcd6)
 
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 

@@ -2085,30 +2085,35 @@ revisionTest(
 );
 
 revisionTest(
-  "one worker renews a completion wait during another Agent's overdue Gateway stop",
+  "an overdue Gateway stop services a due renewal ahead of older unrelated Work",
   async (fixture) => {
-    const waiting = await fixture.agent("renewal-waiting", { executionMode: "dedicated" });
-    const stopping = await fixture.agent("renewal-stopping", { executionMode: "dedicated" });
+    const waiting = await fixture.agent("mixed-queue-waiting", { executionMode: "dedicated" });
+    const stopping = await fixture.agent("mixed-queue-stopping", { executionMode: "dedicated" });
+    const unrelated = await fixture.agent("mixed-queue-unrelated", { executionMode: "dedicated" });
     const driver = countingExclusiveCompute(fixture);
     const deadlines: number[] = [];
-    let yielded = false;
-    let renewedAfterYield = false;
+    const effects: string[] = [];
+    let stoppingGateway = false;
+    const releaseUnrelated = Promise.withResolvers<void>();
     driver.compute.canWaitForPredecessorCompletion = () => true;
     driver.compute.waitForPredecessorCompletion = async (_revision, context) => {
       deadlines.push(context.deadlineAtMs);
-      if (!yielded) {
+      assert.equal(await context.recordExecutionIdentity("waiting-executor"), true);
+      if (deadlines.length === 1) {
         return "waiting";
       }
-      renewedAfterYield = true;
-      assert.equal(await context.recordExecutionIdentity("waiting-executor"), true);
+      assert.equal(context.expectedExecutionIdentity, "waiting-executor");
       await context.commitStopping("waiting-executor");
+      effects.push(stoppingGateway ? "renewed-during-stop" : "renewed-after-stop");
       return "ready";
     };
 
     await fixture.start(driver.compute);
     const original = await fixture.revision(waiting, 1);
     await fixture.work(original, "succeeded");
-    const other = await fixture.revision(stopping, 1);
+    const draining = await fixture.revision(stopping, 1);
+    await fixture.work(draining, "succeeded");
+    const other = await fixture.revision(unrelated, 1);
     await fixture.work(other, "succeeded");
     await fixture.stop();
 
@@ -2123,31 +2128,67 @@ revisionTest(
     );
     await fixture.stop();
 
+    const stopped = await fixture.requestStop(stopping);
+    const unrelatedStop = await fixture.requestStop(unrelated);
+    // Both Stops precede A's due renewal in FIFO order. B must keep its original
+    // stop invocation while A renews, even though C could take a yielded slot.
+    await fixture.observerPool.query(
+      `UPDATE occ.controller_work
+       SET available_at = clock_timestamp() - CASE idempotency_key
+           WHEN $1 THEN interval '3 seconds'
+           WHEN $2 THEN interval '2 seconds'
+           ELSE interval '1 second'
+         END
+       WHERE idempotency_key IN ($1, $2, $3)`,
+      [stopped.idempotencyKey, unrelatedStop.idempotencyKey, candidate.idempotencyKey],
+    );
     const stop = driver.compute.stopRevision.bind(driver.compute);
     driver.compute.stopRevision = async (revision) => {
-      if (revision.id === other.id && !yielded) {
-        // Keep the simulated Pod terminating until the actual worker exposes due completion work.
-        await waitFor(
-          "the overdue stop yielding to completion work",
-          async () => (await computeStopShouldYield("gateway")) || undefined,
-        );
-        yielded = true;
-        throw new ComputeStopYieldedError("The Gateway Pod is still terminating.");
+      if (revision.id === other.id) {
+        effects.push("unrelated-stop");
+        // Keep C claimed until the test can read the durable state of A's queued work.
+        await releaseUnrelated.promise;
+      }
+      if (revision.id === draining.id && effects.length === 0) {
+        stoppingGateway = true;
+        try {
+          await waitFor("renewal during B's Gateway drain", async () => {
+            if (await computeStopShouldYield("gateway")) {
+              throw new ComputeStopYieldedError("The Gateway Pod is still terminating.");
+            }
+            return effects.length > 0 || undefined;
+          });
+        } finally {
+          stoppingGateway = false;
+        }
       }
       await stop(revision);
     };
 
-    const stopped = await fixture.requestStop(stopping);
-    // Work ages on PostgreSQL's clock even while the worker is offline. Give the stop a
-    // shorter ordinary convergence budget without changing the completion cutoff.
+    // The convergence age uses PostgreSQL's clock. Let B become overdue before
+    // the single worker claims it. A's fixed 30-minute wait remains live.
     await new Promise((resolve) => setTimeout(resolve, 1100));
     await fixture.start(driver.compute, { convergenceTimeoutMs: 1000, emit: observe });
-    await fixture.work(candidate, "succeeded");
+    try {
+      const firstEffect = await waitFor("first competing queue effect", () => effects[0]);
+      if (firstEffect === "unrelated-stop") {
+        const { rows } = await fixture.observerPool.query(
+          `SELECT state, available_at <= clock_timestamp() AS due FROM occ.controller_work
+           WHERE idempotency_key = $1`,
+          [candidate.idempotencyKey],
+        );
+        assert.fail(`C claimed the worker first. A's Work: ${JSON.stringify(rows[0])}`);
+      }
+      assert.equal(firstEffect, "renewed-during-stop");
+    } finally {
+      releaseUnrelated.resolve();
+    }
+
     await fixture.work(stopped, "succeeded");
-    assert.ok(renewedAfterYield);
+    await fixture.work(unrelatedStop, "succeeded");
+    await fixture.work(candidate, "succeeded");
     assert.equal(new Set(deadlines).size, 1);
-    assert.equal(driver.count(original), 1);
-    assert.equal(driver.count(other), 1);
+    assert.equal(driver.count(draining), 1);
     assert.equal(await activeRevisionId(fixture, waiting), candidate.id);
   },
 );
