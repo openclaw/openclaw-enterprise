@@ -15,6 +15,12 @@ type ToolInstallation =
       /** Hash the installed binary for the actual platform (e.g. linux-arm64). Reject missing pins. */
       readonly binarySha256ByPlatform: Readonly<Record<string, string>>;
     }
+  | {
+      /** Selection before native lookup. This identity alone cannot satisfy artifact verification. */
+      readonly kind: "codex-marketplace-selection";
+      readonly marketplaceName: string;
+      readonly nativePluginId: string;
+    }
   | { readonly kind: "openclaw-package"; readonly package: string; readonly integrity: string }
   | {
       readonly kind: "hosted-mcp";

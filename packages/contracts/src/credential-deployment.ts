@@ -68,15 +68,21 @@ export type DeploymentCredentialBinding =
     readonly bindingRef: string;
   } & (
       | {
-          readonly consumer:
-            | {
-                readonly kind: "plugin";
-                readonly pluginId: string;
-                readonly requirement: string;
-                readonly connection: string;
-              }
-            | { readonly kind: "model"; readonly providerId: string };
+          readonly consumer: {
+            readonly kind: "plugin";
+            readonly pluginId: string;
+            readonly requirement: string;
+            readonly connection: string;
+          };
           readonly projection: BearerCredentialProjection;
+        }
+      | {
+          readonly consumer: { readonly kind: "model"; readonly providerId: string };
+          /** The admitted model profile selects the header. The proxy must support that exact placement. */
+          readonly projection: {
+            readonly environment: string;
+            readonly presentation: "bearer" | "x-api-key";
+          };
         }
       | {
           readonly consumer: { readonly kind: "repository"; readonly repositoryId: string };
