@@ -199,23 +199,6 @@ equal to the live state, so the script accepts them. Agents deployed afterward
 get the API-proxy rule. Recreating with `occ dev down` and `scripts/dev-up` also adds the
 field, but discards the database, Agents, and volumes.
 
-`dev-up` sets `database.cidrs` and `cluster.cidrs` to the PostgreSQL Pod and
-Kubernetes API addresses at bring-up. These addresses can change after a restart.
-The launcher's `openclaw-development-*-egress` policies select the API, worker
-and the script's startup preflight Pods by label, so these Pods stay connected.
-An installation created by an older `dev-up` does not select the preflight Pods.
-If its PostgreSQL Pod has moved, the preflight stops with "this Pod could not open a
-connection to the database" and stops no writer. Add the preflight component
-to both launcher policies, then run the script again:
-
-```bash
-for policy in openclaw-development-postgres-egress openclaw-development-kubernetes-egress; do
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" --namespace "$NAMESPACE" \
-    patch networkpolicy "$policy" --type json \
-    -p '[{"op":"add","path":"/spec/podSelector/matchExpressions/0/values/-","value":"upgrade-preflight"}]'
-done
-```
-
 ## Select and make the published images available
 
 In GitHub Actions, inspect **Enterprise Containers** runs on `main` in newest

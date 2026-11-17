@@ -963,7 +963,10 @@ export function registerWriterHandoffCases({
       const f = await fixture(t, { agent: true });
       await writeFile(
         join(f.directory, "state.json"),
-        JSON.stringify({ ...(await f.state()), nextDeployment: { id: "rev_new", status: "running" } }),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: "rev_new", status: "running" },
+        }),
       );
       // 8 s leaves room for at least one status poll after the deploy.
       const failure = await expectUpgradeFailure(
