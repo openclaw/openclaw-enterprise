@@ -239,7 +239,20 @@ export async function exerciseNamedProvider(
     connectionTemplateId: template.id,
     models: [{ id: "fixture-model", contextWindow: 8192, maxTokens: 512 }, { id: "another-model" }],
   };
-  const provider = await request("POST", "/model-providers", values, 201);
+  const provider = await request(
+    "POST",
+    "/model-providers",
+    { ...values, displayName: " Research models " },
+    201,
+  );
+  assert.equal(provider.displayName, "Research models");
+  const invalidName = await f.request("POST", "/model-providers", {
+    body: { ...values, displayName: "   " },
+  });
+  assert.equal(invalidName.status, 400);
+  assert.deepEqual(invalidName.body.error.details, [
+    { path: "/displayName", code: "INVALID_VALUE" },
+  ]);
   const key = await request(
     "POST",
     root + "/credential-sources",
@@ -393,4 +406,45 @@ export async function exerciseNamedProvider(
       .privateInferencePeer,
     approved,
   );
+  // Reapproval issues a new source. Rebind the draft and grant the Agent access before deploying.
+  const replacement = await request(
+    "POST",
+    root + "/credential-sources",
+    {
+      name: "research-key-reapproved",
+      type: "openai",
+      secrets: f.source.secrets,
+      connectionTemplateId: template.id,
+      connectionTemplateVersion: edited.current.version,
+    },
+    201,
+  );
+  const draft = await request("GET", first, undefined, 200);
+  await request(
+    "POST",
+    root + "/iam/access-bindings",
+    {
+      subjectKind: "identity",
+      subjectId: draft.servicePrincipalId,
+      roleId: f.grant.roleId,
+      resourceKind: "credential_source",
+      resourceId: replacement.id,
+    },
+    201,
+  );
+  const rebound = await request(
+    "PATCH",
+    first,
+    {
+      modelProviderId: provider.id,
+      harnessAuth: { method: "credential_source", sourceId: replacement.id },
+      credentialSources: draft.credentialSources.map((binding: { sourceId: string }) =>
+        binding.sourceId === key.id ? { ...binding, sourceId: replacement.id } : binding,
+      ),
+    },
+    200,
+  );
+  assert.equal(rebound.harnessAuth.sourceId, replacement.id);
+  const redeployed = await request("POST", first + "/deploy", {}, 202);
+  assert.deepEqual(redeployed.harness.privateInferencePeer, edited.current.privatePeer);
 }

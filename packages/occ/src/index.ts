@@ -344,6 +344,7 @@ import {
   IAMPolicyValidationError,
   keyedSettingPath,
   ModelProviderSettingError,
+  ModelProviderValidationError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -524,6 +525,7 @@ export {
   KubernetesSecretWriteForbiddenError,
   ModelCredentialValueError,
   ModelProviderSettingError,
+  ModelProviderValidationError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -5646,6 +5648,13 @@ export class OpenClawController {
           );
         }
       }
+      const displayName = input.displayName.trim();
+      if (displayName.length === 0 || displayName.length > 200) {
+        throw new ModelProviderValidationError(
+          "displayName",
+          "A Model Provider display name must have 1 to 200 characters after trimming.",
+        );
+      }
       const template = await state.connectionTemplates.lockConnectionTemplate(
         input.connectionTemplateId,
       );
@@ -5670,7 +5679,12 @@ export class OpenClawController {
           "List each model once and choose a default from that list.",
         );
       }
-      const provider = { ...input, baseUrl, id: previous?.id ?? `mpr_${crypto.randomUUID()}` };
+      const provider = {
+        ...input,
+        displayName,
+        baseUrl,
+        id: previous?.id ?? `mpr_${crypto.randomUUID()}`,
+      };
       if (previous) {
         await state.modelProviders.updateModelProvider(provider);
       } else {
