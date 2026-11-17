@@ -1,3 +1,4 @@
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import pg from "pg";
 import { randomUUID } from "node:crypto";
@@ -16,7 +17,7 @@ import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres, databaseUrl } from "../helpers/postgres-database.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 for (const retained of [true, false]) {
   test(
@@ -111,6 +112,9 @@ for (const retained of [true, false]) {
         },
         configurationDriver: app.controller.selectedDriver("configuration"),
         sandboxDriver: f.sandboxDriver,
+        namespaceLifecycleBindings: [
+          sandboxNamespaceLifecycleBinding(compute, f.sandboxDriver, f.installedDriver),
+        ],
         credentialGatewayDriver: gateway,
         proxyDriver: f.egress,
         protectedDriver: f.installedDriver,
@@ -144,7 +148,16 @@ for (const retained of [true, false]) {
             return event;
           },
           20_000,
-        );
+        ).catch((error) => {
+          t.diagnostic(
+            JSON.stringify(
+              events
+                .filter((event) => event.revisionId === id)
+                .map(({ event, outcome, code, step }) => ({ event, outcome, code, step })),
+            ),
+          );
+          throw error;
+        });
       await worker.start();
       await completed(f.revision.id);
       const old = receipts.get(f.revision.id)!;

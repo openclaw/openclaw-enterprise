@@ -1,8 +1,9 @@
 # Verify Git access across managed Sandbox revisions
 
 Run this scenario after deploying matching OCE API, worker and runtime images
-with managed OpenShell replacement support. It exercises unchanged settings and
-repository additions and removals through the real Agent API and worker. It also
+with managed OpenShell replacement support. It exercises Git enablement,
+disablement, re-enablement, unchanged settings, and repository additions and
+removals through the real Agent API and worker. It also
 terminates the run-owned Harness supervisor through OpenShell exec and verifies
 automatic recovery under the same revision. It does not change installation
 configuration or write to GitHub.
@@ -92,15 +93,25 @@ OCC_TEST_QA_SCENARIOS=openshell-git-replacement \
 node --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-The scenario creates two Agents with repository A selected. It fetches A, denies B,
-writes a workspace marker, and verifies recovery with the same Sandbox and revision,
-allowed and denied Git reads, and successful model turns. It then deploys an unchanged revision and adds B,
-deploys, removes A, and deploys again. Each replacement requires the same Sandbox
-ID, retained files, a new middleware binding, removal of the old Provider/profile,
-and successful Git fetches and model turns. Removed or unselected repositories
-must be denied. The peer keeps access to A and cannot access B. Cleanup deletes
-test-created Agents and IAM resources and preserves the prepared model source
-and its Secret. The scenario does not change registry permissions or test Git writes.
+The scenario creates one Agent without Git and a peer with repository A selected.
+It denies Git access on the first Agent, writes a workspace marker, and verifies
+model turns. It enables A on that Agent and requires the same Sandbox and marker,
+a successful fetch of A, and denial of B. It then verifies automatic recovery
+with the same Sandbox and revision, allowed and denied Git reads, and model turns.
+
+The scenario redeploys unchanged settings, adds B, removes A, disables Git with an
+empty repository selection, and enables A again. Each replacement retains the
+Sandbox ID and fetched files. Git-enabled revisions require fresh middleware and
+authority; Git-free revisions must have no Git Provider, middleware, environment
+setup or enrollment configuration. Old Providers and profiles must be deleted.
+Removed or unselected repositories must be denied, and each revision must complete
+a model turn. The peer keeps access to A and cannot access B throughout. Cleanup
+deletes test-created Agents and IAM resources and preserves the prepared model
+source and its Secret. The scenario does not change registry permissions, test Git
+writes, or switch profiles that change static policy.
+
+Local tests use controlled OpenShell responses for failure cases. The live runs
+below record the separately verified cluster behavior.
 
 On 2026-11-06, the repository-change checks passed on the operator-approved cluster
 with these deployed images:
@@ -139,5 +150,28 @@ test-owned Pods and PVCs.
 
 Local tests cover operator and managed execution without Kubernetes access,
 ownership refusals, execution changes, repository additions/removals, changed
-permission maps, interrupted cleanup and denial of the retired middleware binding with controlled OpenShell responses. The live scenario
+permission maps, Git toggles, interrupted cleanup, lost policy/attachment/workload/start
+replies, stale cleanup and denial of the retired middleware binding with controlled
+OpenShell responses. The live scenario
 does not restart the worker.
+
+On 2026-11-17, the expanded scenario passed on the operator-approved existing
+cluster with these deployed images:
+
+- Controller: `quay.io/gordons/oce-controller@sha256:74929b60cbc759f3181438f4d60aa6aa559cdb9b4f81d59a54825d77118663ed`
+- Runtime: `quay.io/gordons/oce-runtime@sha256:d6568685a0809df6b3b9a4863fc8cb2221840ff535e1342d4c6bca9702b1a6bf`
+- OpenShell Gateway: `quay.io/gordons/openshell-gateway@sha256:ac8e5ffe38b59b602a9e17956253b697ad03382aa15fb67e2b9e9bd936445549`
+
+API and worker copies of `openshell/managed.ts` matched the tested checkout.
+The run used dedicated Codex with `gpt-5.6-luna` and verified Git enablement,
+unchanged redeployment, repository addition/removal, disablement and re-enablement
+on the same Sandbox. Retained files, fresh Git authority, removed-access denial,
+retired Providers/profiles, automatic Harness recovery, model turns and peer
+isolation all passed. The second repository was confirmed private, so its fetch
+also verified credential delivery.
+
+The scenario and parent test passed with no skips in approximately eight minutes.
+Cleanup restored the original Agent, Credential Source, role and access-binding
+inventories and deleted the test Configuration. The existing user Agent was
+preserved. This run does not qualify permission-map changes, Git writes, worker
+restart, or profile transitions that change static policy.

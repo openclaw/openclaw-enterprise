@@ -72,9 +72,14 @@ export function workspaceGatewayClient(
     providers,
     sandboxes,
     workspaces,
-    async getPolicyStatus({ workspace, sandbox }: { workspace: string; sandbox: string }) {
-      const current = await this.getSandbox({ workspace, name: sandbox });
-      return { policy: current?.spec?.policy };
+    async getPolicyStatus({ workspace, sandbox }, signal) {
+      const current = await this.getSandbox({ workspace, name: sandbox }, signal);
+      return {
+        policy: (current?.spec?.policy ?? {}) as Record<string, unknown>,
+        version: 1,
+        activeVersion: 1,
+        state: "POLICY_STATUS_LOADED",
+      };
     },
     async health() {
       calls.push(["health"]);

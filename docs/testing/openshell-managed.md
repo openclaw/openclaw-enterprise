@@ -16,7 +16,7 @@ These checks do not establish live managed-Workspace integration.
 Local checks:
 
 ```sh
-node --test tests/conformance/openshell-managed-bootstrap.test.mjs tests/conformance/openshell-gateway-wire.test.mjs tests/conformance/kubernetes-provider-harness.test.mjs tests/conformance/kubernetes-harness-workspace-volume.test.mjs tests/conformance/kubernetes-compute.test.mjs tests/integration/sandbox-driver-startup.test.mjs
+node --test tests/conformance/openshell-managed-bootstrap.test.mjs tests/conformance/openshell-gateway-wire.test.ts tests/conformance/kubernetes-provider-harness.test.mjs tests/conformance/kubernetes-harness-workspace-volume.test.mjs tests/conformance/kubernetes-compute.test.mjs tests/integration/sandbox-driver-startup.test.ts
 ```
 
 Before qualification, extend the QA matrix's regular Agent workflow on a disposable

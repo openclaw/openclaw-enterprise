@@ -52,19 +52,18 @@ import {
   type OpenShellPreparedGitGeneration,
   type OpenShellPreparedGitInstalled,
 } from "./openshell-prepared-git-provider.ts";
-import {
+import type {
   createOpenShellOnlineGitAuthority,
-  type OpenShellOnlineGitBinding,
-  type OpenShellOnlineGitIdentity,
-  type OpenShellOnlineGitAuthorityOptions,
-  type OpenShellOnlineGitReasonCode,
+  OpenShellOnlineGitBinding,
+  OpenShellOnlineGitIdentity,
+  OpenShellOnlineGitAuthorityOptions,
+  OpenShellOnlineGitReasonCode,
 } from "./openshell-online-git-authority.ts";
 import {
   ObservedHookPreview,
   observedRequestHook,
   previewPolicyAndRecipient,
 } from "./openshell-request-hook-preview.ts";
-import { bindOpenShellEgressAuthority } from "./openshell-authority.ts";
 import {
   OpenShellGitObservationError,
   OpenShellGitRouteError,
@@ -2214,6 +2213,11 @@ export class OpenShellGitRuntime {
     emit?: RepositoryTransportEmit,
     routes?: OpenShellGitRouteStore,
   ): Promise<void> {
+    const [{ createOpenShellOnlineGitAuthority }, { bindOpenShellEgressAuthority }] =
+      await Promise.all([
+        import("./openshell-online-git-authority.ts"),
+        import("./openshell-authority.ts"),
+      ]);
     const config = this.configuration.authority;
     const [certificate, privateKey, publicKey] = await Promise.all([
       readFile(config.certificatePath),

@@ -8,7 +8,7 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import { validateExplicitK3dLoopbackContext } from "./kubernetes-real.mjs";
+import { validateExplicitK3dLoopbackContext } from "./kubernetes-real.ts";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
 
 /** Real API/worker workflow with run-owned resources in a selected managed installation. */
@@ -231,7 +231,7 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId: sources[0].id },
       credentialSources: [{ sourceId: sources[0].id }],
-      ...(gitReplacement
+      ...(gitReplacement && index === 1
         ? {
             repositoryBindings: [
               {
@@ -259,7 +259,7 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
   if (gitReplacement) {
     // Read-only Git against explicitly selected repositories. Exercise the regular
     // API/worker revision lifecycle; no token is read or installed by the test.
-    const first = await deploy(agents[0]);
+    let first = await deploy(agents[0]);
     const peer = await deploy(agents[1]);
     const before = await sandbox(agents[0]);
     assert.ok(before?.id);
@@ -281,14 +281,60 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
       execute(agents[0], [
         "/bin/sh",
         "-ec",
-        'mkdir "$1"; git -C "$1" init -q; git -C "$1" remote add origin "$2"; git -C "$1" fetch -q --depth=1 origin HEAD; printf %s "$3" > "$1/retained"',
+        'test "$(cat "$1/retained")" = "$3"; git -C "$1" init -q; git -C "$1" remote add origin "$2"; git -C "$1" fetch -q --depth=1 origin HEAD',
         "git-replacement",
         path,
         input.git.url,
         nonce,
       ]);
     const denied = (url) => execute(agents[0], ["/usr/bin/git", "ls-remote", url]);
-    assert.equal(await fetch(), 0, "Initial revision must fetch the admitted repository");
+    const assertGitSettings = async (current, enabled) => {
+      assert.equal(Boolean(current.annotations["openclaw.dev/git-scope"]), enabled);
+      assert.equal(current.spec.environment.GIT_CONFIG_COUNT !== undefined, enabled);
+      const status = await gateway.getPolicyStatus({ workspace, sandbox: current.name }, signal());
+      assert.equal(status.state, "POLICY_STATUS_LOADED");
+      assert.equal(status.activeVersion, status.version);
+      assert.equal(Boolean(status.policy.network_middlewares?.["oce-prepared-git"]), enabled);
+      const providers = await Promise.all(
+        current.spec.providers.map((name) => gateway.getProvider(workspace, name, signal())),
+      );
+      assert.equal(
+        providers.filter((provider) => provider?.labels["openclaw.dev/git-revision-id"]).length,
+        enabled ? 1 : 0,
+      );
+      const runtime = providers.find((provider) => provider?.name.startsWith("oce-runtime-"));
+      assert.ok(runtime);
+      assert.equal(Boolean(JSON.parse(runtime.config.runtime_json).egressEnrollment), enabled);
+      return status;
+    };
+    // Start without Git so the Sandbox creation policy cannot supply an old Git
+    // binding. Enabling must prepare new authority while retaining the same files.
+    await assertGitSettings(before, false);
+    assert.notEqual(await denied(input.git.url), 0, "Git must be denied before enablement");
+    assert.equal(
+      await execute(agents[0], [
+        "/bin/sh",
+        "-ec",
+        'mkdir "$1"; printf %s "$2" > "$1/retained"',
+        "retained-workspace",
+        path,
+        nonce,
+      ]),
+      0,
+    );
+    await turn(agents[0], first);
+    await turn(agents[1], peer);
+    await api("PATCH", `${base}/agents/${agents[0].id}`, {
+      configurationId: input.configurationId,
+      repositoryBindings: [
+        { repositoryRef: input.git.repositoryRef, profile: "github-repository" },
+      ],
+    });
+    first = await deploy(agents[0]);
+    const enabled = await sandbox(agents[0]);
+    assert.equal(enabled.id, before.id, "Enabling Git retains the original Sandbox");
+    await assertGitSettings(enabled, true);
+    assert.equal(await fetch(), 0, "Enabled revision must fetch the admitted repository");
     assert.notEqual(
       await denied(input.git.additionalUrl),
       0,
@@ -357,12 +403,14 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     await turn(agents[0], first);
     await turn(agents[1], peer);
     let previous = first;
-    // Keep Git enabled throughout. The same revision path must add a repository and
-    // later remove the original one, without losing files or the peer's authority.
+    // Change scope, remove all Git access, then enable it again. Every revision
+    // keeps local files while replacing remote authority independently of the peer.
     for (const repositories of [
       [input.git.repositoryRef],
       [input.git.repositoryRef, input.git.additionalRepositoryRef],
       [input.git.additionalRepositoryRef],
+      [],
+      [input.git.repositoryRef],
     ]) {
       const current = await sandbox(agents[0]);
       const oldPolicy = await gateway.getPolicyStatus(
@@ -376,7 +424,7 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
           oldProviders.push(provider);
         }
       }
-      assert.equal(oldProviders.length, 1);
+      assert.equal(oldProviders.length, current.annotations["openclaw.dev/git-scope"] ? 1 : 0);
       await api("PATCH", `${base}/agents/${agents[0].id}`, {
         configurationId: input.configurationId,
         repositoryBindings: repositories.map((repositoryRef) => ({
@@ -387,12 +435,10 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
       const successor = await deploy(agents[0]);
       const after = await sandbox(agents[0]);
       assert.equal(after.id, before.id, "Git replacement retains the Sandbox and workspace");
-      const policy = await gateway.getPolicyStatus({ workspace, sandbox: after.name }, signal());
-      assert.equal(policy.state, "POLICY_STATUS_LOADED");
-      assert.equal(policy.activeVersion, policy.version);
+      const policy = await assertGitSettings(after, repositories.length > 0);
       assert.notDeepEqual(
-        policy.policy.network_middlewares["oce-prepared-git"],
-        oldPolicy.policy.network_middlewares["oce-prepared-git"],
+        policy.policy.network_middlewares?.["oce-prepared-git"],
+        oldPolicy.policy.network_middlewares?.["oce-prepared-git"],
       );
       for (const provider of oldProviders) {
         assert.equal(after.spec.providers.includes(provider.name), false);
@@ -453,7 +499,7 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     }
     return {
       outcome:
-        "unchanged Git redeployment, repository addition and removal, retained Sandbox/workspace, allowed fetches, denied removed/unselected repositories, retired Provider/profile and peer isolation",
+        "Git enablement, unchanged redeployment, repository addition and removal, disablement and re-enablement, retained Sandbox/workspace, allowed fetches, denied removed/unselected repositories, retired Provider/profile and peer isolation",
       limitation: "A successful public repository fetch does not prove credential delivery.",
     };
   }

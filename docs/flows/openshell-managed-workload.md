@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-09"
-last_updated_session: authoring-run/7bc6f6a8-db0f-4304-9729-3dabe2800ffd
+updated: "2026-11-16"
+last_updated_session: authoring-run/6162dd23-33b7-482f-be88-9b54cc477da0
 ---
 
 # Managed OpenShell workload flow
@@ -124,31 +124,32 @@ remains under OpenShell's control. A resource-version check protects each policy
 write. Readback verifies the requested policy and the same stopped Sandbox,
 workload and ownership. OCE does not wait for activation while stopped.
 
-`reconcileProviders` compares Provider membership independently of list order.
-After verifying the intermediate policy, it detaches obsolete Providers before
-attaching missing ones, because replacement sources can supply the same credential
-environment variable. Each mutation uses the observed Sandbox resource version. Readback must confirm the
-expected membership, unchanged workload and ownership, and the same stopped
-Sandbox identity. Detachment does not delete a shared Credential Source Provider.
-A failed or uncertain mutation ends the attempt before start; a retry reads the
-stored membership and policy and performs the remaining changes. Once attachments
-match, `reconcilePolicy` installs the final network rules. A lost response after
-the last attachment can therefore resume directly with the final policy. A failed
-final policy write leaves the new attachments on a stopped Sandbox; OCE does not
-roll back or start it. With unchanged membership, only the final policy needs
-reconciliation.
+`reconcileProviders` ignores attachment order. It verifies the intermediate policy,
+then detaches obsolete Providers before attaching replacements to avoid credential
+key conflicts. Each mutation checks the observed resource version; readback verifies
+membership, unchanged workload/ownership and stopped Sandbox identity. Shared
+Credential Source Providers survive detachment. Failed or uncertain mutations
+prevent start. Retries reconcile stored membership and policy; after the last
+attachment, they install the final policy. A failed final policy leaves attachments
+in place without rollback or start. Unchanged membership needs only policy reconciliation.
 
-For Git, `ManagedOpenShellSandbox.gitScopeAnnotations` records a fingerprint of the
-repository Driver and resolved bindings, excluding the session deadline. Each
-revision uses its own admitted scope; repository selections and permissions can change.
-`retainedGitSandbox` permits a stopped Git-enabled predecessor only after its Git
-middleware and owned Provider have been removed. The Git runtime creates a fresh
-revision-owned bootstrap Provider and middleware binding. Workload readback verifies
-the new scope annotation. Enabling or disabling Git remains refused.
-`verifyGitSandbox` checks the latest policy separately from the creation policy;
-workload and ownership checks still apply. Credential installation and supervisor
-identity checks remain in the [repository flow](agent-repository-credentials.md).
-A failed policy read remains retryable; a confirmed mismatch closes the Git route.
+`ManagedOpenShellSandbox.gitScopeAnnotations` fingerprints the repository Driver
+and resolved bindings, excluding the session deadline. Revisions can change scope
+or enable/disable Git. Before Git preparation, `retainedGitSandbox` calls
+`verifyRetiredGit`: the predecessor must belong to the same Agent and Workspace,
+be stopped, and have no Git middleware or revision-owned Provider. Git-free
+predecessors are permitted. Preparation creates a fresh revision-owned bootstrap
+Provider and middleware binding; workload readback verifies the scope annotation.
+
+For Git-free successors, `reconcileHarness` checks retirement directly. Replacement
+removes Git environment, annotations and enrollment configuration and restores the
+ordinary policy. Retries verify stored workload before start. Re-enablement creates
+fresh authority; late predecessor cleanup preserves the successor and fetched files.
+Static policy, restart policy and non-Git middleware must remain unchanged.
+`verifyGitSandbox` checks current policy separately from creation policy, plus workload
+and ownership. Failed reads remain retryable; confirmed mismatches close the route.
+See the [repository flow](agent-repository-credentials.md) for credential installation
+and supervisor identity checks.
 
 `OpenShellSandboxDriver.gitContinuity` supplies the exact model and runtime
 Provider names, current source policy, and an execution fingerprint from
@@ -300,6 +301,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-16 19:23: Support Git enablement and disablement after verified predecessor retirement in the accompanying implementation. (authoring-run/6162dd23-33b7-482f-be88-9b54cc477da0 - 7b9261020c74d0beb64df5cf227127cb8c9b32c7)
 
 - 2026-11-09 20:15: Retain Harness recovery and require a new revision after worker replacement in the accompanying rebase. (authoring-run/7bc6f6a8-db0f-4304-9729-3dabe2800ffd - f8a7f049153b93196473fd86b53f0f3593dde82f)
 

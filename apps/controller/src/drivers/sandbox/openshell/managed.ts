@@ -391,39 +391,44 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
   }
 
   protected override retainedGitSandbox(context: SandboxHarnessContext) {
-    return async (sandbox: OpenShellSandboxResponse): Promise<void> => {
-      this.verifyOwner(sandbox, context.namespace.id, context.revision.agentId);
-      if (
-        !stopped(sandbox) ||
-        sandbox.workspace !== workspaceName(context.namespace) ||
-        !sandbox.annotations[REVISION] ||
-        sandbox.annotations[REVISION] === context.revision.id ||
-        !sandbox.annotations[GIT_SCOPE]
-      ) {
-        throw new Error("Git replacement requires a stopped Git-enabled predecessor.");
+    return (sandbox: OpenShellSandboxResponse) => this.verifyRetiredGit(context, sandbox);
+  }
+
+  private async verifyRetiredGit(
+    context: SandboxHarnessContext,
+    sandbox: OpenShellSandboxResponse,
+  ): Promise<void> {
+    this.verifyOwner(sandbox, context.namespace.id, context.revision.agentId);
+    if (
+      !stopped(sandbox) ||
+      sandbox.workspace !== workspaceName(context.namespace) ||
+      !sandbox.annotations[REVISION] ||
+      sandbox.annotations[REVISION] === context.revision.id
+    ) {
+      throw new Error("Git replacement requires a stopped predecessor.");
+    }
+    const client = this.gatewayClientForNamespace(context.namespace.name);
+    // Apply the same retirement check when enabling, replacing or disabling Git.
+    // A stopped process alone does not prove that its Git authority was retired.
+    const workspace = workspaceName(context.namespace);
+    const policy = await readOpenShellGitEvidence(
+      () =>
+        client.getPolicyStatus?.({ workspace, sandbox: sandbox.name }, context.signal) ??
+        Promise.resolve(undefined),
+      context.signal,
+    );
+    if (!policy || asRecord(policy.policy.network_middlewares)?.["oce-prepared-git"]) {
+      throw new Error("Retire the predecessor Git middleware before preparing its replacement.");
+    }
+    const providers = await readOpenShellGitEvidence(
+      () => client.listProviders(workspace, context.signal),
+      context.signal,
+    );
+    for (const provider of providers) {
+      if (preparedGitProviderForRevision(provider, sandbox.annotations[REVISION]!)) {
+        throw new Error("Retire the predecessor Git Provider before preparing its replacement.");
       }
-      const client = this.gatewayClientForNamespace(context.namespace.name);
-      // A stopped workload is insufficient: predecessor cleanup must have removed its Git route.
-      const workspace = workspaceName(context.namespace);
-      const policy = await readOpenShellGitEvidence(
-        () =>
-          client.getPolicyStatus?.({ workspace, sandbox: sandbox.name }, context.signal) ??
-          Promise.resolve(undefined),
-        context.signal,
-      );
-      if (!policy || asRecord(policy.policy.network_middlewares)?.["oce-prepared-git"]) {
-        throw new Error("Retire the predecessor Git middleware before preparing its replacement.");
-      }
-      const providers = await readOpenShellGitEvidence(
-        () => client.listProviders(workspace, context.signal),
-        context.signal,
-      );
-      for (const provider of providers) {
-        if (preparedGitProviderForRevision(provider, sandbox.annotations[REVISION]!)) {
-          throw new Error("Retire the predecessor Git Provider before preparing its replacement.");
-        }
-      }
-    };
+    }
   }
 
   protected override async verifyGitSandbox(
@@ -480,8 +485,13 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       throw new Error("Managed Sandbox disappeared after creation.");
     }
     this.verifyOwner(existing, context.namespace.id, context.revision.agentId);
-    if (!!existing.annotations[GIT_SCOPE] !== !!create.annotations[GIT_SCOPE]) {
-      throw new Error("Managed replacement cannot enable or disable repository access.");
+    if (
+      existing.annotations[REVISION] !== context.revision.id &&
+      context.revision.repositoryCredentials === undefined
+    ) {
+      // Git-enabled successors check retirement before preparing their fresh route.
+      // Git-free successors have no prepare call, but must verify retirement too.
+      await this.verifyRetiredGit(context, existing);
     }
     const matches = (value: OpenShellSandboxResponse) =>
       isDeepStrictEqual(comparableWorkload(value.spec), comparableWorkload(create.spec)) &&

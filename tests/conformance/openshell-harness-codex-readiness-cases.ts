@@ -249,6 +249,7 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
         loginMode: harnessAuth.loginMode,
         image: "fixture-codex:0.164.0",
         command: ["codex", "app-server"],
+        retainedDirectories: [],
         workspaceMounts: [],
         environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
         files: [],
