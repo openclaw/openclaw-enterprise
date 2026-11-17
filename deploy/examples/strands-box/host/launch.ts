@@ -24,9 +24,8 @@ import {
   BOX_UPSTREAM_CA_KEY,
   CONTROLLED_INFERENCE_MARKER,
   policy,
-  REPOSITORY_SENDER_BEARER,
-  REPOSITORY_SENDER_BEARER_ENV,
-  repositorySenderCredential,
+  githubCredentialEnvironment,
+  githubCredentials,
   upstreamCaPem,
 } from "./egress.ts";
 import {
@@ -186,12 +185,20 @@ export interface StartInput {
   workspaceNodeSetupExpiresAt?: number;
   egress?: readonly EgressRoute[];
   /**
-   * The per-execution sender bearer, held only in memory and in the `box run` environment.
-   * Its `repository-sender` route must also be the single such route in `egress`.
+   * STAGE_A_PROTOTYPE: the OCE-minted GitHub installation token for this execution, held only in
+   * memory and in the `box run` environment, where Box's two GitHub routes read it once.
    */
-  repositorySenderBearer?: string;
-  /** Protected startup: Box starts, but the command waits until `release()` is called. */
+  github?: { readonly token: string; readonly caSha256?: string };
+  /**
+   * Protected startup: Box starts, but the command waits until `release()` is called. The
+   * restarted run that carries `github` is already released and never takes the gate.
+   */
   releaseGate?: true;
+  /**
+   * Protected startup: the reservation generation the host fixed before any material existed,
+   * repeated in ready.json and presented by host ingress.
+   */
+  reservationGeneration?: string;
   /** The execution's one extra upstream CA bundle; every route in `egress` must opt in to it. */
   upstreamCa?: UpstreamCa;
 }
@@ -220,9 +227,11 @@ export interface Execution {
   readonly done: Promise<number>;
   /** Present once `box run` was spawned; `undefined` before that or after it exited. */
   boxProcess(): BoxProcess | undefined;
+  /** Settles once `box run` was spawned (or refused before that). */
+  readonly spawned: Promise<void>;
   /**
-   * Protected startup only: SHA-256 of the reservation (this host process, the `box run`
-   * process and the sender bearer digest), fixed before the release and repeated in ready.json.
+   * Protected startup only: SHA-256 of the reservation (this host process, the execution and the
+   * execution bearer digest), fixed before the release and repeated in ready.json.
    */
   generation(): string | undefined;
   /** Open the protected startup gate once; only the caller that verified the release calls it. */
@@ -487,7 +496,7 @@ export function start(
   input: StartInput,
   standaloneCapability?: string,
   beforeBoxExec?: () => string | void,
-): Execution & { readonly spawned: Promise<void> } {
+): Execution {
   const abort = new AbortController();
   let readyResolve!: (value: OwnerReady) => void;
   let readyReject!: (reason: Error) => void;
@@ -552,9 +561,12 @@ export function start(
   async function run(): Promise<number> {
     let verifiedBootId: string | void;
     const run = config.runtimeDir;
-    const authority = join(run, "authority");
-    const bridgeDir = join(run, "bridge");
-    const projectionDir = join(run, "projection");
+    // The runtime directory is single-use per run. The one restart that installs GitHub material
+    // keeps its run inputs and Box state in a fresh subdirectory; owner sockets stay at the root.
+    const work = input.github === undefined ? run : join(run, "installed");
+    const authority = join(work, "authority");
+    const bridgeDir = join(work, "bridge");
+    const projectionDir = join(work, "projection");
     const boxHome = join(authority, "home");
     const app = join(run, APP_SOCKET);
     const inner = join(bridgeDir, "native.sock");
@@ -578,7 +590,8 @@ export function start(
     let receiptOwned = false;
     let stage = "stage-inputs";
     try {
-      const staging = join(run, "input");
+      if (work !== run) mkdirSync(work, { mode: 0o700 });
+      const staging = join(work, "input");
       mkdirSync(staging, { mode: 0o700 });
       const effectiveEnvironment = { ...input.environment };
       const stagedPaths: string[] = [];
@@ -595,18 +608,22 @@ export function start(
         stagedPaths.push(staged);
         effectiveEnvironment[file.environmentVariable] = staged;
       }
-      const senderRoutes = (input.egress ?? []).filter(
-        (route) => route.kind === "repository-sender",
-      );
-      const senderBearer = input.repositorySenderBearer;
+      const github = input.github;
       if (
-        senderRoutes.length > 1 ||
-        (senderRoutes.length === 1) !== (senderBearer !== undefined) ||
-        (senderBearer !== undefined && !REPOSITORY_SENDER_BEARER.test(senderBearer)) ||
-        Object.hasOwn(effectiveEnvironment, REPOSITORY_SENDER_BEARER_ENV)
+        // A protected run is reserved: held at the gate first, then restarted once with the
+        // GitHub routes after its release. An ordinary run takes neither.
+        (input.reservationGeneration === undefined) !==
+          (input.releaseGate !== true && github === undefined) ||
+        (input.releaseGate === true && github !== undefined) ||
+        (input.reservationGeneration !== undefined &&
+          !/^[a-f0-9]{64}$/.test(input.reservationGeneration)) ||
+        Object.keys(effectiveEnvironment).some((name) => /^(?:GITHUB_|GH_|GIT_|OCE_GITHUB_)/.test(name))
       ) {
-        throw new Error("repository_sender_unadmitted");
+        throw new Error("github_route_unadmitted");
       }
+      // Validates the value before any file exists; the result is used only in the spawn below.
+      const githubEnvironment =
+        github === undefined ? undefined : githubCredentialEnvironment(github.token);
       const environment = safeEnvironment(
         effectiveEnvironment,
         input.egress?.some((route) => route.kind === "controlled-inference") === true,
@@ -662,13 +679,16 @@ export function start(
       }
       writeFileSync(
         policyFile,
-        policy(input.egress ?? []) +
+        policy(input.egress ?? [], github !== undefined) +
           (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)),
         ownerOnly,
       );
       // Only the CA bundle verified at host config load is written, into the authority directory
       // that no grant covers, and only when every route Box dials opts in to it again here.
       // Stock Box refuses the key, so it fails closed before any egress.
+      // Box trusts the bundle for every upstream, GitHub included: the GitHub routes opt in too.
+      if (github !== undefined && github.caSha256 !== input.upstreamCa?.sha256)
+        throw new Error("upstream_ca_route_not_declared");
       const caPem = upstreamCaPem(input.upstreamCa, input.egress ?? []);
       if (caPem !== undefined) writeFileSync(caFile, caPem, ownerOnly);
       // Box excludes its own box.toml and policy directory from every native grant.
@@ -694,7 +714,7 @@ export function start(
       const exec = outermost([...config.exec, config.codexBin, config.nodeBin]);
       const configText = [
         'name = "oce-strands"',
-        `box_dir = ${quoted(join(run, "box-state"))}`,
+        `box_dir = ${quoted(join(work, "box-state"))}`,
         `policy = ${quoted(policyFile)}`,
         ...(caPem === undefined ? [] : [`${BOX_UPSTREAM_CA_KEY} = ${quoted(caFile)}`]),
         "",
@@ -711,13 +731,11 @@ export function start(
         ),
         "",
       ].join("\n");
-      // The credential table names only the variable; the bearer never enters box.toml.
+      // The credential tables name only variables; the token never enters box.toml.
       writeFileSync(
         boxFile,
         configText +
-          (senderRoutes[0] === undefined
-            ? ""
-            : "\n" + repositorySenderCredential(senderRoutes[0])) +
+          (github === undefined ? "" : "\n" + githubCredentials()) +
           (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)),
         ownerOnly,
       );
@@ -750,7 +768,7 @@ export function start(
           PATH,
           LANG: "C.UTF-8",
           EXPERIMENTAL_LINUX_SUPPORT: "TRUE",
-          ...(senderBearer === undefined ? {} : { [REPOSITORY_SENDER_BEARER_ENV]: senderBearer }),
+          ...githubEnvironment,
         },
       });
       child.stdout?.resume();
@@ -776,22 +794,7 @@ export function start(
         pid: owner.pid,
         startTicks: owner.startTicks,
       };
-      if (input.releaseGate === true) {
-        reservation = createHash("sha256")
-          .update(
-            JSON.stringify({
-              version: 1,
-              profile: "strands-box-protected-reservation-v1",
-              host: { pid: process.pid, startTicks: processIdentity(process.pid).startTicks },
-              box: boxRun,
-              bearerSha256:
-                senderBearer === undefined
-                  ? null
-                  : createHash("sha256").update(senderBearer).digest("hex"),
-            }),
-          )
-          .digest("hex");
-      }
+      reservation = input.reservationGeneration;
       spawnedResolve();
       if (input.releaseGate === true) {
         stage = "wait-release";

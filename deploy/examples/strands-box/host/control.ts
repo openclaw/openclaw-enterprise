@@ -12,7 +12,9 @@ import {
   CONTROLLED_INFERENCE_MARKER,
   loadUpstreamCa,
   parseRoute,
-  REPOSITORY_SENDER_BEARER,
+  EXECUTION_BEARER,
+  GITHUB_HOSTS,
+  GITHUB_TOKEN_VALUE,
   routeView,
   sameRouteView,
 } from "./egress.ts";
@@ -29,7 +31,7 @@ import {
   string,
 } from "./launch.ts";
 import type { Execution, HostConfig, StartInput } from "./launch.ts";
-import { listen, PORT } from "./transport.ts";
+import { listen, PORT, processIdentity } from "./transport.ts";
 
 import {
   approve,
@@ -96,8 +98,12 @@ interface InstalledConfig extends HostConfig {
   workspaceNode?: EgressRoute;
   separateWorkspaceNode?: NodeInstallation;
   controlledInference?: EgressRoute;
-  /** Box egress to the Worker's fixed-repository sender, authenticated by a phantom bearer. */
-  repositorySender?: EgressRoute;
+  /**
+   * STAGE_A_PROTOTYPE: protected repository access on this host. Box injects the OCE-minted
+   * GitHub installation token for `github.com` and `api.github.com` itself. `caSha256` opts the
+   * GitHub routes in to `upstreamCa`, which Box applies to every upstream.
+   */
+  protectedRepository?: ProtectedRepository;
   upstreamCa?: UpstreamCa;
 }
 
@@ -111,11 +117,12 @@ export interface RecordView {
   workspaceVolume?: NodeInstallation["workspaceVolume"];
   generationSha256?: string;
   /**
-   * Host-observed sender identity of this execution: the digest of the bearer this host gave to
-   * `box run` (never the bearer) and `bootId:pid:startTicks` of that `box run` process while it
-   * is the same live process. The Driver binds both into the recipient it reports.
+   * Host-observed recipient of this execution's repository material: the digest of the
+   * per-execution bearer the Driver minted (never the bearer), `bootId:pid:startTicks` of this
+   * host process, which receives the material, and, once `box run` holds it, the exact material
+   * version and that live `box run` process. The Driver binds these into the recipient it reports.
    */
-  repositorySender?: { bearerSha256: string; processInstanceId?: string };
+  repositoryRecipient?: RepositoryRecipient;
   /**
    * Protected startup: the reservation generation (fixed once `box run` exists, before any
    * release) and, after the host verified Compute's release, the release's SHA-256.
@@ -139,7 +146,33 @@ interface LaunchPlan extends StartInput {
 export const ENROLLMENT_REVISION_ENV = "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID";
 export const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 export const RELEASE_PROFILE = "oce-compute-execution-release-v1";
-export const SENDER_WIRING_VERSION = 1;
+export const PROTECTED_WIRING_VERSION = 2;
+export const MATERIAL = "/v1/repository-material";
+
+export interface ProtectedRepository {
+  readonly provider: "github";
+  readonly caSha256?: string;
+}
+
+export interface RepositoryRecipient {
+  bearerSha256: string;
+  processInstanceId: string;
+  installed?: {
+    preparationAttemptId: string;
+    materialVersion: string;
+    boxProcessInstanceId: string;
+  };
+}
+
+/** STAGE_A_PROTOTYPE: the material the Worker delivers once per execution. */
+export interface DeliveredMaterial {
+  readonly preparationAttemptId: string;
+  readonly materialVersion: string;
+  readonly expiresAt: string;
+  readonly installationId: string;
+  readonly repositories: readonly { readonly repositoryId: string; readonly repository: string }[];
+  readonly value: string;
+}
 
 export interface ProtectedStartup {
   readonly releaseKey: KeyObject;
@@ -147,30 +180,39 @@ export interface ProtectedStartup {
 }
 
 /**
+ * The exact nonsecret wiring the paired Driver and this host agree on for protected access.
+ * STAGE_A_PROTOTYPE: Box injects the installation token for the two public GitHub hosts itself.
+ */
+export function wiringConfiguration(provider: "github") {
+  return {
+    version: PROTECTED_WIRING_VERSION,
+    protectedRepository: {
+      provider,
+      hosts: [...GITHUB_HOSTS] as readonly string[],
+      delivery: "box-env-v1" as const,
+    },
+  };
+}
+
+/**
  * The exact protected inputs the paired Driver may hand to this host: one online-request
- * repository Git plan with no other routes, owned by this host's Driver and revision, whose
- * nonsecret sender configuration names this host's operator-configured sender route.
+ * `github-repository` plan with no other routes, owned by this host's Driver and revision, whose
+ * nonsecret configuration is exactly this host's protected repository wiring.
  */
 export function protectedWiring(
-  sender: EgressRoute | undefined,
+  configured: ProtectedRepository | undefined,
   value: unknown,
   owner: Owner,
 ): Record<string, unknown> {
   const wiring = object(value);
   fields(wiring, ["plan", "configuration"]);
-  const configuration = object(wiring.configuration);
-  fields(configuration, ["version", "repositorySender"]);
-  const route = object(configuration.repositorySender);
-  fields(route, ["url", "address"]);
   const plan = object(wiring.plan);
   const execution = object(plan.execution);
   const git = object(plan.repositoryGit);
   const bindings = git.bindings;
   if (
-    sender === undefined ||
-    configuration.version !== SENDER_WIRING_VERSION ||
-    route.url !== sender.url ||
-    route.address !== sender.address ||
+    configured === undefined ||
+    canonical(wiring.configuration) !== canonical(wiringConfiguration(configured.provider)) ||
     plan.repositoryGitAuthorization !== "online-request" ||
     !Array.isArray(plan.routes) ||
     plan.routes.length !== 0 ||
@@ -189,6 +231,57 @@ export function protectedWiring(
     throw new Error("unadmitted_protected_wiring");
   }
   return plan;
+}
+
+const ID = /^[\x21-\x7e]{1,256}$/;
+
+/** STAGE_A_PROTOTYPE: refuse anything but one complete, unexpired installation token. */
+export function deliveredMaterial(value: unknown): DeliveredMaterial {
+  const material = object(value);
+  fields(material, [
+    "preparationAttemptId",
+    "materialVersion",
+    "expiresAt",
+    "installationId",
+    "repositories",
+    "value",
+  ]);
+  const repositories = material.repositories;
+  if (
+    typeof material.preparationAttemptId !== "string" ||
+    !ID.test(material.preparationAttemptId) ||
+    typeof material.materialVersion !== "string" ||
+    !ID.test(material.materialVersion) ||
+    typeof material.expiresAt !== "string" ||
+    !(Date.parse(material.expiresAt) > Date.now()) ||
+    typeof material.installationId !== "string" ||
+    !/^[1-9][0-9]{0,15}$/.test(material.installationId) ||
+    typeof material.value !== "string" ||
+    !GITHUB_TOKEN_VALUE.test(material.value) ||
+    !Array.isArray(repositories) ||
+    repositories.length < 1 ||
+    repositories.length > 100
+  )
+    throw new Error("invalid_github_material");
+  return {
+    preparationAttemptId: material.preparationAttemptId,
+    materialVersion: material.materialVersion,
+    expiresAt: material.expiresAt,
+    installationId: material.installationId,
+    repositories: repositories.map((entry) => {
+      const repository = object(entry);
+      fields(repository, ["repositoryId", "repository"]);
+      if (
+        typeof repository.repositoryId !== "string" ||
+        !/^[1-9][0-9]{0,15}$/.test(repository.repositoryId) ||
+        typeof repository.repository !== "string" ||
+        !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repository.repository)
+      )
+        throw new Error("invalid_github_material");
+      return { repositoryId: repository.repositoryId, repository: repository.repository };
+    }),
+    value: material.value,
+  };
 }
 
 function releaseKey(value: string): KeyObject {
@@ -322,7 +415,11 @@ function startInstalledExecution(config: InstalledConfig, plan: LaunchPlan): Exe
 
   const abort = new AbortController();
   const startNode = () =>
-    startWorkspaceNode(input, join(config.runtimeDir, "file-node"), abort.signal);
+    startWorkspaceNode(
+      input,
+      join(config.runtimeDir, plan.github === undefined ? "file-node" : "file-node-installed"),
+      abort.signal,
+    );
   const node = image === undefined ? startNode() : box.spawned.then(startNode);
   const nodeDone = node.then(
     (process) => process.done,
@@ -344,6 +441,7 @@ function startInstalledExecution(config: InstalledConfig, plan: LaunchPlan): Exe
   void nodeDone.then(() => box.stop()).catch(() => undefined);
   return {
     ready: Promise.all([box.ready, node]).then(([ready]) => ready),
+    spawned: box.spawned,
     done: Promise.all([boxDone, nodeDone]).then(([code]) => code),
     boxProcess: () => box.boxProcess(),
     generation: () => box.generation(),
@@ -361,6 +459,14 @@ interface LiveRecord {
   execution?: Execution;
   retiring: boolean;
   protectedStartup?: ProtectedStartup;
+  /** The admitted launch, kept so the protected install can restart `box run` with material. */
+  plan?: LaunchPlan;
+  workspaceNode?: Pending["workspaceNode"];
+  /**
+   * STAGE_A_PROTOTYPE: the one material version this execution accepted. Set before the restart
+   * begins, so a lost reply is answered from it and never installs a second time.
+   */
+  installing?: { readonly preparationAttemptId: string; readonly materialVersion: string };
 }
 
 /** Canonical JSON for the operator profile and the exact Worker request. */
@@ -500,7 +606,7 @@ function installedConfig(value: unknown): InstalledConfig {
     "workspaceNode",
     "separateWorkspaceNode",
     "controlledInference",
-    "repositorySender",
+    "protectedRepository",
     "upstreamCa",
   ]);
   if (config.workspace !== WORKSPACE) throw new Error("unsupported_workspace_path");
@@ -619,6 +725,15 @@ function installedConfig(value: unknown): InstalledConfig {
     upstreamCa,
     boxDialedRoutes({ workspaceNode, separateWorkspaceNode, controlledInference }),
   );
+  const protectedRepository = parseProtectedRepository(data.protectedRepository);
+  // Box applies the bundle to its GitHub upstreams too, so those routes must opt in as well.
+  if (
+    protectedRepository !== undefined &&
+    protectedRepository.caSha256 !== upstreamCa?.sha256
+  )
+    throw new Error(
+      upstreamCa === undefined ? "upstream_ca_not_configured" : "upstream_ca_route_not_declared",
+    );
   return {
     ...config,
     owner: ownerPin,
@@ -639,9 +754,23 @@ function installedConfig(value: unknown): InstalledConfig {
     ...(separateWorkspaceNode === undefined ? {} : { separateWorkspaceNode }),
     ...(controlledInference === undefined ? {} : { controlledInference }),
     ...(upstreamCa === undefined ? {} : { upstreamCa }),
-    ...(data.repositorySender === undefined
-      ? {}
-      : { repositorySender: parseRoute(data.repositorySender, "repository-sender") }),
+    ...(protectedRepository === undefined ? {} : { protectedRepository }),
+  };
+}
+
+function parseProtectedRepository(value: unknown): ProtectedRepository | undefined {
+  if (value === undefined) return undefined;
+  const configured = object(value);
+  fields(configured, ["provider", "caSha256"]);
+  if (
+    configured.provider !== "github" ||
+    (configured.caSha256 !== undefined &&
+      (typeof configured.caSha256 !== "string" || !SHA256.test(configured.caSha256)))
+  )
+    throw new Error("invalid_protected_repository");
+  return {
+    provider: "github",
+    ...(configured.caSha256 === undefined ? {} : { caSha256: configured.caSha256 as string }),
   };
 }
 
@@ -775,15 +904,15 @@ function admitted(
     requirements.workloadIdentity !== undefined ||
     !Array.isArray(requirements.credentialAttachments) ||
     requirements.credentialAttachments.length !== 0 ||
-    (requirements.proxyWiring === undefined) !== (config.repositorySender === undefined)
+    (requirements.proxyWiring === undefined) !== (config.protectedRepository === undefined)
   ) {
     throw new Error("unavailable_identity_or_credential_material");
   }
-  // A sender-configured host runs only the paired protected execution, never an ordinary one.
+  // A host configured for protected repository access runs only the paired protected execution.
   const protectedPlan =
     requirements.proxyWiring === undefined
       ? undefined
-      : protectedWiring(config.repositorySender, requirements.proxyWiring, requested);
+      : protectedWiring(config.protectedRepository, requirements.proxyWiring, requested);
   let releasePublicKey: string | undefined;
   if (requirements.workspaceSetup !== undefined) {
     const setup = object(requirements.workspaceSetup);
@@ -1155,61 +1284,55 @@ function controlSocketPath(config: InstalledConfig): string {
   return join(directory, "control.sock");
 }
 
+/** The identity of this host process, which receives the material for its execution. */
+function hostProcessInstance(): string {
+  const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  return `${bootId}:${process.pid}:${processIdentity(process.pid).startTicks}`;
+}
+
 /**
- * Adds the operator-configured sender route and the Driver's per-execution bearer to one
- * admitted launch. Exactly one of them alone is refused. The bearer stays in memory: it is
- * passed only to `box run`'s environment and is never part of a digest, record or reply.
+ * The protected reservation generation, fixed before any material exists: this host process,
+ * the execution and the execution bearer digest. Ingress presents it as the owner generation.
  */
-export function withRepositorySender<T extends StartInput>(
-  route: EgressRoute | undefined,
-  input: T,
-  bearer: unknown,
-): T {
-  if ((route === undefined) !== (bearer === undefined)) {
-    throw new Error("repository_sender_bearer_unexpected_or_missing");
-  }
-  if (route === undefined) return input;
-  if (
-    typeof bearer !== "string" ||
-    !REPOSITORY_SENDER_BEARER.test(bearer) ||
-    route.kind !== "repository-sender" ||
-    (input.egress ?? []).some(({ kind }) => kind === "repository-sender")
-  ) {
-    throw new Error("repository_sender_bearer_unexpected_or_missing");
-  }
-  return { ...input, egress: [...(input.egress ?? []), route], repositorySenderBearer: bearer };
+export function reservationGeneration(
+  executionId: string,
+  bearerSha256: string,
+  hostProcessInstanceId: string,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 2,
+        profile: "strands-box-protected-reservation-v2",
+        host: hostProcessInstanceId,
+        executionId,
+        bearerSha256,
+      }),
+    )
+    .digest("hex");
 }
 
 export function observedView(record: {
   readonly view: RecordView;
   readonly execution?: Pick<Execution, "boxProcess" | "generation">;
 }): RecordView {
-  const sender = record.view.repositorySender;
-  if (sender === undefined) return record.view;
-  // A held protected run has no native socket yet; its `box run` is still the recipient.
+  const recipient = record.view.repositoryRecipient;
+  if (recipient === undefined) return record.view;
+  // The installed version is reported only while the `box run` that holds it is the same live
+  // process; a replaced or exited Box reports none.
   const box = record.view.state === "failed" ? undefined : record.execution?.boxProcess();
-  const generation = box === undefined ? undefined : record.execution?.generation();
-  const startup = record.view.protectedStartup;
+  const installed = recipient.installed;
+  const live =
+    installed !== undefined &&
+    box !== undefined &&
+    installed.boxProcessInstanceId === `${box.bootId}:${box.pid}:${box.startTicks}`;
   return {
     ...record.view,
-    repositorySender: {
-      bearerSha256: sender.bearerSha256,
-      ...(box === undefined
-        ? {}
-        : { processInstanceId: `${box.bootId}:${box.pid}:${box.startTicks}` }),
+    repositoryRecipient: {
+      bearerSha256: recipient.bearerSha256,
+      processInstanceId: recipient.processInstanceId,
+      ...(live ? { installed: { ...installed } } : {}),
     },
-    ...(startup === undefined
-      ? {}
-      : {
-          protectedStartup: {
-            ...startup,
-            ...(generation === undefined ? {} : { generationSha256: generation }),
-          },
-          // The file-only node's owner generation is the reservation from the first read.
-          ...(generation === undefined || record.view.workspaceNodeMode === undefined
-            ? {}
-            : { generationSha256: generation }),
-        }),
   };
 }
 
@@ -1258,10 +1381,60 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
     server.on("error", stop);
   });
 
+  /** Follow one started execution: its ready receipt and its exit. */
+  function track(
+    running: LiveRecord,
+    execution: Execution,
+    workspaceNode: Pending["workspaceNode"],
+  ): void {
+    const view = running.view;
+    // A restarted protected run replaces `execution`; the replaced run's outcome is not the view's.
+    const live = () => running.execution === execution;
+    void execution.ready.then(
+      (receipt) => {
+        if (!live()) return;
+        try {
+          if (workspaceNode !== undefined) {
+            const bytes = readFileSync(join(config.runtimeDir, READY_FILE), {
+              flag: constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+            });
+            if (!bytes.equals(Buffer.from(`${JSON.stringify(receipt)}\n`))) {
+              throw new Error("original_ready_receipt_changed");
+            }
+            // A protected run keeps the reservation generation the Gateway pinned before release;
+            // ready.json repeats it and host ingress presents it.
+            view.generationSha256 =
+              running.protectedStartup === undefined
+                ? createHash("sha256").update(bytes).digest("hex")
+                : (receipt.generationSha256 ?? "");
+            if (!SHA256.test(view.generationSha256))
+              throw new Error("protected_generation_missing");
+          }
+          view.state = "running";
+        } catch {
+          view.state = "failed";
+          void execution.stop().catch(() => undefined);
+        }
+      },
+      () => {
+        if (live()) view.state = "failed";
+      },
+    );
+    void execution.done.then(
+      () => {
+        if (live()) view.state = "failed";
+      },
+      () => {
+        if (live()) view.state = "failed";
+      },
+    );
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const observing = request.url === ADMISSION && request.method === "POST";
     const releasing = request.url === RELEASE && request.method === "POST";
-    if (request.url !== CONTROL && !observing && !releasing) {
+    const delivering = request.url === MATERIAL && request.method === "POST";
+    if (request.url !== CONTROL && !observing && !releasing && !delivering) {
       reply(response, 404, { error: "unknown_path" });
       return;
     }
@@ -1274,7 +1447,13 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       else reply(response, 200, observedView(current));
       return;
     }
-    if (!observing && !releasing && request.method !== "PUT" && request.method !== "DELETE") {
+    if (
+      !observing &&
+      !releasing &&
+      !delivering &&
+      request.method !== "PUT" &&
+      request.method !== "DELETE"
+    ) {
       reply(response, 405, { error: "method_refused" });
       return;
     }
@@ -1294,7 +1473,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       const held = current;
       const startup = held?.protectedStartup;
       const view = held === undefined ? undefined : observedView(held);
-      const processInstanceId = view?.repositorySender?.processInstanceId;
+      const recipient = view?.repositoryRecipient;
       if (
         held === undefined ||
         view === undefined ||
@@ -1305,17 +1484,16 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         held.view.executionId !== data.executionId ||
         held.view.requirementsDigest !== requirementsDigest ||
         view.state !== "starting" ||
-        processInstanceId === undefined ||
-        view.protectedStartup?.generationSha256 === undefined ||
-        view.repositorySender === undefined
+        recipient === undefined ||
+        view.protectedStartup?.generationSha256 === undefined
       ) {
         reply(response, 409, { error: "release_outside_held_execution" });
         return;
       }
       const verified = verifyRelease(startup, data.release, {
         executionId: held.view.executionId,
-        processInstanceId,
-        bearerSha256: view.repositorySender.bearerSha256,
+        processInstanceId: recipient.processInstanceId,
+        bearerSha256: recipient.bearerSha256,
       });
       const prior = held.view.protectedStartup;
       if (prior?.startupSha256 !== undefined) {
@@ -1329,6 +1507,87 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         if (prior === undefined) throw new Error("release_outside_held_execution");
         held.view.protectedStartup = { ...prior, ...verified };
       }
+      reply(response, 200, observedView(held));
+      return;
+    }
+    if (delivering) {
+      // STAGE_A_PROTOTYPE: the Worker delivers the installation token OCE's Token Service minted
+      // for this execution's committed recipient (this host control process). OCE prepares it
+      // only after the revision activates, and stock Box reads an env:// secret once at start,
+      // so the host restarts the released `box run` once with Box's two GitHub routes. One
+      // version per execution: Box cannot take a renewed token, so another version is refused.
+      fields(data, ["owner", "requirementsDigest", "executionId", "material"]);
+      const held = current;
+      const recipient = held?.view.repositoryRecipient;
+      const material = deliveredMaterial(data.material);
+      const version = {
+        preparationAttemptId: material.preparationAttemptId,
+        materialVersion: material.materialVersion,
+      };
+      if (
+        held === undefined ||
+        recipient === undefined ||
+        held.retiring ||
+        held.execution === undefined ||
+        held.plan === undefined ||
+        !sameOwner(held.view.owner, supplied) ||
+        held.view.executionId !== data.executionId ||
+        held.view.requirementsDigest !== requirementsDigest ||
+        held.view.protectedStartup?.startupSha256 === undefined ||
+        held.view.state === "failed"
+      ) {
+        reply(response, 409, { error: "material_outside_released_execution" });
+        return;
+      }
+      if (held.installing !== undefined) {
+        const installed = observedView(held).repositoryRecipient?.installed;
+        const same =
+          held.installing.preparationAttemptId === version.preparationAttemptId &&
+          held.installing.materialVersion === version.materialVersion;
+        if (same && installed !== undefined) reply(response, 200, observedView(held));
+        else
+          reply(response, 409, {
+            error: same ? "material_install_unsettled" : "material_refresh_unsupported",
+          });
+        return;
+      }
+      held.installing = version;
+      const previous = held.execution;
+      held.view.state = "starting";
+      await previous.stop().catch(() => undefined);
+      if (shuttingDown || held.retiring || current !== held) {
+        reply(response, 503, { error: "host_stopping" });
+        return;
+      }
+      let execution: Execution;
+      try {
+        execution = startInstalledExecution(config, {
+          ...held.plan,
+          github: {
+            token: material.value,
+            ...(config.protectedRepository?.caSha256 === undefined
+              ? {}
+              : { caSha256: config.protectedRepository.caSha256 }),
+          },
+        });
+        held.execution = execution;
+      } catch {
+        held.view.state = "failed";
+        reply(response, 503, { error: "start_outcome_unknown" });
+        return;
+      }
+      track(held, execution, held.workspaceNode);
+      await execution.spawned.catch(() => undefined);
+      const box = execution.boxProcess();
+      if (box === undefined || (held.view.state as RecordView["state"]) === "failed") {
+        held.view.state = "failed";
+        reply(response, 503, { error: "start_outcome_unknown" });
+        return;
+      }
+      recipient.installed = {
+        ...version,
+        boxProcessInstanceId: `${box.bootId}:${box.pid}:${box.startTicks}`,
+      };
       reply(response, 200, observedView(held));
       return;
     }
@@ -1376,13 +1635,11 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
             commandSha256: digest(plan.command),
             ...(workspaceNode === undefined ? {} : { workspaceNode }),
             ...(inference === undefined ? {} : { controlledInference: routeView(inference) }),
-            ...(config.repositorySender === undefined
+            ...(config.protectedRepository === undefined
               ? {}
               : {
-                  repositorySender: {
-                    url: config.repositorySender.url,
-                    address: config.repositorySender.address,
-                  },
+                  protectedRepository: wiringConfiguration(config.protectedRepository.provider)
+                    .protectedRepository,
                 }),
             counts: {
               environment: Object.keys(plan.environment).length,
@@ -1421,7 +1678,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         "workspaceVolume",
         "workspaceNodeSetupCode",
         "controlledInference",
-        "repositorySenderBearer",
+        "executionBearer",
       ]);
       if (digest(data.requirements) !== requirementsDigest)
         throw new Error("requirements_digest_mismatch");
@@ -1477,12 +1734,15 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
           return;
         }
       }
-      const bearer = data.repositorySenderBearer;
-      const input = withRepositorySender(
-        config.repositorySender,
-        admitted(config, supplied, data, "start"),
-        bearer,
-      );
+      const bearer = data.executionBearer;
+      const input = admitted(config, supplied, data, "start");
+      // A protected host needs exactly one fresh execution bearer; an ordinary one takes none.
+      if (
+        (input.protectedStartup === undefined) !== (bearer === undefined) ||
+        (bearer !== undefined && (typeof bearer !== "string" || !EXECUTION_BEARER.test(bearer)))
+      ) {
+        throw new Error("execution_bearer_unexpected_or_missing");
+      }
       const workspaceNode = approvedWorkspaceNode(input);
       if (workspaceNode?.planSha256 !== pending.view.workspaceNode?.planSha256) {
         throw new Error("file_node_admitted_plan_changed");
@@ -1492,21 +1752,19 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       if (JSON.stringify(inferenceView) !== JSON.stringify(pending.view.controlledInference)) {
         throw new Error("controlled_inference_admitted_route_changed");
       }
+      const executionId = randomUUID();
+      const bearerSha256 =
+        typeof bearer === "string" ? createHash("sha256").update(bearer).digest("hex") : undefined;
+      const hostInstance = bearerSha256 === undefined ? undefined : hostProcessInstance();
       const view: RecordView = {
         owner: supplied,
         requirementsDigest,
-        executionId: randomUUID(),
+        executionId,
         state: "starting",
         endpoint: config.endpoint,
-        ...(input.repositorySenderBearer === undefined
+        ...(bearerSha256 === undefined || hostInstance === undefined
           ? {}
-          : {
-              repositorySender: {
-                bearerSha256: createHash("sha256")
-                  .update(input.repositorySenderBearer)
-                  .digest("hex"),
-              },
-            }),
+          : { repositoryRecipient: { bearerSha256, processInstanceId: hostInstance } }),
         ...(workspaceNode === undefined
           ? {}
           : {
@@ -1517,14 +1775,23 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       };
       attempted = true;
       reserveExecution(config.runtimeDir, view);
-      if (input.protectedStartup !== undefined)
+      const generation =
+        bearerSha256 === undefined || hostInstance === undefined
+          ? undefined
+          : reservationGeneration(executionId, bearerSha256, hostInstance);
+      if (input.protectedStartup !== undefined && generation !== undefined)
         view.protectedStartup = {
           plan: input.protectedStartup.plan,
           reservedAt: new Date().toISOString(),
+          generationSha256: generation,
         };
+      const plan: LaunchPlan =
+        generation === undefined ? input : { ...input, reservationGeneration: generation };
       const running: LiveRecord = {
         view,
         retiring: false,
+        plan,
+        workspaceNode,
         ...(input.protectedStartup === undefined
           ? {}
           : { protectedStartup: input.protectedStartup }),
@@ -1532,50 +1799,14 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       current = running;
       let execution: Execution;
       try {
-        execution = startInstalledExecution(config, input);
+        execution = startInstalledExecution(config, plan);
         running.execution = execution;
       } catch {
         view.state = "failed";
         reply(response, 503, { error: "start_outcome_unknown" });
         return;
       }
-      void execution.ready.then(
-        (receipt) => {
-          try {
-            if (workspaceNode !== undefined) {
-              const bytes = readFileSync(join(config.runtimeDir, READY_FILE), {
-                flag: constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-              });
-              if (!bytes.equals(Buffer.from(`${JSON.stringify(receipt)}\n`))) {
-                throw new Error("original_ready_receipt_changed");
-              }
-              // A protected run keeps the reservation generation the Gateway pinned before release;
-              // ready.json repeats it and host ingress presents it.
-              view.generationSha256 =
-                running.protectedStartup === undefined
-                  ? createHash("sha256").update(bytes).digest("hex")
-                  : (receipt.generationSha256 ?? "");
-              if (!SHA256.test(view.generationSha256))
-                throw new Error("protected_generation_missing");
-            }
-            view.state = "running";
-          } catch {
-            view.state = "failed";
-            void execution.stop().catch(() => undefined);
-          }
-        },
-        () => {
-          view.state = "failed";
-        },
-      );
-      void execution.done.then(
-        () => {
-          view.state = "failed";
-        },
-        () => {
-          view.state = "failed";
-        },
-      );
+      track(running, execution, workspaceNode);
       reply(response, 202, view);
       return;
     }

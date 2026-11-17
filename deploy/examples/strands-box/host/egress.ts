@@ -6,17 +6,26 @@ import { isAbsolute, normalize } from "node:path";
 
 export const CONTROLLED_INFERENCE_MARKER = "openclaw-strands-controlled-inference-v1";
 
-/** Box gives the workload a placeholder in this variable and swaps in the real bearer. */
-export const REPOSITORY_SENDER_BEARER_ENV = "OCE_REPOSITORY_SENDER_BEARER";
 /** 32 random bytes in unpadded base64url, minted once per execution by the paired Driver. */
-export const REPOSITORY_SENDER_BEARER = /^[A-Za-z0-9_-]{43}$/;
-/** The only requests the fixed-repository sender serves; Box's canonical path drops the query. */
-export const REPOSITORY_SENDER_REQUESTS = [
-  ["GET", "/repository.git/info/refs"],
-  ["POST", "/repository.git/git-upload-pack"],
-  ["POST", "/repository.git/git-receive-pack"],
-  ["POST", "/draft-pull"],
-] as const;
+export const EXECUTION_BEARER = /^[A-Za-z0-9_-]{43}$/;
+
+/**
+ * STAGE_A_PROTOTYPE (strands-gh design note, section 2): Box itself injects the GitHub App
+ * installation token that OCE's Token Service minted. Stock `gh` reads `GITHUB_TOKEN` and
+ * sends `Authorization: token <value>`, so Box swaps its placeholder there. Stock Git sends no
+ * credential on its first request and waits for a 401, which a placeholder-only route would
+ * refuse, so the `github.com` route attaches `x-access-token:<token>` as Basic auth to every
+ * request. Neither route asks OCE per request; see the accepted gaps in KNOWN-GAPS.md.
+ */
+export const GITHUB_TOKEN_ENV = "GITHUB_TOKEN";
+export const GITHUB_GIT_CREDENTIAL_ENV = "OCE_GITHUB_GIT_CREDENTIAL";
+export const GITHUB_HOSTS = ["github.com", "api.github.com"] as const;
+/** What OCE's material check accepts for an installation token value. */
+export const GITHUB_TOKEN_VALUE = /^[A-Za-z0-9_.-]{8,512}$/;
+const GITHUB_METHODS: Readonly<Record<(typeof GITHUB_HOSTS)[number], readonly string[]>> = {
+  "github.com": ["GET", "POST"],
+  "api.github.com": ["GET", "POST", "PATCH", "PUT", "DELETE"],
+};
 
 /**
  * The top-level box.toml key that names one PEM file of extra upstream roots, as proposed in
@@ -36,7 +45,7 @@ export interface UpstreamCa {
 }
 
 export interface EgressRoute {
-  readonly kind: "workspace-node" | "controlled-inference" | "repository-sender";
+  readonly kind: "workspace-node" | "controlled-inference";
   readonly url: string;
   readonly address: string;
   /** The route opts in to the execution's upstream CA bundle by naming its digest. */
@@ -80,9 +89,7 @@ function exactRoute(url: string, address: string, kind: EgressRoute["kind"]): UR
     parsed.hash ||
     (kind === "workspace-node"
       ? parsed.protocol !== "wss:"
-      : kind === "repository-sender"
-        ? parsed.protocol !== "https:" || parsed.pathname !== "/"
-        : parsed.protocol !== "https:" || parsed.pathname !== "/v1")
+      : parsed.protocol !== "https:" || parsed.pathname !== "/v1")
   ) {
     throw new Error("invalid_fixed_egress");
   }
@@ -267,19 +274,19 @@ export function upstreamCaPem(
 // Box's own egress policy checks hostname+port before DNS and the exact IP
 // after resolution. The request rule narrows method and canonical path. These
 // rules inject no credential and do not bypass Box's upstream TLS checks.
-export function policy(routes: readonly EgressRoute[]): string {
+export function policy(routes: readonly EgressRoute[], github = false): string {
   const text = [
     "// Default deny; only these installed, credential-free destinations are eligible.",
   ];
+  if (github) text.push(githubPolicy());
   for (const route of routes) {
     const url = exactRoute(route.url, route.address, route.kind);
     const port = url.port || "443";
     const condition = `context.input.host == ${JSON.stringify(url.hostname)} && context.input.port == ${port}`;
     const ws = route.kind === "workspace-node";
-    const requests: readonly (readonly [string, string])[] =
-      route.kind === "repository-sender"
-        ? REPOSITORY_SENDER_REQUESTS
-        : [[ws ? "GET" : "POST", ws ? url.pathname : `${url.pathname}/responses`]];
+    const requests: readonly (readonly [string, string])[] = [
+      [ws ? "GET" : "POST", ws ? url.pathname : `${url.pathname}/responses`],
+    ];
     text.push(
       'permit (principal, action == Box::Action::"net:connect", resource)',
       `when { ${condition} && !(context.input has ip6) && (!(context.input has ip4) || (context.input has ip4 && context.input.ip4 == ${JSON.stringify(route.address)})) };`,
@@ -295,21 +302,54 @@ export function policy(routes: readonly EgressRoute[]): string {
 }
 
 /**
- * The Box phantom credential route for the repository sender. `box run` reads the bearer from
- * its own environment once at start; the workload, tools and MCP servers see a placeholder,
- * and Box adds the real value only over intercepted TLS to this exact host and port.
+ * STAGE_A_PROTOTYPE: the public GitHub hosts over TLS against Box's own roots. Box resolves them
+ * itself; OCE authorizes nothing per request here, so the rules only bound host, port, method and
+ * interception. The listener is the real GitHub.
  */
-export function repositorySenderCredential(route: EgressRoute): string {
-  if (route.kind !== "repository-sender") throw new Error("invalid_fixed_egress");
-  const url = exactRoute(route.url, route.address, route.kind);
+export function githubPolicy(): string {
+  const text = ["// STAGE_A_PROTOTYPE: GitHub, with the OCE-minted installation token Box injects."];
+  for (const host of GITHUB_HOSTS) {
+    const condition = `context.input.host == ${JSON.stringify(host)} && context.input.port == 443`;
+    const methods = GITHUB_METHODS[host].map((method) => `context.input.method == "${method}"`);
+    text.push(
+      'permit (principal, action == Box::Action::"net:connect", resource)',
+      `when { ${condition} };`,
+      'permit (principal, action == Box::Action::"http:request", resource)',
+      `when { ${condition} && (${methods.join(" || ")}) && context.input.intercepted == true };`,
+    );
+  }
+  return text.join("\n");
+}
+
+/**
+ * STAGE_A_PROTOTYPE: the two Box credential routes. `box run` reads both values from its own
+ * environment once at start; the workload sees only placeholders. The tables name variables,
+ * never the token.
+ */
+export function githubCredentials(): string {
   return [
-    "[egress.repository-sender]",
-    `destinations = [${JSON.stringify(`${url.hostname}:${url.port || "443"}`)}]`,
-    `secret.ref = "env://${REPOSITORY_SENDER_BEARER_ENV}"`,
+    "[egress.github-git]",
+    'destinations = ["github.com"]',
+    `secret.ref = "env://${GITHUB_GIT_CREDENTIAL_ENV}"`,
+    'secret.placement = "basic_auth"',
+    'secret.inject = "always"',
+    "",
+    "[egress.github-api]",
+    'destinations = ["api.github.com"]',
+    `secret.ref = "env://${GITHUB_TOKEN_ENV}"`,
     'secret.placement = "header"',
     'secret.header = "Authorization"',
-    'secret.prefix = "Bearer "',
+    'secret.prefix = "token "',
     'secret.inject = "phantom"',
     "",
   ].join("\n");
+}
+
+/** The `box run` environment that carries one installation token for both routes. */
+export function githubCredentialEnvironment(token: string): Record<string, string> {
+  if (!GITHUB_TOKEN_VALUE.test(token)) throw new Error("invalid_github_material");
+  return {
+    [GITHUB_TOKEN_ENV]: token,
+    [GITHUB_GIT_CREDENTIAL_ENV]: `x-access-token:${token}`,
+  };
 }

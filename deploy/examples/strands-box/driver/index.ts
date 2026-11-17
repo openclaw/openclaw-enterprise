@@ -43,9 +43,8 @@ import { nativeStatus } from "./native.ts";
 import { readObject, Relay, relayName, type RelayOptions } from "./relay.ts";
 import {
   createProtectedRegistration,
-  repositorySenderSchema,
-  validateRepositorySender,
-  type RepositorySenderConfiguration,
+  protectedRepositorySchema,
+  type ProtectedRepositoryConfiguration,
 } from "./protected.ts";
 
 export interface Options {
@@ -62,7 +61,7 @@ export interface Options {
   };
   readonly workspaceNodeMode?: WorkspaceNodeMode;
   /** Selecting this makes the package a paired protected Sandbox + Credential Proxy registration. */
-  readonly repositorySender?: RepositorySenderConfiguration;
+  readonly protectedRepository?: ProtectedRepositoryConfiguration;
 }
 
 const DNS_LABEL = "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$";
@@ -90,7 +89,7 @@ export const configurationSchema: NonNullable<DriverImplementation["configuratio
     nativeCaBundle: { type: "string", minLength: 1, maxLength: 32768 },
     workspaceRoot: { type: "string", minLength: 1, maxLength: 1024 },
     workspaceNodeMode: { type: "string", enum: ["file-only-v1"] },
-    repositorySender: repositorySenderSchema,
+    protectedRepository: protectedRepositorySchema,
     controlledInference: {
       type: "object",
       additionalProperties: false,
@@ -259,14 +258,11 @@ export function validateConfiguration(
   if (options.workspaceNodeMode !== undefined && options.controlledInference === undefined) {
     invalid("/workspaceNodeMode", "The file-only workspace node requires controlled inference.");
   }
-  if (options.repositorySender !== undefined) {
-    errors.push(...validateRepositorySender(options.repositorySender));
-  }
   return errors;
 }
 
 /**
- * Without `repositorySender` this returns the ordinary Sandbox Driver, which the paired loader
+ * Without `protectedRepository` this returns the ordinary Sandbox Driver, which the paired loader
  * refuses. With it, this returns one registration with the protected Sandbox and its Credential
  * Proxy sharing state, which the ordinary `drivers.sandbox` loader refuses.
  */
@@ -276,7 +272,7 @@ export function createDriver(input: {
   readonly configuration: Readonly<Record<string, unknown>>;
 }): SandboxDriver | DriverRegistration {
   const options = input.configuration as unknown as Options;
-  if (options.repositorySender !== undefined) {
+  if (options.protectedRepository !== undefined) {
     return createProtectedRegistration(StrandsBoxDriver, input.id, input.implementation, options);
   }
   return new StrandsBoxDriver(input.id, input.implementation, options);

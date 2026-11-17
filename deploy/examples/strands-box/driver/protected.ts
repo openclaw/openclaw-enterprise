@@ -1,19 +1,19 @@
 /**
  * Paired protected registration: one Strands Box Sandbox and its Credential Proxy with shared
- * state. Selected only when the Installation configures `repositorySender`; the ordinary
+ * state. Selected only when the Installation configures `protectedRepository`; the ordinary
  * `drivers.sandbox` loader refuses this registration, and the paired loader refuses the
  * ordinary Driver, so neither can be selected as the other.
  *
- * Custody: the GitHub App and the installation token stay in the Worker (prepared-git owner).
- * The fixed-repository sender runs in the Worker and reads material per request. Box holds only
- * a per-execution phantom bearer that authenticates the execution to this sender.
+ * Custody: the GitHub App key stays in the Worker (prepared-Git owner); OCE's Token Service mints
+ * the installation token. STAGE_A_PROTOTYPE: this Worker delivers that token to the Box host
+ * over its owner-only control socket, and the host gives it to `box run` as the env:// secret of
+ * Box's github.com and api.github.com routes. The workload holds only Box's placeholder; stock
+ * `git` and `gh` work unchanged. Box sends without asking OCE per request, which the Credential
+ * Proxy contract does not allow ("a material read permits receipt or installation only"), so
+ * this stage cannot land. Stage B answers a Box request-phase authorizer from `bindRepositoryGit`
+ * here instead of delivering the token (docs/planning/strands-gh-design.md in the workspace).
  */
-import { createHash, createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { type Agent, createServer, type Server } from "node:https";
-import { isIP } from "node:net";
-import { isAbsolute, join } from "node:path";
+import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   CredentialProxyDriver,
@@ -21,8 +21,8 @@ import type {
   DriverRegistration,
   EgressInstallation,
   EgressRef,
-  ErrorDetail,
   HarnessWorkloadRequirements,
+  ProtectedGitHubRepositoryMaterial,
   ProtectedRepositoryGitAuthority,
   ProtectedWorkspaceEndpoint,
   ProtectedWorkspaceSandboxDriver,
@@ -41,144 +41,69 @@ import type {
   SandboxResourceRef,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
-import { BOX_PHANTOM_IDENTITY, createRepositorySender } from "../git/index.ts";
-import type { CurrentGitRecipient, GitReceipt } from "../git/index.ts";
-import { repositorySelection, type RepositorySelection } from "../git/protocol.ts";
 import {
   canonicalJson,
   control,
+  deliverMaterial,
   digest,
   record,
   releaseExecution,
   sameOwner,
+  type DeliveredMaterial,
   type Execution,
 } from "./control.ts";
 import type { Options, StrandsBoxDriver } from "./index.ts";
 
-export interface RepositorySenderConfiguration {
-  /** What Box connects to: `https://<name>:<port>/`, the name resolving to `address`. */
-  readonly url: string;
-  /** The one private IPv4 Box's egress policy pins for `url`. */
-  readonly address: string;
-  /** The Box host's source address as the Worker listener sees it; every other peer is dropped. */
-  readonly peerAddress: string;
-  readonly listenHost?: string;
-  readonly listenPort: number;
-  /** Worker-local PEM files. Box verifies this certificate, so it must chain to a root Box trusts. */
-  readonly certificateFile: string;
-  readonly keyFile: string;
-  /** Worker-local owner-only directory; one journal subdirectory per execution. */
-  readonly journalDir: string;
-  readonly repository: RepositorySelection;
+export interface ProtectedRepositoryConfiguration {
+  /** The provider whose installation token Box's routes carry. Only GitHub exists. */
+  readonly provider: "github";
 }
 
-export const repositorySenderSchema: NonNullable<DriverImplementation["configurationSchema"]> = {
+export const protectedRepositorySchema: NonNullable<
+  DriverImplementation["configurationSchema"]
+> = {
   type: "object",
   additionalProperties: false,
-  required: [
-    "url",
-    "address",
-    "peerAddress",
-    "listenPort",
-    "certificateFile",
-    "keyFile",
-    "journalDir",
-    "repository",
-  ],
-  properties: {
-    url: { type: "string", minLength: 1, maxLength: 256 },
-    address: { type: "string", minLength: 7, maxLength: 15 },
-    peerAddress: { type: "string", minLength: 7, maxLength: 15 },
-    listenHost: { type: "string", minLength: 1, maxLength: 64 },
-    listenPort: { type: "integer", minimum: 1024, maximum: 65535 },
-    certificateFile: { type: "string", minLength: 1, maxLength: 1024 },
-    keyFile: { type: "string", minLength: 1, maxLength: 1024 },
-    journalDir: { type: "string", minLength: 1, maxLength: 1024 },
-    repository: {
-      type: "object",
-      additionalProperties: false,
-      required: ["repository", "repositoryId", "installationId", "head", "base"],
-      properties: {
-        repository: { type: "string", minLength: 1, maxLength: 256 },
-        repositoryId: { type: "string", minLength: 1, maxLength: 256 },
-        installationId: { type: "string", minLength: 1, maxLength: 256 },
-        head: { type: "string", minLength: 1, maxLength: 256 },
-        base: { type: "string", minLength: 1, maxLength: 256 },
-      },
-    },
-  },
+  required: ["provider"],
+  properties: { provider: { type: "string", enum: ["github"] } },
 };
 
-const WIRING_VERSION = 1;
+/** Equal to the host's `wiringConfiguration` (host/control.ts); the host compares it exactly. */
+const WIRING_VERSION = 2;
+const GITHUB_HOSTS = ["github.com", "api.github.com"] as const;
+const BOX_PHANTOM_IDENTITY = "box-phantom-sha256:";
 const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 const RELEASE_PROFILE = "oce-compute-execution-release-v1";
-const PROCESS_INSTANCE = /^([a-f0-9-]{36}):([1-9][0-9]{0,9}):([1-9][0-9]{0,19})$/;
 
-function privateIpv4(address: string): boolean {
-  return isIP(address) === 4 && /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2[0-9]|3[01])\.)/.test(address);
-}
-
-function senderUrl(value: string, address: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      url.pathname === "/" &&
-      url.port !== "" &&
-      !url.username &&
-      !url.password &&
-      !url.search &&
-      !url.hash &&
-      url.toString() === value &&
-      (isIP(url.hostname) === 0
-        ? /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(url.hostname)
-        : url.hostname === address)
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function validateRepositorySender(
-  sender: RepositorySenderConfiguration,
-): readonly ErrorDetail[] {
-  const errors: ErrorDetail[] = [];
-  const invalid = (path: string, message: string) =>
-    errors.push({ path: `/repositorySender${path}`, code: "INVALID_VALUE", message });
-  if (!privateIpv4(sender.address))
-    invalid("/address", "Use the one private IPv4 address the sender name resolves to for Box.");
-  if (!senderUrl(sender.url, sender.address))
-    invalid("/url", "Use the sender's canonical https://<name>:<port>/ origin.");
-  if (!privateIpv4(sender.peerAddress))
-    invalid("/peerAddress", "Use the Box host's private IPv4 source address.");
-  for (const key of ["certificateFile", "keyFile", "journalDir"] as const) {
-    if (!isAbsolute(sender[key])) invalid(`/${key}`, "Use an absolute Worker-local path.");
-  }
-  try {
-    repositorySelection(sender.repository);
-  } catch {
-    invalid(
-      "/repository",
-      "Select one exact GitHub repository and distinct head and base branches.",
-    );
-  }
-  return errors;
-}
-
-/** The nonsecret configuration the host compares with its own sender route. */
-function wiringConfiguration(sender: RepositorySenderConfiguration) {
+function wiringConfiguration(configured: ProtectedRepositoryConfiguration) {
   return {
     version: WIRING_VERSION,
-    repositorySender: { url: sender.url, address: sender.address },
+    protectedRepository: {
+      provider: configured.provider,
+      hosts: [...GITHUB_HOSTS],
+      delivery: "box-env-v1",
+    },
   };
 }
 
-function senderRef(id: string): EgressRef {
-  return { id: `${id}-repository-sender`, generation: 1 };
+function recipientRef(id: string): EgressRef {
+  return { id: `${id}-box-egress`, generation: 1 };
 }
 
 function samePlan(left: unknown, right: unknown): boolean {
   return canonicalJson(left) === canonicalJson(right);
+}
+
+function sameVersion(
+  left: RepositoryGitMaterialVersion | undefined,
+  right: RepositoryGitMaterialVersion | undefined,
+): boolean {
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.preparationAttemptId === right.preparationAttemptId &&
+    left.materialVersion === right.materialVersion
+  );
 }
 
 /** Exactly one online-request, one-repository Git plan with no other route, owned by this Driver. */
@@ -197,41 +122,55 @@ function admittedPlan(plan: ProxyPlan | undefined, id: string): plan is ProxyPla
   );
 }
 
+/** Only what Box's routes need: the value and the identifiers the host checks and reports. */
+function hostMaterial(material: ProtectedGitHubRepositoryMaterial): DeliveredMaterial {
+  return {
+    preparationAttemptId: material.preparationAttemptId,
+    materialVersion: material.materialVersion,
+    expiresAt: material.expiresAt,
+    installationId: material.installationId,
+    repositories: material.repositories.map(({ repositoryId, repository }) => ({
+      repositoryId,
+      repository,
+    })),
+    value: material.value,
+  };
+}
+
 interface Recipient {
   readonly executionId: string;
   readonly revisionId: string;
   readonly installation: EgressInstallation;
   route?: RepositoryGitInstallationFence;
+  /** The intent OCC persisted; a lost install or confirmation is settled from it, never redone. */
+  pending?: (RepositoryGitInstallationFence & RepositoryGitMaterialVersion) | undefined;
   confirmed?: RepositoryGitInstallationFence;
   version?: RepositoryGitMaterialVersion;
   settledAt?: number;
-  sender?: ReturnType<typeof createRepositorySender>;
-  binding?: { close(): void | Promise<void> };
+  /** A newer version OCE prepared that stock Box cannot take (Stage A has no refresh). */
+  refused?: RepositoryGitMaterialVersion;
 }
 
 /** State shared by the paired Sandbox and Credential Proxy of one registration. */
 class Shared {
-  readonly sender: EgressRef;
+  readonly recipient: EgressRef;
   readonly wiring: ReturnType<typeof wiringConfiguration>;
   readonly retained = new Map<string, HarnessWorkloadRequirements>();
   authority: ProtectedRepositoryGitAuthority | undefined;
-  server: Server | undefined;
   active: Recipient | undefined;
   readonly id: string;
-  readonly options: Options & { readonly repositorySender: RepositorySenderConfiguration };
-
-  readonly upstreamAgent: Agent | undefined;
+  readonly options: Options & {
+    readonly protectedRepository: ProtectedRepositoryConfiguration;
+  };
 
   constructor(
     id: string,
-    options: Options & { readonly repositorySender: RepositorySenderConfiguration },
-    upstreamAgent?: Agent,
+    options: Options & { readonly protectedRepository: ProtectedRepositoryConfiguration },
   ) {
     this.id = id;
     this.options = options;
-    this.upstreamAgent = upstreamAgent;
-    this.sender = senderRef(id);
-    this.wiring = wiringConfiguration(options.repositorySender);
+    this.recipient = recipientRef(id);
+    this.wiring = wiringConfiguration(options.protectedRepository);
   }
 
   read(signal: AbortSignal): Promise<Execution | undefined> {
@@ -239,20 +178,21 @@ class Shared {
   }
 
   /**
-   * The recipient exactly as the host observes it now: this host execution, its live `box run`
-   * process and the digest of the bearer the host gave it. Never built from a request or from
-   * Compute's record alone.
+   * The recipient exactly as the host observes it now: this host execution, the host control
+   * process that receives the material for it, and the digest of the bearer the host gave it.
+   * Never built from a request or from Compute's record alone. It does not change when the host
+   * restarts `box run` to install material, so the committed installation stays exact.
    */
   installationFrom(
     plan: ProxyPlan,
     execution: Execution | undefined,
   ): EgressInstallation | undefined {
-    const sender = execution?.repositorySender;
+    const recipient = execution?.repositoryRecipient;
     const startup = execution?.protectedStartup;
     if (
       execution === undefined ||
       execution.state === "failed" ||
-      sender?.processInstanceId === undefined ||
+      recipient === undefined ||
       startup?.generationSha256 === undefined ||
       execution.owner.driverId !== this.id ||
       execution.owner.revisionId !== plan.execution.revisionId ||
@@ -266,7 +206,7 @@ class Shared {
     return {
       plan,
       sandboxId: execution.executionId,
-      sender: this.sender,
+      sender: this.recipient,
       installedAt: startup.reservedAt,
       enforcement: {
         instanceId: execution.executionId,
@@ -274,15 +214,15 @@ class Shared {
         policyHash: digest({
           version: WIRING_VERSION,
           plan,
-          route: this.wiring.repositorySender,
+          route: this.wiring.protectedRepository,
           generationSha256: startup.generationSha256,
         }),
         authorityScope: "execution",
         repositoryGitRecipient: {
-          providerId: this.sender.id,
+          providerId: this.recipient.id,
           attachmentEpoch: execution.executionId,
-          processInstanceId: sender.processInstanceId,
-          networkInstanceId: `${BOX_PHANTOM_IDENTITY}${sender.bearerSha256}`,
+          processInstanceId: recipient.processInstanceId,
+          networkInstanceId: `${BOX_PHANTOM_IDENTITY}${recipient.bearerSha256}`,
           authorization: "online-request",
           deliveryProfile: "github_repository",
         },
@@ -290,63 +230,14 @@ class Shared {
     };
   }
 
-  async current(signal: AbortSignal): Promise<CurrentGitRecipient | undefined> {
-    const active = this.active;
-    if (active?.confirmed === undefined || active.version === undefined) return undefined;
-    const execution = await this.read(signal);
-    const installation = this.installationFrom(active.installation.plan, execution);
-    const sender = execution?.repositorySender;
-    const process = PROCESS_INSTANCE.exec(sender?.processInstanceId ?? "");
-    if (
-      installation === undefined ||
-      sender === undefined ||
-      process === null ||
-      execution?.executionId !== active.executionId ||
-      !isDeepStrictEqual(installation, active.installation) ||
-      this.active !== active
-    ) {
-      return undefined;
-    }
-    return {
-      installation,
-      route: active.confirmed,
-      version: active.version,
-      original: {
-        running: true,
-        executionId: installation.plan.execution.executionId,
-        bootId: process[1]!,
-        pid: Number(process[2]),
-        startTicks: process[3]!,
-      },
-      executionBearerSha256: sender.bearerSha256,
-    };
-  }
-
-  async retire(): Promise<void> {
-    const active = this.active;
+  retire(): void {
     this.active = undefined;
-    await active?.binding?.close();
-  }
-
-  journal(executionId: string): string {
-    const root = this.options.repositorySender.journalDir;
-    const path = join(root, createHash("sha256").update(executionId).digest("hex").slice(0, 32));
-    try {
-      mkdirSync(path, { mode: 0o700 });
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-    }
-    const stat = lstatSync(path);
-    if (!stat.isDirectory() || realpathSync(path) !== path || (stat.mode & 0o777) !== 0o700) {
-      throw new DependencyUnavailableError("The sender journal directory is not owner-only.");
-    }
-    return path;
   }
 
   /**
-   * One Worker pass: re-observe the host's current execution, the committed recipient, and the
-   * eligible material version. The sender in this Worker is the recipient; it holds no copy of
-   * the material and reads that exact version on each request.
+   * One Worker pass: re-observe the host's current execution and the committed recipient, then
+   * install the eligible material version once. OCE prepares material only for the active
+   * revision, so this runs after the release and the activation, never before.
    */
   async reconcile(signal: AbortSignal): Promise<void> {
     const authority = this.authority;
@@ -355,7 +246,7 @@ class Shared {
     const plan = execution?.protectedStartup?.plan as ProxyPlan | undefined;
     const installation = plan === undefined ? undefined : this.installationFrom(plan, execution);
     if (execution === undefined || installation === undefined) {
-      await this.retire();
+      this.retire();
       return;
     }
     if (
@@ -363,119 +254,121 @@ class Shared {
       (this.active.executionId !== execution.executionId ||
         !isDeepStrictEqual(this.active.installation, installation))
     ) {
-      await this.retire();
+      this.retire();
     }
     const active = (this.active ??= {
       executionId: execution.executionId,
       revisionId: installation.plan.execution.revisionId,
       installation,
     });
+    if (active.pending !== undefined) {
+      await this.settle(authority, active, execution, signal);
+      return;
+    }
     const route = await authority.recipients.observe(installation);
     if (route === undefined || this.active !== active) return;
     active.route = route;
     const git = authority.online.githubRepository;
     const material = git === undefined ? undefined : await git.readMaterial(route, signal);
+    // Withdrawal: OCE retires the attempt and revokes the token at GitHub, so Box's routes are
+    // refused from then on while the chat keeps running. Nothing is sent to the host.
     if (material === undefined || "absent" in material || this.active !== active) return;
     const version = {
       preparationAttemptId: material.preparationAttemptId,
       materialVersion: material.materialVersion,
     };
-    if (isDeepStrictEqual(active.version, version)) return;
-    const pending = await authority.recipients.beginInstall(route, version);
-    if (this.active !== active) return;
-    let confirmed: RepositoryGitInstallationFence | undefined;
-    if (pending === undefined) {
-      // OCC refuses an intent for the version its delivery row already holds, which is the state
-      // a restarted Worker finds. observe() returned this fence only with no pending write, so
-      // adopt it for that version without a second intent. Every request's authorize still
-      // checks the installed fence and version against OCC's row and denies any other state.
-      if (active.version !== undefined) return;
-      confirmed = route;
-    } else {
-      confirmed = await authority.recipients.confirmInstall(pending);
-    }
-    if (confirmed === undefined || this.active !== active) return;
-    active.confirmed = confirmed;
-    active.version = version;
-    active.settledAt = Date.now();
-    if (active.sender === undefined) {
-      const sender = createRepositorySender({
-        execution: installation.plan.execution,
-        driver: installation.plan.driver!,
-        sender: this.sender,
-        repository: this.options.repositorySender.repository,
-        journalDir: this.journal(installation.plan.execution.executionId),
-        current: (lifetime) => this.current(lifetime),
-        record: receipt,
-        ...(this.upstreamAgent === undefined ? {} : { upstreamAgent: this.upstreamAgent }),
-      });
-      active.binding = await sender.bindRepositoryGit(authority);
-      active.sender = sender;
-    }
-  }
-
-  handle(req: IncomingMessage, res: ServerResponse): void {
-    const sender = this.active?.sender;
-    if (sender === undefined) {
-      res.writeHead(403, { "cache-control": "no-store", "content-length": "0" }).end();
+    if (sameVersion(active.version, version)) return;
+    const installed = execution.repositoryRecipient?.installed;
+    if (active.confirmed !== undefined || (installed !== undefined && !sameVersion(installed, version))) {
+      // STAGE_A_PROTOTYPE: stock Box reads its secret once; a renewed version is not installed.
+      // OCE's renewal retires (and revokes) the version Box holds, which ends its access.
+      active.refused = version;
       return;
     }
-    void sender.handle(req, res);
+    const pending = await authority.recipients.beginInstall(route, version);
+    if (this.active !== active) return;
+    if (pending === undefined) {
+      // OCC refuses an intent for the version its delivery row already holds, which is the state
+      // a restarted Worker finds. Adopt it only when the host shows that exact version in the
+      // live `box run`; the delivery row records nothing else.
+      if (!sameVersion(installed, version)) return;
+      this.settled(active, route, version);
+      return;
+    }
+    active.pending = pending;
+    if (installed === undefined) {
+      await deliverMaterial(
+        this.options.controlSocket,
+        {
+          owner: execution.owner,
+          executionId: execution.executionId,
+          requirementsDigest: execution.requirementsDigest,
+          material: hostMaterial(material),
+        },
+        signal,
+      );
+    }
+    await this.settle(authority, active, await this.read(signal), signal);
   }
 
-  async bind(authority: ProtectedRepositoryGitAuthority): Promise<RepositoryGitBinding> {
+  /**
+   * Confirm the persisted intent only after reading the exact version back from the host for
+   * the same execution's live `box run`. A delivery whose reply was lost is redelivered with the
+   * same version: the host answers it from its record and never restarts Box twice.
+   */
+  private async settle(
+    authority: ProtectedRepositoryGitAuthority,
+    active: Recipient,
+    execution: Execution | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const pending = active.pending!;
+    const installed = execution?.repositoryRecipient?.installed;
+    if (
+      execution === undefined ||
+      execution.executionId !== active.executionId ||
+      !sameVersion(installed, pending)
+    ) {
+      return;
+    }
+    const confirmed = await authority.recipients.confirmInstall(pending);
+    signal.throwIfAborted();
+    if (confirmed === undefined || this.active !== active) return;
+    active.pending = undefined;
+    this.settled(active, confirmed, pending);
+  }
+
+  private settled(
+    active: Recipient,
+    route: RepositoryGitInstallationFence,
+    version: RepositoryGitMaterialVersion,
+  ): void {
+    active.route = route;
+    active.confirmed = route;
+    active.version = {
+      preparationAttemptId: version.preparationAttemptId,
+      materialVersion: version.materialVersion,
+    };
+    active.settledAt = Date.now();
+  }
+
+  bind(authority: ProtectedRepositoryGitAuthority): RepositoryGitBinding {
     if (this.authority !== undefined || authority.online.githubRepository === undefined) {
       throw new DependencyUnavailableError(
         "The selected online GitHub repository authority is unavailable.",
       );
     }
-    const sender = this.options.repositorySender;
-    const server = createServer(
-      {
-        cert: readFileSync(sender.certificateFile),
-        key: readFileSync(sender.keyFile),
-        requestTimeout: 30_000,
-        headersTimeout: 10_000,
-        maxHeaderSize: 8_192,
-      },
-      (req, res) => this.handle(req, res),
-    );
-    server.maxConnections = 16;
-    // Only the Box host reaches this listener; the NetworkPolicy is the outer fence.
-    server.on("connection", (socket) => {
-      const remote = socket.remoteAddress?.replace(/^::ffff:/, "");
-      if (remote !== sender.peerAddress) socket.destroy();
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(sender.listenPort, sender.listenHost ?? "0.0.0.0", () => {
-        server.off("error", reject);
-        resolve();
-      });
-    });
     this.authority = authority;
-    this.server = server;
     return {
       reconcile: (signal) => this.reconcile(signal),
       close: () => this.close(),
     };
   }
 
-  async close(): Promise<void> {
-    const server = this.server;
-    this.server = undefined;
+  close(): void {
     this.authority = undefined;
-    await this.retire();
-    if (server !== undefined) {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+    this.retire();
   }
-}
-
-function receipt(row: GitReceipt): void {
-  // Receipts carry stages and identifiers only, never material or the bearer.
-  process.stderr.write(`${JSON.stringify({ event: "strands-box.repository-sender", ...row })}\n`);
 }
 
 export function createProtectedRegistration(
@@ -483,13 +376,11 @@ export function createProtectedRegistration(
   id: string,
   implementation: string,
   input: Options,
-  /** Test seam only: `createDriver` never passes it, so configuration cannot select it. */
-  seams: { readonly upstreamAgent?: Agent } = {},
 ): DriverRegistration {
-  const configured = input.repositorySender;
-  if (configured === undefined) throw new Error("repositorySender is required.");
-  const options = { ...structuredClone(input), repositorySender: structuredClone(configured) };
-  const shared = new Shared(id, options, seams.upstreamAgent);
+  const configured = input.protectedRepository;
+  if (configured === undefined) throw new Error("protectedRepository is required.");
+  const options = { ...structuredClone(input), protectedRepository: structuredClone(configured) };
+  const shared = new Shared(id, options);
 
   class ProtectedStrandsBoxDriver extends Base implements ProtectedWorkspaceSandboxDriver {
     readonly repositoryAccess: SandboxRepositoryAccess = {
@@ -506,8 +397,8 @@ export function createProtectedRegistration(
           fingerprint: digest(installation.enforcement),
         };
       },
-      // OCC withdraws the binding; the sender then refuses before any provider connection.
-      // The Box execution and its chat keep running.
+      // STAGE_A_PROTOTYPE: OCC retires the attempt and revokes the token at GitHub; Box's routes
+      // are refused from then on. The Box execution and its chat keep running.
       retireExpired: async () => "withdrawn",
       routeReadiness: (revisionId) =>
         shared.active?.revisionId === revisionId && shared.active.route !== undefined
@@ -534,14 +425,17 @@ export function createProtectedRegistration(
         revision.harness.mode !== "dedicated"
       ) {
         this.refuse(
-          "This paired Strands Box registration runs only a protected one-repository revision through its fixed sender.",
+          "This paired Strands Box registration runs only a protected one-repository revision through Box's GitHub routes.",
         );
       }
     }
 
-    /** A fresh bearer per PUT; the host keeps it only in memory and in `box run`. */
+    /**
+     * A fresh bearer per PUT: the per-execution recipient identity. The host keeps only its
+     * digest; Stage B presents the bearer to OCE's authorizer for each request.
+     */
     protected override executionInputs(): Readonly<Record<string, string>> {
-      return { repositorySenderBearer: randomBytes(32).toString("base64url") };
+      return { executionBearer: randomBytes(32).toString("base64url") };
     }
 
     override async provisionHarness(context: SandboxHarnessContext): Promise<SandboxResourceRef> {
@@ -663,7 +557,7 @@ export function createProtectedRegistration(
         shared.active !== undefined &&
         (context.revision === undefined || shared.active.revisionId === context.revision.id)
       ) {
-        await shared.retire();
+        shared.retire();
       }
     }
   }
@@ -674,25 +568,21 @@ export function createProtectedRegistration(
     implementation,
     capability: "credential_proxy",
     sourceControl: {
-      sender: shared.sender,
-      backend: shared.sender,
-      resolver: shared.sender,
+      sender: shared.recipient,
+      backend: shared.recipient,
+      resolver: shared.recipient,
       providers: [],
       async assertAvailable(signal, profile) {
         if (profile !== "github_repository") {
           throw new DependencyUnavailableError(
-            "This Strands Box registration delivers only one GitHub repository through its sender.",
+            "This Strands Box registration delivers only one GitHub repository through Box's routes.",
           );
         }
-        // In the Worker, prove the host and the bound listener answer. The API process loads
-        // the package but never binds; its admission answer is the configured guarantee, and the
-        // Worker repeats this check in configure before any wiring.
-        if (shared.authority !== undefined) {
-          await shared.read(signal);
-          if (shared.server?.listening !== true) {
-            throw new DependencyUnavailableError("The repository sender listener is not bound.");
-          }
-        }
+        // In the Worker, prove the host answers. The API process loads the package but never
+        // binds; the Worker repeats this check in configure before any wiring.
+        if (shared.authority !== undefined) await shared.read(signal);
+        // STAGE_A_PROTOTYPE: this answer claims online authorization so OCE admits the plan, but
+        // stock Box sends without asking OCE per request. Stage B's authorizer makes it true.
         return { profile, authorization: "online-request" };
       },
     },
@@ -721,10 +611,10 @@ export function createProtectedRegistration(
       return observed !== undefined && isDeepStrictEqual(observed, installation);
     },
     async removeRevision(context) {
-      if (shared.active?.revisionId === context.revision.id) await shared.retire();
+      if (shared.active?.revisionId === context.revision.id) shared.retire();
       return true;
     },
-    bindRepositoryGit: (authority) => shared.bind(authority),
+    bindRepositoryGit: async (authority) => shared.bind(authority),
   };
   return {
     capabilities: { sandbox, credential_proxy: credentialProxy },
