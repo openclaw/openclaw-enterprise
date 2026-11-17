@@ -112,3 +112,8 @@ test("only the latest user prompt picks a step; an ordinary follow-up gets a pla
   assert.match(later.text, /READY/);
   assert.equal(rows.length, 1);
 });
+
+test("the hook checks: a marker write and one no-progress call the dry-run model repeats", () => {
+  assert.match(gitCommand(plan, nonce, "touch"), /^printf '%s\\n' (?:a1)+ > \/home\/node\/workspace\/x5-touch-a1a1a1a1a1a1\.txt && echo wrote$/);
+  assert.equal(gitCommand(plan, nonce, "gateway-loop"), "printf x5-loop-a1a1a1a1a1a1");
+});

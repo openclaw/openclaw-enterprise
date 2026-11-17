@@ -28,7 +28,13 @@ export const GIT_STEPS = [
   "other-ref",
   "after-withdrawal",
   "worker-down",
+  // Hook admission checks: one marker-file write (did the tool run?) and the same no-progress
+  // call repeated until the Gateway's loop policy blocks it through PreToolUse.
+  "touch",
+  "gateway-loop",
 ] as const;
+/** Bound on repeated calls for the gateway-loop step (the stock critical threshold is 20). */
+export const LOOP_CALLS = 30;
 export type GitStep = (typeof GIT_STEPS)[number];
 export interface GitPlan {
   readonly repository: string;
@@ -102,6 +108,10 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
     case "after-withdrawal":
     case "worker-down":
       return `git ls-remote ${url(plan.repository)} 2>&1 | tail -2`;
+    case "touch":
+      return `printf '%s\\n' ${nonce} > ${WORKSPACE}/x5-touch-${tag}.txt && echo wrote`;
+    case "gateway-loop":
+      return `printf x5-loop-${tag}`;
   }
 }
 
@@ -125,6 +135,21 @@ export function gitAnswerFor(
 }
 
 type Obj = Record<string, unknown>;
+function execCall(callId: string, cmd: string): Obj {
+  return {
+    id: `fc_${randomUUID()}`,
+    type: "function_call",
+    call_id: callId,
+    name: "exec_command",
+    arguments: JSON.stringify({
+      cmd,
+      workdir: WORKSPACE,
+      login: false,
+      yield_time_ms: 60000,
+      max_output_tokens: 2000,
+    }),
+  };
+}
 const obj = (x: unknown): Obj =>
   x && typeof x === "object" && !Array.isArray(x) ? (x as Obj) : {};
 
@@ -190,6 +215,25 @@ export function controlledGitModelRequests(
         (item) => item.type === "function_call_output" && calls.get(String(item.call_id)) === step,
       );
       const result = results.at(-1);
+      if (result !== undefined && step === "gateway-loop") {
+        const text = typeof result.output === "string" ? result.output : JSON.stringify(result.output);
+        const blocked = gitOutcome(text) === undefined;
+        if (!blocked && results.length < LOOP_CALLS) {
+          // Same call again: no progress, so the Gateway's loop policy decides the next one.
+          const again = `call_${randomUUID()}`;
+          calls.set(again, step);
+          reply(res, execCall(again, gitCommand(plan, nonce, step)));
+          return;
+        }
+        const answer = `${GIT_RESULT} ${nonce} ${step} calls=${results.length} blocked=${blocked ? 1 : 0}`;
+        const callId = String(result.call_id);
+        if (!answered.has(callId)) {
+          answered.add(callId);
+          receipt({ stage: "tool_result", nonce, step, callId, answer, output: text.slice(0, 600) });
+        }
+        reply(res, answer);
+        return;
+      }
       if (result !== undefined) {
         const callId = String(result.call_id);
         const outcome = gitOutcome(result.output);
@@ -218,19 +262,7 @@ export function controlledGitModelRequests(
       const callId = `call_${randomUUID()}`;
       calls.set(callId, step);
       receipt({ stage: "tool_intent", nonce, step, callId });
-      reply(res, {
-        id: `fc_${randomUUID()}`,
-        type: "function_call",
-        call_id: callId,
-        name: "exec_command",
-        arguments: JSON.stringify({
-          cmd: gitCommand(plan, nonce, step),
-          workdir: WORKSPACE,
-          login: false,
-          yield_time_ms: 60000,
-          max_output_tokens: 2000,
-        }),
-      });
+      reply(res, execCall(callId, gitCommand(plan, nonce, step)));
     } catch {
       if (!res.headersSent) res.writeHead(422).end();
       else res.destroy();
