@@ -62,10 +62,10 @@ allows one validated saved-token retry. See [node enrollment](../../docs/referen
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge when the selected source provides that contract.
 `openclaw-chat-main-session-start.patch` (OpenClaw #197151) lets chat-only members start
-an Agent's unused main conversation.
-Provenance `patches` maps every patch the Dockerfile applies, in order, to its
-SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
-against the Dockerfile.
+an Agent's unused main conversation; `openclaw-chat-absent-selected-agent.patch`
+(#200358) limits that to the selected Agent.
+Provenance `patches` maps each applied patch, in order, to its SHA-256;
+`scripts/build-runtime-assets.ts` holds the list, which a test checks against the Dockerfile.
 
 Dedicated Gateways require the supporting source recorded in this recipe and
 validate their effective native configuration before starting. The required

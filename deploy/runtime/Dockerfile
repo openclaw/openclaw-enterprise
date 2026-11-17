@@ -261,6 +261,11 @@ RUN echo '5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6  /tmp
 COPY deploy/runtime/openclaw-chat-main-session-start.patch /tmp/openclaw-chat-main-session-start.patch
 RUN echo '483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4  /tmp/openclaw-chat-main-session-start.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-chat-main-session-start.patch
+# Remove this bridge when the pinned OpenClaw includes openclaw#200358: the
+# empty-history proof above holds only for the Agent whose history was read.
+COPY deploy/runtime/openclaw-chat-absent-selected-agent.patch /tmp/openclaw-chat-absent-selected-agent.patch
+RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp/openclaw-chat-absent-selected-agent.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-chat-absent-selected-agent.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
@@ -349,7 +354,7 @@ RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run 
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
     src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
-    src/pages/chat/chat-main-session-absent.test.ts
+    src/pages/chat/chat-main-session-absent.test.ts src/pages/chat/chat-history-subscription-errors.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
