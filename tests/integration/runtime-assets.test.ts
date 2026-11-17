@@ -19,6 +19,7 @@ import {
   readRuntimeDownloadClients,
 } from "../../scripts/lib/runtime-download-clients.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { readRuntimePatchChecksums } from "../helpers/runtime-patch-checksums.ts";
 
 type RuntimeAsset =
   { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
@@ -352,15 +353,7 @@ packages:
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
   // Provenance must name every patch the image build applies, in order, so images with and
   // without a patch differ there (finding 2290: four applied patches were missing).
-  const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
-  const applied = [
-    ...dockerfile.matchAll(
-      /^COPY deploy\/runtime\/(\S+\.patch) \/tmp\/\1\nRUN echo '([a-f0-9]{64}) {2}\/tmp\/\1' \| sha256sum --check --strict \\\n\s+&& git apply /gm,
-    ),
-  ].map(([, file, sha256]): [string, string] => {
-    assert.ok(file && sha256, "Expected an applied patch path and digest");
-    return [file, sha256];
-  });
+  const applied = await readRuntimePatchChecksums();
   // Every patch kept beside the Dockerfile is copied, verified and applied in that form, and
   // each pinned hash is the file's own (a format the pattern misses fails here, not silently).
   const patchFiles = (await readdir("deploy/runtime")).filter((name) => name.endsWith(".patch"));

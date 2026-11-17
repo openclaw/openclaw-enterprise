@@ -1,4 +1,5 @@
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
+import { controlPlaneAuditEnabled } from "./control-plane-audit.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
   openShellProxyConfiguration,
@@ -1576,6 +1577,10 @@ async function composeInstallationConfiguration(
         id: compute.id,
         implementation: compute.implementation,
         lifecycleDrivers: [configurationDriver],
+        auditEnabled: controlPlaneAuditEnabled(
+          options.mode,
+          environment.OCC_CONTROL_PLANE_AUDIT_ENABLED,
+        ),
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
         // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.

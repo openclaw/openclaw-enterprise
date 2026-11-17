@@ -962,7 +962,13 @@ export function registerDeploymentHandoffCases() {
         configurationId = await provisioningConfigurationId(fixture.pool, workId);
         const agentPath = `/namespaces/${target.namespace.id}/agents/${target.agentId}`;
         // Turn collection off in the API while the original worker still holds the audited claim.
-        await fixture.restartApi({ controlPlaneAuditEnabled: false });
+        await fixture.restartApi({
+          controlPlaneAuditEnabled: false,
+          runtimeAuditAdmission: () => undefined,
+        });
+        // Sender configuration alone cannot expose the runtime audit route.
+        const auditOff = await fixture.request("POST", "/internal/runtime-audit", {});
+        assert.equal(auditOff.status, 404, JSON.stringify(auditOff.body));
         const deleting = await fixture.requestChecked(AgentResponse, "DELETE", agentPath);
         assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
         assert.equal(deleting.data.status, "deleting");

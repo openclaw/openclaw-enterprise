@@ -163,7 +163,7 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
-RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+RUN echo '06161c5863c7116daa568d7ad65381e9b95a35fbd2e772cbddde4052ce8479a0  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
@@ -259,7 +259,7 @@ RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp
 
 # Record runtime audit observations at the OpenClaw and Codex Gateway owners.
 COPY deploy/runtime/openclaw-runtime-audit.patch /tmp/openclaw-runtime-audit.patch
-RUN echo 'af75310ee1b32d0f5007b602b4c2936cdf4f9c3c917f766fb8a7134c70e21b7c  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
+RUN echo 'a7a4274b85acbcfe86bd7ffb32a45c5c99090c3f14588e5fd0b42a77e87dad76  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-runtime-audit.patch
 
 COPY deploy/runtime/openclaw-codex-runtime-audit.patch /tmp/openclaw-codex-runtime-audit.patch

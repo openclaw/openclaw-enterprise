@@ -139,10 +139,9 @@ export async function composeProduction(
   };
 
   const auditEnabled = config.controlPlaneAuditEnabled === true;
-  const auditStorageEnabled = auditEnabled || config.runtimeAuditAdmission !== undefined;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
-    ...(auditStorageEnabled ? controlPlaneAuditDatabaseOptions : {}),
+    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
@@ -150,7 +149,7 @@ export async function composeProduction(
     closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
-      ...(auditStorageEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
+      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
@@ -229,7 +228,7 @@ export async function composeProduction(
         ...installationControllerOptions(config.drivers.installation),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
-        ...(auditStorageEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
+        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         ...(config.drivers.pluginSourceReader === undefined
           ? {}
@@ -390,11 +389,15 @@ export async function composeProduction(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
-      ...(config.runtimeAuditAdmission === undefined
-        ? {}
-        : { runtimeAuditAdmission: config.runtimeAuditAdmission }),
-      ...(auditEnabled ? { durableRequestAuditSink: state.auditSink } : {}),
-      ...(auditStorageEnabled ? { agentAuditCursorSecret: config.authSecret } : {}),
+      ...(auditEnabled
+        ? {
+            durableRequestAuditSink: state.auditSink,
+            agentAuditCursorSecret: config.authSecret,
+            ...(config.runtimeAuditAdmission === undefined
+              ? {}
+              : { runtimeAuditAdmission: config.runtimeAuditAdmission }),
+          }
+        : {}),
       backendSummaries: backendSummariesFromDefinitions(installation.backend),
       ...(installation.observability === undefined
         ? {}

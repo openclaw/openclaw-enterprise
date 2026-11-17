@@ -235,6 +235,11 @@ to the same session, Agent, and window.
 `apps/controller/src/http/runtime-audit.ts:registerRuntimeAudit` and
 `packages/contracts/src/runtime-audit.ts:runtimeAuditObservationSchema`
 
+The Control Plane audit setting enables the Agent audit API. The runtime
+write routes also require sender grants. For a managed dedicated Gateway,
+Kubernetes Compute mounts the revision's audit credential when the same
+setting is on and the Gateway has an audit endpoint.
+
 The producer sends the same event ID, time, and metadata if it retries the
 request. OCC checks the bearer credential, the action, and the fields. It
 looks up the Agent and revision from the credential's grant. The request

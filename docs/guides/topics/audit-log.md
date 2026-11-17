@@ -99,8 +99,10 @@ event names the permission that admitted the reader, `read_logs` or `administer`
 
 ### Runtime activity
 
-To enable runtime audit in Helm, set `api.runtimeAudit.grantsSecretName`.
-Use a dedicated Secret in the API namespace with the key `grants.json`.
+Turn on [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
+before you configure a runtime sender. This setting also enables the Agent
+audit API. In Helm, set `api.runtimeAudit.grantsSecretName` to a dedicated
+Secret in the API namespace with the key `grants.json`.
 In other deployments, set `OCC_RUNTIME_AUDIT_GRANTS_PATH` on the API to the
 absolute path of a file that only the operator can change.
 Each grant in the file contains `namespaceId`, `agentId`,
@@ -117,13 +119,15 @@ SHA-256 digest of `JSON.stringify([agentId, agentRevisionId])`. Store the
 token text under the key `token`. The Gateway mounts the file read-only.
 Each Gateway waits for its revision's Secret before it starts.
 The Kubernetes configuration must let that Gateway reach the selected API.
+If you turn audit off, reconcile the Agent so the Gateway starts without
+the audit configuration. A Gateway with audit configured must save the
+admission record before it starts a covered turn.
 
 For direct Gateway testing, set `OPENCLAW_RUNTIME_AUDIT_URL` and
 `OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH` on the Gateway process. Protect the
 credential file from Agent tools and workloads. The Gateway reads it at
 startup.
 
-Enabling runtime audit also enables the authorized Agent audit reader.
 Runtime activity shows the action, the reporting component, and the Agent
 revision. A turn ID links events from one turn. A message ID points to a saved
 input in that session, when the runtime can identify it. The reader needs
@@ -136,12 +140,12 @@ can occur during a turn that continues. The turn record names a blocking
 policy only when the turn owner confirms that the decision ended the turn.
 
 The OpenClaw Gateway records turns and model calls that use its provider
-connection. The in-process runtime can also record tool calls and decisions
-from its read and write workspace checks. The separate OpenClaw worker's local
-tool execution has a different trust boundary. The Codex Gateway records its
-dynamic tool calls and the command, file-change, and MCP items from the native
-server. The stock Codex server does not supply a separate record for each
-provider request.
+connection. The in-process runtime can also record tool calls and workspace
+read and write decisions. The standard dedicated OpenClaw worker makes model
+requests and runs tools locally. Those operations still need a trusted audit
+source. The Codex Gateway records its dynamic tool calls and the command,
+file-change, and MCP items from the native server. The stock Codex server
+does not supply a record for each provider request.
 
 #### OpenShell network denials
 

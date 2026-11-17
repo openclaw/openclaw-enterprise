@@ -654,7 +654,7 @@ index e2958ea..6f5fc13 100644
      transcript: () =>
        buildExecAutoReviewTranscript({ messages: manager.buildSessionContext().messages }),
 diff --git a/src/gateway/worker-environments/worker-turn-admission.test.ts b/src/gateway/worker-environments/worker-turn-admission.test.ts
-index b4be35b..65cfe5d 100644
+index b4be35b..4396779 100644
 --- a/src/gateway/worker-environments/worker-turn-admission.test.ts
 +++ b/src/gateway/worker-environments/worker-turn-admission.test.ts
 @@ -8,6 +8,11 @@ import { createSolidPngBuffer } from "../../../test/helpers/image-fixtures.js";
@@ -669,7 +669,35 @@ index b4be35b..65cfe5d 100644
  import {
    initializeGlobalHookRunner,
    resetGlobalHookRunner,
-@@ -119,6 +124,23 @@ describe("worker-side before_agent_run admission", () => {
+@@ -50,6 +55,18 @@ import { createWorkerTurnRpc } from "./worker-turn-rpc.js";
+
+ afterAll(closeStateDatabaseForTest);
+
++function createAdmissionTurn(runId: string) {
++  const input = turn(runId);
++  return {
++    ...input,
++    config: {
++      ...input.config,
++      // Load only the provider this admission fixture uses.
++      plugins: { allow: ["openai"], slots: { memory: "none" } },
++    },
++  };
++}
++
+ function executeTurn(
+   input: Parameters<ReturnType<typeof createWorkerSessionTurnPlacementProvider>["executeTurn"]>[1],
+   environment: ReturnType<typeof attachedEnvironment>,
+@@ -103,7 +120,7 @@ describe("worker-side before_agent_run admission", () => {
+         mimeType: "image/png",
+       };
+       const input = {
+-        ...turn(`admission-${modern}-${block}-${recorderOwned}`),
++        ...createAdmissionTurn(`admission-${modern}-${block}-${recorderOwned}`),
+         images: [image],
+         modelHasVision: true,
+       };
+@@ -119,6 +136,23 @@ describe("worker-side before_agent_run admission", () => {
              input: { text: input.prompt },
            })
          : undefined;
@@ -693,7 +721,7 @@ index b4be35b..65cfe5d 100644
        let messagesAtGate: unknown[] | undefined;
        const handler = vi.fn(async (event: PluginHookBeforeAgentRunEvent) => {
          // Both Gateway persistence owners must wait for the policy decision.
-@@ -156,6 +178,12 @@ describe("worker-side before_agent_run admission", () => {
+@@ -156,6 +190,12 @@ describe("worker-side before_agent_run admission", () => {
        let promptForWorker: string | undefined;
        const stream = vi.fn<Parameters<typeof runWorkerEmbeddedTurn>[0]["inference"]["stream"]>(
          ({ context }) => {
@@ -706,7 +734,7 @@ index b4be35b..65cfe5d 100644
            expect(
              context.messages.flatMap((message) =>
                Array.isArray(message.content)
-@@ -273,15 +301,23 @@ describe("worker-side before_agent_run admission", () => {
+@@ -273,15 +313,23 @@ describe("worker-side before_agent_run admission", () => {
          },
        );
        try {
@@ -739,7 +767,7 @@ index b4be35b..65cfe5d 100644
          if (block) {
            const result = await execution;
            expect(result.meta.error?.kind).toBe("hook_block");
-@@ -300,6 +336,24 @@ describe("worker-side before_agent_run admission", () => {
+@@ -300,6 +348,24 @@ describe("worker-side before_agent_run admission", () => {
          } else {
            await expect(execution).rejects.toThrow(observedModel.message);
            expect(stream).toHaveBeenCalledOnce();
@@ -764,6 +792,24 @@ index b4be35b..65cfe5d 100644
            expect((await openSessionManager()).buildSessionContext().messages).toEqual([
              ...retainedHistory,
              expect.objectContaining({
+@@ -370,7 +436,7 @@ describe("worker-side before_agent_run admission", () => {
+     assert(bootstrapReceipt);
+     bootstrapReceipt.protocolFeatures.push(WORKER_TURN_ADMISSION_PROTOCOL_FEATURE);
+     await seedActivePlacement();
+-    const input = turn("worker-startup-failed");
++    const input = createAdmissionTurn("worker-startup-failed");
+     const launch = vi.fn<NonNullable<ReturnType<typeof createWorkerTurnTunnel>["launchTurn"]>>(
+       async ({ onDispatchReady }) => {
+         onDispatchReady?.();
+@@ -392,7 +458,7 @@ describe("worker-side before_agent_run admission", () => {
+     bootstrapReceipt.protocolFeatures.push(WORKER_TURN_ADMISSION_PROTOCOL_FEATURE);
+     writePlacementEnvironmentFixture(database, environment);
+     await seedActivePlacement();
+-    const input = turn("worker-skipped-admission");
++    const input = createAdmissionTurn("worker-skipped-admission");
+     const store = await createWorkerEnvironmentStore({ database });
+     const execute = vi.fn(async () => DONE);
+     const inference = createWorkerInferenceManager({
 diff --git a/src/gateway/worker-environments/worker-turn-execution.ts b/src/gateway/worker-environments/worker-turn-execution.ts
 index f3368f0..8542582 100644
 --- a/src/gateway/worker-environments/worker-turn-execution.ts

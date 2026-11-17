@@ -65,16 +65,26 @@ import {
 
 const execute = promisify(execFile);
 
-test("runtime audit grants mount only on the API when configured", async () => {
-  for (const secret of ["", "runtime-audit-grants-v1"]) {
+test("runtime audit grants mount only on the API with audit enabled", async () => {
+  const cases = [
+    { audit: false, secret: "runtime-audit-grants-v1" },
+    { audit: true, secret: "" },
+    { audit: true, secret: "runtime-audit-grants-v1" },
+  ];
+  for (const { audit, secret } of cases) {
     const objects = await resources(
-      (await renderProductionChart({ "api.runtimeAudit.grantsSecretName": secret })).stdout,
+      (
+        await renderProductionChart({
+          "controlPlaneAudit.enabled": String(audit),
+          "api.runtimeAudit.grantsSecretName": secret,
+        })
+      ).stdout,
     );
     for (const component of ["api", "worker"]) {
       const { spec } = findResource(objects, "Deployment", `openclaw-enterprise-${component}`);
       const pod = spec.template.spec;
       const container = pod.containers.find((item) => item.name === component);
-      const enabled = component === "api" && secret !== "";
+      const enabled = component === "api" && audit && secret !== "";
       assert.deepEqual(
         pod.volumes.find((item) => item.name === "runtime-audit-grants")?.secret,
         enabled

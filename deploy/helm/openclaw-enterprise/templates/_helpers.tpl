@@ -706,7 +706,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $routing := .Values.gatewayRouting -}}
 {{- $roles := list -}}
 {{- $roles = append $roles (list "backend.openshell.clientSecretName" .Values.backend.openshell.clientSecretName) -}}
+{{- if .Values.controlPlaneAudit.enabled -}}
 {{- $roles = append $roles (list "api.runtimeAudit.grantsSecretName" .Values.api.runtimeAudit.grantsSecretName) -}}
+{{- end -}}
 {{- if .Values.egressAuthority.enabled -}}
 {{- $roles = concat $roles (list (list "egressAuthority.tlsSecretName" .Values.egressAuthority.tlsSecretName) (list "egressAuthority.issuerSecretName" .Values.egressAuthority.issuerSecretName)) -}}
 {{- end -}}

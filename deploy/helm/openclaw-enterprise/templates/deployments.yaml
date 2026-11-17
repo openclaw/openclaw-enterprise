@@ -2,7 +2,7 @@
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
-{{- $runtimeAudit := and (eq $component "api") $.Values.api.runtimeAudit.grantsSecretName }}
+{{- $runtimeAudit := and (eq $component "api") $.Values.controlPlaneAudit.enabled $.Values.api.runtimeAudit.grantsSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
 ---
 apiVersion: apps/v1

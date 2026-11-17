@@ -8,6 +8,7 @@ import {
   imageSmokeTimeoutMultiplier,
 } from "../helpers/image-smoke-timeout.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { readRuntimePatchChecksums } from "../helpers/runtime-patch-checksums.ts";
 import { probePackagedCodex } from "../fixtures/runtime-image-startup/packaged-codex.ts";
 import { codexRpc, list, parseJson, record, text } from "../fixtures/runtime-image-startup/wire.ts";
 import {
@@ -84,6 +85,9 @@ export async function verifyCodexPackaging(
       historicalCodex,
       stagingCodexVersion,
       deadlineMs: 30000 * imageSmokeTimeoutMultiplier,
+      ...(historicalCodex
+        ? {}
+        : { expectedPatches: Object.fromEntries(await readRuntimePatchChecksums()) }),
     },
     codexExecutableSource,
     codexRpc,

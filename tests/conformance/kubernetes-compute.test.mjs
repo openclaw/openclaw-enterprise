@@ -4990,7 +4990,11 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     async provisionHarness() {},
     async cleanup() {},
   };
-  const driver = new KubernetesComputeDriver(driverOptions, { sandboxDriver, nodeEnrollment: {} });
+  const driver = new KubernetesComputeDriver(driverOptions, {
+    sandboxDriver,
+    nodeEnrollment: {},
+    auditEnabled: true,
+  });
   const namespace = kubernetesNamespaceName(tenant.id);
   const namespaceAddress = { name: namespace, plane: "execution" };
   const agentId = "agent-native-worker";
@@ -5329,24 +5333,26 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
   };
   const deviceId = "a".repeat(64);
-  const gatewayDeployment = driver.deployment(
-    "gateway-native-worker",
-    ownership,
-    namespaceAddress,
-    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
-    "gateway-native-worker",
-    "gateway",
-    {},
-    "info",
-    driver.gatewayConfiguration(revision, deviceId, namespaceAddress),
-    false,
-    undefined,
-    undefined,
-    [],
-    [],
-    undefined,
-    [],
-  );
+  const renderGateway = (compute) =>
+    compute.deployment(
+      "gateway-native-worker",
+      ownership,
+      namespaceAddress,
+      { runtime: "gateway:local", workspaceSetup: compute.options.images.gateway },
+      "gateway-native-worker",
+      "gateway",
+      {},
+      "info",
+      compute.gatewayConfiguration(revision, deviceId, namespaceAddress),
+      false,
+      undefined,
+      undefined,
+      [],
+      [],
+      undefined,
+      [],
+    );
+  const gatewayDeployment = renderGateway(driver);
   const workerDeployment = driver.deployment(
     "agent-native-worker",
     { ...ownership, revisionId: revision.id },
@@ -5381,6 +5387,16 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     .slice(0, 24);
   const gatewayPod = gatewayDeployment.spec.template.spec;
   const workerPod = workerDeployment.spec.template.spec;
+  // An endpoint can remain configured when the operator turns audit off.
+  const auditDisabledPod = renderGateway(
+    new KubernetesComputeDriver(driverOptions, { sandboxDriver, nodeEnrollment: {} }),
+  ).spec.template.spec;
+  assert.ok(!auditDisabledPod.volumes.some(({ name }) => name === auditVolume));
+  assert.ok(
+    !auditDisabledPod.containers[0].env.some(({ name }) =>
+      name.startsWith("OPENCLAW_RUNTIME_AUDIT_"),
+    ),
+  );
   assert.deepEqual(gatewayPod.volumes.find(({ name }) => name === auditVolume)?.secret, {
     secretName: `runtime-audit-${auditSecret}`,
     optional: false,

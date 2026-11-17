@@ -411,7 +411,7 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
   }
   const runtimeAuditGrantsPath = env.OCC_RUNTIME_AUDIT_GRANTS_PATH;
   const compositionSettings = {
-    ...(runtimeAuditGrantsPath === undefined
+    ...(!settings.controlPlaneAuditEnabled || runtimeAuditGrantsPath === undefined
       ? {}
       : { runtimeAuditAdmission: await loadRuntimeAuditAdmission(runtimeAuditGrantsPath) }),
     ...(consoleTheme === undefined ? {} : { consoleTheme }),

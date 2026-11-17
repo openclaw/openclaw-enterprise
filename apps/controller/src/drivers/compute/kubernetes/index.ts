@@ -3666,6 +3666,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     executionModes: Object.freeze(["dedicated"] as const),
   });
   private readonly options: KubernetesComputeDriverOptions;
+  private readonly auditEnabled: boolean;
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly preparedRepositoryIngress: boolean;
@@ -4280,6 +4281,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly id?: string;
       readonly implementation?: string;
       readonly lifecycleDrivers?: readonly Driver[];
+      readonly auditEnabled?: boolean;
       readonly sandboxDriver?: SandboxDriver;
       readonly preparedRepositoryIngress?: true;
       readonly preparedTokens?: TokenService;
@@ -4304,6 +4306,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     // Keep the Driver-owned configuration isolated from its constructor caller.
     this.options = structuredClone(options);
+    this.auditEnabled = selection.auditEnabled === true;
     if (options.runtime !== undefined) {
       this.requiresAgentRuntimeCredentials = true;
       this.supportsGatewayManagedMode = true;
@@ -17384,7 +17387,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
       if (role === "gateway") {
-        if (dedicated && configuration?.gatewayManagedMode === true && runtime.audit) {
+        if (
+          this.auditEnabled &&
+          dedicated &&
+          configuration?.gatewayManagedMode === true &&
+          runtime.audit
+        ) {
           const revision = JSON.stringify([agentId, configuration.revisionId]);
           volumes.push({
             name: RUNTIME_AUDIT_VOLUME,

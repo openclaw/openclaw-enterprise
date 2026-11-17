@@ -36,7 +36,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-codex-full-access-profile.patch",
-    sha256: "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
+    sha256: "06161c5863c7116daa568d7ad65381e9b95a35fbd2e772cbddde4052ce8479a0",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
@@ -69,7 +69,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-runtime-audit.patch",
-    sha256: "af75310ee1b32d0f5007b602b4c2936cdf4f9c3c917f766fb8a7134c70e21b7c",
+    sha256: "a7a4274b85acbcfe86bd7ffb32a45c5c99090c3f14588e5fd0b42a77e87dad76",
   },
   {
     file: "openclaw-codex-runtime-audit.patch",
