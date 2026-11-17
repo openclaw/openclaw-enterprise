@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { startPluginRequestGuard } from "../../apps/controller/src/plugin-request-guard.ts";
+import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plugin/managed-request-policies.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   managedPluginMiddleware,
@@ -95,7 +96,7 @@ test("the signed OpenShell request guard intersects the source envelope with the
   );
   // GetGatewayInfo exposes these negotiated fields before a Sandbox receives its provider.
   assert.equal(manifest.extension.implementation_name, managedPluginMiddlewareImplementation);
-  assert.equal(manifest.extension.implementation_version, managedGoogleInstall.releaseSha256);
+  assert.equal(manifest.extension.implementation_version, managedPluginGuardVersion);
   assert.deepEqual(manifest.extension.required_capabilities, [contract]);
   assert.deepEqual(manifest.extension.supported_capabilities, [contract]);
   assert.deepEqual(

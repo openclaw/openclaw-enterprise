@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
+import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plugin/managed-request-policies.ts";
 import {
   managedMcpInstalls,
   type ManagedMcpInstall,
@@ -30,7 +31,7 @@ export const negotiatedGoogleGuard = () => ({
   kind: 4,
   configured_name: "oce-plugin-requests",
   implementation_name: "oce/managed-plugin-requests",
-  implementation_version: managedGoogleInstall.releaseSha256,
+  implementation_version: managedPluginGuardVersion,
   protocol_major: 1,
   supported_capabilities: ["openshell.supervisor-middleware.contract"],
   required_capabilities: ["openshell.supervisor-middleware.contract"],

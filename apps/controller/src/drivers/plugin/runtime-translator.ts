@@ -11,7 +11,9 @@ import type { CodexPublicGithubRead } from "../repo/github/public-read/codex.ts"
 
 export type OpenClawRuntimeResolvedArtifacts = {
   readonly kind: "openclaw";
-  readonly configuration: OpenClawConfigurationDocument;
+  readonly configuration: OpenClawConfigurationDocument & {
+    readonly tools?: { readonly deny?: readonly string[] };
+  };
   readonly installs: readonly {
     readonly pluginId: string;
     readonly nativeId: string;
@@ -1008,17 +1010,6 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     };
   }
 
-  function openClawToolSelection(pluginId: string, selection: Record<string, unknown>) {
-    const descriptor = openClawCatalogDescriptor(pluginId);
-    const policies = toolPolicies(selection);
-    const toolDefaults = defaults(selection);
-    const deniedTools = descriptor.toolNames.filter((toolId) => {
-      const policy = Object.hasOwn(policies, toolId) ? policies[toolId]! : {};
-      return (policy.enabled ?? toolDefaults.enabled ?? true) === false;
-    });
-    return { descriptor, deniedTools };
-  }
-
   function openClawRuntimeArtifact(
     selections: unknown,
     failures: unknown = [],
@@ -1032,8 +1023,17 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     const alsoAllow: string[] = [];
     const deny: string[] = [];
     for (const [pluginId, selection] of selectionEntries(selections)) {
-      const { descriptor, deniedTools } = openClawToolSelection(pluginId, selection);
-      const { nativeId } = descriptor;
+      const nativeId = openClawNativeIdFromPluginId(pluginId);
+      const descriptor = nativeCatalog.find((entry) => entry.nativeId === nativeId);
+      if (descriptor === undefined) {
+        throw new Error("Unknown OpenClaw plugin selection.");
+      }
+      const policies = toolPolicies(selection);
+      const toolDefaults = defaults(selection);
+      const deniedTools = descriptor.toolNames.filter((toolId) => {
+        const policy = Object.hasOwn(policies, toolId) ? policies[toolId]! : {};
+        return (policy.enabled ?? toolDefaults.enabled ?? true) === false;
+      });
       const pluginEnabled = selectionEnabledAfterFailures(pluginId, selection, failedPluginIds);
       if (pluginEnabled) {
         deny.push(...deniedTools);
@@ -1106,7 +1106,6 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     codexRuntimeArtifact,
     openClawCatalogEntries,
     openClawManagedEntryConfig,
-    openClawToolSelection,
     openClawRuntimeArtifact,
   };
 }
@@ -1146,13 +1145,13 @@ export function openClawRuntimeArtifact(
   failures: PluginRuntimeFailureInput = [],
   defaultApprovers?: PluginApprovers,
   gatewayPublicOrigin = false,
-): PluginRuntimeResolvedArtifacts {
+): OpenClawRuntimeResolvedArtifacts {
   return pluginRuntimeTranslator.openClawRuntimeArtifact(
     selections,
     failures,
     defaultApprovers,
     gatewayPublicOrigin,
-  ) as PluginRuntimeResolvedArtifacts;
+  ) as OpenClawRuntimeResolvedArtifacts;
 }
 
 export function describeNativeOpenClawDeployment({
@@ -1163,9 +1162,11 @@ export function describeNativeOpenClawDeployment({
   if (Object.keys(connections).length > 0) {
     throw new Error("Native OpenClaw plugins do not declare credential requirements.");
   }
-  const { descriptor, deniedTools } = pluginRuntimeTranslator.openClawToolSelection(pluginId, {
-    ...selection,
-  });
+  // Use the same resolved install and tool denials the Gateway receives.
+  const runtime = openClawRuntimeArtifact({ [pluginId]: selection });
+  const install = runtime.installs[0]!;
+  const descriptor = OPENCLAW_PLUGIN_CATALOG.find(({ nativeId }) => nativeId === install.nativeId)!;
+  const deniedTools = runtime.configuration.tools?.deny ?? [];
   const toolId = descriptor.nativeId;
   const node = "/usr/local/bin/node";
   return {

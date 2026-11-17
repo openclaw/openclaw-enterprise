@@ -135,15 +135,15 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-At save and deployment, OCC supplies authorized sources. The OpenClaw Driver’s
+At save and deployment, the OpenClaw Driver’s
 [credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts)
 maps each selected slot to its default connection, then calls
 [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts).
-It rejects connections that lack a compatible attached source before OCC saves the revision.
+It requires a compatible attached source authorized by OCC.
 
-OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks the pinned Driver against the Harness. Gateway and worker each verify their assets from Compute’s package descriptors.
+OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks Driver–Harness compatibility. Gateway and worker verify assets against Compute’s package descriptors.
 
-- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
+- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) attaches a Google credential only when the guard advertises the expected fingerprint of evaluator IDs and release digests. The guard checks each request before injection.
 - **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
@@ -374,6 +374,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-17 21:20: Check guard compatibility before attachment. (01a1eb01-409e-7270-a471-5a104ce7b468 - a5ebff48cd9cb180ea21ecd9740a034fde254864)
 
 - 2026-11-17 19:48: Trace OpenClaw deployment requirements through account validation. (01a1eb01-409e-7270-a471-5a104ce7b468 - 23b54e2855d0a8d60b2168588fe8c7d7f06e9b36)
 
