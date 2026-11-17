@@ -56,7 +56,7 @@ export function registerOAuthRenewalRefusalCases({
     });
     await service.storeInitialGrant(custody, grant, t.signal);
     const accepted = (await service.observe(custody, t.signal, 0)).token;
-    assert.ok(accepted);
+    assert.ok(accepted?.nextRefreshAt);
     t.mock.timers.setTime(Date.parse(accepted.nextRefreshAt));
     const stop = new AbortController();
     const swap = driver.compareAndSwap.bind(driver);

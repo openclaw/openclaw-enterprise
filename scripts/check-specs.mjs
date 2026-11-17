@@ -97,7 +97,7 @@ function localTarget(file, href) {
 
 const files = markdownFiles(specs);
 for (const file of files) {
-  const source = path.relative(root, file);
+  const source = path.relative(root, file).replaceAll("\\", "/");
   try {
     const text = fs.readFileSync(file, "utf8");
     const { data, content } = parseFrontmatter(text);
