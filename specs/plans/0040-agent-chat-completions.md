@@ -224,7 +224,7 @@ workspace-write proof not applicable/not performed for explicit full-access.
 
 Diff sizes use base `f2359730f`; authored counts exclude the three generated API files.
 
-| Scope | Reviewed head | After M1–M5 |
+| Scope | Reviewed head | Initial M1–M5 pass |
 | --- | --- | --- |
 | Total additions/deletions | +8,269/−4,842 | +3,464/−112 |
 | Authored additions/deletions | +3,045/−107 | +2,970/−110 |
@@ -252,6 +252,36 @@ passed ten test nodes, with zero failures or skips. Cleanup verified no owned
 containers, volumes or networks; private state and temporary model input are
 removed. Default kubeconfig and unrelated resources are unchanged. Known Codex
 SSE failure and canonical reviewer authentication were not retried or bypassed.
+
+### Fresh terminal-check correction
+
+At `93bfd4c8786f2a6e284d38a1171dcac11f25f1a9`, terminal delivery first awaits
+any periodic check and its `finally` cleanup, then starts a fresh check after
+the native body completes. One in-flight owner prevents overlapping admission
+mutation; timers, terminal withholding and audit outcomes remain unchanged.
+The earlier `1279bde62` live run does not validate this corrected gate.
+
+Focused HTTP/API validation first passed 131 test nodes; one CLI fixture failed
+because its Go cache was not selected. With the existing task cache, its targeted
+retry passed all three nodes with no skips. Build/type, lint, format, workspace
+and documentation checks passed. Unchanged Go and Kubernetes suites and the
+612-test batch were not repeated.
+
+The corrected OpenClaw-only real run uses controller
+`sha256:b5dceea603114e241cdf7c40ca3433046f6da0fe509cf930bdc32ee6792287b1`
+and the unchanged native image. Its first run reported four passing nodes, six
+failed nodes including parents, and zero skips. It completed 27 HTTP requests,
+ten JSON responses, two SSE responses and two verified tool actions. Revocation,
+replacement and stop interruptions passed; the following deployment model probe
+returned `rate_limit`, so final opt-out checks were not reached. Its owned
+cluster/database and private state were cleaned. One identical bounded retry
+passed ten nodes with zero failures or skips: 29 HTTP requests, ten JSON
+completions, two SSE completions and two verified tool actions, including final
+opt-out checks. Provider-call counts are unobserved. Both attempts have no
+remaining owned containers, volumes or networks; private state and temporary
+model input are removed. Default kubeconfig and unrelated resources are preserved.
+Final cumulative diff against `f2359730f`: +3,499/−112; authored: +3,005/−110.
+Generated API reference remains +105/−2; the corrected relay is 327 lines.
 
 ## Manual Notes
 
