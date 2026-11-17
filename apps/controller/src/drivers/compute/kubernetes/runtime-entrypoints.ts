@@ -4510,14 +4510,17 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       "Reply only READY. Do not use tools.",
     ], {
       cwd: directory,
-      // Keep the runtime's TLS trust anchors so a TLS-inspecting egress proxy can serve the probe.
+      // Keep the runtime's TLS trust anchors so a TLS-inspecting egress proxy can serve the probe,
+      // and the conventional proxy variables: where the Sandbox's egress is an explicit proxy
+      // (no route but loopback), the probe must take the same path the app-server will.
       env: {
         PATH: process.env.PATH,
         HOME: directory,
         CODEX_HOME: process.env.CODEX_HOME,
         RUST_LOG: "error",
         ...Object.fromEntries(
-          ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+          ["SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"]
             .filter((name) => typeof process.env[name] === "string" && process.env[name].length > 0)
             .map((name) => [name, process.env[name]]),
         ),

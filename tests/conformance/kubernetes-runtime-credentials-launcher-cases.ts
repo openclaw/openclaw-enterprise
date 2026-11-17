@@ -24,7 +24,9 @@ const codexCallRecorder = `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 const input = args.includes("login") ? fs.readFileSync(0, "utf8") : undefined;
-fs.appendFileSync(process.env.CODEX_HOME + "/../calls", JSON.stringify({ args, input }) + "\\n");
+const proxyNames = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy", "FIXTURE_UNRELATED"];
+const proxy = Object.fromEntries(proxyNames.filter((name) => process.env[name] !== undefined).map((name) => [name, process.env[name]]));
+fs.appendFileSync(process.env.CODEX_HOME + "/../calls", JSON.stringify({ args, input, ...(args.includes("exec") && Object.keys(proxy).length > 0 ? { proxy } : {}) }) + "\\n");
 if (args.includes("exec")) {
   const events = [
     { type: "turn.started" },
@@ -50,6 +52,53 @@ function recordedArguments(value: unknown): string[] {
 }
 
 export function registerCodexLauncher(): void {
+  // An explicit-proxy Sandbox gives the Harness no route but its proxy: the model probe must
+  // carry the conventional proxy variables, as app-server does, and nothing else from the env.
+  test("the Codex model probe keeps the runtime's proxy variables", (t) => {
+    const directory = temporaryDirectorySync(t, "oce-codex-probe-proxy-");
+    const codexHome = join(directory, "codex");
+    mkdirSync(join(directory, "bin"));
+    mkdirSync(codexHome);
+    writeFileSync(join(directory, "bin", "codex"), codexCallRecorder, { mode: 0o755 });
+    const proxy = {
+      HTTPS_PROXY: "http://127.0.0.1:3128",
+      https_proxy: "http://127.0.0.1:3128",
+      HTTP_PROXY: "http://127.0.0.1:3128",
+      http_proxy: "http://127.0.0.1:3128",
+      NO_PROXY: "127.0.0.1,localhost",
+      no_proxy: "127.0.0.1,localhost",
+    };
+    const child = spawnSync(
+      process.execPath,
+      ["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)],
+      {
+        env: {
+          ...proxy,
+          ALL_PROXY: "",
+          FIXTURE_UNRELATED: "fixture-unrelated",
+          OPENAI_API_KEY: "fixture-key",
+          PATH: `${join(directory, "bin")}:${dirname(process.execPath)}`,
+          HOME: directory,
+          TMPDIR: directory,
+          CODEX_HOME: codexHome,
+          CODEX_LOGIN_MODE: "api_key",
+          OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
+          OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
+          APP_SERVER_TOKEN: "fixture-transport-token",
+          APP_SERVER_PORT: "4500",
+        },
+        encoding: "utf8",
+        timeout: 20000,
+      },
+    );
+    assert.equal(child.status, 0, child.stderr);
+    const calls = readJsonLinesSync(join(directory, "calls")).map((call) => asRecord(call));
+    const probe = calls.find((call) => recordedArguments(call).includes("exec"));
+    assert.ok(probe, "Codex CLI must run the model probe");
+    // An empty variable is not forwarded; unrelated variables never are.
+    assert.deepEqual(probe.proxy, proxy);
+  });
+
   // Run the actual generated bootstrap in a fresh process. Malformed credential
   // combinations must fail before launching Codex.
   test("Codex startup rejects missing, blank, conflicting, and unsupported authentication inputs", () => {
