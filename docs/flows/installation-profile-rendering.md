@@ -205,9 +205,11 @@ The Installation output selects Kubernetes Configuration, native IAM,
 Kubernetes Compute, Kubernetes Secrets, default Preset seeding, and the profile
 PluginDriver. Compute settings consume the runtime image, DNS peer, trusted
 proxy CIDRs, plugin-status proxy CIDRs, gateway routing identity, runtime
-storage class, node selectors, and transport Secret prefix. The Codex profile
-also consumes the reviewed `runtime.codexSeccompProfile` path. Preflight applies
-the Compute driver's localhost-profile rule and refuses an absolute path, a
+storage class, node selectors, and transport Secret prefix. When the Codex profile omits
+`runtime.codexSeccompProfile`, Compute uses the Pod's `RuntimeDefault` seccomp
+profile. When a path is supplied, preflight lists node installation as a
+prerequisite and validates the path before rendering it. It refuses a blank
+value, an absolute path, a
 backslash, an empty, `.`, or `..` segment, or a segment named `unconfined`,
 before writing `installation.yaml`. Optional `runtime.modelProvider.baseUrl` gets
 Compute's endpoint rule. When optional
@@ -315,6 +317,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 16:48: Document the optional Codex seccomp path and its node prerequisite. (authoring-run/485a255a-c5ed-4f97-9b48-96738c7f19f4 - 4ecdd59c5a64f217f0b7fafdf7a034e74b890ffc)
 
 - 2026-11-14 12:18: Run the installation profile command directly from its TypeScript source in the accompanying change. (authoring-run/b17203e9-337c-40cf-9a41-0139532525fe - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 

@@ -20,6 +20,7 @@ import {
   helmTemplate,
   syntheticCredentialUrl,
   render,
+  renderCli,
   assertPreflightFailure,
   assertFieldRefusals,
   propertyAt,
@@ -144,13 +145,27 @@ export function registerComputeCases(): void {
         message,
       );
     }
-    const accepted = await render("codex", codexInput());
-    const installation = loadYaml(accepted.installation);
-    requireConfiguration(
-      KubernetesComputeDriver,
-      propertyAt(installation, "drivers", "compute", "configuration"),
+    await assertPreflightFailure(
+      "codex",
+      codexInput({ runtime: { codexSeccompProfile: "" } }),
+      /runtime\.codexSeccompProfile must be a nonempty string when supplied/,
     );
-    assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
+    const accepted = renderCli("codex", codexInput());
+    const compute = computeConfiguration(accepted.installation);
+    requireConfiguration(KubernetesComputeDriver, compute);
+    assert.equal(propertyAt(compute, "runtime", "codexSeccompProfile"), "profiles/codex.json");
+    assert.match(
+      accepted.preflight.prerequisites.join("\n"),
+      /Configured Codex seccomp profile installed/,
+    );
+  });
+
+  test("Codex profile accepts an omitted seccomp profile", () => {
+    const output = renderCli("codex", codexInput({ runtime: { codexSeccompProfile: undefined } }));
+    const compute = computeConfiguration(output.installation);
+    requireConfiguration(KubernetesComputeDriver, compute);
+    assert.equal(Object.hasOwn(objectAt(compute, "runtime"), "codexSeccompProfile"), false);
+    assert.doesNotMatch(output.preflight.prerequisites.join("\n"), /seccomp/i);
   });
 
   test("both profiles carry the shared model endpoint under Compute startup's rule", async () => {
