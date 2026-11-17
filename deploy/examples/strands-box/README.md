@@ -141,6 +141,16 @@ and admitted `PATH`. A writable root, a different standalone command, or a
 substituted executable is refused before Box and the file node are started.
 The existing profile applies when the receipt setting is absent.
 
+Codex must find no `git` or `gh` by name. Before Box starts, the host refuses
+an exec grant covering either one, and an admitted `PATH` entry that is empty
+or relative, lies under `/proc`, `/dev` or `/sys`, loops, or passes through
+Box's loader directories, git's helper directories or a writable directory.
+It also refuses any `git` or `gh` in the directories the runtime adds to
+Codex's `PATH`, or a link in their place: `$HOME/.local/bin`,
+`$HOME/.openclaw/tools/node/npm/bin` and `$CODEX_HOME/tmp/arg0`. The host log
+then shows `strands-box-diagnostic source=box stage=input
+reason=agent_exec_covers_git` before `startup refused at stage-inputs`.
+
 ### Terminal 1. Start the native app-server inside Box
 
 Run both terminals as the same nonroot operator. Create a short, canonical

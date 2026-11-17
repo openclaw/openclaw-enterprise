@@ -51,7 +51,13 @@ import {
   workspaceVerifierPolicy,
   workspaceVerifierTool,
 } from "./workspace-verifier.ts";
-import { ensureWorkspaceCodex, execCoversGit, stockGitPolicy, stockGitTools } from "./stock-git.ts";
+import {
+  ensureWorkspaceCodex,
+  execCoversGit,
+  runtimeSearchPath,
+  stockGitPolicy,
+  stockGitTools,
+} from "./stock-git.ts";
 import {
   nativeHookPolicy,
   nativeHookProbe,
@@ -995,10 +1001,22 @@ export function start(
       ]);
       const write = outermost([...writable, config.workspace, bridgeDir]);
       const exec = outermost([...config.exec, config.codexBin, config.nodeBin]);
-      // Also no git or gh on the search path the agent's environment names (finding 3325), and
-      // no entry there that could lead to the copy of git in Box's loader directories (3333).
-      if (execCoversGit(exec, environment.PATH?.split(":") ?? [], write))
+      // Also no git or gh on the search path the agent's environment names (finding 3325), no
+      // entry there that could lead to the copy of git in Box's loader directories (3333) or
+      // that the host cannot judge (3339), and none already in the directories the runtime adds
+      // to Codex's search path inside the writable state (3338). The operator sees the stable
+      // reason, not only the stage (3341).
+      if (
+        execCoversGit(
+          exec,
+          environment.PATH?.split(":") ?? [],
+          write,
+          runtimeSearchPath(environment),
+        )
+      ) {
+        report("box", "input", "agent_exec_covers_git");
         throw new Error("agent_exec_covers_git");
+      }
       const configText = [
         'name = "oce-strands"',
         `box_dir = ${quoted(join(work, "box-state"))}`,

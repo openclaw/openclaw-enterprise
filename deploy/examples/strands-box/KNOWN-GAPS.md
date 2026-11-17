@@ -1,12 +1,12 @@
 # Strands Box known gaps
 
-What an operator deploying this example today must know.
+What an operator deploying this example must know.
 
 ## Upstream TLS trusts only Box's built-in public roots
 
 - **Symptom:** the first model request from Box fails its upstream TLS
   handshake when the controlled inference endpoint uses a private IPv4
-  address, a `.svc.cluster.local` name, or a certificate from a private CA.
+  address, a `.svc.cluster.local` name, or a private CA's certificate.
 - **Cause:** Strands Box v0.2.2 verifies every upstream certificate against
   public roots compiled into it, and no setting adds another CA.
 - **Workaround:** use an operator DNS name pinned to one private IPv4 address
@@ -21,13 +21,13 @@ upstream_ca_file` (the fork's `dogfood/main`). Box trusts that bundle for
 
 ## Box presents no client certificate
 
-- **Symptom:** a TLS client certificate configured inside Box never reaches the
-  server, so a server that identifies callers by certificate refuses Box.
+- **Symptom:** a TLS client certificate set inside Box never reaches the
+  server, which refuses Box if it identifies callers by certificate.
 - **Cause:** Box builds both TLS legs of every `CONNECT` without client
   authentication.
 - **Workaround:** none for mutual TLS; the paired registration uses a
   per-execution bearer instead.
-- **Upstream status:** not yet reported to strands-agents/box.
+- **Upstream status:** not reported upstream.
 
 ## GitHub access needs the Box fork's request-time credential source
 
@@ -44,7 +44,7 @@ upstream_ca_file` (the fork's `dogfood/main`). Box trusts that bundle for
   `EXPERIMENTAL_X86_SUPPORT=TRUE` for `box run`. Use only on a dogfood host
   with a test repository.
 - **Upstream status:** the fork's credential source is drafted for
-  strands-agents/box with the owner. Nothing is filed yet.
+  strands-agents/box; nothing is filed yet.
 
 ## OCE applies no draft or branch rule to gh's GitHub API requests
 
@@ -67,9 +67,9 @@ upstream_ca_file` (the fork's `dogfood/main`). Box trusts that bundle for
   installation token, GitHub requests fail with `403` and `credential refused
 by its source: route_not_ready`. The chat keeps running.
 - **Cause:** only the Worker's paired Driver can ask OCE. The host refuses an
-  ask unanswered within Box's 5-second timeout, and the Driver refuses one until
-  OCE's current token version is confirmed for the execution.
-- **Workaround:** retry once the Worker is back, about a second later.
+  ask unanswered within Box's 5-second timeout; the Driver refuses until OCE
+  confirms the execution's current token version.
+- **Workaround:** retry about a second after the Worker is back.
 - **Upstream status:** by design. The request-time source fails closed.
 
 ## Box connects upstream before it asks the source
@@ -101,24 +101,27 @@ by its source: route_not_ready`. The chat keeps running.
 - **Cause:** Box decides `shell:spawn` once per program. The host gives each
   program its own `[tool]` boundary, which its children keep: `git` reads and
   writes the workspace, `gh` reads it and runs `git`, both see Box's system
-  libraries, TLS roots and gateway CA, and neither sees the Codex home, hook
-  directory, bridge, model source, `/bin/sh`, an interpreter, or Git or `gh`
+  libraries, TLS roots and gateway CA, not the Codex home, hook directory,
+  bridge, model source, `/bin/sh`, an interpreter, or Git or `gh`
   configuration outside the workspace. The workspace's `.codex` and the
   verifier's marker are denied. Every route reaches them: Box cannot attribute
   a request to a process. The shell's own commands, Python and Lua included,
   reach only the workspace and `/dev/null`. Codex itself, with `apply_patch`,
-  keeps the agent's whole boundary. Its own turn-start `git status` once ran a
+  keeps the agent's whole boundary. Its turn-start `git status` once ran a
   workload `clean` filter (Node) there, so the host refuses an exec grant
   covering `git`, `gh` or git's helpers, and Codex works without git
-  information. The Gateway shares the boundary and lacks git too: new
-  workspaces get no repository, the Control UI diff panel finds no checkout,
-  and project clones and worktree sessions fail. Box's loader directories stay
-  executable in every boundary, so Debian's `/usr/lib/git-core/git` runs there
-  by full path; nothing names it, and the host refuses an agent `PATH` leading
-  to it. A root `AGENTS.md` and skills under `.codex/skills` and
-  `.agents/skills` reach the prompt; git and the shell can write all but
-  `.codex/skills`. This Codex version ignores `.codex/config.toml`, which
-  `apply_patch` can write: Codex behavior, not a host control.
+  information. Box's loader directories stay executable in every boundary, so
+  Debian's `/usr/lib/git-core/git` runs there by full path. The host refuses, at
+  start, an agent `PATH` or runtime-added directory leading to git or gh; code
+  already in the agent's boundary can plant one later. The Gateway, a
+  Kubernetes workload outside Box, has git in its image and no copy of this
+  workspace (files go through the paired node); its git features
+  (new-workspace repository, Control UI diff panel, project clones, worktree
+  sessions) are unverified on Box. A root `AGENTS.md` and skills under
+  `.codex/skills` and `.agents/skills` reach the prompt; git and the shell can
+  write all but `.codex/skills`. This Codex version ignores
+  `.codex/config.toml`, which `apply_patch` can write: Codex behavior, not a
+  host control.
 - **Workaround:** run one Agent per execution; grant the App only what it
   needs; set a Git identity in the repository; treat the workspace and that
   prompt content as written by any code the Agent runs. **Never run `git` in an
@@ -146,35 +149,34 @@ by its source: route_not_ready`. The chat keeps running.
   and no prompt. Other relays, sessions, generations and turns are
   refused (403 or 410), Box refuses every other path, method and Agent, and the
   token stops working about 17 s after the turn. The hook refuses a link at the
-  credential's name, but that name stays the same for a chat session, and a link
-  planted there between turns makes Codex write the next credential through it,
-  for example into a workspace file the tools can read.
+  credential's name, but the name is fixed per chat session, and a link planted
+  between turns makes Codex write the next credential through it, for example
+  into a workspace file the tools can read.
 - **Impact:** the hook fails closed on a refused, corrupt or missing
   credential; a hook that times out (10 s) is non-blocking in stock Codex and
   the call runs. Approving a call the Gateway would refuse is not shown (no
   refusal source was configured); no forgery reached another Agent.
 - **Workaround:** run one Agent per Box execution. Closing it needs the
   credential-handling process apart from the workload (the shared-kernel gap).
-- **Upstream status:** by design in Box v0.2.2. The ask is a per-process or
+- **Upstream status:** by design in Box v0.2.2. The ask: a per-process or
   trusted-process-only grant for the hook directory.
 
 ## Any local process on the Box host can use Box's egress gateway
 
-- **Symptom:** a process on the Box host outside the execution, including code
-  that escapes Box's sandbox as the host user, can send requests through the
+- **Symptom:** a process on the Box host outside the execution, including
+  sandbox-escaped code running as the host user, can send requests through the
   execution's egress gateway; on `github.com` Box attaches the installation token.
 - **Cause:** `box run` serves its gateway on host loopback with no peer check
   and no token.
 - **Workaround:** dedicate the host (or virtual machine) and its user to Box,
   with no other untrusted local processes.
-- **Upstream status:** not yet reported. The ask is an owner-only Unix socket
-  or a per-execution token for the gateway.
+- **Upstream status:** not reported. The ask: an owner-only Unix socket or a
+  per-execution gateway token.
 
 ## Box's trusted process shares a kernel with the workload
 
-- **Symptom:** code that escapes Box's sandbox lands on the same host, in the
-  same host account, as the process that holds the installation token and the
-  model key, which does not expire.
+- **Symptom:** code that escapes Box's sandbox lands in the same host account
+  as the process holding the installation token and the non-expiring model key.
 - **Cause:** Box's boundary is operating-system process sandboxing, not a
   virtual machine; its gateway and credential handling run in the one `box run`
   process on the workload's kernel, and kernel-exploit resistance is a Box
@@ -187,8 +189,8 @@ by its source: route_not_ready`. The chat keeps running.
   readable only by root or a ptrace-capable process; a same-user escape can
   still use it through the loopback gateway. A stolen token works on the
   assigned repositories until OCE revokes or renews it: at most one hour. Keep
-  the host dedicated and patched. Give each Agent a revocable, rate-limited key
-  from a model proxy, not a provider account key.
+  the host dedicated and patched. Give each Agent a revocable, rate-limited
+  model-proxy key, not a provider account key.
 - **Upstream status:** open upstream as
   [strands-agents/box#24](https://github.com/strands-agents/box/issues/24) and
   [strands-agents/box#25](https://github.com/strands-agents/box/issues/25).
@@ -201,10 +203,10 @@ by its source: route_not_ready`. The chat keeps running.
   the package owns, beside OCE's own copy, and the [Role](model-gateway-rbac.yaml)
   gives the API and the Worker `get` on every such Secret, of every Namespace.
 - **Cause:** the package's Credential Gateway view gets the value only at
-  `registerSource` and `updateSource`, in the API, and the Worker answers each
-  Box model request later. It keeps one Secret per source in
+  `registerSource` and `updateSource` in the API; the Worker answers each Box
+  model request later. It keeps one Secret per source in
   `modelGateway.secretNamespace`; Kubernetes has no metadata-only read.
-- **Workaround:** use a namespace that holds nothing else, and grant no one else
+- **Workaround:** use a namespace holding nothing else, and grant no one else
   `get` on Secrets there. Removing the source deletes its Secret.
 - **Upstream status:** an OCE question: a Worker-side read of OCE's own Secret
   would remove the copy.
@@ -213,8 +215,8 @@ by its source: route_not_ready`. The chat keeps running.
 
 - **Symptom:** a withdrawn revision never gets model access on this host again.
 - **Cause:** the host writes a receipt for the revision and source in
-  `protectedModel.revocationDir`, with or without a running execution, and
-  every start of that revision loads it.
+  `protectedModel.revocationDir`, running execution or not, and every start of
+  that revision loads it.
 - **Workaround:** deploy a new revision. To undo a mistaken withdrawal, stop the
   host and move the `model-revoked-*.json` file out of that directory.
 - **Upstream status:** by design in this example.
@@ -263,7 +265,7 @@ code-mode host ... Permission denied (os error 13)`; the model then uses its
 - **Cause:** Codex starts its Code Mode host, a separate binary beside `codex`,
   as its own child, and the agent's exec list names only `tini`, Node and `codex`.
 - **Workaround:** none needed: the call fails before any code runs. Do not add
-  the host to the exec list: it would run model-written JavaScript in the
+  it to the exec list: it would run model-written JavaScript in the
   agent's boundary unadmitted.
 - **Upstream status:** turning Code Mode off needs an OCE change to the Codex
   configuration it renders.
@@ -285,16 +287,16 @@ code-mode host ... Permission denied (os error 13)`; the model then uses its
 - **Workaround:** the file-only workspace node runs outside Box on its own route
   to the Agent Gateway, and the Harness reaches the Gateway through the
   installed relay. See [Connect the installation](README.md#connect-the-installation).
-- **Upstream status:** not yet reported to strands-agents/box.
+- **Upstream status:** not reported upstream.
 
 ## Box ships for Linux ARM64 only
 
 - **Symptom:** the pinned Box v0.2.2 release has no Linux x86-64 build.
-- **Cause:** the release publishes Linux ARM64 and macOS ARM64 builds only.
+- **Cause:** the release has Linux and macOS ARM64 builds only.
 - **Workaround:** use an ARM64 Linux host or full-system ARM64 virtual machine
   (Box needs namespaces and Bubblewrap from its kernel) with API, Worker and the
   workspace volume on that node, or the fork's `dogfood/main` on Linux x86-64.
-- **Upstream status:** not yet reported to strands-agents/box.
+- **Upstream status:** not reported upstream.
 
 ## Ubuntu 24.04 restricts unprivileged user namespaces
 
@@ -304,4 +306,4 @@ code-mode host ... Permission denied (os error 13)`; the model then uses its
   namespaces to programs without an AppArmor profile that allows them.
 - **Workaround:** install such profiles for the Box and Bubblewrap binaries,
   or, on a dedicated host, set `kernel.apparmor_restrict_unprivileged_userns=0`.
-- **Upstream status:** a host prerequisite, not yet in the Box documentation.
+- **Upstream status:** a host prerequisite, not in Box's documentation.

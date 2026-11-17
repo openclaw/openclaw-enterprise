@@ -1,5 +1,5 @@
-import { lstatSync, mkdirSync, readlinkSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { lstatSync, mkdirSync, readlinkSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { WORKSPACE_MARKER } from "./workspace-verifier.ts";
 
 /**
@@ -47,75 +47,196 @@ const GIT_HELPERS = ["/usr/lib/git-core", "/usr/libexec/git-core"] as const;
  * Box mounts these readable and executable in every boundary, with no grant (finding 3333): Box's
  * Linux runtime minimum, `LOADER_DIRECTORIES` in `crates/box/src/run/contain/runtime_minimum.rs`.
  * Debian and Ubuntu ship a complete git there, `/usr/lib/git-core/git`. It stays executable by its
- * full path; it stays unused because nothing names it and no directory on the agent's search path
- * may lead to it.
+ * full path; it stays unused while nothing names it: no directory on the admitted search path, or
+ * among those the runtime adds (`runtimeSearchPath`), may lead to it when the host checks.
  */
 export const LOADER_DIRECTORIES = ["/lib", "/lib64", "/usr/lib", "/usr/lib64"] as const;
+/**
+ * What a path here means depends on the process that resolves it (`/proc/self/cwd` is Codex's
+ * working directory, the workspace, inside Box; `/dev/fd/N` is one of its descriptors), or the
+ * kernel makes it up. The host cannot judge such a path for Codex, so a search path entry may not
+ * lie in or pass through one (finding 3339).
+ */
+export const UNJUDGEABLE_DIRECTORIES = ["/proc", "/dev", "/sys"] as const;
+/** Linux's own limit on the links one lookup follows (`MAXSYMLINKS`); past it, a lookup fails. */
+const MAX_LINKS = 40;
 
 const within = (parent: string, child: string) =>
   child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
+const unjudgeable = (path: string) =>
+  UNJUDGEABLE_DIRECTORIES.some((directory) => within(directory, path));
 
-/** `..` and links resolved in every existing component; a dangling link resolves to its target. */
-function resolvedPath(path: string, depth = 0): string {
-  const absolute = resolve(path);
+interface Resolution {
+  /** Where the path leads: each existing component resolved, an absent rest kept as written. */
+  readonly path: string;
+  /** Every path the lookup passes: each component, each link and each target, in order. */
+  readonly visited: readonly string[];
+  /**
+   * False when the host cannot judge the path: a component under `/proc`, `/dev` or `/sys`,
+   * more links than Linux follows (a loop), or any failure but an absent component.
+   */
+  readonly judged: boolean;
+}
+
+/**
+ * Resolve a path one component at a time, as the kernel does: a link's target replaces it, a
+ * relative target is read from the link's own directory, and `..` leaves the directory reached so
+ * far, not the one written. A dangling link resolves to its target. Never throws.
+ */
+function resolution(path: string): Resolution {
+  const visited: string[] = [];
+  const unjudged = (at: string): Resolution => ({ path: at, visited, judged: false });
+  if (!isAbsolute(path)) return unjudged(path);
+  let pending = path.split("/");
+  let current = "/";
+  let links = 0;
+  let absent = false;
   try {
-    return realpathSync(absolute);
+    while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (name === "" || name === ".") continue;
+      if (name === "..") {
+        current = dirname(current);
+        continue;
+      }
+      const next = join(current, name);
+      visited.push(next);
+      if (unjudgeable(next)) return unjudged(next);
+      current = next;
+      if (absent) continue;
+      let link: string | undefined;
+      try {
+        const stat = lstatSync(next);
+        if (stat.isSymbolicLink()) link = readlinkSync(next);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") return unjudged(next);
+        // Absent: the rest is as written, and may appear later.
+        absent = true;
+        continue;
+      }
+      if (link === undefined) continue;
+      links += 1;
+      if (links > MAX_LINKS) return unjudged(next);
+      pending = [...link.split("/"), ...pending];
+      current = link.startsWith("/") ? "/" : dirname(next);
+    }
   } catch {
-    // absent or dangling: resolve what exists
+    return unjudged(current);
   }
-  if (depth > 40) return absolute;
-  try {
-    if (lstatSync(absolute).isSymbolicLink())
-      return resolvedPath(resolve(dirname(absolute), readlinkSync(absolute)), depth + 1);
-  } catch {
-    // absent
-  }
-  const parent = dirname(absolute);
-  return parent === absolute ? absolute : join(resolvedPath(parent, depth + 1), basename(absolute));
+  return { path: current, visited, judged: true };
+}
+
+/**
+ * The directories the stock runtime puts on Codex's search path at run time, inside the agent's
+ * writable state, which the host never sees in the admitted `PATH` (finding 3338). Derived from
+ * the inputs the runtime itself uses:
+ *
+ * - the combined workspace-node program appends `$HOME/.local/bin` and
+ *   `$HOME/.openclaw/tools/node/npm/bin` (`agentWithNodeEntrypoint`, `harnessPath`, in Compute's
+ *   `runtime-entrypoints.ts`, with `HOME` defaulting to `/home/node`);
+ * - Codex prepends a fresh directory it makes under `$CODEX_HOME/tmp/arg0` (`CODEX_HOME`
+ *   defaulting to `$HOME/.codex`).
+ *
+ * Every layout gets the check: a `git` there has no use in any of them.
+ */
+export function runtimeSearchPath(environment: Readonly<Record<string, string>>): string[] {
+  const home = environment.HOME || "/home/node";
+  const codexHome = environment.CODEX_HOME || join(home, ".codex");
+  return [
+    join(home, ".local/bin"),
+    join(home, ".openclaw/tools/node/npm/bin"),
+    join(codexHome, "tmp/arg0"),
+  ];
 }
 
 /**
  * True when the agent's boundary could run git or gh by name: an exec grant over one of them or
  * over git's helper directory, or a search path entry that is relative or empty (the working
- * directory, the workspace), lies in a loader directory or git's helper directory (each after
- * resolving `..` and links), lies in a directory the agent's boundary may write (`writable`: a
- * link put there could name the loader directory's git), or holds a `git` or `gh` whose real
- * file lies in a loader directory.
+ * directory, the workspace), that the host cannot judge (under `/proc`, `/dev` or `/sys`, or a
+ * link loop), or that passes on its way (any component, link or target) through a loader
+ * directory, git's helper directory or a directory the agent's boundary may write (`writable`:
+ * a link there could be changed to name the loader directory's git), or that holds a `git` or
+ * `gh` leading into a loader directory. `appended` are directories the runtime adds inside the
+ * writable state (`runtimeSearchPath`): each must hold no `git` or `gh` of any kind, and must
+ * contain no link (a link could lead into the workspace, where the workload's own git writes).
+ * Never throws: a path it cannot judge counts as covering git.
  */
 export function execCoversGit(
   grants: readonly string[],
   searchPath: readonly string[] = AGENT_SEARCH_PATH,
   writable: readonly string[] = [],
+  appended: readonly string[] = [],
 ): boolean {
-  const both = (paths: readonly string[]) => [
-    ...new Set(paths.flatMap((path) => [resolve(path), resolvedPath(path)])),
-  ];
-  const loaders = both(LOADER_DIRECTORIES);
-  const helpers = both(GIT_HELPERS);
-  const unsafeEntry = (entry: string) =>
-    !isAbsolute(entry) ||
-    both([entry]).some(
-      (path) =>
-        [...loaders, ...helpers].some((directory) => within(directory, path)) ||
-        both(writable).some((directory) => within(directory, path)),
+  try {
+    // A directory as written and where it leads.
+    const both = (paths: readonly string[]) => [
+      ...new Set(paths.flatMap((path) => [resolve(path), resolution(path).path])),
+    ];
+    const loaders = both(LOADER_DIRECTORIES);
+    const helpers = both(GIT_HELPERS);
+    const closed = [...loaders, ...helpers];
+    const written = both(writable);
+    const unsafeEntry = (entry: string) => {
+      if (!isAbsolute(entry)) return true;
+      const { path, visited, judged } = resolution(entry);
+      return (
+        !judged ||
+        [resolve(entry), path, ...visited].some(
+          (step) =>
+            unjudgeable(step) ||
+            [...closed, ...written].some((directory) => within(directory, step)),
+        )
+      );
+    };
+    if (searchPath.some(unsafeEntry)) return true;
+    const unsafeAppended = (directory: string) => {
+      if (!isAbsolute(directory)) return true;
+      const { path, visited, judged } = resolution(directory);
+      if (
+        !judged ||
+        path !== resolve(directory) ||
+        [path, ...visited].some((step) => closed.some((loader) => within(loader, step)))
+      )
+        return true;
+      return ["git", "gh"].some((name) => {
+        try {
+          lstatSync(join(path, name));
+          return true;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          return code !== "ENOENT" && code !== "ENOTDIR";
+        }
+      });
+    };
+    if (appended.some(unsafeAppended)) return true;
+    const named = [...AGENT_SEARCH_PATH, ...searchPath].flatMap((directory) => [
+      join(directory, "git"),
+      join(directory, "gh"),
+    ]);
+    // A link by one of those names that leads into a loader directory runs with no grant.
+    const resolved = named.map(resolution);
+    if (
+      resolved.some(
+        ({ path, visited, judged }) =>
+          !judged ||
+          [path, ...visited].some((step) => loaders.some((directory) => within(directory, step))),
+      )
+    )
+      return true;
+    // Each one and its real file, where it is a link to a file elsewhere.
+    const programs = [...new Set([...named, ...resolved.map(({ path }) => path), ...GIT_HELPERS])];
+    // A grant over one of them, or inside git's helper directory (each helper is git); a linked
+    // grant counts as its real file too.
+    if (grants.some((grant) => !resolution(grant).judged)) return true;
+    return both(grants).some(
+      (grant) =>
+        programs.some((program) => within(grant, program)) ||
+        helpers.some((directory) => within(directory, grant)),
     );
-  if (searchPath.some(unsafeEntry)) return true;
-  const named = [...AGENT_SEARCH_PATH, ...searchPath].flatMap((directory) => [
-    join(directory, "git"),
-    join(directory, "gh"),
-  ]);
-  // A link by one of those names whose real file is in a loader directory runs with no grant.
-  const reals = named.map((program) => resolvedPath(program));
-  if (reals.some((real) => loaders.some((directory) => within(directory, real)))) return true;
-  // Each one and its real file, where it is a link to a file elsewhere.
-  const programs = [...new Set([...named, ...reals, ...GIT_HELPERS])];
-  // A grant over one of them, or inside git's helper directory (each helper is git); a linked
-  // grant counts as its real file too.
-  return both(grants).some(
-    (grant) =>
-      programs.some((program) => within(grant, program)) ||
-      helpers.some((directory) => within(directory, grant)),
-  );
+  } catch {
+    return true;
+  }
 }
 
 export function stockGitPolicy(workspace: string): string {
