@@ -43,7 +43,7 @@ Current behavior is documented in the [Agent plugins reference](../../docs/refer
    - Discover tools, select permissions, and enforce policy per account, including accounts sharing an endpoint. Removing or failing one account must not affect another.
    - **Status:** Not done; depends on steps 1–3.
 7. **OpenClaw selective MCP admission:** Extend node policy admission to classify each exact account-qualified server and upstream tool before issuing worker grants.
-   - Keep eligible enabled tools without approval on same-node execution; route approval-required tools to Gateway dispatch. Do not grant disabled tools. Block a call when its required Gateway policy is absent, and invalidate stale grants when policy changes. Reuse the existing worker grant protocol.
+   - Keep eligible enabled tools without approval on same-node execution; route approval-required tools to Gateway dispatch. Do not grant disabled tools. Add `gateway.nodes.commands.requiredPolicies` to reject grants and dispatch when a required command policy owner is missing or mismatched, and invalidate stale grants when policy changes. Reuse the existing worker grant protocol.
    - **Status:** Not done; planned OpenClaw PR.
 8. **OCE native MCP human approval:** Install one OCE-managed Gateway MCP node policy and translate saved per-tool `all_actions`/`none` settings into it.
    - Extend per-plugin Driver capability reporting so only supported managed MCP plugins advertise human approval. Reuse the existing `tools[id].approval` field and Agent-wide approvers; freeze the binding and policy in the Agent revision. Extend the Tools picker and fail deployment when the required gate cannot be installed.
