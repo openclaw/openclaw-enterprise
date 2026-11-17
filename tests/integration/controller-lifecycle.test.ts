@@ -516,7 +516,10 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
     ["maintenance-zero", { maintenanceIntervalMs: 0 }],
     ["maintenance-fraction", { maintenanceIntervalMs: 1.5 }],
     ["maintenance-text", { maintenanceIntervalMs: "60000" }],
-    ["maintenance-without-provision", { maintenanceIntervalMs: 60_000, provisionHarness: undefined }],
+    [
+      "maintenance-without-provision",
+      { maintenanceIntervalMs: 60_000, provisionHarness: undefined },
+    ],
   ] as const) {
     assert.throws(
       () => controller.registerDriver({ ...createSandboxDriver({ id }), ...extra }),

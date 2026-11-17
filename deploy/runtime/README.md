@@ -71,7 +71,7 @@ against the Dockerfile.
 `openclaw-codex-external-workspace.patch` makes a dedicated Codex Gateway enforce the
 [external workspace binding](../../docs/reference/drivers/sandbox.md#harness-transport) that Compute mounts.
 
-Dedicated Gateways require this recipe's source and validate effective native
+Dedicated Gateways require this recipe's source and validate effective
 configuration before startup. Required tool policy covers core dispatch,
 automation authority, and dynamic Codex tools. Older or unknown images stay
 unready; runtime qualification remains separate.
