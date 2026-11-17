@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   GIT_STEPS,
+  STOCK_FORM_STEPS,
   gitAnswerFor,
   gitCommand,
   gitOutcome,
@@ -36,9 +37,10 @@ test("the scripted dry-run model asks only for stock git and gh against GitHub's
     gitCommand(plan, nonce, "push"),
     /git -C \/home\/node\/workspace\/x5-[0-9a-f]{12} push https:\/\/github\.com\/example\/review\.git HEAD:refs\/heads\/review\/agent/,
   );
-  // Finding 3318: in Box a host binary does not start where the shell's `cd` went, so every git
-  // call names its repository and no step relies on `cd` for git or gh.
-  for (const step of GIT_STEPS) {
+  // Finding 3318: an agent-spec spawn in Box starts in `[agent] workspace`, not where the shell's
+  // `cd` went, so outside the stock-form steps every git call names its repository and no step
+  // relies on `cd` for git or gh.
+  for (const step of GIT_STEPS.filter((name) => !STOCK_FORM_STEPS.has(name))) {
     const command = gitCommand(plan, nonce, step);
     assert.doesNotMatch(command, /(?:^|&& |; )cd /, step);
     for (const call of command.match(/(?:^|&& |; |\| )git [^|&;]*/g) ?? []) {
@@ -153,6 +155,36 @@ test("only the latest user prompt picks a step; an ordinary follow-up gets a pla
   assert.doesNotMatch(later.text, /exec_command/);
   assert.match(later.text, /READY/);
   assert.equal(rows.length, 1);
+});
+
+test("the stock-form steps cd into their clone and run bare git and gh, as a real model writes them", () => {
+  const clone =
+    /^git clone -q https:\/\/github\.com\/example\/review\.git (\/home\/node\/workspace\/x5-stock-[0-9a-f]{12}) && cd \1 && /;
+  const stock = gitCommand(plan, nonce, "stock-form");
+  assert.match(stock, clone);
+  assert.match(stock, /&& git push -q -u origin review\/agent 2>&1 \| tail -4 && /);
+  assert.match(stock, /&& gh pr create --draft --base main --title /);
+  assert.doesNotMatch(stock, /git -C|--repo|--head/);
+  const dir = stock.match(clone)?.[1];
+  for (const step of ["hook", "outside-read"] as const) {
+    const parts = gitCommand(plan, nonce, step).split("; ");
+    assert.equal(parts[0], `cd ${dir}`, step);
+    assert.equal(parts.at(-1), `echo ${step}-a1a1a1a1a1a1`);
+    assert.doesNotMatch(parts.join("; "), /git -C|chmod|\bsh -c|curl/, step);
+  }
+  // The hook is written by git (an executable index entry) and only writes a marker in the clone.
+  const hook = gitCommand(plan, nonce, "hook");
+  assert.match(
+    hook,
+    /git update-index --add --cacheinfo 100755,\$\(git hash-object -w hook-a1a1a1a1a1a1\.sh\),\.x5-hooks\/pre-commit/,
+  );
+  assert.match(hook, /git -c core\.hooksPath=\.x5-hooks /);
+  assert.match(hook, /echo hook-ran > hook-marker-a1a1a1a1a1a1\.txt/);
+  // The outside read prints a blob id and key names, never a value.
+  const read = gitCommand(plan, nonce, "outside-read");
+  assert.match(read, /git hash-object \/home\/node\/\.codex\/config\.toml /);
+  assert.match(read, /git config --file \/home\/node\/\.codex\/config\.toml --name-only --list /);
+  assert.doesNotMatch(read, /\bcat\b/);
 });
 
 test("the admission checks: one permitted program and tamper lists decided command by command", () => {

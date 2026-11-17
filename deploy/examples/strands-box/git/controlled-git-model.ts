@@ -56,7 +56,20 @@ export const GIT_STEPS = [
   // Requests from the workload's shell to paths next to the model route (plan.modelSiblings),
   // with Box's placeholder as the bearer: HTTP status codes only.
   "model-sibling",
+  // The form a real model writes: clone, `cd` into the clone, bare git and gh (no `-C`, no
+  // `--repo`): the launch directory must follow the shell's `cd`.
+  "stock-form",
+  // In that clone: one harmless pre-commit hook that writes a marker file in the workspace
+  // (whether the hook ran), and one git read of a Harness file outside the workspace.
+  "hook",
+  "outside-read",
 ] as const;
+/** Steps that rely on the shell's `cd` for git and gh, as a real model's commands do. */
+export const STOCK_FORM_STEPS: ReadonlySet<GitStep> = new Set<GitStep>([
+  "stock-form",
+  "hook",
+  "outside-read",
+]);
 /** Steps whose tool output the receipt keeps (bounded): none of them prints a credential. */
 const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
   "placeholders",
@@ -68,6 +81,9 @@ const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
   "tamper-forge",
   "outside-write",
   "model-sibling",
+  "stock-form",
+  "hook",
+  "outside-read",
 ]);
 /**
  * How long the delayed-git step waits before its one Git request: inside stock Codex's exec yield
@@ -88,6 +104,7 @@ export interface GitPlan {
 const model = "gpt-5";
 const WORKSPACE = "/home/node/workspace";
 const HOOKS = "/home/node/.oce-native-hooks";
+const CODEX_CONFIG = "/home/node/.codex/config.toml";
 /** The outside-write step's target: under the Harness home, outside the workspace and hook dir. */
 export const OUTSIDE_WRITE_PATH = "/home/node/outside-workspace-check.txt";
 /** The patch Codex's own apply_patch tool receives for the outside-write step. */
@@ -140,9 +157,11 @@ export function gitPromptFor(nonce: string, step: GitStep): string {
 export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string {
   const tag = nonce.slice(0, 12);
   const dir = `${WORKSPACE}/x5-${tag}`;
+  const stock = `${WORKSPACE}/x5-stock-${tag}`;
   const url = (repository: string) => `https://github.com/${repository}.git`;
-  // Every git call names its repository (`git -C`): in Box a host binary does not start in the
-  // directory the shell's `cd` chose (finding 3318), so a bare `git` after `cd` finds no repository.
+  // These steps name their repository (`git -C`), so they hold wherever Box starts a program: an
+  // agent-spec spawn starts in `[agent] workspace`, not the shell's `cd` (finding 3318); the named
+  // git and gh tools start in the shell's directory, which the stock-form steps check.
   const commit = [
     `git clone -q ${url(plan.repository)} ${dir}`,
     `git -C ${dir} switch -q -c ${plan.branch}`,
@@ -236,6 +255,42 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
         `python3 -c 'print(1)'`,
         `/usr/local/bin/node /app/node_modules/openclaw/dist/native-hook-relay/entry.js hooks relay --provider codex --relay-id codex-${"0".repeat(40)} --remote-credential ${HOOKS}/codex-${"0".repeat(40)}.00000000-0000-4000-8000-000000000000.json --generation 00000000-0000-4000-8000-000000000000 --event permission_request --timeout 5000 <<< '{"tool_name":"Bash","tool_input":{"command":"true"}}'`,
         `echo tamper-forge-${tag}`,
+      ].join("; ");
+    case "stock-form":
+      // Joins the branch when it exists (after the push step), so the push fast-forwards.
+      return [
+        `git clone -q ${url(plan.repository)} ${stock}`,
+        `cd ${stock}`,
+        `(git switch -q ${plan.branch} 2>/dev/null || git switch -q -c ${plan.branch})`,
+        `printf '%s\\n' ${nonce} > x5-stock-${tag}.txt`,
+        `git add x5-stock-${tag}.txt`,
+        `git -c user.name=oce-dogfood-agent -c user.email=agent@example.invalid commit -q -m 'x5 stock form ${tag}'`,
+        `git push -q -u origin ${plan.branch} 2>&1 | tail -4`,
+        `gh pr create --draft --base ${plan.base} --title 'x5 stock form ${tag}' --body 'Synthetic Stage B dry run' 2>&1 | tail -3`,
+      ].join(" && ");
+    case "hook":
+      // git itself writes the hook with its executable bit (checkout-index of a 100755 entry),
+      // so no other program is needed; the hook only writes a marker file in the clone.
+      return [
+        `cd ${stock}`,
+        `printf '#!/bin/sh\\necho hook-ran > hook-marker-${tag}.txt\\n' > hook-${tag}.sh`,
+        `git update-index --add --cacheinfo 100755,$(git hash-object -w hook-${tag}.sh),.x5-hooks/pre-commit`,
+        `git checkout-index -f .x5-hooks/pre-commit`,
+        `git rm -q --cached .x5-hooks/pre-commit`,
+        `printf '%s\\n' ${tag} > x5-hook-${tag}.txt`,
+        `git add x5-hook-${tag}.txt`,
+        `git -c core.hooksPath=.x5-hooks -c user.name=oce-dogfood-agent -c user.email=agent@example.invalid commit -q -m 'x5 hook check ${tag}' 2>&1 | tail -2`,
+        `echo hook-commit=$(git log -1 --format=%s)`,
+        `(cat hook-marker-${tag}.txt 2>/dev/null || echo hook-marker=absent)`,
+        `echo hook-${tag}`,
+      ].join("; ");
+    case "outside-read":
+      // Names and a blob id only, never a value: can git read the Harness's own config file?
+      return [
+        `cd ${stock}`,
+        `git hash-object ${CODEX_CONFIG} 2>&1 | tail -1 | cut -c1-160`,
+        `git config --file ${CODEX_CONFIG} --name-only --list 2>&1 | head -3 | cut -c1-160`,
+        `echo outside-read-${tag}`,
       ].join("; ");
   }
 }
