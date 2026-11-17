@@ -240,7 +240,11 @@ test("a protected plan on a non-OpenShell Sandbox tells its Gateway the Harness 
         },
         sandboxDriverId: "sandbox-provider",
         egressDriverId: "sandbox-provider",
-        driver: { id: "sandbox-provider", implementation: "external", configurationId: "a".repeat(64) },
+        driver: {
+          id: "sandbox-provider",
+          implementation: "external",
+          configurationId: "a".repeat(64),
+        },
         policyReductionVersion: 1,
         routes: [],
       },
