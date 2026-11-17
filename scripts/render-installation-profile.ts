@@ -1,6 +1,6 @@
 /// <reference lib="es2024.string" />
 import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
-import { createHash } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import dns from "node:dns/promises";
 import { statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -12,6 +12,7 @@ import {
   isKubernetesNamespaceName,
   isKubernetesResourceName,
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
+import { publicGithubReadPolicy } from "../apps/controller/src/drivers/repo/github/public-read/access.ts";
 import { modelEgressWarning } from "../apps/controller/src/drivers/compute/kubernetes/model-egress.ts";
 
 import {
@@ -77,7 +78,18 @@ interface ChatGptValues {
   key: string;
   providerCidr: string;
 }
+interface PublicGithubReadValues {
+  enabled: boolean;
+  clusterIP: string;
+  upstreamCidrs: unknown[];
+  policy: ReturnType<typeof publicGithubReadPolicy>;
+  installationId: string;
+  authorizationConfigMapName: string;
+  tlsSecretName: string;
+  caBundle: string;
+}
 interface SecretValues {
+  publicGithubRead?: PublicGithubReadValues;
   database: { caSecretName?: string; caMountPath?: string };
   repositoryCredentials: RepositoryValues;
   backend?: { chatgpt: ChatGptValues };
@@ -128,7 +140,6 @@ interface ProfileValues extends SecretValues {
   };
   logging: { collector: { enabled: boolean; exporter?: CollectorExporter } };
   slackProxy?: { enabled: boolean };
-  publicGithubRead?: { enabled: boolean; clusterIP: string; upstreamCidrs: unknown[] };
 }
 interface KubernetesDriver {
   id: string;
@@ -152,7 +163,11 @@ interface ComputeConfiguration {
     gatewayTrustedProxyCidrs: unknown[];
     pluginStatusProxySourceCidrs: unknown[];
     repositoryCredentials?: NetworkPeer;
-    publicGithubRead?: NetworkPeer & { address: string };
+    publicGithubRead?: NetworkPeer & {
+      address: string;
+      authorizationConfigMapName: string;
+      caBundle: string;
+    };
   };
   gatewayRouting: { gatewayName: string; gatewayNamespace: string; envoyNamespace: string };
   servicePrincipalCredentials: { mode: string; audience: string; expirationSeconds: number };
@@ -1362,7 +1377,16 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
   closed(
     publicGithubRead,
     "publicGithubRead",
-    ["enabled", "clusterIP", "upstreamCidrs"],
+    [
+      "enabled",
+      "clusterIP",
+      "upstreamCidrs",
+      "policy",
+      "installationId",
+      "authorizationConfigMapName",
+      "tlsSecretName",
+      "caBundleFile",
+    ],
     diagnostics,
   );
   const presets = section(input, "presets", diagnostics, false);
@@ -1584,6 +1608,9 @@ function dedicatedSecrets(
       : []),
     ["controlPlane.databaseCa.secretName", values.database.caSecretName, "ca"],
     ["controlPlane.gatewayApiKeySecretName", values.gatewayRouting.apiKeySecretName],
+    ...(values.publicGithubRead?.enabled
+      ? [["publicGithubRead.tlsSecretName", values.publicGithubRead.tlsSecretName] as const]
+      : []),
     ...Object.entries(signInSecretDefaults)
       .filter(([name]) => values.auth[name as "google" | "oidc"] !== undefined)
       .map(
@@ -1690,11 +1717,9 @@ function collectorExporter(loggingCollector: InputRecord, enabled: boolean, diag
   return rendered;
 }
 
-function buildRendered(
-  profile: Profile,
-  parsed: ReturnType<typeof buildInput>,
-  diagnostics: Diagnostics,
-) {
+type ParsedProfile = ReturnType<typeof buildInput> & { publicGithubReadCaBundle?: string };
+
+function buildRendered(profile: Profile, parsed: ParsedProfile, diagnostics: Diagnostics) {
   const {
     controlPlane,
     runtime,
@@ -2379,12 +2404,61 @@ function buildRendered(
       publicGithubRead,
       ["publicGithubRead", "upstreamCidrs"],
       diagnostics,
-      { validate: isIpv4Cidr, description: "an approved IPv4 CIDR for api.github.com" },
+      {
+        validate: isIpv4Cidr,
+        description: "an approved IPv4 CIDR for github.com and api.github.com",
+      },
     );
-    values.publicGithubRead = { enabled: true, clusterIP, upstreamCidrs };
+    const installationId = asString(
+      publicGithubRead,
+      ["publicGithubRead", "installationId"],
+      diagnostics,
+      {
+        validate: (value) => /^ins_[A-Za-z0-9_-]{1,128}$/.test(value),
+        description: "the existing OCC Installation ID (ins_...)",
+      },
+    );
+    const authorizationConfigMapName = asString(
+      publicGithubRead,
+      ["publicGithubRead", "authorizationConfigMapName"],
+      diagnostics,
+      resourceNameRule,
+    );
+    const tlsSecretName = asString(
+      publicGithubRead,
+      ["publicGithubRead", "tlsSecretName"],
+      diagnostics,
+      resourceNameRule,
+    );
+    let policy: ReturnType<typeof publicGithubReadPolicy> = {
+      mode: "repositories",
+      repositories: [],
+    };
+    try {
+      policy = publicGithubReadPolicy(
+        publicGithubRead.policy === undefined ? policy : publicGithubRead.policy,
+      );
+    } catch {
+      diagnostics.errors.push(
+        "publicGithubRead.policy must select all or at most 256 canonical owner/repository entries.",
+      );
+    }
+    const caBundle = parsed.publicGithubReadCaBundle ?? "";
+    values.publicGithubRead = {
+      enabled: true,
+      clusterIP,
+      upstreamCidrs,
+      policy,
+      installationId,
+      authorizationConfigMapName,
+      tlsSecretName,
+      caBundle,
+    };
     installation.drivers.compute.configuration.network.publicGithubRead = {
       namespace,
       address: clusterIP,
+      authorizationConfigMapName,
+      caBundle,
       podLabels: {
         "app.kubernetes.io/name": "openclaw-enterprise",
         "app.kubernetes.io/instance": releaseName,
@@ -2392,12 +2466,10 @@ function buildRendered(
       },
     };
     diagnostics.prerequisites.push(
-      "Reserve the public GitHub reader ClusterIP until every AgentRevision that allows it has retired; enforce both NetworkPolicies.",
+      "Reserve the public GitHub reader ClusterIP until every selected AgentRevision has retired; enforce both NetworkPolicies. Create the dedicated TLS Secret with tls.crt/tls.key and an IP SAN for the reserved address. Trust this public CA in OpenShell supervisor SSL_CERT_FILE as well as the Harness.",
     );
     diagnostics.nextSteps.push(
-      "Select public reads in a dedicated Codex Agent Configuration or Preset: enable plugins.entries.codex.config.appServer.networkProxy and allow its exact Service IP " +
-        clusterIP +
-        " in domains, then deploy the Agent.",
+      "Select public reads with plugins.entries.codex.config.publicGithubRead ({mode: all} or {mode: repositories, repositories: [...]}) in a dedicated Codex Agent Configuration or Preset, then deploy the Agent. Omitted and empty selections deny access.",
     );
   } else if (Object.keys(publicGithubRead).some((key) => key !== "enabled")) {
     diagnostics.errors.push(
@@ -2618,7 +2690,37 @@ export async function renderInstallationProfile(args: RenderArguments) {
     readProfile(args.profile!),
     readJson(resolve(args.input), "input"),
   ]);
-  const parsed = buildInput(rawInput, diagnostics);
+  const parsed: ParsedProfile = buildInput(rawInput, diagnostics);
+  if (parsed.publicGithubRead.enabled === true) {
+    const path = asString(
+      parsed.publicGithubRead,
+      ["publicGithubRead", "caBundleFile"],
+      diagnostics,
+    );
+    if (path) {
+      try {
+        const pem = await readFile(resolve(dirname(resolve(args.input)), path), "utf8");
+        const certificates = pem.match(
+          /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g,
+        );
+        if (
+          Buffer.byteLength(pem) > 65 * 1024 ||
+          !certificates?.length ||
+          pem.replace(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g, "").trim()
+        ) {
+          throw new Error("invalid public trust");
+        }
+        for (const certificate of certificates) {
+          new X509Certificate(certificate);
+        }
+        parsed.publicGithubReadCaBundle = pem;
+      } catch {
+        diagnostics.errors.push(
+          "publicGithubRead.caBundleFile must contain only public PEM certificates, at most 65 KiB; private keys and unreadable files are refused.",
+        );
+      }
+    }
+  }
   const { values, installation } = buildRendered(profile, parsed, diagnostics);
 
   if (diagnostics.errors.length === 0) {

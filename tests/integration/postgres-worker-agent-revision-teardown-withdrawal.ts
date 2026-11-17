@@ -46,9 +46,21 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
         const events: WorkerEvent[] = [];
         let preparations = 0;
         let observations = 0;
+        let activations = 0;
+        let serviceMaintenances = 0;
         let result: WithdrawalObservation = initialObservation;
         const compute: ComputeDriver = {
           ...fixture.compute,
+          async activateRevision(revision) {
+            if (revision.id === candidate.id) {
+              activations++;
+            }
+          },
+          async maintainServiceAccess(revision, signal) {
+            assert.equal(revision.id, candidate.id);
+            signal.throwIfAborted();
+            serviceMaintenances++;
+          },
           async prepareRevision(revision, context) {
             if (revision.id === candidate.id) {
               preparations++;
@@ -82,11 +94,13 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
             (event) =>
               event.event === "worker.completed" &&
               event.revisionId === candidate.id &&
-              event.workId?.includes(":repository_cleanup:"),
+              event.workId?.includes(":repository_cleanup:") &&
+              event.code !== "REPOSITORY_CLEANUP_COMPLETE",
           );
         await start();
         await fixture.work(candidate, "succeeded");
         await fixture.stop();
+        events.length = 0;
         const [original] = await repositoryAttempts(fixture, candidate);
         assert.ok(original, "expected original repository attempt");
         assert.equal(original.phase, "open");
@@ -134,8 +148,15 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
           );
           assert.equal(repository.calls.filter((call) => call.operation === "open").length, 1);
           assert.equal(preparations, 1);
+          assert.equal(activations, 1);
         };
         await checkNoNewGit();
+        if (scenario === "withdrawn") {
+          assert.ok(
+            serviceMaintenances > 0,
+            "independent selected services need maintenance after Git expires",
+          );
+        }
         if (scenario === "retire-runtime" || scenario === "unsupported") {
           assert.equal(first.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
           await waitFor("confirmed retirement clears only this active revision", async () =>
@@ -208,6 +229,7 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
         );
         await fixture.stop();
         const previous = observations;
+        const previousServiceMaintenances = serviceMaintenances;
         const {
           rowCount: count,
           rows: [next],
@@ -222,6 +244,10 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
           "REPOSITORY_ACCESS_WITHDRAWN",
         );
         assert.ok(observations > previous, "cold maintenance verifies the reduced runtime");
+        assert.ok(
+          serviceMaintenances > previousServiceMaintenances,
+          "a cold worker renews independently authorized services without replaying Git",
+        );
         await checkNoNewGit();
         assert.equal(stopped.length, 0);
         const agent = required(await fixture.currentAgent(owner), "fixture Agent");
@@ -229,6 +255,7 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
         assert.equal(agent.desiredRuntimeState, "running");
 
         // Offboard the requester after Git withdrawal. IAM now denies this exact revision.
+        const maintenancesBeforeRevocation = serviceMaintenances;
         const removed = await removeAccessBindings(fixture, fixture.actor.id);
         assert.ok((removed.rowCount ?? 0) > 0, "remove the requester's actual access bindings");
         await fixture.advanceMaintenance(candidate);
@@ -239,6 +266,11 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
             : undefined,
         );
         assert.deepEqual(stopped, [candidate.id]);
+        assert.equal(
+          serviceMaintenances,
+          maintenancesBeforeRevocation,
+          "independent authority loss must prevent further service renewal",
+        );
         await checkNoNewGit();
       },
     );

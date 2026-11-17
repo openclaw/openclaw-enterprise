@@ -1,3 +1,4 @@
+import type { ComputeServiceAccess } from "./drivers/compute/index.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
@@ -49,11 +50,19 @@ export interface SandboxPolicySnapshot {
   readonly version: number;
   readonly defaults: Readonly<OpenClawConfigurationDocument>;
   readonly additions: readonly SandboxNetworkGrant[];
+  readonly serviceAccess?: readonly ComputeServiceAccess[];
 }
 
 /** Explicit, nonsecret acknowledgement; only its validated snapshot is persisted. */
 export interface ProtectedCodexArtifactPolicyAdmission {
   readonly purpose: "protected-codex-artifacts";
+  readonly declaredRuleNames: readonly string[];
+  readonly snapshot: SandboxPolicySnapshot;
+}
+
+/** Explicit acknowledgement of artifact rules and exact Compute service contributions. */
+export interface ProtectedNetworkPolicyAdmission {
+  readonly purpose: "protected-network";
   readonly declaredRuleNames: readonly string[];
   readonly snapshot: SandboxPolicySnapshot;
 }

@@ -1,3 +1,5 @@
+import { registerPublicGithubSandboxCases } from "./sandbox-driver-public-github-cases.ts";
+
 import {
   registerDedicatedCodexProviderCase,
   registerInitialWorkspaceCases,
@@ -158,3 +160,5 @@ registerSandboxDriverNamespaceGatewayCleanupCases({
   sandboxInstallation,
   openShellDriver,
 });
+
+registerPublicGithubSandboxCases();

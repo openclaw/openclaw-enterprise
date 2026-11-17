@@ -420,7 +420,12 @@ interface NetworkProxy {
 interface CodexValues {
   plugins: {
     entries: {
-      codex: { config: { appServer: { mode: string; networkProxy?: NetworkProxy } } };
+      codex: {
+        config: {
+          publicGithubRead?: { mode: "repositories"; repositories: string[] };
+          appServer: { mode: string; networkProxy?: NetworkProxy };
+        };
+      };
     };
   };
 }
@@ -446,6 +451,10 @@ export async function createCodexAgent(
   const configurationValues: unknown = createHarnessConfiguration("codex", defaultAgentModel);
   const values = configurationValues as CodexValues;
   if (reader) {
+    values.plugins.entries.codex.config.publicGithubRead = {
+      mode: "repositories",
+      repositories: ["example/public-project"],
+    };
     values.plugins.entries.codex.config.appServer.networkProxy = {
       enabled: true,
       mode: "limited",

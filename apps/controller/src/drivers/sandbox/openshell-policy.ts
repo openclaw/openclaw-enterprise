@@ -1,7 +1,12 @@
+import { openShellRevisionServiceRules } from "./openshell-service-access.ts";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
-import type { SandboxNetworkGrant, SandboxPolicySnapshot } from "@openclaw-enterprise/contracts";
+import type {
+  AgentRevision,
+  SandboxNetworkGrant,
+  SandboxPolicySnapshot,
+} from "@openclaw-enterprise/contracts";
 
 export const AGENT_POLICY_PREFIX = "oce-agent-";
 
@@ -76,6 +81,7 @@ export function sameOpenShellPolicy(left: unknown, right: unknown): boolean {
 export function openShellPolicyCandidate(
   baseline: Readonly<Record<string, unknown>>,
   snapshot: SandboxPolicySnapshot,
+  revision?: Readonly<AgentRevision>,
 ) {
   const network = asRecord(baseline.network_policies);
   if (network === undefined) {
@@ -85,16 +91,26 @@ export function openShellPolicyCandidate(
   if (defaults === undefined) {
     throw new Error("Invalid policy snapshot.");
   }
+  if (!isDeepStrictEqual(snapshot.serviceAccess, revision?.compute?.serviceAccess)) {
+    throw new Error("Service access differs from the admitted revision.");
+  }
+  const services = openShellRevisionServiceRules(
+    revision === undefined ? undefined : { ...revision, sandboxPolicy: snapshot },
+  );
   const baseRules = Object.fromEntries(
     Object.entries(network).filter(([name]) => !name.startsWith(AGENT_POLICY_PREFIX)),
   );
-  for (const [name, rule] of Object.entries(defaults)) {
+  for (const [name, rule] of Object.entries({ ...defaults, ...services })) {
     if (!sameOpenShellPolicy(baseRules[name], rule)) {
       throw new Error("Sandbox defaults differ from the admitted revision.");
     }
   }
   return immutableCopy({
     ...baseline,
-    network_policies: { ...baseRules, ...openShellAgentNetworkRules(snapshot.additions) },
+    network_policies: {
+      ...baseRules,
+      ...services,
+      ...openShellAgentNetworkRules(snapshot.additions),
+    },
   });
 }

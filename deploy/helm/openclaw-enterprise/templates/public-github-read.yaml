@@ -5,12 +5,67 @@
 {{- if not (regexMatch (include "openclaw.ipv4Host32" .) (printf "%s/32" $read.clusterIP)) }}
   {{- fail "publicGithubRead.clusterIP must be the reserved IPv4 Service ClusterIP" }}
 {{- end }}
-{{- if not $read.upstreamCidrs }}{{ fail "publicGithubRead.upstreamCidrs must contain approved api.github.com IPv4 CIDRs" }}{{ end }}
+{{- if not $read.upstreamCidrs }}{{ fail "publicGithubRead.upstreamCidrs must contain approved github.com and api.github.com IPv4 CIDRs" }}{{ end }}
 {{- range $cidr := $read.upstreamCidrs }}
   {{- include "openclaw.requireIpv4Cidr" (dict "label" "publicGithubRead.upstreamCidrs" "cidr" $cidr) }}
 {{- end }}
+{{- range $field := list "installationId" "authorizationConfigMapName" "tlsSecretName" "caBundle" }}
+{{- include "openclaw.requireString" (dict "label" (printf "publicGithubRead.%s" $field) "value" (index $read $field)) }}
+{{- if not (index $read $field) }}{{ fail (printf "publicGithubRead.%s is required" $field) }}{{ end }}
+{{- end }}
+{{- if not (regexMatch "^ins_[A-Za-z0-9_-]{1,128}$" $read.installationId) }}{{ fail "publicGithubRead.installationId must be the actual OCC Installation ID (ins_...)" }}{{ end }}
+{{- range $field := list "authorizationConfigMapName" "tlsSecretName" }}
+{{- include "openclaw.validateResourceName" (dict "label" (printf "publicGithubRead.%s" $field) "value" (index $read $field)) }}
+{{- end }}
+{{- if or (gt (len $read.caBundle) 66560) (not (regexMatch "(?s)^\\s*(-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE-----\\s*)+$" $read.caBundle)) }}
+{{- fail "publicGithubRead.caBundle must contain only public PEM certificates, at most 65 KiB" }}
+{{- end }}
+{{- $policy := $read.policy }}
+{{- if not (kindIs "map" $policy) }}{{ fail "publicGithubRead.policy must select all or repositories" }}{{ end }}
+{{- $repositories := list }}
+{{- if eq $policy.mode "all" }}
+{{- /* Helm merges maps, so all mode can inherit the default empty repository list. */}}
+{{- range $key, $value := $policy }}
+{{- if ne $key "mode" }}
+{{- if or (ne $key "repositories") (not (kindIs "slice" $value)) $value }}{{ fail "publicGithubRead.policy all mode has no additional fields" }}{{ end }}
+{{- end }}
+{{- end }}
+{{- $policy = dict "mode" "all" }}
+{{- else if eq $policy.mode "repositories" }}
+{{- if or (ne (len $policy) 2) (not (kindIs "slice" $policy.repositories)) }}{{ fail "publicGithubRead.policy.repositories must be a list" }}{{ end }}
+{{- if gt (len $policy.repositories) 256 }}{{ fail "publicGithubRead.policy.repositories permits at most 256 entries" }}{{ end }}
+{{- range $repository := $policy.repositories }}
+{{- if not (kindIs "string" $repository) }}{{ fail "publicGithubRead.policy.repositories entries must be owner/repository names" }}{{ end }}
+{{- if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]{1,100}$" $repository) }}{{ fail "publicGithubRead.policy.repositories entries must be owner/repository names" }}{{ end }}
+{{- $parts := splitList "/" $repository }}
+{{- if has (index $parts 1) (list "." "..") }}{{ fail "publicGithubRead.policy.repositories entries must be owner/repository names" }}{{ end }}
+{{- $repositories = append $repositories (lower $repository) }}
+{{- end }}
+{{- $policy = dict "mode" "repositories" "repositories" (sortAlpha (uniq $repositories)) }}
+{{- else }}{{ fail "publicGithubRead.policy must select all or repositories" }}{{ end }}
 {{- $labels := include "openclaw.labels" (dict "root" . "component" "public-github-read") }}
 {{- $name := "openclaw-enterprise-public-github-read" }}
+{{- if has $read.authorizationConfigMapName (list (printf "%s-policy" $name) (printf "%s-ca" $name)) }}{{ fail "publicGithubRead.authorizationConfigMapName must be dedicated to authorizations" }}{{ end }}
+{{- $installationLabel := $read.installationId | sha256sum | trunc 32 }}
+{{- $existingRegistry := lookup "v1" "ConfigMap" .Release.Namespace $read.authorizationConfigMapName }}
+{{- if and $existingRegistry (ne (dig "metadata" "labels" "openclaw.dev/public-read-installation" "" $existingRegistry) $installationLabel) }}{{ fail "publicGithubRead authorization ConfigMap ownership mismatch" }}{{ end }}
+{{- if and $existingRegistry (not (hasKey ($existingRegistry.data | default dict) "authorizations.json")) }}{{ fail "publicGithubRead authorization ConfigMap is missing authorizations.json" }}{{ end }}
+{{- /* The operator creates the registry once. Never render its mutable data:
+      an upgrade must not replay a stale lookup over a concurrent withdrawal. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-policy
+data:
+  policy.json: {{ toJson $policy | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-ca
+data:
+  ca.crt: {{ $read.caBundle | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,6 +86,17 @@ spec:
       {{- with .Values.controlPlane.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ $read.tlsSecretName | quote }}
+            items: [{key: tls.crt, path: tls.crt}, {key: tls.key, path: tls.key}]
+        - name: policy
+          configMap:
+            name: {{ $name }}-policy
+        - name: authorizations
+          configMap:
+            name: {{ $read.authorizationConfigMapName | quote }}
       containers:
         - name: reader
           image: {{ .Values.images.controller | quote }}
@@ -39,9 +105,19 @@ spec:
           resources:
             requests: {cpu: 25m, memory: 64Mi}
             limits: {cpu: 500m, memory: 256Mi}
-          ports: [{name: http, containerPort: 8080}]
+          env:
+            - {name: PUBLIC_GITHUB_READ_TLS_CERT_FILE, value: /etc/public-read/tls/tls.crt}
+            - {name: PUBLIC_GITHUB_READ_TLS_KEY_FILE, value: /etc/public-read/tls/tls.key}
+            - {name: PUBLIC_GITHUB_READ_POLICY_FILE, value: /etc/public-read/policy/policy.json}
+            - {name: PUBLIC_GITHUB_READ_AUTHORIZATIONS_FILE, value: /etc/public-read/authorizations/authorizations.json}
+          volumeMounts:
+            - {name: tls, mountPath: /etc/public-read/tls, readOnly: true}
+            - {name: policy, mountPath: /etc/public-read/policy, readOnly: true}
+            # No subPath: kubelet must project Compute registry updates.
+            - {name: authorizations, mountPath: /etc/public-read/authorizations, readOnly: true}
+          ports: [{name: https, containerPort: 8080}]
           readinessProbe:
-            httpGet: {path: /healthz, port: http}
+            httpGet: {path: /healthz, port: https, scheme: HTTPS}
 ---
 apiVersion: v1
 kind: Service
@@ -51,7 +127,7 @@ spec:
   type: ClusterIP
   clusterIP: {{ $read.clusterIP | quote }}
   selector: {{- $labels | nindent 4 }}
-  ports: [{name: http, port: 8080, targetPort: http}]
+  ports: [{name: https, port: 8080, targetPort: https}]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -74,6 +150,19 @@ spec:
             matchExpressions:
               - {key: openclaw.dev/agent, operator: Exists}
               - {key: openclaw.dev/revision, operator: Exists}
+        - namespaceSelector:
+            matchExpressions:
+              - {key: openclaw.dev/namespace, operator: Exists}
+          podSelector:
+            matchLabels:
+              openshell.ai/boundary-role: supervisor
+        {{- range $component := list "api" "worker" }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Release.Namespace | quote }}
+          podSelector:
+            matchLabels: {{- include "openclaw.labels" (dict "root" $ "component" $component) | nindent 14 }}
+        {{- end }}
       ports: [{protocol: TCP, port: 8080}]
   egress:
     {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
@@ -82,4 +171,47 @@ spec:
         - ipBlock: {cidr: {{ . | quote }}}
         {{- end }}
       ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-authorizations
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ $read.authorizationConfigMapName | quote }}]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-authorizations
+subjects:
+  {{- range $component := list "api" "worker" }}
+  - kind: ServiceAccount
+    name: openclaw-enterprise-{{ $component }}
+    namespace: {{ $.Release.Namespace | quote }}
+  {{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-authorizations
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-controller-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    matchExpressions:
+      - {key: app.kubernetes.io/component, operator: In, values: [api, worker]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {{- $labels | nindent 14 }}
+      ports: [{protocol: TCP, port: 8080}]
 {{- end }}

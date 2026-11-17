@@ -40,6 +40,15 @@ import type {
 import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
+/** A pure, nonsecret Compute-owned service contribution frozen with a revision. */
+export interface ComputeServiceAccess {
+  readonly id: string;
+  readonly driverId: string;
+  readonly implementation: string;
+  readonly endpoint: string;
+  readonly configuration: Readonly<OpenClawConfigurationDocument>;
+}
+
 export interface ComputeRevisionContext {
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
@@ -203,6 +212,17 @@ export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
 export interface ComputeDriver extends Driver {
+  /** Select services from original Configuration before Sandbox normalization, using OCC runtime identity. */
+  admitServiceAccess?(input: {
+    readonly installationId: string;
+    readonly configuration: Readonly<OpenClawConfigurationDocument>;
+    readonly harness: Readonly<RevisionHarnessDescriptor>;
+  }): readonly ComputeServiceAccess[];
+
+  /** Maintain only existing frozen services after the worker verifies the running revision's
+   * independent authority. Never prepare or activate a runtime or renew repository grants. */
+  maintainServiceAccess?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
+
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
     revision: Readonly<AgentRevision>,

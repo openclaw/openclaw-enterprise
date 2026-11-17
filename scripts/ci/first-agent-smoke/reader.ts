@@ -42,6 +42,7 @@ interface Reader {
     namespace: string;
     podLabels: Record<string, string>;
     address: string;
+    caBundle: string;
   };
   marker: string;
 }
@@ -63,6 +64,8 @@ export async function enablePublicReader(stack: LocalSetup): Promise<Reader> {
   const values = chartValues as HelmValues;
   const fixture: unknown = await installPublicGithubReadFixture({
     namespace: stack.state.platformNamespace,
+    release: "openclaw-enterprise",
+    installationId: wireField(await stack.api("GET", "/installation"), "id") as string,
     controllerImage: values.images.controller,
     kubectl: async (...args: string[]) => (await kubectl(stack, args)).stdout,
     applyManifest: (input: string) => kubectl(stack, ["apply", "-f", "-"], { input }),
@@ -204,6 +207,7 @@ async function observeReaderPeer(
   };
   const script = `
 import assert from "node:assert/strict";
+import { normalizeSecretBindings } from "/app/packages/contracts/src/index.ts";
 import { createPostgresPool, PostgresPlatformState } from "/app/packages/occ/src/index.ts";
 import { loadStartupConfigurationSnapshot, loadInstallationConfiguration } from "/app/apps/controller/src/composition/installation-config.ts";
 const input = ${JSON.stringify(input)};
@@ -219,7 +223,27 @@ try {
     const configuration = structuredClone(startup.configuration);
     delete configuration.drivers.compute.configuration.network.publicGithubRead;
     const withdrawn = await loadInstallationConfiguration({ mode: "production", startupConfiguration: { ...startup, configuration } });
-    await assert.rejects(withdrawn.computeDriver.prepareRevision(revision), (error) => {
+    // Resolve the API-created Secret metadata just as the worker does, without reading its value.
+    const auth = revision.harnessAuth;
+    assert.equal(auth.method, "api_key", "withdrawal fixture requires API-key authentication");
+    assert.equal(auth.source.namespaceId, revision.namespaceId);
+    assert.equal(auth.secretDriverId, selected.secretDriver.id);
+    assert.equal(auth.secretDriverId, withdrawn.secretDriver.id);
+    assert.equal(Object.keys(normalizeSecretBindings(revision.secretBindings)).length, 0);
+    assert.ok(revision.egressPlan === undefined, "withdrawal fixture must be unprotected");
+    assert.equal((revision.repositoryCredentials ?? []).length, 0);
+    assert.equal((revision.credentialSources ?? []).length, 0);
+    const secret = await state.read((view) => view.secrets.findSecret(auth.source.namespaceId, auth.source.id));
+    assert.ok(secret, "withdrawal fixture authentication Secret is unavailable");
+    assert.equal(secret.id, auth.source.id);
+    assert.equal(secret.namespaceId, auth.source.namespaceId);
+    assert.equal(secret.namespaceId, revision.namespaceId);
+    assert.equal(secret.driverId, selected.secretDriver.id);
+    for (const field of ["namespaceName", "name", "key", "uid"]) {
+      assert.ok(typeof secret.backendRef[field] === "string" && secret.backendRef[field].trim().length > 0, "withdrawal fixture Secret backend reference is incomplete");
+    }
+    const context = { harnessAuth: { ...auth, backendRef: secret.backendRef }, secretEnvironment: [] };
+    await assert.rejects(withdrawn.computeDriver.prepareRevision(revision, context), (error) => {
       assert.equal(error.message, "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.");
       assert.equal(withdrawn.computeDriver.describePrepareRevisionFailure(error).code, "KUBERNETES_CONFIGURATION_INVALID");
       return true;
@@ -346,13 +370,16 @@ async function revisionHarness(stack: LocalSetup, agent: SmokeAgent, revisionId:
 // Keep one Agent-to-reader socket busy, avoiding the reader's idle timeout.
 // A second selected Agent performs the same requests throughout the interval.
 function holdReaderSocket(stack: LocalSetup, pod: Pod, address: string, number: number) {
-  const script = `const http = require('node:http');
-const agent = new http.Agent({keepAlive:true, maxSockets:1});
+  const script = `const https = require('node:https');
+const fs = require('node:fs');
+const material = JSON.parse(fs.readFileSync(process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE, 'utf8'));
+const capability = fs.readFileSync(process.env.OCE_PUBLIC_GITHUB_READ_CAPABILITY_FILE, 'utf8').trim();
+const agent = new https.Agent({keepAlive:true, maxSockets:1, ca:material.caBundle});
 let busy = false;
 function read() {
   if (busy) return;
   busy = true;
-  const req = http.get({host:${JSON.stringify(address)}, port:8080, path:'/repos/example/public-project/pulls/${number}', agent}, res => {
+  const req = https.get({host:${JSON.stringify(address)}, port:8080, path:'/repos/example/public-project/pulls/${number}', agent, headers:{Authorization:'Bearer '+capability}}, res => {
     res.resume(); res.on('end', () => { if (res.statusCode !== 200) process.exit(2); busy = false; console.log('ok'); });
   });
   req.on('error', () => process.exit(3));
@@ -531,6 +558,7 @@ export async function proveRetirement(
     );
     assert.ok(!stillSelected.closed(), "selected control stopped during withdrawal");
     const unselected = structuredClone(selected.values);
+    delete unselected.plugins.entries.codex.config.publicGithubRead;
     unselected.plugins.entries.codex.config.appServer.networkProxy!.domains = {};
     await stack.api(
       "PATCH",
@@ -584,8 +612,8 @@ export async function proveRetirement(
       "unselected successor discovered the reader skill",
     );
     log("unselected Gateway and Harness skill: absent");
-    const negative = `const http = require('node:http');
-const req = http.get({host:${JSON.stringify(reader.peer.address)}, port:8080, path:'/repos/example/public-project/pulls/29'}, res => {res.resume(); process.exit(1)});
+    const negative = `const https = require('node:https');
+const req = https.get({host:${JSON.stringify(reader.peer.address)}, port:8080, ca:${JSON.stringify(reader.peer.caBundle)}, path:'/repos/example/public-project/pulls/29'}, res => {res.resume(); process.exit(1)});
 const timer = setTimeout(() => req.destroy(new Error('probe-deadline')), 5000);
 req.on('error', error => { clearTimeout(timer); process.exit(error.message === 'probe-deadline' || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes(error.code) ? 0 : 2); });`;
     const controlBeforeNegative = stillSelected.count();
@@ -743,20 +771,36 @@ export async function diagnostics(stack: (LocalSetup & Partial<SmokeStack>) | un
       "get",
       "pods",
       "-o",
-      "jsonpath={.items[*].metadata.name}",
+      "json",
     ]);
-    for (const pod of stdout.split(/\s+/).filter(Boolean)) {
-      await attempt(`platform Pod ${pod} logs`, () =>
-        kubectl(stack, [
-          "-n",
-          stack.state.platformNamespace,
-          "logs",
-          pod,
-          "--all-containers",
-          "--tail",
-          "200",
-        ]),
-      );
+    for (const pod of podList(stdout)) {
+      const spec = wireField(pod, "spec");
+      const initContainers = wireField(spec, "initContainers") ?? [];
+      const containers = wireField(spec, "containers");
+      assert.ok(Array.isArray(initContainers) && Array.isArray(containers));
+      // A waiting later init container makes --all-containers fail before it
+      // returns the earlier installation-check refusal. Read each separately.
+      for (const container of [...initContainers, ...containers]) {
+        const name = wireField(container, "name");
+        assert.ok(typeof name === "string");
+        await attempt(`platform Pod ${pod.metadata.name} ${name} logs`, () =>
+          kubectl(
+            stack,
+            [
+              "-n",
+              stack.state.platformNamespace,
+              "logs",
+              pod.metadata.name,
+              "-c",
+              name,
+              "--tail",
+              "200",
+              "--request-timeout=15s",
+            ],
+            { timeout: 20_000 },
+          ),
+        );
+      }
     }
   } catch (error) {
     process.stdout.write(

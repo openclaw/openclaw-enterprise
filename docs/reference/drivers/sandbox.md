@@ -61,7 +61,7 @@ Construct a new Driver after changing Installation settings.
 | Method                                       | Requirement           | Caller and behavior                                                                                                                                                                                                                                       |
 | -------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cleanup`                                    | Required              | Compute passes the Agent revision on stop or retirement. For Namespace cleanup, it omits the revision.                                                                                                                                                    |
-| `configureAgent`                             | Optional              | Synchronously transform Configuration values for the resolved Harness. OCC validates the result and stores it in the Agent revision. OCC uses the original values by default.                                                                             |
+| `configureAgent`                             | Optional              | Synchronously transform Configuration for the resolved Harness. OCC validates and stores the result, or uses original values if omitted.                                                                                                                  |
 | `validateWorkspaceSetup`                     | Optional              | Synchronously checks the projected configuration. Without it, Compute rejects initial workspace files in a Sandbox. Compute still checks storage and workload identity.                                                                                   |
 | `ensureNamespace`                            | Optional              | Prepare the backend after Compute prepares baseline Namespace isolation. Composition adapts it to OCC Namespace lifecycle hooks.                                                                                                                          |
 | `provisionHarness`                           | Optional              | Creates a dedicated Harness and returns its stable [resource identity](#sandbox-resource-identity). Without it, Compute rejects dedicated native OpenClaw and revisions that bind credential sources.                                                     |
@@ -74,17 +74,19 @@ Construct a new Driver after changing Installation settings.
 | `readSandboxLogs`                            | Optional              | Derive the Sandbox from the revision. Return at most `lines` raw lines at or after `sinceTime` and the number examined, using read-only access. OCC classifies and redacts each line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source). |
 | `observeHarness`                             | Optional              | Read provider lifecycle state for [Harness Sandbox status](#harness-sandbox-status).                                                                                                                                                                      |
 | `admitNetworkPolicy`                         | Optional              | Validates additions and returns an admitted snapshot. Declaring `networkPolicy` without this method fails startup.                                                                                                                                        |
-| `admitProtectedCodexArtifactPolicy`          | Composition-dependent | Qualifies declared credential-free artifact rules for protected, dedicated Codex repository execution. It acknowledges the purpose and exact rule-name subset; omission refuses this composition.                                                         |
+| `admitProtectedNetworkPolicy`                | Composition-dependent | Qualify defaults and acknowledge exact Compute services in the snapshot. Required for protected service selection.                                                                                                                                        |
+| `admitProtectedCodexArtifactPolicy`          | Composition-dependent | Qualify credential-free artifact rules for protected dedicated Codex repository execution; acknowledge purpose and exact rule names, or refuse.                                                                                                           |
 | `observeNetworkPolicy`, `applyNetworkPolicy` | Optional              | Read provider state or apply the snapshot against the expected version. Declaring live policy support without both methods fails startup.                                                                                                                 |
 | `readPolicyRecommendations`                  | Optional              | Return provider suggestions for review.                                                                                                                                                                                                                   |
 
-Protected artifact admission returns `purpose: protected-codex-artifacts`,
-`declaredRuleNames` and a `SandboxPolicySnapshot`. OCC verifies Driver identity,
-version, exact map keys and empty additions before runtime credential provisioning.
-Only the snapshot is stored on the immutable revision. Both paired compilers
-validate that frozen authority during preparation and replay. Ordinary policy
-admission cannot substitute for this acknowledgment. Protected snapshots never
-permit live Agent policy apply. See
+Protected admission returns `purpose: protected-network`, declared rule names
+and a snapshot acknowledging exact Compute services. Paired compilers
+validate it; ordinary admission cannot substitute. Protected snapshots forbid
+live apply. See [service admission](compute-admission.md#service-admission) for
+frozen descriptors and separate private material.
+
+Artifact-only admission retains `purpose: protected-codex-artifacts`. OCC checks
+Driver identity, version, exact map keys and empty additions before effects. See
 [OpenShell artifact rules](openshell-sandbox.md#protected-codex-artifact-rules).
 
 <a id="harness-transport"></a>

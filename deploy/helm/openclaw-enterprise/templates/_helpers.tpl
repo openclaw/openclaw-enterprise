@@ -746,6 +746,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.logging.collector.enabled -}}
 {{- range $key := list "configSecretName" "envSecretName" -}}{{- $roles = append $roles (list (printf "logging.collector.%s" $key) (index $.Values.logging.collector $key)) -}}{{- end -}}
 {{- end -}}
+{{- if .Values.publicGithubRead.enabled -}}{{- $roles = append $roles (list "publicGithubRead.tlsSecretName" .Values.publicGithubRead.tlsSecretName) -}}{{- end -}}
 {{- $holders := dict -}}
 {{- $groups := dict -}}
 {{- range $role := $roles -}}

@@ -12,7 +12,7 @@ Kubernetes Compute provisions OpenShell Harnesses.
 
 ## Entry Points
 
-- Trigger: worker reconciles an OpenShell/Kubernetes Agent revision.
+- Trigger: worker reconciles Agent revisions.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
@@ -109,7 +109,7 @@ partial `0600` archives and preserve existing files.
 `prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.ts) verify native/descriptor identity
 from cached children/indexes or exact-child pulls. Manifest/config/CRI checks precede apply
 (`Never`); CRI misses retry. Overrides remain intact.
-The [importer](../../internal/occdev/openshell_image.go) journals tag/engine-ID intent before creation.
+[Importer](../../internal/occdev/openshell_image.go) journals tag/engine-ID intent before creation.
 Return/rollback/`dev down` reconcile without clusters/Compose providers. Incomplete inspection
 or uncertain/replaced tags retain state.
 
@@ -263,7 +263,7 @@ Namespace, Agent and setup identity, then sends initializer/JSON stdin through
 authenticated `ExecSandbox`. Each attempt has 270 seconds to acquire the workspace lock
 and run the initializer. With fewer than 250 seconds left, the lock holder can only
 verify the completion marker. If a pending setup has no marker, the worker retries.
-The Harness waits for completion. See [document initialization](workspace-files.md#2-deployment-initializes-storage-before-execution),
+Harness waits for completion. See [document initialization](workspace-files.md#2-deployment-initializes-storage-before-execution),
 separate from native subpath preparation.
 
 Credential attachments require OCC `oce-cs-` names without static-provider duplicates.
@@ -282,18 +282,19 @@ After replay, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#cre
 
 Provisioning reads [Agent sizing and RuntimeClass](../reference/drivers/openshell-sandbox.md#configuration)
 from the current Installation. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
-annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
+annotations/spec and a Sandbox that is neither stopped nor deleting. `canonicalSandboxPolicy` equates empty/omitted endpoint lists, preserving
+nonempty/malformed differences. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
-ends after confirmed deletion through `withdrawHarnessExposure`, adoption or
+ends through confirmed `withdrawHarnessExposure`, adoption or
 recreation with `workspaceNodeEnrolled`.
 
 After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
 require the recorded release acknowledgment and authenticated WebSocket. Other
 non-`200` responses stay pending or refuse enrollment without an upgrade.
 
-The Backend reuses clients and retries setup. Cancellation follows
-setup/credential preparation; stalled initialization/file reads have no cancellation deadline.
+Backend reuses clients, retrying setup. Cancellation follows
+setup/credential preparation; initialization/file reads lack cancellation deadlines.
 After dispatch it stops local gRPC, but remote mutations may require recovery.
 
 `GetService` separates control/workload addresses. `harnessEndpoint` returns the WebSocket
@@ -397,7 +398,7 @@ attempts other authorized withdrawals. Retirement remains separate.
 
 The [quickstart chat probe](../snippets/openshell-quickstart/chat.mts) runs in the
 ready API Pod. It waits on the ID from its only `chat.send`, then reads history.
-A malformed reply fails the command and closes the WebSocket.
+Malformed replies fail the command and close the WebSocket.
 
 See [test prerequisites](../testing/openshell.md). Compose requires the provider
 ClusterIP, advertised `ws://*.openshell.localhost:8080/` route, and inactive
@@ -425,6 +426,8 @@ setup, retry and restart under setgid parents.
 - 2026-11-16 13:30: Trace Gateway reply checks in the operator turn helper. (authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d - 7a8e52f38b378151c8c08ef1b6dd466ab24834bb)
 
 - 2026-11-14 14:53: Explain workspace lock and retry timing. (authoring-run/e22da2ae-8be7-42d3-876f-6355fa901e9f - 8a15b18175c508fe54672fc12ea0ff5a0847967d)
+
+- 2026-11-12 10:44: Preserve endpoint normalization during main merge. (authoring-run/154c8688-8890-47f1-ba61-7dab0ea29cd5 - 1de1eb4ad23a6fdf3c5b51310e7b64dc3b262fb4)
 
 - 2026-11-11 21:41: Bind controller preload to node identity. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - 7a2f352a44c42459a3a33c784199a47d11d98e1e)
 

@@ -33,7 +33,7 @@
     {
       "path": "tests/integration/runtime-image-public-github-read.test.mjs",
       "expectedTests": [
-        "stock Codex reads the projected public GitHub skill and returns a provider-only pull title"
+        "stock Codex reads public API and clones/fetches ordinary Git URLs through projected material"
       ]
     },
     {
@@ -76,6 +76,12 @@
       "path": "tests/integration/codex-plugin-stdio-real.test.ts",
       "expectedTests": [
         "native stdio plugin preparation survives WebSocket replacement and drains failed installation"
+      ]
+    },
+    {
+      "path": "tests/integration/qa-compose-reload-real.test.ts",
+      "expectedTests": [
+        "QA Compose recreation consumes mounted state and retains strict client peers"
       ]
     }
   ]

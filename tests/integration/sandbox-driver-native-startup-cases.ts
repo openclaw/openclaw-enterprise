@@ -205,8 +205,14 @@ export function registerInitialWorkspaceCases(): void {
 
       // Failed initialization and foreign Secret ownership must never report successful delivery.
       exitCode = 1;
-      await assert.rejects(provision(), {
-        message: "OpenShell workspace initialization failed (initializer exit 1).",
+      await assert.rejects(provision(), (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(
+          error.message,
+          "OpenShell workspace initialization failed (initializer exit 1).",
+        );
+        assert.equal(error.constructor.name, "OpenShellWorkspaceInitializationFailure");
+        return true;
       });
       for (const { status, stage } of [
         { status: 3, stage: "native setup failed" },

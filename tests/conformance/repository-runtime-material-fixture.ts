@@ -1,3 +1,4 @@
+import type { V1EnvVar } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
 import { admitRevisionHarness as admitRevisionHarnessJs } from "../helpers/kubernetes-routed-scenarios.mjs";
 import assert from "node:assert/strict";
 import {
@@ -18,6 +19,9 @@ import type {
   RepositoryCredentialRuntimeBinding,
   RepositoryCredentialSessionFiles,
   SandboxDriver,
+  SandboxWorkloadFile,
+  HarnessWorkloadRequirements,
+  CredentialSource,
 } from "../../packages/contracts/src/index.ts";
 import type { GatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import type { PluginRuntimeSpec } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
@@ -123,6 +127,48 @@ interface ComputeFixturePorts {
     revision: AgentRevision,
     context?: Pick<ComputeRevisionContext, "currentEgressInstallation">,
   ): void;
+  sandboxWorkloadFiles(
+    snapshot: { runtime: PluginRuntimeSpec; name: string } | undefined,
+  ): readonly SandboxWorkloadFile[];
+  harnessAuthForRevision(
+    revision: AgentRevision,
+    context: ComputeRevisionContext,
+    namespace: { name: string; plane: "execution" },
+  ): {
+    loginMode: HarnessWorkloadRequirements["loginMode"];
+    environment: readonly V1EnvVar[];
+    credentialSource?: Readonly<CredentialSource>;
+  };
+  deployment(
+    name: string,
+    ownership: ReturnType<ComputeFixturePorts["pluginRuntimeOwnership"]>,
+    namespace: { name: string; plane: "execution" },
+    image: string,
+    serviceAccountName: string,
+    role: "agent",
+    environment: Record<string, string>,
+    logging: "info",
+    configuration: undefined,
+    embedded: false,
+    servicePrincipal: undefined,
+    harnessAuth: ReturnType<ComputeFixturePorts["harnessAuthForRevision"]>,
+    channels: [],
+    secrets: [],
+    snapshot: { runtime: PluginRuntimeSpec; name: string } | undefined,
+    warnings: [],
+    workspace: undefined,
+    repository: undefined,
+    native: undefined,
+    endpoint: undefined,
+    launch: CodexLaunch,
+  ): FixtureDeployment;
+  addWorkspaceNode(
+    deployment: FixtureDeployment,
+    name: string,
+    ca: string | undefined,
+    revision: AgentRevision,
+    setupFile: boolean,
+  ): void;
   codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch;
   pluginRuntimeSnapshot(
     revision: AgentRevision,
@@ -148,6 +194,14 @@ export function computeFixturePorts(driver: KubernetesComputeDriver): ComputeFix
   assert.ok(
     "pluginRuntimeSnapshot" in instance && typeof instance.pluginRuntimeSnapshot === "function",
   );
+  for (const method of [
+    "sandboxWorkloadFiles",
+    "harnessAuthForRevision",
+    "deployment",
+    "addWorkspaceNode",
+  ] as const) {
+    assert.ok(method in instance && typeof Reflect.get(instance, method) === "function");
+  }
   return instance as ComputeFixturePorts;
 }
 
@@ -481,7 +535,7 @@ export async function fixture(
   }
   transport.startTracing();
   const context = (
-    bindings: ComputeRevisionContext["repositoryCredentials"],
+    bindings: ComputeRevisionContext["repositoryCredentials"] = undefined,
   ): ComputeRevisionContext => ({
     secretEnvironment: [],
     harnessAuth: {

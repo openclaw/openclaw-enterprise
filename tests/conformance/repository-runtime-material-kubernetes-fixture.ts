@@ -13,6 +13,7 @@ import type {
   V1ObjectMeta,
   V1PodSpec,
   V1PodStatus,
+  V1Status,
 } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
 
 const coreKinds = [
@@ -32,7 +33,7 @@ type FixtureMetadata = Omit<V1ObjectMeta, "deletionTimestamp"> & {
   deletionTimestamp?: string;
 };
 
-interface FixtureObject {
+export interface FixtureObject {
   kind: string;
   apiVersion?: string;
   metadata: FixtureMetadata;
@@ -126,6 +127,11 @@ export interface KubernetesMaterialClients {
     ) => Promise<{ items: FixturePod[]; metadata?: { continue: string } }>;
     patchNamespacedPod: (request: CoreMethodRequest<"patchNamespacedPod">) => Promise<object>;
     connectGetNamespacedPodProxyWithPath?: PodProxy;
+    readNamespacedSecret: (request: ResourceReadRequest) => Promise<FixtureObject>;
+    replaceNamespacedSecret: (request: ResourceWriteRequest) => Promise<FixtureObject>;
+    deleteNamespacedSecret: (request: ResourceDeleteRequest) => Promise<V1Status>;
+    readNamespacedConfigMap: (request: ResourceReadRequest) => Promise<FixtureObject>;
+    replaceNamespacedConfigMap: (request: ResourceWriteRequest) => Promise<FixtureObject>;
     createNamespacedSecret: (request: MaterialSecretCreateRequest) => Promise<FixtureObject>;
     listNamespacedSecret: (request: ResourceListRequest) => Promise<{ items: FixtureObject[] }>;
   };
@@ -287,7 +293,11 @@ export function createKubernetesMaterialFixture(namespace: string, repositoryBro
       if (!object) {
         throw failure(404);
       }
-      if (body?.preconditions?.uid && body.preconditions.uid !== object.metadata.uid) {
+      if (
+        (body?.preconditions?.uid && body.preconditions.uid !== object.metadata.uid) ||
+        (body?.preconditions?.resourceVersion &&
+          body.preconditions.resourceVersion !== object.metadata.resourceVersion)
+      ) {
         throw failure(409);
       }
       calls.push({ operation: "delete", kind, name });
@@ -312,7 +322,16 @@ export function createKubernetesMaterialFixture(namespace: string, repositoryBro
   const secret = resourceMethods("Secret");
   const deployment = resourceMethods("Deployment");
   const policy = resourceMethods("NetworkPolicy");
+  const configMap = resourceMethods("ConfigMap");
   const core: KubernetesMaterialClients["core"] = {
+    readNamespacedSecret: secret.read,
+    replaceNamespacedSecret: secret.write,
+    deleteNamespacedSecret: async (request) => {
+      await secret.remove(request);
+      return {};
+    },
+    readNamespacedConfigMap: configMap.read,
+    replaceNamespacedConfigMap: configMap.write,
     listNamespace: async ({ labelSelector }) => ({
       items: [...objects.values()].filter(
         (object) => object.kind === "Namespace" && matching(object, labelSelector),
@@ -376,6 +395,10 @@ export function createKubernetesMaterialFixture(namespace: string, repositoryBro
       additionalResourceMethods(kind, kind === "Secret" ? secret : resourceMethods(kind)),
     );
   }
+  core.deleteNamespacedSecret = async (request) => {
+    await secret.remove(request);
+    return {};
+  };
   if (repositoryBroker === false) {
     // Without that endpoint the chart grants the worker no Secret list (rbac.yaml).
     core.listNamespacedSecret = async () => {

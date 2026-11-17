@@ -1970,6 +1970,7 @@ async function prepareProductionInstallation(
     controlUiOrigin,
     gatewayManagedMode,
     withOAuthToolSources = true,
+    withKeycloak = withOAuthToolSources,
     observeReplacementNode = false,
     withScratch = false,
     enableCompatibilityBridges = harnessId === "openclaw",
@@ -2122,7 +2123,7 @@ async function prepareProductionInstallation(
   // A disposable Keycloak issues OAuth2 tokens over HTTPS signed by a private CA. The Namespace
   // gateway is configured to trust that CA so it can mint and refresh tokens itself.
   const keycloak =
-    harnessId === "codex" && withOAuthToolSources
+    harnessId === "codex" && withKeycloak
       ? await startKeycloak({
           context,
           kubectl,
@@ -2510,7 +2511,7 @@ async function prepareProductionInstallation(
           url: `https://${untrustedTls.host}/untrusted`,
         };
   const refreshSources =
-    keycloak === undefined || networkPolicyOnly
+    !withOAuthToolSources || keycloak === undefined || networkPolicyOnly
       ? undefined
       : await registerRefreshSources(request, namespaceId, tokenEcho, keycloak, placement);
 
@@ -3070,7 +3071,8 @@ async function prepareProductionInstallation(
     credentials: adminCredentials,
     ...(toolSources === undefined ? {} : { toolSources, tokenEcho }),
     ...(untrustedTls === undefined ? {} : { untrustedTls, untrustedTlsSource }),
-    ...(refreshSources === undefined ? {} : { refreshSources, keycloak }),
+    ...(keycloak === undefined ? {} : { keycloak }),
+    ...(refreshSources === undefined ? {} : { refreshSources }),
     policyWrites: createSandboxDriver.policyWrites,
     setPolicyWriteBarrier: createSandboxDriver.setPolicyWriteBarrier,
     gatewayClient: (auth) => createSandboxDriver.gatewayClientForNamespace(placement, auth),
@@ -9729,6 +9731,13 @@ export function registerProviderLifecycleTest(workflow) {
             harnessId: selectedHarness,
             observeReplacementNode: workflow === "upstream" && selectedScenario === "full",
             ...(workflow === "scratch" ? { withScratch: true, withOAuthToolSources: false } : {}),
+            // Keep periodic OAuth rotation out of static outage and withdrawal checks.
+            // The refresh workflow exercises OAuth delivery and renewal.
+            ...(workflow === "upstream" || workflow === "withdrawal"
+              ? { withOAuthToolSources: false }
+              : {}),
+            // Native policy scopes require OIDC without periodic Agent tool-source rotation.
+            ...(workflow === "withdrawal" ? { withKeycloak: true } : {}),
             ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
             ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
           }),

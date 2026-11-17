@@ -6,3 +6,5 @@ import "./repository-runtime-material-protected-projection-cases.ts";
 import "./repository-runtime-material-public-reader-lifecycle-cases.ts";
 import "./repository-runtime-material-native-projection-cases.ts";
 import "./repository-runtime-material-session-lifecycle-cases.ts";
+
+import "./repository-runtime-material-public-git-cases.ts";

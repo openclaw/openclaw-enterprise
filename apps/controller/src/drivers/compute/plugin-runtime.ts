@@ -1,4 +1,8 @@
 import {
+  PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+  PUBLIC_GITHUB_READ_TRANSPORT_SOURCE,
+} from "../repo/github/public-read/runtime-source.ts";
+import {
   type AgentRevision,
   assertExecutionAdmission,
   CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
@@ -147,7 +151,17 @@ export function pluginRuntimeSpecForRevision(
   publicGithubRead?: CodexPublicGithubRead,
 ): PluginRuntimeSpec | undefined {
   assertExecutionAdmission(revision);
-  if (publicGithubRead !== undefined && revision.executionAdmission.mode !== "unprotected") {
+  if (
+    publicGithubRead !== undefined &&
+    revision.executionAdmission.mode !== "unprotected" &&
+    !(
+      publicGithubRead.endpoint &&
+      revision.compute.serviceAccess?.some(
+        (service) =>
+          service.id === "public-github-read" && service.endpoint === publicGithubRead.endpoint,
+      )
+    )
+  ) {
     throw new Error("The public GitHub reader cannot be selected for protected execution.");
   }
   const state = revision.plugins;
@@ -270,7 +284,20 @@ function configMapData(
     [PLUGIN_RUNTIME_MANIFEST]: JSON.stringify(runtimeManifest(runtime)),
     ...(codexConfig === undefined ? {} : { [PLUGIN_RUNTIME_CODEX_CONFIG]: codexConfig }),
     ...(runtime.kind === "codex" && runtime.publicGithubRead !== undefined
-      ? { [PUBLIC_GITHUB_READ_SKILL]: publicGithubReadSkill(runtime.publicGithubRead) }
+      ? {
+          [PUBLIC_GITHUB_READ_SKILL]: publicGithubReadSkill(runtime.publicGithubRead),
+          ...(runtime.publicGithubRead.endpoint === undefined
+            ? {}
+            : {
+                [PUBLIC_GITHUB_READ_TRANSPORT_FILE]: PUBLIC_GITHUB_READ_TRANSPORT_SOURCE,
+                "public-github-read.json": JSON.stringify({
+                  endpoint: runtime.publicGithubRead.endpoint,
+                  caBundle: runtime.publicGithubRead.caBundle,
+                  authenticatedRepositories:
+                    runtime.publicGithubRead.authenticatedRepositories ?? [],
+                }),
+              }),
+        }
       : {}),
   });
 }
