@@ -17,8 +17,10 @@ custody and retirement. Provider adapters own provider-specific scope, injection
 and response rules. The proxy enforces requests and obtains eligible material;
 it does not run a credential renewal loop.
 
-Credential Proxy does not replace every Credential Gateway. Existing static
-Gateway-owned attachments retain their own delivery path.
+Selecting Credential Proxy does not adopt ordinary sources into protected delivery.
+New and existing ordinary sources use Credential Gateway. Protected sources and
+repository bindings require Proxy admission; an Agent with neither needs no Proxy
+plan. An unavailable Proxy never permits Gateway fallback for a protected source.
 
 ## Interface
 
@@ -88,9 +90,8 @@ selects an offered provider; updates retain its ID and generation. Bundled
 `openai-online-request` generation 1 requires same-state native IAM and one dedicated
 Codex HTTPS Responses route, an explicit model and no provider-hosted tools.
 
-`ProxyPlan.authorization` records the profile. Version 8 admits the model route;
-version 9 adds independently authorized mandatory Git delivery. Strict admissions
-retain their guarantees. The optional `requestTimeCredentials` capability provides
+`ProxyPlan.authorization` records the profile. Version 8 admits the model route.
+Version 9 also requires separately authorized Git. The optional `requestTimeCredentials` provides
 `assertAvailable` and `verifyRequestInstallation(context, installation, recipient)`.
 The API checks the recipient against the persisted opaque `requestConfigurationId`.
 OpenShell binds the full policy, model provider/profile and Sandbox/process identities.
@@ -285,27 +286,26 @@ naming the field. Each operation in progress can hold its request body (up to 1
 MiB), about 8 GiB at the `operations` maximum, so size the API Pod's memory
 before raising it. Restart API Pods to apply a change.
 
-A ready handle holds its operation slot until closure or deadline (at most 30 s),
-and pending work must settle. Per-Sandbox operation shares use verified sender
-and Sandbox identities; authentication is globally budgeted before verification.
-For online models, both gRPC identity checks and HTTPS body/bundle/JWT processing
-hold an authentication lease, released before resolver admission. A canceled
-final Secret read releases policy locks but retains capacity until it settles.
+An operation slot covers the handle until closure or deadline (at most 30 s)
+and any pending work until settlement. Verified sender and Sandbox identities
+determine each Sandbox share. Authentication uses the global budget before
+verification. For online models, gRPC verification and HTTPS body, bundle, and
+JWT processing hold an authentication lease until resolver admission. A
+canceled final Secret read releases policy locks and retains capacity until settlement.
 
-Online approvals retain recipient/request IDs after consumption or redemption
-expiry until the verified adapter's replay horizon, at most one hour from
-admission. Database time governs retention, admission and redemption. Quota
-contention refuses; strict ID maps and operation caps remain per process.
+Online approvals reserve recipient and request IDs past consumption or expiry
+until the verified replay horizon, at most one hour from admission. Database
+time governs retention, admission, and redemption. Quota contention refuses.
+Strict ID maps and operation caps remain per process.
 
-Strict ID defaults allow about 270 requests/s per process and 68 per Sandbox
-(`requestIds / 30` and `sandboxRequestIds / 30`). A refusal before exchange capture
-reserves no ID; captured IDs stay reserved even after refusal. Default shares
-prevent one Sandbox exhausting a pool; four busy Sandboxes can.
-Past a bound, strict `resolve` refuses with `unavailable`/`resolver`. The bundled
-OpenShell authority separately permits 1024 pending exchange openings (256 per
-Sandbox), 1024 accepted exchanges and 1024 online Git decisions (256 per Sandbox).
-Excess Git decisions receive `online_authorization_denied`. Online model
-middleware denies; a saturated token authentication budget returns HTTP 503.
+Strict defaults allow about 270 requests/s per process and 68 per Sandbox
+(`requestIds / 30` and `sandboxRequestIds / 30`). Captured IDs stay reserved after
+refusal. With default shares, four busy Sandboxes can exhaust the pool.
+Strict `resolve` refuses with `unavailable`/`resolver` at capacity. Bundled OpenShell
+allows 1024 pending exchange openings and 1024 online Git decisions, with 256
+per Sandbox for each, plus 1024 accepted exchanges. It refuses excess Git
+decisions with `online_authorization_denied` and excess model middleware requests.
+Token authentication saturation returns HTTP 503.
 
 ## Troubleshooting
 

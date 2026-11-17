@@ -47,8 +47,15 @@ export async function requestCredentialFixture(
   let live: EgressInstallation | undefined;
   let nextVerification: { reached: () => void; release: Promise<void> } | undefined;
   const sandboxId = randomUUID();
+  const { credentialProxyCapacity, ...fixtureOptions } = configuration;
+  const { capacity } = resolveCredentialProxyCapacity(
+    credentialProxyCapacity ?? {},
+    "requestCapacity",
+  );
+  assert.ok(capacity);
   const options = {
-    ...configuration,
+    ...fixtureOptions,
+    ...(credentialProxyCapacity && { credentialProxyCapacity: capacity }),
     admitRevision: false,
     driverConfigurations: [
       {

@@ -53,6 +53,14 @@ export class AuthorizationDeniedError extends Error {
   }
 }
 
+/** Keep IAM evidence while concealing a resource the caller cannot read or operate. */
+export class HiddenResourceAuthorizationDeniedError extends AuthorizationDeniedError {
+  constructor(denial: AuthorizationDeniedError) {
+    super(denial.message, denial.evidence, denial.authorization, denial.checkedPrincipalId);
+    this.name = "HiddenResourceAuthorizationDeniedError";
+  }
+}
+
 /**
  * The caller's own denial where the named grant needs a reason to make sense: an Agent update
  * checks the grant on the Agent's current Harness authentication even when it replaces it
@@ -178,6 +186,17 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** The database did not accept required audit evidence in the current transaction. */
+export class AuditAppendUnavailableError extends DependencyUnavailableError {
+  readonly reasonCode: "AUDIT_CAPACITY_EXCEEDED" | undefined;
+
+  constructor(reasonCode?: "AUDIT_CAPACITY_EXCEEDED") {
+    super("The platform audit write failed.");
+    this.name = "AuditAppendUnavailableError";
+    this.reasonCode = reasonCode;
   }
 }
 
@@ -701,17 +720,10 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
   }
 }
 
-/**
- * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
- * registration is the request-phase Git service, which never advertises the execution profile.
- * It delivers repository Git, so a Proxy-owned credential source (static, prepared or
- * credential-free metadata) or an Agent without a repository binding can never be admitted.
- * Source creation answered a generic 503 for this permanent configuration and such a deploy a
- * 503 or a bare 404; both now name the Installation settings.
- */
+/** The configured Git transport does not support protected credential-source admission. */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "The selected OpenShell registration serves repository requests, not strict credential exchanges. To add model access, ask an Installation administrator to enable online-request delivery and select it explicitly when creating the source.";
+    "The selected Credential Proxy registration serves repository Git only. Ordinary model sources can use Credential Gateway. Protected sources require a qualified execution profile; online-request delivery must be enabled and explicitly selected when creating a model source.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);

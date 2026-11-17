@@ -365,6 +365,7 @@ both changes in one Helm release before deploying the recorded fleet.
 Keep evidence private. Match `source-revision` to the target source commit,
 `.id` in `installation-after.json` to the expected Installation ID, and `.version`
 in `after-helm-status.json` to this upgrade's deployed Helm revision.
+`after-helm-status.txt` summarizes that same response.
 The `completed` marker confirms Helm revision, API and worker rollout,
 authenticated Installation access, and any selected
 [replacement fleet checks](#upgrade-agent-runtimes) or

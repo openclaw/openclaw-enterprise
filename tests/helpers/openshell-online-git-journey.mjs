@@ -10,7 +10,7 @@ import {
   cleanEnvironment,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 const packet = (line) =>
   Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, "0") + line);
@@ -54,7 +54,7 @@ export async function gitCommandBodies(t, pushRef) {
 
 // The stock gateway boundary for the worker expiry regression. The production gRPC client
 // sends every request, including provider bootstrap, credential rotation and conditional detach.
-// openshell-gateway-wire.test.mjs checks that client's encoding against the released schema.
+// openshell-gateway-wire.test.ts checks that client's encoding against the released schema.
 // No Kubernetes, real supervisor, credential or model provider is needed for this test.
 export async function gitExpiryGateway(
   t,
@@ -69,7 +69,6 @@ export async function gitExpiryGateway(
     onGitInstall = (_value) => {},
     modelSourceId = "",
     gatewayVersion = "",
-    registrations = () => ["oce-prepared-git"],
     supervisor = /** @type {Record<string, any> | undefined} */ (undefined),
     configure = (_methods, _world) => {},
     gatewayTls = /** @type {{ key: string, cert: string, rootCertificatePath: string, tokenPath: string } | undefined} */ (
@@ -278,11 +277,13 @@ export async function gitExpiryGateway(
     GetWorkspace: () => ({ workspace: { metadata: { name: workspace, id: "workspace-id" } } }),
     GetGatewayInfo: () => ({
       gateway_version: gatewayVersion,
-      extensions: registrations().map((name) => ({
-        configured_name: name,
-        kind: 4,
-        protocol_major: 1,
-      })),
+      extensions: [
+        {
+          configured_name: "oce-prepared-git",
+          kind: 4,
+          protocol_major: 1,
+        },
+      ],
     }),
     GetSandbox: () =>
       world.id && {

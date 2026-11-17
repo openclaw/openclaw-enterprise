@@ -7,7 +7,7 @@ import test from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { promisify } from "node:util";
 import pg from "pg";
-import { migrationCatalog } from "../../scripts/migration-catalog.mjs";
+import { migrationCatalog } from "../../scripts/migration-catalog.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const exec = promisify(execFile);
@@ -132,9 +132,17 @@ test(
           )),
         };
       } catch (error) {
-        const failure = error as { code: number; stdout: string; stderr: string };
-        assert.equal(failure.code, 1, "Migration command must exit normally with failure.");
-        return { code: failure.code, stdout: failure.stdout, stderr: failure.stderr };
+        assert.ok(
+          error instanceof Error &&
+            "code" in error &&
+            error.code === 1 &&
+            "stdout" in error &&
+            typeof error.stdout === "string" &&
+            "stderr" in error &&
+            typeof error.stderr === "string",
+          "Migration command must exit normally with failure and captured output.",
+        );
+        return { code: error.code, stdout: error.stdout, stderr: error.stderr };
       }
     };
     const dump = async () =>
@@ -157,10 +165,17 @@ test(
         await client.query(
           "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('preserved-human','principal','fixture','human')",
         );
+        await client.query("SET search_path = occ, pg_catalog");
+        const readSearchPath = async (session: pg.Client) =>
+          (await session.query<Record<string, unknown>>("SHOW search_path")).rows[0]?.search_path;
+        const previousSearchPath = await readSearchPath(client);
+        assert.equal(previousSearchPath, "occ, pg_catalog");
         await assert.rejects(migrationCatalog(client), {
           code: "22023",
           message: 'unrecognized privilege type: "MAINTAIN"',
         });
+        // The same connection must regain its original setting even after a catalog query fails.
+        assert.equal(await readSearchPath(client), previousSearchPath);
       }
       const before = await dump();
       for (const option of ["--expect-empty", "--check", undefined]) {

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
+import { startupFailureFields } from "../../apps/controller/src/api-startup.ts";
+import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import {
   accountPrincipalId,
   assertConsoleSignIn,
@@ -17,7 +19,10 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import {
+  preparePostgresSignInInstallation,
+  type SignInApp,
+} from "../helpers/postgres-sign-in-installation.ts";
 
 // Only upstream HTTP and passive Compute are fixtures. The callback, account
 // transaction, native IAM, audit, session and Agent operations are production code.
@@ -25,9 +30,7 @@ test(
   "OIDC enrollment creates scoped accounts and preserves explicit identity links",
   requiresPostgres,
   async (t) => {
-    let app: Awaited<
-      ReturnType<Awaited<ReturnType<typeof preparePostgresSignInInstallation>>["composeApp"]>
-    >;
+    let app: SignInApp;
     const clientId = "enrollment-client";
     const clientSecret = "enrollment-client-secret";
     const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
@@ -46,13 +49,10 @@ test(
     );
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.19");
-    const { admin, roles, accounts } = (await onboard({
+    const { admin, roles, accounts } = await onboard({
       accounts: { existing: { email: "existing-enrollment@example.test" } },
       remoteAddress: address(),
-    })) as Awaited<ReturnType<typeof onboard>> & {
-      admin: { id: string; email: string; password: string };
-      accounts: { existing: { id: string; email: string } };
-    };
+    });
     const settings = oidcUpgradeSettings(admin.id);
     app = await composeApp(settings);
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
@@ -531,10 +531,50 @@ test(
       }
     });
     await t.test("activation rejects missing Role, Namespace and Group references", async () => {
+      const namespaceRole = await app.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/iam/roles`,
+        headers: await signedInHeaders(app, origin, admin, address()),
+        payload: {
+          name: "Enrollment diagnostic Namespace Role",
+          permissions: [{ action: "read", resourceKind: "agent" }],
+        },
+      });
+      assert.equal(namespaceRole.statusCode, 201, namespaceRole.body);
+      assert.equal(namespaceRole.json().data.namespaceId, namespaceId);
       await app.close();
+
+      for (const id of ["missing-role", namespaceRole.json().data.id]) {
+        const invalid = { ...policy, createAccount: { enabled: true, role: { id, scope: "all" } } };
+        await assert.rejects(
+          composeApp({ ...settings, OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(invalid) }),
+          (error: unknown) => {
+            let output = "";
+            const logger = createOccLogger({
+              component: "occ-api",
+              destination: {
+                write(line: string) {
+                  output += line;
+                },
+              },
+            });
+            // Project and sanitize the error from real PostgreSQL-backed API composition.
+            emitOccLogEvent(logger, { event: "startup-error", ...startupFailureFields(error) });
+            const event = JSON.parse(output);
+            assert.equal(event.event, "startup-error");
+            assert.equal(event.code, "OIDC_ENROLLMENT_ROLE_INVALID");
+            assert.equal(
+              event.reason,
+              "Set auth.oidc.enrollment.createAccount.role.id to an Installation-scoped Role from the Installation iam configuration.",
+            );
+            assert.ok(!output.includes(id));
+            return true;
+          },
+        );
+      }
+
       for (const invalid of [
         { ...policy, groupIds: ["missing-group"] },
-        { ...policy, createAccount: { enabled: true, role: { id: "missing-role", scope: "all" } } },
         {
           ...policy,
           createAccount: {

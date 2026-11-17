@@ -538,7 +538,42 @@
       "idx": 77,
       "version": "7",
       "when": 1787000000077,
-      "tag": "0077_request_credential_approvals",
+      "tag": "0077_control_plane_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1787000000078,
+      "tag": "0078_preserve_pending_sandbox_policy_application",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1787000000079,
+      "tag": "0079_predecessor_replacement",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1787000000080,
+      "tag": "0080_revision_runtime_inputs",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1787000000081,
+      "tag": "0081_request_credential_approvals",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1787000000082,
+      "tag": "0082_request_model_driver_identity",
       "breakpoints": true
     }
   ]

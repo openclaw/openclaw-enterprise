@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 
 async function load(t: TestContext, plugin?: unknown) {

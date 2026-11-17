@@ -1,4 +1,4 @@
-// Administrative SQL on a lane's PostgreSQL server (scripts/ci/prepare.mjs and cleanup.mjs):
+// Administrative SQL on a lane's PostgreSQL server (scripts/ci/prepare-postgres.ts and scripts/ci/cleanup.ts):
 // creating, copying and dropping databases and the server's settings. It connects straight
 // to the port the server publishes on 127.0.0.1, as the superuser compose.postgres.yaml
 // creates. Each test's database copy and drop used to run `docker compose exec -T postgres
@@ -10,7 +10,7 @@
 export const postgresSuperuser = "postgres";
 export const postgresSuperuserPassword = "openclaw-local-admin";
 
-// The fixture tests' fake servers (tests/helpers/ci-prepare-fixture-command.mjs) listen on a
+// The fixture tests' fake servers (tests/helpers/ci-prepare-fixture-command.ts) listen on a
 // Unix socket in this directory (".s.PGSQL.<port>") instead: their fake `compose up` cannot
 // claim the TCP port preparation reserved once another process's connection holds it.
 function adminHost() {
@@ -20,7 +20,7 @@ function adminHost() {
 type PostgresAdminOptions = {
   port: unknown;
   database?: string;
-  statements: string[];
+  statements: readonly string[];
   timeoutMs?: number;
 };
 
@@ -132,4 +132,11 @@ function adminError(
 ) {
   const error = new Error(message, cause === undefined ? undefined : { cause });
   return Object.assign(error, { failure, timedOut: false }, properties);
+}
+
+export function quoteIdentifier(value: string) {
+  if (!/^[a-z0-9_]+$/.test(value)) {
+    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
+  }
+  return `"${value.replaceAll('"', '""')}"`;
 }

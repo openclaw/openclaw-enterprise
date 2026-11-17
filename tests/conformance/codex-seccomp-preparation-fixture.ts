@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import type { SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.mjs";
+import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 export const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -82,21 +81,10 @@ export const installedContainerId = "c".repeat(64);
 export const probePodUid = "8c00ce88-c148-4c3e-a2e8-32c4dbf39c89";
 export const probeImageDigest = `sha256:${"a".repeat(64)}`;
 
-type PreparationOptions = NonNullable<Parameters<typeof prepareCodexSeccompProfile>[0]>;
-type CommandResult = Pick<SpawnSyncReturns<string>, "stdout" | "stderr"> & {
-  exitCode?: SpawnSyncReturns<string>["status"];
-  code?: number;
-  signal?: SpawnSyncReturns<string>["signal"];
-  killed?: boolean;
-  timedOut?: boolean;
-};
-
-// The preparation entrypoint is JavaScript and does not type its injected command.
-type ExecFile = (
-  command: string,
-  args: string[],
-  options: { timeoutMs: NonNullable<PreparationOptions["commandTimeoutMs"]> },
-) => Promise<CommandResult>;
+type PrepareProfile = typeof prepareCodexSeccompProfile;
+type PreparationOptions = NonNullable<Parameters<PrepareProfile>[0]>;
+type ExecFile = NonNullable<PreparationOptions["execFile"]>;
+type CommandResult = Awaited<ReturnType<ExecFile>>;
 
 type MissingProfileFixtureOptions = {
   beforeCleanup?: () => void;
@@ -106,12 +94,7 @@ type MissingProfileFixtureOptions = {
     args: Parameters<ExecFile>[1],
     context: { baseline: boolean; root: string },
   ) => CommandResult | ReturnType<ExecFile>;
-  prepareProfile?: (options: {
-    cluster: { name: string; directory: string; kubeconfig: string; context: string };
-    image: string;
-    execFile: ExecFile;
-    timeoutMs: NonNullable<PreparationOptions["timeoutMs"]>;
-  }) => Promise<unknown>;
+  prepareProfile?: PrepareProfile;
   timeoutMs?: PreparationOptions["timeoutMs"];
 };
 
@@ -301,8 +284,8 @@ export async function missingProfileFixture(
     throw new Error(`Unexpected injected command: ${command} ${args.join(" ")}`);
   };
   return {
-    run: (): Promise<unknown> =>
-      withMockedPollClock<unknown>(t, () =>
+    run: () =>
+      withMockedPollClock(t, () =>
         (options.prepareProfile ?? prepareCodexSeccompProfile)({
           cluster,
           image: `registry.invalid/runtime@${probeImageDigest}`,

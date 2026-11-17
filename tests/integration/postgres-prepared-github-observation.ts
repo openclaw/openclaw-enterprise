@@ -1,0 +1,114 @@
+import assert from "node:assert/strict";
+import type { TestContext } from "node:test";
+import type { Client, Pool, PoolClient } from "pg";
+import type { PostgresClient } from "../../packages/occ/src/state/postgres-state.ts";
+import type { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
+import { PreparedGitHubPostgres as Repository } from "../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts";
+import type {
+  CredentialReadLifetime,
+  PreparedGitHubEgressSource,
+  PreparedTokenSelection,
+} from "../../packages/contracts/src/index.ts";
+import { callFixture } from "./postgres-prepared-github-wire.ts";
+
+type CustodyMethods = {
+  open: Repository["open"];
+  seal(bytes: Uint8Array, admission: Parameters<Repository["open"]>[1], id: string): Buffer;
+  transaction: Repository["transaction"];
+};
+
+function hasCustodyMethods(value: object): value is CustodyMethods {
+  return (
+    "open" in value &&
+    typeof value.open === "function" &&
+    "seal" in value &&
+    typeof value.seal === "function" &&
+    "transaction" in value &&
+    typeof value.transaction === "function"
+  );
+}
+
+export function connectedRepository(
+  lifecycle: PostgresPreparedGitHubLifecycle,
+): Pick<Repository, keyof Repository> & CustodyMethods {
+  const repository: unknown = lifecycle["repository"];
+  assert.ok(repository instanceof Repository, "the lifecycle is connected to PostgreSQL");
+  const methods: Pick<Repository, keyof Repository> = repository;
+  assert.ok(hasCustodyMethods(methods));
+  return methods;
+}
+
+// The controller declaration omits the private method signature. Keep the probe
+// typed at the call boundary and invoke it on the connected lifecycle.
+export function readWarm(
+  lifecycle: PostgresPreparedGitHubLifecycle,
+  source: PreparedGitHubEgressSource,
+  lifetime: CredentialReadLifetime,
+): Promise<PreparedTokenSelection | undefined> {
+  const read: (
+    source: PreparedGitHubEgressSource,
+    lifetime: CredentialReadLifetime,
+  ) => Promise<PreparedTokenSelection | undefined> = lifecycle["readWarm"];
+  return read.call(lifecycle, source, lifetime);
+}
+
+type Query = (
+  sql: string,
+  values?: readonly unknown[],
+) => Promise<{
+  rows: unknown[];
+  rowCount: number | null;
+}>;
+
+// pg overloads include callbacks, Query objects and row-mode configs. Observe only
+// this suite's promise SQL calls and forward every other argument list unchanged.
+export function mockPgQuery(
+  t: TestContext,
+  client: Client | PoolClient,
+  observe: (sql: string, values: readonly unknown[] | undefined, query: Query) => ReturnType<Query>,
+) {
+  const original: Query = client.query;
+  return t.mock.method(client, "query", function (this: Client, ...args: unknown[]): unknown {
+    const [sql, values] = args;
+    const query = original.bind(this);
+    if (
+      typeof sql === "string" &&
+      args.length <= 2 &&
+      (values === undefined || Array.isArray(values))
+    ) {
+      return observe(sql, values, query);
+    }
+    const forwarded: unknown = callFixture(original, this, args);
+    return forwarded;
+  });
+}
+
+export function containsSealedRow(rows: readonly unknown[]) {
+  return rows.some(
+    (row) => typeof row === "object" && row !== null && "sealed" in row && row.sealed != null,
+  );
+}
+
+export function observeTransaction(
+  t: TestContext,
+  repository: ReturnType<typeof connectedRepository>,
+  observe: (client: PostgresClient, ...args: Parameters<Query>) => ReturnType<Query>,
+) {
+  const transaction: (typeof repository)["transaction"] =
+    repository["transaction"].bind(repository);
+  function observed<T>(work: (client: Pick<PostgresClient, "query">) => Promise<T>): Promise<T> {
+    return transaction((client: PostgresClient) =>
+      work({
+        query: (sql, values) => observe(client, sql, values),
+      }),
+    );
+  }
+  t.mock.method(repository, "transaction", observed);
+}
+
+// Fault injection owns one checked-out client. Only the first promise-mode
+// connection uses it, then the original Pool restores its usual connection path.
+export function useCheckedOutClient(t: TestContext, pool: Pool, client: PoolClient): void {
+  const promisePool: { connect(): Promise<PoolClient> } = pool;
+  t.mock.method(promisePool, "connect", async () => client, { times: 1 });
+}

@@ -1,4 +1,4 @@
-import type { CredentialPolicyReductionState } from "./platform-state.ts";
+import type { CredentialPolicyReductionState, PredecessorReplacement } from "./platform-state.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
@@ -287,6 +287,7 @@ export const agents = occSchema.table(
     ),
     credentialSources: jsonb("credential_sources").$type<readonly AgentCredentialSourceBinding[]>(),
     activeRevisionId: text("active_revision_id"),
+    predecessorReplacement: jsonb("predecessor_replacement").$type<PredecessorReplacement>(),
     desiredRuntimeState: text("desired_runtime_state")
       .$type<AgentDesiredRuntimeState>()
       .notNull()
@@ -305,6 +306,15 @@ export const agents = occSchema.table(
     check("agents_id_format", sql`${table.id} ~ ${identifierPatterns.agent}`),
     check("agents_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
     check("agents_execution_mode_valid", sql`${table.executionMode} IN ('embedded', 'dedicated')`),
+    check(
+      "agents_predecessor_replacement_valid",
+      sql`${table.predecessorReplacement} IS NULL OR (
+      jsonb_typeof(${table.predecessorReplacement}) = 'object'
+      AND ${table.predecessorReplacement} ?& ARRAY['predecessorRevisionId', 'candidateRevisionId', 'phase', 'startedAt']
+      AND ${table.predecessorReplacement}->>'phase' IN ('pre-stop', 'stopping')
+      AND (${table.predecessorReplacement}->>'phase' <> 'stopping' OR ${table.predecessorReplacement} ? 'stoppingAt')
+    ) IS TRUE`,
+    ),
     check(
       "agents_desired_runtime_state_valid",
       sql`${table.desiredRuntimeState} IN ('running', 'stopped')`,
@@ -789,7 +799,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec} #>> '{harness,mode}') IN ('embedded', 'dedicated')
         AND jsonb_typeof(${table.admittedSpec}->'compute') = 'object'
         AND ((${table.admittedSpec}->'compute') ?& ARRAY['id', 'implementation'])
-        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission' - 'runtimeInputs') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,id}') = 'string'
         AND COALESCE(btrim(${table.admittedSpec} #>> '{compute,id}'), '') <> ''
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,implementation}') = 'string'
@@ -799,6 +809,12 @@ export const agentRevisions = occSchema.table(
           OR (jsonb_typeof(${table.admittedSpec} #> '{compute,admission}') = 'string'
               AND char_length(${table.admittedSpec} #>> '{compute,admission}') BETWEEN 1 AND 1024
               AND (${table.admittedSpec} #>> '{compute,admission}') ~ '^[ -~]+$')
+        )
+        AND (
+          NOT ((${table.admittedSpec}->'compute') ? 'runtimeInputs')
+          OR (jsonb_typeof(${table.admittedSpec} #> '{compute,runtimeInputs}') = 'string'
+              AND char_length(${table.admittedSpec} #>> '{compute,runtimeInputs}') BETWEEN 1 AND 4096
+              AND (${table.admittedSpec} #>> '{compute,runtimeInputs}') ~ '^[ -~]+$')
         )
         AND (
           NOT (${table.admittedSpec} ? 'sandbox_driver_id')
@@ -1199,7 +1215,7 @@ export const iamRestrictions = occSchema.table(
   (table) => [
     check(
       "iam_restrictions_action_valid",
-      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy')`,
+      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'read_audit')`,
     ),
     check(
       "iam_restrictions_resource_kind_valid",
@@ -1233,6 +1249,22 @@ export const auditEvents = occSchema.table(
       .where(
         sql`${table.kind} = 'mutation' AND ${table.action} = 'reconcile' AND ${table.resourceKind} = 'agent_revision'`,
       ),
+    index("audit_events_agent_page_idx")
+      .on(
+        table.namespaceId,
+        sql`(CASE WHEN ${table.resourceKind} = 'agent' THEN ${table.resourceId} ELSE ${table.details}->>'agentId' END)`,
+        table.occurredAt.desc(),
+        table.id.desc(),
+      )
+      .where(
+        sql`(${table.resourceKind} = 'agent' AND ${table.kind} = 'api_request'
+          AND ${table.action} = 'openclaw.api.request.result' AND ${table.outcome} = 'success')
+        OR (${table.resourceKind} IN ('agent','agent_revision') AND ${table.kind} = 'mutation'
+          AND ${table.details}->>'agentId' IS NOT NULL
+          AND (${table.action} IN ('openclaw.controller_work.queued','openclaw.controller_work.claimed')
+            OR (${table.action} IN ('reconcile','openclaw.controller_work.deferred','openclaw.controller_work.completed')
+              AND ${table.details}->>'attemptId' IS NOT NULL)))`,
+      ),
     check("audit_events_id_format", sql`${table.id} ~ ${identifierPatterns.audit}`),
     check("audit_events_outcome_valid", sql`${table.outcome} IN ('success', 'denied', 'failure')`),
     check(
@@ -1259,6 +1291,7 @@ export const controllerWork = occSchema.table(
     availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
     claimToken: uuid("claim_token"),
+    auditAttemptId: uuid("audit_attempt_id"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     reasonCode: text("reason_code"),

@@ -33,12 +33,12 @@ import {
   bindReservedPortInProcess,
   reservePort,
   reservedPortArgs,
-} from "../helpers/available-port.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+} from "../helpers/available-port.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { invoke, openShellMiddlewareClient, token } from "../helpers/openshell-online-wire.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
-import { waitFor } from "../helpers/qa-utils.mjs";
+import { waitFor } from "../helpers/qa-wait.ts";
 
 const { SignJWT } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "jose",

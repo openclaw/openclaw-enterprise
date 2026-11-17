@@ -73,6 +73,12 @@ export async function exerciseHarnessOverrides(
     config: { authorized_base_url: destination },
     secrets: f.source.secrets,
   });
+  // Destination restrictions are enforced by protected-source admission. A new
+  // Gateway source must be explicitly adopted before this workflow binds it.
+  const adopted = await f.request("PATCH", `${root}/credential-sources/${source.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
   const create = async (name: string, sourceId: string) => {
     const agent = await post("/agents", {
       name,

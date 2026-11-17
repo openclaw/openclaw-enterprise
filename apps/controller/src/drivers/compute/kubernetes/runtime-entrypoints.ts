@@ -1,12 +1,5 @@
-// A relative import, like the others here: CI image builds and the in-image supervisor proof
-// load this file from a checkout or copy with no workspace packages installed.
-import {
-  RUNTIME_DIAGNOSTIC_CHECKS,
-  RUNTIME_DIAGNOSTIC_CODES,
-  RUNTIME_FAILURE_CHECKS,
-} from "../../../../../../packages/contracts/src/runtime-failure.mjs";
-
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
   MANAGED_PLUGIN_CREDENTIAL_HELPER,
   managedCredentialEnvironment,
@@ -14,6 +7,7 @@ import {
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
+import { EXITED_GATEWAY_STATE_RELEASE } from "../embedded-gateway-owner.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import {
@@ -29,6 +23,47 @@ import {
   openClawStateMigrationHelper,
   startupPhaseHelper,
 } from "../runtime-startup.ts";
+
+type RuntimeVocabulary = Pick<
+  typeof import("@openclaw-enterprise/contracts"),
+  "RUNTIME_DIAGNOSTIC_CHECKS" | "RUNTIME_DIAGNOSTIC_CODES" | "RUNTIME_FAILURE_CHECKS"
+>;
+
+function isStringArray(value: unknown): value is readonly string[] {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index) || typeof value[index] !== "string") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isRuntimeVocabulary(value: unknown): value is RuntimeVocabulary {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "RUNTIME_DIAGNOSTIC_CHECKS" in value &&
+    isStringArray(value.RUNTIME_DIAGNOSTIC_CHECKS) &&
+    "RUNTIME_DIAGNOSTIC_CODES" in value &&
+    isStringArray(value.RUNTIME_DIAGNOSTIC_CODES) &&
+    "RUNTIME_FAILURE_CHECKS" in value &&
+    isStringArray(value.RUNTIME_FAILURE_CHECKS)
+  );
+}
+
+// The in-image supervisor and checkout-only CI load the renderer without workspace
+// dependencies. Compiled callers load the compiler's separate contracts output.
+const require = createRequire(import.meta.url);
+const vocabulary: unknown = new URL(import.meta.url).pathname.endsWith(".ts")
+  ? require("../../../../../../packages/contracts/src/runtime-failure.ts")
+  : require("../../../../../../packages/contracts/dist/runtime-failure.js");
+if (!isRuntimeVocabulary(vocabulary)) {
+  throw new Error("Invalid runtime failure vocabulary.");
+}
+const { RUNTIME_DIAGNOSTIC_CHECKS, RUNTIME_DIAGNOSTIC_CODES, RUNTIME_FAILURE_CHECKS } = vocabulary;
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
 // and 5s supervisor margin. Idle Gateways exit as soon as their work settles.
@@ -2634,6 +2669,7 @@ ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "restart the Pod")}
 ${OPENCLAW_CONFIG_ISSUE_HELPER}
+${EXITED_GATEWAY_STATE_RELEASE}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -3318,7 +3354,10 @@ function gatewayEnvironment() {
   }
 }
 
-let gatewayConfigurationHeld = false;
+// Set while the wrapper holds a startup failure of its native Gateway; the polls stop.
+let gatewayStartupHeld = false;
+// Set when OpenClaw kept the records of the native Gateway that last exited (finding 3310).
+let exitedGatewayStateKept = false;
 
 // OpenClaw exits at startup (status 78) when any setting fails its schema, including a plugin
 // entry's config when that plugin is disabled or denied (finding 3043; the runtime image carries
@@ -3327,8 +3366,8 @@ let gatewayConfigurationHeld = false;
 // served exits non-zero, OpenClaw's own validator checks the same configuration. An invalid
 // one is held as check gateway-config, which ends the deployment at once, and the log names
 // the settings. Any other exit, or a validator that prints no report (it failed or timed
-// out), restarts the container as before, as does a Gateway with no Compute status port to
-// serve the hold on.
+// out), restarts the container as before (or holds the Gateway state lock, below), as does a
+// Gateway with no Compute status port to serve the hold on.
 function holdInvalidGatewayConfiguration(code, signal) {
   if (runtimeStatusPort() === undefined) return false;
   const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
@@ -3342,12 +3381,69 @@ function holdInvalidGatewayConfiguration(code, signal) {
     return false;
   }
   if (report?.valid !== false) return false;
-  gatewayConfigurationHeld = true;
+  gatewayStartupHeld = true;
   publishRuntimeFailure("gateway-config", "UNAVAILABLE");
   console.error(invalidOpenClawConfigurationLine(
     "The OpenClaw Gateway exited (" + (signal ?? "exit-" + code) + ") before it served", report.issues,
   ));
   setInterval(() => {}, 3600000);
+  return true;
+}
+
+// OpenClaw's own start can refuse the Gateway state lock after config validate passed: the
+// owner lease of a Gateway this container cannot verify stopped, such as one in a force-deleted
+// Pod, is not what validate reads. OpenClaw waits up to 95 s, logs the holder and exits 1, and
+// each container restart repeats that (finding 3288). So after a Gateway that never served
+// exits 1, the wrapper runs OpenClaw's lock inspection: recover-lock without --confirm reads a
+// private snapshot and changes nothing. Holders that the exit release above left are held as
+// check gateway-state-lock with the tool policy step's log line. The wrapper never recovers a
+// lock it cannot prove stopped; an operator does. A held wrapper inspects again every 5
+// minutes: once no holder remains, it restarts its container on purpose and the next start
+// takes the lock. An inspection that fails, or finds no holder, exits 1 as before.
+const GATEWAY_STATE_LOCK_RECHECK_MS = 300_000;
+// OpenClaw lists at most three lock files and then the owner lease, which the recovery steps
+// name; each holder is cut on its own so that a long one never drops the lease.
+const GATEWAY_STATE_LOCK_HOLDER_CHARS = 500;
+function gatewayStateLockHolders() {
+  const inspection = pluginSpawnSync("node", ["/app/openclaw.mjs", "gateway", "recover-lock", "--json"], {
+    env: { ...gatewayEnvironment(), OPENCLAW_CONFIG_READONLY: "1" },
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
+  });
+  if (inspection.error !== undefined || inspection.status !== 0) return undefined;
+  let report;
+  try {
+    report = JSON.parse(inspection.stdout);
+  } catch {
+    return undefined;
+  }
+  if (typeof report?.present !== "boolean" || !Array.isArray(report.holders)) return undefined;
+  const holders = report.holders.filter((holder) => typeof holder === "string" && holder !== "");
+  // Only the holder descriptions: the confirmation would recover the lock without that proof.
+  return holders.length === report.holders.length && report.present === holders.length > 0
+    ? holders : undefined;
+}
+function holdGatewayStateLock(code) {
+  if (runtimeStatusPort() === undefined) return false;
+  const holders = gatewayStateLockHolders();
+  if (holders === undefined || holders.length === 0) return false;
+  gatewayStartupHeld = true;
+  holdGatewayToolPolicyFailure(new GatewayStateLockError(
+    holders.map((holder) => holder.slice(0, GATEWAY_STATE_LOCK_HOLDER_CHARS)).join(" "),
+  ));
+  const recheck = setInterval(() => {
+    if (gatewayTerminating) return;
+    // A failed exit release (it timed out, or a foreign record made OpenClaw keep every lock)
+    // would otherwise hold the child's own records for ever. This namespace still lives, so the
+    // release can still prove the child dead; a retry runs at most 60 s, the inspection 30 s.
+    if (exitedGatewayStateKept) {
+      exitedGatewayStateKept = !releaseExitedGatewayState(code, gatewayEnvironment());
+    }
+    const current = gatewayStateLockHolders();
+    if (current !== undefined && current.length > 0) return;
+    clearInterval(recheck);
+    if (current === undefined) process.exit(code);
+    else stopContainer("GATEWAY_STATE_LOCK_RELEASED");
+  }, GATEWAY_STATE_LOCK_RECHECK_MS);
   return true;
 }
 
@@ -3362,7 +3458,11 @@ function startGatewayProcess() {
   gatewayGeneration++;
   childExited = new Promise((resolve) => {
     spawned.on("exit", (code, signal) => {
-      if (spawned === child) childRunning = false;
+      if (spawned === child) {
+        childRunning = false;
+        // Before the wrapper exits or starts another Gateway (finding 3257).
+        exitedGatewayStateKept = !releaseExitedGatewayState(code, gatewayEnvironment());
+      }
       resolve();
       if (stoppingContainer) {
         process.exit(DELIBERATE_RESTART_EXIT_STATUS);
@@ -3370,6 +3470,9 @@ function startGatewayProcess() {
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
         if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
+          return;
+        }
+        if (!gatewayTerminating && !gatewayServed && code === 1 && holdGatewayStateLock(code)) {
           return;
         }
         // A native exit never passes as a deliberate restart, which Compute does not count
@@ -3533,7 +3636,7 @@ if (workspaceNodeBindingPath !== undefined) {
     }
   };
   const workspaceNodePoll = setInterval(async () => {
-    if (pollInFlight || respawning || gatewayConfigurationHeld) return;
+    if (pollInFlight || respawning || gatewayStartupHeld) return;
     pollInFlight = true;
     try {
       await pollWorkspaceNode();
@@ -3677,7 +3780,7 @@ if (followsPeerStatus) {
     }
   };
   const peerStatusPoll = setInterval(async () => {
-    if (pollInFlight || respawning || stoppingContainer || gatewayConfigurationHeld) return;
+    if (pollInFlight || respawning || stoppingContainer || gatewayStartupHeld) return;
     pollInFlight = true;
     try {
       let current;

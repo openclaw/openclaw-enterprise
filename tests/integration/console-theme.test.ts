@@ -7,7 +7,7 @@ import {
   ConsoleThemeError,
   loadConsoleTheme,
 } from "../../apps/controller/src/composition/console-theme.ts";
-import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
+import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

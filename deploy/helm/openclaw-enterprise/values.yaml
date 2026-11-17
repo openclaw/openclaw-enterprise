@@ -121,6 +121,10 @@ agentNativeAdmin:
 agentRuntimeLogs:
   enabled: true
 
+# Durable request and worker audit records, plus the authorized Agent audit API.
+controlPlaneAudit:
+  enabled: false
+
 bootstrap:
   adminEmail: ""
   password:
@@ -246,7 +250,7 @@ database:
   port: 5432
 
 api:
-  # Public branding files: theme.json and referenced images. The API and the pre-upgrade
+  # Public branding files: theme.json and referenced images. The API and the initialization Job's
   # installation check mount them. The check refuses a bundle that API startup would refuse.
   consoleTheme:
     configMapName: ""

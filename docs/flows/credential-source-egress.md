@@ -1,24 +1,23 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-11
-last_updated_session: authoring-run/789515e7-d00d-4e5c-bf44-04a1275c340d
+updated: 2026-11-12
+last_updated_session: authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-The supervisor holds GitHub's identity reply until OpenClaw Control Plane (OCC)
-authorizes release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+OpenClaw Control Plane (OCC) authorizes GitHub identity replies.
+See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
-[Online model requests](credential-source-egress/model-requests.md) use a separate
-approval and credential-release flow.
+[Online model requests](credential-source-egress/model-requests.md) have their own approval and release flow.
 
 ## Entry Points
 
 - Deployment establishes a [source route](../reference/credential-sources.md#bind-a-source-to-an-agent);
   current enforcement evidence is required.
-- The authenticated supervisor opens one TLS stream,
+- The supervisor opens
   `HttpInstallationExchange.Exchange`, for credential resolution, send
   authorization and response release
   (`apps/controller/src/drivers/egress-proxy/openshell-authority.ts:createOpenShellEgressAuthority`).
@@ -27,8 +26,7 @@ approval and credential-release flow.
 
 ### Follow the metadata GET
 
-A revision admits `github-app-metadata` for `acme/widgets` (ID `12345`) at
-`https://api.github.com`.
+This route admits `github-app-metadata` for `acme/widgets` (ID `12345`) at `https://api.github.com`.
 
 1. **Match.** The supervisor binds the bodyless `GET /repos/acme/widgets` reply
    to its exchange. The adapter checks method, URL, headers and body against the route.
@@ -43,9 +41,8 @@ A revision admits `github-app-metadata` for `acme/widgets` (ID `12345`) at
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-The supervisor withholds a reply with ID `67890` after send. The credential-free
-profile applies the same filters and records `no_material_required` without
-sending a credential header.
+The supervisor withholds ID `67890`. Credential-free requests use the same filters,
+record `no_material_required`, and omit credential headers.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
@@ -71,12 +68,11 @@ their provider, authorization, withdrawal and cleanup under the
 
 OCC checks source and Secret permissions; existing sources need opt-in. Version 3
 binds Sandbox and Proxy to one registered Driver.
-The plan records its digest, execution, source generation, grant, and routes;
+The plan records digest, execution, source generation, grant, and routes;
 empty routes deny all. `admitProxyPlan` derives routes from saved Harness settings
 and source consent. `checkEgressUseIn` rechecks before delivery and send authorization.
-Console `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides`
-captures the controls at submission. OCC owns normalized input before awaiting
-admission, which resolves settings and checks both caller and Agent grants.
+`apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
+settings at submission. OCC normalizes them and checks caller and Agent grants.
 
 For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same
@@ -84,9 +80,9 @@ digest across property orders. Unprotected revisions remain v2. Only the bundled
 Driver recognizes historical protected plans by original capability IDs for stored
 release or custody settlement.
 
-Compute rechecks admission with the worker before launch. PostgreSQL rejects
-unknown decisions and mixed v2/v3 fields. Older workers refuse v3. Upgrade
-all writers before admitting it.
+Compute's `validateExecutionAdmission` requires pairing only for protected
+revisions. Workers recheck before launch. PostgreSQL rejects unknown decisions
+and mixed v2/v3 fields. Upgrade all writers before admitting v3.
 
 For each route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
 selects the issuer, projects the admitted source and checks readiness. Compute has
@@ -95,8 +91,12 @@ owners refuse release; cold sources remain pending.
 
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
-(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, Agents without Git on
-a Git-only Proxy, and Installation limits. Preparation repeats both Git refusals.
+(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, and Installation limits.
+Agents with ordinary Gateway sources and no protected sources or Git bindings
+need no Proxy plan. Agents with no sources retain selected Proxy admission.
+`packages/occ/src/index.ts:admitProxyPlan` checks availability before saving an
+empty protected plan; Kubernetes uses it for runtime-authenticated Dedicated
+Codex without inference access. Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
@@ -317,12 +317,12 @@ verifies the original fence, recipient, material, policy and request without rea
 
 ## Debugging and Verification
 
-Qualify model execution, response custody and NetworkPolicy with [separate origin and caller observations](../testing/static-egress.md).
-`openclaw.egress.authorize` rows describe attempts. Pre-reservation refusals may reuse `requestId`; correlate actor, source, revision and time.
-Responses `classificationRule` maps to
+Verify model execution, custody, and NetworkPolicy with [separate origin and caller checks](../testing/static-egress.md).
+Correlate `openclaw.egress.authorize` by actor, source, revision, and time. Refusals before reservation may reuse `requestId`.
+Responses `classificationRule` comes from
 `apps/controller/src/drivers/egress-proxy/openai-responses.ts:responsesRequestFailure`
-after route and model eligibility checks. Numbers identify root slots; rule 1 hides unknown names. Values are excluded; absent rules identify no slot.
-Caller refusals stay generic.
+after route and model checks. Numbers identify root slots. Rule 1 hides unknown names.
+Absent rules name no slot. Audit excludes values. Caller refusals stay generic.
 
 ## Related docs
 
@@ -338,6 +338,10 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-12 19:08: Preserve source-free Proxy admission while bypassing it for ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
+
+- 2026-11-12 10:58: Separate Gateway delivery and unprotected admission from Git. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 
 - 2026-11-11 18:22: Shorten the flow without changing its boundaries. (authoring-run/789515e7-d00d-4e5c-bf44-04a1275c340d - 81097025d513c9faac0b0c75c7fda61835369ad6)
 

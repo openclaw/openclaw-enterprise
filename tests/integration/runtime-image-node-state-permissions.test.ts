@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { AGENT_WITH_NODE_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
-import { image, imageTestOptions, runDocker } from "../helpers/runtime-image-startup.mjs";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
 
 test(
   "runtime image initializes and restarts private node state below a setgid parent",

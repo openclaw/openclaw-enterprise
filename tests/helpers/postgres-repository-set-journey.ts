@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { waitForRevisionPass, advanceCleanupRetries } from "./postgres-worker-revision-support.mjs";
 import { deferred } from "./deferred.ts";
-import { waitFor, within } from "./wait-for.mjs";
+import { waitFor, within } from "./wait-for.ts";
 import { Pool } from "pg";
 import { buffer } from "node:stream/consumers";
 import { setTimeout as delay } from "node:timers/promises";
@@ -25,7 +25,6 @@ import type {
   ComputeRevisionContext,
   GitHubRepositoryCredentialBackendDefinition,
   ProxyRevisionContext,
-  ProxyWiring,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
@@ -63,7 +62,7 @@ const repositorySetPermissions = {
   issues: "write",
 } as const;
 import { gitExpiryGateway } from "./openshell-online-git-journey.mjs";
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { harnessTlsFixture } from "./harness-tls.ts";
 import { bindReservedPortInProcess, reservePort } from "./available-port.ts";
 import { invoke, token, openShellMiddlewareClient } from "./openshell-online-wire.mjs";
 import { exerciseNativeRepositorySet } from "./native-repository-set.ts";
@@ -106,15 +105,13 @@ type NarrowJourney = {
 type NarrowPreparation = Pick<
   NarrowJourney,
   "runtime" | "revision" | "client" | "workspace" | "sandbox" | "pool" | "peer" | "writes"
-> & { wiring: ProxyWiring };
+>;
 
 export async function beforeNarrowGitPreparation(
   t: TestContext,
-  testUrl: string,
   exercise: (journey: NarrowPreparation) => Promise<void>,
-  options: AdmissionOptions = {},
 ) {
-  await repositoryGitJourney(t, testUrl, undefined, options, exercise, false, undefined, options);
+  await repositoryGitJourney(t, import.meta.url, undefined, {}, exercise);
 }
 
 type NarrowPolicy = {
@@ -133,11 +130,10 @@ type NarrowStartupOptions = NarrowPolicy & {
       ReturnType<NarrowJourney["maintenance"]["fixture"]["controller"]["createConfiguration"]>
     >;
   }) => Promise<void>;
-  configure?: Parameters<typeof gitExpiryGateway>[1]["configure"];
-};
-
-type AdmissionOptions = NarrowStartupOptions & {
-  requestModel?: { baseUrl: string; registrations(): string[] };
+  configure?: (
+    methods: { GetSandboxProviderStatus(request: unknown): unknown },
+    world: { version: number },
+  ) => void;
 };
 
 export async function createNarrowOnlineGitStartup(
@@ -203,7 +199,7 @@ async function repositoryGitJourney(
     | "cold-worker"
     | "expired-original-pods"
     | "expired-replaced-supervisor",
-  startupOptions?: AdmissionOptions,
+  startupOptions?: NarrowStartupOptions,
 ) {
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
@@ -212,9 +208,8 @@ async function repositoryGitJourney(
   const selectedRepositories = repositorySet.slice(0, standing ? 1 : 2);
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
-  const modelBaseUrl = conversation?.baseUrl ?? startupOptions?.requestModel?.baseUrl;
-  const modelProvider = modelBaseUrl
-    ? { protocol: "openai-responses" as const, baseUrl: modelBaseUrl }
+  const modelProvider = conversation
+    ? { protocol: "openai-responses" as const, baseUrl: conversation.baseUrl }
     : undefined;
   const workspace = "selected-journey";
   const tls = await harnessTlsFixture(t);
@@ -259,35 +254,8 @@ async function repositoryGitJourney(
     drivers: { sandbox: id, credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
     client: { placement: () => undefined, clientForNamespace: () => client },
   };
-  // These model endpoints describe the admission fixture. Only the Git authority starts a listener.
-  const modelAuthority = startupOptions?.requestModel?.baseUrl
-    ? {
-        exchangeAuthority: {
-          host: "127.0.0.1",
-          port: 9444,
-          issuer: "https://gateway.example.test",
-          audience: "model-requests",
-          keyId: "model-key",
-          certificatePath: tls.certPath,
-          privateKeyPath: tls.keyPath,
-          issuerPublicKeyPath,
-        },
-        tokenGrant: {
-          endpoint: "https://model-authority.example.test:9445/token",
-          port: 9445,
-          trustDomain: "fixture.test",
-          bundlePath: join(tls.directory, "unused-model-bundle.json"),
-        },
-      }
-    : undefined;
   const opts = {
-    middlewareName: modelAuthority ? "oce-model" : "oce-prepared-git",
-    ...(modelAuthority && {
-      requestCredentials: {
-        audience: modelAuthority.exchangeAuthority.audience,
-        tokenEndpoint: modelAuthority.tokenGrant.endpoint,
-      },
-    }),
+    middlewareName: "oce-prepared-git",
     repositoryMiddlewareName: "oce-prepared-git",
     authorityScope: "execution" as const,
   };
@@ -337,7 +305,6 @@ async function repositoryGitJourney(
       {
         gateway: { workspaceMode: "operator" },
         kubernetes: {
-          runtimeClassName: "openshell-sandbox",
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {
             subPath: "workspace",
@@ -369,7 +336,6 @@ async function repositoryGitJourney(
       id,
       sandbox,
       backend: backend as never,
-      ...modelAuthority,
       bindRepositoryGit: (authority) => runtime.bindRepositoryGit(authority),
       ...{
         mandatoryEnforcement: (ctx: ProxyRevisionContext, box: string) => {
@@ -507,7 +473,7 @@ async function repositoryGitJourney(
   const agent = await f.agent("repository-set", {
     executionMode: "dedicated",
     auth: "credential_source",
-    ...(modelBaseUrl && { modelConfig: { authorized_base_url: modelBaseUrl } }),
+    ...(conversation && { modelConfig: { authorized_base_url: conversation.baseUrl } }),
   });
   const configuration = await f.controller.createConfiguration(f.actor.id, {
     namespaceId: f.namespace.id,
@@ -561,7 +527,6 @@ async function repositoryGitJourney(
     gatewayTls: { ...tls, tokenPath },
     ...{ supervisor: state },
     configure: startupOptions?.configure,
-    registrations: startupOptions?.requestModel?.registrations,
     onGitInstall(value: string) {
       state.installed = value;
     },
@@ -607,7 +572,7 @@ async function repositoryGitJourney(
   assert.equal(queued.rows.length, 1);
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
   assert.equal(revision.repositoryCredentials!.bindings.length, narrowProfile || standing ? 1 : 2);
-  assert.equal(revision.executionAdmission.version, modelAuthority ? 9 : 5);
+  assert.equal(revision.executionAdmission.version, 5);
   assert.equal(revision.executionAdmission.mode, "protected");
   assert.deepEqual(revision.egressPlan!.repositoryGit, revision.repositoryCredentials);
   assert.equal(revision.egressPlan!.repositoryGitAuthorization, "online-request");
@@ -628,7 +593,6 @@ async function repositoryGitJourney(
   state.policy = wiring.configuration;
   if (beforePrepare) {
     await beforePrepare({
-      wiring,
       runtime,
       revision,
       client,
@@ -1214,7 +1178,7 @@ async function repositoryGitJourney(
       const first = (await attempts())[0]!;
       const request = () => peer.exchange(() => evaluate(probe), state.installed!, false);
       assert.equal(((await request()) as { status: number }).status, 200);
-      assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
+      assert.deepEqual(peer.gh.issuesOfTokens[0]?.repositoryIds, [73]);
       if (pendingSuccessor !== "cold-worker") {
         await f.stop();
       }
@@ -1690,8 +1654,8 @@ async function repositoryGitJourney(
       assert.equal(wire.world.id, initialSandbox, "renewal preserves the running Sandbox");
       assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
       assert.equal(peer.gh.issuesOfTokens.length, 2);
-      assert.deepEqual(peer.gh.issuesOfTokens[1].repositoryIds, [73]);
-      assert.deepEqual(peer.gh.issuesOfTokens[1].permissions, repositorySetPermissions);
+      assert.deepEqual(peer.gh.issuesOfTokens[1]?.repositoryIds, [73]);
+      assert.deepEqual(peer.gh.issuesOfTokens[1]?.permissions, repositorySetPermissions);
       assert.equal(((await request()) as { status: number }).status, 200);
       await f.controller.removeAgentStandingApproval(f.actor.id, {
         ...ownerKey,
@@ -1733,8 +1697,8 @@ async function repositoryGitJourney(
     }
     if (narrow) {
       assert.equal(revision.repositoryCredentials!.bindings[0]!.profile, "git-write");
-      assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
-      assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+      assert.deepEqual(peer.gh.issuesOfTokens[0]?.repositoryIds, [73]);
+      assert.deepEqual(peer.gh.issuesOfTokens[0]?.permissions, {
         metadata: "read",
         contents: "write",
         ...((policy.draftPull ?? true) && { pull_requests: "write" }),
@@ -1838,10 +1802,10 @@ async function repositoryGitJourney(
     const originalAttachmentEpoch = entry.installed.attachmentEpoch;
     assert.equal(peer.gh.issuesOfTokens.length, 1, "one issuance for the selected set");
     assert.deepEqual(
-      peer.gh.issuesOfTokens[0].repositoryIds,
+      peer.gh.issuesOfTokens[0]?.repositoryIds,
       repositorySet.slice(0, 2).map(({ repositoryId }) => Number(repositoryId)),
     );
-    assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, repositorySetPermissions);
+    assert.deepEqual(peer.gh.issuesOfTokens[0]?.permissions, repositorySetPermissions);
     const heldSyntheticValue = state.installed!;
     const liveOriginBefore = peer.originCalls();
     assert.equal(

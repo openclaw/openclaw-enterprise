@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   beforeNarrowGitPreparation,
   narrowOnlineGitJourney,
@@ -334,7 +334,6 @@ test(
   async (t) => {
     await beforeNarrowGitPreparation(
       t,
-      import.meta.url,
       async ({ runtime: first, revision, client, workspace, sandbox, pool, peer, writes }) => {
         let lostAcknowledgements = 0;
         const releases: boolean[] = [];

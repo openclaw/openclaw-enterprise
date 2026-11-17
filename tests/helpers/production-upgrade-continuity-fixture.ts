@@ -12,11 +12,15 @@ import type {
   AgentRuntimeLogSource,
   AgentRuntimePodStatus,
 } from "../../packages/contracts/src/runtime-logs.ts";
+import type { RecoveryState } from "./production-upgrade-recovery-state.ts";
+
+import { asRecord } from "../../packages/utils/src/objects.ts";
 
 type PodReference = AgentRuntimeLogSource["pods"][number];
 
-type ContinuityPod = Omit<AgentRuntimePodStatus, "containers"> & {
+type ContinuityPod = Omit<AgentRuntimePodStatus, "containers" | "events"> & {
   containers: AgentRuntimeContainerStatus[];
+  events: AgentRuntimePodStatus["events"][number][];
 };
 
 type ContinuitySource = Omit<AgentRuntimeLogSource, "available" | "unavailableCode" | "pods"> & {
@@ -28,12 +32,12 @@ type ContinuitySource = Omit<AgentRuntimeLogSource, "available" | "unavailableCo
 type ContinuityRuntime = Omit<AgentRuntimeDescription, "pods" | "sources" | "harness"> & {
   pods: ContinuityPod[];
   sources: ContinuitySource[];
-  harness?: AgentRuntimeDescription["harness"];
+  harness?: NonNullable<AgentRuntimeDescription["harness"]>;
 };
 
 interface ContinuityObservation {
   agent: Omit<AgentWire, "activeRevisionId"> & {
-    activeRevisionId?: AgentWire["activeRevisionId"] | null;
+    activeRevisionId?: NonNullable<AgentWire["activeRevisionId"]> | null;
   };
   runtime: ContinuityRuntime;
   agentError?: string;
@@ -50,8 +54,8 @@ function continuityPodReference(
 }
 
 export const continuityNamespace = "ns_00000000-0000-4000-8000-000000000001";
-const continuityAgent = "agt_00000000-0000-4000-8000-000000000002";
-const continuityRevision = "rev_00000000-0000-4000-8000-000000000003";
+export const continuityAgent = "agt_00000000-0000-4000-8000-000000000002";
+export const continuityRevision = "rev_00000000-0000-4000-8000-000000000003";
 const continuityFlags = [
   "--verify-agent",
   continuityAgent,
@@ -132,14 +136,7 @@ type UpgradeFixture = {
   commands: readonly unknown[];
   readEvidence(name: string): Promise<string>;
   run(...args: string[]): Promise<unknown>;
-  state(): Promise<{
-    api: number;
-    worker: number;
-    version: number;
-    dispatches: number;
-    helmSubmissions?: number;
-    continuity: ReturnType<typeof continuityFixture> | null;
-  }>;
+  state(): Promise<RecoveryState>;
   events(): Promise<string[]>;
   failNext(fault: string): Promise<void>;
 };
@@ -302,8 +299,9 @@ export function registerUpgradeContinuityTests({
         const baseline = await f.readEvidence("agent-continuity.json");
         const state = await f.state();
         assert.equal(state.helmSubmissions, 1);
-        assert.ok(state.continuity);
-        state.continuity.after = continuityObservation("restored");
+        const observations = asRecord(state.continuity);
+        assert.ok(observations);
+        observations.after = continuityObservation("restored");
         await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
         await f.run(...continuityFlags, "--resume");
         assert.equal((await f.state()).helmSubmissions, 1);
@@ -362,16 +360,18 @@ export function registerUpgradeContinuityTests({
     );
     assert.equal(existsSync(join(f.evidence, "completed")), false);
     const state = await f.state();
-    assert.ok(state.continuity);
-    state.continuity.after = continuityObservation("restored");
+    const observations = asRecord(state.continuity);
+    assert.ok(observations);
+    const restored = continuityObservation("restored");
     // Retained terminal Pods do not prevent healthy replacement Pods from passing.
     const original = continuityObservation();
     const originalPod = original.runtime.pods[0];
     const originalSource = original.runtime.sources[0];
-    const restoredSource = state.continuity.after.runtime.sources[0];
+    const restoredSource = restored.runtime.sources[0];
     assert.ok(originalPod && originalSource && restoredSource);
-    state.continuity.after.runtime.pods.push({ ...originalPod, phase: "Failed", ready: false });
+    restored.runtime.pods.push({ ...originalPod, phase: "Failed", ready: false });
     restoredSource.pods.push(...originalSource.pods);
+    observations.after = restored;
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     await f.run(...continuityFlags, "--resume");
     assert.equal((await f.state()).helmSubmissions, 1);

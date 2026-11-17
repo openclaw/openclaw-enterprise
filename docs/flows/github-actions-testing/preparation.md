@@ -1,3 +1,9 @@
+---
+created: 2026-09-09
+updated: 2026-11-16
+last_updated_session: 01a1e535-91ca-7273-913f-aaacfd69c1c2
+---
+
 # CI resource preparation
 
 [Parent flow](../github-actions-testing.md).
@@ -6,13 +12,13 @@
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
+`scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
 
-Static Checks restores the documentation pnpm store and alone saves it after
-Pagefind builds; installation can omit its optional native package.
-`run-ci-lane` restores that store for baseline part 1 and browser part 1.
-Keys include OS, architecture, Node.js, pnpm and lockfile hash. Prefix fallbacks
-can restore other lockfiles; frozen installation acquires missing packages.
+Static Checks restores the documentation pnpm store before installation. On
+cache misses, it saves the store after Pagefind succeeds. Baseline part 1 and
+browser part 1 only restore it. Keys include OS, architecture, Node.js, pnpm,
+and lockfile hash. Prefix matches can cross lockfiles. Frozen installation
+fetches missing packages.
 
 First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
 downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
@@ -50,21 +56,21 @@ Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` imports the
 selected artifact or builds source when both are absent; selected pairs retain their immutable references.
 Controller build selection is independent.
 
-`scripts/ci/prepare.mjs:imageBuildArgs` restores read-only caches, including
+`scripts/ci/image-build-cache.ts:imageBuildArgs` restores read-only caches, including
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
 each OpenShell lane builds its stack. Tests inherit builder and epoch,
 not cache credentials; installers still build source.
-`openshell-build-inputs` resolves the `integration-main` controller base for
-`all`/`openshell` builds, including Local Setup. `openshell-image-cache` requires
-caller-source exports and successful cleanup before admission. Strict export
-errors propagate after sibling settlement; standalone exports remain best effort.
-Queued writers remain unordered by commit; mutable caches permit misses.
-`imageCacheObservation` counts steps/imports for Gateway Routing, Slack Live,
-Production TUI, `k3d-otel` and OpenShell, including alternate sources.
-It deduplicates step IDs; import lines do not prove hits. Loads may reuse probes.
+`openshell-build-inputs` resolves the `integration-main` controller base.
+`scripts/ci/warm-image-cache.ts` validates the base before Buildx setup, then
+builds the controller and runtime concurrently. Required export errors propagate
+after both builds settle. Standalone exports are best effort.
+The workflow requires a retained runtime tag and successful cleanup before
+OpenShell admission for the same source SHA. Queued writers can run out of
+commit order. `imageCacheObservation` counts distinct steps and cache imports;
+import lines alone cannot establish cache hits. Loads may reuse probes.
 
-Image lanes, First Agent Smoke, Docker Model Runtime, Gateway Routing and
-Production TUI fetch artifacts by repository/run/artifact IDs with `actions: read`.
+Images, First Agent Smoke, Docker Model Runtime, Gateway Routing and
+Production TUI fetch artifacts by repository/run/artifact ID with `actions: read`.
 
 Docker Model Runtime requires an artifact ID on producer success. Failure or
 skip selects standalone builds. Local import cancels three minutes before the
@@ -84,19 +90,19 @@ First Agent Smoke's `prepareRuntimeArtifactLayout` verifies compressed and
 uncompressed layer digests; Buildx builds its trust layer from the verified
 platform manifest digest.
 
-Before tagging or import, the CLI records image ownership in private
-`RUNNER_TEMP` state, excluded from uploads. Database tests use the limited
-application role and fresh migrated databases; Agent revision worker tests use
-migrated template copies (`prepareFile({ template })`). Failure and Kubernetes
-database names satisfy admission guards.
+`scripts/ci/prepare-command.ts:execFile` drains both output streams. Cluster
+creation uses the cleanup supervisor to hold the process group for signal forwarding.
 
-Ordinary lanes select loopback k3d contexts and digest-pinned Kubernetes 1.35 K3s;
-readiness rejects other server versions. OpenShell keeps its separate K3s pin.
-External images use approved registry digests and the selected platform. All
-images receive run-owned references at their imported platform manifest digests.
-Preparation pins OCI or Docker manifests against kubelet garbage collection.
-Every node must report the expected containerd digest and an exact CRI
-digest-list entry with boolean `pinned: true`. Manual imports are excluded.
+The CLI journals image ownership in private `RUNNER_TEMP` state before tagging
+or import. Database tests use the limited application role and freshly migrated
+databases. Agent revision tests copy migrated templates (`prepareFile({ template })`).
+Failure and Kubernetes database names satisfy admission guards.
+
+Ordinary k3d lanes require loopback and digest-pinned K3s 1.35. OpenShell has a
+separate pin. `scripts/ci/k3d-image-admission.ts:registerImageInK3d` checks external
+digests and platform. Imported images get run-owned, manifest-digest references
+pinned against garbage collection. Every node must report the containerd digest
+and matching CRI digest-list entry with boolean `pinned: true`. Manual imports are excluded.
 
 TUI upgrades require both candidate and baseline controller/runtime digests
 before allocation. Preparation imports all four, rejects candidates resolving to
@@ -116,7 +122,7 @@ reads bounded metadata; results and diagnostics retain only their preparation's 
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
-`scripts/ci/prepare.mjs:ensurePostgresServer` journals exclusive bootstrap-directory
+`scripts/ci/prepare-postgres.ts:ensurePostgresServer` journals exclusive bootstrap-directory
 and SQL-copy ownership. It refuses existing paths and retires failed directory
 records. Its container-readable `migrations/init-local.sql` copy is selected by
 `OPENCLAW_CI_POSTGRES_INIT_SQL`.
@@ -165,9 +171,14 @@ A returned resource is removed from state; invalid state or ownership still
 fails cleanup. These results do not prove
 the runner accepted a shared-store commit.
 
-For each Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server and one worker with a shared task-owned local-path mount. It reads the worker Pod CIDR and the server route to that network, validates the route source, and exports its single-address `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. Image preparation registers and checks the imported digest alias on both nodes. A minimal DaemonSet keeps that local-only image active on each node for the lane so kubelet image garbage collection cannot remove it between fixture tests. The DaemonSet exposes no Service and is removed with the disposable cluster. The status suite schedules the runtime on the worker so a node-local bypass cannot conceal a missing proxy ingress rule.
+Each Kubernetes fixture lane uses a server and worker with a shared local-path
+mount. Preparation validates the server's route source to the worker Pod CIDR and
+exports its `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. It verifies
+the imported digest alias on both nodes. A DaemonSet keeps the image active on both
+nodes until cluster cleanup and exposes no Service. The status suite schedules the
+runtime on the worker to test proxy ingress across nodes.
 
-`scripts/ci/prepare.mjs:buildFixtureImage` reports separate engine-version and
+`scripts/ci/k3d-fixture-storage.ts:buildFixtureImage` reports separate engine-version and
 fixture-build stages. The engine probe uses the existing image-command
 limit (30 seconds by default); the fixture build has a 30-minute cap to allow slow builds. These are execution limits, not
 expected durations. Both commands respect the remaining lane deadline less
@@ -196,9 +207,9 @@ not include tenant workloads or complete Pod specifications.
 
 The runtime image recipe pins compatible OpenClaw, Codex-plugin and Slack-plugin releases together with the Codex app-server version required by the plugin. Image startup smoke verifies fresh-home plugin loading, actual app-server initialization, and nested Codex home ownership for generated images and credential files before credentialed tests. Routing additionally requires the Gateway identity-scope contract; embedded continuity requires outgoing media to remain visible through history and artifact APIs across Pod replacement. Image builds alone prove none of these outcomes.
 
-`scripts/ci/prepare.mjs:reuseEngineImage` asks BuildKit whether the restored cache
-resolves to an image already in the engine; a cache miss builds it. In CI, the
-probe and subsequent build share the remaining `CI_RUNNER_DEADLINE_MS` budget,
+`scripts/ci/image-build-cache.ts:reuseEngineImage` uses BuildKit's scalar
+SHA-256 config digest to inspect the engine. A failed reuse probe falls back to
+the build. In CI, both share the remaining `CI_RUNNER_DEADLINE_MS` budget,
 reserving three minutes for preparation and tests. Exhaustion reports `Image
 build out of lane time`, starts no further build, and leaves owned-tag removal to
 job cleanup. Local runs and main's cache warmer have no lane deadline. The warmer
@@ -209,9 +220,48 @@ cold Node compilation exceeded the former 20-minute build limit.
 
 For dedicated Codex preparation (and installed repository-credential preparation, once that lane is available again), each owned node supplies its actual `RuntimeDefault` syscall profile from a restricted probe Pod. In the same command path, preparation first verifies that `RuntimeDefault` denies the pinned Codex Bubblewrap sandbox, then preserves that baseline, adds the version-pinned Bubblewrap calls, installs the resulting Localhost profile, verifies its hash and effective OCI policy, and requires actual sandbox execution through the profile. A missing profile must prevent container creation. The selected relative profile path is passed to the live fixture as `runtime.codexSeccompProfile`; only the dedicated Codex container uses it. Node profile files belong to the disposable cluster, and temporary probe resources are cleaned before model tests. The live fixture checks the effective configured model before paid model turns. OpenShell continues to own containment for its provider-created Harness.
 
+`scripts/ci/repository-credentials.ts:prepareRepositoryCredentials` journals each
+tag before building it. A valid immutable Docker image ID moves the tag to ready.
+The Repository Credentials lane writes the service, client, and qualification IDs
+and source commit to a mode-0600 receipt. Production Observability builds the
+service for k3d import and verification on each node.
+
+`scripts/ci/prepare.mjs:prepareFileWithState` checks the file's manifest
+requirements before calling `scripts/ci/repository-credentials.ts:prepareRepositoryCredentialsFile`.
+The helper extracts the delivered `gh` in a container with no network and a
+read-only root. It checks the binary's pinned version before returning its path
+for the test environment. Invalid image IDs, source commits, and binary versions
+produce fixed errors without the command output. File cleanup removes the extracted
+binary. Lane cleanup removes its journaled image tags.
+
 The suite map owns fixed selection flags, required input names, and the resources each lane needs. Preparation consumes those descriptors instead of maintaining parallel lane lists. External model, ChatGPT and Slack credentials come only from the selected protected environment. Missing selected inputs fail rather than turning the lane into a skipped success.
 
-Routing preparation installs pinned Gateway API, cert-manager v1.18.4, and Envoy Gateway v1.6.7 controllers and creates a private test CA. It builds and imports immutable controller and runtime references so the routing proof can run OCC inside Kubernetes and reach Envoy through the normal ClusterIP Service. OpenShell preparation uses the digest-pinned K3s v1.36.4 image with its `runc` handler, installs a matched kubectl, verifies the selected RuntimeClass with a smoke Pod, installs Agent Sandbox resources, acquires the OpenShell CLI/chart, and imports gateway, sandbox, and supervisor images. The RuntimeClass smoke proves runtime availability; the full OpenShell lane must prove the separate supervisor enforces approved filesystem access, process privileges, and binary-scoped endpoint/L7 network policy. The Harness and supervisor receive neither `SYS_PTRACE` nor `DAC_READ_SEARCH`. Before creating the OpenShell cluster, preparation writes a private admission config under the owned cluster directory and mounts that exact file read-only into its server. Only the selected RuntimeClass is exempt; namespace and username exemptions remain empty. The API server must reject a violating ordinary Pod in a restricted namespace and admit the same Pod with the selected class before the RuntimeClass availability smoke runs. Logging preparation starts an owned OpenTelemetry Collector backend and passes JSONL evidence to selected tests. The Collector and Docker-model jobs use the shared [setup-test-docker action](../../../.github/actions/setup-test-docker/action.yml) to pin Docker 29.9.2, which supports the production `fluentd-write-timeout` logging option. The action stops the ephemeral runner’s preinstalled daemon, installs that version through the SHA-pinned official Docker setup action, and points `/var/run/docker.sock` at the action socket so the CLI, production Compose, and Driver use one daemon. Other jobs keep the runner Docker daemon. Full-suite acceptance remains incomplete until main-only protected hosted execution records every selected lane. The [delivery status](../../../specs/plans/19-github-actions-test-coverage/delivery-status.md#delivery-status) owns current proof boundaries and live gaps.
+Routing preparation installs pinned Gateway API, cert-manager v1.18.4, and Envoy
+Gateway v1.6.7 controllers and creates a private test CA. It imports immutable
+controller and runtime references so OCC can reach Envoy through its ClusterIP
+Service.
+
+OpenShell preparation uses digest-pinned K3s v1.36.4, installs matching kubectl
+and Agent Sandbox resources, obtains the OpenShell CLI and chart, and imports
+gateway, sandbox, and supervisor images. `prepareOpenShellClusterBootstrap` returns
+only the pinned node image and kubectl selection; `createK3dPreparation` creates
+the cluster without an OCE admission file or API server admission override.
+`prepareOpenShell` requires PSA to reject privileged and forbidden-capability Pods
+in a restricted probe namespace, then runs a default-runtime smoke Pod. The
+privileged probe omits `allowPrivilegeEscalation: false` so core validation does
+not reject it before PSA. OCE creates no RuntimeClass or
+PSA exemption. The full lane checks filesystem, privilege, and binary-scoped Layer 7
+network policy enforcement by the supervisor. The Harness and supervisor receive
+neither `SYS_PTRACE` nor `DAC_READ_SEARCH`.
+
+Logging preparation starts an owned OpenTelemetry Collector and passes JSONL
+evidence to selected tests. The [setup-test-docker action](../../../.github/actions/setup-test-docker/action.yml)
+replaces the runner's daemon with Docker 29.9.2 for Collector and Docker Model
+Runtime jobs. This version supports `fluentd-write-timeout`. The action uses the
+pinned official Docker setup action and connects the CLI, Compose, and Driver to
+its socket at `/var/run/docker.sock`. Other jobs keep the runner daemon.
+See [Full Integration delivery status](../../../specs/plans/19-github-actions-test-coverage/delivery-status.md#delivery-status)
+for hosted proof and remaining coverage.
 
 The OpenShell test owns management port-forwards throughout the test. Teardown stops the worker, drains forwards, then attempts app, database, namespace and directory cleanup even after an earlier failure. Forward shutdown allows two seconds after `SIGTERM`, then sends `SIGKILL` if necessary and waits two more seconds. Cleanup errors fail the test.
 

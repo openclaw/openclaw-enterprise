@@ -28,7 +28,7 @@ else
           nodeSelector:{"oce-role":"control"},automountServiceAccountToken:false,
           securityContext:{runAsNonRoot:true,runAsUser:1000,runAsGroup:1000,fsGroup:1000,
             seccompProfile:{type:"RuntimeDefault"}},
-          containers:[{name:"listener",image:$image,command:["node","/listener/owner-listener.mjs"],
+          containers:[{name:"listener",image:$image,command:["node","/listener/owner-listener.mts"],
             securityContext:{allowPrivilegeEscalation:false,readOnlyRootFilesystem:true,capabilities:{drop:["ALL"]}},
             resources:{requests:{cpu:"25m",memory:"48Mi"},limits:{cpu:"250m",memory:"128Mi"}},
             volumeMounts:[{name:"code",mountPath:"/listener",readOnly:true},{name:"tls",mountPath:"/tls",readOnly:true}]}],

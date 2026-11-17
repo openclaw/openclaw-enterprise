@@ -74,6 +74,10 @@ The bundled proxy accepts HTTP `CONNECT` only for Slack hostnames on port 443.
 The API accepts a DNS proxy URL only when Helm also sets the matching
 `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`; it rejects any other DNS proxy URL.
 
+The bundled proxy closes a tunnel if it has pending writes to the client for
+10 continuous seconds while the upstream connection is open. A quiet Socket
+Mode tunnel can stay open when no writes are pending.
+
 Operators can instead set Helm `api.channelDirectoryProxyUrl` to an approved
 external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the
 example IP and port replaced. The value must contain one literal IPv4 address

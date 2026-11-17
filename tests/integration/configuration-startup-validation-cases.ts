@@ -11,7 +11,7 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration as installation,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type ValidationConfiguration = ReturnType<typeof installation> & {
