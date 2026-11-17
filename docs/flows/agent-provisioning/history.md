@@ -8,6 +8,8 @@ This record preserves the dated changes to the Agent provisioning flow. See the 
 
 ## Changelog
 
+- 2026-10-20 14:57: Preserve human Gateway identities and reject malformed or automatic administrator grants; consolidate PR #2596 history. (PR #3049 - fd73e091f)
+- 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 - 2026-10-25: Refuse a taken Agent name at admission. (finding 2420)
 - 2026-10-25 03:30: Check a Secret binding's placement before the Compute plan check; Console runs the preflight first. (fix-postland-1025b - 2b1f510594)
 - 2026-10-25: Name Slack's whole `${NAME}` token reading; move older entries to the history page. (finding 2512)

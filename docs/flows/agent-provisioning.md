@@ -247,10 +247,12 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 ## Changelog
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-17 16:05: Clear a deleted Secret from a restored draft's saved status and picker; a new request requires a replacement. (feat/create-agent-progress - d1f6f135c)
+
 - 2026-11-14 11:20: Apply the maintainer's unattributed-failure correction; clear deleted credentials from the saved form state. (feat/create-agent-progress - b0a68ce6b)
 
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
-- 2026-11-13 15:30: Unlock recovery for deleted resources; monotonic meter steps. (feat/create-agent-progress - 414e45996)
+- 2026-11-13 15:30: Unlock recovery for deleted resources; monotonic meter steps. (feat/create-agent-progress - 74f1d5a5c)
 
 - 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
 
@@ -258,17 +260,13 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 - 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
 
-- 2026-11-11 13:40: Follow the maintainer review: checkpoint status line, refused-read explanation, identity-preserving recovery. (feat/create-agent-progress - 79271c345)
+- 2026-11-11 13:40: Follow the maintainer review: checkpoint status line, refused-read explanation, identity-preserving recovery. (feat/create-agent-progress - 025f6c754)
 - 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
 
 - 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
-- 2026-11-06 19:35: Pin the Create Agent step meter in the sticky action bar; a failure names its step and reason there, and Retry appears only once the request has ended. (feat/create-agent-progress - a818dccb3)
-- 2026-11-06 18:20: Add the Create Agent step meter, driven by the polled job's status and phase. (feat/create-agent-progress - 822f2513e)
+- 2026-11-06 19:35: Pin the Create Agent step meter in the sticky action bar; a failure names its step and reason there, and Retry appears only once the request has ended. (feat/create-agent-progress - 78309c72d)
+- 2026-11-06 18:20: Add the Create Agent step meter, driven by the polled job's status and phase. (feat/create-agent-progress - 5de3fe71f)
 
 - 2026-10-21 13:21: Validate native identity grants before rollout and clarify external human ingress; accompanying local changes. (authoring-run/aba975bf-8e97-4c9d-9e34-dc2c9c79d591 - 4accde87c)
-
-- 2026-10-20 14:57: Preserve human Gateway identities and reject malformed or automatic administrator grants; consolidate PR #2596 history. (PR #3049 - fd73e091f)
-
-- 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 
 [Agent provisioning documentation history](agent-provisioning/history.md) preserves the older dated entries.
