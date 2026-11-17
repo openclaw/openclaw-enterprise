@@ -1447,15 +1447,13 @@ test(
           await worker?.stop();
           if (removed !== undefined) {
             await migrator.query(
-              "INSERT INTO occ.installation_network_policy_ceiling (installation_id, version, rules, management_mode, updated_at, updated_by, startup_configuration) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+              "INSERT INTO occ.installation_network_policy_ceiling (installation_id, version, rules, updated_at, updated_by) VALUES ($1,$2,$3,$4,$5)",
               [
                 removed.installation_id,
                 removed.version,
                 JSON.stringify(removed.rules),
-                removed.management_mode,
                 removed.updated_at,
                 removed.updated_by,
-                removed.startup_configuration,
               ],
             );
           }

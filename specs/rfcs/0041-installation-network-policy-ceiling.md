@@ -14,9 +14,8 @@ author: russellb
 
 Make the Installation network policy ceiling a versioned, persistent Installation
 setting that administrators can manage through the Console. Use trusted startup
-configuration once to initialize it; PostgreSQL owns runtime values. Operators
-can opt in to replacing the saved ceiling from startup configuration on each
-control-plane start for GitOps management. Changes govern future policy admission
+configuration once to initialize it; PostgreSQL owns runtime values. Changes
+govern future policy admission
 and pending applications. They do not revoke access from running Agents or change
 Sandbox Driver defaults.
 
@@ -36,7 +35,6 @@ arbitrary Driver startup configuration editable.
 
 - Let an Installation administrator inspect, add, edit, and remove ceiling rules.
 - Give the API and worker one authoritative value that survives restarts.
-- Support an explicit GitOps option to replace saved rules at startup.
 - Preserve current grant semantics and exact-resource authorization.
 - Reject stale saves and record attributable initialization, mutations, and
   authorization denials.
@@ -51,8 +49,8 @@ The ceiling permits requests; it does not grant access by itself.
 ### Ownership and persisted state
 
 OCC owns one ceiling record associated with the server-selected Installation.
-Persist the rules, management mode (`console` or `startup`), a monotonically
-increasing version, and update attribution and time. Use the existing
+Persist the rules, a monotonically increasing version, and update attribution
+and time. Use the existing
 [platform state transaction boundary](../../packages/occ/src/state/platform-state.ts)
 with PostgreSQL persistence and its in-memory counterpart. Enforce singleton
 ownership and valid version constraints in the database.
@@ -79,7 +77,7 @@ Only the trusted initialization path seeds state; the worker never initializes
 from its own startup copy. Policy operations and worker processing require
 initialization to have completed.
 
-By default, startup configuration remains subject to normal startup
+Startup configuration remains subject to normal startup
 validation but cannot replace an initialized value. If a supplied seed differs from
 the persisted rules, emit a diagnostic that it is seed-only and direct the
 operator to the admin control. Do not print the complete policy in the diagnostic.
@@ -91,35 +89,17 @@ outside initialization, unreadable state, or invalid persisted state causes
 dependent policy operations to fail explicitly. There is no fallback to a
 process-local seed or a previously cached value.
 
-### Optional overwrite at startup
+### One dynamic owner
 
-Add `sandboxNetworkPolicyCeilingOverwriteOnStartup`, defaulting to `false`.
-When `true`, the trusted initialization path replaces the persisted ceiling with
-the validated startup rules before the API admits policy operations. Require an
-explicit `sandboxNetworkPolicyCeiling` value in this mode; omission fails startup.
-An explicit empty list deliberately clears the ceiling. The worker never writes
-the startup rules and continues to read the persisted value.
+Saved state is authoritative after initialization. Startup cannot replace it or
+disable manual edits. No management mode, replica agreement fingerprint or
+dedicated ownership lease is needed. The retired overwrite setting is rejected.
 
-Serialize replacement with ceiling updates and dependent policy admission. If the
-rules or management mode change, increment the saved version and commit
-attributable startup audit evidence in the same transaction. Identical rules and
-mode are a no-op, preserving the version. Failed replacement prevents startup from admitting policy operations;
-do not continue with stale rules while claiming GitOps configuration took effect.
-
-This option reconciles at startup, not continuously when a configuration file
-changes. All API instances must use the same startup rules and option; competing
-startup configurations are unsupported. The implementation plan must define how
-startup ownership prevents conflicting configurations during a rollout. Turning
-the option off preserves the last saved rules and restores the default behavior.
-Startup replacement retains the same guarantee as UI saves: no automatic
-revocation of access from running Agents.
-
-The proposed GitOps mode makes the admin editor read-only and labels the ceiling
-as managed by startup configuration. The API checks the persisted management mode
-within the write transaction and rejects edits with a conflict in `startup` mode,
-even from an administrator. Return that mode with the read response. Only trusted
-startup configuration can change it. Turning overwrite off sets `console` mode
-without changing rules; stale editor versions remain subject to conflict checks.
+The proposed [Guardrails primitive](https://github.com/openclaw/openclaw-enterprise/pull/2968)
+overlaps with this capability. Its API shape
+and implementation alignment are a later refactor, as noted in
+[review feedback](https://github.com/openclaw/openclaw-enterprise/pull/4920#issuecomment-6960433647).
+This proposal retains its existing Installation endpoint for this delivery.
 
 ### Admin operations and Console
 
@@ -133,7 +113,7 @@ conflict. Commit a successful write and its attributable audit event together.
 
 `POST /installation/sandbox-network-policy-ceiling/validate` previews the same
 input through shared validation. It requires the same Installation authority and
-checks current mode and version without changing state. Return a configuration
+checks the current version without changing state. Return a configuration
 result with validated rules or safe field details. Preview success grants no
 authority to a later write; PUT repeats its checks.
 
@@ -182,7 +162,7 @@ deployed or applied through its normal workflow.
 
 ## Delivery and verification
 
-The owner API, PostgreSQL persistence, startup ownership, worker rechecks, and
+The owner API, PostgreSQL persistence, seed-once initialization, worker rechecks, and
 Console editor are implemented in [PR #4920](https://github.com/openclaw/openclaw-enterprise/pull/4920).
 The [implementation plan](../plans/0041-installation-network-policy-ceiling.md)
 records verification and remaining delivery requirements. Current behavior is
@@ -193,10 +173,9 @@ Required proof includes:
 
 - PostgreSQL integration for one-time seeding, concurrent initialization,
   explicit empty state, restart persistence, stale saves, authorization denials,
-  audit atomicity, and fail-closed reads. Cover opted-in startup replacement,
-  missing input rejection, explicit clearing, unchanged-rule no-ops, startup
-  failure, refusal of admin writes in GitOps mode, and returning to the default
-  mode without resetting saved rules.
+  audit atomicity, and fail-closed reads. A restart with a different seed must
+  preserve saved state and administrator editing. Reject the retired overwrite
+  setting instead of retaining a second source of authority.
 - The regular Agent workflow through real controller routes: administrator saves
   a ceiling, permitted Agent rules save/apply, excessive rules fail, tightening
   rejects pending work, and widening alone grants no access. Include concurrent
@@ -226,7 +205,7 @@ live sources.
 
 **Startup configuration always wins:** suits GitOps but makes Console changes
 unexpectedly disappear on restart for operators who did not select that model.
-An explicit overwrite option preserves that workflow without making it the default.
+Rejected: mixing startup and dynamic ownership adds operational complexity.
 
 **Require a separate initialization command:** makes initialization explicit,
 but adds an operator step to a setting that already has a trusted seed. The

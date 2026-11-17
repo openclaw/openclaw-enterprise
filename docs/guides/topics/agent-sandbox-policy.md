@@ -104,18 +104,9 @@ After an uncertain save, read the current ceiling before deciding whether anothe
 save is needed; do not automatically repeat the request. A permission denial needs
 an Installation administrator to restore access.
 
-**Managed by startup configuration** makes this editor read-only. The operator
-must update the startup ceiling and stop existing API replicas before starting
-them with the changed rules or mode. Running Agent access remains unchanged.
-To restore Console editing,
-turn off `sandboxNetworkPolicyCeilingOverwriteOnStartup`; the saved rules remain.
-Restarting with only a different seed does not replace them. See the
-[ceiling reference](../../reference/sandbox-policies.md#installation-ceiling)
-for the configuration contract.
-
-If an API instance loses its startup database session, its health and readiness
-checks fail. Wait for the Kubernetes liveness restart, or restart that process
-when using another supervisor. Confirm readiness before retrying the request.
+Startup configuration supplies an initial seed only. Restarting with a different
+seed does not replace saved rules or disable this editor. See the
+[ceiling reference](../../reference/sandbox-policies.md#installation-ceiling).
 
 ## CLI
 

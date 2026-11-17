@@ -14052,7 +14052,6 @@
                     "value": {
                       "data": {
                         "installationId": "ins_123e4567-e89b-42d3-a456-426614174000",
-                        "managementMode": "console",
                         "rules": [],
                         "updatedAt": "2026-10-01T12:00:00.000Z",
                         "updatedBy": "principal-administrator",
@@ -14069,12 +14068,6 @@
                       "additionalProperties": false,
                       "properties": {
                         "installationId": { "type": "string" },
-                        "managementMode": {
-                          "anyOf": [
-                            { "const": "console", "type": "string" },
-                            { "const": "startup", "type": "string" }
-                          ]
-                        },
                         "rules": {
                           "items": {
                             "additionalProperties": false,
@@ -14137,14 +14130,7 @@
                         "updatedBy": { "type": "string" },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
-                      "required": [
-                        "installationId",
-                        "version",
-                        "rules",
-                        "managementMode",
-                        "updatedAt",
-                        "updatedBy"
-                      ],
+                      "required": ["installationId", "version", "rules", "updatedAt", "updatedBy"],
                       "type": "object"
                     },
                     "meta": {
@@ -14331,7 +14317,6 @@
                     "value": {
                       "data": {
                         "installationId": "ins_123e4567-e89b-42d3-a456-426614174000",
-                        "managementMode": "console",
                         "rules": [
                           {
                             "binary": "/usr/bin/python3.11",
@@ -14355,12 +14340,6 @@
                       "additionalProperties": false,
                       "properties": {
                         "installationId": { "type": "string" },
-                        "managementMode": {
-                          "anyOf": [
-                            { "const": "console", "type": "string" },
-                            { "const": "startup", "type": "string" }
-                          ]
-                        },
                         "rules": {
                           "items": {
                             "additionalProperties": false,
@@ -14423,14 +14402,7 @@
                         "updatedBy": { "type": "string" },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
-                      "required": [
-                        "installationId",
-                        "version",
-                        "rules",
-                        "managementMode",
-                        "updatedAt",
-                        "updatedBy"
-                      ],
+                      "required": ["installationId", "version", "rules", "updatedAt", "updatedBy"],
                       "type": "object"
                     },
                     "meta": {

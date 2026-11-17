@@ -13,8 +13,8 @@ rfc: ../rfcs/0041-installation-network-policy-ceiling.md
 ## Outcome and scope
 
 Implement the submitted RFC in PR #4920. Administrators manage the Installation
-ceiling in Settings. PostgreSQL owns the effective rules; startup seeds them once
-or explicitly replaces them in startup-managed mode. Every Agent policy admission
+ceiling in Settings. PostgreSQL owns the effective rules; startup seeds absent
+state once. Every Agent policy admission
 and pending application uses the saved ceiling. Running access is unchanged.
 
 ## Global Constraints
@@ -30,24 +30,20 @@ and pending application uses the saved ceiling. Running access is unchanged.
 ## Contract and source touchpoints
 
 Add a ceiling record owned by the Installation persistence repository. Its public
-shape is `{ installationId, version, rules, managementMode, updatedAt, updatedBy }`;
-managementMode is `console` or `startup`. GET and PUT at
+shape is `{ installationId, version, rules, updatedAt, updatedBy }`. GET and PUT at
 `/installation/sandbox-network-policy-ceiling` use the standard data envelope.
 PUT takes `{ expectedVersion, rules }`. POST at the same path plus `/validate`
 previews that input through the shared server validator and returns a
 `ConfigurationResult<{ rules }>` in the data envelope without writes. It checks
-the same Installation authority, current mode and version. Preview success grants
+the same Installation authority and current version. Preview success grants
 no authority to PUT. Agent policy reads expose only rules.
 
 The ceiling lock precedes Namespace and Agent locks in admission and worker
 application transactions. Shared admission locks permit unrelated Agents to
-proceed; updates and startup replacement use an exclusive lock. Initialization
+proceed; updates and seed-once initialization use an exclusive lock. Initialization
 holds the same lock even when the record is absent. Startup must finish before
 HTTP admission; workers require an existing record and never seed it. API replicas
-must agree on management mode and startup-managed rules. A dedicated PostgreSQL
-session lease rejects conflicting live settings; mode or startup-rule changes
-require stopping old API replicas. Console seeds do not hold runtime authority.
-The API reserves one pool connection, so its pool maximum must be at least two.
+read the same dynamic value and retain no startup ownership lease.
 
 ## Implementation
 
@@ -55,15 +51,15 @@ The API reserves one pool connection, so its pool maximum must be at least two.
 
 Extend contracts, Installation state repositories, PostgreSQL schema and migration,
 controller composition, HTTP schemas/handlers, all policy admission callers, and
-worker rechecks. Add startup overwrite validation and attributable transactional
-audit. Extend existing PostgreSQL Agent policy workflows and add focused TypeScript
-integration coverage for persistence, restart, stale saves, mode changes, denials,
+worker rechecks. Reject the retired overwrite setting and preserve attributable
+transactional audit. Extend existing PostgreSQL Agent policy workflows and add focused TypeScript
+integration coverage for persistence, restart, stale saves, denials,
 rollback, concurrency and absent state. Register new tests in their actual CI lane.
 
 ### Task 2: Console Settings and UI evidence
 
 Use the existing rule editor and shared browser components for the administrator
-Settings section. Cover loading, empty, invalid, forbidden, read-only startup mode,
+Settings section. Cover loading, empty, invalid, forbidden,
 conflict reload, uncertain-save recovery, successful saves, and permission loss.
 Preserve drafts on failure and require review before saving reductions. Add matching
 Storybook scenarios and workflow instructions. Rebuild, inspect controls, and
@@ -258,6 +254,26 @@ API/startup run passes 175/182, with seven failures before repository certificat
 setup: its fixed executable path has no OpenSSL. The available task-local binary
 is outside that path. No fixture isolation or system executable is changed to
 hide this prerequisite gap. Hosted CI must verify the new head.
+
+## Dynamic ownership review, 2026-11-17
+
+[Review feedback](https://github.com/openclaw/openclaw-enterprise/pull/4920#issuecomment-6960433647)
+removes startup overwrite mode. The ceiling has one dynamic owner: its saved
+Installation state. Startup seeds absent state once; it never changes existing
+rules. Remove management mode, startup fingerprint, replica agreement leases and
+their probe coupling. Keep versioned API/Console edits, exact administration,
+transactional audit and admission/worker checks. Append a migration to remove
+obsolete columns while preserving published migration bytes and receipts.
+Update contracts, Console stories, browser/integration proof and current docs.
+The generic Guardrails API alignment is a later refactor, explicitly not a merge
+blocker. This revision does not record RFC acceptance.
+
+The dynamic-only revision passes PostgreSQL owner 9/9, readiness 1/1 with a
+one-connection pool, regular Agent policy 45/45, migration restore/rollback 45/45,
+and ceiling browser 5/5, without skips. The retired configuration regression
+passes 1/1. Scoped local backend and Console reviews report no actionable defects;
+they do not replace final external review. Rebuilt Storybook captures show the
+dynamic editor, but native GitHub uploads remain unavailable.
 
 ## Manual Notes
 

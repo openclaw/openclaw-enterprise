@@ -163,7 +163,6 @@ export const InstallationSandboxNetworkPolicyCeilingSchema = Type.Object(
     installationId: Type.String(),
     version: SandboxPolicyVersion,
     rules: SandboxNetworkGrantsSchema,
-    managementMode: Type.Union([Type.Literal("console"), Type.Literal("startup")]),
     updatedAt: Type.String(),
     updatedBy: Type.String(),
   },

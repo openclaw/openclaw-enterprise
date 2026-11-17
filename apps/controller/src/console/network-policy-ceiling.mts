@@ -31,7 +31,6 @@ function savedCeiling(value: unknown): InstallationSandboxNetworkPolicyCeiling {
     !record.installationId ||
     !Number.isInteger(record.version) ||
     Number(record.version) < 1 ||
-    (record.managementMode !== "console" && record.managementMode !== "startup") ||
     typeof record.updatedAt !== "string" ||
     typeof record.updatedBy !== "string" ||
     !Array.isArray(record.rules)
@@ -72,8 +71,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
   let recovered: InstallationSandboxNetworkPolicyCeiling | undefined;
   let readGeneration = 0;
   const current = () => context.isCurrent();
-  const editable = () =>
-    authorized && !busy && saved?.managementMode === "console" && !uncertain && !conflict;
+  const editable = () => authorized && !busy && saved !== undefined && !uncertain && !conflict;
   const dirty = () => saved !== undefined && !sameValue(saved.rules, draft);
 
   function focusResult() {
@@ -289,7 +287,6 @@ export function renderNetworkPolicyCeiling(context: Context) {
       if (
         next.installationId !== saved.installationId ||
         next.version !== attempt.expectedVersion + 1 ||
-        next.managementMode !== "console" ||
         !sameValue(next.rules, attempt.rules)
       ) {
         throw new Error("The response did not confirm the reviewed ceiling.");
@@ -368,22 +365,6 @@ export function renderNetworkPolicyCeiling(context: Context) {
         `Saved version ${saved.version} · Updated ${saved.updatedAt} · By ${saved.updatedBy}`,
       ),
     );
-    if (saved.managementMode === "startup") {
-      content.append(
-        statusBlock(
-          "info",
-          "Managed by startup configuration",
-          "This ceiling is read-only. Ask the operator to change the startup configuration or restore Console management.",
-        ),
-        ruleList(saved.rules),
-      );
-      if (dirty()) {
-        content.append(
-          element("details", {}, element("summary", {}, "Retained draft"), ruleList(draft)),
-        );
-      }
-      return;
-    }
     if (!authorized) {
       content.append(element("h3", {}, "Retained draft"), ruleList(draft));
       return;

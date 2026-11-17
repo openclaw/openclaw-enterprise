@@ -30,8 +30,6 @@ Stores the Installation's versioned [network policy ceiling](../sandbox-policies
 - `installation_id`
 - `version`
 - `rules`
-- `management_mode`
-- `startup_configuration` (private startup ownership fingerprint)
 - `updated_at`
 - `updated_by`
 

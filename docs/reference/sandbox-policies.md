@@ -63,14 +63,13 @@ Changes do not revoke running access or replace Sandbox Driver defaults.
 
 `GET` and `PUT /installation/sandbox-network-policy-ceiling` require `administer`
 on the server-selected Installation. The read returns `installationId`, `version`,
-`rules`, `managementMode`, `updatedAt`, and `updatedBy` in the standard data
-envelope. PUT takes `{ expectedVersion, rules }`. A stale version or a write in
-`startup` mode returns a conflict. Successful changes and attributable audit
-evidence commit together.
+`rules`, `updatedAt`, and `updatedBy` in the standard data envelope. PUT takes
+`{ expectedVersion, rules }`. A stale version returns a conflict. Successful
+changes and attributable audit evidence commit together.
 
 `POST /installation/sandbox-network-policy-ceiling/validate` takes the same fields
-with a draft `rules` value. It requires the same authority and checks mode,
-version, and shared rule validation without saving. The data envelope contains
+with a draft `rules` value. It requires the same authority and checks the
+version and shared rule validation without saving. The data envelope contains
 `{ success: true, data: { rules } }` or
 `{ success: false, error: { details } }`. Preview success grants no authority to
 PUT, which repeats its checks.
@@ -86,20 +85,10 @@ unreadable, or invalid state causes dependent operations to fail explicitly.
 Workers refuse startup until the API has initialized the ceiling. They never
 initialize it or fall back to their startup configuration.
 
-Set `sandboxNetworkPolicyCeilingOverwriteOnStartup: true` to manage rules from
-startup configuration. This mode requires an explicit ceiling; `[]` clears it.
-Startup replaces the rules before policy operations are admitted and sets
-`managementMode: startup`. Manual API and Console edits are refused. Identical
-rules and mode preserve the version. Turning the option off restores `console`
-mode and preserves the last rules. Rule or mode changes advance the version.
-Each PostgreSQL API instance reserves one pool connection for startup ownership;
-`OCC_DATABASE_POOL_MAX` must be at least `2`. API instances must use consistent
-startup settings; conflicting live settings are refused. Stop existing API
-replicas before changing the management mode or startup-managed rules. See the [operator workflow](../guides/topics/agent-sandbox-policy.md#manage-installation-network-limits).
-
-Losing the startup session makes the instance unready and unhealthy. Kubernetes
-restarts it through its liveness probe; the restarted API reacquires ownership
-before becoming ready. Other deployments must restart the affected process.
+Saved state is the only runtime authority. Startup never reconciles existing
+rules or disables administrator edits. API replicas need no ceiling ownership
+lease or coordinated restart to change the saved rules. The retired
+`sandboxNetworkPolicyCeilingOverwriteOnStartup` setting is rejected.
 
 Each rule has `id`, an exact absolute `binary` path, a DNS `host`, and `ports`
 containing inclusive `{from,to}` ranges. For example, this startup seed permits

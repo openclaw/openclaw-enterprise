@@ -6,7 +6,6 @@ import {
   postgresAgentAuditState,
 } from "./control-plane-audit.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
-import { acquireInstallationCeilingStartup } from "./installation-ceiling-startup.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -137,26 +136,15 @@ export async function composeProduction(
     phaseStartedAt = now;
   };
 
-  if (config.poolMax !== undefined && config.poolMax < 2) {
-    throw new Error(
-      "API startup ceiling ownership requires a PostgreSQL pool maximum of at least two connections.",
-    );
-  }
-
   const auditEnabled = config.controlPlaneAuditEnabled === true;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
     ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
-  let ceilingStartup: Awaited<ReturnType<typeof acquireInstallationCeilingStartup>> | undefined;
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = async (database: { close(): Promise<void> }) => {
-    try {
-      await ceilingStartup?.close();
-    } finally {
-      await closeResources(exchange, protectedDriver, preparedGitHub, database);
-    }
+    await closeResources(exchange, protectedDriver, preparedGitHub, database);
   };
   try {
     const state = new PostgresPlatformState(pool, {
@@ -237,8 +225,6 @@ export async function composeProduction(
       persistedInstallation,
       {
         ...installationControllerOptions(config.drivers.installation),
-        assertSandboxNetworkPolicyCeilingStartupAuthority: async () =>
-          ceilingStartup?.assertCurrent(),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
@@ -255,7 +241,7 @@ export async function composeProduction(
       },
       config.drivers.repositoryAdmission,
     );
-    ceilingStartup = await acquireInstallationCeilingStartup(pool, controller, state, installation);
+    const ceilingInitialization = await controller.initializeSandboxNetworkPolicyCeiling();
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
@@ -423,18 +409,16 @@ export async function composeProduction(
     config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
     await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
-    if (ceilingStartup.seedIgnored) {
+    if (ceilingInitialization.seedIgnored) {
       app.log.warn(
         "The startup network policy ceiling is seed-only. Use Installation Settings to change the saved ceiling.",
       );
     }
     app.get("/healthz", async () => {
-      await ceilingStartup!.assertCurrent();
       return { status: "ok" };
     });
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {
-      await ceilingStartup!.assertCurrent();
       await checkDatabaseReadiness();
       return { status: "ready" };
     });

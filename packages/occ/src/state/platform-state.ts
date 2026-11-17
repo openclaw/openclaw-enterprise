@@ -1858,7 +1858,6 @@ function repositories(
     saveSandboxNetworkPolicyCeiling: async (ceiling, expectedVersion) => {
       assertInitialized(snapshot);
       if (
-        (ceiling.managementMode !== "console" && ceiling.managementMode !== "startup") ||
         snapshot.installation!.id !== ceiling.installationId ||
         ceiling.version < 1 ||
         !Number.isInteger(ceiling.version) ||

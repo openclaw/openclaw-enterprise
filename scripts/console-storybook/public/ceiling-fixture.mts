@@ -4,7 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { fixtureError, fixtureResponse } from "./preview-rules.mts";
 
-export type CeilingScenario = { ceilingState?: "empty" | "startup" | "conflict" | "invalid" };
+export type CeilingScenario = { ceilingState?: "empty" | "conflict" | "invalid" };
 
 /** Simulated storage for the production Settings renderer; backend proof runs separately. */
 export function createCeilingFixture(scenario: CeilingScenario, createdAt: string) {
@@ -18,7 +18,6 @@ export function createCeilingFixture(scenario: CeilingScenario, createdAt: strin
     installationId: "ins_00000000-0000-4000-8000-000000000001",
     version: 1,
     rules: scenario.ceilingState === "empty" ? [] : [rule],
-    managementMode: scenario.ceilingState === "startup" ? "startup" : "console",
     updatedAt: createdAt,
     updatedBy: "storybook-operator",
   };
@@ -31,7 +30,7 @@ export function createCeilingFixture(scenario: CeilingScenario, createdAt: strin
       return fixtureResponse(ceiling);
     }
     const input = body as { expectedVersion: number; rules: SandboxNetworkGrant[] };
-    if (ceiling.managementMode === "startup" || input.expectedVersion !== ceiling.version) {
+    if (input.expectedVersion !== ceiling.version) {
       return fixtureError(409, "RESOURCE_STATE_CONFLICT");
     }
     if (method === "POST" && path.endsWith("/validate")) {

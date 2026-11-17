@@ -55,10 +55,10 @@ Secret Driver operations do not include Installation management. Installed
 Drivers remain trusted, unsandboxed controller code. Invalid production YAML,
 unsupported settings, and unavailable Drivers stop startup before requests run.
 
-`sandboxNetworkPolicyCeiling` seeds the persistent network ceiling once.
-`sandboxNetworkPolicyCeilingOverwriteOnStartup: true` requires explicit rules,
-replaces saved rules at API startup, and disables manual edits. It defaults to
-`false`. See [Installation ceiling](sandbox-policies.md#installation-ceiling)
+`sandboxNetworkPolicyCeiling` seeds the persistent network ceiling once. Later
+starts preserve saved rules; administrators change them through the API or
+Console. The retired `sandboxNetworkPolicyCeilingOverwriteOnStartup` setting is
+rejected. See [Installation ceiling](sandbox-policies.md#installation-ceiling)
 for ownership, grant limits, and authorization.
 
 The optional `iam` block declares the

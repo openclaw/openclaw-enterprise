@@ -13,7 +13,6 @@ const installationCeiling = {
   installationId: id("ins"),
   version: 1,
   rules: [],
-  managementMode: "console",
   updatedAt: time,
   updatedBy: "principal-administrator",
 };

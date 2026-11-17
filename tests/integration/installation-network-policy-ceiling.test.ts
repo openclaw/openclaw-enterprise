@@ -8,9 +8,6 @@ import { waitFor } from "../helpers/wait-for.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { acquireInstallationCeilingStartup } from "../../apps/controller/src/composition/installation-ceiling-startup.ts";
 
 const path = "/installation/sandbox-network-policy-ceiling";
 const rule = {
@@ -21,7 +18,7 @@ const rule = {
 };
 
 // This serial CI file changes the singleton Installation setting. All assertions use the
-// real Fastify routes, Native IAM and PostgreSQL, including the actual startup owner lease.
+// real Fastify routes, Native IAM and PostgreSQL, including seed-only startup.
 test(
   "Installation ceiling owner API preserves empty state and rejects stale saves",
   requiresPostgres,
@@ -35,15 +32,89 @@ test(
       const response = await fixture.inject(method, path, body);
       return { status: response.statusCode, body: response.json(), data: response.json().data };
     };
-    const restarted = (rules?: (typeof rule)[], overwrite = false) =>
+    const restarted = (rules?: (typeof rule)[]) =>
       new OpenClawController(controller.installation, {
         state,
         ...(rules === undefined ? {} : { sandboxNetworkPolicyCeiling: rules }),
-        sandboxNetworkPolicyCeilingOverwriteOnStartup: overwrite,
       });
+    await t.test("concurrent startup seeds once with attributable atomic audit", async () => {
+      const migrator = new pg.Pool({
+        connectionString: localMigratorDatabaseUrl(fixtureDatabaseUrl),
+        max: 1,
+      });
+      try {
+        // Recreate the supported post-bootstrap, pre-API state in this disposable database.
+        await migrator.query("DELETE FROM occ.installation_network_policy_ceiling");
+        const auditCount = async () =>
+          (
+            await pool.query(
+              "SELECT count(*)::integer AS count FROM occ.audit_events WHERE action = 'openclaw.installation.sandbox_network_policy_ceiling.initialize'",
+            )
+          ).rows[0].count;
+        const before = await auditCount();
+        const candidate = restarted([rule]);
+        await assert.rejects(
+          candidate.transact(async () => {
+            await candidate.initializeSandboxNetworkPolicyCeiling();
+            throw new Error("interrupt seed transaction");
+          }),
+          /interrupt seed transaction/,
+        );
+        assert.equal(
+          await state.read((view) => view.installations.getSandboxNetworkPolicyCeiling()),
+          undefined,
+        );
+        assert.equal(await auditCount(), before, "seed and audit roll back together");
+
+        const blocker = await pool.connect();
+        let startups: Promise<{ seedIgnored: boolean }[]> | undefined;
+        try {
+          await blocker.query("BEGIN");
+          await blocker.query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('occ.installation.sandbox-network-policy-ceiling', 0))",
+          );
+          // Different replicas may offer different seeds. Only the first lock holder creates
+          // state; the waiter must observe that committed value under READ COMMITTED.
+          startups = Promise.all([
+            candidate.initializeSandboxNetworkPolicyCeiling(),
+            restarted([]).initializeSandboxNetworkPolicyCeiling(),
+          ]);
+          await waitFor("both initializers wait on the exclusive ceiling lock", async () => {
+            const waiting = await pool.query(
+              "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock(hashtextextended(%sandbox-network-policy-ceiling%'",
+            );
+            return waiting.rows[0].count === 2 ? true : undefined;
+          });
+          await blocker.query("COMMIT");
+          const initialized = await startups;
+          assert.deepEqual(initialized.map(({ seedIgnored }) => seedIgnored).sort(), [false, true]);
+        } finally {
+          await blocker.query("ROLLBACK");
+          blocker.release();
+          await startups;
+        }
+        const seeded = (await request("GET")).data;
+        assert.equal(seeded.version, 1);
+        assert.ok(
+          seeded.rules.length === 0 || JSON.stringify(seeded.rules) === JSON.stringify([rule]),
+        );
+        assert.equal(await auditCount(), before + 1, "only one seed is audited");
+        const evidence = await pool.query(
+          "SELECT actor_id, resource_id, details FROM occ.audit_events WHERE action = 'openclaw.installation.sandbox_network_policy_ceiling.initialize' ORDER BY occurred_at DESC, id DESC LIMIT 1",
+        );
+        assert.equal(evidence.rows[0].actor_id, seeded.updatedBy);
+        assert.equal(evidence.rows[0].resource_id, controller.installation.id);
+        assert.deepEqual(evidence.rows[0].details.rules, seeded.rules);
+        assert.equal(
+          seeded.updatedBy,
+          await state.read((view) => view.installations.getBootstrapActor()),
+        );
+      } finally {
+        await migrator.end();
+      }
+    });
     let read = await request("GET");
     assert.equal(read.status, 200, JSON.stringify(read.body));
-    assert.equal(read.data.managementMode, "console");
     // Start from saved empty state without relying on a constructor seed to reset a live DB.
     if (read.data.rules.length > 0) {
       assert.equal(
@@ -139,47 +210,6 @@ test(
     );
 
     await t.test(
-      "startup overwrite, no-op, clearing and mode changes invalidate old editors",
-      async () => {
-        assert.throws(() => restarted(undefined, true), /requires explicit/);
-        const managed = restarted([rule], true);
-        await managed.initializeSandboxNetworkPolicyCeiling();
-        const startup = (await request("GET")).data;
-        assert.equal(startup.managementMode, "startup");
-        assert.equal(startup.version, cleared.data.version + 1);
-        assert.deepEqual(startup.rules, [rule]);
-        await managed.initializeSandboxNetworkPolicyCeiling();
-        assert.deepEqual((await request("GET")).data, startup);
-        assert.equal(
-          (
-            await fixture.inject("POST", `${path}/validate`, {
-              expectedVersion: startup.version,
-              rules: [],
-            })
-          ).statusCode,
-          409,
-        );
-
-        assert.equal(
-          (await request("PUT", { expectedVersion: startup.version, rules: [] })).status,
-          409,
-        );
-        await restarted().initializeSandboxNetworkPolicyCeiling();
-        const manual = (await request("GET")).data;
-        assert.equal(manual.managementMode, "console");
-        assert.equal(manual.version, startup.version + 1);
-        assert.deepEqual(manual.rules, [rule]);
-        assert.equal(
-          (await request("PUT", { expectedVersion: startup.version, rules: [] })).status,
-          409,
-        );
-        await restarted([], true).initializeSandboxNetworkPolicyCeiling();
-        assert.deepEqual((await request("GET")).data.rules, []);
-        await restarted().initializeSandboxNetworkPolicyCeiling();
-      },
-    );
-
-    await t.test(
       "invalid rules return field details and concurrent editors commit only once",
       async () => {
         const before = (await request("GET")).data;
@@ -268,302 +298,6 @@ test(
           await migrator.end();
         }
         assert.deepEqual((await request("GET")).data, before);
-      },
-    );
-
-    await t.test(
-      "API startup ownership permits agreeing replicas and refuses live configuration changes",
-      async () => {
-        const nested = await pool.connect();
-        try {
-          await nested.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
-          await nested.query("SELECT 1");
-          await assert.rejects(
-            state.transactOnConnection(nested, (unit) =>
-              restarted().initializeSandboxNetworkPolicyCeiling(undefined, unit),
-            ),
-            /requires an idle PostgreSQL connection/,
-          );
-          assert.equal(
-            nested.getTransactionStatus(),
-            "T",
-            "refusal preserves the caller's transaction",
-          );
-          assert.equal(
-            (await nested.query("SHOW transaction_isolation")).rows[0].transaction_isolation,
-            "repeatable read",
-          );
-        } finally {
-          await nested.query("ROLLBACK");
-          nested.release();
-        }
-        const first = await acquireInstallationCeilingStartup(pool, restarted(), state, undefined);
-        let second: Awaited<ReturnType<typeof acquireInstallationCeilingStartup>> | undefined;
-        try {
-          second = await acquireInstallationCeilingStartup(pool, restarted([rule]), state, {
-            sandboxNetworkPolicyCeiling: [rule],
-          });
-          await assert.rejects(
-            acquireInstallationCeilingStartup(pool, restarted([rule], true), state, {
-              sandboxNetworkPolicyCeiling: [rule],
-              sandboxNetworkPolicyCeilingOverwriteOnStartup: true,
-            }),
-            /Conflicting/,
-          );
-          await first.assertCurrent();
-        } finally {
-          await second?.close();
-          await first.close();
-        }
-        const managed = await acquireInstallationCeilingStartup(
-          pool,
-          restarted([rule], true),
-          state,
-          {
-            sandboxNetworkPolicyCeiling: [rule],
-            sandboxNetworkPolicyCeilingOverwriteOnStartup: true,
-          },
-        );
-        try {
-          assert.equal((await request("GET")).data.managementMode, "startup");
-          const reordered = {
-            ports: [{ to: 443, from: 443 }],
-            host: rule.host,
-            binary: rule.binary,
-            id: rule.id,
-          };
-          const replica = await acquireInstallationCeilingStartup(
-            pool,
-            restarted([reordered], true),
-            state,
-            {
-              sandboxNetworkPolicyCeiling: [reordered],
-              sandboxNetworkPolicyCeilingOverwriteOnStartup: true,
-            },
-          );
-          await replica.close();
-        } finally {
-          await managed.close();
-        }
-        await assert.rejects(managed.assertCurrent(), /ownership was lost/);
-        await restarted().initializeSandboxNetworkPolicyCeiling();
-      },
-    );
-
-    await t.test(
-      "lost startup ownership rejects owner operations and releases the dedicated client",
-      async () => {
-        const name = `ceiling-lease-${randomUUID()}`;
-        const leasePool = new pg.Pool({
-          connectionString: fixtureDatabaseUrl,
-          max: 2,
-          application_name: name,
-        });
-        let lease: Awaited<ReturnType<typeof acquireInstallationCeilingStartup>> | undefined;
-        const guarded = new OpenClawController(controller.installation, {
-          state,
-          sandboxNetworkPolicyCeiling: [rule],
-          sandboxNetworkPolicyCeilingOverwriteOnStartup: true,
-          assertSandboxNetworkPolicyCeilingStartupAuthority: async () => lease?.assertCurrent(),
-        });
-        const iam = controller.selectedDriver("iam")!;
-        guarded.registerDriver(iam);
-        guarded.selectDriver("iam", iam.id);
-        try {
-          lease = await acquireInstallationCeilingStartup(leasePool, guarded, state, {
-            sandboxNetworkPolicyCeiling: [rule],
-            sandboxNetworkPolicyCeilingOverwriteOnStartup: true,
-          });
-          await assert.rejects(
-            state.transact((unit) =>
-              guarded.initializeSandboxNetworkPolicyCeiling(undefined, unit),
-            ),
-            /requires its single startup ownership transaction/,
-          );
-          const victim = await pool.query(
-            "SELECT pid FROM pg_stat_activity WHERE application_name = $1",
-            [name],
-          );
-          assert.equal(victim.rowCount, 1);
-          await pool.query("SELECT pg_terminate_backend($1)", [victim.rows[0].pid]);
-          await assert.rejects(
-            guarded.initializeSandboxNetworkPolicyCeiling(),
-            /requires its single startup ownership transaction/,
-          );
-          await assert.rejects(
-            state.transact((unit) =>
-              guarded.initializeSandboxNetworkPolicyCeiling(undefined, unit),
-            ),
-            /requires its single startup ownership transaction/,
-          );
-
-          await assert.rejects(
-            guarded.getInstallationSandboxNetworkPolicyCeiling(principal.id),
-            /startup ownership is unavailable/,
-          );
-          await assert.doesNotReject(
-            lease.close(),
-            "closing a lost ownership client must discard it without querying it",
-          );
-          await assert.doesNotReject(lease.close(), "ownership cleanup remains idempotent");
-        } finally {
-          await lease?.close().catch(() => undefined);
-          await leasePool.end();
-          await restarted().initializeSandboxNetworkPolicyCeiling();
-        }
-      },
-    );
-
-    await t.test(
-      "startup loss rolls back rules, audit and fingerprint on the owning session",
-      async () => {
-        const name = `ceiling-atomic-${randomUUID()}`;
-        const gate = `ceiling-fingerprint-${randomUUID()}`;
-        const suffix = randomUUID().replaceAll("-", "");
-        const trigger = `test_ceiling_${suffix}`;
-        const migrator = new pg.Pool({
-          connectionString: localMigratorDatabaseUrl(fixtureDatabaseUrl),
-          max: 1,
-        });
-        const startupPool = new pg.Pool({
-          connectionString: fixtureDatabaseUrl,
-          application_name: name,
-          max: 1,
-        });
-        const snapshot = async () => ({
-          setting: (await pool.query("SELECT * FROM occ.installation_network_policy_ceiling")).rows,
-          audit: (
-            await pool.query(
-              "SELECT id FROM occ.audit_events WHERE action LIKE 'openclaw.installation.sandbox_network_policy_ceiling.%' ORDER BY id",
-            )
-          ).rows,
-        });
-        const before = await snapshot();
-        const blocker = await pool.connect();
-        let startup: Promise<unknown> | undefined;
-        let lease: Awaited<ReturnType<typeof acquireInstallationCeilingStartup>> | undefined;
-        try {
-          // Pause only the final fingerprint write, after rules and audit have been staged.
-          // Killing its real backend must roll back all three as one startup operation.
-          await migrator.query(`CREATE FUNCTION occ.${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN PERFORM pg_advisory_xact_lock(hashtextextended('${gate}', 0)); RETURN NEW; END $$`);
-          await migrator.query(`CREATE TRIGGER ${trigger} BEFORE UPDATE OF startup_configuration
-            ON occ.installation_network_policy_ceiling FOR EACH ROW EXECUTE FUNCTION occ.${trigger}()`);
-          await blocker.query("BEGIN");
-          await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gate]);
-          const candidate = restarted([{ ...rule, host: "atomic.example.org" }], true);
-          startup = acquireInstallationCeilingStartup(startupPool, candidate, state, {
-            sandboxNetworkPolicyCeiling: [{ ...rule, host: "atomic.example.org" }],
-            sandboxNetworkPolicyCeilingOverwriteOnStartup: true,
-          }).then(
-            (value) => {
-              lease = value;
-              return undefined;
-            },
-            (error: unknown) => error,
-          );
-          const pid = await waitFor("startup fingerprint write waits on PostgreSQL", async () => {
-            const waiting = await pool.query(
-              "SELECT pid FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock'",
-              [name],
-            );
-            return waiting.rows[0]?.pid as number | undefined;
-          });
-          await pool.query("SELECT pg_terminate_backend($1)", [pid]);
-          assert.ok(await startup, "the interrupted startup must reject");
-          assert.deepEqual(
-            await snapshot(),
-            before,
-            "startup has no separately committed rules or audit",
-          );
-          assert.equal(
-            startupPool.totalCount,
-            0,
-            "failed startup discards its dedicated connection",
-          );
-        } finally {
-          await blocker.query("ROLLBACK");
-          blocker.release();
-          await startup;
-          await lease?.close();
-          await migrator.query(
-            `DROP TRIGGER IF EXISTS ${trigger} ON occ.installation_network_policy_ceiling`,
-          );
-          await migrator.query(`DROP FUNCTION IF EXISTS occ.${trigger}()`);
-          await startupPool.end();
-          await migrator.end();
-        }
-      },
-    );
-
-    await t.test(
-      "development readiness and liveness reject a lost startup lease until restart",
-      async () => {
-        const name = `ceiling-development-${randomUUID()}`;
-        const connection = new URL(fixtureDatabaseUrl);
-        connection.searchParams.set("application_name", name);
-        const compose = () =>
-          composePostgresDevelopment(
-            {
-              mode: "development",
-              host: "127.0.0.1",
-              databaseUrl: connection.toString(),
-              authSecret: "ceiling-composed-recovery-session-secret-32-characters",
-              authBaseURL: "https://console.oce.localhost",
-              logging: { level: "info" },
-              nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
-            },
-            {
-              computeDriver: createDevelopmentComputeDriver(),
-              configurationDriver: createTestConfigurationDriver(),
-            },
-          );
-        let app = await compose();
-        try {
-          // Composition has initialized already, but Fastify has not entered onReady yet.
-          // A dead replica must never rewrite a newer replica's startup state there.
-          const owner = await pool.query(
-            "SELECT DISTINCT a.pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid WHERE a.application_name=$1 AND l.locktype='advisory' AND l.granted",
-            [name],
-          );
-          assert.equal(owner.rowCount, 1);
-          await pool.query("SELECT pg_terminate_backend($1)", [owner.rows[0].pid]);
-          const newer = restarted([{ ...rule, host: "newer.example.org" }], true);
-          const replacement = await acquireInstallationCeilingStartup(pool, newer, state, {
-            sandboxNetworkPolicyCeiling: [{ ...rule, host: "newer.example.org" }],
-            sandboxNetworkPolicyCeilingOverwriteOnStartup: true,
-          });
-          try {
-            const before = await state.read((view) =>
-              view.installations.getSandboxNetworkPolicyCeiling(),
-            );
-            for (const url of ["/readyz", "/healthz"]) {
-              const result = await app.inject({ method: "GET", url });
-              assert.equal(result.statusCode, 503, result.body);
-              assert.equal(result.json().error.code, "DEPENDENCY_UNAVAILABLE");
-            }
-            assert.deepEqual(
-              await state.read((view) => view.installations.getSandboxNetworkPolicyCeiling()),
-              before,
-            );
-          } finally {
-            await replacement.close();
-          }
-          await app.close();
-          app = await compose();
-          for (const url of ["/readyz", "/healthz"]) {
-            const result = await app.inject({ method: "GET", url });
-            assert.equal(result.statusCode, 200, result.body);
-          }
-          assert.equal(
-            (await state.read((view) => view.installations.getSandboxNetworkPolicyCeiling()))
-              ?.managementMode,
-            "console",
-          );
-        } finally {
-          await app.close();
-          await restarted().initializeSandboxNetworkPolicyCeiling();
-        }
       },
     );
 

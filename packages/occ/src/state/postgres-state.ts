@@ -193,7 +193,6 @@ function predecessorReplacementFromJson(
 }
 
 export interface PostgresClient extends PostgresQueryClient {
-  getTransactionStatus?(): string | null;
   release(discard?: boolean): void;
   on?(event: "error", listener: (error: Error) => void): unknown;
   removeListener?(event: "error", listener: (error: Error) => void): unknown;
@@ -1699,20 +1698,6 @@ export class PostgresPlatformState implements PlatformStateStore {
     );
   }
 
-  /** Use an idle session. Its owner retains the client and must discard it on failure. */
-  async transactOnConnection<T>(
-    client: PostgresClient,
-    work: (state: PlatformUnitOfWork) => Promise<T>,
-  ): Promise<T> {
-    // PostgreSQL accepts nested BEGIN without changing isolation. Never adopt a caller's snapshot.
-    if (client.getTransactionStatus?.() !== "I") {
-      throw new ScopeViolationError(
-        "A caller-owned transaction requires an idle PostgreSQL connection.",
-      );
-    }
-    return this.execute(false, async (state) => work(state), true, client);
-  }
-
   /** Observe changes committed while acquiring locks, regardless of the connection default. */
   async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
     return this.execute(false, async (state) => work(state), true);
@@ -1980,11 +1965,10 @@ export class PostgresPlatformState implements PlatformStateStore {
     readOnly: boolean,
     work: (state: PlatformUnitOfWork, context: TransactionContext) => Promise<T>,
     readCommitted = false,
-    borrowedClient?: PostgresClient,
   ): Promise<T> {
     let client: PostgresClient;
     try {
-      client = borrowedClient ?? (await this.pool.connect());
+      client = await this.pool.connect();
     } catch (error) {
       // No statement has run yet, so any checkout failure (DNS, routing, TLS,
       // credentials or a password callback) is unavailability, not a server verdict.
@@ -2138,9 +2122,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       }
       let cleanupFailed = false;
       try {
-        if (borrowedClient === undefined) {
-          client.release(discard || transportError !== undefined);
-        }
+        client.release(discard || transportError !== undefined);
       } catch {
         cleanupFailed = true;
       }
@@ -2224,7 +2206,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           return undefined;
         }
         const result = await client.query(
-          "SELECT installation_id, version, rules, management_mode, updated_at, updated_by FROM occ.installation_network_policy_ceiling WHERE installation_id = $1",
+          "SELECT installation_id, version, rules, updated_at, updated_by FROM occ.installation_network_policy_ceiling WHERE installation_id = $1",
           [installation.id],
         );
         const row = rows(result.rows)[0];
@@ -2235,10 +2217,6 @@ export class PostgresPlatformState implements PlatformStateStore {
           installationId: text(row, "installation_id"),
           version: Number(row.version),
           rules: row.rules as InstallationSandboxNetworkPolicyCeiling["rules"],
-          managementMode: text(
-            row,
-            "management_mode",
-          ) as InstallationSandboxNetworkPolicyCeiling["managementMode"],
           updatedAt: timestamp(row, "updated_at"),
           updatedBy: text(row, "updated_by"),
         });
@@ -2246,14 +2224,13 @@ export class PostgresPlatformState implements PlatformStateStore {
       saveSandboxNetworkPolicyCeiling: async (ceiling, expectedVersion) => {
         await this.requireInstallation(context, ceiling.installationId);
         const result = await client.query(
-          `INSERT INTO occ.installation_network_policy_ceiling (installation_id, version, rules, management_mode, updated_at, updated_by)
-          SELECT $1, $2, $3::jsonb, $4, $5, $6 WHERE $7::integer = 0
+          `INSERT INTO occ.installation_network_policy_ceiling (installation_id, version, rules, updated_at, updated_by)
+          SELECT $1, $2, $3::jsonb, $4, $5 WHERE $6::integer = 0
           ON CONFLICT (installation_id) DO NOTHING RETURNING installation_id`,
           [
             ceiling.installationId,
             ceiling.version,
             JSON.stringify(ceiling.rules),
-            ceiling.managementMode,
             ceiling.updatedAt,
             ceiling.updatedBy,
             expectedVersion,
@@ -2263,13 +2240,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           return result.rowCount === 1 ? immutableCopy(ceiling) : undefined;
         }
         const updated = await client.query(
-          `UPDATE occ.installation_network_policy_ceiling SET version = $2, rules = $3::jsonb, management_mode = $4, updated_at = $5, updated_by = $6
-          WHERE installation_id = $1 AND version = $7 AND $2::integer = $7::integer + 1 RETURNING installation_id`,
+          `UPDATE occ.installation_network_policy_ceiling SET version = $2, rules = $3::jsonb, updated_at = $4, updated_by = $5
+          WHERE installation_id = $1 AND version = $6 AND $2::integer = $6::integer + 1 RETURNING installation_id`,
           [
             ceiling.installationId,
             ceiling.version,
             JSON.stringify(ceiling.rules),
-            ceiling.managementMode,
             ceiling.updatedAt,
             ceiling.updatedBy,
             expectedVersion,

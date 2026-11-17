@@ -54,8 +54,6 @@ export const CeilingEmpty = { ...story("ceilingEmpty") };
 
 export const CeilingLoading = { ...story("ceilingLoading") };
 
-export const CeilingStartup = { ...story("ceilingStartup") };
-
 export const CeilingForbidden = { ...story("ceilingForbidden") };
 
 export const CeilingUnavailable = { ...story("ceilingUnavailable") };

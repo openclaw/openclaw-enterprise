@@ -189,14 +189,6 @@ export const settingsScenarios = {
     description:
       "The ceiling read is pending. No editing controls are offered before the saved value is known.",
   },
-  ceilingStartup: {
-    group: "Pages/Settings",
-    name: "Ceiling startup management",
-    path: "/console/settings",
-    ceilingState: "startup",
-    description:
-      "Managed by startup configuration makes the ceiling read-only, with operator guidance.",
-  },
   ceilingForbidden: {
     group: "Pages/Settings",
     name: "Ceiling forbidden",

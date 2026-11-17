@@ -23,8 +23,8 @@ later versions through the Sandbox Driver. Denial logs and recommendations infor
 
 ```mermaid
 graph TD
-  Start["Trusted API startup"] --> Init["Seed or replace<br/>persisted ceiling"]
-  Admin["Installation administrator"] --> Edit["Authorize and compare<br/>version and mode"]
+  Start["Trusted API startup"] --> Init["Seed absent<br/>persisted ceiling"]
+  Admin["Installation administrator"] --> Edit["Authorize and compare<br/>saved version"]
   Edit --> Limits["Save ceiling and audit<br/>in one transaction"]
   Init --> Limits
   Limits --> Preview
@@ -49,16 +49,12 @@ Arrows trace source paths; provider verification has separate limits.
 
 ### 0. Initialize and manage the Installation ceiling
 
-`apps/controller/src/composition/installation-ceiling-startup.ts:acquireInstallationCeilingStartup`
-commits rules, audit and startup fingerprint on the lease-owning PostgreSQL
-connection. Matching settings allow replicas; conflicts refuse startup.
-Readiness and liveness reject permanent lease loss, allowing Kubernetes to restart
-the replica. Stop replicas before changing startup-managed rules or mode.
-
-`packages/occ/src/index.ts:initializeSandboxNetworkPolicyCeiling` takes the
-exclusive lock and attributes initialization to the bootstrap identity.
-Composed controllers permit one attempt with the lease transaction.
-Memory callers initialize explicitly; workers never seed state.
+API composition calls
+`packages/occ/src/index.ts:initializeSandboxNetworkPolicyCeiling` before exposing
+routes. It takes the exclusive ceiling lock and creates absent state with audit
+attributed to the bootstrap identity. Concurrent starts serialize the seed; an
+existing record, including empty rules, is unchanged. No startup fingerprint or
+dedicated ownership session survives initialization. Workers never seed state.
 
 `apps/controller/src/console/network-policy-ceiling.mts:renderNetworkPolicyCeiling`
 retains drafts and requires server preview before an explicit save.
@@ -66,7 +62,7 @@ retains drafts and requires server preview before an explicit save.
 `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` dispatches the
 Installation endpoints under exact-Installation `administer`.
 `updateInstallationSandboxNetworkPolicyCeiling` fences authority, validates grants,
-locks exclusively, rechecks mode and version, and commits rules with audit.
+locks exclusively, rechecks the version, and commits rules with audit.
 Preview uses the same checks without writes or reconciliation.
 
 Admission and worker application explicitly use Read Committed, taking the shared
@@ -290,6 +286,7 @@ the policy read, only the network policy card states it; the suggestions card is
 
 ## Changelog
 
+- 2026-11-17 21:11: Remove startup overwrite and replica lease ownership; trace dynamic seed-once initialization. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - 645ec11b283cd7c3133304943706049f08e70e52)
 - 2026-11-16 11:31: Trace atomic startup ownership, lease-loss probes and scoped Read Committed admission. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - 4e08594acaf0bf68f53b1e6c6c88be94a4014589)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)

@@ -84,6 +84,13 @@ test("Settings reviews shared field errors and saves only the reviewed ceiling",
   assert.equal((await response).status(), 200);
   await section.getByText("Network policy ceiling saved", { exact: true }).waitFor();
   const saved = (await fixture.request("GET", path)).data;
+  assert.deepEqual(Object.keys(saved).sort(), [
+    "installationId",
+    "rules",
+    "updatedAt",
+    "updatedBy",
+    "version",
+  ]);
   assert.equal(saved.version, 2);
   assert.equal(saved.rules[0].host, rule.host);
   await click(section, "Edit rule");

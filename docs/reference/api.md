@@ -3243,7 +3243,6 @@ Get the Installation network policy ceiling
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.installationId` | `string` | Yes | — |
-| `data.managementMode` | `"console" or "startup"` | Yes | — |
 | `data.rules` | `array<object>` | Yes | max items: 32 |
 | `data.rules[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.rules[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
@@ -3262,7 +3261,6 @@ Example response
 {
   "data": {
     "installationId": "ins_123e4567-e89b-42d3-a456-426614174000",
-    "managementMode": "console",
     "rules": [],
     "updatedAt": "2026-10-01T12:00:00.000Z",
     "updatedBy": "principal-administrator",
@@ -3346,7 +3344,6 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.installationId` | `string` | Yes | — |
-| `data.managementMode` | `"console" or "startup"` | Yes | — |
 | `data.rules` | `array<object>` | Yes | max items: 32 |
 | `data.rules[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.rules[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
@@ -3365,7 +3362,6 @@ Example response
 {
   "data": {
     "installationId": "ins_123e4567-e89b-42d3-a456-426614174000",
-    "managementMode": "console",
     "rules": [
       {
         "binary": "/usr/bin/python3.11",

@@ -262,7 +262,6 @@ export interface InstallationSandboxNetworkPolicyCeiling {
   readonly installationId: string;
   readonly version: number;
   readonly rules: readonly SandboxNetworkGrant[];
-  readonly managementMode: "console" | "startup";
   readonly updatedAt: string;
   readonly updatedBy: string;
 }

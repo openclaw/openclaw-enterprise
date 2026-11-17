@@ -5785,7 +5785,6 @@ async function assertAgentNetworkPolicyLifecycle(topology, enterCheck, diagnosti
   const ceilingPath = "/installation/sandbox-network-policy-ceiling";
   const readCeiling = await topology.request("GET", ceilingPath);
   assert.equal(readCeiling.status, 200, JSON.stringify(readCeiling.error));
-  assert.equal(readCeiling.data.managementMode, "console");
   let ceilingVersion = readCeiling.data.version;
   const saveCeiling = async (rules) => {
     const saved = await topology.request("PUT", ceilingPath, {

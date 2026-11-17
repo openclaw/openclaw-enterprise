@@ -147,7 +147,6 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly repository?: SelectedDriverConfiguration;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
-  readonly sandboxNetworkPolicyCeilingOverwriteOnStartup?: boolean;
   /** RFC-0026 configured Roles, Groups, and Group bindings; see the configuration reference. */
   readonly iam?: InstallationIAMConfiguration;
   readonly occ: { readonly cluster: string };
@@ -208,7 +207,6 @@ export function installationControllerOptions(
 ): Pick<
   ControllerOptions,
   | "driverConfigurations"
-  | "sandboxNetworkPolicyCeilingOverwriteOnStartup"
   | "sandboxNetworkPolicyCeiling"
   | "iamConfiguration"
   | "nativeWorkerSupport"
@@ -219,8 +217,6 @@ export function installationControllerOptions(
     ...(installation?.sandboxNetworkPolicyCeiling === undefined
       ? {}
       : { sandboxNetworkPolicyCeiling: installation.sandboxNetworkPolicyCeiling }),
-    sandboxNetworkPolicyCeilingOverwriteOnStartup:
-      installation?.sandboxNetworkPolicyCeilingOverwriteOnStartup ?? false,
     ...(installation?.iam === undefined ? {} : { iamConfiguration: installation.iam }),
     ...(installation?.runtime === undefined
       ? {}
@@ -878,6 +874,11 @@ async function composeInstallationConfiguration(
   if (configuration === undefined) {
     return undefined;
   }
+  if (Object.hasOwn(configuration, "sandboxNetworkPolicyCeilingOverwriteOnStartup")) {
+    throw new Error(
+      "sandboxNetworkPolicyCeilingOverwriteOnStartup is retired; startup rules only seed an absent ceiling.",
+    );
+  }
   if (
     options.mode === "development" &&
     configuration.occ === undefined &&
@@ -892,15 +893,6 @@ async function composeInstallationConfiguration(
   const occ = object(configuration.occ, "occ");
   closed(occ, ["cluster"], "occ");
   const cluster = nonempty(occ.cluster, "occ.cluster");
-  const overwriteCeiling = configuration.sandboxNetworkPolicyCeilingOverwriteOnStartup;
-  if (overwriteCeiling !== undefined && typeof overwriteCeiling !== "boolean") {
-    throw new Error("sandboxNetworkPolicyCeilingOverwriteOnStartup must be a boolean.");
-  }
-  if (overwriteCeiling === true && configuration.sandboxNetworkPolicyCeiling === undefined) {
-    throw new Error(
-      "Startup ceiling overwrite requires explicit sandboxNetworkPolicyCeiling rules.",
-    );
-  }
   const sandboxNetworkPolicyCeiling = configuration.sandboxNetworkPolicyCeiling;
   if (sandboxNetworkPolicyCeiling !== undefined) {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
@@ -1345,9 +1337,6 @@ async function composeInstallationConfiguration(
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
     ...(sandboxNetworkPolicyCeiling === undefined ? {} : { sandboxNetworkPolicyCeiling }),
-    ...(overwriteCeiling === undefined
-      ? {}
-      : { sandboxNetworkPolicyCeilingOverwriteOnStartup: overwriteCeiling }),
     ...(iamSettings === undefined ? {} : { iam: iamSettings }),
     presets: Object.freeze({ includeDefaults }),
     logging,

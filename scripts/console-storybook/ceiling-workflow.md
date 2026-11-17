@@ -2,7 +2,7 @@
 
 Open **Pages/Settings → Ceiling Empty**. These stories use the production Console
 renderer with simulated API responses. They do not prove PostgreSQL persistence,
-IAM enforcement, startup ownership, or Agent runtime traffic.
+IAM enforcement, seed-once initialization, or Agent runtime traffic.
 
 1. Choose **Add rule**. Enter `/usr/bin/python3.11` for **Executable path** and
    `docs.example.org` for **Destination hostname**. Keep the generated Rule ID
@@ -24,9 +24,8 @@ IAM enforcement, startup ownership, or Agent runtime traffic.
    shows the refusal before any saved value is available. The existing story
    **Driver Configuration Denied** has a known nonadministrator permission
    answer: neither the ceiling nor Driver configuration endpoint is queried.
-7. Open **Ceiling Startup**. Confirm **Managed by startup configuration** and
-   the read-only rule list. **Ceiling Loading** offers no editor while its read
-   is pending; **Ceiling Unavailable** offers **Retry ceiling read**.
+7. Open **Ceiling Loading**. Confirm that no editor is available while the read
+   is pending. **Ceiling Unavailable** offers **Retry ceiling read**.
 
 Repeat the add/review/save flow with keyboard controls at 1440 px and 390 px.
 Check that executable paths and destinations fit, the buttons wrap, the current

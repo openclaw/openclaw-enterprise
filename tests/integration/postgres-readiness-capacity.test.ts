@@ -104,7 +104,7 @@ test(
     let liveSockets = 0;
     let peakSockets = 0;
     const identify = (pool: pg.Pool) => {
-      if (pool.options.max === 2 && pool.options.connectionString === databaseUrl) {
+      if (pool.options.max === 1 && pool.options.connectionString === databaseUrl) {
         applicationPool ??= pool;
       }
     };
@@ -137,7 +137,7 @@ test(
           authSecret: secret,
           authBaseURL: origin,
           nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
-          poolMax: 2,
+          poolMax: 1,
           drivers: await productionDrivers(),
         });
       app = await compose();
@@ -174,9 +174,9 @@ test(
       assert.equal(authorized.statusCode, 200);
       assert.ok("data" in authorized.json());
       assert.equal(pool.waitingCount, 0);
-      // One dedicated startup lease stays checked out; the other connection supplies
-      // all normal application and readiness work throughout this capacity proof.
-      assert.equal(pool.totalCount, 2);
+      // Startup releases its transaction client; one connection supplies all normal
+      // application and readiness work throughout this capacity proof.
+      assert.equal(pool.totalCount, 1);
       assert.equal(pool.idleCount, 1);
 
       // An occupied real client and queued authenticated read reproduce the
@@ -190,8 +190,7 @@ test(
       const methods = ["GET", "HEAD", "GET", "HEAD", "GET", "HEAD"] as const;
       const probes = methods.map((method) => send(method));
       await waitUntil(() => arrived === enteredBefore + methods.length, "all six routes entered");
-      // Route entry precedes the dedicated startup-lease check. Wait for the real
-      // application-pool query before measuring its shared admission.
+      // Wait for the real application-pool query before measuring shared admission.
       await waitUntil(() => readinessQueries > before, "readiness reaches the application pool");
       assert.equal(readinessQueries - before, 1, "one readiness query is admitted");
       assert.equal(pool.waitingCount, 2, "only authentication and readiness wait for the client");
@@ -324,31 +323,6 @@ test(
       assert.equal((await send("GET")).statusCode, 200);
       assert.equal(readinessQueries, afterDisconnect + 1);
       assert.equal(pool.waitingCount, 0);
-
-      // The dedicated session is also a serving prerequisite. Real backend loss must
-      // fail both Kubernetes probes, and replacement composition must reacquire first.
-      const observer = new pg.Pool({ connectionString: databaseUrl, max: 1 });
-      try {
-        const owner = await observer.query(
-          "SELECT DISTINCT pid FROM pg_locks WHERE locktype='advisory' AND granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())",
-        );
-        assert.equal(owner.rowCount, 1, "only the startup session retains an advisory lock");
-        await observer.query("SELECT pg_terminate_backend($1)", [owner.rows[0].pid]);
-        for (const url of ["/readyz", "/healthz"]) {
-          const unavailable = await server.inject({ method: "GET", url });
-          assert.equal(unavailable.statusCode, 503, unavailable.body);
-          assert.equal(unavailable.json().error.code, "DEPENDENCY_UNAVAILABLE");
-        }
-        await app.close();
-        const replacement = await compose();
-        app = replacement;
-        for (const url of ["/readyz", "/healthz"]) {
-          const recovered = await replacement.inject({ method: "GET", url });
-          assert.equal(recovered.statusCode, 200, recovered.body);
-        }
-      } finally {
-        await observer.end();
-      }
     } finally {
       if (heldClient !== undefined) {
         await heldClient.query("ROLLBACK").catch(() => undefined);

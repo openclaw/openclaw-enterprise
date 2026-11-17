@@ -1761,6 +1761,7 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preInstallationNetworkPolicyCeiling"],
+      [81, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2063,6 +2064,7 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preInstallationNetworkPolicyCeiling"],
+      [81, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2263,6 +2265,7 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preInstallationNetworkPolicyCeiling"],
+      [81, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2339,6 +2342,7 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preInstallationNetworkPolicyCeiling"],
+      [81, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2363,7 +2367,9 @@ test(
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         // 0081 grants access after creating the ceiling table; abort that final GRANT.
+        // 0082 removes startup ownership columns; abort its ALTER TABLE.
         const rollbackTag = [
+          [81, "ALTER TABLE"],
           [80, "GRANT"],
           [79, "ALTER TABLE"],
           [78, "GRANT"],

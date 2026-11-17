@@ -196,6 +196,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 80 && completedCount > 80) {
     return "preInstallationNetworkPolicyCeiling";
   }
+  if (count === 81 && completedCount > 81) {
+    return "preDynamicInstallationNetworkPolicyCeiling";
+  }
   if (count === completedCount) {
     return "completed";
   }
