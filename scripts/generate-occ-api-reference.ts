@@ -228,9 +228,36 @@ function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
   return rows;
 }
 
-function schemaTable(schema: unknown, document: unknown) {
-  const rows = schemaRows(resolveSchema(schema, document), document);
+function schemaVariantLabel(schema: unknown, document: unknown): string | undefined {
+  const resolved = resolveSchema(schema, document);
+  for (const [name, property] of entries(optionalField(resolved, "properties") ?? {})) {
+    const value = resolveSchema(property, document);
+    if (Object.hasOwn(fields(value), "const")) {
+      return `\`${name}: ${JSON.stringify(field(value, "const"))}\``;
+    }
+  }
+  return undefined;
+}
+
+function schemaTable(schema: unknown, document: unknown): string {
+  const resolved = resolveSchema(schema, document);
+  const rows = schemaRows(resolved, document);
   if (!rows.length) {
+    const variants = optionalField(resolved, "anyOf");
+    if (
+      Array.isArray(variants) &&
+      variants.some((variant) => schemaVariantLabel(variant, document))
+    ) {
+      return variants
+        .map((variant) => {
+          const required = array(optionalField(resolveSchema(variant, document), "required") ?? []);
+          const label =
+            schemaVariantLabel(variant, document) ??
+            `Required fields: ${required.map((name) => `\`${text(name)}\``).join(", ")}`;
+          return `**${label}**\n\n${schemaTable(variant, document)}`;
+        })
+        .join("\n\n");
+    }
     return `Schema: \`${schemaType(schema, document)}\`.`;
   }
   return ["| Field | Type | Required | Constraints |", "| --- | --- | --- | --- |", ...rows].join(
