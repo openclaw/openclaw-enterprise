@@ -51,7 +51,12 @@ import {
   workspaceVerifierPolicy,
   workspaceVerifierTool,
 } from "./workspace-verifier.ts";
-import { ensureWorkspaceCodex, stockGitPolicy, stockGitTools } from "./stock-git.ts";
+import {
+  ensureWorkspaceCodex,
+  execCoversGit,
+  stockGitPolicy,
+  stockGitTools,
+} from "./stock-git.ts";
 import {
   nativeHookPolicy,
   nativeHookProbe,
@@ -110,6 +115,7 @@ const startupMessages = new Set([
   "compiled_agent_missing",
   "grant_covers_private_runtime",
   "workspace_verifier_refused",
+  "agent_exec_covers_git",
   "owner_config_file",
   "linux_arm64_required",
   "runtime_already_used",
@@ -503,7 +509,15 @@ export function hostConfig(input: unknown, additionalKeys: readonly string[] = [
     runtimeDir,
     workspace,
     read: checked("read-grants", () => grants(data.read)),
-    exec: checked("exec-grants", () => grants(data.exec)),
+    exec: checked("exec-grants", () => {
+      // Codex's own git would evaluate workspace Git configuration in the agent's boundary.
+      if (
+        Array.isArray(data.exec) &&
+        execCoversGit(data.exec.filter((path): path is string => typeof path === "string"))
+      )
+        throw new Error("agent_exec_covers_git");
+      return grants(data.exec);
+    }),
     linuxPreview: true,
   };
   if (data.workspaceVerifierSha256 !== undefined) {
@@ -986,6 +1000,9 @@ export function start(
       ]);
       const write = outermost([...writable, config.workspace, bridgeDir]);
       const exec = outermost([...config.exec, config.codexBin, config.nodeBin]);
+      // Also no git or gh on the search path the agent's environment names (finding 3325).
+      if (execCoversGit(exec, (environment.PATH ?? "").split(":").filter(isAbsolute)))
+        throw new Error("agent_exec_covers_git");
       const configText = [
         'name = "oce-strands"',
         `box_dir = ${quoted(join(work, "box-state"))}`,

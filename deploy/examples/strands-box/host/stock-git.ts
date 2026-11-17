@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { WORKSPACE_MARKER } from "./workspace-verifier.ts";
 
@@ -22,6 +22,56 @@ import { WORKSPACE_MARKER } from "./workspace-verifier.ts";
  */
 export const STOCK_GIT = "/usr/bin/git";
 export const STOCK_GH = "/usr/local/bin/gh";
+
+/**
+ * Git and gh never enter the agent's own boundary (finding 3325). Codex runs git itself, outside
+ * Box's shell, in the workspace root at every turn start (`status --porcelain`, `rev-parse`,
+ * `remote`, `config`). With git in the agent's exec list, a workspace repository whose attributes
+ * name a `clean` filter of a program the agent may run (Node) runs workload-written code with the
+ * Codex home, the native hook credential and the bridge in reach. Without it Codex finds no git
+ * and carries on without git information, and the workload's git and gh still run in their own
+ * `[tool]` boundaries below, which Box's shell starts without the agent's exec grant. So an exec
+ * grant that covers git or gh in a standard program directory or the agent's search path, or git's
+ * helper directory, is refused.
+ */
+export const AGENT_SEARCH_PATH = [
+  "/usr/local/sbin",
+  "/usr/local/bin",
+  "/usr/sbin",
+  "/usr/bin",
+  "/sbin",
+  "/bin",
+] as const;
+const GIT_HELPERS = ["/usr/lib/git-core", "/usr/libexec/git-core"] as const;
+
+export function execCoversGit(
+  grants: readonly string[],
+  searchPath: readonly string[] = AGENT_SEARCH_PATH,
+): boolean {
+  const programs = [
+    ...[...AGENT_SEARCH_PATH, ...searchPath].flatMap((directory) => [
+      join(directory, "git"),
+      join(directory, "gh"),
+    ]),
+    ...GIT_HELPERS,
+  ];
+  // Also each one's real file, where it is a link to a file elsewhere.
+  for (const program of [...programs]) {
+    try {
+      programs.push(realpathSync(program));
+    } catch {
+      // absent here: its configured path is still refused
+    }
+  }
+  const within = (parent: string, child: string) =>
+    child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
+  // A grant over one of them, or inside git's helper directory (each helper is git).
+  return grants.some(
+    (grant) =>
+      programs.some((program) => within(grant, program)) ||
+      GIT_HELPERS.some((helpers) => within(helpers, grant)),
+  );
+}
 
 export function stockGitPolicy(workspace: string): string {
   const w = JSON.stringify(workspace);
