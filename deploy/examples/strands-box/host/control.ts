@@ -1521,6 +1521,35 @@ export function readModelRevocation(
   return value as unknown as ModelRevocation;
 }
 
+/**
+ * Write this revision's model revoke receipt durably (or return the one already written): from
+ * then on the host refuses the revision's model requests, also after a host restart.
+ */
+export function recordModelRevocation(
+  config: InstalledConfig,
+  owner: Owner,
+  executionId: string,
+  sourceId: string,
+): ModelRevocation {
+  const existing = readModelRevocation(config, owner, sourceId);
+  if (existing !== undefined) return existing;
+  const receipt: ModelRevocation = {
+    version: 1,
+    receiptId: randomUUID(),
+    revokedAt: new Date().toISOString(),
+    owner,
+    executionId,
+    sourceId,
+  };
+  const directory = config.protectedModel!.revocationDir;
+  durableRecord(
+    directory,
+    revocationFile(config, owner, sourceId).slice(directory.length + 1),
+    receipt,
+  );
+  return receipt;
+}
+
 /** The model route's target as Box sends it to the source: host, port and the one POST path. */
 function modelTarget(route: EgressRoute): { host: string; port: number; path: string } {
   const url = new URL(route.url);
@@ -1764,24 +1793,12 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         return;
       }
       if (model.revoked === undefined) {
-        const existing = readModelRevocation(config, held.view.owner, model.sourceId);
-        const receipt: ModelRevocation = existing ?? {
-          version: 1,
-          receiptId: randomUUID(),
-          revokedAt: new Date().toISOString(),
-          owner: held.view.owner,
-          executionId: held.view.executionId,
-          sourceId: model.sourceId,
-        };
-        if (existing === undefined) {
-          durableRecord(
-            config.protectedModel.revocationDir,
-            revocationFile(config, held.view.owner, model.sourceId).slice(
-              config.protectedModel.revocationDir.length + 1,
-            ),
-            receipt,
-          );
-        }
+        const receipt = recordModelRevocation(
+          config,
+          held.view.owner,
+          held.view.executionId,
+          model.sourceId,
+        );
         model.revoked = { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
         process.stdout.write(`strands-box-control: model attachment revoked ${receipt.receiptId}\n`);
       }

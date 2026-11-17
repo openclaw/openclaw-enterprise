@@ -16,17 +16,25 @@ import {
 } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { createRepositoryGitRequests } from "../../apps/controller/src/drivers/repo/github/access/protected-requests.ts";
+import type { ModelGatewayConfiguration } from "../../deploy/examples/strands-box/driver/model-gateway.ts";
 import {
+  readModelRevocation,
+  recordModelRevocation,
   verifyRelease,
   wiringConfiguration as hostWiring,
 } from "../../deploy/examples/strands-box/host/control.ts";
 import {
   CredentialSourceRelay,
+  MODEL_MAX_BODY_BYTES,
   SOURCE_BEARER_ENV,
   SOURCE_MAX_BODY_BYTES,
   SOURCE_TIMEOUT_MS,
 } from "../../deploy/examples/strands-box/host/credential-source.ts";
-import { githubCredentials, policy } from "../../deploy/examples/strands-box/host/egress.ts";
+import {
+  githubCredentials,
+  modelCredentials,
+  policy,
+} from "../../deploy/examples/strands-box/host/egress.ts";
 import type {
   AgentRevision,
   EgressInstallation,
@@ -152,7 +160,33 @@ export async function installPackage(t: TestContext) {
   return { directory, packageRoot, dist: join(installed, "dist") };
 }
 
-export async function pairedFixture(t: TestContext, options: { originPort?: number } = {}) {
+/** The protected model route of the model fixtures: a private IPv4 literal on the /v1 base. */
+export const MODEL_ROUTE = "https://10.0.0.9:8444/v1";
+export const MODEL_SOURCE_ID = "cs_model_pilot";
+/** The revision's frozen Harness auth and the plan's model source: this Gateway's own source. */
+export const modelSource = {
+  method: "credential_source",
+  sourceId: MODEL_SOURCE_ID,
+  sourceType: "openai",
+  credentialGatewayId: id,
+  loginMode: "api_key",
+} as const;
+
+export interface PairedModelOptions {
+  /** The package's model Gateway configuration (the S1 Secret store's Kubernetes API). */
+  readonly gateway: ModelGatewayConfiguration;
+  /** The controlled-inference route; MODEL_ROUTE by default. */
+  readonly route?: string;
+  /** The pinned address, for an operator DNS name route. */
+  readonly address?: string;
+}
+
+export async function pairedFixture(
+  t: TestContext,
+  options: { originPort?: number; model?: PairedModelOptions } = {},
+) {
+  const model = options.model;
+  const modelRoute = model?.route ?? MODEL_ROUTE;
   const origin = await strandsRepositoryOriginFixture(
     t,
     undefined,
@@ -173,11 +207,20 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
     workspaceRoot: endpoint.workspaceRoot,
     relay,
     protectedRepository: { provider: "github" },
+    ...(model === undefined
+      ? {}
+      : {
+          controlledInference: {
+            modelBaseUrl: modelRoute,
+            ...(model.address === undefined ? {} : { address: model.address }),
+          },
+          modelGateway: model.gateway,
+        }),
   };
   const owner = await createExternalSandboxRegistration(
     module as never,
     { id, implementation, configuration, definition: module as never },
-    ["credential_proxy"],
+    model === undefined ? ["credential_proxy"] : ["credential_gateway", "credential_proxy"],
   );
   t.after(() => owner.close());
   const grant = { providerInstanceId: "provider", repositoryId: "one-selection", grantId: "grant" };
@@ -204,6 +247,7 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
         { repositoryRef: "selected", profile: "github-repository", backendId: "repo", grant },
       ],
     },
+    ...(model === undefined ? {} : { harnessCredentialSource: modelSource }),
   };
   const revision = {
     id: "rev_pilot",
@@ -216,12 +260,19 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
     configurationGeneration: 1,
     configuration: {},
     gatewayManagedMode: false,
-    harness: { id: "codex", mode: "dedicated", version: "1", overrides: {}, configuration: {} },
+    harness: {
+      id: "codex",
+      mode: "dedicated",
+      version: "1",
+      overrides: {},
+      configuration:
+        model === undefined ? {} : { modelProvider: { id: "openai", baseUrl: modelRoute } },
+    },
     compute: { id: "compute-kubernetes", implementation: "kubernetes" },
     sandboxDriverId: id,
     executionAdmission: { version: 5, mode: "protected" },
     egressPlan: plan,
-    harnessAuth: { method: "runtime" },
+    harnessAuth: model === undefined ? { method: "runtime" } : modelSource,
     // OCC freezes the Driver's empty protected artifact acknowledgement (finding 3290).
     sandboxPolicy: { driverId: id, implementation, version: 1, defaults: {}, additions: [] },
     servicePrincipalId: "sp_pilot",
@@ -229,7 +280,7 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
   } as unknown as AgentRevision;
   const keys = generateKeyPairSync("ed25519");
   // The Driver states exactly the host's own wiring; the host compares it canonically.
-  const wiringConfiguration = hostWiring("github");
+  const wiringConfiguration = hostWiring("github", model !== undefined);
   const requirements = {
     image: `registry.example/runtime@sha256:${"e".repeat(64)}`,
     command: ["node", "-e", "stock fixture command"],
@@ -239,7 +290,10 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
       { name: RELEASE_KEY_ENV, value: computeReleasePublicKey(keys.privateKey) },
     ],
     files: [],
-    credentialAttachments: [],
+    credentialAttachments:
+      model === undefined
+        ? []
+        : [{ sourceId: MODEL_SOURCE_ID, ref: `strands-box-model:${MODEL_SOURCE_ID}` }],
     loginMode: "api_key",
     labels: {},
     proxyWiring: { plan, configuration: wiringConfiguration },
@@ -284,6 +338,9 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
     /** Each answer's outcome as Box received it: "credential" or the refusal code, never a value. */
     answered: [] as string[],
     deletes: 0,
+    /** The host's revoke receipt for the model attachment, loaded as after a host restart. */
+    modelRevoked: undefined as { receiptId: string; revokedAt: string } | undefined,
+    modelRevokes: 0,
   };
   const executionId = "box-execution";
   const sourceDirectory = join(directory, "source");
@@ -295,6 +352,21 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
   );
   await source.listen(sourceSocket);
   t.after(() => source.close());
+  // The host's second source for the model route, and its durable revoke receipts (outside the
+  // runtime directory in the installed host; here a private directory of the fixture).
+  const modelSocket = join(sourceDirectory, "model.sock");
+  const routeUrl = new URL(modelRoute);
+  const modelTarget = {
+    host: routeUrl.hostname,
+    port: Number(routeUrl.port || 443),
+    path: `${routeUrl.pathname}/responses`,
+  };
+  const revocationDir = join(directory, "model-revocations");
+  const hostConfig = { protectedModel: { revocationDir } } as never;
+  if (model !== undefined) {
+    await mkdir(revocationDir, { mode: 0o700 });
+    await source.listenModel(modelSocket, modelTarget, () => host.modelRevoked !== undefined);
+  }
   const record = () => ({
     owner: {
       driverId: id,
@@ -321,7 +393,16 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
       generationSha256: host.generationSha256,
       ...host.startup,
     },
+    ...(model === undefined
+      ? {}
+      : {
+          harnessModel: {
+            sourceId: MODEL_SOURCE_ID,
+            ...(host.modelRevoked === undefined ? {} : { revoked: host.modelRevoked }),
+          },
+        }),
   });
+  const hostOwner = () => record().owner;
   const server = createHttpServer((req, res) => {
     void body(req).then(async (bytes) => {
       const reply = (status: number, value?: unknown) =>
@@ -373,6 +454,19 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
           host.answered.push(typeof answer?.refusal === "string" ? answer.refusal : "credential");
           reply(source.answer(String(input.askId), input.answer) ? 204 : 409);
         }
+        return;
+      }
+      if (req.method === "POST" && req.url === "/v1/model-revoke" && model !== undefined) {
+        // As host/control.ts: the receipt is written durably first, then the view shows it.
+        const input = JSON.parse(bytes.toString()) as Record<string, unknown>;
+        if (!host.present || input.executionId !== executionId || input.sourceId !== MODEL_SOURCE_ID) {
+          reply(409, { error: "revoke_outside_execution" });
+          return;
+        }
+        host.modelRevokes++;
+        const receipt = recordModelRevocation(hostConfig, hostOwner(), executionId, MODEL_SOURCE_ID);
+        host.modelRevoked = { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
+        reply(200, record());
         return;
       }
       if (req.method === "DELETE") {
@@ -555,6 +649,31 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
     }),
     committed: () => committed,
     material: () => material,
+    /** The model route's Box source socket and box.toml tables (only with `options.model`). */
+    modelSocket,
+    modelTarget,
+    modelRoute,
+    modelBoxConfig: (address: string) =>
+      modelCredentials(
+        { kind: "controlled-inference", url: modelRoute, address },
+        {
+          socket: modelSocket,
+          bearerEnv: SOURCE_BEARER_ENV,
+          timeoutMs: SOURCE_TIMEOUT_MS,
+          maxBodyBytes: MODEL_MAX_BODY_BYTES,
+          path: modelTarget.path,
+        },
+      ),
+    gateway: model === undefined ? undefined : owner.require("credential_gateway"),
+    /** A host restart: the view reloads the receipt from the revocation directory. */
+    restartHostModelView() {
+      const receipt = readModelRevocation(hostConfig, hostOwner(), MODEL_SOURCE_ID);
+      host.modelRevoked =
+        receipt === undefined
+          ? undefined
+          : { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
+    },
+    revocationDir,
     /** OCE's renewal: a new attempt, version and token for the same session. */
     renew(value = origin.credential) {
       material = {
