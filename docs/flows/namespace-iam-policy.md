@@ -220,14 +220,14 @@ behavior.
   instead authorizes `create` on the Namespace collection at the Installation
   before it creates the Namespace.
   `fenceAgentProvisioning` also takes the IAM configuration lock before
-  `lockNamespace`. The final `completeNamespaceConnection` transaction first
-  holds the supplied browser session, then takes this shared lock before it
-  authorizes and grants exact-source access. `updateAgent` takes it at transaction
-  entry when the request includes `repositoryStandingApproval`; ordinary edits
-  keep their existing path. Startup's `initializeDefaultPresets` takes the same
+  `lockNamespace`. The final `completeNamespaceConnection` transaction holds the
+  browser session, then this shared lock before authorizing and granting
+  exact-source access. `updateAgent` takes it at transaction entry for
+  `repositoryStandingApproval`; ordinary edits are unchanged. Startup's
+  `initializeDefaultPresets` takes the same
   lock before Installation authorization and Namespace locks. A configured
-  permission withdrawal therefore commits before these decisions or after their
-  durable authority and success audit commit.
+  permission withdrawal commits before these decisions or after durable
+  authority and success audit commit.
 - **Agent Backend selection.** `createAgent` resolves a supplied Backend ID and
   checks its type only after the second `agent:create` authorization. A caller
   without that grant receives `403` for both configured and unknown valid IDs.
