@@ -164,17 +164,22 @@ export function controlledGitModelRequests(
         return;
       }
       const input = body.input.map(obj);
-      // The latest user prompt that names this run decides the step.
-      const prompts = input
+      // The latest user message decides the step; one that names no step of this run (an
+      // ordinary message in the same chat, for example after withdrawal) gets a plain reply.
+      const latest = input
         .filter((item) => item.role === "user")
-        .flatMap(({ content }) =>
+        .map(({ content }) =>
           (Array.isArray(content) ? content : [{ type: "input_text", text: content }])
             .map(obj)
-            .flatMap((part) => (typeof part.text === "string" ? [part.text] : [])),
+            .flatMap((part) => (typeof part.text === "string" ? [part.text] : []))
+            .join("\n"),
         )
-        .flatMap((text) => text.split(/\r?\n/))
-        .filter((line) => line.includes(`${GIT_ACTION} ${nonce} `));
-      const latest = prompts.at(-1);
+        // Codex's own context items (environment, instructions) are tagged; they are not prompts.
+        .filter((text) => !/^\s*(?:<|# AGENTS\.md)/.test(text))
+        .at(-1)
+        ?.split(/\r?\n/)
+        .filter((line) => line.includes(`${GIT_ACTION} ${nonce} `))
+        .at(-1);
       const step = GIT_STEPS.find((name) => latest?.endsWith(gitPromptFor(nonce, name)));
       if (step === undefined) {
         reply(res, "READY");
