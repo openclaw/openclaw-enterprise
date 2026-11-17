@@ -1,19 +1,50 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { gatewayRoutingHostname } from "../../apps/controller/src/drivers/compute/kubernetes/gateway-routing-hostname.ts";
+import {
+  isKubernetesNamespaceName,
+  isKubernetesResourceName,
+} from "../../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 import type { createQaAgent, createQaInstallation } from "./qa-installation.mjs";
 
 type Fixture = Awaited<ReturnType<typeof createQaInstallation>>;
 type Agent = Awaited<ReturnType<typeof createQaAgent>>;
+type InstalledGatewayRouting = Parameters<typeof gatewayRoutingHostname>[0] & {
+  endpointPort?: number;
+};
+
+// createQaInstallation loads these fields from the installed configuration before returning.
+type InstalledFixture = Fixture & {
+  state: { platformNamespace: string };
+  configuration: {
+    drivers: { compute: { configuration: { gatewayRouting: InstalledGatewayRouting } } };
+  };
+};
 
 /** Installed route isolation and NetworkPolicy proof; no model response is substituted. */
-export async function verifyQaHttpChatIsolation(f: Fixture, agent: Agent): Promise<void> {
+export async function verifyQaHttpChatIsolation(fixture: Fixture, agent: Agent): Promise<void> {
+  const f = fixture as InstalledFixture;
   const gateway = await f.pod(agent, "gateway");
-  const image = gateway.spec.containers.find((container) => container.name === "gateway").image;
+  const image = gateway.spec.containers.find(
+    (container: { name: string }) => container.name === "gateway",
+  ).image;
   assert.match(image, /@sha256:[a-f0-9]{64}$/, "the installed runtime must use an immutable image");
   const routing = f.configuration.drivers.compute.configuration.gatewayRouting;
-  const authority = routing.endpointPort
-    ? `${routing.hostname}:${routing.endpointPort}`
-    : routing.hostname;
+  let hostname = routing.hostname;
+  if (f.controlPlane !== "compose" && (hostname === undefined || hostname === "")) {
+    const { gatewayName, gatewayNamespace, envoyNamespace } = routing;
+    assert.ok(
+      typeof gatewayName === "string" &&
+        isKubernetesResourceName(gatewayName) &&
+        typeof gatewayNamespace === "string" &&
+        isKubernetesNamespaceName(gatewayNamespace) &&
+        typeof envoyNamespace === "string" &&
+        isKubernetesNamespaceName(envoyNamespace),
+      "QA HTTP chat requires valid Installation Gateway routing identity when hostname is omitted",
+    );
+    hostname = gatewayRoutingHostname({ gatewayName, gatewayNamespace, envoyNamespace });
+  }
+  const authority = routing.endpointPort ? `${hostname}:${routing.endpointPort}` : hostname;
   const path = `/http-chat/namespaces/${agent.namespaceId}/agents/${agent.id}/revisions/${agent.revision.id}/v1/chat/completions`;
   // Run as OCC's existing private proxy client. Only status codes leave the process;
   // the transport key stays in its existing mounted file and never appears in arguments.
@@ -53,8 +84,8 @@ export async function verifyQaHttpChatIsolation(f: Fixture, agent: Agent): Promi
 
   const name = `http-chat-probe-${randomUUID().slice(0, 8)}`;
   const port = gateway.spec.containers
-    .find((container) => container.name === "gateway")
-    .ports.find((port) => port.name === "http").containerPort;
+    .find((container: { name: string }) => container.name === "gateway")
+    .ports.find((port: { name: string }) => port.name === "http").containerPort;
   const missingAuthority = await f.execRole(agent, "gateway", [
     "node",
     "-e",
