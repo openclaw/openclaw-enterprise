@@ -3619,6 +3619,10 @@ async function assertRetainedArtifact(
   return artifact.id;
 }
 
+function hasReadyCondition(pod) {
+  return pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True");
+}
+
 async function assertGatewayPodContinuity(context, topology, privateClaim) {
   const sessionKey = `agent:main:durability-${randomUUID()}`;
   const nonce = `OCE-BEFORE-${randomUUID()}`;
@@ -3740,7 +3744,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
         !pod.metadata.deletionTimestamp &&
         pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
-        pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+        hasReadyCondition(pod),
     ),
   );
   const retained = await assertGatewayPrivateResources(topology);
@@ -4405,18 +4409,23 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   assert.match(response.trimEnd(), /enterprise openclaw[.!?]*$/);
 }
 
+function matchesAgentPodRevision(pod, topology, getRevisionId) {
+  return (
+    pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
+    pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
+    pod.metadata.labels?.["openclaw.dev/revision"] === getRevisionId()
+  );
+}
+
 async function waitForReadyAgentPod(topology, revisionId, previousUid) {
-  return waitFor(`dedicated Codex Pod for revision ${revisionId}`, async () => {
-    const ready = (await topologyPods(topology)).find(
+  return waitFor(`dedicated Codex Pod for revision ${revisionId}`, async () =>
+    (await topologyPods(topology)).find(
       (pod) =>
         pod.metadata.uid !== previousUid &&
-        pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-        pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
-        pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
-        pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
-    );
-    return ready;
-  });
+        matchesAgentPodRevision(pod, topology, () => revisionId) &&
+        hasReadyCondition(pod),
+    ),
+  );
 }
 
 async function kubectlInReadyAgentPod(topology, ...args) {
@@ -4424,13 +4433,9 @@ async function kubectlInReadyAgentPod(topology, ...args) {
     const pod = (await topologyPods(topology)).find(
       (candidate) =>
         candidate.metadata.deletionTimestamp === undefined &&
-        candidate.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-        candidate.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
-        candidate.metadata.labels?.["openclaw.dev/revision"] === topology.revision.id &&
+        matchesAgentPodRevision(candidate, topology, () => topology.revision.id) &&
         candidate.status.phase === "Running" &&
-        candidate.status.conditions?.some(
-          ({ type, status }) => type === "Ready" && status === "True",
-        ),
+        hasReadyCondition(candidate),
     );
     if (pod === undefined) {
       return undefined;
@@ -4458,17 +4463,16 @@ async function kubectlInReadyAgentPod(topology, ...args) {
 }
 
 async function waitForReadyGatewayPod(topology, revisionId, previousUid) {
-  return waitFor(`embedded OpenClaw gateway Pod for revision ${revisionId}`, async () => {
-    const ready = (await resources("pods", topology.gatewayPlacement)).find(
+  return waitFor(`embedded OpenClaw gateway Pod for revision ${revisionId}`, async () =>
+    (await resources("pods", topology.gatewayPlacement)).find(
       (pod) =>
         (previousUid === undefined || pod.metadata.uid !== previousUid) &&
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
         pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
         gatewayConsumesRevision(pod, topology.agent.id, revisionId) &&
-        pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
-    );
-    return ready;
-  });
+        hasReadyCondition(pod),
+    ),
+  );
 }
 
 async function deployEmbeddedAgentAndWait(topology, agentId, description, options = {}) {
