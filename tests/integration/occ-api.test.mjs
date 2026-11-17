@@ -141,10 +141,9 @@ function startChild(port, overrides = {}) {
   return { child, output: () => output };
 }
 
-// Each case points OCC_DATABASE_URL at a closed port, so a case whose own check stopped
-// firing would still exit nonzero once startup tried the database (PERSISTENCE_UNAVAILABLE).
-// The startup-error code proves startup refused it before that. STARTUP_FAILED is the
-// catch-all code, so the bind and production cases prove only that much.
+// The missing-database case clears any inherited URL. The others use a closed port so
+// PERSISTENCE_UNAVAILABLE distinguishes reaching the database from an earlier refusal.
+// STARTUP_FAILED is a catch-all, so it cannot identify the exact reason for refusal.
 async function assertUnsafeStartupRejected(t) {
   const configuredDatabase = { OCC_DATABASE_URL: "postgresql://127.0.0.1:1/openclaw" };
   const installationPath = join(
@@ -159,7 +158,11 @@ async function assertUnsafeStartupRejected(t) {
     OCC_CONFIG_PATH: installationPath,
   };
   for (const [description, overrides, code] of [
-    ["missing development database", {}, "DATABASE_CONFIGURATION_INVALID"],
+    [
+      "missing development database",
+      { OCC_DATABASE_URL: undefined },
+      "DATABASE_CONFIGURATION_INVALID",
+    ],
     [
       "production mode",
       { ...configuredDatabase, NODE_ENV: "production", OCC_HOST: "192.0.2.10" },
@@ -371,7 +374,26 @@ async function admittedDeploymentFixture(namespaceName, agentName, { recordOpera
     `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
   );
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  return { controller, fixture, namespace, agent, admitted, deploymentWorks };
+  const work = {
+    key: `agent_revision:${admitted.data.id}:reconcile`,
+    record(state, completedAt, outcome = {}) {
+      return {
+        idempotencyKey: work.key,
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        revisionId: admitted.data.id,
+        actorId: fixture.principal.id,
+        state,
+        availableAt: new Date(0),
+        attemptCount: 1,
+        completedAt: new Date(completedAt),
+        ...outcome,
+        createdAt: new Date(0),
+        updatedAt: new Date(completedAt),
+      };
+    },
+  };
+  return { controller, fixture, namespace, agent, admitted, deploymentWorks, work };
 }
 
 function stateWithDeploymentWork(state, deploymentWorks) {
@@ -2949,7 +2971,7 @@ test("Installation API exposes Agent provisioning capabilities without configure
 });
 
 test("Agent deployment status polls the admitted revision work with exact read authorization", async () => {
-  const { controller, fixture, namespace, agent, admitted, deploymentWorks } =
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
     await admittedDeploymentFixture("deployment-status", "status-agent", {
       recordOperations: true,
     });
@@ -2982,21 +3004,13 @@ test("Agent deployment status polls the admitted revision work with exact read a
     check: "UNRECOGNIZED",
     code: "UNRECOGNIZED",
   };
-  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
-    idempotencyKey: `agent_revision:${admitted.data.id}:reconcile`,
-    namespaceId: namespace.id,
-    agentId: agent.id,
-    revisionId: admitted.data.id,
-    actorId: fixture.principal.id,
-    state: "failed_permanent",
-    availableAt: new Date(0),
-    attemptCount: 1,
-    completedAt: new Date("2026-09-19T20:31:00.000Z"),
-    reasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
-    resultData: { timeoutMs: 900_000, runtimeFailure: servedRuntimeFailure },
-    createdAt: new Date(0),
-    updatedAt: new Date("2026-09-19T20:31:00.000Z"),
-  });
+  deploymentWorks.set(
+    work.key,
+    work.record("failed_permanent", "2026-09-19T20:31:00.000Z", {
+      reasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
+      resultData: { timeoutMs: 900_000, runtimeFailure: servedRuntimeFailure },
+    }),
+  );
   const failedStatus = await controller.request("GET", path);
   assert.equal(failedStatus.status, 200, JSON.stringify(failedStatus.body));
   assert.deepEqual(failedStatus.data, {
@@ -3056,8 +3070,8 @@ test("Agent deployment status polls the admitted revision work with exact read a
     checkedAt: "2026-09-19T20:30:00.000Z",
     code: "NOT_CONFIGURED",
   };
-  const deploymentWork = deploymentWorks.get(`agent_revision:${admitted.data.id}:reconcile`);
-  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+  const deploymentWork = deploymentWorks.get(work.key);
+  deploymentWorks.set(work.key, {
     ...deploymentWork,
     resultData: { timeoutMs: 900_000, runtimeFailure: knownRuntimeFailure },
   });
@@ -3072,7 +3086,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     checkedAt: "2026-09-19T20:30:00.000Z",
     code: "WORKSPACE_SETUP_FAILED",
   };
-  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+  deploymentWorks.set(work.key, {
     ...deploymentWork,
     resultData: { timeoutMs: 900_000, runtimeFailure: workspaceSetupFailure },
   });
@@ -3094,7 +3108,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
       { code: "REVISION_SUPERSEDED", message: "Deployment was superseded by a newer revision." },
     ],
   ]) {
-    deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+    deploymentWorks.set(work.key, {
       ...deploymentWork,
       state: "succeeded",
       reasonCode,
@@ -3117,9 +3131,8 @@ test("Agent deployment status polls the admitted revision work with exact read a
 test("a refused deployment's status names its cause and remedy without naming principals", async () => {
   // Finding 1039: these refusals used to fall through to "Deployment reconciliation failed.",
   // so a member whose deploy permission was revoked mid-rollout saw no cause or remedy.
-  const { controller, fixture, namespace, agent, admitted, deploymentWorks } =
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
     await admittedDeploymentFixture("deployment-refusals", "refused-agent");
-  const workKey = `agent_revision:${admitted.data.id}:reconcile`;
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${admitted.data.id}`;
   const messages = {
     AUTHORIZATION_DENIED: DEPLOYMENT_FAILED.AUTHORIZATION_DENIED,
@@ -3176,20 +3189,10 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "This version's repository access no longer matches the Credential Proxy delivery it was admitted with. Deploy again to admit a version with the current repository access.",
   };
   for (const [reasonCode, message] of Object.entries(messages)) {
-    deploymentWorks.set(workKey, {
-      idempotencyKey: workKey,
-      namespaceId: namespace.id,
-      agentId: agent.id,
-      revisionId: admitted.data.id,
-      actorId: fixture.principal.id,
-      state: "failed_permanent",
-      availableAt: new Date(0),
-      attemptCount: 1,
-      completedAt: new Date("2026-10-10T18:03:32.000Z"),
-      reasonCode,
-      createdAt: new Date(0),
-      updatedAt: new Date("2026-10-10T18:03:32.000Z"),
-    });
+    deploymentWorks.set(
+      work.key,
+      work.record("failed_permanent", "2026-10-10T18:03:32.000Z", { reasonCode }),
+    );
     const status = await controller.request("GET", path);
     assert.equal(status.status, 200, JSON.stringify(status.body));
     assert.equal(status.data.status, "failed", reasonCode);
@@ -3267,26 +3270,12 @@ test("a deletion retry by another delete holder names the initiator condition an
 });
 
 test("Installation deployment inventory fails closed on incomplete authorization and reports in-flight work", async () => {
-  const { controller, fixture, namespace, agent, admitted, deploymentWorks } =
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
     await admittedDeploymentFixture("deployment-inventory", "inventory-agent", {
       recordOperations: true,
     });
-  const workKey = `agent_revision:${admitted.data.id}:reconcile`;
-  const completedWork = {
-    kind: "lifecycle",
-    idempotencyKey: workKey,
-    namespaceId: namespace.id,
-    agentId: agent.id,
-    revisionId: admitted.data.id,
-    actorId: fixture.principal.id,
-    state: "succeeded",
-    availableAt: new Date(0),
-    attemptCount: 1,
-    completedAt: new Date(1),
-    createdAt: new Date(0),
-    updatedAt: new Date(1),
-  };
-  deploymentWorks.set(workKey, completedWork);
+  const completedWork = { kind: "lifecycle", ...work.record("succeeded", 1) };
+  deploymentWorks.set(work.key, completedWork);
   await fixture.platformState.transact((unit) =>
     unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, admitted.data.id),
   );
@@ -3400,7 +3389,7 @@ test("Installation deployment inventory fails closed on incomplete authorization
     fixture.state.restrictions.pop();
   }
 
-  deploymentWorks.set(workKey, { ...completedWork, state: "claimed" });
+  deploymentWorks.set(work.key, { ...completedWork, state: "claimed" });
   const inProgress = await controller.request("GET", inventoryPath);
   assert.equal(inProgress.status, 200, JSON.stringify(inProgress.body));
   const inProgressAgent = inProgress.data.namespaces
@@ -3413,12 +3402,12 @@ test("Installation deployment inventory fails closed on incomplete authorization
     (candidate) => candidate.id !== namespace.id,
   );
   assert.ok(otherNamespace);
-  deploymentWorks.set(workKey, { ...completedWork, namespaceId: otherNamespace.id });
+  deploymentWorks.set(work.key, { ...completedWork, namespaceId: otherNamespace.id });
   const wrongOwner = await controller.request("GET", inventoryPath);
   assertApiError(wrongOwner, 503, "DEPENDENCY_UNAVAILABLE", "wrong-owner deployment work");
 
   // Missing durable work makes completeness unknowable and must fail the whole operation.
-  deploymentWorks.set(workKey, undefined);
+  deploymentWorks.set(work.key, undefined);
   const incomplete = await controller.request("GET", inventoryPath);
   assertApiError(incomplete, 503, "DEPENDENCY_UNAVAILABLE", "missing deployment work");
   assert.deepEqual(Object.keys(incomplete.body).sort(), ["error", "meta"]);

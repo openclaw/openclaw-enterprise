@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: "2026-11-16"
+updated: "2026-11-17"
 last_updated_session: "01a1cb1a-b03e-7380-9b34-1a7470a05f64"
 ---
 
@@ -77,10 +77,8 @@ state fails explicitly. See the
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML outputs.
-`internal/occcli/cli.go:validateOptions` defaults omitted `--output` to JSON and
-rejects unsupported formats before requests. `internal/occcli/output.go:printStructured`
-prints the acknowledged result.
+`internal/occcli/agent_policy.go:agentPolicyCommand` uses the shared structured
+output path. See the [CLI reference](../reference/cli.md).
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
@@ -177,8 +175,14 @@ are bounded by the claim lease. Database and audit failures roll back the pass.
 `apps/controller/src/drivers/sandbox/openshell.ts` verifies exact provider
 ownership, preserves the Sandbox's static policy and generated access, and uses
 native status/UpdateConfig RPCs. A full candidate match plus loaded active version
-is required for `applied`. Transient or unknown outcomes retry within limits;
-terminal stale work becomes an unconfirmed failure. The worker calls
+is required for `applied`. If the current resource version already differs from the
+pinned version and the policy does not match, the worker fails before it sends a write.
+After a refused write, the worker reads the provider again and confirms its lease.
+A matching policy still loading is deferred within the deadline, `applied` is recorded
+only for a loaded active match, and a changed resource version with a nonmatch fails as
+`SANDBOX_POLICY_PROVIDER_FAILED` (the pinned version cannot succeed). Worker shutdown during
+that read rolls back so the next worker recovers the claim; other outcomes retry within limits;
+exhausted abandoned claims become unconfirmed failures. The worker calls
 `failAbandonedSandboxPolicies` inside the same `transactWithQueue` that recovers
 exhausted work, so queue failure, application failure, and audit either all commit
 or remain recoverable after interruption. A failed live request does
@@ -209,12 +213,9 @@ Select page changes only eligible visible rows. Follow retains up to 1,000 new
 log records without replacing inspected rows. Show newest accepts the retained
 window and removes selections for records no longer retained.
 
-`stageGrants` builds exact executable/host/port candidates, deduplicates requests,
-and skips requests already covered by saved or proposed grants. It retains the
-complete additions array and opens the schema editor or batch preview. Missing
-metadata disables prefilling. An incomplete existing draft must be corrected
-before staging more grants. `ruleList` searches and pages explicit rules five at
-a time; row controls edit or remove local additions.
+`stageGrants` deduplicates executable/host/port candidates against saved and
+proposed grants, retaining the complete additions array. Missing metadata disables
+prefilling; incomplete drafts prevent further staging. `ruleList` edits local additions.
 
 `console/agents/sandbox-policy.mts:renderPolicy` shows status, suggestions, and
 read recovery above the log, independently of mutation authority.
@@ -222,13 +223,10 @@ read recovery above the log, independently of mutation authority.
 A separately authorized operation changes Agent policy editing. Mutation feedback
 and policy-read failures remain visible while the editor is closed. See the
 [Console workflow](../guides/topics/agent-sandbox-policy.md) for its controls.
-`renderEditor` manages rules without an editing toggle and
-keeps proposed rules local until preview. Its footer compares the draft with saved
-additions, including removals and restored values, to offer review, application,
-or Done. Saving a confirmed response closes the dialog and clears the completed
-selection. Review shows additions, updates, and removals from the controller-validated rules,
-with the previously saved policy available for comparison. Save sends the complete
-validated array with the reviewed policy version. Superseded preview and read responses
+`renderEditor` keeps proposed rules local until preview. Review compares the
+controller-validated draft with saved additions. Save sends the complete validated
+array with the reviewed version; confirmation closes the dialog and clears its
+selection. Superseded preview and read responses
 cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
 cannot invalidate a newer request. A pending application re-arms polling after
 the latest read, including a response discarded after a draft edit.

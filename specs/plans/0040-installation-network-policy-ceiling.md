@@ -229,6 +229,20 @@ owner assertions. Typecheck, formatting, workspace, OpenAPI, CI inventory and
 documentation checks pass. Current-head hosted CI is required after publication;
 the external review, live runtime and native media requirements remain open.
 
+## Worker refresh, 2026-11-17
+
+The merge of main at `555698eff` retains its stale-provider checks and recovery
+after a refused policy write. Queued application still reads the saved ceiling,
+holds its shared lock before Namespace/Agent locks and starts with Read Committed.
+The repository-credentials fixture uses the actual Installation state and retains
+main's caller-supplied shutdown signal. The Agent policy PostgreSQL suite passes
+45/45 without skips, and the repository-credentials admission file passes. The
+extracted ceiling browser suite passes 5/5 without skips. Typecheck, workspace,
+module boundaries, OpenAPI and both CI inventory audits pass. Repeated CLI and
+Console descriptions are removed from the merged flow to retain its length limit.
+Migration 0081 and RFC decision status remain unchanged. New hosted CI and the
+previously recorded external review, runtime and media requirements remain open.
+
 ## Manual Notes
 
 ## Changelog

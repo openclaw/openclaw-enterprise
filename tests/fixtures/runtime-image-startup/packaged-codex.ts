@@ -105,13 +105,17 @@ export async function probePackagedCodex(
           "openclaw-control-ui-browser-reconnect.patch":
             "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
           "openclaw-terminated-gateway-namespace.patch":
-            "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
+            "3e400cc9d0fc4a457ff58a4fa62f188c24fe63ecf5b0f7140f7a0cffa2c03889",
           "openclaw-planned-completion.patch":
             "c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4",
           "openclaw-native-turn-settlement.patch":
             "5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6",
           "openclaw-node-setup-renewal.patch":
             "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
+          "openclaw-chat-main-session-start.patch":
+            "483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4",
+          "openclaw-chat-absent-selected-agent.patch":
+            "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);

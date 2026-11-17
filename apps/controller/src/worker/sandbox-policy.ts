@@ -244,22 +244,32 @@ export async function reconcileSandboxPolicy(
           ),
         ]);
       let observation;
+      let placement: Awaited<
+        ReturnType<NonNullable<typeof options.compute.resolveSandboxNamespace>>
+      >;
+      const context = () => ({ namespace: placement, revision, signal: signal() });
+      let writeSent = false;
+      let staleBeforeWrite = false;
       // Only provider operations are retried here. Database/audit failures roll back the pass.
       try {
-        const placement = await options.compute.resolveSandboxNamespace(namespace);
-        const context = () => ({ namespace: placement, revision, signal: signal() });
+        placement = await options.compute.resolveSandboxNamespace(namespace);
         await renew();
         observation = await driver.observeNetworkPolicy(context(), policy.application.snapshot);
         await renew();
         if (policy.application.expectedProviderVersion !== undefined && !observation.matches) {
-          await driver.applyNetworkPolicy(context(), {
-            snapshot: policy.application.snapshot,
-            expectedProviderVersion: policy.application.expectedProviderVersion,
-            operationId: policy.application.id,
-          });
-          await renew();
-          observation = await driver.observeNetworkPolicy(context(), policy.application.snapshot);
-          await renew();
+          if (observation.resourceVersion !== policy.application.expectedProviderVersion) {
+            staleBeforeWrite = true;
+          } else {
+            writeSent = true;
+            await driver.applyNetworkPolicy(context(), {
+              snapshot: policy.application.snapshot,
+              expectedProviderVersion: policy.application.expectedProviderVersion,
+              operationId: policy.application.id,
+            });
+            await renew();
+            observation = await driver.observeNetworkPolicy(context(), policy.application.snapshot);
+            await renew();
+          }
         }
       } catch (error) {
         if (options.signal.aborted || error instanceof WorkClaimLostError) {
@@ -270,12 +280,44 @@ export async function reconcileSandboxPolicy(
           await fail("SANDBOX_POLICY_UNSUPPORTED");
           return "permanent";
         }
-        if (claim.attemptCount >= options.maxAttempts || claim.ageMs >= options.deadlineMs) {
+        // A refused write may have landed, or the provider may have moved past the pinned
+        // version. The pinned version and operation ID never change, so a later pass
+        // cannot succeed in the second case.
+        let current;
+        if (writeSent) {
+          await renew();
+          current = await driver
+            .observeNetworkPolicy(context(), policy.application.snapshot)
+            .catch((readError) => {
+              if (options.signal.aborted) {
+                throw readError;
+              }
+            });
+          if (current !== undefined) {
+            options.signal.throwIfAborted();
+            await renew();
+            options.signal.throwIfAborted();
+          }
+        }
+        if (current?.matches) {
+          observation = current;
+        } else if (
+          current !== undefined &&
+          current.resourceVersion !== policy.application.expectedProviderVersion
+        ) {
+          await fail("SANDBOX_POLICY_PROVIDER_FAILED");
+          return "permanent";
+        } else if (claim.attemptCount >= options.maxAttempts || claim.ageMs >= options.deadlineMs) {
           await fail("SANDBOX_POLICY_UNCONFIRMED");
           return "permanent";
+        } else {
+          await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+          return "retry";
         }
-        await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
-        return "retry";
+      }
+      if (staleBeforeWrite) {
+        await fail("SANDBOX_POLICY_PROVIDER_FAILED");
+        return "permanent";
       }
       if (observation.matches && observation.state === "applied") {
         const applied = {
