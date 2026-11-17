@@ -30,6 +30,9 @@
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-protected-workspace-endpoint.test.ts",
+    "tests/conformance/external-sandbox-binding.test.mjs",
+    "tests/conformance/external-sandbox-core-names.test.ts",
+    "tests/conformance/external-sandbox-registration.test.ts",
     "tests/conformance/strands-box-driver.test.ts",
     "tests/conformance/strands-box-git.test.ts",
     "tests/conformance/strands-box-harness-image.test.ts",
@@ -272,6 +275,15 @@
     },
     {
       "path": "tests/conformance/kubernetes-protected-workspace-endpoint.test.ts"
+    },
+    {
+      "path": "tests/conformance/external-sandbox-binding.test.mjs"
+    },
+    {
+      "path": "tests/conformance/external-sandbox-core-names.test.ts"
+    },
+    {
+      "path": "tests/conformance/external-sandbox-registration.test.ts"
     },
     {
       "path": "tests/conformance/strands-box-driver.test.ts"
