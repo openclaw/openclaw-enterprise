@@ -156,6 +156,10 @@ import {
 } from "./resources.ts";
 
 const ErrorResponseRef = Type.Ref("ErrorResponse");
+// TODO(RFC-0034): Remove the staged response when the controller implements named providers.
+const NamedProviderUnavailable = Type.Ref("ErrorResponse", {
+  description: "Named model providers are unavailable on this controller.",
+});
 const SecretResponseRef = Type.Ref("SecretResponse");
 const CredentialSourceResponseRef = Type.Ref("CredentialSourceResponse");
 
@@ -442,11 +446,12 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "List Installation model providers",
+    summary:
+      "List Installation model providers. This controller returns 501 for every valid request",
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
-      response: { 200: ModelProviderListResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: ModelProviderListResponse, ...readErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -457,12 +462,12 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Read a model provider",
+    summary: "Read a model provider. This controller returns 501 for every valid request",
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
       params: ModelProviderParams,
-      response: { 200: ModelProviderResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: ModelProviderResponse, ...readErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -473,12 +478,13 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Create an Installation model provider",
+    summary:
+      "Create an Installation model provider. This controller returns 501 for every valid request",
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
       body: ModelProviderBody,
-      response: { 201: ModelProviderResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 201: ModelProviderResponse, ...createErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -489,13 +495,14 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Replace model provider settings if the saved fingerprint matches",
+    summary:
+      "Replace model provider settings if the saved fingerprint matches. This controller returns 501 for every valid request",
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
       params: ModelProviderParams,
       body: UpdateModelProviderBody,
-      response: { 200: ModelProviderResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 200: ModelProviderResponse, ...createErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -506,12 +513,13 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
-    summary: "List the model providers available when creating an Agent",
+    summary:
+      "List the model providers available when creating an Agent. This controller returns 501 for every valid request",
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      response: { 200: ModelProviderListResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: ModelProviderListResponse, ...readErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -537,12 +545,13 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Create an Installation-wide or Namespace-scoped connection template",
+    summary:
+      "Create an Installation-wide or Namespace-scoped connection template. This controller returns 501 for static_bearer templates",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
       body: CreateConnectionTemplateBody,
-      response: { 201: ConnectionTemplateResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 201: ConnectionTemplateResponse, ...createErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -569,13 +578,14 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Rename a connection template, or create a version with new approved values",
+    summary:
+      "Rename a connection template, or create a version with new approved values. This controller returns 501 for static_bearer templates",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
       params: ConnectionTemplateParams,
       body: UpdateConnectionTemplateBody,
-      response: { 200: ConnectionTemplateResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 200: ConnectionTemplateResponse, ...createErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -1234,13 +1244,18 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "Register a credential source with the selected Credential Gateway",
+    summary:
+      "Register a credential source with the selected Credential Gateway. This controller returns 501 for connectionTemplateId or connectionTemplateVersion",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateCredentialSourceBody,
-      response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
+      response: {
+        201: CredentialSourceResponseRef,
+        ...createErrors,
+        501: NamedProviderUnavailable,
+      },
     },
   },
   {
@@ -1251,7 +1266,8 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_and_credential_source_candidates",
-    summary: "List readable credential sources without revealing credential values",
+    summary:
+      "List readable credential sources without revealing credential values. This controller returns 501 for the modelProviderId filter",
     tags: ["Credential sources"],
     schema: {
       querystring: Type.Object(
@@ -1259,7 +1275,7 @@ export const occApiRoutes = [
         { additionalProperties: false },
       ),
       params: NamespaceParams,
-      response: { 200: CredentialSourceListResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: CredentialSourceListResponse, ...readErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -1636,13 +1652,14 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
-    summary: "Create a new Agent and queue first-time provisioning",
+    summary:
+      "Create a new Agent and queue first-time provisioning. This controller returns 501 when the request includes modelProviderId",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ProvisionAgentBody,
-      response: { 202: AgentProvisioningResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 202: AgentProvisioningResponse, ...createErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -1698,13 +1715,14 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
-    summary: "Create a Namespace-owned Agent",
+    summary:
+      "Create a Namespace-owned Agent. This controller returns 501 when the request includes modelProviderId",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateAgentBody,
-      response: { 201: AgentResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 201: AgentResponse, ...createErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -1716,13 +1734,13 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
     summary:
-      "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything",
+      "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything. This controller returns 501 when the request includes modelProviderId",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
-      response: { 204: Type.Null(), ...createErrors, 501: ErrorResponseRef },
+      response: { 204: Type.Null(), ...createErrors, 501: NamedProviderUnavailable },
     },
   },
   {
@@ -1825,13 +1843,14 @@ export const occApiRoutes = [
     iamAction: "update",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Replace an exact Namespace-owned Agent's editable draft",
+    summary:
+      "Replace an exact Namespace-owned Agent's editable draft. This controller returns 501 when the request includes modelProviderId",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
       body: UpdateAgentBody,
-      response: { 200: AgentResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 200: AgentResponse, ...createErrors, 501: NamedProviderUnavailable },
     },
   },
   {
