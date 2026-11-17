@@ -6255,6 +6255,7 @@ export class ControllerWorker {
     this.workOrigins.set(claim, performance.now() - claim.ageMs);
     let code = "PREDECESSOR_COMPLETION_RECHECK";
     let delayMs = this.stopYieldRecheckMs(claim);
+    let claimLost = false;
     try {
       const { namespace, agent, previous, revision } = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
@@ -6301,11 +6302,17 @@ export class ControllerWorker {
         return;
       }
       this.validateExecutionAdmission(revision);
+      if (this.compute.bindAgent !== undefined) {
+        await this.withClaimHeartbeat(claim, async () => {
+          await this.compute.bindAgent!({ namespace, agent });
+        });
+      }
       await this.waitForPlannedCompletion(claim, previous, revision, PLANNED_COMPLETION_WAIT_MS);
       if (this.completionWaits.get(claim)?.phase === "stopping") {
         delayMs = 1;
       }
     } catch (error) {
+      claimLost = error instanceof WorkClaimLostError;
       if (error instanceof PredecessorCompletionWaitingError) {
         code = "PREDECESSOR_COMPLETION_WAITING";
       } else if (!(error instanceof RepositoryCredentialAuthorityError)) {
@@ -6315,7 +6322,14 @@ export class ControllerWorker {
       // The ordinary pass owns refusal handling, physical stop and candidate preparation.
       // Releasing this claim refunds its attempt, including after committing the stop boundary.
       if (!this.stopping) {
-        await this.queue.defer(claim, { code }, { delayMs });
+        try {
+          await this.queue.defer(claim, { code }, { delayMs });
+        } catch (error) {
+          // Keep the original claim loss when deferral also refuses the stale token.
+          if (!claimLost || !(error instanceof WorkClaimLostError)) {
+            throw error;
+          }
+        }
       }
     }
   }
