@@ -42,7 +42,7 @@ export class InstalledDriver {
       readonly configuration: unknown;
       /** @internal Process-local admission policy supplied only by bundled composition. */
       readonly retiredStaticProviderRefs?: readonly EgressRef[];
-      /** @internal Set only after bundled repository transport validation. */
+      /** @internal Set by composition for a validated repository-only Proxy owner. */
       readonly repositoryOnly?: boolean;
     },
     registration: DriverRegistration,

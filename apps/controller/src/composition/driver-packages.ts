@@ -471,10 +471,27 @@ export async function createExternalSandboxRegistration(
     if (!registration || !asRecord(registration.capabilities)) {
       throw new Error("The selected Sandbox package must return one Driver registration.");
     }
+    // A package that supplies the selected Gateway beside a repository Git Proxy with no static
+    // model provider is repository-only, as the bundled OpenShell owner is: ordinary model
+    // sources stay with its Gateway. The InstalledDriver still requires the Git transport.
+    const providers = asRecord(asRecord(asRecord(registration.capabilities)?.credential_proxy)?.sourceControl)
+      ?.providers;
+    const repositoryOnly =
+      repositoryAuthorityIdentity !== undefined &&
+      selected.includes("credential_gateway") &&
+      selected.includes("credential_proxy") &&
+      Array.isArray(providers) &&
+      !providers.some(
+        (provider) => asRecord(asRecord(provider)?.sourceType)?.harnessAuth !== undefined,
+      );
     const owner = new InstalledDriver(
       repositoryAuthorityIdentity === undefined
         ? selection
-        : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
+        : {
+            ...selection,
+            configuration: { sandbox: configuration, repositoryAuthorityIdentity },
+            repositoryOnly,
+          },
       registration as unknown as DriverRegistration,
       {},
       gatewayConfiguration,
