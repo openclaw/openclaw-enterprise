@@ -23,22 +23,19 @@ author: freeqaz
 ## Summary
 
 An operator installs a Sandbox Driver package that runs each dedicated Codex Harness on a host-level sandbox outside
-the Pods that Kubernetes Compute owns; the host enforces filesystem and network confinement. The Agent works like any
-other OCE Agent. This RFC defines that **external Sandbox profile** as a composition of existing and proposed
-primitives, and adds only what none of them owns (the "this RFC" rows of the contract surface). Strands Box is the
-worked example; its code stays in an installable example package.
+Kubernetes Compute's Pods; the host enforces filesystem and network confinement. This RFC defines that **external
+Sandbox profile** as a composition of existing and proposed primitives, and adds only what none of them owns. Strands
+Box is the worked example; its code stays in an installable example package.
 
 ## Motivation
 
-OCE is designed to confine Agents with different Sandboxes behind one set of contracts. OpenShell is bundled; the
-second implementation is an [example Driver for Strands Box](https://github.com/openclaw/openclaw-enterprise/tree/6beef115bc4f65f7ae0a4316cbcccb5bd8e86ebd/deploy/examples/strands-box),
+OpenShell is bundled; the second Sandbox implementation is an
+[example Driver for Strands Box](https://github.com/openclaw/openclaw-enterprise/tree/6beef115bc4f65f7ae0a4316cbcccb5bd8e86ebd/deploy/examples/strands-box),
 a Linux host sandbox whose egress gateway intercepts every connection. Its pilot reached ordinary chat, but put
 provider-shaped names into core and imported controller source, which an installed package cannot do.
 
-Four proposals cover parts of the core: RFC-0030 (ordinary external workspace owner), RFC-0031 and the RFC-0023
-amendment (protected workspace endpoint and pin), and the RFC-0016 amendment (one package registration). None draws
-the line between "a primitive any external Sandbox uses" and "this provider's adapter", and the whole is too large to
-review as one change.
+Four proposals cover parts of the core (see the contract surface), but none draws the line between "a primitive any
+external Sandbox uses" and "this provider's adapter", and the whole is too large to review as one change.
 
 <a id="scope"></a>
 
@@ -48,15 +45,15 @@ review as one change.
    name, documentation and a provider-free conformance test.
 2. Ordinary chat and workspace files work on an external Sandbox, with the Gateway enforcing the binding to the
    original provider execution (RFC-0030).
-3. Protected repository access uses the **same GitHub App installation-token flow and request decision as
-   OpenShell**. No token or key enters the workload. Withdrawal refuses fresh Git before any provider traffic while
-   the chat continues.
-4. The package installs through the existing [Driver package loader](../../docs/reference/drivers/selection.md#select-the-installed-driver),
-   and the loader validates every optional member it declares.
+3. Protected repository access uses the **same GitHub App installation-token flow and request decision as OpenShell**.
+   No token or key enters the workload. Withdrawal refuses fresh Git while the chat continues.
+4. The package installs through the existing
+   [Driver package loader](../../docs/reference/drivers/selection.md#select-the-installed-driver), which validates
+   every optional member it declares.
 
 ## Non-goals
 
-- A bundled, in-tree provider Driver (see the alternatives).
+- A bundled, in-tree provider Driver.
 - A separate credential issuer service, any token flow parallel to the Worker's prepared-git owner, or an OCE-run
   forwarding sender: the Sandbox host injects.
 - Changing [native prepared Git](../../docs/reference/repository-credentials/prepared-native-git.md) admission, which
@@ -76,7 +73,7 @@ review as one change.
 | Sandbox package, `sandbox` view (runs in API and Worker) | Harness provisioning on the host, execution identity, endpoint and status observations, the Gateway bearer during `harnessStatus` and enrollment | the bearer in Harness launch inputs (verifier only) or host state, repository tokens |
 | Sandbox host (outside the confinement) | the workload launch, its egress policy, the per-execution credential, workspace mounts, injection of the credential OCE releases | App keys, GitHub request rules, a stored repository token |
 | Sandbox package, `credential_proxy` view (Worker only) | execution authentication, relay of each held request to OCE's request decision | the App key, GitHub request rules, a credential from its own material read |
-| Worker prepared-git owner (existing) | GitHub App key, repository-scoped installation tokens, grant checks, request classification, ref and draft rules, use records | — |
+| Worker prepared-git owner (existing) | GitHub App key, repository-scoped installation tokens, grant checks, request classification, each profile's rules, use records | — |
 | Agent Gateway runtime | enforcement of the mounted binding on every native connection and turn | provider credentials |
 
 ### Contract surface
@@ -110,47 +107,47 @@ outside a Pod uses it instead of importing controller source.
 declared Harness hook that is not a function, `harnessTransportCredential` other than `"verifier"` or without
 `provisionHarness` and `harnessEndpoint`, `maintenanceIntervalMs` that is not a positive integer or lacks
 `provisionHarness`, or a protected capability with a missing observer or an unknown version. Compute refuses a
-malformed endpoint observation, such as an owner without a generation, before it pins, routes or releases. Each
-addition has its validator case.
+malformed endpoint observation, such as an owner without a generation, before it pins, routes or releases.
 
 **Transport bearer.** The verifier keeps the bearer out of the Harness launch inputs only: the package's
 `harnessStatus` and protected enrollment still receive it. The package sends it only to the Harness after verifying
-the pinned TLS peer, as RFC-0030 requires of the Gateway, and never puts it in launch inputs, host state, logs or the
-workload.
+the pinned TLS peer and never puts it in host state, logs or the workload.
 
 **Worker control mount (optional).** For a host control plane on a local Unix socket, the chart gains
 `worker.sandboxControlClaimName`, an existing PVC claim mounted read-only at `/run/openclaw-sandbox-control` in the
 Worker only. It requires `controlPlane.nodeSelector[kubernetes.io/hostname]`, refuses `executionCluster.enabled`,
 reuse of the bootstrap claim and overlap with the database CA mount. Empty leaves the chart unchanged. The Driver's
-own configuration names the socket path under that directory.
+configuration names the socket under that directory.
 
-**Execution credential for a paired Credential Proxy.** Without mTLS (see the alternatives), the paired Sandbox mints
-one random credential per admitted execution and sends it only to its trusted host, whose egress presents it with each
-held request. The Sandbox reports only its SHA-256 and the live process identity. The Proxy compares digests in
-constant time, binds the request to that execution and process, and rechecks the binding before it answers. As for
-protected inference, the principal is the
+**Execution credential for a paired Credential Proxy.** Without mTLS, the paired Sandbox mints one random credential
+per admitted execution and sends it only to its trusted host, whose egress presents it with each held request. The
+Sandbox reports only its SHA-256 and the live process identity. The Proxy compares digests in constant time, binds the
+request to that execution and process, and rechecks the binding before it answers. As for protected inference, the
+principal is the
 [whole admitted execution](../../docs/reference/drivers/credential-proxy.md#registration-and-execution-release),
 siblings included. The credential identifies the execution, not the request; per-request freshness comes from OCE's
 request decision. This is a pattern inside one paired registration, not a new contract member.
 
 **GitHub request decision.** The host's egress holds each GitHub request and asks the Proxy, which obtains a
 credential only from `requests.authorize`, never from its own material read. It passes the request without credentials
-(TLS-verified target, headers, the whole body up to 4 MiB) and a deadline at most 30 s ahead. OCE reads the material,
+(TLS-verified target, headers, whole body up to 4 MiB) and a deadline at most 30 s ahead. OCE reads the material,
 classifies the request with the bundled route's code, authorizes it online, records one possible use, and answers
-`allow` or `refused` with a reason code for the Agent. The grant owns the ref policy. A refusal, a timeout or a passed
-`sendBy` ends the request before any provider byte. Current rules (questions 4 and 5): `allow` carries `sendBy` and
-one `authorization` header value, which the host adds to that request and never retries or stores; OCE allows uses
-only after the recipient confirms each material version (`beginInstall`, `confirmInstall`), again after renewal, which
-for a request-time recipient means it is ready to ask per request and holds no value.
+`allow` or `refused` with a reason code for the Agent. Under `repository_git` OCE refuses another repository, a ref
+outside the grant's, any pull request but one draft, and other API requests. `github_repository`, which stock CLI
+GraphQL requests need, refuses Git and REST requests outside the granted repositories but has no ref or draft rule;
+the provider's repository-scoped token refuses GraphQL for others (question 6). After a refusal, a timeout or a passed
+`sendBy`, no request byte or credential reaches the provider, though the host may have connected. Current rules
+(questions 4, 5): `allow` carries `sendBy` and one `authorization` header value, which the host adds to that request
+and never retries or stores; OCE allows uses only after the recipient confirms each material version (`beginInstall`,
+`confirmInstall`), renewals included; a request-time recipient thereby declares it is ready to ask and holds no value.
 
 The value is the grant's installation token, so `sendBy` and the ref rules bind honest use only; OCE never promises
 the same credential twice. A standing token delivered to the host at start gets no per-request decision and does not
 meet this contract. A Sandbox whose trusted process shares the workload's kernel or serves any local process is an
 accepted gap, which its package documents with a deployment mitigation.
 
-**Conformance kit.** `tests/conformance/external-sandbox-*` uses a fixture package modelled on the existing
-protected-execution fixture, not a real provider. Each criterion below has one case there. A provider package runs the
-same cases against its own host.
+**Conformance kit.** `tests/conformance/external-sandbox-*` uses a fixture package modelled on the protected-execution
+fixture. Each criterion below has one case there. A provider package runs the same cases against its own host.
 
 ### Architecture
 
@@ -200,19 +197,19 @@ sequenceDiagram
   C->>S: provisionHarness (verifier, held)
   S->>H: launch held, mint execution credential
   H-->>S: reserved endpoint, generation, credential digest
-  C->>C: pin endpoint, mount binding, wait for Gateway acknowledgment
+  C->>C: pin endpoint, mount binding, await Gateway ack
   C->>S: enrollHarness (signed release, bearer)
   S->>H: release, Codex starts
   G->>H: WSS turn (pinned CA, generation header)
   H->>P: held git push, execution credential
-  P->>T: requests.authorize (deadline) after digest + execution check
-  T-->>P: allow: header, sendBy (exact ref only)
+  P->>T: requests.authorize after execution check
+  T-->>P: allow: header, sendBy
   P-->>H: header, host injects and sends
   Note over C,P: Operator withdraws the grant
   H->>P: held git fetch
   P->>T: requests.authorize
   T-->>P: refused, access_withdrawn
-  P-->>H: refused before any provider connection
+  P-->>H: refused, no request byte or credential sent
   G->>H: next chat turn still served
 ```
 
@@ -220,9 +217,8 @@ sequenceDiagram
 
 The example package exports one registration. Its Sandbox view drives a nonroot host service over the Worker control
 mount and creates a relay Deployment that the Gateway reaches through `network.providerHarness`. Box's egress gateway
-asks a request-time credential source on the host, which the Credential Proxy view answers through
-`requests.authorize`. Provider limits and accepted gaps are on the package's known-gaps page; none needs a change in
-core.
+asks a request-time credential source on the host, which relays each ask over the same owner-only control channel to
+the Credential Proxy view (OCE runs no listener for it) for `requests.authorize`.
 
 ## Acceptance Criteria
 
@@ -241,12 +237,13 @@ fixture package (kit) or a real host (installed).
   and opens a draft, then the Worker token service minted the installation token, OCE's request decision recorded each
   request, the provider sees the App as actor and the granted ref, and no token or key exists in the workload.
   Installed run with independent provider readback joined to OCE's use records.
-- **AC-4 — Refusal before egress (Goal 3):** A wrong repository, a wrong ref or a second draft is refused by OCE's
-  request decision although the material is readable; a missing execution credential, or one from a replaced or ended
-  execution or another process, by the Proxy. Neither reaches the provider, and a second request from the live
-  execution succeeds. Kit case: the fixture package and the bundled route decide alike.
-- **AC-5 — Withdrawal (Goal 3):** After the operator withdraws the grant, a fresh fetch or push is refused before any
-  provider traffic, and the next chat turn in the same conversation succeeds. Kit case and installed run.
+- **AC-4 — Refusal before egress (Goal 3):** Each request its profile excludes is refused by OCE's request decision
+  although the material is readable; a missing execution credential, or one from a replaced or ended execution or
+  another process, by the Proxy. Neither reaches the provider, and a second request from the live execution succeeds.
+  Kit case: the fixture package and the bundled route decide alike.
+- **AC-5 — Withdrawal (Goal 3):** After the operator withdraws the grant, a fresh fetch or push is refused with no
+  request byte or credential reaching the provider, and the next chat turn in the same conversation succeeds. Kit case
+  and installed run.
 - **AC-6 — Validation (Goal 4):** Each malformed optional member is refused at registration with a typed startup
   error (controller lifecycle test). A valid registration whose endpoint owner lacks a generation is refused by
   Compute before pinning, routing or release (kit case).
@@ -263,39 +260,42 @@ fixture package (kit) or a real host (installed).
 4. Optional Worker control mount (#6356), and the request decision port (#6358, #6350).
 5. The example package with its own tests and manual lanes, after an installed AC-3 to AC-5 run.
 
-No installed run exists yet; the draft PRs' tests and the pilot's chat are component evidence only.
+No installed run exists yet; draft PR tests and the pilot's chat are component evidence only.
 
 <a id="alternatives-and-open-decisions"></a>
 
 ## Rationale and alternatives
 
-- **Keep provider names in core.** Smallest diff now, but each later provider adds its own directory, header and
-  chart value, and the contract blurs into the adapter.
+- **Keep provider names in core.** Smallest diff, but each later provider adds its own directory, header and chart
+  value.
 - **A bundled in-tree Driver** (earlier RFC-0024 draft). Couples OCE releases to the provider's cadence and
   architecture, and hides contract gaps in one codebase.
 - **Admit native prepared Git with an ordinary external Sandbox.** Reuses the qualified broker, but changes a product
   rule and splits recipient identity between broker and Sandbox.
-- **A separate credential issuer service.** Rejected: new infrastructure parallel to the Worker token service.
 - **An importable GitHub classifier.** Rejected: isolated Driver runtimes resolve only relative imports, and a copy
   drifts from the Worker's rules.
-- **Execution identity by client certificate.** Not available when the Sandbox's egress presents none. A bearer bound
-  to the execution and process is the strongest identity such a Sandbox can present.
+- **Execution identity by client certificate.** Not available when the Sandbox's egress presents none; a bearer bound
+  to the execution and process is the strongest identity it can present.
 
 ## Unresolved questions
 
 1. **Umbrella or consolidation** (RFC reviewers): keep RFC-0030, RFC-0031 and the RFC-0023 amendment as separate
    decisions indexed here, or fold them into this RFC. Either way, the generic names and the token-flow rule bind.
 2. **Worker control transport** (maintainers): accept the chart mount, or require an authenticated TCP control
-   endpoint, which lifts the same-node constraint; today's node selector pins the whole control plane to that host.
+   endpoint, which lifts the same-node constraint; today's node selector pins the control plane to that host.
 3. **Ordinary and protected binding directories** (RFC-0023 amendment owner): one directory with a `mode` field,
    or two fixed directories as proposed here.
-4. **Request-time release** (repository-credentials owners): an injector installs nothing. Keep its readiness
-   declaration per material version, or add per-request release evidence?
+4. **Request-time release** (repository-credentials owners): keep an injector's readiness declaration per material
+   version, or add per-request release evidence? Measured: no restart is needed; after a renewal, requests are refused
+   as not ready for about a second.
 5. **Decision shape** (Sandbox owners): keep the header value, or return a typed credential (scheme, token, receipt)
    that the Sandbox places by its own configuration? Whole body or receive-pack prefix? A request-phase endpoint in
-   core?
+   core? Measured: an injector must decode and re-encode a header value per route and cannot join its request ID to
+   OCE's record; a typed credential plus exchange ID maps in one step.
+6. **GraphQL draft rule** (repository-credentials owners): give `github_repository` draft, ref and one-draft rules for
+   every Sandbox, or accept and document the gap?
 
 ## References
 
 - [Sandbox contract: Harness transport](../../docs/reference/drivers/sandbox.md#harness-transport).
-- [Protected OpenShell Git](../../docs/reference/repository-credentials/protected-openshell-git.md) for the token flow being reused.
+- [Protected OpenShell Git](../../docs/reference/repository-credentials/protected-openshell-git.md) for the reused token flow.
