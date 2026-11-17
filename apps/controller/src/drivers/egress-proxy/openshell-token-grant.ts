@@ -19,6 +19,13 @@ export interface OpenShellTokenGrantConfiguration {
   readonly bundlePath: string;
 }
 
+// The chart exposes both listeners on the token endpoint's service host.
+export function openShellRequestAuthorityEndpoint(tokenEndpoint: string, authorityPort: number) {
+  const endpoint = new URL(tokenEndpoint);
+  endpoint.port = String(authorityPort);
+  return endpoint.origin;
+}
+
 export const tokenGrantSchema = {
   type: "object",
   additionalProperties: false,
@@ -163,9 +170,27 @@ export async function bindOpenShellTokenGrant(
   await loadJwtAuthorities(config.bundlePath);
   const path = new URL(config.endpoint).pathname;
   const prefix = `spiffe://${config.trustDomain}/openshell/sandbox/`;
+  let pendingBodies = 0;
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     if (request.method !== "POST" || request.url !== path) {
       reply(response, 404, { error: "not_found" });
+      return;
+    }
+    // Slow unauthenticated bodies cannot occupy the shared gRPC authentication budget.
+    if (pendingBodies >= 32) {
+      response.setHeader("connection", "close");
+      reply(response, 503, { error: "temporarily_unavailable" });
+      return;
+    }
+    const startedAt = Date.now();
+    pendingBodies++;
+    const bodyDeadline = setTimeout(() => request.destroy(), 5_000).unref();
+    const grant = await readGrant(request).finally(() => {
+      clearTimeout(bodyDeadline);
+      pendingBodies--;
+    });
+    if (!grant) {
+      reply(response, 400, { error: "invalid_request" });
       return;
     }
     const release = acquireAuthentication();
@@ -174,12 +199,6 @@ export async function bindOpenShellTokenGrant(
       return;
     }
     try {
-      const startedAt = Date.now();
-      const grant = await readGrant(request);
-      if (!grant) {
-        reply(response, 400, { error: "invalid_request" });
-        return;
-      }
       const keys = await loadJwtAuthorities(config.bundlePath);
       const jwt = await jwtVerify(grant.assertion, keys, {
         algorithms: ["ES256", "ES384", "RS256", "PS256"],

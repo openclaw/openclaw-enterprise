@@ -289,9 +289,9 @@ before raising it. Restart API Pods to apply a change.
 An operation slot covers the handle until closure or deadline (at most 30 s)
 and any pending work until settlement. Verified sender and Sandbox identities
 determine each Sandbox share. Authentication uses the global budget before
-verification. For online models, gRPC verification and HTTPS body, bundle, and
-JWT processing hold an authentication lease until resolver admission. A
-canceled final Secret read releases policy locks and retains capacity until settlement.
+verification. Incomplete HTTPS grants have 32 listener slots and a five-second
+deadline. gRPC verification and complete grants share the authentication lease.
+A canceled final Secret read releases policy locks and retains capacity until settlement.
 
 Online approvals reserve recipient and request IDs past consumption or expiry
 until the verified replay horizon, at most one hour from admission. Database

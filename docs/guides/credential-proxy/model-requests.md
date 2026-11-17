@@ -76,8 +76,9 @@ the exact token endpoint. This feature does not deploy SPIRE or create those
 registrations. Verify that the guest cannot reach the socket or obtain the same
 identity. A mounted public trust bundle alone is insufficient.
 
-Register the model middleware as a required pre-credential binding with the
-configured HTTPS authority and audience. Set `timeout = "5s"` in the
+Register the model middleware as a required pre-credential binding. Its HTTPS
+endpoint uses the token-grant service host and the configured authority port.
+Use the configured audience and set `timeout = "5s"` in the
 model middleware registration to allow live installation and IAM checks; this
 is a recommended timeout, not a guarantee that a request completes within it.
 The existing Gateway-signed extension

@@ -3,7 +3,10 @@ import {
   verifyModelRequestProfile,
   verifyModelRequestPolicy,
 } from "../sandbox/openshell-model-request-policy.ts";
-import type { OpenShellTokenGrantConfiguration } from "./openshell-token-grant.ts";
+import {
+  openShellRequestAuthorityEndpoint,
+  type OpenShellTokenGrantConfiguration,
+} from "./openshell-token-grant.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
@@ -79,6 +82,7 @@ export interface OpenShellProxyOptions {
   readonly requestCredentials?: {
     readonly audience: string;
     readonly tokenEndpoint: string;
+    readonly grpcEndpoint: string;
   };
 }
 
@@ -86,22 +90,28 @@ function validRequestCredentials(input: unknown): boolean {
   const value = asRecord(input);
   if (
     !value ||
-    Object.keys(value).length !== 2 ||
+    Object.keys(value).length !== 3 ||
     typeof value.audience !== "string" ||
     !value.audience.trim() ||
     typeof value.tokenEndpoint !== "string" ||
-    !URL.canParse(value.tokenEndpoint)
+    !URL.canParse(value.tokenEndpoint) ||
+    typeof value.grpcEndpoint !== "string" ||
+    !URL.canParse(value.grpcEndpoint)
   ) {
     return false;
   }
   const endpoint = new URL(value.tokenEndpoint);
+  const authority = new URL(value.grpcEndpoint);
   return (
     endpoint.protocol === "https:" &&
     !endpoint.username &&
     !endpoint.password &&
     !endpoint.search &&
     !endpoint.hash &&
-    endpoint.href === value.tokenEndpoint
+    endpoint.href === value.tokenEndpoint &&
+    authority.protocol === "https:" &&
+    authority.hostname === endpoint.hostname &&
+    authority.origin === value.grpcEndpoint
   );
 }
 
@@ -340,10 +350,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       requestCredentials: {
         type: "object",
         additionalProperties: false,
-        required: ["audience", "tokenEndpoint"],
+        required: ["audience", "tokenEndpoint", "grpcEndpoint"],
         properties: {
           audience: { type: "string", minLength: 1 },
           tokenEndpoint: { type: "string", minLength: 1 },
+          grpcEndpoint: { type: "string", minLength: 1 },
         },
       },
     },
@@ -409,7 +420,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       (options.requestCredentials &&
         (!exchange ||
           options.requestCredentials.audience !== exchange.audience ||
-          options.requestCredentials.tokenEndpoint !== selection.tokenGrant?.endpoint))
+          options.requestCredentials.tokenEndpoint !== selection.tokenGrant?.endpoint ||
+          options.requestCredentials.grpcEndpoint !==
+            openShellRequestAuthorityEndpoint(
+              options.requestCredentials.tokenEndpoint,
+              exchange.port,
+            )))
     ) {
       throw new Error("Request credentials require their selected authority and token grant.");
     }

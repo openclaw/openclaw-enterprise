@@ -371,7 +371,11 @@ export function registerStartupDiagnosticsCases({
     assert.deepEqual(loaded?.installation.drivers.credential_proxy?.configuration, {
       middlewareName,
       repositoryMiddlewareName: gitRegistration,
-      requestCredentials: { audience: authority.audience, tokenEndpoint },
+      requestCredentials: {
+        audience: authority.audience,
+        tokenEndpoint,
+        grpcEndpoint: `https://token-grant.example.test:${authority.port}`,
+      },
       authorityScope: "execution",
     });
 

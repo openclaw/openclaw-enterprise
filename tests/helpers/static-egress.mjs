@@ -503,6 +503,7 @@ async function buildStaticEgressFixture(
       requestCredentials: {
         audience: "oce-authority",
         tokenEndpoint: "https://127.0.0.1:9445/token",
+        grpcEndpoint: "https://127.0.0.1:9444",
       },
     }),
   };

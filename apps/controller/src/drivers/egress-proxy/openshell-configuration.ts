@@ -8,7 +8,10 @@ import {
   type InstallationFieldDetail,
 } from "../../composition/installation-fields.ts";
 import { preparedGitHubConfiguration } from "../repo/github/access/prepared-configuration.ts";
-import { validTokenGrantConfiguration } from "./openshell-token-grant.ts";
+import {
+  openShellRequestAuthorityEndpoint,
+  validTokenGrantConfiguration,
+} from "./openshell-token-grant.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
 /** Existing Helm listener and mounted files for the OpenShell Git adapter. */
@@ -73,7 +76,13 @@ export function openShellProxyConfiguration(
               "OpenShell request credentials require distinct authority and token-grant listeners.",
             );
           }
-          return { authority, middlewareName, tokenGrant: egress.tokenGrant };
+          const tokenGrant = egress.tokenGrant;
+          const policy = {
+            audience: authority.audience,
+            tokenEndpoint: tokenGrant.endpoint,
+            grpcEndpoint: openShellRequestAuthorityEndpoint(tokenGrant.endpoint, authority.port),
+          };
+          return { authority, middlewareName, tokenGrant, policy };
         })();
   if (repository) {
     if (requestCredentials && Object.hasOwn(egress, "authorityScope")) {
@@ -118,12 +127,7 @@ export function openShellProxyConfiguration(
       }),
       policy: {
         middlewareName: requestCredentials?.middlewareName ?? repository.registrationName,
-        ...(requestCredentials && {
-          requestCredentials: {
-            audience: requestCredentials.authority.audience,
-            tokenEndpoint: requestCredentials.tokenGrant.endpoint,
-          },
-        }),
+        ...(requestCredentials && { requestCredentials: requestCredentials.policy }),
         repositoryMiddlewareName: repository.registrationName,
         authorityScope: "execution",
         ...preview,
@@ -140,12 +144,7 @@ export function openShellProxyConfiguration(
     repository: undefined,
     policy: {
       ...policy,
-      ...(requestCredentials && {
-        requestCredentials: {
-          audience: requestCredentials.authority.audience,
-          tokenEndpoint: requestCredentials.tokenGrant.endpoint,
-        },
-      }),
+      ...(requestCredentials && { requestCredentials: requestCredentials.policy }),
     },
     ...(requestCredentials && { tokenGrant: requestCredentials.tokenGrant }),
     authority: egressAuthorityConfiguration(

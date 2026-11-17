@@ -264,7 +264,12 @@ test("model profile wire retains zero-cache token grants and output-only endpoin
     provider: { name, profile },
     host: "api.example.test",
     environment: { OPENAI_API_KEY: "oce:request-authorized:model" },
-    registration: { name: "model-authority", audience: "model-authority", tokenEndpoint },
+    registration: {
+      name: "model-authority",
+      audience: "model-authority",
+      tokenEndpoint,
+      grpcEndpoint: "https://authority.example.test:9443",
+    },
     middlewares: {
       "oce-model": {
         name: "oce-model",

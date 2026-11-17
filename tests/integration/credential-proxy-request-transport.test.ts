@@ -368,8 +368,7 @@ test(
       skewedClock.mock.restore();
     }
 
-    // An incomplete request occupies the authentication lease before any bundle or signature
-    // work. The HTTPS and gRPC listeners share that same configured process budget.
+    // An incomplete HTTPS body must leave the only authentication slot available.
     const pending = httpsRequest(tokenEndpoint, {
       method: "POST",
       ca: tls.caBundle,
@@ -379,27 +378,15 @@ test(
     const pendingClosed = new Promise<void>((resolve) => pending.once("close", resolve));
     pending.on("error", () => {});
     t.after(() => pending.destroy());
-    pending.write("client_assertion=");
+    await new Promise<void>((resolve, reject) =>
+      pending.write("client_assertion=", (error) => (error ? reject(error) : resolve())),
+    );
     const capacityInput = fixture.request();
-    await waitFor(
-      "shared pre-authentication capacity",
-      async () => (await redeem(capacityInput, Promise.resolve("invalid"))).status === 503,
-      5000,
-      { interval: 20 },
-    );
-    assert.equal((await evaluate(capacityInput)).decision, 2);
-    const beforeCapacityRelease = f.secretReads;
-    pending.destroy();
-    await pendingClosed;
-    await waitFor(
-      "authentication capacity recovery",
-      async () => (await redeem(capacityInput, Promise.resolve("invalid"))).status === 401,
-      5000,
-      { interval: 20 },
-    );
-    assert.equal(f.secretReads, beforeCapacityRelease);
     assert.equal((await evaluate(capacityInput)).decision, 1);
     assert.equal((await redeem(capacityInput)).status, 200);
+    assert.equal(pending.destroyed, false);
+    pending.destroy();
+    await pendingClosed;
 
     // Key rotation is observed without provider recreation; removing a trust key takes effect
     // on the next HTTPS request and never reaches the Secret reader.
@@ -598,7 +585,7 @@ test(
         {
           name: "oce-authority",
           audience: "oce-authority",
-          grpc_endpoint: "https://authority.example.test:9444",
+          grpc_endpoint: expected.registration.grpcEndpoint,
           binding_policy: 2,
           bindings: [1],
         },
@@ -619,6 +606,15 @@ test(
     Reflect.deleteProperty(admission, "policy_version");
     assert.equal(await f.credentialProxy.wiringStatus(context, prepared), undefined);
     admission.policy_version = 1;
+    const [registration] = config.supervisor_middleware_services;
+    assert.ok(registration);
+    const trustedEndpoint = registration.grpc_endpoint;
+    registration.grpc_endpoint = "https://unrelated-authority.example.test:9444";
+    await assert.rejects(
+      f.credentialProxy.wiringStatus(context, prepared),
+      /required authenticated model request middleware/,
+    );
+    registration.grpc_endpoint = trustedEndpoint;
     const installation = await f.credentialProxy.wiringStatus(context, prepared);
     assert.ok(installation, "the Driver must first qualify the observed installation");
     const requestCredentials = f.credentialProxy.requestTimeCredentials;
@@ -629,6 +625,9 @@ test(
         context: workspace,
       });
     assert.equal(await verify(), true);
+    registration.grpc_endpoint = "https://unrelated-authority.example.test:9444";
+    await assert.rejects(verify(), /required authenticated model request middleware/);
+    registration.grpc_endpoint = trustedEndpoint;
     // Protobuf maps have no stable wire order. Repeated real-client decodes must
     // preserve the installation when only the order of the provider labels changes.
     const provider = f.providers.get(expected.provider.name);

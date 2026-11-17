@@ -1393,21 +1393,9 @@ async function assertUpgradedRevisionReadable(db) {
   );
 
   const modelDriver = { id: "model", implementation: "test", configurationId: "a".repeat(64) };
-  const insertRequestModel = (driver) =>
-    insertRevision(
-      `jsonb_set(${currentSpec}, '{harness_auth,protectedExecutionVersion}', '8'::jsonb)
-       || jsonb_build_object('execution_admission', '{"version":8,"mode":"protected"}'::jsonb,
-                             'egress_plan', $3::jsonb)`,
-      {
-        execution: { namespaceId, agentId, revisionId },
-        authorization: "online-request",
-        driver,
-        routes: [
-          { binding: { grant: { kind: "inference" }, source: { source: { id: "model-source" } } } },
-        ],
-      },
-    );
+  const insertRequestModel = (driver) => insertRequestModelRevision(db, id, driver);
   await assert.rejects(insertRequestModel({ ...modelDriver, id: false }), invalidAdmission);
+  await assert.rejects(insertRequestModel({ ...modelDriver, id: " \t\u00a0" }), invalidAdmission);
   await assert.rejects(
     insertRequestModel({ ...modelDriver, implementation: {} }),
     invalidAdmission,
@@ -1418,6 +1406,30 @@ async function assertUpgradedRevisionReadable(db) {
   } finally {
     await db.app.query("ROLLBACK");
   }
+}
+
+async function insertRequestModelRevision(db, existingRevision, driver) {
+  const id = `rev_${randomUUID()}`;
+  const plan = {
+    authorization: "online-request",
+    driver,
+    routes: [
+      { binding: { grant: { kind: "inference" }, source: { source: { id: "model-source" } } } },
+    ],
+  };
+  return db.app.query(
+    `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+     SELECT $1, namespace_id, agent_id, 2,
+       jsonb_set(admitted_spec, '{harness}', (admitted_spec->'harness') || '{"overrides":{},"configuration":{}}'::jsonb)
+       || jsonb_build_object(
+         'harness_auth', (admitted_spec->'harness_auth') || '{"protectedExecutionVersion":8}'::jsonb,
+         'execution_admission', '{"version":8,"mode":"protected"}'::jsonb,
+         'egress_plan', $3::jsonb || jsonb_build_object('execution', jsonb_build_object(
+           'namespaceId', namespace_id, 'agentId', agent_id, 'revisionId', $1::text))
+       ),
+       NULL, now() FROM occ.agent_revisions WHERE id=$2`,
+    [id, existingRevision, plan],
+  );
 }
 
 /**
@@ -2464,6 +2476,34 @@ test(
         await assertCompletedHistory(db, before.receipts);
       });
     }
+
+    await context.test(
+      "a pending migration refuses a stored malformed request-model Driver",
+      async (child) => {
+        const db = await historyDatabase(child, fixture, "malformedmodel", { prefix: 81 });
+        const { revision } = await seedCanonicalAgent(db, `ns_${randomUUID()}`, {
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: true,
+        });
+        const malformed = { id: false, implementation: "test", configurationId: "a".repeat(64) };
+        assert.equal((await insertRequestModelRevision(db, revision, malformed)).rowCount, 1);
+        const before = await historySnapshot(db);
+        assert.equal(before.receipts.length, 81);
+        assert.deepEqual(
+          await runHistoryMigration(db, "development", undefined, undefined, (error) => {
+            assert.equal(error.code, "23514");
+            assert.equal(error.constraint, "agent_revisions_execution_admission");
+          }),
+          { ok: false, code: "MIGRATION_FAILED" },
+        );
+        assert.deepEqual(await historySnapshot(db), before);
+        const stored = await db.app.query(
+          "SELECT admitted_spec #> '{egress_plan,driver,id}' AS driver FROM occ.agent_revisions WHERE revision_number=2",
+        );
+        assert.deepEqual(stored.rows, [{ driver: false }]);
+      },
+    );
 
     for (const { provider, restored } of [
       { provider: false, restored: false },

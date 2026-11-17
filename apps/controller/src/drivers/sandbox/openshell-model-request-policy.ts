@@ -205,7 +205,8 @@ export function verifyModelRequestPolicy(
     !Array.isArray(registration.bindings) ||
     !registration.bindings.includes(1) ||
     typeof registration.grpc_endpoint !== "string" ||
-    !registration.grpc_endpoint.startsWith("https://")
+    (registration.grpc_endpoint !== expected.registration.grpcEndpoint &&
+      registration.grpc_endpoint !== expected.registration.grpcEndpoint + "/")
   ) {
     unsupported("OpenShell has not admitted the required authenticated model request middleware.");
   }
