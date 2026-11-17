@@ -62,6 +62,24 @@ or renewal under the same binding. Fresh setup comes first; a typed bootstrap re
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge when the selected source provides that contract.
+`openclaw-codex-box-owner.patch` binds an external Codex turn to the Compute-owned
+provider-Box generation and its WSS peer, and fences the app-server RPCs a provider
+Box may make: the chat control set is allowed, the native hook relay credential file
+(`fs/writeFile`/`fs/remove` of one `<relayId>.<generation>.json` under the fixed
+`$HOME/.oce-native-hooks`, whose URL is pinned to the Gateway's own configured
+`appServer.nativeHookRelay` value, never the request) is admitted, and every other
+`fs/*` call and unbound RPC stays refused. The client takes one JSON snapshot of the
+request params before the fence so the value decided on is exactly the value sent.
+`openclaw-native-hook-env-proxy.patch` makes a dedicated native-hook-relay call honour
+Node's own env-proxy switch, which an explicit-proxy Sandbox sets.
+
+These two patches' unit tests (`provider-box-owner.test.ts`,
+`native-hook-relay-remote-client.test.ts`) run only in the Dockerfile's
+`openclaw-bridge-tests` image stage, which is not a dependency of the runtime target
+and which hosted PR CI does not run (it runs only under `container-check`
+`workflow_dispatch` or `container-publish`). Validating a change to either patch means
+building that stage (or dispatching `container-check`), not the normal PR checks.
+
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
 against the Dockerfile.

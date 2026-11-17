@@ -167,7 +167,7 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 # Bind external Codex turn policy to the Compute-owned Box generation and its WSS peer.
 COPY deploy/runtime/openclaw-codex-box-owner.patch /tmp/openclaw-codex-box-owner.patch
-RUN echo '4a2aacf4358afe63891f1762d3b94cccff93fa65c6916795e4d604ea734295e4  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
+RUN echo 'b7da231cae0a7966a19b6c09a627e4bc99221bddd24f9e8e14917685694fbeeb  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-box-owner.patch
 # A dedicated native hook relay call honours Node's own env-proxy switch, which an
 # explicit-proxy Sandbox sets; without it the call still dials the Gateway directly.

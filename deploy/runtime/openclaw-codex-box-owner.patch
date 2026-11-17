@@ -1,19 +1,23 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
-index 18794d5..a95e6ec 100644
+index 793ec66..5965cbc 100644
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
-@@ -55,6 +55,7 @@ import {
+@@ -55,6 +55,11 @@ import {
    type RpcMessage,
    type RpcRequest,
  } from "./protocol.js";
-+import { providerBoxRequestRefusal, type ProviderBoxOwner } from "./provider-box-owner.js";
++import {
++  providerBoxRequestRefusal,
++  providerBoxRequestSnapshot,
++  type ProviderBoxOwner,
++} from "./provider-box-owner.js";
  import { dispatchCodexRequestAttempt } from "./request-admission.js";
  import { createCodexRequestAttempt, remainingCodexRequestTime } from "./request-attempt.js";
  import type { CodexRequestWaiterFinished } from "./request-observation.js";
-@@ -177,7 +178,10 @@ export class CodexAppServerClient {
+@@ -177,7 +182,10 @@ export class CodexAppServerClient {
    private readonly privateTransportSecrets = new Set<string>();
    private privateStderrPending = "";
-
+ 
 -  private constructor(child: CodexAppServerTransport) {
 +  private constructor(
 +    child: CodexAppServerTransport,
@@ -22,7 +26,7 @@ index 18794d5..a95e6ec 100644
      this.child = child;
      this.closeMessageReader = listenCodexAppServerLines(
        child.stdout,
-@@ -228,7 +232,10 @@ export class CodexAppServerClient {
+@@ -228,7 +236,10 @@ export class CodexAppServerClient {
      }
      if (startOptions.transport === "websocket" || startOptions.transport === "unix") {
        await assertCurrent?.();
@@ -34,17 +38,32 @@ index 18794d5..a95e6ec 100644
      }
      // The spawn callback runs synchronously before registration; initialization
      // stays blocked until registration finishes, without losing startup errors.
-@@ -342,6 +349,14 @@ export class CodexAppServerClient {
+@@ -338,10 +349,28 @@ export class CodexAppServerClient {
+   ): Promise<T>;
+   request<T = JsonValue | undefined>(
+     method: string,
+-    params?: unknown,
++    paramsInput?: unknown,
      optionsInput?: RequestOptions,
    ): Promise<T> {
      const options = optionsInput ?? {};
-+    const boxRefusal = this.providerBoxOwner
-+      ? providerBoxRequestRefusal(this.providerBoxOwner, method, params)
-+      : undefined;
-+    if (boxRefusal !== undefined) {
-+      return Promise.reject(
-+        new Error(`The provider Box refused a Codex request before dispatch (${boxRefusal}).`),
-+      );
++    let params = paramsInput;
++    if (this.providerBoxOwner) {
++      // One JSON snapshot: the fence decides on exactly the value that is sent, so a getter,
++      // a Proxy or a toJSON cannot pass the check and then serialize as something else.
++      try {
++        params = providerBoxRequestSnapshot(params);
++      } catch {
++        return Promise.reject(
++          new Error("The provider Box refused a Codex request before dispatch (params)."),
++        );
++      }
++      const boxRefusal = providerBoxRequestRefusal(this.providerBoxOwner, method, params);
++      if (boxRefusal !== undefined) {
++        return Promise.reject(
++          new Error(`The provider Box refused a Codex request before dispatch (${boxRefusal}).`),
++        );
++      }
 +    }
      if (this.closed) {
        return Promise.reject(this.closeError ?? new Error("codex app-server client is closed"));
@@ -62,7 +81,7 @@ index 320b5e8..0092d47 100644
    env?: Record<string, string>;
    clearEnv?: string[];
 diff --git a/extensions/codex/src/app-server/config-options.ts b/extensions/codex/src/app-server/config-options.ts
-index a8e7a87..6c62a07 100644
+index a8e7a87..570e35c 100644
 --- a/extensions/codex/src/app-server/config-options.ts
 +++ b/extensions/codex/src/app-server/config-options.ts
 @@ -58,6 +58,7 @@ import {
@@ -70,14 +89,14 @@ index a8e7a87..6c62a07 100644
  import { readCodexAppServerConfigOptions } from "./launch-args.js";
  import type { CodexSandboxMode, CodexSandboxPolicy } from "./protocol.js";
 +import { readProviderBoxOwner } from "./provider-box-owner.js";
-
+ 
  /**
   * Sole owner of the app-server home-scope decision. Ordinary harness connections
-@@ -270,6 +271,18 @@ export function createCodexAppServerConfig({
+@@ -270,6 +271,29 @@ export function createCodexAppServerConfig({
        authToken,
        headers,
      });
-+    const providerBoxOwner =
++    const boxOwner =
 +      connectionScope === "harness" && params.pluginConfig?.appServer !== undefined
 +        ? readProviderBoxOwner({
 +            transport,
@@ -89,10 +108,21 @@ index a8e7a87..6c62a07 100644
 +            headers,
 +          })
 +        : undefined;
-
++    // The fence admits the hook credential only for this configured relay URL and directory.
++    const providerBoxOwner =
++      boxOwner && config.nativeHookRelay
++        ? {
++            ...boxOwner,
++            nativeHookRelay: {
++              url: config.nativeHookRelay.url,
++              credentialDirectory: config.nativeHookRelay.credentialDirectory,
++            },
++          }
++        : boxOwner;
+ 
      const configApprovalPolicy = config.approvalPolicy;
      const envApprovalPolicy = resolveApprovalPolicy(env.OPENCLAW_CODEX_APP_SERVER_APPROVAL_POLICY);
-@@ -303,6 +316,7 @@ export function createCodexAppServerConfig({
+@@ -303,6 +327,7 @@ export function createCodexAppServerConfig({
          args: args.length > 0 ? args : ["app-server", "--listen", "stdio://"],
          ...(url ? { url } : {}),
          ...(authToken ? { authToken } : {}),
@@ -100,21 +130,22 @@ index a8e7a87..6c62a07 100644
          headers,
          ...(transport === "stdio" && clearEnv.length > 0 ? { clearEnv } : {}),
        },
-@@ -490,6 +504,8 @@ export function codexAppServerStartOptionsKey(
+@@ -490,6 +515,9 @@ export function codexAppServerStartOptionsKey(
      args: options.args,
      cwd: options.cwd ?? null,
      url: options.url ?? null,
 +    boxOwnerGeneration: options.providerBoxOwner?.generationSha256 ?? null,
++    boxOwnerHookRelay: options.providerBoxOwner?.nativeHookRelay ?? null,
 +    boxOwnerCa: hashSecretForKey(options.providerBoxOwner?.ca, "boxOwnerCa"),
      authToken: hashSecretForKey(options.authToken, "authToken"),
      headers: Object.entries(options.headers)
        .toSorted(([left], [right]) => left.localeCompare(right))
 diff --git a/extensions/codex/src/app-server/provider-box-owner.test.ts b/extensions/codex/src/app-server/provider-box-owner.test.ts
 new file mode 100644
-index 0000000..c0fd3a6
+index 0000000..ceeb37a
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.test.ts
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,634 @@
 +import { execFileSync } from "node:child_process";
 +import { once } from "node:events";
 +import {
@@ -137,6 +168,7 @@ index 0000000..c0fd3a6
 +  allowsProviderBoxRequest,
 +  matchesProviderBoxOwner,
 +  providerBoxRequestRefusal,
++  providerBoxRequestSnapshot,
 +  readProviderBoxOwner,
 +} from "./provider-box-owner.js";
 +import { createWebSocketTransport } from "./transport-websocket.js";
@@ -473,12 +505,52 @@ index 0000000..c0fd3a6
 +  const url = `https://gateway.example.test:10443/namespaces/ns/agents/agent/node/__openclaw__/native-hook/${relayId}`;
 +  const document = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64");
 +  const dataBase64 = document({ url, token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f" });
-+  const write = (params: unknown) => providerBoxRequestRefusal(owner, "fs/writeFile", params);
-+  const remove = (params: unknown) => providerBoxRequestRefusal(owner, "fs/remove", params);
++  // The fence reads the configured relay URL and directory from the Gateway's own rendered
++  // configuration (appServer.nativeHookRelay), never from the request; base is that URL without
++  // the relay-id suffix native-hook-relay-remote.ts appends.
++  const base = url.slice(0, url.length - `/${relayId}`.length);
++  const hookOwner = { workspaceRoot, nativeHookRelay: { url: base, credentialDirectory: directory } };
++  const write = (params: unknown) => providerBoxRequestRefusal(hookOwner, "fs/writeFile", params);
++  const remove = (params: unknown) => providerBoxRequestRefusal(hookOwner, "fs/remove", params);
 +
 +  // The two accepted forms, exactly as native-hook-relay-remote.ts sends them.
 +  expect(write({ path, dataBase64 })).toBeUndefined();
 +  expect(remove({ path, force: true, recursive: false })).toBeUndefined();
++
++  // Without the configured relay (owner has no nativeHookRelay), or with a directory that is not
++  // the fixed hook directory, nothing is admitted: the fence fails closed on misconfiguration.
++  expect(providerBoxRequestRefusal({ workspaceRoot }, "fs/writeFile", { path, dataBase64 })).toBe(
++    "fs/writeFile:unconfigured",
++  );
++  expect(
++    providerBoxRequestRefusal({ workspaceRoot }, "fs/remove", {
++      path,
++      force: true,
++      recursive: false,
++    }),
++  ).toBe("fs/remove:unconfigured");
++  expect(
++    providerBoxRequestRefusal(
++      { workspaceRoot, nativeHookRelay: { url: base, credentialDirectory: "/home/node/.other" } },
++      "fs/writeFile",
++      { path, dataBase64 },
++    ),
++  ).toBe("fs/writeFile:unconfigured");
++  // The URL is pinned to the configured relay: the same credential written under a different
++  // configured base is refused (the request cannot choose its own target).
++  expect(
++    providerBoxRequestRefusal(
++      {
++        workspaceRoot,
++        nativeHookRelay: {
++          url: "https://other.example.test:10443/namespaces/ns/agents/agent/node/__openclaw__/native-hook",
++          credentialDirectory: directory,
++        },
++      },
++      "fs/writeFile",
++      { path, dataBase64 },
++    ),
++  ).toBe("fs/writeFile:data");
 +
 +  // Paths: sibling directory, nested, prefix collision, relative, dot segments, trailing
 +  // slash, NUL, symlink-looking or other names and extensions, the directory itself.
@@ -574,12 +646,146 @@ index 0000000..c0fd3a6
 +  expect(refusal).toBe("fs/writeFile:path");
 +  expect(refusal).not.toContain("private-caller-name");
 +});
++
++it("pins the hook credential URL to the configured relay and kills the surviving fence mutants", () => {
++  // The configured relay URL comes from the Gateway's own rendered configuration, never the
++  // request; the fence requires the written URL to equal `${base}/${relayId}`, exactly as
++  // native-hook-relay-remote.ts builds it. These inputs each isolate one load-bearing check: an
++  // input the full fence refuses and the single mutation would admit (finding 3277).
++  const directory = "/home/node/.oce-native-hooks";
++  const relayId = `codex-${"0123456789abcdef".repeat(3).slice(0, 40)}`;
++  const generation = "3f2b8c1e-9d4a-4b7e-8c21-5a6f0e9d1b72";
++  const token = "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f";
++  const path = `${directory}/${relayId}.${generation}.json`;
++  const doc = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64");
++  const refuse = (relayUrl: string, params: unknown) =>
++    providerBoxRequestRefusal(
++      { workspaceRoot, nativeHookRelay: { url: relayUrl, credentialDirectory: directory } },
++      "fs/writeFile",
++      params,
++    );
++
++  const cleanBase =
++    "https://gateway.example.test:10443/namespaces/ns/agents/agent/node/__openclaw__/native-hook";
++  const cleanUrl = `${cleanBase}/${relayId}`;
++  // Baseline: the configured relay's own credential is admitted.
++  expect(refuse(cleanBase, { path, dataBase64: doc({ url: cleanUrl, token }) })).toBeUndefined();
++
++  // M1 name `^` anchor: a basename with a prefix before `codex-` must not match.
++  expect(
++    refuse(cleanBase, {
++      path: `${directory}/evil-${relayId}.${generation}.json`,
++      dataBase64: doc({ url: cleanUrl, token }),
++    }),
++  ).toBe("fs/writeFile:path");
++
++  // M2 prototype check: params on a custom prototype (a toJSON that would re-serialize other
++  // values) are not a plain record.
++  const sneaky = Object.create({
++    toJSON() {
++      return { path, dataBase64: doc({ url: cleanUrl, token }) };
++    },
++  }) as { path: string; dataBase64: string };
++  sneaky.path = path;
++  sneaky.dataBase64 = doc({ url: cleanUrl, token });
++  expect(refuse(cleanBase, sneaky)).toBe("fs/writeFile:params");
++
++  // M3 canonical base64 re-encode: a non-canonical base64 that decodes to the exact credential
++  // bytes but is not what Buffer re-encodes to. The ns segment is padded by one character so the
++  // document base64 carries `==` (unused bits to flip).
++  {
++    const base = cleanBase.replace("/namespaces/ns/", "/namespaces/nsa/");
++    const url = `${base}/${relayId}`;
++    const canonical = doc({ url, token });
++    const raw = Buffer.from(canonical, "base64");
++    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++    const at = canonical.indexOf("=") - 1;
++    let nonCanonical: string | undefined;
++    for (const char of alphabet) {
++      if (char === canonical[at]) continue;
++      const candidate = `${canonical.slice(0, at)}${char}${canonical.slice(at + 1)}`;
++      const decoded = Buffer.from(candidate, "base64");
++      if (decoded.equals(raw) && Buffer.from(decoded).toString("base64") !== candidate) {
++        nonCanonical = candidate;
++        break;
++      }
++    }
++    expect(nonCanonical).toBeDefined();
++    expect(refuse(base, { path, dataBase64: canonical })).toBeUndefined();
++    expect(refuse(base, { path, dataBase64: nonCanonical })).toBe("fs/writeFile:data");
++  }
++
++  // M4 password-only userinfo: the configured base carries `:pw@`, so the URL pin passes and only
++  // the `!password` check can refuse it.
++  {
++    const base =
++      "https://:pw@gateway.example.test:10443/namespaces/ns/agents/agent/node/__openclaw__/native-hook";
++    expect(refuse(base, { path, dataBase64: doc({ url: `${base}/${relayId}`, token }) })).toBe(
++      "fs/writeFile:data",
++    );
++  }
++
++  // M6 `href === url`: an uppercase host in the configured base passes the string URL pin, but the
++  // parsed URL normalizes the host, so `href !== url` must refuse it.
++  {
++    const base =
++      "https://GATEWAY.example.test:10443/namespaces/ns/agents/agent/node/__openclaw__/native-hook";
++    expect(refuse(base, { path, dataBase64: doc({ url: `${base}/${relayId}`, token }) })).toBe(
++      "fs/writeFile:data",
++    );
++  }
++
++  // M7 the 4 KiB bound: a configured base long enough that the credential document exceeds the
++  // byte bound, while the URL pin and route checks still pass.
++  {
++    const base = `https://gateway.example.test:10443/namespaces/${"a".repeat(
++      4096,
++    )}/agents/agent/node/__openclaw__/native-hook`;
++    expect(refuse(base, { path, dataBase64: doc({ url: `${base}/${relayId}`, token }) })).toBe(
++      "fs/writeFile:data",
++    );
++  }
++
++  // M5 fragment and the empty `?`/`#` cases: the URL pin pins the exact string, so a trailing
++  // fragment or query can never equal `${base}/${relayId}`. (The dedicated fragment check is now an
++  // equivalent mutant; the URL pin is the primary guard.)
++  for (const suffix of ["#x", "#", "?", "?q=1"]) {
++    expect(refuse(cleanBase, { path, dataBase64: doc({ url: `${cleanUrl}${suffix}`, token }) })).toBe(
++      "fs/writeFile:data",
++    );
++  }
++});
++
++it("decides on one JSON snapshot of the params, not a live object (3276)", () => {
++  // The snapshot is read exactly once; the fence and the wire both see that frozen value, so a
++  // getter cannot pass the check and then serialize as something else.
++  let reads = 0;
++  const live = {
++    get path(): string {
++      reads += 1;
++      return reads === 1 ? "/home/node/.oce-native-hooks/first.json" : "/home/node/.codex/config.toml";
++    },
++    dataBase64: "AAAA",
++  };
++  const snapshot = providerBoxRequestSnapshot(live) as { path: string; dataBase64: string };
++  expect(reads).toBe(1);
++  expect(snapshot.path).toBe("/home/node/.oce-native-hooks/first.json");
++  // Re-reading the snapshot does not re-invoke the getter: the value is stable.
++  expect(snapshot.path).toBe("/home/node/.oce-native-hooks/first.json");
++  expect(reads).toBe(1);
++  expect(providerBoxRequestSnapshot(undefined)).toBeUndefined();
++  // Params that cannot be represented as plain JSON throw; client.request turns that into a refusal.
++  expect(() => providerBoxRequestSnapshot({ path: 1n })).toThrow();
++  const circular: Record<string, unknown> = {};
++  circular.self = circular;
++  expect(() => providerBoxRequestSnapshot(circular)).toThrow();
++});
 diff --git a/extensions/codex/src/app-server/provider-box-owner.ts b/extensions/codex/src/app-server/provider-box-owner.ts
 new file mode 100644
-index 0000000..3f205b7
+index 0000000..b4d6bf3
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.ts
-@@ -0,0 +1,525 @@
+@@ -0,0 +1,552 @@
 +import { X509Certificate } from "node:crypto";
 +import {
 +  closeSync,
@@ -619,6 +825,8 @@ index 0000000..3f205b7
 +  generationSha256: string;
 +  ca: string;
 +  assertCurrent: () => void;
++  /** The configured `appServer.nativeHookRelay`; the hook credential calls are refused without it. */
++  nativeHookRelay?: { url: string; credentialDirectory: string };
 +};
 +
 +function refusal(): never {
@@ -942,8 +1150,11 @@ index 0000000..3f205b7
 +  return NATIVE_HOOK_CREDENTIAL_NAME.exec(posix.basename(path))?.[1];
 +}
 +
-+/** The one credential document the Gateway writes: `{url, token}` for this relay, canonical. */
-+function nativeHookCredentialData(data: unknown, relayId: string): boolean {
++/**
++ * The one credential document the Gateway writes: `{url, token}` for this relay, canonical, with
++ * the URL exactly the one `native-hook-relay-remote.ts` builds from the configured relay URL.
++ */
++function nativeHookCredentialData(data: unknown, relayId: string, base: string): boolean {
 +  if (
 +    typeof data !== "string" ||
 +    data.length === 0 ||
@@ -973,7 +1184,8 @@ index 0000000..3f205b7
 +      !target.search &&
 +      !target.hash &&
 +      target.href === url &&
-+      target.pathname.endsWith(`${NATIVE_HOOK_ROUTE}${relayId}`)
++      target.pathname.endsWith(`${NATIVE_HOOK_ROUTE}${relayId}`) &&
++      url === `${base.replace(/\/$/, "")}/${encodeURIComponent(relayId)}`
 +    );
 +  } catch {
 +    return false;
@@ -981,9 +1193,18 @@ index 0000000..3f205b7
 +}
 +
 +function nativeHookCredentialRefusal(
++  relay: ProviderBoxOwner["nativeHookRelay"],
 +  method: "fs/writeFile" | "fs/remove",
 +  params: unknown,
-+): `${"fs/writeFile" | "fs/remove"}:${"params" | "path" | "data"}` | undefined {
++): `${"fs/writeFile" | "fs/remove"}:${"params" | "path" | "data" | "unconfigured"}` | undefined {
++  // Only the configured relay's own projection: without that configuration nothing is admitted.
++  if (
++    !relay ||
++    typeof relay.url !== "string" ||
++    relay.credentialDirectory !== NATIVE_HOOK_CREDENTIAL_DIRECTORY
++  ) {
++    return `${method}:unconfigured`;
++  }
 +  const record = plainRecord(
 +    params,
 +    method === "fs/writeFile" ? ["path", "dataBase64"] : ["path", "force", "recursive"],
@@ -994,12 +1215,14 @@ index 0000000..3f205b7
 +  if (method === "fs/remove") {
 +    return record.force === true && record.recursive === false ? undefined : "fs/remove:params";
 +  }
-+  return nativeHookCredentialData(record.dataBase64, relayId) ? undefined : "fs/writeFile:data";
++  return nativeHookCredentialData(record.dataBase64, relayId, relay.url)
++    ? undefined
++    : "fs/writeFile:data";
 +}
 +
 +type ProviderBoxRequestRefusal =
 +  | "rpc-not-allowed"
-+  | `${"fs/writeFile" | "fs/remove"}:${"params" | "path" | "data"}`
++  | `${"fs/writeFile" | "fs/remove"}:${"params" | "path" | "data" | "unconfigured"}`
 +  | ProviderBoxKnownDeniedRpc
 +  | `thread/${"start" | "resume" | "fork"}:${"params" | "cwd" | "permissions" | "environments" | "roots" | "path" | "sandbox-policy" | "sandbox" | "config"}`
 +  | `turn/start:${"params" | "cwd" | "permissions" | "environments" | "roots" | "sandbox" | "sandbox-policy" | "external-policy" | "read-only-policy" | "workspace-write-policy"}`;
@@ -1010,16 +1233,26 @@ index 0000000..3f205b7
 +  return THREAD_BINDING.has(method);
 +}
 +
++/**
++ * One JSON snapshot of the request params: the value the fence decides on is exactly the value the
++ * client sends, so a getter, a Proxy or a toJSON cannot pass the check and then serialize as
++ * something else (a TOCTOU on the fence). Throws for params that are not plain JSON; the caller
++ * turns that into a refusal.
++ */
++export function providerBoxRequestSnapshot(params: unknown): unknown {
++  return params === undefined ? undefined : JSON.parse(JSON.stringify(params));
++}
++
 +/** Check the fixed RPC set without reflecting method or argument data into failures. */
 +export function providerBoxRequestRefusal(
-+  owner: Pick<ProviderBoxOwner, "workspaceRoot">,
++  owner: Pick<ProviderBoxOwner, "workspaceRoot" | "nativeHookRelay">,
 +  method: string,
 +  params: unknown,
 +): ProviderBoxRequestRefusal | undefined {
 +  if (CHAT_CONTROL.has(method)) return;
 +  // Only the native hook relay's own credential file; every other filesystem call stays refused.
 +  if (method === "fs/writeFile" || method === "fs/remove") {
-+    return nativeHookCredentialRefusal(method, params);
++    return nativeHookCredentialRefusal(owner.nativeHookRelay, method, params);
 +  }
 +  if (method !== "turn/start" && !isProviderBoxThreadBinding(method)) {
 +    return KNOWN_DENIED_RPC_DIAGNOSTICS.get(method) ?? "rpc-not-allowed";
@@ -1099,7 +1332,7 @@ index 0000000..3f205b7
 +
 +/** Authorize the fixed chat RPC set before sending it over the selected owner's WSS. */
 +export function allowsProviderBoxRequest(
-+  owner: Pick<ProviderBoxOwner, "workspaceRoot">,
++  owner: Pick<ProviderBoxOwner, "workspaceRoot" | "nativeHookRelay">,
 +  method: string,
 +  params: unknown,
 +): boolean {
@@ -1129,7 +1362,7 @@ index 48945c0..62de0fc 100644
 +} from "./provider-box-owner.js";
  import type { CodexAppServerTransport } from "./transport.js";
  import { codexWebSocketDataToBuffer } from "./websocket-data.js";
-
+ 
 @@ -19,7 +29,10 @@ export function isCodexWebSocketOpenFailure(error: unknown): boolean {
    let current = error;
    while (current instanceof Error && !seen.has(current)) {
@@ -1185,13 +1418,13 @@ index 48945c0..62de0fc 100644
 +      boxOwnerVerified = matchesProviderBoxOwner(boxOwner, response);
 +    });
 +  }
-
+ 
    const clearConnectionHealthTimers = () => {
      clearTimeout(pingTimeout);
 @@ -127,12 +162,48 @@ export function createWebSocketTransport(
      scheduleHeartbeatPing();
    };
-
+ 
 +  const ownerFrameAllowed = (frame: string): boolean => {
 +    if (!boxOwner) return true;
 +    try {
