@@ -22,9 +22,10 @@ OCC_TEST_STRANDS_BOX_NATIVE=1 \
 ```
 
 The end-to-end case is part of the manual `strands-box-native` lane, described
-below. With the lane selected and no `gh`, it fails. The paired registration
-and release cases in `strands-box-protected.test.ts` need no `gh` and run in
-the `checks-baseline-1` lane.
+below. With the lane selected and no `gh`, it fails. The same steps without
+`gh` (the push, refusal of another repository and refusal after withdrawal) run
+in `strands-box-protected.test.ts` with the paired registration and release
+cases, in the `checks-baseline-1` lane.
 
 On a slow or emulated host, set `OCC_TEST_STRANDS_TIMEOUT_MULTIPLIER` to an
 integer from 1 to 10. It scales the Strands test and fixture deadlines without

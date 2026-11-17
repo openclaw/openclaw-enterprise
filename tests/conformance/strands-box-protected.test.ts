@@ -18,6 +18,7 @@ import {
   publicCa,
   relay,
   sha,
+  stageAEndToEnd,
 } from "../helpers/strands-box-protected-fixture.ts";
 
 test(
@@ -199,5 +200,15 @@ test(
       signal,
     } as never);
     assert.equal(verified?.executionId, f.plan.execution.executionId);
+  },
+);
+
+// The Git steps of the Stage A end-to-end case run here, everywhere; the stock gh
+// steps need a host input CI does not stage and run in strands-box-protected-gh.test.ts.
+test(
+  "after activation the Worker installs OCE's token in Box once; stock git pushes, the wrong repository is refused, and withdrawal refuses fresh requests while the execution runs",
+  { timeout: 90_000 },
+  async (t) => {
+    await stageAEndToEnd(t, undefined);
   },
 );
