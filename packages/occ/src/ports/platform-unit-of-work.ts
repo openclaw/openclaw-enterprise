@@ -91,6 +91,12 @@ export function bindPlatformUnitOfWork(
       "consumeConnectionSession",
       "takeExpiredConnectionSessions",
     ]),
+    deviceAuthorizations: bindRepository(repositories.deviceAuthorizations, lifetime, [
+      "find",
+      "create",
+      "replace",
+      "expire",
+    ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",

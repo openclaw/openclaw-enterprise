@@ -44,6 +44,13 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    authentication is selected. Switching providers also clears the selected model
    credential. A staged login is discarded only through its explicit control.
 
+## Check a refused poll
+
+Open **Components/Credentials → ChatGPT login poll denied (Experimental)** and choose
+**Sign in with OAuth**. The simulated API starts the login, then refuses the first poll.
+Confirm the message names Secret operate on this login session and credential source operate
+on its credential source.
+
 ## Return after an interrupted start
 
 Open **Pages/Create Agent → ChatGPT sign-in interrupted by navigation (Experimental)**.

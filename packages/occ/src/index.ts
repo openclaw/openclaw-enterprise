@@ -150,7 +150,8 @@ import {
 } from "./iam-policy-cleanup.ts";
 import { deploymentDiagnostics, withHarnessDiagnostic } from "./deployment-diagnostics.ts";
 import {
-  deviceAuthorizationSession,
+  deviceAuthorizationCipher,
+  deviceAuthorizationScope,
   type DeviceAuthorizationSession,
 } from "./device-authorization.ts";
 import type {
@@ -867,6 +868,7 @@ export interface InstallationIAMConfiguration {
 }
 
 export interface ControllerOptions {
+  readonly deviceAuthorizationSecret?: string;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[] | undefined;
   /** Code-only composition binding for the bundled retained-source plugin reader. */
   readonly pluginSourceReader?: {
@@ -2327,6 +2329,7 @@ export class OpenClawController {
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
+  private readonly deviceLoginCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
   private readonly state: PlatformStateStore;
@@ -2391,6 +2394,9 @@ export class OpenClawController {
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
+    if (options.deviceAuthorizationSecret) {
+      this.deviceLoginCipher = deviceAuthorizationCipher(options.deviceAuthorizationSecret);
+    }
     this.agentAuditState = options.agentAuditState;
     this.shouldRecordOperations = options.recordOperations ?? true;
     this.backends = validateBackendDefinitions(options.backends ?? []);
@@ -5190,8 +5196,10 @@ export class OpenClawController {
 
   async expireConnectionSessions(limit: number): Promise<void> {
     await this.mutate(async (state) => {
+      const now = this.timestamp();
+      await state.deviceAuthorizations.expire(now, limit);
       for (const attempt of await state.savedConnections.takeExpiredConnectionSessions(
-        this.timestamp(),
+        now,
         limit,
       )) {
         await state.credentialSources.deleteCredentialSource(
@@ -10276,13 +10284,8 @@ export class OpenClawController {
     }
     const gateway = this.credentialGatewayDriver();
     const refresh = this.credentialRefreshDriver();
-    const secrets = this.secretDriver();
-    if (
-      !refresh.startDeviceAuthorization ||
-      !refresh.pollDeviceAuthorization ||
-      !secrets.withValue ||
-      !secrets.compareAndSwap
-    ) {
+    const cipher = this.deviceLoginCipher;
+    if (!refresh.startDeviceAuthorization || !refresh.pollDeviceAuthorization || !cipher) {
       throw new NotImplementedError(
         "agent_device_authorization",
         "Device authorization is unavailable for the selected Drivers.",
@@ -10323,9 +10326,9 @@ export class OpenClawController {
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     const { privateState, expiresAt, ...authorization } = started;
+    const sessionId = this.nextIdentifier("secret");
+    const handle = { id: sessionId, namespaceId };
     const session: DeviceAuthorizationSession = {
-      kind: "harness_device_authorization",
-      version: 2,
       actorId: principalId,
       namespaceId,
       ...(agentId === undefined ? {} : { agentId }),
@@ -10339,45 +10342,62 @@ export class OpenClawController {
         Date.parse(this.timestamp()) + authorization.intervalSeconds * 1000,
       ).toISOString(),
       authorization,
-      privateState,
     };
-    const secret = await this.mutate(async (state) => {
-      const created = await this.createSecret(principalId, {
-        namespaceId,
-        name: `Device login session ${crypto.randomUUID()}`,
-        value: JSON.stringify(session),
+    const encrypted = cipher.seal(
+      privateState,
+      deviceAuthorizationScope(this.installation.id, sessionId, session),
+    );
+    await this.mutate(async (state) => {
+      await this.holdAuthority(state);
+      const namespace = await this.lockNamespace(state, namespaceId);
+      await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      await state.deviceAuthorizations.create(sessionId, {
+        ...session,
+        privateState: encrypted,
       });
+      await this.bindCreator(state, principalId, { kind: "secret", ...handle });
       if (audit !== undefined) {
         await state.audit.append(audit(source, "session_pending"));
       }
-      return created;
     });
-    return { session: secret.ref, status: "pending" as const, expiresAt, ...authorization };
+    return { session: handle, status: "pending" as const, expiresAt, ...authorization };
+  }
+
+  private replaceDeviceAuthorization(
+    id: string,
+    version: number,
+    session: DeviceAuthorizationSession,
+  ) {
+    return this.mutate((state) =>
+      state.deviceAuthorizations.replace(session.namespaceId, id, version, session),
+    );
   }
 
   private async readAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
-    secretId: string,
+    sessionId: string,
     agentId?: string,
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
-    const secret = await this.read((state) => state.secrets.findSecret(namespaceId, secretId));
-    if (secret === undefined) {
-      throw new ScopeViolationError("The login Secret does not belong to the exact Namespace.");
-    }
-    const driver = this.secretDriver(secret.driverId);
-    if (!driver.withValue || !driver.compareAndSwap) {
-      throw new NotImplementedError(
-        "agent_device_authorization",
-        "Device authorization is unavailable for the Secret Driver.",
-      );
-    }
-    const value = await this.secretOperation(() =>
-      driver.withValue!(secret, async (value) => value),
+    await this.authorize(principalId, "operate", { kind: "secret", id: sessionId, namespaceId });
+    const stored = await this.read((state) =>
+      state.deviceAuthorizations.find(namespaceId, sessionId),
     );
-    const session = deviceAuthorizationSession(value);
+    if (stored === undefined) {
+      // A caller can supply an authorized ordinary Secret reference to the login route.
+      // Its value is never needed to distinguish an unavailable login from an unknown ID.
+      if (await this.read((state) => state.secrets.findSecret(namespaceId, sessionId))) {
+        throw new ResourceStateConflictError(
+          "This login is no longer available in OCE. Connect again.",
+        );
+      }
+      throw new ScopeViolationError("The login does not belong to the exact Namespace.");
+    }
+    const { session, version } = stored;
     if (
       session.actorId !== principalId ||
       session.namespaceId !== namespaceId ||
@@ -10390,28 +10410,25 @@ export class OpenClawController {
       Date.parse(session.expiresAt) <= Date.parse(this.timestamp())
     ) {
       // Expiry closes the login handle; the separately managed credential source survives.
-      const expired = JSON.stringify({
-        ...session,
-        phase: "cancelled",
-        privateState: undefined,
-      });
-      if (await this.secretOperation(() => driver.compareAndSwap!(secret, value, expired))) {
-        return { secret, driver, value: expired, session: deviceAuthorizationSession(expired) };
+      const { privateState: _privateState, ...metadata } = session;
+      const expired: DeviceAuthorizationSession = { ...metadata, phase: "cancelled" };
+      if (await this.replaceDeviceAuthorization(sessionId, version, expired)) {
+        return { version: version + 1, session: expired };
       }
     }
-    return { secret, driver, value, session };
+    return stored;
   }
 
   async pollAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
-    secretId: string,
+    sessionId: string,
     agentId?: string,
   ) {
-    const { secret, driver, value, session } = await this.readAgentDeviceAuthorization(
+    const { version, session } = await this.readAgentDeviceAuthorization(
       principalId,
       namespaceId,
-      secretId,
+      sessionId,
       agentId,
     );
     if (
@@ -10436,7 +10453,7 @@ export class OpenClawController {
       throw new ResourceStateConflictError("The login Driver changed. Connect again.");
     }
     const response = (status: "pending" | "ready", expiresAt = session.expiresAt) => ({
-      session: this.secretMetadata(secret).ref,
+      session: { id: sessionId, namespaceId },
       ...(status === "ready" ? { source: this.credentialSourceMetadata(context.source).ref } : {}),
       status,
       expiresAt,
@@ -10451,26 +10468,42 @@ export class OpenClawController {
     ) {
       return response("pending");
     }
-    const claimed = JSON.stringify({ ...session, phase: "polling" });
-    if (!(await this.secretOperation(() => driver.compareAndSwap!(secret, value, claimed)))) {
+    const cipher = this.deviceLoginCipher;
+    if (!cipher) {
+      throw new NotImplementedError(
+        "agent_device_authorization",
+        "Device login session encryption is unavailable.",
+      );
+    }
+    const { privateState, ...metadata } = session;
+    if (!privateState) {
+      throw new ResourceStateConflictError(
+        "This login is no longer available in OCE. Connect again.",
+      );
+    }
+    const handle = cipher.open(
+      privateState,
+      deviceAuthorizationScope(this.installation.id, sessionId, session),
+    );
+    if (
+      !(await this.replaceDeviceAuthorization(sessionId, version, { ...session, phase: "polling" }))
+    ) {
       return response("pending");
     }
+    const claimedVersion = version + 1;
     let result: CredentialSourceDeviceAuthorizationResult;
     try {
-      result = await refresh.pollDeviceAuthorization(context, session.privateState!);
+      result = await refresh.pollDeviceAuthorization(context, handle);
     } catch (error) {
       // An uncertain external exchange is not replayed. The source remains visible for recovery.
-      await this.secretOperation(() =>
-        driver.compareAndSwap!(
-          secret,
-          claimed,
-          JSON.stringify({ ...session, phase: "cancelled", privateState: undefined }),
-        ),
-      );
+      await this.replaceDeviceAuthorization(sessionId, claimedVersion, {
+        ...metadata,
+        phase: "cancelled",
+      });
       throw new RetryLaterError("deviceLoginFailed", error);
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
+    await this.authorize(principalId, "operate", { kind: "secret", id: sessionId, namespaceId });
     const current = await this.authorizedCredentialSource(
       principalId,
       namespaceId,
@@ -10483,7 +10516,13 @@ export class OpenClawController {
     ) {
       throw new ResourceStateConflictError("The login Driver changed. Connect again.");
     }
-    const { privateState: _privateState, ...completedSession } = session;
+    if (Date.parse(session.expiresAt) <= Date.parse(this.timestamp())) {
+      await this.replaceDeviceAuthorization(sessionId, claimedVersion, {
+        ...metadata,
+        phase: "cancelled",
+      });
+      throw new ResourceStateConflictError("Device login expired or was cancelled. Connect again.");
+    }
     const next: DeviceAuthorizationSession =
       result.status === "pending"
         ? {
@@ -10494,15 +10533,11 @@ export class OpenClawController {
             ).toISOString(),
           }
         : {
-            ...completedSession,
+            ...metadata,
             phase: "ready",
             expiresAt: new Date(Date.parse(this.timestamp()) + 24 * 60 * 60 * 1000).toISOString(),
           };
-    if (
-      !(await this.secretOperation(() =>
-        driver.compareAndSwap!(secret, claimed, JSON.stringify(next)),
-      ))
-    ) {
+    if (!(await this.replaceDeviceAuthorization(sessionId, claimedVersion, next))) {
       throw new ResourceStateConflictError("The login changed while completing. Connect again.");
     }
     return response(result.status, next.expiresAt);
@@ -10511,22 +10546,23 @@ export class OpenClawController {
   async cancelAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
-    secretId: string,
+    sessionId: string,
     agentId?: string,
   ): Promise<void> {
-    const { secret, driver, value, session } = await this.readAgentDeviceAuthorization(
+    const { version, session } = await this.readAgentDeviceAuthorization(
       principalId,
       namespaceId,
-      secretId,
+      sessionId,
       agentId,
     );
     // Local discard must never revoke a shared upstream login session.
-    const discarded = JSON.stringify({
-      ...session,
-      phase: "cancelled",
-      privateState: undefined,
-    });
-    if (!(await this.secretOperation(() => driver.compareAndSwap!(secret, value, discarded)))) {
+    const { privateState: _privateState, ...metadata } = session;
+    if (
+      !(await this.replaceDeviceAuthorization(sessionId, version, {
+        ...metadata,
+        phase: "cancelled",
+      }))
+    ) {
       throw new ResourceStateConflictError("The login session changed. Refresh and retry.");
     }
   }
@@ -17919,7 +17955,10 @@ export class OpenClawController {
         return;
       }
       if (resourceKind === "secret") {
-        if ((await state.secrets.findSecret(namespaceId, resourceId)) === undefined) {
+        if (
+          (await state.secrets.findSecret(namespaceId, resourceId)) === undefined &&
+          (await state.deviceAuthorizations.find(namespaceId, resourceId)) === undefined
+        ) {
           throw new IAMPolicyValidationError(
             "/resourceId",
             "The IAM target Secret does not belong to the Namespace.",

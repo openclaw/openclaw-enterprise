@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
   AgentDeviceAuthorizationResponse,
   CredentialSourceListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import type { SecretDriver } from "../../packages/contracts/src/drivers/secret/index.ts";
 import {
   assertNoCredentials,
   createFixture,
@@ -84,7 +82,6 @@ export function registerDeviceAuthorizationSessionCases() {
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.deepEqual(fixture.gateway.calls, before, "owner mismatch must precede external calls");
     const stored = await fixture.stored(login);
-    assert.equal(stored.version, 2);
     assert.equal(stored.credentialGatewayId, fixture.gateway.id);
     assert.equal(stored.credentialRefreshId, fixture.refresh.id);
     assert.equal(stored.sourceId, original.sourceId);
@@ -121,7 +118,6 @@ export function registerDeviceAuthorizationSessionCases() {
     const refused = await pending;
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     const stored = await fixture.stored(login);
-    assert.equal(stored.version, 2);
     assert.equal(stored.credentialGatewayId, fixture.gateway.id);
     assert.equal(stored.credentialRefreshId, fixture.refresh.id);
     assert.equal(stored.sourceId, original.sourceId);
@@ -185,24 +181,6 @@ export function registerDeviceAuthorizationSessionCases() {
       409,
     );
     assertNoCredentials(fixture);
-  });
-
-  test("missing login-session fencing refuses device authorization before Gateway I/O", async (t) => {
-    const fixture = await createFixture(t);
-    const login = await fixture.start();
-    const before = fixture.gateway.calls.length;
-    // Remove the optional capability after start so both new and existing logins fail closed.
-    const secretDriver: SecretDriver = fixture.secretDriver;
-    delete secretDriver.compareAndSwap;
-    assert.equal(
-      (await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } })).status,
-      501,
-    );
-    await fixture.clock.advance(5000);
-    const poll = await fixture.poll(login);
-    const { error } = fixture.fixtureResponse(poll, 501, ErrorResponse, "poll without fencing");
-    assert.equal(error.message, "Device authorization is unavailable for the Secret Driver.");
-    assert.equal(fixture.gateway.calls.length, before);
   });
 }
 

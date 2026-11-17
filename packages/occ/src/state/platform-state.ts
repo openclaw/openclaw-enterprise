@@ -1,3 +1,4 @@
+import type { DeviceAuthorizationSession } from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
@@ -531,6 +532,29 @@ export interface SecretReferenceEntry {
 export interface SecretReferencePage {
   readonly references: readonly Readonly<SecretReferenceEntry>[];
   readonly truncated: boolean;
+}
+
+interface StoredDeviceAuthorization {
+  readonly version: number;
+  readonly session: DeviceAuthorizationSession;
+}
+
+interface DeviceAuthorizationReadRepository {
+  find(namespaceId: string, id: string): Promise<StoredDeviceAuthorization | undefined>;
+}
+
+export interface DeviceAuthorizationRepository extends DeviceAuthorizationReadRepository {
+  create(id: string, session: DeviceAuthorizationSession): Promise<void>;
+  replace(
+    namespaceId: string,
+    id: string,
+    version: number,
+    session: Pick<
+      DeviceAuthorizationSession,
+      "phase" | "expiresAt" | "nextPollAt" | "privateState"
+    >,
+  ): Promise<boolean>;
+  expire(at: string, limit: number): Promise<void>;
 }
 
 export interface SecretReadRepository {
@@ -1204,6 +1228,7 @@ export interface PlatformReadView {
   readonly connectionTemplates: ConnectionTemplateReadRepository;
   readonly savedConnections: SavedConnectionReadRepository;
   readonly presets: PresetReadRepository;
+  readonly deviceAuthorizations: DeviceAuthorizationReadRepository;
   readonly secrets: SecretReadRepository;
   readonly credentialSources: CredentialSourceReadRepository;
   readonly serviceAccounts: ServiceAccountReadRepository;
@@ -1226,6 +1251,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly connectionTemplates: ConnectionTemplateRepository;
   readonly savedConnections: SavedConnectionRepository;
   readonly presets: PresetRepository;
+  readonly deviceAuthorizations: DeviceAuthorizationRepository;
   readonly secrets: SecretRepository;
   readonly credentialSources: CredentialSourceRepository;
   readonly serviceAccounts: ServiceAccountRepository;
@@ -1289,6 +1315,7 @@ interface PlatformSnapshot {
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
   readonly connectionSessions: Map<string, Readonly<ConnectionSession>>;
   readonly presets: Map<string, Readonly<Preset>>;
+  readonly deviceAuthorizations: Map<string, StoredDeviceAuthorization>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
@@ -1420,6 +1447,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     savedConnections: new Map(snapshot.savedConnections),
     connectionSessions: new Map(snapshot.connectionSessions),
     presets: copyStoredMap(snapshot.presets),
+    deviceAuthorizations: new Map(snapshot.deviceAuthorizations),
     secrets: copyStoredMap(snapshot.secrets),
     egressRejected: new Set(snapshot.egressRejected),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
@@ -1972,6 +2000,11 @@ function repositories(
       const createdTime = new Date(namespace.createdAt).getTime();
       if (Number.isNaN(deletedTime) || Number.isNaN(createdTime) || deletedTime < createdTime) {
         throw new ScopeViolationError("The Namespace tombstone timestamp is invalid.");
+      }
+      for (const [id, record] of snapshot.deviceAuthorizations) {
+        if (record.session.namespaceId === namespaceId) {
+          snapshot.deviceAuthorizations.delete(id);
+        }
       }
       const saved = immutableCopy({ ...namespace, deletedAt });
       snapshot.namespaces.set(key, saved);
@@ -2568,6 +2601,59 @@ function repositories(
       snapshot.configurations.delete(agentKey(namespaceId, configurationId));
       deleteResourceAccessBindings("configuration", configurationId);
       return true;
+    },
+  };
+
+  const deviceAuthorizations: DeviceAuthorizationRepository = {
+    find: async (namespaceId, id) => {
+      const record = snapshot.deviceAuthorizations.get(id);
+      return record?.session.namespaceId === namespaceId ? record : undefined;
+    },
+    create: async (id, session) => {
+      if (!snapshot.namespaces.has(session.namespaceId)) {
+        throw new ScopeViolationError("The login belongs to an unavailable Namespace.");
+      }
+      if (snapshot.deviceAuthorizations.has(id)) {
+        throw new ResourceConflictError("The login session already exists.");
+      }
+      snapshot.deviceAuthorizations.set(id, storedCopy({ version: 1, session }));
+    },
+    replace: async (namespaceId, id, version, { phase, expiresAt, nextPollAt, privateState }) => {
+      const current = snapshot.deviceAuthorizations.get(id);
+      if (current?.session.namespaceId !== namespaceId || current.version !== version) {
+        return false;
+      }
+      const { privateState: _previous, ...metadata } = current.session;
+      snapshot.deviceAuthorizations.set(
+        id,
+        storedCopy({
+          version: version + 1,
+          session: {
+            ...metadata,
+            phase,
+            expiresAt,
+            nextPollAt,
+            ...(privateState === undefined ? {} : { privateState }),
+          },
+        }),
+      );
+      return true;
+    },
+    expire: async (at, limit) => {
+      let expired = 0;
+      for (const [id, { version, session }] of snapshot.deviceAuthorizations) {
+        if (expired >= limit) {
+          break;
+        }
+        if (session.phase !== "cancelled" && Date.parse(session.expiresAt) <= Date.parse(at)) {
+          const { privateState: _discarded, ...remaining } = session;
+          snapshot.deviceAuthorizations.set(
+            id,
+            storedCopy({ version: version + 1, session: { ...remaining, phase: "cancelled" } }),
+          );
+          expired++;
+        }
+      }
     },
   };
 
@@ -3951,7 +4037,10 @@ function repositories(
       return (await presets.findPreset(namespaceId, resourceId)) !== undefined;
     }
     if (resourceKind === "secret") {
-      return (await secrets.findSecret(namespaceId, resourceId)) !== undefined;
+      return (
+        (await secrets.findSecret(namespaceId, resourceId)) !== undefined ||
+        (await deviceAuthorizations.find(namespaceId, resourceId)) !== undefined
+      );
     }
     if (resourceKind === "credential_source") {
       return (await findCredentialSource(namespaceId, resourceId)) !== undefined;
@@ -4286,6 +4375,7 @@ function repositories(
     configurations,
     connectionTemplates,
     savedConnections,
+    deviceAuthorizations,
     presets,
     secrets,
     credentialSources,
@@ -4589,6 +4679,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     savedConnections: new Map(),
     connectionSessions: new Map(),
     presets: new Map(),
+    deviceAuthorizations: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
     credentialPolicyReductions: new Map(),

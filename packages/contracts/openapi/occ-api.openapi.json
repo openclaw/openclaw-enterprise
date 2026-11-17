@@ -16458,8 +16458,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -16484,19 +16483,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -16657,7 +16655,7 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}": {
       "delete": {
         "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
         "operationId": "cancelAgentDeviceAuthorization",
@@ -16681,11 +16679,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16778,7 +16776,7 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll": {
       "post": {
         "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
         "operationId": "pollAgentDeviceAuthorization",
@@ -16802,11 +16800,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16835,8 +16833,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -16861,19 +16858,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -25653,8 +25649,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -25679,19 +25674,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -25853,7 +25847,7 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}": {
       "delete": {
         "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
         "operationId": "cancelSavedAgentDeviceAuthorization",
@@ -25892,11 +25886,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -25990,7 +25984,7 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll": {
       "post": {
         "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
         "operationId": "pollSavedAgentDeviceAuthorization",
@@ -26029,11 +26023,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -26062,8 +26056,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -26088,19 +26081,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {

@@ -2796,3 +2796,43 @@ export const nativeBrowserHandles = occSchema.table(
     index("native_browser_handle_expiry").on(table.installationId, table.expiresAt),
   ],
 );
+
+export const deviceAuthorizations = occSchema.table(
+  "device_authorizations",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id")
+      .notNull()
+      .references(() => namespaces.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    agentId: text("agent_id"),
+    harnessId: text("harness_id").notNull(),
+    credentialGatewayId: text("credential_gateway_id").notNull(),
+    credentialRefreshId: text("credential_refresh_id").notNull(),
+    sourceId: text("source_id").notNull(),
+    verificationUrl: text("verification_url").notNull(),
+    userCode: text("user_code").notNull(),
+    intervalSeconds: integer("interval_seconds").notNull(),
+    phase: text("phase").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    nextPollAt: timestamp("next_poll_at", { withTimezone: true }).notNull(),
+    privateState: text("private_state"),
+    version: integer("version").notNull().default(1),
+  },
+  (table) => [
+    check("device_authorizations_id_check", sql`${table.id} ~ ${identifierPatterns.secret}`),
+    check("device_authorizations_interval_seconds_check", sql`${table.intervalSeconds} > 0`),
+    check("device_authorizations_version_check", sql`${table.version} > 0`),
+    check(
+      "device_authorizations_phase_check",
+      sql`${table.phase} IN ('pending','polling','cancelled','ready')`,
+    ),
+    check(
+      "device_authorizations_check",
+      sql`(${table.phase} IN ('pending','polling')) = (${table.privateState} IS NOT NULL)`,
+    ),
+    index("device_authorizations_expiry")
+      .on(table.expiresAt, table.id)
+      .where(sql`${table.phase} <> 'cancelled'`),
+  ],
+);

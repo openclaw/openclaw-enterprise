@@ -3795,8 +3795,8 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents`](#get-namespacesnamespaceidagents) | List authorized Agents in one exact Namespace |
 | [`POST /namespaces/{namespaceId}/agents`](#post-namespacesnamespaceidagents) | Create a Namespace-owned Agent |
 | [`POST /namespaces/{namespaceId}/agents/device-authorizations`](#post-namespacesnamespaceidagentsdeviceauthorizations) | Experimental: Start a private device login for Agent configuration |
-| [`DELETE /namespaces/{namespaceId}/agents/device-authorizations/{secretId}`](#delete-namespacesnamespaceidagentsdeviceauthorizationssecretid) | Experimental: Discard a local device login without upstream revocation |
-| [`POST /namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
+| [`DELETE /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}`](#delete-namespacesnamespaceidagentsdeviceauthorizationssessionid) | Experimental: Discard a local device login without upstream revocation |
+| [`POST /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll`](#post-namespacesnamespaceidagentsdeviceauthorizationssessionidpoll) | Experimental: Complete device login without returning credential material |
 | [`POST /namespaces/{namespaceId}/agents/models`](#post-namespacesnamespaceidagentsmodels) | List provider models for Agent creation without storing the supplied credential |
 | [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List or search available plugins for Agent creation using the selected Driver |
 | [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details using the selected Driver |
@@ -3815,8 +3815,8 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy-first`](#post-namespacesnamespaceidagentsagentiddeployfirst) | Admit the first deployment of an exact reviewed Configuration; requires Configuration read |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deploy-first/{key}/{expectedConfigurationId}/{expectedGeneration}`](#get-namespacesnamespaceidagentsagentiddeployfirstkeyexpectedconfigurationidexpectedgeneration) | Read an exact first-deployment receipt; null does not prove failure; requires Configuration read |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations`](#post-namespacesnamespaceidagentsagentiddeviceauthorizations) | Experimental: Start a private device login for Agent configuration |
-| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}`](#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid) | Experimental: Discard a local device login without upstream revocation |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}`](#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssessionid) | Experimental: Discard a local device login without upstream revocation |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll`](#post-namespacesnamespaceidagentsagentiddeviceauthorizationssessionidpoll) | Experimental: Complete device login without returning credential material |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`](#get-namespacesnamespaceidagentsagentiddriverconfigurations) | Discover authorized Agent Driver configuration contributions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`](#get-namespacesnamespaceidagentsagentidharnessstatus) | Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
@@ -4252,9 +4252,8 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
+| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID. |
 | `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.session.kind` | `"secret"` | Yes | — |
 | `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.source.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -4273,8 +4272,7 @@ Example response
     "expiresAt": "2026-10-01T12:15:00.000Z",
     "intervalSeconds": 5,
     "session": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
+      "id": "sec_123e4567-e89b-42d3-a456-426614174001",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
     "status": "pending",
@@ -4287,9 +4285,9 @@ Example response
 }
 ```
 
-#### `DELETE /namespaces/{namespaceId}/agents/device-authorizations/{secretId}`
+#### `DELETE /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}`
 
-<span id="delete-namespacesnamespaceidagentsdeviceauthorizationssecretid"></span>
+<span id="delete-namespacesnamespaceidagentsdeviceauthorizationssessionid"></span>
 
 Experimental: Discard a local device login without upstream revocation
 
@@ -4307,7 +4305,7 @@ Experimental: Discard a local device login without upstream revocation
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174001" |
 
 ##### Responses
 
@@ -4323,9 +4321,9 @@ Experimental: Discard a local device login without upstream revocation
 | `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
-#### `POST /namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll`
+#### `POST /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll`
 
-<span id="post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll"></span>
+<span id="post-namespacesnamespaceidagentsdeviceauthorizationssessionidpoll"></span>
 
 Experimental: Complete device login without returning credential material
 
@@ -4343,7 +4341,7 @@ Experimental: Complete device login without returning credential material
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174001" |
 
 ##### Request body
 
@@ -4381,9 +4379,8 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
+| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID. |
 | `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.session.kind` | `"secret"` | Yes | — |
 | `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.source.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -4402,8 +4399,7 @@ Example response
     "expiresAt": "2026-10-01T12:15:00.000Z",
     "intervalSeconds": 5,
     "session": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
+      "id": "sec_123e4567-e89b-42d3-a456-426614174001",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
     "status": "pending",
@@ -6325,9 +6321,8 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
+| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID. |
 | `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.session.kind` | `"secret"` | Yes | — |
 | `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.source.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -6346,8 +6341,7 @@ Example response
     "expiresAt": "2026-10-01T12:15:00.000Z",
     "intervalSeconds": 5,
     "session": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
+      "id": "sec_123e4567-e89b-42d3-a456-426614174001",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
     "status": "pending",
@@ -6360,9 +6354,9 @@ Example response
 }
 ```
 
-#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}`
+#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}`
 
-<span id="delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid"></span>
+<span id="delete-namespacesnamespaceidagentsagentiddeviceauthorizationssessionid"></span>
 
 Experimental: Discard a local device login without upstream revocation
 
@@ -6382,7 +6376,7 @@ Experimental: Discard a local device login without upstream revocation
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174001" |
 
 ##### Responses
 
@@ -6398,9 +6392,9 @@ Experimental: Discard a local device login without upstream revocation
 | `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
-#### `POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll`
 
-<span id="post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll"></span>
+<span id="post-namespacesnamespaceidagentsagentiddeviceauthorizationssessionidpoll"></span>
 
 Experimental: Complete device login without returning credential material
 
@@ -6420,7 +6414,7 @@ Experimental: Complete device login without returning credential material
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174001" |
 
 ##### Request body
 
@@ -6458,9 +6452,8 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
+| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID. |
 | `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.session.kind` | `"secret"` | Yes | — |
 | `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.source.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -6479,8 +6472,7 @@ Example response
     "expiresAt": "2026-10-01T12:15:00.000Z",
     "intervalSeconds": 5,
     "session": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
+      "id": "sec_123e4567-e89b-42d3-a456-426614174001",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
     "status": "pending",

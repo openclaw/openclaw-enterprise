@@ -86,7 +86,14 @@ export const AgentDeviceAuthorizationResponse = Type.Object(
   {
     data: Type.Object(
       {
-        session: SecretReference,
+        session: Type.Object(
+          { id: SecretId, namespaceId: NamespaceId },
+          {
+            additionalProperties: false,
+            description:
+              "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
+          },
+        ),
         source: Type.Optional(CredentialSourceReference),
         status: Type.Union([Type.Literal("pending"), Type.Literal("ready")]),
         verificationUrl: Type.String({ format: "uri" }),

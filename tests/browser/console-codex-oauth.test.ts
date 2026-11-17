@@ -653,9 +653,10 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
     assert.equal(data.status, "pending");
     // The real start committed. Lose its session reference only in the reply reaching the page.
     const sessionId = jsonString(jsonObject(data.session).id);
-    const session = await fixture.request("GET", `${namespacePath}/secrets/${sessionId}`);
-    assert.equal(session.status, 200);
-    assert.equal(jsonObject(session.data).id, sessionId);
+    const stored = await fixture.controller.transact((state) =>
+      state.deviceAuthorizations.find(namespace.id, sessionId),
+    );
+    assert.equal(stored?.session.phase, "pending");
     delete data.session;
     await route.fulfill({ response, json: body });
   });
@@ -732,10 +733,10 @@ for (const savedAgent of [false, true]) {
     assert.equal(committed.status(), 200);
     const sessionId = jsonString(jsonObject(responseData(await committed.json()).session).id);
     assert.equal(gateway.sources.size, 1);
-    assert.equal(
-      (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
-      200,
+    const stored = await fixture.controller.transact((state) =>
+      state.deviceAuthorizations.find(namespace.id, sessionId),
     );
+    assert.equal(stored?.session.phase, "pending");
     await page.getByRole("link", { name: "Credentials", exact: true }).click();
     await page.waitForURL("**/console/secrets?**");
     held.release();
@@ -1147,8 +1148,8 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
 });
 
 // From Agent detail, each request checks Agent read and update on that Agent. A start also
-// creates a Secret and a credential source; a poll or cancel checks Secret operate on the login's
-// Secret, which a Namespace Role can grant, so those name the grants to ask for instead.
+// requires Secret create and credential source create. A Namespace Role can grant Secret operate
+// on the session, so poll and cancellation refusals identify that grant.
 test("a refused device login on Agent detail names the grants its start, poll and cancel check", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Agent refused");
   const { gateway, refresh } = createDeviceCredentialDrivers();

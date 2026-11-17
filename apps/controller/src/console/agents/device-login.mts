@@ -1,9 +1,9 @@
 import type {
-  CredentialSourceDeviceAuthorization,
+  AgentDeviceAuthorizationResponse,
   CredentialSourceReference,
   InstallationCapabilities,
-  SecretReference,
 } from "@openclaw-enterprise/contracts";
+import type { Static } from "typebox";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { button, element, setUnavailable } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
@@ -12,11 +12,10 @@ import { message, namespacePath } from "./list.mjs";
 
 // The Console retains the public challenge and reference, never the provider's private state.
 type DeviceChallenge = Pick<
-  CredentialSourceDeviceAuthorization,
-  "verificationUrl" | "userCode" | "expiresAt" | "intervalSeconds"
-> & { session: SecretReference } & (
-    { status: "pending" } | { status: "ready"; source: CredentialSourceReference }
-  );
+  Static<typeof AgentDeviceAuthorizationResponse>["data"],
+  "session" | "verificationUrl" | "userCode" | "expiresAt" | "intervalSeconds"
+> &
+  ({ status: "pending" } | { status: "ready"; source: CredentialSourceReference });
 
 // Without a confirmed session reference, the Console can neither poll nor cancel that start.
 // Keep this outcome in the form draft so restoring it does not offer a duplicate sign-in.
@@ -29,9 +28,8 @@ function readLogin(
 ): DeviceChallenge {
   const { status, userCode, intervalSeconds, expiresAt, verificationUrl, session, source } =
     responseFields(value);
-  const { kind, id, namespaceId: sessionNamespace } = responseFields(session);
+  const { id, namespaceId: sessionNamespace } = responseFields(session);
   if (
-    kind !== "secret" ||
     typeof id !== "string" ||
     sessionNamespace !== namespaceId ||
     (expectedSessionId !== undefined && id !== expectedSessionId) ||
@@ -46,7 +44,7 @@ function readLogin(
     throw new Error("Invalid device authorization response");
   }
   const challenge = { userCode, verificationUrl, intervalSeconds, expiresAt };
-  const reference: SecretReference = { kind, id, namespaceId };
+  const reference = { id, namespaceId };
   if (status === "pending") {
     return { ...challenge, session: reference, status };
   }
@@ -82,10 +80,10 @@ const NOT_OFFERED =
   "ChatGPT sign-in needs a Credential Gateway that offers ChatGPT device login and a Credential Refresh Driver, and this Installation's Drivers do not offer it. Choose another authentication method.";
 
 // What each device-authorization request checks (packages/occ/src/index.ts), so a 403 names it
-// (finding 2577). Every start creates a Secret and a credential source, and Namespace Roles cannot
+// (finding 2577). Starting a login requires Secret and credential source create, and Namespace Roles cannot
 // grant create, so only an Installation administrator can start one. Create Agent's requests also
 // check Agent create; Agent detail's check Agent read and update on that Agent. Poll and cancel
-// check Secret operate on the login's Secret, and poll operate on its credential source too.
+// check Secret operate on the login handle, and poll checks operate on its credential source too.
 type DeviceLoginStep = "start" | "poll" | "cancel";
 const START_REMEDY =
   "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
@@ -99,8 +97,8 @@ function deviceLoginDenied(step: DeviceLoginStep, agentScoped: boolean) {
   const task = step === "poll" ? "finishing this device login" : "cancelling this device login";
   const login =
     step === "poll"
-      ? "Secret operate on the login's Secret and credential source operate on its credential source"
-      : "Secret operate on the login's Secret";
+      ? "Secret operate on this login session and credential source operate on its credential source"
+      : "Secret operate on this login session";
   return agentScoped
     ? notIncluded(task, `Agent read and update on this Agent, plus ${login}`)
     : `Your access does not include ${task}. It needs Agent create in this Namespace, which only an Installation administrator holds, plus ${login}. ${askAdministratorTo("check your access")}`;

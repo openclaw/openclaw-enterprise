@@ -1457,6 +1457,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preDeviceAuthorizations"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1760,6 +1761,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preDeviceAuthorizations"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2061,6 +2063,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preDeviceAuthorizations"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2260,6 +2263,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preDeviceAuthorizations"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2335,6 +2339,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preDeviceAuthorizations"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

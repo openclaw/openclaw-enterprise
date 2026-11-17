@@ -181,21 +181,12 @@ export async function createFixture(
         ...(session === undefined ? {} : { session }),
       });
     },
-    async stored(
-      login: Pick<DeviceLogin, "session">,
-    ): Promise<Record<string, unknown> & { sourceId: string }> {
-      const secret = await controller.transact((unit) =>
-        unit.secrets.findSecret(namespace.id, login.session.id),
+    async stored(login: Pick<DeviceLogin, "session">) {
+      const record = await controller.transact((unit) =>
+        unit.deviceAuthorizations.find(namespace.id, login.session.id),
       );
-      assert.ok(secret, "the login session must have a Secret");
-      const value = secretDriver.valueFor(secret);
-      assert.ok(value, "the login Secret must have a stored value");
-      const stored = asRecord(JSON.parse(value));
-      assert.ok(
-        stored && typeof stored.sourceId === "string",
-        "the session must identify its source",
-      );
-      return { ...stored, sourceId: stored.sourceId };
+      assert.ok(record, "the login session must exist");
+      return record.session;
     },
   };
 }

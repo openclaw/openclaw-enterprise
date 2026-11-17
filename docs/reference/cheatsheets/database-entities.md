@@ -143,6 +143,29 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `device_authorizations`
+
+Stores [device-login sessions](../../flows/credential-source-refresh.md#device-authorization-and-configuration).
+OCC checks the row version before committing a poll result. The private state
+contains the encrypted Refresh Driver handle until the login completes, closes, or expires.
+
+- `id`
+- `namespace_id`
+- `actor_id`
+- `agent_id` (optional)
+- `harness_id`
+- `credential_gateway_id`
+- `credential_refresh_id`
+- `source_id`
+- `verification_url`
+- `user_code`
+- `interval_seconds`
+- `phase`
+- `expires_at`
+- `next_poll_at`
+- `private_state`
+- `version`
+
 ### `connection_templates`
 
 Stores the scope and current version of each OAuth connection template.

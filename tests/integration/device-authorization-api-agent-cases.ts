@@ -92,13 +92,12 @@ export function registerDeviceAuthorizationAgentCases(): void {
     assert.equal(ready.status, "ready");
     assert.equal(ready.source?.kind, "credential_source");
     assertDeviceAudit(fixture, "poll");
-    const stored: Record<string, unknown> = await fixture.stored(login);
+    const stored = await fixture.stored(login);
     assert.equal(stored.sourceId, ready.source.id);
-    assert.equal(stored.version, 2);
     assert.equal(stored.credentialGatewayId, fixture.gateway.id);
     assert.equal(stored.credentialRefreshId, fixture.refresh.id);
     assert.equal(stored.privateState, undefined);
-    assert.equal(stored.credential, undefined);
+    assert.equal(Object.hasOwn(stored, "credential"), false);
     assert.equal(JSON.stringify(stored).includes(DEVICE_ACCESS_TOKEN), false);
 
     const list = await fixture.request("POST", fixture.pluginsPath, {
@@ -233,6 +232,18 @@ export function registerDeviceAuthorizationAgentCases(): void {
       namespaceId: undefined,
       resource: undefined,
     });
+    // An authorized ordinary Secret is a known resource, but its value is never a login handle.
+    const ordinary = await fixture.createSecret(
+      fixture.namespace.id,
+      "Ordinary Secret",
+      "fixture-key",
+    );
+    const calls = fixture.secretDriver.calls.length;
+    const refused = await fixture.request("POST", `${fixture.path}/${ordinary.id}/poll`, {
+      body: {},
+    });
+    assert.equal(refused.status, 409);
+    assert.equal(fixture.secretDriver.calls.length, calls);
     const login = await readyLogin(fixture);
     const before = fixture.gateway.calls.length;
     assert.equal((await fixture.poll(login, fixture.path, otherSession)).status, 404);

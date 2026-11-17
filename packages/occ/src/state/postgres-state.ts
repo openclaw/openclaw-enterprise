@@ -1,3 +1,4 @@
+import type { DeviceAuthorizationSession } from "../device-authorization.ts";
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
@@ -109,6 +110,7 @@ import type {
   AgentRevisionRepository,
   ConfigurationOwnership,
   ConfigurationRepository,
+  DeviceAuthorizationRepository,
   CredentialSourceRepository,
   InstallationRepository,
   IAMPolicyRepository,
@@ -2387,6 +2389,13 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         )[0];
         if (updated !== undefined) {
+          // Namespace-scoped bindings are removed by removeNamespacePolicy for lifecycle audit.
+          await client.query(
+            `WITH removed AS (DELETE FROM occ.device_authorizations WHERE namespace_id = $1 RETURNING id)
+             DELETE FROM occ.iam_access_bindings b USING removed
+             WHERE b.namespace_id IS NULL AND b.resource_kind = 'secret' AND b.resource_id = removed.id`,
+            [namespaceId],
+          );
           return namespaceFromRow(updated);
         }
         const existing = rows(
@@ -2709,6 +2718,92 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
+    const deviceAuthorizations: DeviceAuthorizationRepository = {
+      find: async (namespaceId, id) => {
+        const result = await client.query(
+          "SELECT * FROM occ.device_authorizations WHERE namespace_id = $1 AND id = $2",
+          [namespaceId, id],
+        );
+        const row = rows(result.rows)[0];
+        if (!row) {
+          return undefined;
+        }
+        return {
+          version: Number(row.version),
+          session: {
+            namespaceId,
+            actorId: text(row, "actor_id"),
+            ...(row.agent_id === null ? {} : { agentId: text(row, "agent_id") }),
+            harnessId: text(row, "harness_id"),
+            credentialGatewayId: text(row, "credential_gateway_id"),
+            credentialRefreshId: text(row, "credential_refresh_id"),
+            sourceId: text(row, "source_id"),
+            phase: row.phase as DeviceAuthorizationSession["phase"],
+            expiresAt: timestamp(row, "expires_at"),
+            nextPollAt: timestamp(row, "next_poll_at"),
+            authorization: {
+              verificationUrl: text(row, "verification_url"),
+              userCode: text(row, "user_code"),
+              intervalSeconds: Number(row.interval_seconds),
+            },
+            ...(row.private_state === null ? {} : { privateState: text(row, "private_state") }),
+          },
+        };
+      },
+      create: async (id, session) => {
+        await client.query(
+          `INSERT INTO occ.device_authorizations
+           (namespace_id, id, actor_id, agent_id, harness_id, credential_gateway_id, credential_refresh_id,
+            source_id, verification_url, user_code, interval_seconds, phase, expires_at, next_poll_at, private_state)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+          [
+            session.namespaceId,
+            id,
+            session.actorId,
+            session.agentId,
+            session.harnessId,
+            session.credentialGatewayId,
+            session.credentialRefreshId,
+            session.sourceId,
+            session.authorization.verificationUrl,
+            session.authorization.userCode,
+            session.authorization.intervalSeconds,
+            session.phase,
+            session.expiresAt,
+            session.nextPollAt,
+            session.privateState,
+          ],
+        );
+      },
+      replace: async (namespaceId, id, version, session) => {
+        const result = await client.query(
+          `UPDATE occ.device_authorizations SET version = version + 1, phase = $4, expires_at = $5,
+             next_poll_at = $6, private_state = $7
+           WHERE namespace_id = $1 AND id = $2 AND version = $3`,
+          [
+            namespaceId,
+            id,
+            version,
+            session.phase,
+            session.expiresAt,
+            session.nextPollAt,
+            session.privateState,
+          ],
+        );
+        return result.rowCount === 1;
+      },
+      expire: async (at, limit) => {
+        await client.query(
+          `WITH expired AS (
+             SELECT id FROM occ.device_authorizations WHERE expires_at <= $1 AND phase <> 'cancelled'
+             ORDER BY expires_at, id LIMIT $2 FOR UPDATE SKIP LOCKED
+           )
+           UPDATE occ.device_authorizations d SET version = d.version + 1, phase = 'cancelled', private_state = NULL
+           FROM expired WHERE d.id = expired.id`,
+          [at, limit],
+        );
+      },
+    };
     const secrets: SecretRepository = {
       findSecret,
       listSecrets,
@@ -4314,7 +4409,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         configuration:
           "SELECT 1 FROM occ.configurations WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         preset: "SELECT 1 FROM occ.presets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
-        secret: "SELECT 1 FROM occ.secrets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
+        secret: `SELECT 1 WHERE
+          EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE)
+          OR EXISTS (SELECT 1 FROM occ.device_authorizations WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE)`,
         credential_source:
           "SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         sandbox_policy: `SELECT 1 FROM occ.sandbox_policies AS p JOIN occ.agents AS a ON a.namespace_id = p.namespace_id AND a.id = p.agent_id WHERE p.namespace_id = $1 AND p.id = $2 AND a.status = 'active' FOR SHARE OF a`,
@@ -4748,6 +4845,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         this.requireInitialized(context),
       ),
       presets,
+      deviceAuthorizations,
       secrets,
       credentialSources,
       serviceAccounts,

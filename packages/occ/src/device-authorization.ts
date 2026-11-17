@@ -1,10 +1,9 @@
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
+
 import { ResourceStateConflictError } from "./errors.ts";
 
-/** Private Secret-backed state; provider payloads never enter platform rows or API responses. */
+/** OCC persists only ciphertext for the private provider handle. */
 export interface DeviceAuthorizationSession {
-  readonly kind: "harness_device_authorization";
-  readonly version: 2;
   readonly actorId: string;
   readonly namespaceId: string;
   readonly agentId?: string;
@@ -23,40 +22,50 @@ export interface DeviceAuthorizationSession {
   readonly privateState?: string;
 }
 
-export function deviceAuthorizationSession(value: string): DeviceAuthorizationSession {
-  let record: Record<string, unknown> | undefined;
-  try {
-    record = asRecord(JSON.parse(value));
-  } catch {
-    // Unsupported or consumed credentials cannot be reopened as an OCE login session.
-  }
-  const authorization = asRecord(record?.authorization);
-  if (
-    record?.kind !== "harness_device_authorization" ||
-    record.version !== 2 ||
-    !isNonEmptyString(record.actorId) ||
-    !isNonEmptyString(record.namespaceId) ||
-    !isNonEmptyString(record.harnessId) ||
-    !isNonEmptyString(record.credentialGatewayId) ||
-    !isNonEmptyString(record.credentialRefreshId) ||
-    !isNonEmptyString(record.sourceId) ||
-    (record.agentId !== undefined && !isNonEmptyString(record.agentId)) ||
-    !["pending", "polling", "ready", "cancelled"].includes(String(record.phase)) ||
-    !isNonEmptyString(record.expiresAt) ||
-    !Number.isFinite(Date.parse(record.expiresAt)) ||
-    !isNonEmptyString(record.nextPollAt) ||
-    !Number.isFinite(Date.parse(record.nextPollAt)) ||
-    !isNonEmptyString(authorization?.verificationUrl) ||
-    !isNonEmptyString(authorization?.userCode) ||
-    typeof authorization.intervalSeconds !== "number" ||
-    authorization.intervalSeconds < 1 ||
-    (record.phase !== "ready" &&
-      record.phase !== "cancelled" &&
-      !isNonEmptyString(record.privateState))
-  ) {
-    throw new ResourceStateConflictError(
-      "This login is no longer available in OCE. Connect again.",
-    );
-  }
-  return record as unknown as DeviceAuthorizationSession;
+export function deviceAuthorizationCipher(secret: string) {
+  const key = createHmac("sha256", secret).update("occ-device-authorization-v1").digest();
+  return {
+    seal(value: string, scope: Buffer): string {
+      const nonce = randomBytes(12);
+      const cipher = createCipheriv("aes-256-gcm", key, nonce);
+      cipher.setAAD(scope);
+      const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+      return Buffer.concat([nonce, cipher.getAuthTag(), encrypted]).toString("base64");
+    },
+    open(value: string, scope: Buffer): string {
+      try {
+        const bytes = Buffer.from(value, "base64");
+        const decipher = createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
+        decipher.setAAD(scope);
+        decipher.setAuthTag(bytes.subarray(12, 28));
+        return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString(
+          "utf8",
+        );
+      } catch {
+        throw new ResourceStateConflictError(
+          "This login is no longer available in OCE. Connect again.",
+        );
+      }
+    },
+  };
+}
+
+export function deviceAuthorizationScope(
+  installationId: string,
+  id: string,
+  session: DeviceAuthorizationSession,
+): Buffer {
+  return Buffer.from(
+    JSON.stringify([
+      installationId,
+      session.namespaceId,
+      id,
+      session.actorId,
+      session.agentId,
+      session.harnessId,
+      session.sourceId,
+      session.credentialGatewayId,
+      session.credentialRefreshId,
+    ]),
+  );
 }

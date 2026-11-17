@@ -158,15 +158,11 @@ export function registerDeviceAuthorizationRefusalCases() {
         assert.equal(event.requestId, meta.requestId);
         assert.equal(event.resource.id, source.id);
       }
-      const loginCreates = fixture.secretDriver.calls.filter((call) => call.operation === "create");
-      if (phase === "session_pending") {
-        // The private Driver value must be compensated as well as its OCC metadata.
-        assert.equal(loginCreates.length, 1);
-        const [created] = loginCreates;
-        assert.ok(created);
-        assert.equal(fixture.secretDriver.has(created.identity), false);
-      } else {
-        assert.equal(loginCreates.length, 0);
+      assert.equal(
+        fixture.secretDriver.calls.some((call) => call.operation === "create"),
+        false,
+      );
+      if (phase !== "session_pending") {
         assert.equal(
           fixture.gateway.calls.some((call) => call.operation === "startDeviceAuthorization"),
           false,

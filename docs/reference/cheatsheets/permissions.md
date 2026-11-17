@@ -94,7 +94,7 @@ operation was not authorized.`
   only an Installation administrator or a holder of a configured Role with
   those permissions can start it. Polling and closure require the initiating actor
   and exact session `secret:operate`; source use requires exact
-  `credential_source:operate`. The session holds only an opaque Gateway handle.
+  `credential_source:operate`. For an exact login grant, use resource kind `secret` and the ID from the device-login handle.
   Saved-Agent discovery also checks the Agent principal's source grant.
 
 - [Channel directory lookup](../api.md#post-namespacesnamespaceidchanneldirectorylookup)

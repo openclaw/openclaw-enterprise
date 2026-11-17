@@ -2692,14 +2692,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         result = await controller.pollAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
         );
       } else {
         await controller.cancelAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
         );
       }

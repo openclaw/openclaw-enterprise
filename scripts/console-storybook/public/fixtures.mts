@@ -136,7 +136,7 @@ type StoredCredentialSource = Pick<
   createdAt: string;
 };
 type DeviceLogin = {
-  session: SecretReference;
+  session: { id: string; namespaceId: string };
   status: "pending" | "ready";
   verificationUrl: string;
   userCode: string;
@@ -621,7 +621,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (deviceLogin) {
         const [, id, poll] = deviceLogin;
         if (!id && method === "POST") {
-          const session = secretRef(nextId("sec"));
+          const session = { id: nextId("sec"), namespaceId };
           const login: DeviceLogin = {
             session,
             status: "pending",
@@ -646,7 +646,6 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (!poll && method === "DELETE") {
           deviceLogins.delete(id ?? "");
-          secrets.delete(id ?? "");
           return new Response(null, { status: 204 });
         }
       }
