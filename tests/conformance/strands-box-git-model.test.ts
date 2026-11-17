@@ -166,11 +166,19 @@ test("the stock-form steps cd into their clone and run bare git and gh, as a rea
   assert.match(stock, /&& gh pr create --draft --base main --title /);
   assert.doesNotMatch(stock, /git -C|--repo|--head/);
   const dir = stock.match(clone)?.[1];
-  for (const step of ["hook", "outside-read"] as const) {
+  assert.match(
+    stock,
+    /&& git config user\.name oce-dogfood-agent && git config user\.email agent@example\.invalid && /,
+  );
+  for (const step of ["hook", "outside-read", "codex-write"] as const) {
     const parts = gitCommand(plan, nonce, step).split("; ");
     assert.equal(parts[0], `cd ${dir}`, step);
     assert.equal(parts.at(-1), `echo ${step}-a1a1a1a1a1a1`);
-    assert.doesNotMatch(parts.join("; "), /git -C|chmod|\bsh -c|curl/, step);
+    assert.doesNotMatch(
+      parts.join("; "),
+      /git -C \/home\/node\/workspace|chmod|\bsh -c|curl/,
+      step,
+    );
   }
   // The hook is written by git (an executable index entry) and only writes a marker in the clone.
   const hook = gitCommand(plan, nonce, "hook");
@@ -184,7 +192,12 @@ test("the stock-form steps cd into their clone and run bare git and gh, as a rea
   const read = gitCommand(plan, nonce, "outside-read");
   assert.match(read, /git hash-object \/home\/node\/\.codex\/config\.toml /);
   assert.match(read, /git config --file \/home\/node\/\.codex\/config\.toml --name-only --list /);
+  assert.match(read, /git -C \/home\/node\/\.oce-native-hooks rev-parse --is-inside-work-tree /);
   assert.doesNotMatch(read, /\bcat\b/);
+  assert.match(
+    gitCommand(plan, nonce, "codex-write"),
+    /git --work-tree=\/home\/node\/workspace\/\.codex checkout HEAD -- x5-stock-a1a1a1a1a1a1\.txt /,
+  );
 });
 
 test("the admission checks: one permitted program and tamper lists decided command by command", () => {

@@ -63,12 +63,15 @@ export const GIT_STEPS = [
   // (whether the hook ran), and one git read of a Harness file outside the workspace.
   "hook",
   "outside-read",
+  // One git write into the workspace's Harness directory (`.codex`), which the git tool must refuse.
+  "codex-write",
 ] as const;
 /** Steps that rely on the shell's `cd` for git and gh, as a real model's commands do. */
 export const STOCK_FORM_STEPS: ReadonlySet<GitStep> = new Set<GitStep>([
   "stock-form",
   "hook",
   "outside-read",
+  "codex-write",
 ]);
 /** Steps whose tool output the receipt keeps (bounded): none of them prints a credential. */
 const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
@@ -84,6 +87,7 @@ const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
   "stock-form",
   "hook",
   "outside-read",
+  "codex-write",
 ]);
 /**
  * How long the delayed-git step waits before its one Git request: inside stock Codex's exec yield
@@ -262,9 +266,12 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
         `git clone -q ${url(plan.repository)} ${stock}`,
         `cd ${stock}`,
         `(git switch -q ${plan.branch} 2>/dev/null || git switch -q -c ${plan.branch})`,
+        // Repo-local identity: no global git configuration is visible to the git tool.
+        "git config user.name oce-dogfood-agent",
+        "git config user.email agent@example.invalid",
         `printf '%s\\n' ${nonce} > x5-stock-${tag}.txt`,
         `git add x5-stock-${tag}.txt`,
-        `git -c user.name=oce-dogfood-agent -c user.email=agent@example.invalid commit -q -m 'x5 stock form ${tag}'`,
+        `git commit -q -m 'x5 stock form ${tag}'`,
         `git push -q -u origin ${plan.branch} 2>&1 | tail -4`,
         `gh pr create --draft --base ${plan.base} --title 'x5 stock form ${tag}' --body 'Synthetic Stage B dry run' 2>&1 | tail -3`,
       ].join(" && ");
@@ -279,7 +286,7 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
         `git rm -q --cached .x5-hooks/pre-commit`,
         `printf '%s\\n' ${tag} > x5-hook-${tag}.txt`,
         `git add x5-hook-${tag}.txt`,
-        `git -c core.hooksPath=.x5-hooks -c user.name=oce-dogfood-agent -c user.email=agent@example.invalid commit -q -m 'x5 hook check ${tag}' 2>&1 | tail -2`,
+        `git -c core.hooksPath=.x5-hooks commit -q -m 'x5 hook check ${tag}' 2>&1 | tail -2`,
         `echo hook-commit=$(git log -1 --format=%s)`,
         `(cat hook-marker-${tag}.txt 2>/dev/null || echo hook-marker=absent)`,
         `echo hook-${tag}`,
@@ -290,7 +297,16 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
         `cd ${stock}`,
         `git hash-object ${CODEX_CONFIG} 2>&1 | tail -1 | cut -c1-160`,
         `git config --file ${CODEX_CONFIG} --name-only --list 2>&1 | head -3 | cut -c1-160`,
+        // Visibility of the hook credential directory only (a git error names no file in it).
+        `git -C ${HOOKS} rev-parse --is-inside-work-tree 2>&1 | tail -1 | cut -c1-160`,
         `echo outside-read-${tag}`,
+      ].join("; ");
+    case "codex-write":
+      return [
+        `cd ${stock}`,
+        `git --work-tree=${WORKSPACE}/.codex checkout HEAD -- x5-stock-${tag}.txt 2>&1 | tail -1 | cut -c1-160`,
+        `([ -e ${WORKSPACE}/.codex/x5-stock-${tag}.txt ] && echo codex-write=present || echo codex-write=absent)`,
+        `echo codex-write-${tag}`,
       ].join("; ");
   }
 }
