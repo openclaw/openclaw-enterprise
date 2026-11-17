@@ -58,27 +58,36 @@ while (!existsSync(join(queue, "stop"))) {
  * proxy (Node's env proxy opt-in and CA, as Box sets them). Prints the status, the response's
  * size, digest, chunk count and timing, and the request body's digest; never a header value.
  */
-const CLIENT = `const [url, method, size] = process.argv.slice(2);
+const CLIENT = `import { createHash } from "node:crypto";
+import { request } from "node:https";
+// node:https, not fetch: fetch's parser needs WebAssembly, which --jitless Node lacks. Box sets
+// NODE_USE_ENV_PROXY and the CA variables, so the global agent goes through Box's proxy.
+const [url, method, size] = process.argv.slice(2);
 const n = Number(size);
 const prefix = '{"model":"fixture-model","stream":true,"input":"';
 const body = n > 0 ? Buffer.concat([Buffer.from(prefix), Buffer.alloc(Math.max(0, n - prefix.length - 2), 0x61), Buffer.from('"}')]) : undefined;
 const started = Date.now();
-const out = { bodyBytes: body?.length ?? 0, bodySha256: body ? (await import("node:crypto")).createHash("sha256").update(body).digest("hex") : undefined };
+const out = { bodyBytes: body?.length ?? 0, bodySha256: body ? createHash("sha256").update(body).digest("hex") : undefined };
 try {
-  const response = await fetch(url, { method, body, headers: { authorization: "Bearer " + process.env.OPENAI_API_KEY, "content-type": "application/json", accept: "text/event-stream" } });
-  out.status = response.status;
-  const hash = (await import("node:crypto")).createHash("sha256");
-  let bytes = 0, chunks = 0, first;
-  const decoder = new TextDecoder();
-  let text = "";
-  for await (const chunk of response.body) {
-    if (first === undefined) first = Date.now() - started;
-    chunks++; bytes += chunk.length; hash.update(chunk);
-    if (text.length < 4096) text += decoder.decode(chunk, { stream: true });
-  }
-  Object.assign(out, { bytes, chunks, firstChunkMs: first, totalMs: Date.now() - started, sha256: hash.digest("hex"), events: (text.match(/^data: /gm) ?? []).length, head: text.slice(0, 200) });
+  await new Promise((resolve, reject) => {
+    const outgoing = request(url, { method, timeout: 60000, headers: { authorization: "Bearer " + process.env.OPENAI_API_KEY, "content-type": "application/json", accept: "text/event-stream", ...(body ? { "content-length": body.length } : {}) } }, (response) => {
+      out.status = response.statusCode;
+      const hash = createHash("sha256");
+      let bytes = 0, chunks = 0, first, text = "";
+      response.on("data", (chunk) => {
+        if (first === undefined) first = Date.now() - started;
+        chunks++; bytes += chunk.length; hash.update(chunk);
+        if (text.length < 4096) text += chunk.toString("utf8");
+      });
+      response.on("end", () => { Object.assign(out, { bytes, chunks, firstChunkMs: first, totalMs: Date.now() - started, sha256: hash.digest("hex"), events: (text.match(/^data: /gm) ?? []).length, head: text.slice(0, 160) }); resolve(); });
+      response.on("error", reject);
+    });
+    outgoing.on("timeout", () => outgoing.destroy(new Error("timeout")));
+    outgoing.on("error", reject);
+    outgoing.end(body);
+  });
 } catch (error) {
-  out.error = String(error?.cause?.code ?? error?.code ?? error?.message ?? error).slice(0, 200);
+  out.error = [error?.message, error?.code].filter(Boolean).join(" | ").slice(0, 400);
 }
 process.stdout.write(JSON.stringify(out));
 `;
@@ -99,6 +108,11 @@ interface ClientResult {
 /** SSE events the fixture streams per response, and the gap between them. */
 const EVENTS = 5;
 const EVENT_GAP_MS = 400;
+const event = (sequence: number) =>
+  `data: {"type":"response.output_text.delta","sequence":${sequence}}\n\n`;
+/** The whole response the fixture streams, for the byte-identical check. */
+const STREAM =
+  Array.from({ length: EVENTS }, (_, sequence) => event(sequence)).join("") + "data: [DONE]\n\n";
 
 export interface NativeModelInputs {
   readonly boxBin: string;
@@ -164,7 +178,7 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       let sent = 0;
       const tick = () => {
-        res.write(`data: {"type":"response.output_text.delta","sequence":${sent}}\n\n`);
+        res.write(event(sent));
         if (++sent === EVENTS) {
           res.end("data: [DONE]\n\n");
           return;
@@ -248,10 +262,25 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
       NO_COLOR: "1",
     };
     const codex = inputs.codexBin;
-    const read = [dirname(dirname(node)), agent, queue, f.workspace, home, "/usr/share/git-core", "/usr/lib64"];
+    // Node's install prefix when it is not a system root (Box refuses /usr/local as a tree).
+    const prefix = dirname(dirname(node));
+    const read = [
+      ...(["/usr", "/usr/local", "/"].includes(prefix) ? [] : [prefix]),
+      agent,
+      queue,
+      f.workspace,
+      home,
+      // git-remote-https's shared libraries (libcurl): /usr/lib64 on Fedora, the multiarch
+      // directory on Ubuntu.
+      ...["/usr/share/git-core", "/usr/lib64", `/usr/lib/${process.arch === "x64" ? "x86_64" : "aarch64"}-linux-gnu`].filter(
+        (path) => existsSync(path),
+      ),
+    ];
+    // git's helper programs: /usr/libexec/git-core (Fedora, Debian 13) or /usr/lib/git-core (Ubuntu).
+    const gitCore = ["/usr/libexec/git-core", "/usr/lib/git-core"].filter((path) => existsSync(path));
     if (codex !== undefined) read.push(dirname(codex));
     const write = [queue, f.workspace, home];
-    const exec = [node, "/usr/bin/git", "/usr/libexec/git-core", ...(codex === undefined ? [] : [codex])];
+    const exec = [node, "/usr/bin/git", ...gitCore, ...(codex === undefined ? [] : [codex])];
     const boxFile = join(authority, "box.toml");
     await writeFile(
       boxFile,
@@ -330,7 +359,8 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
       });
     };
     const call = async (url: string, method = "POST", size = 64): Promise<ClientResult> => {
-      const result = await run([node, join(agent, "client.mjs"), url, method, String(size)]);
+      // Box denies writable+executable memory: Node runs without its JIT, as the runner does.
+      const result = await run([node, "--jitless", join(agent, "client.mjs"), url, method, String(size)]);
       assert.equal(result.code, 0, `${result.stderr}${result.error ?? ""}`);
       return JSON.parse(result.stdout) as ClientResult;
     };
@@ -370,11 +400,16 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
 
     // 1. Allowed: the fixture receives the test key; the SSE stream arrives as it is sent.
     const allowed = await call(`${route}/responses`);
-    assert.equal(allowed.status, 200, JSON.stringify(allowed));
+    if (allowed.status !== 200) {
+      throw failWith(
+        `allowed model request: ${JSON.stringify(allowed)} host ${JSON.stringify(counts())} answered ${JSON.stringify(f.host.answered.slice(-3))} provider ${provider.connections}/${provider.requests.length}`,
+      );
+    }
     assert.equal(provider.requests.length, 1);
     assert.equal(provider.requests[0]!.authSha256, sha(key));
     assert.equal(provider.requests[0]!.bodySha256, allowed.bodySha256);
     assert.equal(allowed.events, EVENTS + 1);
+    assert.equal(allowed.sha256, sha(STREAM), "the SSE response arrives byte-identical");
     assert.ok(allowed.chunks! >= 2, "streamed in more than one chunk");
     assert.ok(
       allowed.firstChunkMs! < allowed.totalMs! - (EVENTS - 2) * EVENT_GAP_MS,
@@ -433,7 +468,8 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
     evidence.overCap = { bodyBytes: over.bodyBytes, status: over.status, error: over.error };
 
     // 5. Repository-only withdrawal: OCE refuses GitHub; the model keeps working.
-    assert.equal((await git(["ls-remote", remote, "HEAD"])).code, 0);
+    const lsRemote = await git(["ls-remote", remote, "HEAD"]);
+    assert.equal(lsRemote.code, 0, `${lsRemote.stderr.slice(-600)}${lsRemote.error ?? ""}`);
     f.state.withdrawn = true;
     const repoRefused = await git(["ls-remote", remote, "HEAD"]);
     assert.notEqual(repoRefused.code, 0);

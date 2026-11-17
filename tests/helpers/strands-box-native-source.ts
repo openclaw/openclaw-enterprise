@@ -117,17 +117,24 @@ export async function stageBRealBox(
       GH_NO_UPDATE_NOTIFIER: "1",
       NO_COLOR: "1",
     };
+    // Node's prefix unless it is a system root (Box refuses /usr/local as a tree); git's helpers
+    // and libcurl where this distribution keeps them (Fedora or Debian/Ubuntu multiarch).
+    const prefix = dirname(dirname(node));
     const read = [
-      dirname(dirname(node)),
+      ...(["/usr", "/usr/local", "/"].includes(prefix) ? [] : [prefix]),
       agent,
       queue,
       f.workspace,
       home,
-      "/usr/share/git-core",
-      "/usr/lib64",
+      ...[
+        "/usr/share/git-core",
+        "/usr/lib64",
+        `/usr/lib/${process.arch === "x64" ? "x86_64" : "aarch64"}-linux-gnu`,
+      ].filter((path) => existsSync(path)),
     ];
     const write = [queue, f.workspace, home];
-    const exec = [node, "/usr/bin/git", "/usr/libexec/git-core", inputs.gh];
+    const gitCore = ["/usr/libexec/git-core", "/usr/lib/git-core"].filter((path) => existsSync(path));
+    const exec = [node, "/usr/bin/git", ...gitCore, inputs.gh];
     const boxFile = join(authority, "box.toml");
     await writeFile(
       boxFile,
