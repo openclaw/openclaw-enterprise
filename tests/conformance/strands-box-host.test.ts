@@ -1350,7 +1350,10 @@ test("a controlled inference DNS name is accepted only with its one pinned priva
     [{ url: "https://[fd00::9]/v1", address: "10.0.0.9" }, "controlled-inference"],
     // Compute never produces these spellings, so the host refuses them at load.
     [{ url: "https://model.pilot.example/v1/", address: "10.0.0.9" }, "controlled-inference"],
-    [{ url: "https://model.pilot.example/openai/v1/", address: "10.0.0.9" }, "controlled-inference"],
+    [
+      { url: "https://model.pilot.example/openai/v1/", address: "10.0.0.9" },
+      "controlled-inference",
+    ],
     [{ url: "https://model.pilot.example/openai/v2", address: "10.0.0.9" }, "controlled-inference"],
     [{ url: "https://model.pilot.example/v1/openai", address: "10.0.0.9" }, "controlled-inference"],
     [{ url: "https://model.pilot.example//v1", address: "10.0.0.9" }, "controlled-inference"],

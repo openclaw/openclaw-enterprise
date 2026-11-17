@@ -1235,10 +1235,16 @@ test(
     assert.deepEqual(configured({ modelBaseUrl: "https://10.0.0.9/v1", address: "10.0.0.9" }), []);
     // A fixed path prefix below the host, as Compute accepts an OpenAI-compatible base URL.
     assert.deepEqual(
-      configured({ modelBaseUrl: "https://model.pilot.example:8444/local/8000/v1", address: "10.0.0.9" }),
+      configured({
+        modelBaseUrl: "https://model.pilot.example:8444/local/8000/v1",
+        address: "10.0.0.9",
+      }),
       [],
     );
-    assert.deepEqual(configured({ modelBaseUrl: "https://model.pilot.example/openai/v1", address: "10.0.0.9" }), []);
+    assert.deepEqual(
+      configured({ modelBaseUrl: "https://model.pilot.example/openai/v1", address: "10.0.0.9" }),
+      [],
+    );
     // A name with no pinned address could resolve anywhere.
     refused({ modelBaseUrl });
     // Public, link-local, shared and loopback addresses are never the controlled route.
