@@ -121,6 +121,11 @@ test(
       }
       await rm(root, { recursive: true });
     });
+    const components: unknown = JSON.parse(
+      docker(["version", "--format", "{{json .Server.Components}}"]),
+    );
+    assert.ok(Array.isArray(components), "Container server must identify its components");
+    const podman = components.some((component) => asRecord(component)?.Name === "Podman Engine");
     const ports = new Set<number>();
     // Keep both real servers alive: the engine, rather than a released caller-side
     // probe, must assign distinct usable ports to the independent preparations.
@@ -158,8 +163,9 @@ test(
         "-q",
         "postgres",
       ]);
-      // Inspect the submitted request: Podman reports the assigned port in HostConfig,
-      // while Docker retains zero there. Both must request engine allocation on loopback.
+      // Check the Compose declaration for both engines. Docker also retains the submitted
+      // port request, so check what preparation actually sent. Podman replaces it with the
+      // assigned port in HostConfig; its published mapping is checked below instead.
       const configuration: unknown = JSON.parse(
         docker(
           ["compose", "-f", server.composeFile, "-p", server.name, "config", "--format", "json"],
@@ -175,6 +181,12 @@ test(
       assert.equal(requested?.host_ip, "127.0.0.1");
       assert.equal(String(requested?.published), "0");
       assert.equal(requested?.target, 5432);
+      if (!podman) {
+        const bindings = JSON.parse(
+          docker(["inspect", "--format", "{{json .HostConfig.PortBindings}}", container]),
+        );
+        assert.deepEqual(bindings["5432/tcp"], [{ HostIp: "127.0.0.1", HostPort: "0" }]);
+      }
       const published = JSON.parse(
         docker(["inspect", "--format", "{{json .NetworkSettings.Ports}}", container]),
       );
