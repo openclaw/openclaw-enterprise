@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, constants, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
+import { readBoundedFile } from "./bounded-file.ts";
 import { CONTROLLED_INFERENCE_MARKER, parseRoute } from "./egress.ts";
 import type { EgressRoute } from "./egress.ts";
 import {
@@ -37,6 +38,7 @@ import {
   mountIdentity,
   nodeRuntimeBytes,
   nodeInstallation,
+  openPinned,
   splitStockCommand,
   startWorkspaceNode,
   type MountIdentity,
@@ -520,18 +522,33 @@ function admitted(
     const setup = object(requirements.workspaceSetup);
     if (config.workspaceSetupId === undefined || setup.id !== config.workspaceSetupId)
       throw new Error("workspace_setup_not_staged");
-    const marker = join(config.workspace, ".oce-workspace-setup.json");
-    const stat = lstatSync(marker);
-    if (!stat.isFile() || stat.uid !== process.getuid!() || stat.size > 4096)
-      throw new Error("workspace_setup_not_staged");
-    const expected = {
-      id: setup.id,
-      namespaceId: requested.namespaceId,
-      agentId: requested.agentId,
-      ...(setup.defaultsId === undefined ? {} : { defaultsId: setup.defaultsId }),
-    };
-    if (JSON.stringify(JSON.parse(readFileSync(marker, "utf8"))) !== JSON.stringify(expected))
-      throw new Error("workspace_setup_not_staged");
+    const pin = config.mountIdentities.get(WORKSPACE);
+    if (pin === undefined) throw new Error("workspace_mount_replaced");
+    const workspace = openPinned(config.workspace, pin);
+    try {
+      const { bytes } = readBoundedFile(
+        join(`/proc/self/fd/${workspace}`, ".oce-workspace-setup.json"),
+        {
+          maxBytes: 4096,
+          refusal: "workspace_setup_not_staged",
+          accepts: (stat) =>
+            stat.uid === BigInt(process.getuid!()) &&
+            stat.nlink === 1n &&
+            (stat.mode & 0o022n) === 0n,
+        },
+      );
+      const expected = {
+        id: setup.id,
+        namespaceId: requested.namespaceId,
+        agentId: requested.agentId,
+        ...(setup.defaultsId === undefined ? {} : { defaultsId: setup.defaultsId }),
+      };
+      if (JSON.stringify(JSON.parse(bytes.toString("utf8"))) !== JSON.stringify(expected)) {
+        throw new Error("workspace_setup_not_staged");
+      }
+    } finally {
+      closeSync(workspace);
+    }
   } else if (config.workspaceSetupId !== undefined) throw new Error("unexpected_workspace_setup");
   const stock = parseStockHarnessCommand(requirements.command);
   if (

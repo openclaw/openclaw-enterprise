@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import { once } from "node:events";
-import { chmod, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import type { Server, Socket } from "node:net";
@@ -14,7 +14,11 @@ import type { TLSSocket } from "node:tls";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createFixedIngress } from "../../deploy/examples/strands-box/ingress/host-ingress.ts";
-import { createFixedRelay, probeNative } from "../../deploy/examples/strands-box/ingress/relay.ts";
+import {
+  createFixedRelay,
+  probeNative,
+  probeRelay,
+} from "../../deploy/examples/strands-box/ingress/relay.ts";
 import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
@@ -432,8 +436,19 @@ test(
     assert.ok(address && typeof address !== "string");
 
     const options = { host: "127.0.0.1", port: address.port, authority, ca: f.caBundle };
-    await probeNative(options);
+    // Kubernetes mounts public CA certificates behind a projected symlink.
+    const trust = await temporaryDirectory(t, "box-projected-ca-");
+    const caPath = join(trust, "ca.pem");
+    await writeFile(join(trust, "certificates.pem"), f.caBundle);
+    await symlink("certificates.pem", caPath);
+    await probeRelay({ host: options.host, port: options.port, authority, caPath });
     assert.deepEqual(f.seen, [{ path: "/", authorization: undefined }]);
+    const oversized = join(trust, "oversized.pem");
+    await writeFile(oversized, Buffer.alloc(65_537));
+    await assert.rejects(
+      probeRelay({ host: options.host, port: options.port, authority, caPath: oversized }),
+      { message: "Expected a bounded public CA bundle." },
+    );
     const foreignDir = await temporaryDirectory(t, "box-other-ca-");
     const foreignCa = await certificateAuthority(foreignDir, {
       caName: "Other CA",

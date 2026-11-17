@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { readBoundedFile } from "../host/bounded-file.ts";
 import { answerFor, isNonce, promptFor, replyPrefix } from "./box-workload.ts";
 const workspace = "/home/node/workspace";
 const marker = join(workspace, ".oce-model-marker");
@@ -11,36 +12,30 @@ const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 type Obj = Record<string, unknown>;
 const obj = (x: unknown): Obj =>
   x && typeof x === "object" && !Array.isArray(x) ? (x as Obj) : {};
-function privateRead(file: string, max: number) {
-  const s = lstatSync(file);
-  if (
-    !s.isFile() ||
-    s.nlink !== 1 ||
-    (s.mode & 0o077) !== 0 ||
-    s.uid !== process.getuid?.() ||
-    s.size < 1 ||
-    s.size > max
-  )
-    throw Error("PRIVATE_INPUT_REFUSED");
-  return readFileSync(file, "utf8");
+function privateFile(file: string, maxBytes: number, refusal = "PRIVATE_INPUT_REFUSED") {
+  return readBoundedFile(file, {
+    maxBytes,
+    refusal,
+    accepts: (stat) =>
+      stat.nlink === 1n &&
+      (stat.mode & 0o077n) === 0n &&
+      stat.uid === BigInt(process.getuid?.() ?? -1) &&
+      stat.size > 0n,
+  });
+}
+function privateRead(file: string, maxBytes: number) {
+  return privateFile(file, maxBytes).bytes.toString("utf8");
 }
 function save(path: string, row: Obj) {
   writeFileSync(path, JSON.stringify(row) + "\n", { mode: 0o600, flag: "wx" });
 }
 function checkMarker() {
-  const st = lstatSync(marker, { bigint: true });
-  if (
-    !st.isFile() ||
-    st.nlink !== 1n ||
-    st.size !== 49n ||
-    (st.mode & 0o077n) !== 0n ||
-    st.uid !== BigInt(process.getuid?.() ?? -1)
-  )
-    throw Error("MARKER_IDENTITY_REFUSED");
+  const { bytes, stat } = privateFile(marker, 49, "MARKER_IDENTITY_REFUSED");
+  if (bytes.length !== 49) throw Error("MARKER_IDENTITY_REFUSED");
   return {
-    markerSha256: sha(Buffer.from(privateRead(marker, 49))),
-    device: st.dev.toString(),
-    inode: st.ino.toString(),
+    markerSha256: sha(bytes),
+    device: stat.dev.toString(),
+    inode: stat.ino.toString(),
   };
 }
 function seed(root: string) {
@@ -176,7 +171,8 @@ function executable(value: string | undefined) {
 }
 function ownerReceipt(root: string, fresh: boolean) {
   const path = join(root, "owner-wss.json");
-  const row = obj(JSON.parse(privateRead(path, 2048)) as unknown);
+  const { bytes, stat } = privateFile(path, 2048);
+  const row = obj(JSON.parse(bytes.toString("utf8")) as unknown);
   if (
     row.stage !== "original_box_wss" ||
     row.verifiedTls !== true ||
@@ -184,7 +180,7 @@ function ownerReceipt(root: string, fresh: boolean) {
     !/^[a-f0-9]{64}$/.test(row.generationSha256) ||
     typeof row.ingressLeafSha256 !== "string" ||
     !/^[a-f0-9]{64}$/.test(row.ingressLeafSha256) ||
-    (fresh && Math.abs(Date.now() - lstatSync(path).mtimeMs) > 90000)
+    (fresh && Math.abs(Date.now() - Number(stat.mtimeMs)) > 90000)
   )
     throw Error("LIVE_OWNER_RECEIPT_REQUIRED");
   return { generationSha256: row.generationSha256, ingressLeafSha256: row.ingressLeafSha256 };

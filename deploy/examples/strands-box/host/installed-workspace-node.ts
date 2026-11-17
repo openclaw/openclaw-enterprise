@@ -24,6 +24,7 @@ import {
   withoutLineComments,
 } from "../../../../apps/controller/src/drivers/compute/node-program.ts";
 import type { EgressRoute } from "./egress.ts";
+import { readBoundedFile } from "./bounded-file.ts";
 import { fields, object, privateDirectory, string } from "./launch.ts";
 import { bridge, listen } from "./transport.ts";
 
@@ -198,20 +199,18 @@ export function assertNodeInputs(input: NodeLaunch): void {
 }
 
 export function nodeRuntimeBytes(input: NodeLaunch): Buffer {
-  const script = lstatSync(input.runtime);
-  if (!script.isFile() || script.size > 32_768 || (script.mode & 0o7022) !== 0) {
-    throw new Error("file_node_runtime_changed");
-  }
-  const bytes = readFileSync(input.runtime, {
-    flag: constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  const { bytes } = readBoundedFile(input.runtime, {
+    maxBytes: 32_768,
+    refusal: "file_node_runtime_changed",
+    accepts: (stat) => (stat.mode & 0o7022n) === 0n,
   });
-  if (bytes.length > 32_768 || sha256(bytes) !== input.installation.runtimeSha256) {
+  if (sha256(bytes) !== input.installation.runtimeSha256) {
     throw new Error("file_node_runtime_changed");
   }
   return bytes;
 }
 
-function openPinned(path: string, pin: MountIdentity): number {
+export function openPinned(path: string, pin: MountIdentity): number {
   const fd = openSync(path, constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_RDONLY);
   try {
     const stat = fstatSync(fd, { bigint: true });

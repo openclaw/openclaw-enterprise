@@ -1,8 +1,9 @@
-import { appendFileSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { isIPv4 } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readBoundedFile } from "../host/bounded-file.ts";
 import { CONTROLLED_INFERENCE_MARKER } from "../host/egress.ts";
 import { fields, object, privateDirectory, readConfig, string } from "../host/launch.ts";
 import { controlledModelRequests, isNonce } from "./box-workload.ts";
@@ -17,18 +18,16 @@ function privateAddress(input: unknown): string {
 
 function tlsFile(value: unknown, privateKey: boolean): Buffer {
   const path = string(value);
-  const stat = lstatSync(path);
-  if (
-    !isAbsolute(path) ||
-    realpathSync(path) !== path ||
-    !stat.isFile() ||
-    stat.uid !== process.getuid?.() ||
-    (stat.mode & (privateKey ? 0o077 : 0o022)) !== 0 ||
-    stat.size > 32_768
-  ) {
-    throw new Error("Use an owner-controlled TLS file.");
-  }
-  return readFileSync(path);
+  const refusal = "Use an owner-controlled TLS file.";
+  if (!isAbsolute(path)) throw new Error(refusal);
+  return readBoundedFile(path, {
+    maxBytes: 32_768,
+    refusal,
+    canonical: true,
+    accepts: (stat) =>
+      stat.uid === BigInt(process.getuid?.() ?? -1) &&
+      (stat.mode & (privateKey ? 0o077n : 0o022n)) === 0n,
+  }).bytes;
 }
 
 function start(path: string) {

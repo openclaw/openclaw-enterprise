@@ -20,6 +20,7 @@ import {
 import { createServer } from "node:net";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readBoundedFile } from "./bounded-file.ts";
 import { CONTROLLED_INFERENCE_MARKER, policy } from "./egress.ts";
 import {
   collectDiagnostics,
@@ -360,16 +361,16 @@ export function hostConfig(input: unknown, additionalKeys: readonly string[] = [
 
 export function readConfig(path: string): unknown {
   const file = cleanPath(path);
-  const stat = lstatSync(file);
-  if (
-    !stat.isFile() ||
-    stat.uid !== process.getuid!() ||
-    (stat.mode & 0o7777) !== 0o600 ||
-    stat.size > 256_000
-  ) {
-    throw new Error("owner_config_file");
-  }
-  return JSON.parse(readFileSync(file, "utf8")) as unknown;
+  const { bytes } = readBoundedFile(file, {
+    maxBytes: 256_000,
+    refusal: "owner_config_file",
+    canonical: true,
+    accepts: (stat) =>
+      stat.uid === BigInt(process.getuid!()) &&
+      stat.nlink === 1n &&
+      (stat.mode & 0o7777n) === 0o600n,
+  });
+  return JSON.parse(bytes.toString("utf8")) as unknown;
 }
 
 // TOML strings and JS JSON share these escapes for the safe Unicode inputs here.

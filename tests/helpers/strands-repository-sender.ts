@@ -7,6 +7,7 @@ import { createServer, request } from "node:https";
 import type { Server } from "node:net";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
+import { createSecureContext } from "node:tls";
 import type {
   EgressExecution,
   EgressInstallation,
@@ -19,6 +20,7 @@ import type {
   CurrentGitRecipient,
   GitReceipt,
 } from "../../deploy/examples/strands-box/git/index.ts";
+import { BODY_LIMIT } from "../../deploy/examples/strands-box/git/protocol.ts";
 import { signedLeaf } from "./certificates.ts";
 import { strandsRepositoryOriginFixture } from "./strands-rehearsal-repository.ts";
 
@@ -34,6 +36,13 @@ const baseExecution: EgressExecution = {
 const driver = { id: "sender", implementation: "test/sender", configurationId: "config" };
 const sender = { id: "exact-sender", generation: 1 };
 const version = { preparationAttemptId: "attempt", materialVersion: "version" };
+const probePaths = new Set([
+  "/repository.git/info/refs?service=git-upload-pack",
+  "/repository.git/git-receive-pack",
+  "/different.git/info/refs?service=git-upload-pack",
+  "/different.git/git-receive-pack",
+  "/draft-pull",
+]);
 
 async function listen(t: TestContext, server: Server): Promise<number> {
   server.listen(0, "127.0.0.1");
@@ -263,25 +272,32 @@ export async function strandsRepositorySenderFixture(
         ],
         cwd,
       );
-    const call = (
+    const call = async (
       path: string,
-      input?: object,
+      input?: Buffer | { title: string },
       leaf = clientLeaf,
       gitProtocol?: string,
-    ): Promise<{ status: number; body: Buffer }> =>
-      new Promise((resolve, reject) => {
-        const body =
-          input === undefined || Buffer.isBuffer(input)
-            ? input
-            : Buffer.from(JSON.stringify(input));
+    ): Promise<{ status: number; body: Buffer }> => {
+      if (!probePaths.has(path)) {
+        throw new Error("Fixture request must use a declared test path.");
+      }
+      const body = Buffer.isBuffer(input)
+        ? input
+        : input === undefined
+          ? undefined
+          : Buffer.from(JSON.stringify({ title: input.title }));
+      if (body !== undefined && body.length > BODY_LIMIT) {
+        throw new Error("Fixture request exceeds the Git sender body limit.");
+      }
+      const secureContext = createSecureContext({ cert: leaf.cert, key: leaf.key, ca: caBytes });
+      return new Promise((resolve, reject) => {
         const req = request(
           {
             host: "127.0.0.1",
             port,
             path,
             method: body ? "POST" : "GET",
-            ...leaf,
-            ca: caBytes,
+            secureContext,
             agent: false,
             rejectUnauthorized: true,
             ...(body
@@ -306,6 +322,7 @@ export async function strandsRepositorySenderFixture(
         req.once("error", reject);
         req.end(body);
       });
+    };
     return { remote, remoteGit, call, binding };
   };
   return {

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { BODY_LIMIT } from "../../deploy/examples/strands-box/git/protocol.ts";
 import { strandsRepositorySenderFixture as fixture } from "../helpers/strands-repository-sender.ts";
 
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
@@ -56,6 +57,16 @@ test(
       403,
     );
     assert.equal(f.writes.length, before);
+    // The local fixture rejects oversized packets before they can reach the sender.
+    const receiptCount = f.receipts.length;
+    await assert.rejects(
+      route.call("/repository.git/git-receive-pack", Buffer.alloc(BODY_LIMIT + 1)),
+      { message: "Fixture request exceeds the Git sender body limit." },
+    );
+    await assert.rejects(route.call(route.remote), {
+      message: "Fixture request must use a declared test path.",
+    });
+    assert.equal(f.receipts.length, receiptCount);
     // GitHub's selected-repository grant is the permission boundary. This
     // separate valid Git request proves the sender does not invent a ref policy.
     await route.remoteGit(["push", "origin", "HEAD:refs/heads/other"], copy);

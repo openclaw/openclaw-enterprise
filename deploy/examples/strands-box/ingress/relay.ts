@@ -1,5 +1,6 @@
 import { randomBytes, X509Certificate } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute } from "node:path";
@@ -11,6 +12,8 @@ import {
   privateIPv4,
   TRANSPORT_PORT,
 } from "./network.ts";
+
+const CA_LIMIT = 65_536;
 
 function setting(name: string): string {
   const value = process.env[name];
@@ -83,19 +86,49 @@ function serve(): void {
   });
 }
 
-async function probe(): Promise<void> {
-  const host = privateIPv4(setting("BOX_RELAY_LISTEN_ADDRESS"));
-  const authority = dnsAuthority(setting("BOX_RELAY_AUTHORITY"));
-  const caPath = setting("BOX_RELAY_CA_FILE");
+export async function probeRelay({
+  host,
+  port,
+  authority,
+  caPath,
+}: {
+  readonly host: string;
+  readonly port: number;
+  readonly authority: string;
+  readonly caPath: string;
+}): Promise<void> {
   if (!isAbsolute(caPath)) {
     throw new Error("Expected an absolute public CA path.");
   }
-  const metadata = await stat(caPath);
-  if (!metadata.isFile() || metadata.size < 1 || metadata.size > 65_536) {
-    throw new Error("Expected a bounded public CA bundle.");
+  // Kubernetes projects the immutable ConfigMap through symlinks.
+  const handle = await open(caPath, constants.O_RDONLY | constants.O_NONBLOCK);
+  let ca: Buffer;
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size < 1n || before.size > BigInt(CA_LIMIT)) {
+      throw new Error("Expected a bounded public CA bundle.");
+    }
+    const buffer = Buffer.alloc(Number(before.size) + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (
+      BigInt(length) !== before.size ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      after.ctimeNs !== before.ctimeNs
+    ) {
+      throw new Error("Expected a bounded public CA bundle.");
+    }
+    ca = buffer.subarray(0, length);
+  } finally {
+    await handle.close();
   }
-  const ca = await readFile(caPath);
-  await probeNative({ host, port: TRANSPORT_PORT, authority, ca });
+  await probeNative({ host, port, authority, ca });
 }
 
 export async function probeNative({
@@ -114,7 +147,7 @@ export async function probeNative({
   const pattern = /-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----/g;
   const certificates = bundle.match(pattern);
   if (
-    ca.length > 65_536 ||
+    ca.length > CA_LIMIT ||
     certificates === null ||
     bundle.replace(pattern, "").trim() !== "" ||
     !certificates.every((cert) => new X509Certificate(cert).ca)
@@ -185,7 +218,12 @@ if (import.meta.main) {
     if (process.argv[2] === "serve") {
       serve();
     } else if (process.argv[2] === "probe") {
-      await probe();
+      await probeRelay({
+        host: privateIPv4(setting("BOX_RELAY_LISTEN_ADDRESS")),
+        port: TRANSPORT_PORT,
+        authority: dnsAuthority(setting("BOX_RELAY_AUTHORITY")),
+        caPath: setting("BOX_RELAY_CA_FILE"),
+      });
     } else {
       throw new Error("Unexpected relay operation.");
     }

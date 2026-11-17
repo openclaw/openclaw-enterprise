@@ -35,6 +35,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { inflateRawSync } from "node:zlib";
+import { readBoundedFile } from "../../deploy/examples/strands-box/host/bounded-file.ts";
 import {
   assertPinnedDirectory,
   fileIdentity,
@@ -423,6 +424,33 @@ test(
     }
   },
 );
+
+test("installed profile accepts one private config and refuses the same file with another name", (t) => {
+  const root = temporary();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cli = fileURLToPath(
+    new URL("../../deploy/examples/strands-box/host/control.ts", import.meta.url),
+  );
+  const config = join(root, "config.json");
+  const alias = join(root, "alias.json");
+  const requirements = { environment: [] };
+  writeFileSync(config, JSON.stringify(requirements), { mode: 0o600 });
+  const profile = (path: string) =>
+    spawnSync(process.execPath, [cli, "--profile-sha256", path], { encoding: "utf8" });
+  const accepted = profile(config);
+  assert.equal(accepted.status, 0);
+  assert.equal(accepted.stdout, profileDigest(requirements) + "\n");
+
+  // The contents and mode still match, but an owner input must have a single name.
+  linkSync(config, alias);
+  const refused = profile(alias);
+  assert.equal(refused.status, 1);
+  assert.equal(refused.stdout, "");
+  assert.equal(
+    refused.stderr,
+    "strands-box-control: configuration, listener or retirement refused\n",
+  );
+});
 
 test("selected package implementation is canonical and bound separately from resource identifiers", () => {
   const owner = {
@@ -1091,7 +1119,10 @@ stockShellTest?.(
         nestedShell: denied,
       });
       const telemetry = join(root, "state/private/telemetry/records.jsonl");
-      assert.ok(lstatSync(telemetry).size < 1_000_000, "bounded stock decision log");
+      const { bytes } = readBoundedFile(telemetry, {
+        maxBytes: 999_999,
+        refusal: "bounded stock decision log",
+      });
       interface DecisionEvent {
         resourceLogs?: {
           scopeLogs?: {
@@ -1101,7 +1132,7 @@ stockShellTest?.(
         }[];
       }
       let admitted = 0;
-      for (const line of readFileSync(telemetry, "utf8").trimEnd().split("\n")) {
+      for (const line of bytes.toString("utf8").trimEnd().split("\n")) {
         const record = JSON.parse(line) as DecisionEvent;
         for (const resource of record.resourceLogs ?? []) {
           for (const scope of resource.scopeLogs ?? []) {
