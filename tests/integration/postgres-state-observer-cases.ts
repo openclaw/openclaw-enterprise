@@ -6,7 +6,7 @@ import { databaseUrl } from "../helpers/postgres-platform-state.ts";
 import { ensureInstallation } from "../helpers/postgres-state-installation.ts";
 
 export async function acceptCanonicalObserverTimestamp(context: TestContext): Promise<void> {
-  const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
+  const [{ Pool }, { PostgresPlatformState, PostgresWorkQueue }] = await Promise.all([
     import("pg"),
     import("../../packages/occ/src/index.ts"),
   ]);
@@ -128,6 +128,14 @@ export async function acceptCanonicalObserverTimestamp(context: TestContext): Pr
       },
     },
   };
+  const controllerQueue = new PostgresWorkQueue(pool, {
+    workKind: "controller",
+    maxAttempts: 1,
+    random: () => 0,
+  });
+  const controllerPendingBefore = await controllerQueue.pending();
+  const controllerWaitingBefore = await controllerQueue.claimableWorkWaiting();
+
   const created = await state.transact((unit) => unit.observer.create(createInput, qualification));
   assert.equal(created.replayed, false);
   assert.equal(created.record.completedPhase, "admitted");
@@ -175,6 +183,29 @@ export async function acceptCanonicalObserverTimestamp(context: TestContext): Pr
     ],
   );
   assert.deepEqual(persistedReplayState.rows, [{ invocations: 1, work: 1, candidate_work: 0 }]);
+
+  assert.equal(await controllerQueue.pending(), controllerPendingBefore);
+  assert.equal(await controllerQueue.claimableWorkWaiting(), controllerWaitingBefore);
+
+  const staleClaimToken = randomUUID();
+  const madeStale = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() - interval '1 second', updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $4 AND state = $5",
+    [workId, "claimed", staleClaimToken, "observer", "queued"],
+  );
+  assert.equal(madeStale.rowCount, 1, "test must create one expired observer claim");
+  await controllerQueue.recoverStale();
+  const untouchedObserverClaim = await pool.query(
+    "SELECT state, attempt_count, claim_token FROM occ.controller_work WHERE idempotency_key = $1",
+    [workId],
+  );
+  assert.deepEqual(untouchedObserverClaim.rows, [
+    { state: "claimed", attempt_count: 1, claim_token: staleClaimToken },
+  ]);
+  const restoredObserverWork = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = 0, claim_token = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $3 AND state = $4 AND claim_token = $5::uuid",
+    [workId, "queued", "observer", "claimed", staleClaimToken],
+  );
+  assert.equal(restoredObserverWork.rowCount, 1, "test must restore the exact observer work item");
 
   const claimToken = randomUUID();
   const claimed = await pool.query(

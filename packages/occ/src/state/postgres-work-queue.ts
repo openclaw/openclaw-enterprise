@@ -86,7 +86,7 @@ export interface PostgresWorkQueueOptions {
   readonly leaseDurationMs?: number;
   readonly claimRaceRetries?: number;
   readonly random?: () => number;
-  readonly workKind?: "all" | "namespace";
+  readonly workKind?: "all" | "controller" | "namespace";
   readonly controlPlaneAuditEnabled?: boolean;
 }
 
@@ -814,7 +814,7 @@ export class PostgresWorkQueue {
   private readonly leaseDurationMs: number;
   private readonly claimRaceRetries: number;
   private readonly random: () => number;
-  private readonly workKind: "all" | "namespace";
+  private readonly workKind: "all" | "controller" | "namespace";
   private readonly controlPlaneAuditEnabled: boolean;
 
   constructor(client: PostgresQueryClient, options: PostgresWorkQueueOptions = {}) {
@@ -834,8 +834,14 @@ export class PostgresWorkQueue {
     this.random = options.random ?? Math.random;
     this.controlPlaneAuditEnabled = options.controlPlaneAuditEnabled === true;
     this.workKind = options.workKind ?? "all";
-    if (this.workKind !== "all" && this.workKind !== "namespace") {
-      throw new ScopeViolationError("The controller work kind must be all or namespace.");
+    if (
+      this.workKind !== "all" &&
+      this.workKind !== "controller" &&
+      this.workKind !== "namespace"
+    ) {
+      throw new ScopeViolationError(
+        "The controller work kind must be all, controller, or namespace.",
+      );
     }
   }
 
@@ -1844,6 +1850,9 @@ export class PostgresWorkQueue {
       return "";
     }
     const prefix = alias === undefined ? "" : `${alias}.`;
+    if (this.workKind === "controller") {
+      return `AND ${prefix}work_kind <> 'observer'`;
+    }
     return `AND ${prefix}namespace_target IS NOT NULL
             AND ${prefix}agent_id IS NULL
             AND ${prefix}revision_id IS NULL`;
