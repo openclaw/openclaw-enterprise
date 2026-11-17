@@ -199,10 +199,44 @@ export function bridge(
   return { server, close: stop };
 }
 
+/** The stock program caps a release body at 4 KiB; its answers are smaller still. */
+const ENROLLMENT_BODY_BYTES = 4_096;
+const ENROLLMENT_HEAD_BYTES = 4_096;
+const ENROLLMENT_ANSWER_BYTES = 8_192;
+
 /**
- * The pre-ready enrollment bridge: like `bridge`, but a connection reaches `destination` only when
- * its first line is one of the two enrollment request lines; anything else is closed unanswered.
- * The stock program answers each request with `connection: close`, so a connection carries one.
+ * The exact request a connection carries, or `undefined`: one of the two request lines, a
+ * bounded head without `Upgrade` or `Transfer-Encoding`, and a `Content-Length` that is 0 or
+ * absent for `GET` and at most 4 KiB for `POST`. Returns the head and the body length.
+ */
+function enrollmentHead(head: Buffer): { readonly length: number } | undefined {
+  const lines = head.toString("latin1").split("\r\n");
+  if (!(ENROLLMENT_REQUEST_LINES as readonly string[]).includes(lines[0]!)) return undefined;
+  let length: number | undefined;
+  for (const line of lines.slice(1)) {
+    const colon = line.indexOf(":");
+    if (colon < 1) return undefined;
+    const name = line.slice(0, colon).trim().toLowerCase();
+    const value = line.slice(colon + 1).trim();
+    if (name === "upgrade" || name === "transfer-encoding" || name === "expect") return undefined;
+    if (name === "connection" && value.toLowerCase() !== "close") return undefined;
+    if (name === "content-length") {
+      if (length !== undefined || !/^(?:0|[1-9]\d{0,4})$/.test(value)) return undefined;
+      length = Number(value);
+    }
+  }
+  const post = lines[0]!.startsWith("POST ");
+  length ??= 0;
+  if (post ? length < 1 || length > ENROLLMENT_BODY_BYTES : length !== 0) return undefined;
+  return { length };
+}
+
+/**
+ * The pre-ready enrollment bridge. A connection reaches `destination` with exactly one request:
+ * one of the two enrollment request lines, a bounded head (no `Upgrade`, no chunked body, no
+ * keep-alive) and a body of exactly its declared length (only for `POST`, at most 4 KiB). Nothing
+ * after that request is forwarded, and at most 8 KiB of the answer comes back; anything else is
+ * closed unanswered. The answer is untrusted: the paired Driver checks it, not this bridge.
  */
 export function enrollmentBridge(
   destination: NetConnectOpts,
@@ -219,50 +253,67 @@ export function enrollmentBridge(
     client.once("close", () => clients.delete(client));
     client.once("error", () => client.destroy());
     client.setTimeout(CONNECT_MS, () => client.destroy());
-    let head = Buffer.alloc(0);
+    let received = Buffer.alloc(0);
+    let request: { readonly bytes: Buffer; readonly total: number } | undefined;
     const onData = (chunk: Buffer) => {
-      head = Buffer.concat([head, chunk]);
-      const end = head.indexOf("\r\n");
-      if (end < 0) {
-        if (head.length > 128) client.destroy();
+      received = Buffer.concat([received, chunk]);
+      if (request === undefined) {
+        const end = received.indexOf("\r\n\r\n");
+        if (end < 0) {
+          if (received.length > ENROLLMENT_HEAD_BYTES) client.destroy();
+          return;
+        }
+        const parsed = end > ENROLLMENT_HEAD_BYTES ? undefined : enrollmentHead(received.subarray(0, end));
+        if (parsed === undefined) {
+          client.destroy();
+          return;
+        }
+        request = { bytes: received, total: end + 4 + parsed.length };
+      }
+      // Pipelined bytes past the one request are refused, never forwarded.
+      if (received.length > request.total) {
+        client.destroy();
         return;
       }
+      if (received.length < request.total) return;
       client.off("data", onData);
       client.pause();
-      const line = head.subarray(0, end).toString("latin1");
-      if (!(ENROLLMENT_REQUEST_LINES as readonly string[]).includes(line)) {
-        client.destroy();
-        return;
-      }
-      const upstream = createConnection(destination);
-      const close = () => {
-        client.destroy();
-        upstream.destroy();
-      };
-      client.once("close", () => upstream.destroy());
-      upstream.once("error", close);
-      upstream.once("close", () => {
-        if (!client.writableEnded) client.end();
-      });
-      upstream.setTimeout(CONNECT_MS, close);
-      upstream.once("connect", () => {
-        upstream.pause();
-        void Promise.resolve(authorize(upstream, stopped.signal)).then((permitted) => {
-          if (!permitted || stopped.signal.aborted || upstream.destroyed || client.destroyed) {
-            close();
-            return;
-          }
-          upstream.setTimeout(0);
-          client.setTimeout(0);
-          upstream.write(head);
-          upstream.pipe(client);
-          client.pipe(upstream);
-          client.resume();
-        }, close);
-      });
+      forward(client, received);
     };
     client.on("data", onData);
   });
+  function forward(client: Socket, bytes: Buffer): void {
+    // From here the upstream's own inactivity limit bounds the exchange.
+    client.setTimeout(0);
+    const upstream = createConnection(destination);
+    const close = () => {
+      client.destroy();
+      upstream.destroy();
+    };
+    client.once("close", () => upstream.destroy());
+    upstream.once("error", close);
+    upstream.once("close", () => {
+      if (!client.writableEnded) client.end();
+    });
+    upstream.setTimeout(CONNECT_MS, close);
+    upstream.once("connect", () => {
+      upstream.pause();
+      void Promise.resolve(authorize(upstream, stopped.signal)).then((permitted) => {
+        if (!permitted || stopped.signal.aborted || upstream.destroyed || client.destroyed) {
+          close();
+          return;
+        }
+        let answered = 0;
+        upstream.on("data", (chunk: Buffer) => {
+          answered += chunk.length;
+          if (answered > ENROLLMENT_ANSWER_BYTES) close();
+          else client.write(chunk);
+        });
+        upstream.write(bytes);
+        upstream.resume();
+      }, close);
+    });
+  }
   server.on("error", () => stop());
   function stop(): void {
     stopped.abort();

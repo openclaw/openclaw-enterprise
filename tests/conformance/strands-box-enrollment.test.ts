@@ -10,6 +10,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { createConnection, createServer } from "node:net";
@@ -401,6 +402,44 @@ test(
       );
     }
     assert.equal(canaryHits, 0);
+    // Exactly one bounded request per connection: no upgrade, no chunked or oversized body, no
+    // keep-alive, and nothing pipelined after it.
+    const get = `GET ${ENROLLMENT_PATH} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}`;
+    const post = (length: number, extra = "") =>
+      `POST ${ENROLLMENT_PATH} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}` +
+      `\r\nContent-Type: application/json${extra}\r\nContent-Length: ${length}\r\n\r\n` +
+      "{".repeat(Math.min(length, 5_000));
+    for (const [name, bytes] of [
+      ["upgrade", `${get}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`],
+      ["keep-alive", `${get}\r\nConnection: keep-alive\r\n\r\n`],
+      ["chunked", `${get}\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n`],
+      ["GET body", `${get}\r\nContent-Length: 2\r\n\r\n{}`],
+      ["oversized body", post(4_097)],
+      ["expect", post(2, "\r\nExpect: 100-continue")],
+      ["pipelined", `${get}\r\n\r\n${get}\r\n\r\n`],
+      ["oversized head", `${get}\r\nX-Fill: ${"a".repeat(5_000)}\r\n\r\n`],
+    ] as const) {
+      assert.equal(await raw(held.enrollSocket, bytes), "", name);
+    }
+    assert.match(await raw(held.enrollSocket, `${get}\r\n\r\n`), /^HTTP\/1\.1 200 /);
+    // The host dials only the inode it pinned before the gate: a socket put at the visible path
+    // (as a workload could) gets neither the bearer nor a release, and the program still answers.
+    const visible = held.enrollSocket;
+    const moved = `${visible}.moved`;
+    renameSync(visible, moved);
+    let impostorBytes = "";
+    const impostor = createServer((socket) => {
+      socket.on("data", (chunk: Buffer) => (impostorBytes += chunk.toString("latin1")));
+      socket.end();
+    });
+    impostor.listen(visible);
+    await once(impostor, "listening");
+    t.after(() => impostor.close());
+    assert.deepEqual(await held.execution.enrollment({ method: "GET", bearer: token }), {
+      status: 200,
+      document: first,
+    });
+    assert.equal(impostorBytes, "");
     // A wrong transport bearer stops at the host: nothing relayed, nothing signed.
     await assert.rejects(
       f.sandbox.enrollHarness!({ ...f.harness, transportToken: "wrong-token" }, committed, () => {
@@ -453,16 +492,26 @@ test(
       );
     }
 
-    // Ready: the Driver does nothing more, and the pre-ready path is gone on both sides.
+    // Ready: the Driver does nothing more, and the pre-ready path is gone on both sides. The
+    // host neither dials the visible path (still the impostor) nor relays for a ready run.
     assert.equal(await pass(), true);
     assert.equal(signed.length, 3);
     assert.equal(await held.execution.enrollment({ method: "GET", bearer: token }), undefined);
     assert.equal(readdirSync(held.runtimeDir).includes("enroll-pinned.sock"), false);
     await until(
-      () => (existsSync(held.enrollSocket) ? undefined : true),
+      () => (/source=inner stage=enrollment reason=closed/.test(held.log()) ? true : undefined),
       "box-agent closing the bridge",
     );
-    assert.match(held.log(), /source=inner stage=enrollment reason=closed/);
+    const before = f.host.enrollments.length;
+    f.host.state = "starting";
+    await assert.doesNotReject(
+      f.sandbox.enrollHarness!(f.harness, committed, () => {
+        throw new Error("release must not be requested");
+      }),
+    );
+    f.host.state = "running";
+    assert.equal(f.host.enrollments.length, before + 1);
+    assert.equal(impostorBytes, "");
   },
 );
 
