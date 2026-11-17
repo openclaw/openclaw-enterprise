@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import type { SandboxHarnessContext } from "../../packages/contracts/src/index.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
-import { admitRevisionHarness } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { admitRevisionHarness, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   validateWorkspaceNodeSetupSecret,
   WorkspaceNodeSetupValidationError,
@@ -182,6 +182,115 @@ test("a selected external provider explicitly opts in to the native transport ve
       );
     }
   }
+});
+
+test("an external verifier opt-in decides Codex plugin preparation for both workloads", async () => {
+  for (const optedIn of [false, true]) {
+    const fixture = providerEndpointFixture({
+      revisionOverrides: {
+        plugins: {
+          driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+          plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+        },
+      },
+    });
+    Object.assign(fixture.sandbox, {
+      implementation: "external",
+      ...(optedIn && { harnessTransportCredential: "verifier" }),
+    });
+    admitRevisionHarness(fixture.driver, fixture.revision);
+    await fixture.prepare();
+    const gatewayPrepared = fixture
+      .gateway()
+      .spec.template.spec.containers[0].env.some(
+        ({ name, value }: { name: string; value?: string }) =>
+          name === "OPENCLAW_CODEX_PLUGINS_PREPARED" && value === "true",
+      );
+    fixture.setGatewayServing();
+    fixture.setSetupAvailable(true);
+    await fixture.prepare();
+    const names = (fixture.provisions[0] as SandboxHarnessContext).requirements.environment.map(
+      ({ name }) => name,
+    );
+    // A verifier Harness installs its plugins before serving and publishes no plugin
+    // status, so the Gateway must not wait for one; a bearer Harness publishes it.
+    assert.equal(names.includes("APP_TOKEN_SHA"), optedIn);
+    assert.equal(names.includes("OPENCLAW_PLUGIN_STATUS_PORT"), !optedIn);
+    assert.equal(gatewayPrepared, optedIn);
+  }
+});
+
+test("a protected plan on a non-OpenShell Sandbox tells its Gateway the Harness prepares Codex plugins", () => {
+  // Protected plans receive the verifier from every Sandbox, so their Harness prepares its
+  // own plugins and publishes no plugin status. The Gateway must read the same decision
+  // rather than the OpenShell name, or it waits for that status forever.
+  const fixture = providerEndpointFixture({
+    revisionOverrides: {
+      executionAdmission: { version: 3, mode: "protected" },
+      egressPlan: {
+        id: "protected-plan",
+        generation: 1,
+        execution: {
+          installationId: "installation-routed",
+          namespaceId: tenant.id,
+          agentId: "agent-routed",
+          servicePrincipalId: "service-principal-routed",
+          revisionId: "revision-routed-1",
+          executionId: "revision-routed-1",
+        },
+        sandboxDriverId: "sandbox-provider",
+        egressDriverId: "sandbox-provider",
+        driver: { id: "sandbox-provider", implementation: "external", configurationId: "a".repeat(64) },
+        policyReductionVersion: 1,
+        routes: [],
+      },
+      plugins: {
+        driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+        plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+      },
+    },
+  });
+  Object.assign(fixture.sandbox, { implementation: "external" });
+  // Protected preparation needs the paired protected-execution release, so render the
+  // Gateway Deployment directly from the revision's real configuration snapshot.
+  const compute = fixture.driver as unknown as {
+    gatewayConfiguration(revision: unknown, nodeId: undefined, namespace: unknown): unknown;
+    pluginRuntimeSnapshot(revision: unknown): unknown;
+    deployment(...args: unknown[]): {
+      spec: { template: { spec: { containers: { env: { name: string; value?: string }[] }[] } } };
+    };
+  };
+  const gateway = compute.deployment(
+    "gateway-protected",
+    { namespaceId: fixture.revision.namespaceId, agentId: fixture.revision.agentId },
+    { name: fixture.gatewayNamespace, plane: "control" },
+    { runtime: "gateway:local", workspaceSetup: "gateway:local" },
+    "gateway-protected",
+    "gateway",
+    {},
+    "info",
+    compute.gatewayConfiguration(fixture.revision, undefined, {
+      name: fixture.namespace,
+      plane: "execution",
+    }),
+    false,
+    undefined,
+    undefined,
+    [],
+    [],
+    compute.pluginRuntimeSnapshot(fixture.revision),
+  );
+  const [container] = gateway.spec.template.spec.containers;
+  assert.ok(container);
+  const environment = container.env;
+  assert.equal(
+    environment.find(({ name }) => name === "OPENCLAW_CODEX_PLUGINS_PREPARED")?.value,
+    "true",
+  );
+  assert.equal(
+    environment.some(({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT"),
+    false,
+  );
 });
 
 test("Compute refuses a verifier declaration it cannot honour instead of sending the bearer", async () => {

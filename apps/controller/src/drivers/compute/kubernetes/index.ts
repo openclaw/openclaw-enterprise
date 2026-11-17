@@ -668,6 +668,8 @@ interface GatewayConfigurationSnapshot {
   readonly workspace: unknown;
   readonly nativeWorkerProfile?: string;
   readonly nativeWorkerNodeId?: string;
+  /** The dedicated Harness receives the transport verifier and prepares its own Codex plugins. */
+  readonly harnessTransportVerifier?: true;
 }
 
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
@@ -13529,6 +13531,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       workspaceNodeId !== undefined
         ? { nativeWorkerNodeId: workspaceNodeId }
         : {}),
+      ...(revision.harness.mode === "dedicated" &&
+      this.options.runtime !== undefined &&
+      this.deliversHarnessTransportVerifier(revision, this.sandboxDriverForRevision(revision))
+        ? { harnessTransportVerifier: true as const }
+        : {}),
       // Initial workspace setup's directory: the main entry in any letter case, as OpenClaw
       // and the setup rule read it (finding 1144).
       workspace:
@@ -16949,8 +16956,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       (role === "agent"
         ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
         : // The initial Gateway must issue node setup before the provider has an
-          // endpoint. OpenShell already selects verifier delivery in prepareRevision.
-          this.sandboxDriver?.implementation === "openshell");
+          // endpoint, so it reads the same verifier decision prepareRevision delivered.
+          configuration?.harnessTransportVerifier === true);
     if (providerPreparesCodexPlugins && role === "gateway") {
       variables.push({ name: "OPENCLAW_CODEX_PLUGINS_PREPARED", value: "true" });
     }
