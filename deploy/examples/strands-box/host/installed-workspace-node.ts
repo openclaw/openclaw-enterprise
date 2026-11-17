@@ -13,16 +13,9 @@ import {
 } from "node:fs";
 import { isIP } from "node:net";
 import { basename, dirname, join, sep } from "node:path";
-import {
-  AGENT_WITH_NODE_ENTRYPOINT,
-  CODEX_WORKSPACE_NODE_COMMANDS,
-  PROVIDER_CODEX_ONLY_PROGRAM,
-  RUNTIME_WRAPPER_COMMAND,
-} from "../../../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import {
-  nodeProgramArguments,
-  withoutLineComments,
-} from "../../../../apps/controller/src/drivers/compute/node-program.ts";
+// The host runs from the OCE checkout of the controller's release, so it reads the public
+// launch module by path; installed packages cannot import the controller at all.
+import { stockWorkspaceNodeLaunch } from "../../../../apps/controller/src/drivers/compute/workspace-node-launch.ts";
 import type { EgressRoute } from "./egress.ts";
 import { fields, object, privateDirectory, string } from "./launch.ts";
 import { bridge, listen } from "./transport.ts";
@@ -126,14 +119,14 @@ export function nodeInstallation(value: unknown): NodeInstallation {
 }
 
 export function assertStockCombinedCommand(program: Buffer): void {
-  if (!program.equals(Buffer.from(withoutLineComments(AGENT_WITH_NODE_ENTRYPOINT)))) {
+  if (!program.equals(Buffer.from(stockWorkspaceNodeLaunch().combinedProgram))) {
     throw new Error("unrecognized_combined_workspace_node_command");
   }
 }
 
 export function splitStockCommand(program: Buffer): readonly string[] {
   assertStockCombinedCommand(program);
-  return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM)];
+  return stockWorkspaceNodeLaunch().codexCommand;
 }
 
 function sha256(value: string | Buffer): string {
@@ -386,7 +379,7 @@ export async function startWorkspaceNode(
     child.stdin?.end(
       JSON.stringify({
         code,
-        commands: CODEX_WORKSPACE_NODE_COMMANDS,
+        commands: stockWorkspaceNodeLaunch().nodeCommands,
         displayName: input.displayName,
         port,
         hasCa: input.ca !== undefined,
