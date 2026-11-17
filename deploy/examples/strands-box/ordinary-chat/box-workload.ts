@@ -67,7 +67,7 @@ export function terminal(raw: unknown) {
     shellAlternateDenied: true,
   };
 }
-function reply(res: ServerResponse, content: string | Obj) {
+export function reply(res: ServerResponse, content: string | Obj) {
   const base = {
     id: `resp_${randomUUID()}`,
     object: "response",
