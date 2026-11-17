@@ -1,5 +1,5 @@
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, readlinkSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { WORKSPACE_MARKER } from "./workspace-verifier.ts";
 
 /**
@@ -43,33 +43,78 @@ export const AGENT_SEARCH_PATH = [
   "/bin",
 ] as const;
 const GIT_HELPERS = ["/usr/lib/git-core", "/usr/libexec/git-core"] as const;
+/**
+ * Box mounts these readable and executable in every boundary, with no grant (finding 3333): Box's
+ * Linux runtime minimum, `LOADER_DIRECTORIES` in `crates/box/src/run/contain/runtime_minimum.rs`.
+ * Debian and Ubuntu ship a complete git there, `/usr/lib/git-core/git`. It stays executable by its
+ * full path; it stays unused because nothing names it and no directory on the agent's search path
+ * may lead to it.
+ */
+export const LOADER_DIRECTORIES = ["/lib", "/lib64", "/usr/lib", "/usr/lib64"] as const;
 
+const within = (parent: string, child: string) =>
+  child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
+
+/** `..` and links resolved in every existing component; a dangling link resolves to its target. */
+function resolvedPath(path: string, depth = 0): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    // absent or dangling: resolve what exists
+  }
+  if (depth > 40) return absolute;
+  try {
+    if (lstatSync(absolute).isSymbolicLink())
+      return resolvedPath(resolve(dirname(absolute), readlinkSync(absolute)), depth + 1);
+  } catch {
+    // absent
+  }
+  const parent = dirname(absolute);
+  return parent === absolute ? absolute : join(resolvedPath(parent, depth + 1), basename(absolute));
+}
+
+/**
+ * True when the agent's boundary could run git or gh by name: an exec grant over one of them or
+ * over git's helper directory, or a search path entry that is relative or empty (the working
+ * directory, the workspace), lies in a loader directory or git's helper directory (each after
+ * resolving `..` and links), lies in a directory the agent's boundary may write (`writable`: a
+ * link put there could name the loader directory's git), or holds a `git` or `gh` whose real
+ * file lies in a loader directory.
+ */
 export function execCoversGit(
   grants: readonly string[],
   searchPath: readonly string[] = AGENT_SEARCH_PATH,
+  writable: readonly string[] = [],
 ): boolean {
-  const programs = [
-    ...[...AGENT_SEARCH_PATH, ...searchPath].flatMap((directory) => [
-      join(directory, "git"),
-      join(directory, "gh"),
-    ]),
-    ...GIT_HELPERS,
+  const both = (paths: readonly string[]) => [
+    ...new Set(paths.flatMap((path) => [resolve(path), resolvedPath(path)])),
   ];
-  // Also each one's real file, where it is a link to a file elsewhere.
-  for (const program of [...programs]) {
-    try {
-      programs.push(realpathSync(program));
-    } catch {
-      // absent here: its configured path is still refused
-    }
-  }
-  const within = (parent: string, child: string) =>
-    child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
-  // A grant over one of them, or inside git's helper directory (each helper is git).
-  return grants.some(
+  const loaders = both(LOADER_DIRECTORIES);
+  const helpers = both(GIT_HELPERS);
+  const unsafeEntry = (entry: string) =>
+    !isAbsolute(entry) ||
+    both([entry]).some(
+      (path) =>
+        [...loaders, ...helpers].some((directory) => within(directory, path)) ||
+        both(writable).some((directory) => within(directory, path)),
+    );
+  if (searchPath.some(unsafeEntry)) return true;
+  const named = [...AGENT_SEARCH_PATH, ...searchPath].flatMap((directory) => [
+    join(directory, "git"),
+    join(directory, "gh"),
+  ]);
+  // A link by one of those names whose real file is in a loader directory runs with no grant.
+  const reals = named.map((program) => resolvedPath(program));
+  if (reals.some((real) => loaders.some((directory) => within(directory, real)))) return true;
+  // Each one and its real file, where it is a link to a file elsewhere.
+  const programs = [...new Set([...named, ...reals, ...GIT_HELPERS])];
+  // A grant over one of them, or inside git's helper directory (each helper is git); a linked
+  // grant counts as its real file too.
+  return both(grants).some(
     (grant) =>
       programs.some((program) => within(grant, program)) ||
-      GIT_HELPERS.some((helpers) => within(helpers, grant)),
+      helpers.some((directory) => within(directory, grant)),
   );
 }
 

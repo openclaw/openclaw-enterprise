@@ -896,6 +896,9 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
       "/usr/bin/gh",
       "/usr/bin",
       "/usr/local/sbin",
+      // A parent of git's helper directories (finding 3334).
+      "/usr/lib",
+      "/usr/libexec",
       "/usr",
       "/",
     ]) {
@@ -924,6 +927,41 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
     symlinkSync(join(real, "git-build"), join(linked, "git"));
     assert.equal(execCoversGit([real], [linked]), true);
     assert.equal(execCoversGit([real], []), false);
+    // Finding 3333: Box's loader directories are executable in every boundary with no grant, and
+    // Debian ships a complete git at /usr/lib/git-core/git. No search path entry may lead there.
+    const fine = ["/usr/local/bin", "/usr/bin", "/bin"];
+    assert.equal(execCoversGit([node], fine), false);
+    const helpersLink = join(root, "helpers-link");
+    symlinkSync("/usr/lib/git-core", helpersLink);
+    for (const entry of [
+      "/usr/lib/git-core",
+      "/usr/lib/git-core/",
+      "/usr/bin/../lib/git-core",
+      helpersLink,
+      "/usr/libexec/git-core",
+      "/usr/lib",
+      "/lib64",
+      // The working directory: the workspace, where a link to that git can be checked out.
+      "",
+      "bin",
+    ]) {
+      assert.equal(execCoversGit([node], [...fine, entry]), true, entry);
+    }
+    // A git or gh on the search path that links into a loader directory needs no grant.
+    const loaderLink = join(root, "loader-link");
+    mkdirSync(loaderLink, { mode: 0o700 });
+    symlinkSync("/usr/lib/git-core/git", join(loaderLink, "gh"));
+    assert.equal(execCoversGit([node], [loaderLink]), true);
+    // Also while its target is absent: it can appear later.
+    const dangling = join(root, "dangling");
+    mkdirSync(dangling, { mode: 0o700 });
+    symlinkSync("/usr/lib/absent-git-core/git", join(dangling, "git"));
+    assert.equal(execCoversGit([node], [dangling]), true);
+    // A directory the agent's boundary may write could gain such a link at any time.
+    const writable = join(root, "writable");
+    mkdirSync(join(writable, "bin"), { recursive: true, mode: 0o700 });
+    assert.equal(execCoversGit([node], [join(writable, "bin")], [writable]), true);
+    assert.equal(execCoversGit([node], [join(writable, "bin")]), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1731,18 +1769,35 @@ test(
       }
       // Finding 3325: an exec grant over a directory on the agent's own search path is refused
       // before Box starts (git placed there would run as Codex's own git); the same grant off
-      // that path starts.
+      // that path starts. So are Codex or Node being git or gh there, or a link to one (3334),
+      // and a search path entry that leads into Box's loader directories or the workspace (3333).
       {
         const tools = join(directory, "tools");
         mkdirSync(tools, { mode: 0o700 });
-        for (const [path, expected] of [
-          [`${tools}:/usr/bin:/bin`, "startup_refused:stage-inputs"],
-          ["/usr/bin:/bin", "startup_refused:wait-release"],
-        ] as const) {
+        writeFileSync(join(tools, "git"), "", { mode: 0o700 });
+        writeFileSync(join(tools, "gh"), "", { mode: 0o700 });
+        symlinkSync(join(tools, "gh"), join(tools, "node"));
+        const helpersLink = join(directory, "helpers-link");
+        symlinkSync("/usr/lib/git-core", helpersLink);
+        const onPath = `${tools}:/usr/bin:/bin`;
+        const binaries = { codexBin: join(tools, "git"), nodeBin: join(tools, "node") };
+        for (const [changed, path, expected] of [
+          [{ exec: [tools] }, onPath, "startup_refused:stage-inputs"],
+          [{ exec: [tools] }, "/usr/bin:/bin", "startup_refused:wait-release"],
+          [{ codexBin: binaries.codexBin }, onPath, "startup_refused:stage-inputs"],
+          [{ nodeBin: binaries.nodeBin }, onPath, "startup_refused:stage-inputs"],
+          [binaries, "/usr/bin:/bin", "startup_refused:wait-release"],
+          [{}, "/usr/lib/git-core:/usr/bin:/bin", "startup_refused:stage-inputs"],
+          [{}, "/usr/bin:/usr/bin/../lib/git-core", "startup_refused:stage-inputs"],
+          [{}, `/usr/bin:${helpersLink}`, "startup_refused:stage-inputs"],
+          [{}, "/usr/libexec/git-core:/usr/bin", "startup_refused:stage-inputs"],
+          [{}, `/usr/bin:/bin:${workspace}`, "startup_refused:stage-inputs"],
+          [{}, "/usr/bin:/bin:", "startup_refused:stage-inputs"],
+        ] as [Partial<typeof config>, string, string][]) {
           const scratch = join(directory, `path-${randomBytes(4).toString("hex")}`);
           mkdirSync(scratch, { mode: 0o700 });
           const execution = start(
-            { ...config, exec: [tools], runtimeDir: scratch },
+            { ...config, ...changed, runtimeDir: scratch },
             {
               ...input,
               environment: { ...input.environment, PATH: path },
