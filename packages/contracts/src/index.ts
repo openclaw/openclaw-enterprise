@@ -1674,3 +1674,44 @@ export type {
   NamespaceLifecycleHooks,
   NamespaceLifecycleParticipant,
 } from "./drivers/namespace-lifecycle.ts";
+
+export type {
+  TokenServiceSourceRef,
+  InstallationClientSecretRef,
+  TokenServiceRegistration,
+  RegisteredTokenServiceSource,
+  SourceLifecycleConfig,
+  SourceRegistrationInput,
+  SourceUpdate,
+  UsableCredential,
+  VersionedCredential,
+  SourceRefreshOperation,
+  TokenServiceDriver,
+} from "./drivers/token-service/index.ts";
+
+export type {
+  CredentialProjection,
+  DeploymentWorkloadRequirement,
+  DeploymentRequestPolicy,
+  DeploymentRequestMatch,
+  NetworkAccessPolicy,
+  CredentialInjectionPolicy,
+  CredentialProxyRouting,
+  CredentialDeploymentRef,
+  CredentialDeploymentTarget,
+  CredentialDeploymentConfiguration,
+  CredentialDeploymentReadiness,
+  DeploymentCredentialBinding,
+} from "./credential-deployment.ts";
+
+export type {
+  PluginDeploymentTool,
+  PluginDeploymentNetworkRequirement,
+  PluginCredentialConnection,
+  PluginDeploymentDescription,
+  PluginDeploymentContract,
+} from "./drivers/plugin/deployment.ts";
+
+export type { SandboxDeploymentContract } from "./drivers/sandbox/deployment.ts";
+
+export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";
