@@ -105,7 +105,7 @@ export async function probePackagedCodex(
           "openclaw-control-ui-browser-reconnect.patch":
             "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
           "openclaw-terminated-gateway-namespace.patch":
-            "1715b52a9542eea0ebd82460e633117b7e17af94e38a4f3443a38685538e7f41",
+            "3e400cc9d0fc4a457ff58a4fa62f188c24fe63ecf5b0f7140f7a0cffa2c03889",
           "openclaw-planned-completion.patch":
             "c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4",
           "openclaw-native-turn-settlement.patch":
