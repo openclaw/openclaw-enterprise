@@ -70,7 +70,7 @@ function releaseExitedGatewayState(code, environment) {
   const released = require("node:child_process").spawnSync(process.execPath,
     ["/app/openclaw.mjs", "gateway", "recover-lock", "--terminated-namespace", JSON.stringify(namespace), "--json"],
     { env: environment, stdio: ["ignore", "inherit", "inherit"], timeout: 60000 });
-  if (released.status !== 0) console.error("The exited native Gateway's state lock was not released; a replacement Gateway checks its owner.");
+  if (released.status !== 0) console.error("OpenClaw kept the Gateway state locks; see the recover-lock output above.");
 }
 `;
 

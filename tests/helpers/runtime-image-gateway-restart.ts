@@ -103,16 +103,11 @@ async function firstTurnAfterReadiness({ budgetMs }: { budgetMs: number }): Prom
 
 async function sendFirstTurn(containerName: string): Promise<FirstTurnResult> {
   const budgetMs = 240_000 * imageSmokeTimeoutMultiplier;
-  const { stdout } = await runDocker(
-    [
-      "exec",
-      containerName,
-      "node",
-      "--input-type=module",
-      "-e",
-      `await (${firstTurnAfterReadiness.toString()})(${JSON.stringify({ budgetMs })});`,
-    ],
-    { timeout: budgetMs + 150_000 },
+  const { stdout } = await inGatewayContainer(
+    containerName,
+    firstTurnAfterReadiness,
+    { budgetMs },
+    budgetMs + 120_000,
   );
   const result: unknown = JSON.parse(stdout);
   assert.ok(isRecord(result), "the first-turn probe must return a JSON object");
@@ -357,8 +352,8 @@ const gatewayStateLock = "/home/node/.openclaw/tmp/openclaw-1000/gateway.state.l
 
 // Runs in the Gateway container: stops the native Gateway as soon as its state
 // lock names it (with the given role, if any), so the test, not CPU timing,
-// decides where startup ends, and reports whether OpenClaw already handled
-// SIGTERM (bit 14 of SigCgt) then.
+// decides where startup ends, and reports the lock role it stopped at and
+// whether OpenClaw already handled SIGTERM (bit 14 of SigCgt) then.
 async function freezeLockHolder({
   lockPath,
   role,
@@ -374,10 +369,12 @@ async function freezeLockHolder({
   const deadline = Date.now() + budgetMs;
   for (;;) {
     let pid: unknown;
+    let heldRole: unknown;
     try {
       const holder = JSON.parse(fs.readFileSync(lockPath, "utf8"));
       if (role === null || holder.role === role) {
         pid = holder.pid;
+        heldRole = holder.role;
       }
     } catch {
       // Not written yet.
@@ -393,7 +390,7 @@ async function freezeLockHolder({
       }
       const handlesStop =
         (mask(fs.readFileSync(`/proc/${pid}/status`, "utf8"), "SigCgt") & (1n << 14n)) !== 0n;
-      process.stdout.write(JSON.stringify({ pid, handlesStop }));
+      process.stdout.write(JSON.stringify({ pid, role: heldRole ?? null, handlesStop }));
       return;
     }
     if (Date.now() > deadline) {
@@ -466,6 +463,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
     const volume = await gatewayStateVolume(t, "/home/node");
     const budgetMs = 120_000 * imageSmokeTimeoutMultiplier;
     let holder: { pid: number; handlesStop: boolean } | undefined;
+    let frozenRole: unknown;
     const first = await runStartupProbeScenario(t, {
       terminatedGatewayNamespace: undefined,
       kind: "gateway",
@@ -497,6 +495,12 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
           isRecord(frozen) && typeof frozen.pid === "number",
           `the native Gateway must take its state lock: ${JSON.stringify(frozen)}`,
         );
+        // Role null must stop startup before the Gateway lock, or both cases
+        // would test the same window.
+        if (role === null) {
+          assert.notEqual(frozen.role, "gateway", "startup admission must lock before the Gateway");
+        }
+        frozenRole = frozen.role;
         holder = { pid: frozen.pid, handlesStop: frozen.handlesStop === true };
         // The kubelet's Pod stop: SIGTERM to the container's PID 1.
         await runDocker(["kill", "--signal", "TERM", containerName]);
@@ -518,7 +522,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       },
     });
     t.diagnostic(
-      `native Gateway ended ${holder?.handlesStop ? "by SIGKILL (it handled SIGTERM)" : "by SIGTERM before OpenClaw handled it"}`,
+      `native Gateway stopped at lock role ${JSON.stringify(frozenRole)}, ended ${holder?.handlesStop ? "by SIGKILL (it handled SIGTERM)" : "by SIGTERM before OpenClaw handled it"}`,
     );
     await withStartupProbeEvidence(first, async () => {
       assert.match(first.snapshot.output, /"recovered"\s*:\s*true/);
@@ -548,6 +552,12 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
 
 // Fails closed: a Gateway that exits while another container's live Gateway
 // holds the state never releases that holder's records, and the holder serves on.
+// The contender runs in another Pod (new hostname and PID namespace), so OpenClaw
+// refuses on the namespace match, as it did before this release: this pins that
+// cross-container refusal. The PID check for a holder in the caller's own
+// namespace is covered by the bridge unit tests in OpenClaw's
+// src/infra/gateway-lock-recovery.test.ts
+// (deploy/runtime/openclaw-terminated-gateway-namespace.patch).
 export function liveHolderKeepsStateTest(title: string): void {
   test(title, { ...imageTestOptions, timeout: 900_000 }, async (t) => {
     assert.ok(image !== undefined, "the runtime image must be selected");
