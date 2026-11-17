@@ -237,53 +237,26 @@ running.
 ### Harness enrollment
 
 The stock protected Harness program verifies its own startup release. Before
-Codex starts, it serves a challenge on its port at
-`/openclaw/runtime/egress-enrollment`, and the challenge carries a fresh
-startup ID. Only a Compute-signed release of that challenge starts the
-program. It waits at most 180 seconds. So the program can check the release
-itself, the host passes two public values into Box:
+Codex starts, it serves a challenge with a fresh startup ID on its port at
+`/openclaw/runtime/egress-enrollment`, and waits at most 180 seconds for
+Compute's signed release. The host passes it two public values in Box:
+`OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` and Compute's Ed25519 key
+`OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY`. The transport token never enters
+Box's environment or files.
 
-- `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID`, the admitted revision ID;
-- `OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY`, Compute's Ed25519 verification
-  key.
+`box-agent` opens `bridge/enroll.sock` before it waits at the gate, and the
+host pins it before opening the gate. The bridge forwards only `GET` or `POST`
+on that path, only to the program's own listener, never to Codex, and closes
+when Codex listens.
 
-Neither value authorizes anything. The transport token never enters Box's
-environment or files.
-
-Before Codex listens, Box has one route in, the enrollment bridge. Before it
-waits at the host gate, `box-agent` listens on `bridge/enroll.sock`. Nothing
-else runs in Box at that point. Before it opens the gate, the host links that
-socket to a path only the host can use. `box-agent` forwards a connection only
-when its first line is `GET` or `POST` on the enrollment path. It forwards only
-to the port listener held by the program's own process tree, not by Codex. It
-closes the bridge when Codex listens. Nothing on the host listens for Box on
-this path.
-
-The Driver calls `POST /v1/enrollment` with the execution key and the
-transport token. If the request also carries a release, the host delivers it.
-The host builds the two requests itself. It relays only after these checks
-pass:
-
-- The bearer's SHA-256 equals the admitted `APP_TOKEN_SHA`.
-- The execution is held, its gate is open, and it is still starting.
-- For a release: Compute signed it for this execution and recipient, it has
-  not expired, and its challenge is exactly the challenge the host relayed
-  last.
-
-The Driver treats the challenge as untrusted input. It requires the release
-profile, a UUIDv4 startup ID, and a binding equal to the admitted plan's
-projection, which Compute also renders. Only then does it ask Compute to sign.
-It then requires the program's `{enrolled: true, startupId}`.
-
-The Driver retries on the next pass in these cases:
-
-- the program is not listening yet;
-- the program answers the read with something other than a challenge;
-- the release gets `409` or `410`, which means a restarted or expired program.
-
-Once the host reports the execution running, the Driver does nothing more.
-Each gated run waits up to 180 seconds plus the usual bootstrap time for
-Codex's listener.
+The Driver sends `POST /v1/enrollment` with the execution key and transport
+token, and later the release. The host builds both requests. It relays only if
+the bearer's SHA-256 equals `APP_TOKEN_SHA`, the run's gate is open and the run
+is still starting. A release must verify for this execution, and its challenge must be
+the one the host relayed last. Like the OpenShell Driver, this Driver checks
+the challenge's profile, UUIDv4 startup ID and plan binding before Compute
+signs, then requires `{enrolled: true, startupId}`. If the program is not
+listening yet, or answers `409` or `410`, the next pass tries again.
 
 ### Protected model route
 
