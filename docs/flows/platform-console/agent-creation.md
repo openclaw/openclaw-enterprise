@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-13
-last_updated_session: authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4
+updated: 2026-11-18
+last_updated_session: authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f
 ---
 
 # Console Agent creation
@@ -18,7 +18,7 @@ user-visible behavior.
 
 - `apps/controller/src/console/agents/create.mts:renderCreateAgent` renders the
   form (`renderAgentForm`) and submits it.
-- `apps/controller/src/console/agents/plugin-fields.mjs:createPluginFields` and
+- `apps/controller/src/console/agents/plugin-fields.mts:createPluginFields` and
   `agents/repositories.mts:createRepositoryFields` supply the plugin and repository fields.
 - A signed-in caller with Namespace Agent `create`; each write is authorized again.
 
@@ -68,6 +68,17 @@ none before any answer.
 
 ### 2. Choose a model and starter Configuration
 
+`create.mts:updateModelConfiguration` preserves authored `plugins.allow` and
+`plugins.deny` while changing Codex runtime wiring. Missing and empty allowlists
+remain unrestricted. An explicit `plugins.entries.codex.enabled: false` survives
+a round trip. Dedicated Codex enables the plugin at startup if the draft passes
+admission. Returning to OpenClaw through the Harness selector or model JSON restores
+the original disabled entry when the projected entry is unchanged. Operator edits
+and deletions to the Dedicated projection of an originally disabled native Codex
+entry survive the switch. The form uses the existing server preflight and
+provisioning admission. A refusal leaves the editable
+Configuration unchanged. See [runtime admission](../../reference/harness-execution.md#native-runtime-selection).
+
 `create.mts:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
 `renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
 `updateControls`. Manual mode preserves `model.value` and clears the dropdown.
@@ -78,7 +89,7 @@ sets the button label, visibility, and required input; the toggle moves focus.
 Returning preserves credentials and unrelated Configuration. Saved Configuration
 and pending requests lock the toggle.
 
-If a change needs to update `plugins.allow` for Codex and the field is malformed,
+If Codex model, provider or Harness controls encounter malformed `plugins.allow`,
 the form keeps the JSON as typed and focuses **Configuration JSON**. Use an
 array of strings or remove the field. A refused model selection, provider change,
 or Harness change keeps the last applied model, provider, Harness, and execution
@@ -123,6 +134,8 @@ source without protected sources or repository bindings needs no Proxy admission
 Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 4. Submit provisioning or an ordinary draft
+
+`apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
@@ -225,6 +238,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 10:15: Preserve authored `plugins.allow`, `plugins.deny` and an explicitly disabled native Codex entry across Harness switches, including unfinished JSON recovery. (authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f - 27aa612d2bafd819c734942d59125084a6c658eb)
 
 - 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 

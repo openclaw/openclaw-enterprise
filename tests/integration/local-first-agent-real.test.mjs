@@ -23,7 +23,7 @@ import {
   assertNativeWorkerProofInController,
   nativeFirstAgentProofTimeout,
 } from "../helpers/local-first-agent-native.mjs";
-import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
+import { localOpenShellGatewayIdentity } from "../helpers/local-openshell-gateway.mjs";
 import {
   localFirstAgentStack,
   ownFirstAgentWork,
@@ -34,8 +34,7 @@ import {
   sampleFirstAgentCapacity,
 } from "../helpers/local-first-agent-profile.mjs";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { availablePort } from "../helpers/available-port.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { verifyFirstAgentSandboxPolicy } from "../helpers/first-agent-sandbox-policy.ts";
 import { registerNativeTerminalFailureCases } from "./local-first-agent-native-failure-cases.ts";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -761,8 +760,16 @@ test(
     let nativeNamespace;
     let nativeWork;
     if (selectedSandboxDriver === "openshell") {
+      assert.ok(
+        typeof recorded.installationId === "string" && recorded.installationId.length > 0,
+        "Local Setup must record the authenticated Installation ID",
+      );
       const installation = await requestLocalApi(env.OCC_URL, serviceKey, "GET", "/installation");
-      assert.equal(installation.id, administratorKey.meta.installationId);
+      assert.equal(
+        installation.id,
+        recorded.installationId,
+        "The administrator key must authenticate the recorded Installation",
+      );
       const namespaces = await requestLocalApi(env.OCC_URL, serviceKey, "GET", "/namespaces");
       const defaults = namespaces.filter(({ name }) => name === "default");
       assert.equal(defaults.length, 1, "Local Setup must own exactly one default Namespace");
@@ -1269,73 +1276,61 @@ test(
       if (recorded.sandboxNetworkPolicies?.some(({ name: rule }) => rule === "python-web")) {
         // Read the actual provider-created Sandbox after normal Agent deployment:
         // a rendered Installation alone would not prove delivery to OpenShell.
-        const port = await availablePort();
         const safeEnvironment = { ...env };
         delete safeEnvironment.OPENAI_API_KEY;
         delete safeEnvironment.OPENAI_API_KEY_FILE;
-        const forward = spawn(
-          "kubectl",
-          [
-            "--kubeconfig",
-            join(stateDirectory, "kubeconfig"),
-            "--context",
-            `k3d-${recorded.cluster}`,
-            "port-forward",
-            "--namespace",
-            openShellNamespace,
-            "service/openshell-gateway",
-            `${port}:8080`,
-          ],
-          { env: safeEnvironment, stdio: "ignore" },
-        );
-        context.after(() => stopProcess(forward));
-        const options =
-          recorded.deploymentMode === "k3d"
-            ? await localOpenShellGatewayOptions(
-                context,
-                [
-                  "--kubeconfig",
-                  join(stateDirectory, "kubeconfig"),
-                  "--context",
-                  `k3d-${recorded.cluster}`,
-                ],
-                safeEnvironment,
+        const sandboxName = new URL(appServerUrl).hostname.split("--")[1].split(".")[0];
+        const kubectl = [
+          "--kubeconfig",
+          join(stateDirectory, "kubeconfig"),
+          "--context",
+          `k3d-${recorded.cluster}`,
+        ];
+        await verifyFirstAgentSandboxPolicy({
+          startForward: () =>
+            spawn(
+              "kubectl",
+              [
+                ...kubectl,
+                "port-forward",
+                "--namespace",
                 openShellNamespace,
-                port,
-              )
-            : { endpoint: `http://127.0.0.1:${port}`, auth: { mode: "unauthenticated" } };
-        const client = new GrpcOpenShellGatewayClient(options);
-        try {
-          const sandboxName = new URL(appServerUrl).hostname.split("--")[1].split(".")[0];
-          const deadline = Date.now() + 30_000;
-          let sandbox;
-          while (Date.now() < deadline && sandbox === undefined) {
-            try {
-              sandbox = await client.getSandbox(
-                { name: sandboxName, workspace: namespaces.items[0].metadata.name },
-                AbortSignal.timeout(2_000),
-              );
-            } catch {
-              // The owned port-forward may still be opening its listener.
-              await new Promise((resolve) => setTimeout(resolve, 100));
-            }
-          }
-          const rule = sandbox?.spec?.policy?.network_policies?.["python-web"];
-          assert.ok(rule, "the startup rule must reach the deployed Agent's actual Sandbox");
-          assert.deepEqual(
-            rule.binaries.map(({ path }) => path),
-            ["/usr/bin/python3.11"],
-          );
-          assert.deepEqual(
-            rule.endpoints.map(({ host, ports }) => ({ host, ports })),
-            [{ host: "example.com", ports: [443] }],
-          );
-          assert.ok(sandbox.spec.policy.network_policies["source-control"]);
-          assert.ok(sandbox.spec.policy.network_policies["workspace-node-enrollment"]);
-        } finally {
-          client.close();
-          await stopProcess(forward);
-        }
+                "--address",
+                "127.0.0.1",
+                "service/openshell-gateway",
+                "0:8080",
+              ],
+              { env: safeEnvironment, stdio: ["ignore", "pipe", "ignore"] },
+            ),
+          parentSignal: context.signal,
+          sandbox: { name: sandboxName, workspace: namespaces.items[0].metadata.name },
+          readTlsIdentity:
+            recorded.deploymentMode === "k3d"
+              ? (signal) =>
+                  localOpenShellGatewayIdentity(
+                    context,
+                    kubectl,
+                    safeEnvironment,
+                    openShellNamespace,
+                    signal,
+                  )
+              : undefined,
+          createClient: (options) => new GrpcOpenShellGatewayClient(options),
+          checkPolicy(sandbox) {
+            const rule = sandbox.spec?.policy?.network_policies?.["python-web"];
+            assert.ok(rule, "the startup rule must reach the deployed Agent's actual Sandbox");
+            assert.deepEqual(
+              rule.binaries.map(({ path }) => path),
+              ["/usr/bin/python3.11"],
+            );
+            assert.deepEqual(
+              rule.endpoints.map(({ host, ports }) => ({ host, ports })),
+              [{ host: "example.com", ports: [443] }],
+            );
+            assert.ok(sandbox.spec.policy.network_policies["source-control"]);
+            assert.ok(sandbox.spec.policy.network_policies["workspace-node-enrollment"]);
+          },
+        });
       } else {
         context.diagnostic(
           "Existing stack has no python-web startup rule; override delivery was not exercised.",

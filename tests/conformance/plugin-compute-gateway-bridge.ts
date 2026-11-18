@@ -5,6 +5,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/co
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   codexNoPluginState,
+  createGatewayVmFileSystem,
   gatewayRuntimeProvenance,
   nodeRequire,
   parseJson,
@@ -109,27 +110,7 @@ export function registerGatewayBridge(): void {
             };
           }
           if (specifier === "node:fs") {
-            return {
-              existsSync(path: string) {
-                return files.has(path);
-              },
-              lstatSync(path: string) {
-                if (!files.has(path)) {
-                  throw Object.assign(new Error("File not found"), { code: "ENOENT" });
-                }
-                return { isFile: () => true, mode: 0o600 };
-              },
-              mkdirSync() {},
-              readFileSync(path: string) {
-                if (!files.has(path)) {
-                  throw new Error(`Missing mocked file: ${path}`);
-                }
-                return files.get(path);
-              },
-              writeFileSync(path: string, data: unknown) {
-                files.set(path, String(data));
-              },
-            };
+            return createGatewayVmFileSystem(files);
           }
           if (specifier === "node:child_process") {
             return {

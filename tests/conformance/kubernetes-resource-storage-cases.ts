@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import {
   createKubernetesComputeDriver,
+  harnessWorkspacePreparationScript,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
+  type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
+  type SandboxWorkspaceMount,
   requireConfiguration,
   ConfigurationValidationError,
 } from "../../packages/contracts/src/index.ts";
+import {
+  podTemplate,
+  resourceRecord,
+  resourceRecords,
+} from "../helpers/kubernetes-rendered-resources.ts";
 import {
   options,
   preparedAuth,
@@ -43,7 +51,7 @@ export function checkRequiredResourceFields() {
       },
       "/resources/namespace/containerDefaults/requests/memory",
     ],
-  ]) {
+  ] satisfies [KubernetesComputeDriverOptions["resources"], string][]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ resources })),
       (error) => {
@@ -315,11 +323,14 @@ export function checkResourceRequestLimits() {
   }
 }
 
-function optionsWithRuntime(overrides: {
-  transportSecretPrefix?: string;
-  gatewayStorageClassName?: string | undefined;
-  gatewayStorageSizeGiB?: number | string | null;
-}) {
+function optionsWithRuntime(
+  overrides: Partial<
+    Pick<
+      NonNullable<KubernetesComputeDriverOptions["runtime"]>,
+      "transportSecretPrefix" | "gatewayStorageClassName" | "gatewayStorageSizeGiB"
+    >
+  >,
+) {
   return options({
     runtime: {
       transportSecretPrefix: "transport",
@@ -348,10 +359,16 @@ export function checkTransportSecretPrefix() {
 
 export function checkRequiredGatewayStorageClass() {
   for (const gatewayStorageClassName of [undefined, "", " "]) {
-    assert.throws(
-      () => createKubernetesComputeDriver(optionsWithRuntime({ gatewayStorageClassName })),
-      ConfigurationValidationError,
-    );
+    const configured =
+      gatewayStorageClassName === undefined
+        ? optionsWithRuntime({})
+        : optionsWithRuntime({ gatewayStorageClassName });
+    if (gatewayStorageClassName === undefined) {
+      assert.ok(
+        Reflect.set(configured, "runtime", { ...configured.runtime, gatewayStorageClassName }),
+      );
+    }
+    assert.throws(() => createKubernetesComputeDriver(configured), ConfigurationValidationError);
   }
 }
 
@@ -386,7 +403,15 @@ export function checkGatewayStorageCapacity() {
     "100",
     null,
   ]) {
-    const configured = optionsWithRuntime({ gatewayStorageSizeGiB });
+    const configured =
+      typeof gatewayStorageSizeGiB === "number"
+        ? optionsWithRuntime({ gatewayStorageSizeGiB })
+        : optionsWithRuntime({});
+    if (typeof gatewayStorageSizeGiB !== "number") {
+      assert.ok(
+        Reflect.set(configured, "runtime", { ...configured.runtime, gatewayStorageSizeGiB }),
+      );
+    }
     assert.throws(
       () => requireConfiguration(KubernetesComputeDriver, configured),
       ConfigurationValidationError,
@@ -442,4 +467,258 @@ export function checkGatewayStoragePlacement() {
     "oce-role": "control-plane",
   });
   assert.equal(pod.initContainers[0].name, "prepare-private-state");
+}
+
+function storagePod(workload: Parameters<typeof podTemplate>[0]) {
+  const pod = resourceRecord(podTemplate(workload).spec, "pod spec");
+  const [container] = resourceRecords(pod.containers, "containers");
+  const [init] = resourceRecords(pod.initContainers, "initContainers");
+  assert.ok(container && init);
+  const args = init.args;
+  assert.ok(Array.isArray(args) && typeof args[0] === "string");
+  const initialization: string = args[0];
+  return {
+    pod,
+    init,
+    initialization,
+    security: resourceRecord(pod.securityContext, "securityContext"),
+    volumes: resourceRecords(pod.volumes, "volumes"),
+    mounts: resourceRecords(container.volumeMounts, "volumeMounts"),
+    cacheEnv: resourceRecords(container.env, "env").filter(
+      ({ name }) => name === "NODE_DISABLE_COMPILE_CACHE",
+    ),
+  };
+}
+
+function writableDirectories(name: string, paths: readonly (readonly [string, string])[]) {
+  return paths.map(([mountPath, subPath]) => ({ name, mountPath, subPath, readOnly: false }));
+}
+
+function checkPrivateStatePreparation(
+  { mounts, init, security, initialization }: ReturnType<typeof storagePod>,
+  privateMount: { name: string; mountPath: string },
+) {
+  assert.deepEqual(init.volumeMounts, [
+    { name: "runtime-state", mountPath: "/runtime-state" },
+    { name: "runtime-temporary", mountPath: "/runtime-temporary" },
+    privateMount,
+  ]);
+  for (const [name, mountPath, subPath] of [
+    ["runtime-state", "/home/node", "home"],
+    ["runtime-temporary", "/tmp", "tmp"],
+  ] as const) {
+    assert.deepEqual(
+      mounts.filter((mount) => mount.mountPath === mountPath),
+      [{ name, mountPath, subPath }],
+    );
+    assert.ok(initialization.includes(`/${name}/${subPath}`));
+  }
+  if (privateMount.mountPath === "/gateway-state") {
+    assert.ok(initialization.includes("/gateway-state/skill-library"));
+  }
+  // Avoid recursively changing ownership of retained data on every start.
+  assert.equal(security.fsGroup, 1000);
+  assert.equal(security.fsGroupChangePolicy, "OnRootMismatch");
+}
+
+export function checkGatewayAndHarnessStorage() {
+  const driver = createKubernetesComputeDriver(optionsWithRuntime({}));
+  const agentId = "agent-private-storage";
+  const ownership = { namespaceId: tenant.id, agentId };
+  const name = kubernetesNamespaceName(tenant.id);
+  const namespace = { name, plane: "execution" } as const;
+  const claim = driver["gatewayPrivateStateClaim"](agentId, ownership, namespace);
+  const workspaceClaim = driver["harnessWorkspaceClaim"](agentId, ownership, namespace).metadata
+    .name;
+  assert.deepEqual(claim.spec, {
+    accessModes: ["ReadWriteOnce"],
+    volumeMode: "Filesystem",
+    storageClassName: "local-path",
+    resources: { requests: { storage: "10Gi" } },
+  });
+  const { annotations } = claim.metadata;
+  assert.ok(annotations && claim.metadata.name && workspaceClaim);
+  assert.equal(annotations["openclaw.dev/agent-id"], agentId);
+  assert.equal(annotations["openclaw.dev/namespace-id"], tenant.id);
+  assert.equal(annotations["openclaw.dev/revision-id"], undefined);
+  assert.notEqual(claim.metadata.name, workspaceClaim);
+  assert.notEqual(
+    claim.metadata.name,
+    driver["gatewayPrivateStateClaim"](
+      "another-agent",
+      { ...ownership, agentId: "another-agent" },
+      namespace,
+    ).metadata.name,
+  );
+
+  const gatewayState = "openclaw-gateway-state";
+  const config = driver["gatewayConfiguration"](
+    routedRevision(driver, { agentId }),
+    undefined,
+    namespace,
+  );
+  const workspaceSetup = driver["options"].images.gateway;
+  const gatewayDeployment = (embedded: boolean, configuration = config) =>
+    driver["deployment"](
+      "gateway",
+      ownership,
+      namespace,
+      { runtime: "gateway:local", workspaceSetup },
+      "gateway",
+      "gateway",
+      {},
+      "info",
+      configuration,
+      embedded,
+      undefined,
+      preparedAuth(driver, name, embedded),
+    );
+  for (const embedded of [false, true]) {
+    const gateway = gatewayDeployment(embedded);
+    const rendered = storagePod(gateway);
+    const { pod, mounts, cacheEnv, volumes, security, init } = rendered;
+    assert.equal(pod.terminationGracePeriodSeconds, 330);
+    assert.deepEqual(
+      cacheEnv,
+      embedded ? [] : [{ name: "NODE_DISABLE_COMPILE_CACHE", value: "1" }],
+    );
+    assert.deepEqual(pod.nodeSelector, embedded ? undefined : { "oce-role": "control-plane" });
+    const privateVolumes = volumes.filter(({ name }) => name === gatewayState);
+    assert.equal(privateVolumes.length, 1);
+    assert.deepEqual(privateVolumes[0]?.persistentVolumeClaim, { claimName: claim.metadata.name });
+    assert.ok(!volumes.some(({ name }) => name === "openclaw-workspace"));
+
+    // Retain whole directories so SQLite WAL and SHM siblings survive replacement.
+    const home = "/home/node/.openclaw";
+    assert.deepEqual(
+      mounts.filter(({ name }) => name === gatewayState),
+      writableDirectories(gatewayState, [
+        [`${home}/state`, "state"],
+        [`${home}/client`, "client"],
+        [`${home}/agents/main/agent`, "agent"],
+        [`${home}/media`, "media"],
+        [`${home}/worktrees`, "worktrees"],
+        [`${home}/worktree-sources`, "worktree-sources"],
+        [`${home}/skill-library`, "skill-library"],
+        embedded
+          ? [`${home}/workspace`, "workspace"]
+          : [`${home}/agents/main/sessions`, "sessions"],
+      ]),
+    );
+    if (embedded) {
+      const replacement = storagePod(
+        gatewayDeployment(true, {
+          name: "configuration-2",
+          annotations: {},
+          loggingLevel: "info",
+          usesGatewayPasswordEnv: false,
+          usesWritableNativeAdminConfig: false,
+          workspace: undefined,
+          revision: 2,
+          revisionId: "revision-2",
+          gatewayManagedMode: false,
+        }),
+      );
+      assert.deepEqual(
+        replacement.volumes.filter(({ name }) => name === gatewayState),
+        privateVolumes,
+      );
+      assert.deepEqual(
+        replacement.mounts.filter(({ subPath }) => subPath === "workspace"),
+        mounts.filter(({ subPath }) => subPath === "workspace"),
+      );
+    }
+
+    // Codex home overlays the persistent Agent directory. Its backing store must die with the Pod.
+    const codexHome = `${home}/agents/main/agent/codex-home`;
+    assert.deepEqual(
+      mounts.filter(({ mountPath }) => mountPath === codexHome),
+      [{ name: "runtime-state", mountPath: codexHome, subPath: "home/gateway-codex-home" }],
+    );
+    assert.deepEqual(
+      volumes.filter(({ name }) => name === "runtime-state"),
+      [{ name: "runtime-state", emptyDir: { sizeLimit: "1Gi" } }],
+      "Gateway Codex home must be backed by a bounded emptyDir",
+    );
+    checkPrivateStatePreparation(rendered, { name: gatewayState, mountPath: "/gateway-state" });
+    assert.equal(init.env, undefined);
+    assert.equal(security.runAsUser, 1000);
+    assert.equal(resourceRecord(gateway.spec?.strategy, "strategy").type, "Recreate");
+  }
+
+  const harness = driver["deployment"](
+    "agent",
+    { ...ownership, revisionId: "revision-render" },
+    namespace,
+    { runtime: "agent:local", workspaceSetup },
+    "agent",
+    "agent",
+    {},
+    "info",
+    undefined,
+    undefined,
+    undefined,
+    preparedAuth(driver, name, false),
+  );
+  const rendered = storagePod(harness);
+  assert.deepEqual(rendered.cacheEnv, []);
+  assert.ok(!JSON.stringify(harness).includes(claim.metadata.name));
+  assert.ok(!JSON.stringify(harness).includes(gatewayState));
+  const workspace = "openclaw-workspace";
+  // The Harness keeps task files and Codex rollouts but never mounts Gateway transcripts.
+  assert.deepEqual(
+    rendered.mounts.filter(({ name }) => name === workspace),
+    writableDirectories(workspace, [
+      ["/home/node/workspace", "workspace"],
+      ["/home/node/.codex/generated_images", "generated-images"],
+      ["/home/node/.codex/sessions", "codex-sessions"],
+    ]),
+  );
+  checkPrivateStatePreparation(rendered, {
+    name: workspace,
+    mountPath: "/harness-workspace-state",
+  });
+  assert.ok(
+    rendered.initialization.includes(
+      harnessWorkspacePreparationScript(
+        ["workspace", "generated-images", "codex-sessions"].map(
+          (dir) => `/harness-workspace-state/${dir}`,
+        ),
+      ),
+    ),
+  );
+
+  // Node credentials survive Pod and revision changes, isolated by Harness on the same claim.
+  const revision = routedRevision(driver, {
+    agentId,
+    id: "revision-node-state",
+    configuration: {},
+    harness: { id: "openclaw", mode: "dedicated" },
+  });
+  const withNode = (candidate: typeof revision) => {
+    const workload = structuredClone(harness);
+    const nodeName = driver["workspaceNodeName"](candidate);
+    driver["addWorkspaceNode"](workload, nodeName, undefined, candidate, false);
+    const { security, initialization, volumes, mounts } = storagePod(workload);
+    assert.deepEqual(security, rendered.security);
+    assert.match(initialization, /chmodSync\(path, 0o700\)/);
+    assert.ok(initialization.includes(`/harness-workspace-state/${nodeName}`));
+    const sandboxMounts: readonly SandboxWorkspaceMount[] = driver["sandboxWorkspaceMounts"](
+      volumes,
+      mounts,
+      true,
+    );
+    assert.ok(sandboxMounts.every(({ claimName }) => claimName === workspaceClaim));
+    const node = sandboxMounts.at(-1);
+    assert.ok(node && node.mountPath === "/home/node/.openclaw-node");
+    assert.equal(node.readOnly, false);
+    assert.ok(node.subPath && !node.subPath.includes("/"));
+    return { mounts: sandboxMounts, node };
+  };
+  const original = withNode(revision);
+  assert.deepEqual(withNode(revision), original);
+  assert.deepEqual(withNode({ ...revision, id: "replacement-node-state" }), original);
+  const other = withNode({ ...revision, harness: { ...revision.harness, id: "codex" } });
+  assert.notEqual(other.node.subPath, original.node.subPath);
+  assert.deepEqual(other.mounts.slice(0, -1), original.mounts.slice(0, -1));
 }

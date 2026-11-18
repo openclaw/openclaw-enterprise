@@ -62,7 +62,7 @@ For a custom Helm installation, follow these pages in order:
    Generate configuration from an
    [installation profile](deploy/installation-profiles.md) (recommended) or copy
    the manual YAML examples, then create system Secrets, prepare the fresh
-   bootstrap PVC, and [install the chart once](deploy/production-installation.md#install-the-control-plane)
+   bootstrap credential Secret, and [install the chart once](deploy/production-installation.md#install-the-control-plane)
    with `occ installation install`. Keep the bootstrap key in the installation shell.
    Use it there to authenticate to the production API.
 2. [Prepare Namespaces and deploy Agents](deploy/production-agents.md).
@@ -105,7 +105,7 @@ helm uninstall oce --namespace openclaw-system \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT"
 ```
 
-Helm does not own external PostgreSQL, operator-created Secrets, bootstrap PVCs,
+Helm does not own external PostgreSQL, operator-created Secrets,
 or tenant workloads created by Compute. Retain database, bootstrap storage, and
 tenant resources until recovery and retention requirements are satisfied.
 

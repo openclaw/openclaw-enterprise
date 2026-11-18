@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
-import { createPostgresControllerAuth } from "./password-hasher.mjs";
+import { createPostgresControllerAuth } from "./password-hasher.ts";
 import { postgresAgentAuditState } from "../../apps/controller/src/composition/control-plane-audit.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";

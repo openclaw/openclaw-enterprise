@@ -82,9 +82,10 @@ Only the Gateway Pod mounts these writable directories:
 | `media`                     | `/home/node/.openclaw/media`                |
 | `worktrees`                 | `/home/node/.openclaw/worktrees`            |
 | `worktree-sources`          | `/home/node/.openclaw/worktree-sources`     |
+| `skill-library`             | `/home/node/.openclaw/skill-library`        |
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
-Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
+These directories persist across Gateway replacement.
 
 Back up `state/openclaw.sqlite` with its matching `client/credentials.sqlite`.
 Restore both at their original configured paths with private ownership and

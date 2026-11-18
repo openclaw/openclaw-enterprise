@@ -77,7 +77,11 @@ export async function checkOpenShellSupervisorGatewayIsolation() {
           "openshell.ai/boundary-role": "supervisor",
         }
       : undefined;
-  const installation = () => options(openShellPolicyOptions(options().network));
+  const installation = () => {
+    const configured = options();
+    const additions = openShellPolicyOptions();
+    return options({ ...additions, network: { ...configured.network, ...additions.network } });
+  };
   const driver = new KubernetesComputeDriver(installation(), {
     sandboxDriver: openShellNetworkSandbox({
       async workspaceNodePeerLabels(context) {

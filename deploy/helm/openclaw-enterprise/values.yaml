@@ -75,8 +75,8 @@ auth:
   # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0) for
   # existing password accounts (API Pod only). Requires HTTPS and a recovery account. Its
   # Secret must differ from auth.google's. Copy issuer and the three URLs
-  # from the IdP's discovery document: each must be https on port 443 on the issuer's
-  # host, with no query or fragment. The API never runs discovery.
+  # from the IdP's discovery document: each must use https on port 443 with a DNS host,
+  # no query or fragment. Hosts can differ. The API never runs discovery.
   oidc:
     enabled: false
     # The exact "iss" value, trailing slash included where the IdP uses one.
@@ -103,7 +103,7 @@ auth:
     # or false email_verified claim without marking the email as verified.
     # Admission group strings are one exact group; arrays contain exact strings.
     # API Pod HTTPS egress for the token and JWKS URLs. Empty allows TCP 443 to any
-    # address except link-local 169.254.0.0/16; list the IdP's IPv4 ranges to narrow it.
+    # address except link-local 169.254.0.0/16; list both endpoint hosts' IPv4 ranges to narrow it.
     egressCidrs: []
 
 agentNativeAdmin:
@@ -128,12 +128,10 @@ controlPlaneAudit:
 
 bootstrap:
   adminEmail: ""
-  password:
-    claimName: ""
-    mountPath: /var/lib/openclaw/bootstrap
-    fileName: initial-admin-password
-  serviceKey:
-    fileName: initial-admin-service-key.json
+  credentials:
+    secretName: ""
+    passwordKey: admin-password
+    serviceKeyKey: admin-service-key
 
 backend:
   openshell:

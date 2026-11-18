@@ -70,7 +70,9 @@ After the [configuration setup](production-installation-preparation.md#configure
 use [manual YAML examples](production-installation-preparation.md#advanced-copy-manual-yaml-examples)
 only when not using profiles. Continue through the shared checks and workspace access.
 
-### Shared bootstrap PVC and configuration checks
+<a id="shared-bootstrap-pvc-and-configuration-checks"></a>
+
+### Shared credential and configuration checks
 
 First complete the [configuration setup](production-installation-preparation.md#configure-the-installation)
 for the intended protected input directory and prepare or select the YAML as directed there.
@@ -93,8 +95,7 @@ after the block. Use the Bash shell where validation succeeded and the Secret
 inputs were prepared. In a new shell, restore the [input-directory setup](production-installation-preparation.md#configure-the-installation) and rerun
 [validation](production-installation-preparation.md#shared-bootstrap-pvc-and-configuration-checks), which also loads `DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the
 intended `values.yaml`. Recheck the prepared protected inputs,
-including the CA file when configured. Keep the existing auth secret. Both server
-dry runs must succeed before the block creates Secrets.
+including the CA file when configured. Keep the existing auth secret. The server dry run must succeed before the block creates Secrets.
 
 ```bash
 (
@@ -103,9 +104,7 @@ dry runs must succeed before the block creates Secrets.
     exit 1
   fi
   if ! kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-    apply --dry-run=server -f "$OCC_RENDERED_MANIFEST" ||
-    ! kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-      apply --dry-run=server -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
+    apply --dry-run=server -f "$OCC_RENDERED_MANIFEST"
   then
     printf 'Server dry run failed; correct the error before provisioning Secrets.\n' >&2
     exit 1
@@ -124,20 +123,20 @@ dry runs must succeed before the block creates Secrets.
 )
 ```
 
-If either dry run fails and you have never attempted these Secret creates,
+If the dry run fails and you have never attempted these Secret creates,
 correct the error and rerun the block. If a Secret create fails or its result is
 unknown, verify which Secrets exist in `openclaw-system` on the reviewed cluster.
 Resolve uncertain writes before resuming. Do not repeat confirmed successful
 creates.
 
-If you change any of the three prepared YAML files, rerun validation before
+If you change either prepared YAML file, rerun validation before
 continuing; it reloads the CA settings from the intended `values.yaml`. Do not
 reuse the previous CA selection. Recheck the protected inputs, including the CA file when
 its settings change. Keep the existing auth secret. Before repeating dry runs or
 any remaining creates, verify that previously created Secrets match the intended
 inputs and resolve any mismatch within the authorized change scope. When resuming
-after a create attempt, run both server dry runs separately from the create
-commands. Only after both dry runs succeed, run the create commands confirmed to
+after a create attempt, run the server dry run separately from the create
+commands. Only after it succeeds, run the create commands confirmed to
 be outstanding. Continue only after all required Secrets match the intended inputs.
 
 These operator-owned Secrets are not synchronized automatically. The optional CA
@@ -168,7 +167,8 @@ connecting process (migration, bootstrap, API, and worker) the identity
 environment variables and a renewed federation-token projection. Provision
 federation and database grants for separate application and migrator
 identities, confining migrator privileges to migration. Use
-`node scripts/migrate-production.mjs` for this authentication mode.
+the [selected-image migration command](separate-database-upgrade.md#run-a-selected-image-migration)
+for this authentication mode.
 
 The chart configures none of these inputs. Its migration and bootstrap
 containers share an initialization Pod and service account, so changing the
@@ -180,28 +180,26 @@ enables Azure mode.
 Prepare optional Collector Secrets, values, and verification through
 [Configure platform observability](../observability.md#kubernetes-and-helm).
 
-### Prepare the fresh bootstrap output PVC
+<a id="prepare-the-fresh-bootstrap-output-pvc"></a>
 
-Create the claim, then prepare its mounted root with the controller image:
+<a id="check-the-bootstrap-credential-secret"></a>
 
-```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n openclaw-system apply -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
+### Choose bootstrap credential preparation
 
-scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  --namespace openclaw-system --claim "$BOOTSTRAP_CLAIM" --image "$CONTROLLER_IMAGE" \
-  --node-selector oce-role=control
-```
+The install command generates protected local inputs and creates the configured
+bootstrap Secret before Helm. The operator needs permission to get and create
+Secrets in the release namespace, in addition to Helm's permissions. An existing
+Secret refuses automatic generation; it is never adopted or overwritten.
 
-Replace `--node-selector oce-role=control` with the `controlPlane.nodeSelector`
-labels, one option per label, so preparation and initialization share volume
-topology. Helm refuses keys and values that helper refuses; values may be
-empty, as in `--node-selector node-role.kubernetes.io/infra=`.
+For deliberately preprovisioned credentials, use
+`--bootstrap-credentials=existing` with the
+[prepared Secret](production-installation-preparation.md#optional-supply-bootstrap-credentials).
+This is not a recovery shortcut after an uncertain install.
 
-The helper refuses nonfresh roots except `lost+found`, schedules before storage
-binds, reports `Prepared bootstrap volume claim ... with UID/GID 1000 mode 0700.`,
-and retains failed Pods. If policy forbids the Pod, have the storage administrator
-prepare the same root state.
+The chart projects its two keys read-only into bootstrap on installation only.
+Migration, API, and worker containers receive neither credential. Upgrades do not
+require the Secret. Editing it does not rotate credentials. Protect the retained
+source files or Secret according to your credential-retention policy.
 
 ### Install the control plane
 
@@ -233,65 +231,19 @@ deployment, or a model turn.
 
 ## Authenticate to the production API
 
-Read the protected bootstrap files before you authenticate. The claim holds
-`initial-admin-service-key.json` and `initial-admin-password` as mode 0600 files
-in a root directory owned by UID 1000 with mode 0700. A one-use reader Pod must
-run as UID 1000 on the claim's control nodes and mount the claim read-only. If
-admission refuses UID 1000, have the cluster administrator allow it for this Pod.
-Permission to read this claim is privileged.
-
-```bash
-export READER_DIRECTORY="${READER_DIRECTORY:-/secure/occ}"
-(
-  set -euo pipefail
-  umask 077
-  jq -n --arg image "$CONTROLLER_IMAGE" --arg namespace openclaw-system \
-    --arg claim "$BOOTSTRAP_CLAIM" \
-    --argjson nodeSelector "$(yq e -o=json -I=0 '.controlPlane.nodeSelector' "$OCC_INPUT_DIRECTORY/values.yaml")" \
-    -f docs/snippets/openshell-quickstart/kubernetes/bootstrap-reader.jq |
-    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create -f -
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-    wait --for=condition=Ready pod/oce-owner-bootstrap-reader --timeout=3m
-  for file in initial-admin-password initial-admin-service-key.json; do
-    test ! -e "$READER_DIRECTORY/$file"
-    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-      exec oce-owner-bootstrap-reader -- \
-      node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' \
-      "/bootstrap/$file" > "$READER_DIRECTORY/$file.tmp"
-    test -s "$READER_DIRECTORY/$file.tmp"
-    mv "$READER_DIRECTORY/$file.tmp" "$READER_DIRECTORY/$file"
-  done
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-    delete pod oce-owner-bootstrap-reader
-)
-```
-
-The block preserves completed copies, but a failed read can leave an incomplete
-`.tmp` file. If either read fails, delete this attempt's reader Pod using the
-command above. Keep the retrieved files private and in place; do not use `.tmp`
-files as credentials. Select a fresh directory before repeating the block:
-
-```bash
-umask 077
-READER_DIRECTORY="$(mktemp -d /secure/occ/bootstrap-reader.XXXXXXXX)" && export READER_DIRECTORY
-```
-
-Stop if directory creation fails. The retry reads both files from the same PVC
-without overwriting the earlier copies or rerunning bootstrap. After it succeeds,
-select the newly retrieved key, replacing any earlier path in this shell:
-
-```bash
-export OCC_BOOTSTRAP_KEY_FILE="${READER_DIRECTORY:?}/initial-admin-service-key.json"
-```
-
-Use the new directory for the credentials below. The files use the default names;
-`bootstrap.password.fileName` and `bootstrap.serviceKey.fileName` override them. Sign in to the Console with
-`bootstrap.adminEmail` and `initial-admin-password`. The service key file
-authenticates the CLI and REST calls below. This example works on a session copy:
+For generated inputs, the install receipt identifies the private recovery
+directory. Sign in with `bootstrap.adminEmail` and its `initial-admin-password`.
+Its `bootstrap-client-key.json` contains only `data.key`, not issuance metadata
+or an Installation ID. For existing-Secret mode, set `OCC_BOOTSTRAP_KEY_FILE` to
+your [prepared CLI file](../../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key).
+This example authenticates a session copy:
 
 ```bash
 export OCC_URL="${OCC_URL:-https://<internal-occ-host>}"
-export OCC_BOOTSTRAP_KEY_FILE="${OCC_BOOTSTRAP_KEY_FILE:-${READER_DIRECTORY:-/secure/occ}/initial-admin-service-key.json}"
+if [ -z "${OCC_BOOTSTRAP_KEY_FILE:-}" ]; then
+  BOOTSTRAP_INPUT_DIRECTORY="$(jq -er .inputDirectory "$INSTALL_RECEIPT_DIRECTORY/bootstrap-secret.json")" || exit 1
+  export OCC_BOOTSTRAP_KEY_FILE="$BOOTSTRAP_INPUT_DIRECTORY/bootstrap-client-key.json"
+fi
 umask 077
 prepare_occ_service_key() {
   local working_directory
@@ -322,11 +274,11 @@ prepare_occ_service_key() {
 prepare_occ_service_key
 ```
 
-Expect the displayed `ID` to match the key file's
-`meta.installationId`. Before the first image update, use that ID to
+The authenticated response supplies the server-owned Installation `ID`.
+Before the first image update, use that ID to
 [bind upgrades to this Kubernetes Installation](production-upgrade.md#bind-the-installation-once).
-API and worker cannot read the bootstrap PVC. Keep the protected source because
-initialization does not reissue a lost key. The
+API and worker cannot read the bootstrap credentials. Keep the protected source
+because initialization does not reissue a lost key. The
 [operator cleanup](production-agents.md#end-the-operator-session) removes the
 session copy.
 

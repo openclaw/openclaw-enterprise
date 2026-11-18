@@ -1,7 +1,8 @@
 # Upgrade production images
 
-Upgrade [Kubernetes Compute releases](production-installation.md) using
-`scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
+Upgrade [Kubernetes Compute releases](production-installation.md) with
+`scripts/upgrade-production-images` or [profile commands](production-upgrade-command.md)
+and the [OCC CLI](../cli.md#connect-to-your-installation).
 [Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
 lack the required chart-owned initializer.
 
@@ -186,16 +187,16 @@ recommended resource values, separately with
 
 ## Bind the Installation once
 
-After bootstrap, bind the Installation Secret using the retained key. Skip an
-already-correct `openclaw.dev/installation-id` annotation:
+Set `OCC_URL` and `OCC_SERVICE_KEY_FILE`. Use the API ID, not bootstrap JSON;
+skip correct annotations:
 
 ```bash
 (
   set -o pipefail
-  OCC_INSTALLATION_ID=$(jq -ser '
-    select(length == 1) | .[0].meta.installationId | select(type == "string") |
+  OCC_INSTALLATION_ID=$(occ installation get --output json | jq -ser '
+    select(length == 1) | .[0].id | select(type == "string") |
     select(test("\\Ains_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"))
-  ' "$OCC_BOOTSTRAP_KEY_FILE") &&
+  ') &&
   OCC_INSTALLATION_SECRET=$(yq -o=json '.' /secure/occ/values.yaml | jq -ser '
     select(length == 1) | .[0] | objects | .installation.secretName |
     if . == null then "occ-installation-startup" else . end |
@@ -217,7 +218,8 @@ Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
 upgrade command. With writers active, it checks inputs, repository image pairs,
 Helm's server dry run, rendered Certificate admission, then startup and migration
 compatibility in temporary Jobs.
-The migration Job uses the candidate controller, initializer's migrator credential/CA, and `scripts/migrate-production.mjs --check`. Recognized pending history
+The migration Job runs the candidate image's migration entry with `--check` and
+the initializer's migrator credential and CA. Recognized pending history
 is allowed; migrations are not applied. The Helm hook rechecks history; separate
 migrations require completion with `--require-current`.
 
@@ -246,21 +248,15 @@ acknowledged candidate write.
 
 ## Upgrade the control plane
 
-Before maintenance, check for [split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
-Shared-namespace releases refuse this single-cluster layout.
+Before maintenance, [check for split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations); shared-namespace releases refuse them.
 
 Add `--controller-compatibility-results /secure/occ/controller-results.json` with
 `--controller-image` to require the native PostgreSQL `run` result from
-[released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before shutdown, both the database-write and configured IAM activation cases must
-pass, including cleanup, for the exact image digests. Index, manifest and config
-digests are distinct.
-
-[Recovery retains the receipt](production-upgrade-recovery.md). Verify its provenance:
-`sourceSha` identifies the test checkout, not image revisions or worktree cleanliness.
-These checks do not qualify online migration or rollback; writers still stop.
-
-Omit `--runtime-image`:
+[controller qualification](../../testing/postgresql.md#released-controller-compatibility).
+Before shutdown, database-write, configured IAM activation and cleanup must pass for the
+exact image digests; index, manifest and config digests differ. [Recovery retains the receipt](production-upgrade-recovery.md).
+`sourceSha` identifies the test checkout, not image revisions or cleanliness.
+Writers stop; online migration and rollback remain unqualified.
 
 ```bash
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
@@ -270,35 +266,40 @@ scripts/upgrade-production-images "${target[@]}" \
   --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
-For repository-enabled releases, add `--broker-image "$BROKER_IMAGE"` with the
-selected immutable broker reference. Keep protected values equal to live values;
-the helper preserves the broker hostname, qualifies the pair before mutation,
-and verifies the deployed pair and broker capability.
+Output:
 
-Check one running Agent with `--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID`.
-This requires [runtime inspection](../../reference/cli.md#runtime-status-and-logs),
-exact Agent `read`/`operate` and active AgentRevision `read`, verified before shutdown.
-Freeze that Agent's deployment, stop and deletion through verification.
-This option cannot accompany `--runtime-image`, which changes revisions.
+```text
+Upgrade: Preparing the upgrade.
+...
+Upgrade: Verifying upgrade completion.
+Upgraded controller image; no Agent deployments were requested.
+```
+
+Phases use stderr; completion uses stdout. Use `--verbose` for native output.
+Otherwise, private evidence retains scale/rollout logs. Reconcile uncertain writes;
+progress does not prove completion.
+
+Repository-enabled releases also require immutable `--broker-image "$BROKER_IMAGE"`.
+Keep protected values equal to live values. The helper preserves the broker hostname,
+qualifies the pair before mutation, and verifies deployment and capability.
+
+To check one running Agent, add `--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID`.
+Before shutdown, verify [runtime inspection](../../reference/cli.md#runtime-status-and-logs),
+exact Agent `read`/`operate` and active AgentRevision `read`. Freeze its deployment,
+stop and deletion through verification. This option cannot accompany `--runtime-image`.
 
 Completion requires the original active revision, Ready workload roles and any
-observed provider Harness still running. Replacement Pod UIDs are allowed.
-This samples readiness, not routing, model or channel availability. A final-check failure leaves
-the upgraded control plane without `completed`; follow
-[recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
+observed provider Harness still running; replacement Pod UIDs are allowed. Readiness
+does not prove routing, model or channel availability. A final-check failure leaves no
+`completed` marker; follow [recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
 Initial preflight failure leaves writers serving; inspect `preflight-<api|worker|migration>.log`.
-[Application identity checks](../../flows/coordinated-production-upgrade.md) reject a missing, different or unreadable Installation before further writer shutdown.
-Failed resume prevents further shutdown; writers may already be stopped. Inspect
-current `upgrade-preflight-resume.*` evidence. Preserve evidence and lock;
-follow [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
+[Identity checks](../../flows/coordinated-production-upgrade.md) reject missing, different or unreadable Installations before further shutdown.
+Failed resume stops further shutdown; writers may already be stopped. Preserve the lock and
+current `upgrade-preflight-resume.*` evidence; follow [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
 Helm migrates or [verifies a separate database deployment](separate-database-upgrade.md), bootstraps, and restores Deployments.
-
-```text
-Upgraded controller image; no Agent deployments were requested.
-```
 
 ## Upgrade Agent runtimes
 

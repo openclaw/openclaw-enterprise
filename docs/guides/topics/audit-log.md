@@ -146,8 +146,9 @@ message ID because restart recovery can supply its own input.
 
 #### OpenShell network denials
 
-Use the OpenShell Gateway's typed OCSF export for eligible Sandboxes. In the
-OpenShell Helm values, set the following parameters under
+Use the OpenShell Gateway's typed OCSF export for eligible Sandboxes. Use a
+private HTTPS origin for the regular OCC API that the exporter can reach. In
+the OpenShell Helm values, set the following parameters under
 `gatewayConfig."openshell.gateway.otlp.ocsf"`.
 
 | Parameter      | Value                                                                          |

@@ -56,10 +56,10 @@ index 6381821..1b08ac8 100644
        // Timeout observers may consume this while the call is still pending.
        clearTrackedToolExecution(params.toolCallId, inputContext?.runId);
 diff --git a/src/agents/agent-tools.read.ts b/src/agents/agent-tools.read.ts
-index ec585da..97b5a1e 100644
+index 0fbbe49..5f85484 100644
 --- a/src/agents/agent-tools.read.ts
 +++ b/src/agents/agent-tools.read.ts
-@@ -7,6 +7,12 @@ import { Value } from "typebox/value";
+@@ -6,6 +6,12 @@
  import { resolveRootPath } from "../infra/boundary-path.js";
  import { toErrorObject } from "../infra/errors.js";
  import { findExistingAncestor, root as fsRoot, FsSafeError } from "../infra/fs-safe.js";
@@ -69,10 +69,10 @@ index ec585da..97b5a1e 100644
 +  recordObservedOpenClawRuntimeAudit,
 +  recordOpenClawRuntimeAudit,
 +} from "../infra/openclaw-runtime-audit.js";
- import { decodeWindowsTextFileBuffer } from "../infra/windows-encoding.js";
+ import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
+ import { clampNumber } from "../utils.js";
  import {
-   classifyMediaReferenceSource,
-@@ -477,6 +483,17 @@ async function assertSandboxPathWithinAnyRoot(params: {
+@@ -474,6 +480,17 @@
    );
  }
  
@@ -90,7 +90,7 @@ index ec585da..97b5a1e 100644
  /** Wrap a file tool with workspace guards and optional container path mapping. */
  export function wrapToolWorkspaceRootGuardWithOptions<TDetails>(
    tool: AnyAgentTool<TDetails>,
-@@ -513,6 +530,10 @@ export function wrapToolWorkspaceRootGuardWithOptions<TDetails>(
+@@ -510,6 +527,10 @@
      ...tool,
      execute: async (toolCallId, args, signal, onUpdate) => {
        const record = getToolParamsRecord(args);
@@ -101,7 +101,7 @@ index ec585da..97b5a1e 100644
        let normalizedRecord: Record<string, unknown> | undefined;
        for (const key of pathParamKeys) {
          const rawFilePath = record?.[key];
-@@ -555,14 +576,39 @@ export function wrapToolWorkspaceRootGuardWithOptions<TDetails>(
+@@ -552,14 +573,39 @@
              );
            }
            if (!options?.bridge || legacyBridge || options.readPathValidation !== "bridge") {
@@ -345,10 +345,10 @@ index ba759ae..eb95c9b 100644
    );
  }
 diff --git a/src/gateway/server-methods/sessions-delete.ts b/src/gateway/server-methods/sessions-delete.ts
-index a407a5a..2ed8731 100644
+index 9a76826..71a3f78 100644
 --- a/src/gateway/server-methods/sessions-delete.ts
 +++ b/src/gateway/server-methods/sessions-delete.ts
-@@ -25,6 +25,10 @@ import { assertCapturedSessionEntryReadSource } from "../../config/sessions/sess
+@@ -25,6 +25,10 @@
  import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
  import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
  import { formatErrorMessage } from "../../infra/errors.js";
@@ -356,10 +356,10 @@ index a407a5a..2ed8731 100644
 +  hasOpenClawRuntimeAudit,
 +  recordObservedOpenClawRuntimeAudit,
 +} from "../../infra/openclaw-runtime-audit.js";
+ import { failChatDeliveries } from "../../infra/outbound/delivery-queue-storage.js";
  import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
  import {
-   isIncognitoSessionKey,
-@@ -578,6 +582,12 @@ async function deleteGatewaySessionInScope(
+@@ -580,6 +584,12 @@
        }
        return { ok: false, error: error.error };
      }
@@ -435,24 +435,22 @@ index 499c995..586b46e 100644
    installDatabaseProcessRole("gateway");
    const { installGatewayDatabaseEngine } = await import("./server-database-engine.js");
    await installGatewayDatabaseEngine(
-diff --git a/src/gateway/worker-environments/inference-runtime.test.ts b/src/gateway/worker-environments/inference-runtime.test.ts
-index 7d6b879..6aeee25 100644
---- a/src/gateway/worker-environments/inference-runtime.test.ts
-+++ b/src/gateway/worker-environments/inference-runtime.test.ts
-@@ -1,4 +1,5 @@
- import assert from "node:assert/strict";
+diff --git a/src/gateway/worker-environments/inference-runtime.model.test.ts b/src/gateway/worker-environments/inference-runtime.model.test.ts
+index f5557a9..3963782 100644
+--- a/src/gateway/worker-environments/inference-runtime.model.test.ts
++++ b/src/gateway/worker-environments/inference-runtime.model.test.ts
+@@ -1,4 +1,7 @@
++import assert from "node:assert/strict";
 +import { AsyncResource } from "node:async_hooks";
- import { Type } from "typebox";
- import { describe, expect, it, vi } from "vitest";
- import { WORKER_PROVIDER_REPLAY_MAX_DATA_BYTES } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
-@@ -6,9 +7,18 @@ import { validateWorkerInferenceTerminalOutcome } from "../../../packages/gatewa
- import { createDeferred } from "../../../test/helpers/promise.js";
- import { bindAgentToolExecutionLocation } from "../../agents/agent-tool-metadata.js";
- import * as extraParamsRuntime from "../../agents/embedded-agent-runner/extra-params.js";
+ import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 +import { wrapStreamFnWithDiagnosticModelCallEvents } from "../../agents/embedded-agent-runner/run/attempt.model-diagnostic-events.js";
- import { createToolSurfacePresentationForTest } from "../../agents/tool-surface-plan.test-support.js";
- import { makeZeroUsageSnapshot } from "../../agents/usage.js";
- import { onTrustedInternalDiagnosticEvent } from "../../infra/diagnostic-events.js";
+ import { onAgentEventForRun, type AgentEventPayload } from "../../infra/agent-events.js";
+ import {
+   clearAgentRunContext,
+@@ -8,6 +11,14 @@
+   resolveProjectedAgentRunModel,
+ } from "../../infra/agent-run-registry.js";
+ import type { AgentRunContext } from "../../infra/agent-run-registry.types.js";
 +import {
 +  admitOpenClawRuntimeAuditTurn,
 +  captureOpenClawRuntimeAuditTurnScope,
@@ -461,76 +459,76 @@ index 7d6b879..6aeee25 100644
 +  withOpenClawRuntimeAuditTurn,
 +  type OpenClawRuntimeAuditEvent,
 +} from "../../infra/openclaw-runtime-audit.js";
- import type { AssistantMessage, AssistantMessageEvent, StreamFn } from "../../llm/types.js";
  import { createAssistantMessageEventStream } from "../../llm/utils/event-stream.js";
- import type { ProviderWrapStreamFnContext } from "../../plugins/provider-transport.types.js";
-@@ -106,6 +116,66 @@ describe("worker inference provider runtime", () => {
-     expect(runtime.releaseRuntime).toHaveBeenCalledOnce();
-   });
- 
-+  it("audits actual provider dispatch across the admitted worker RPC context", async () => {
-+    const runtime = setup();
-+    vi.mocked(wrapStreamFnWithDiagnosticModelCallEvents).mockRestore();
-+    const input = request();
-+    const auditEvents: OpenClawRuntimeAuditEvent[] = [];
-+    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_URL", "http://127.0.0.1:1/audit");
-+    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN", "test-audit-token");
-+    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH", undefined);
-+    const originalFetch = globalThis.fetch;
-+    globalThis.fetch = async (_url, options) => {
-+      auditEvents.push(JSON.parse(String(options?.body)) as OpenClawRuntimeAuditEvent);
-+      return new Response(null, { status: 201 });
-+    };
-+    const rpcContext = new AsyncResource("test-dedicated-worker-rpc");
-+    try {
-+      try {
-+        initializeOpenClawRuntimeAudit();
-+      } finally {
-+        globalThis.fetch = originalFetch;
-+      }
-+      const turn = { runId: input.runId, sessionId: input.sessionId };
-+      await withOpenClawRuntimeAuditTurn(
-+        turn,
-+        async () => {
-+          await admitOpenClawRuntimeAuditTurn(turn);
-+          await startOpenClawRuntimeAuditTurn(turn.runId);
-+          const inAuditTurn = captureOpenClawRuntimeAuditTurnScope(turn);
-+          assert(inAuditTurn);
-+          await expect(
-+            rpcContext.runInAsyncScope(() => inAuditTurn(() => run(runtime))),
-+          ).resolves.toMatchObject({ type: "done" });
-+        },
-+        () => "succeeded",
-+      );
-+      expect(runtime.stream).toHaveBeenCalledOnce();
-+      expect(auditEvents.map(({ action }) => action)).toEqual([
-+        "openclaw.runtime.turn.admitted",
-+        "openclaw.runtime.turn.started",
-+        "openclaw.runtime.model_call.started",
-+        "openclaw.runtime.model_call.completed",
-+        "openclaw.runtime.turn.completed",
-+      ]);
-+      expect(auditEvents[2]).toMatchObject({
-+        provider: PROVIDER,
-+        model: MODEL,
-+        sessionId: SESSION_ID,
-+        turnId: auditEvents[0]?.turnId,
-+        modelCallId: expect.any(String),
-+      });
-+      expect(auditEvents[3]).toMatchObject({
-+        turnId: auditEvents[0]?.turnId,
-+        modelCallId: auditEvents[2]?.modelCallId,
-+        outcome: "succeeded",
-+      });
-+    } finally {
-+      rpcContext.emitDestroy();
-+      vi.unstubAllEnvs();
-+    }
-+  });
+ import {
+   MODEL,
+@@ -168,3 +179,66 @@
+     expect(inference.runtime.releaseRuntime).toHaveBeenCalledOnce();
+   },
+ );
 +
-   it.each([
-     {
-       name: "boundary rotation",
++it("audits actual provider dispatch across the admitted worker RPC context", async () => {
++  const runtime = setup();
++  vi.mocked(wrapStreamFnWithDiagnosticModelCallEvents).mockRestore();
++  const input = request();
++  const auditEvents: OpenClawRuntimeAuditEvent[] = [];
++  vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_URL", "http://127.0.0.1:1/audit");
++  vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN", "test-audit-token");
++  vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH", undefined);
++  vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_CA_PATH", undefined);
++  const originalFetch = globalThis.fetch;
++  globalThis.fetch = async (_url, options) => {
++    auditEvents.push(JSON.parse(String(options?.body)) as OpenClawRuntimeAuditEvent);
++    return new Response(null, { status: 201 });
++  };
++  const rpcContext = new AsyncResource("test-dedicated-worker-rpc");
++  try {
++    try {
++      initializeOpenClawRuntimeAudit();
++    } finally {
++      globalThis.fetch = originalFetch;
++    }
++    const turn = { runId: input.runId, sessionId: input.sessionId };
++    await withOpenClawRuntimeAuditTurn(
++      turn,
++      async () => {
++        await admitOpenClawRuntimeAuditTurn(turn);
++        await startOpenClawRuntimeAuditTurn(turn.runId);
++        const inAuditTurn = captureOpenClawRuntimeAuditTurnScope(turn);
++        assert(inAuditTurn);
++        await expect(
++          rpcContext.runInAsyncScope(() =>
++            inAuditTurn(() => runtime.executor(params(input, vi.fn()))),
++          ),
++        ).resolves.toMatchObject({ type: "done" });
++      },
++      () => "succeeded",
++    );
++    expect(runtime.stream).toHaveBeenCalledOnce();
++    expect(auditEvents.map(({ action }) => action)).toEqual([
++      "openclaw.runtime.turn.admitted",
++      "openclaw.runtime.turn.started",
++      "openclaw.runtime.model_call.started",
++      "openclaw.runtime.model_call.completed",
++      "openclaw.runtime.turn.completed",
++    ]);
++    expect(auditEvents[2]).toMatchObject({
++      provider: PROVIDER,
++      model: MODEL,
++      sessionId: SESSION_ID,
++      turnId: auditEvents[0]?.turnId,
++      modelCallId: expect.any(String),
++    });
++    expect(auditEvents[3]).toMatchObject({
++      turnId: auditEvents[0]?.turnId,
++      modelCallId: auditEvents[2]?.modelCallId,
++      outcome: "succeeded",
++    });
++  } finally {
++    rpcContext.emitDestroy();
++    vi.unstubAllEnvs();
++  }
++});
 diff --git a/src/gateway/worker-environments/worker-exec-approval.test.ts b/src/gateway/worker-environments/worker-exec-approval.test.ts
 index 242dbec..514d3b3 100644
 --- a/src/gateway/worker-environments/worker-exec-approval.test.ts

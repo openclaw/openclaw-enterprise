@@ -8,7 +8,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie } from "../../packages/utils/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
   injectLocalhost,

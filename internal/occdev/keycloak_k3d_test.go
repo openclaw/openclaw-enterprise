@@ -871,7 +871,7 @@ func TestKeycloakSecondPassRenderedPoliciesRestrictHTTPS(t *testing.T) {
 	}
 	// The local profile does not enable repository credentials by default.
 	delete(first, "repositoryCredentials")
-	first["bootstrap"] = map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}}
+	first["bootstrap"] = map[string]any{"adminEmail": developmentAdministratorEmail, "credentials": map[string]string{"secretName": "bootstrap-credentials"}}
 	first["api"] = map[string]any{"clients": []any{map[string]any{"namespace": "oce-system", "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}}
 	first["images"] = map[string]string{"controller": "controller@" + profileTestDigest}
 	first["database"] = map[string]any{"cidrs": []string{"10.42.0.20/32"}}

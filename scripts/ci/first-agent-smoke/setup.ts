@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { cookieHeaderFromSetCookie } from "../../../packages/utils/src/index.ts";
 import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.mjs";
 import {
   minute,
@@ -217,6 +219,7 @@ interface LocalSetupState {
   keyPath: string;
   cluster: string;
   apiPort: number;
+  browserOrigin?: string;
   platformNamespace: string;
 }
 
@@ -290,6 +293,78 @@ export function kubectl(
     timeout: 2 * minute,
     ...options,
   });
+}
+
+export async function signInLocalAdministrator(stack: LocalSetup): Promise<Api> {
+  assert.ok(stack.state.browserOrigin, "Local Setup did not record the Console origin");
+  const origin = new URL(stack.state.browserOrigin);
+  assert.equal(origin.protocol, "https:");
+  assert.equal(origin.hostname, `console.${stack.state.cluster}.oce.localhost`);
+  const ca = await readFile(join(stack.directory, "browser-ca.crt"));
+  const signIn = "/api/auth/sign-in/email";
+  let cookie = "";
+  const api: Api = (method, path, body) => {
+    const url = new URL(path, origin);
+    assert.equal(url.origin, origin.origin, "refusing to send credentials outside the Console");
+    const content = body === undefined ? undefined : JSON.stringify(body);
+    return new Promise((resolveResponse, reject) => {
+      // Use the real Console ingress and verify its hostname against the Local Setup CA.
+      const request = httpsRequest(
+        {
+          hostname: "127.0.0.1",
+          servername: origin.hostname,
+          port: origin.port || 443,
+          path: url.pathname + url.search,
+          ca,
+          rejectUnauthorized: true,
+          method,
+          headers: {
+            host: origin.host,
+            origin: origin.origin,
+            ...(cookie === "" ? {} : { cookie }),
+            ...(content === undefined
+              ? {}
+              : {
+                  "content-type": "application/json",
+                  "content-length": Buffer.byteLength(content),
+                }),
+          },
+          signal: AbortSignal.timeout(30_000),
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.once("error", reject);
+          response.once("end", () => {
+            const status = response.statusCode ?? 500;
+            if (status < 200 || status >= 300) {
+              reject(new Error(`${method} ${url.pathname}: HTTP ${status}`));
+              return;
+            }
+            if (path === signIn) {
+              cookie = cookieHeaderFromSetCookie(response.headers["set-cookie"]);
+              resolveResponse(undefined);
+              return;
+            }
+            try {
+              const envelope: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              resolveResponse(wireField(envelope, "data"));
+            } catch {
+              reject(new Error(`${method} ${url.pathname}: invalid JSON response`));
+            }
+          });
+        },
+      );
+      request.once("error", reject);
+      request.end(content);
+    });
+  };
+  await api("POST", signIn, {
+    email: "admin@development.openclaw.invalid",
+    password: await readFile(join(stack.directory, "initial-admin-password"), "utf8"),
+  });
+  assert.ok(cookie.length > 0, "Console sign-in returned no session cookie");
+  return api;
 }
 
 export async function apiProcess(stack: LocalSetup) {

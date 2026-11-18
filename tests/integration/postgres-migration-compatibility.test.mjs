@@ -460,7 +460,7 @@ async function runMigrationCheck(fixture, configPath) {
   try {
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
-      ["scripts/migrate-production.mjs", "--check"],
+      ["scripts/migrate-production.ts", "--check"],
       {
         cwd: repositoryRoot,
         env: {
@@ -752,8 +752,8 @@ async function installProviderCompletedHistory(db) {
 // The real migration command. pnpm's own startup costs about 1 s of CPU per call, so run each
 // package.json script's exact text through `sh` with this Node first on PATH, as pnpm does.
 // The "Drizzle second migration" case still runs both commands through `corepack pnpm`,
-// every prepared CI database is migrated that way, and the Helm migration Job runs the
-// script file directly. Each refusal code and both scripts keep a command case here.
+// every prepared CI database is migrated that way, and Helm runs the migration entry directly
+// in the selected controller image. Each refusal code and both tasks keep a command case here.
 const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").then(
   (text) => JSON.parse(text).scripts,
 );
@@ -833,7 +833,7 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
 }
 
 // The history cases migrate a few hundred databases. Run them in this process: the same
-// `migrateWithHistory` call on the same pool as `scripts/migrate-production.mjs`, with that
+// `migrateWithHistory` call on the same pool as `scripts/migrate-production.ts`, with that
 // command's outcome codes. The mode only selects the script (and its NODE_ENV logging),
 // never the migration; `runHistoryCommand` covers the process contract. flag and refusal
 // are as for runHistoryCommand: the command prints this same error.message on refusal.
@@ -1277,7 +1277,12 @@ function upgradedCanonicalData(data) {
   return {
     ...data,
     agents: data.agents.map(({ value }) => ({
-      value: { ...value, predecessor_replacement: value.predecessor_replacement ?? null },
+      value: {
+        ...value,
+        predecessor_replacement: value.predecessor_replacement ?? null,
+        restart_generation: null,
+        restart_domain: null,
+      },
     })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
@@ -1457,6 +1462,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "preRuntimeAudit"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1760,7 +1768,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preRuntimeAudit"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "preRuntimeAudit"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2062,6 +2072,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "preRuntimeAudit"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2261,7 +2274,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preRuntimeAudit"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "preRuntimeAudit"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2273,10 +2288,18 @@ test(
         ok: true,
         history,
       });
-      assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
-        ok: true,
-        history: "completed",
-      });
+      context.diagnostic(
+        `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+      );
+      await context.test(
+        `restored prefix ${prefix} passes the completed history check`,
+        async () => {
+          assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+            ok: true,
+            history: "completed",
+          });
+        },
+      );
     }
   },
 );
@@ -2337,6 +2360,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "preRuntimeAudit"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2360,7 +2386,9 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
+        // Runtime audit creates an append guard, index and grant table before its privilege grants.
         const rollbackTag = [
+          [81, "GRANT"],
           [79, "ALTER TABLE"],
           [78, "GRANT"],
           [77, "CREATE FUNCTION"],

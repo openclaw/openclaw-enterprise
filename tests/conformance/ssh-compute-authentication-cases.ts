@@ -13,7 +13,7 @@ import {
   sshGatewayPasswordRefusal,
   unreadableGatewayPasswordRefusal,
   unreadableSecretRefProblem,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-diagnostics.ts";
 import {
   bind,
   expectedRuntimeConfiguration,
@@ -26,10 +26,6 @@ import {
   stage,
   tenant,
 } from "./ssh-compute-fixture.ts";
-
-// The shared JavaScript formatter can return arbitrary data at the type boundary.
-const secretRefProblem: (kind: "defaultAlias", alias: string) => unknown =
-  unreadableSecretRefProblem;
 
 test("SSH trusted-proxy can opt into direct loopback password authentication", async (t) => {
   const f = await fixture(t);
@@ -95,8 +91,7 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
   await f.driver.ensureNamespace(tenant);
   bind(f.driver, unset);
   const before = f.calls.length;
-  const problem = secretRefProblem("defaultAlias", "custom");
-  assert.ok(typeof problem === "string");
+  const problem = unreadableSecretRefProblem("defaultAlias", "custom");
   await assert.rejects(f.driver.prepareRevision(unset), {
     message: sshGatewayPasswordRefusal.rendered("custom", problem),
   });

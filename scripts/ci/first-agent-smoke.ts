@@ -32,6 +32,7 @@ import {
   type SmokeStack,
 } from "./first-agent-smoke/setup.ts";
 import {
+  allowCodexAuditRead,
   assertCodexTurnAudit,
   chatTurn,
   createCodexAgent,
@@ -102,6 +103,7 @@ async function smoke() {
     OCC_DEVELOPMENT_KUBERNETES_CLUSTER: clusterName,
     OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "900",
   };
+  delete environment.OCC_DEVELOPMENT_SIGN_IN;
   delete environment.OPENAI_API_KEY;
   const modelCredentials = {
     embedded: `sk-oce-smoke-${randomUUID()}`,
@@ -156,9 +158,11 @@ async function smoke() {
       control: () =>
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
     });
-    await smokeStep("codex-chat", async () => {
+    const readCodexAudit = await smokeStep("codex-chat", async () => {
+      const readAudit = await allowCodexAuditRead(stack, codex.agent);
       await chatTurn(stack, codex.agent, codex.revisionId);
-      await assertCodexTurnAudit(stack, codex.agent, codex.revisionId);
+      await assertCodexTurnAudit(readAudit, codex.agent, codex.revisionId);
+      return readAudit;
     });
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
     const retiredRevision = await smokeStep("reader-retirement", () =>
@@ -182,7 +186,7 @@ async function smoke() {
         chatTurn(stack, embedded.agent, embeddedRevision),
         chatTurn(stack, codex.agent, codexRevision),
       ]);
-      await assertCodexTurnAudit(stack, codex.agent, codexRevision);
+      await assertCodexTurnAudit(readCodexAudit, codex.agent, codexRevision);
       assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");
     });
   } catch (error) {

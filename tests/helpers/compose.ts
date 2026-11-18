@@ -41,6 +41,8 @@ export function composeConfigurationProvider(): ComposeConfigurationProvider {
   const cleanEnvironment = {
     PATH: process.env.PATH,
     ...browserEnvironment,
+    OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/tmp/occ-packaging-admin-password",
+    OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/tmp/occ-packaging-admin-service-key",
   };
   const docker = commandPath("docker");
   if (docker) {
@@ -93,7 +95,13 @@ export function composeConfiguration(
   }
   const rendered = spawnSync(provider.command, args, {
     cwd: repository,
-    env: { PATH: process.env.PATH, ...browserEnvironment, ...environment },
+    env: {
+      PATH: process.env.PATH,
+      ...browserEnvironment,
+      OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/tmp/occ-packaging-admin-password",
+      OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/tmp/occ-packaging-admin-service-key",
+      ...environment,
+    },
     encoding: "utf8",
     maxBuffer: 2_000_000,
   });

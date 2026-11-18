@@ -22,6 +22,7 @@ import {
   kubectl,
   modelEvents,
   podList,
+  signInLocalAdministrator,
   wireField,
   type LocalSetup,
   type SmokeStack,
@@ -236,17 +237,43 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
 }
 
+export async function allowCodexAuditRead(stack: SmokeStack, agent: SmokeAgent) {
+  const api = await signInLocalAdministrator(stack);
+  const session = await api("GET", "/api/auth/session");
+  const userId = wireField(wireField(session, "user"), "id");
+  assert.ok(typeof userId === "string" && userId.length > 0, "missing signed-in account ID");
+  const account = await api("GET", `/api/auth/accounts/${encodeURIComponent(userId)}`);
+  const principalId = wireField(account, "principalId");
+  assert.ok(
+    typeof principalId === "string" && principalId.startsWith("prn_"),
+    "missing Principal ID",
+  );
+  const base = `/namespaces/${stack.namespaceId}`;
+  // The audit route requires a human session and a direct binding to this Agent.
+  const role = await api("POST", `${base}/iam/roles`, {
+    name: "Smoke Codex audit reader",
+    permissions: [{ action: "read_audit", resourceKind: "agent" }],
+  });
+  await api("POST", `${base}/iam/access-bindings`, {
+    subjectKind: "identity",
+    subjectId: principalId,
+    roleId: wireField(role, "id"),
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+  return async () =>
+    (await api("GET", `${base}/agents/${agent.id}/audit-events?limit=100`)) as AgentAuditPage;
+}
+
 export async function assertCodexTurnAudit(
-  stack: SmokeStack,
+  readAudit: () => Promise<AgentAuditPage>,
   agent: SmokeAgent,
   revisionId: string,
 ) {
-  const path = `/namespaces/${stack.namespaceId}/agents/${agent.id}/audit-events?limit=100`;
-  // The installed owner reads the persisted events through the same public API as the Console.
   await waitFor(
     `${agent.label} turn audit on ${revisionId}`,
     async () => {
-      const page = (await stack.api("GET", path)) as AgentAuditPage;
+      const page = await readAudit();
       const events = page.events
         .filter((event) => event.event === "runtime_activity")
         .filter(
