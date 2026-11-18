@@ -51,7 +51,7 @@ RUN --network=none \
 
 # Keep the stock CLI and its lockfile intact. Compile only the standalone App
 # Server for audited managed Codex runs, with upstream's paired bwrap digest.
-FROM docker.io/library/rust:1.99.1-slim-bookworm@sha256:b78cfbe4c0fd96b8a06b259092f1f412cb3ad3c5aed89d188bc40a1b8637f8f6 AS codex-audit-source
+FROM docker.io/library/rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS codex-audit-source
 ARG TARGETARCH
 RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends \
       binutils ca-certificates clang cmake curl g++ git libclang-dev libssl-dev make pkg-config protobuf-compiler python3 \
