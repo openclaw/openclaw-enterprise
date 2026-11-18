@@ -6365,6 +6365,14 @@ export class ControllerWorker {
         }
       }
     }
+    const candidateContinues =
+      (resolved.outcome === "success" && resolved.revision !== undefined) ||
+      (resolved.outcome === "pending" &&
+        resolved.code === "REVISION_INCOMPLETE" &&
+        resolved.refusedCandidate === undefined);
+    if (isCandidateDeployment(claim) && !candidateContinues) {
+      await this.queue.setCandidateAuthorization(claim, false);
+    }
     if (
       resolved.outcome === "retry" &&
       claim.attemptCount >= this.maxAttempts &&
