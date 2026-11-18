@@ -12,7 +12,7 @@ import {
   openShellProgressPrefix,
   upstreamOutageCase,
 } from "../../scripts/ci/openshell-progress.mjs";
-import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { readFileEvidence, type FileEvidence } from "../../scripts/ci/runner-reporter-output.ts";
 import {
