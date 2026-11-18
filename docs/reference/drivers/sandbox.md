@@ -116,13 +116,16 @@ The endpoint can select `codexPermissionProfile: ":danger-full-access"` when the
 provider supplies the sandbox boundary. Kubernetes Compute projects the selection
 to the Gateway. Without it, the Codex bridge keeps its configured sandbox behavior.
 
-The endpoint can supply `tls.caBundle` with public PEM CA certificates for a WSS
-origin. It accepts no private keys, client credentials, or source paths. Without a bundle, the Gateway uses system trust. Kubernetes Compute mounts one combined `NODE_EXTRA_CA_CERTS`
-bundle read-only into the dedicated Agent Gateway. Certificate and hostname
-verification remain enabled. Compute creates the revision's ConfigMap with
-`immutable: true` before Gateway rollout and removes it after the revision
-workloads terminate.
-Changing its certificates requires a new revision.
+For WSS, `tls.caBundle` accepts public PEM CA certificates only. Otherwise
+the Gateway uses system trust. Kubernetes Compute mounts the combined
+`NODE_EXTRA_CA_CERTS` bundle from the revision's immutable ConfigMap before
+Gateway rollout. TLS verification stays enabled. Compute removes the ConfigMap
+after workloads terminate. Certificate changes require a new revision.
+
+For ordinary dedicated Codex with WSS trust, `externalWorkspaceOwner.generationSha256`
+binds the endpoint's `workspaceRoot` to that provider generation. Compute mounts
+`binding.json` (`external-workspace-v1`) and `ca.pem` at `/etc/openclaw-external-workspace/`;
+the Gateway requires one matching `x-openclaw-workspace-generation` header on every native upgrade.
 
 `enrollHarness(context, installation, release)` receives a callback from Compute.
 Compute commits and rechecks the verified installation before it signs the startup

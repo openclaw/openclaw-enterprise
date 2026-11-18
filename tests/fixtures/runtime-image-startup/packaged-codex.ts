@@ -102,6 +102,8 @@ export async function probePackagedCodex(
             "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
         }
       : {
+          "openclaw-codex-external-workspace.patch":
+            "67ef8be714d636e494faf35e7b1c183245cd2edb26b83676ed92da3113cd05fe",
           "openclaw-control-ui-browser-reconnect.patch":
             "e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0",
           "openclaw-terminated-gateway-namespace.patch":

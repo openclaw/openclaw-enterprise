@@ -483,5 +483,35 @@ export function registerWorkspaceLaunchCases() {
         /requires the file-transfer plugin/,
       );
     }
+    // An external workspace binding narrows the node to its workspace and refuses other grants.
+    const binding: [string, string] = ["/etc/openclaw-external-workspace/binding.json", "{}"];
+    const external = await launchGateway(undefined, [], {
+      baseConfig,
+      files: [binding],
+      workspaceNodeId: "enrolled-node",
+    });
+    const externalTransfer = record(
+      field(readConfig(external.files), "plugins", "entries", "file-transfer", "config"),
+    );
+    assert.deepEqual(field(externalTransfer, "nodes", "enrolled-node", "allowReadPaths"), [
+      "/home/node/workspace",
+      "/home/node/workspace/**",
+    ]);
+    assert.deepEqual(
+      field(externalTransfer, "nodes", "enrolled-node", "allowWritePaths"),
+      field(transfer, "nodes", "enrolled-node", "allowWritePaths"),
+    );
+    await assert.rejects(
+      () =>
+        launchGateway(undefined, [], {
+          baseConfig: {
+            ...baseConfig,
+            plugins: { entries: { "file-transfer": { config: explicit } } },
+          },
+          files: [binding],
+          workspaceNodeId: "enrolled-node",
+        }),
+      /cannot use additional file node grants/,
+    );
   });
 }

@@ -98,6 +98,24 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "-e",
 ]);
 export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
+// An external Sandbox's ordinary workspace binding: Compute mounts `binding.json` and `ca.pem`
+// here, and the Gateway enforces it on every native connection and turn.
+export const EXTERNAL_WORKSPACE_OWNER_DIRECTORY = "/etc/openclaw-external-workspace";
+export const EXTERNAL_WORKSPACE_BINDING_FORMAT = "external-workspace-v1";
+
+/** The canonical binding document. The Gateway refuses any other key set or format. */
+export function externalWorkspaceBinding(binding: {
+  readonly url: string;
+  readonly workspaceRoot: string;
+  readonly generationSha256: string;
+}): string {
+  return JSON.stringify({
+    format: EXTERNAL_WORKSPACE_BINDING_FORMAT,
+    url: binding.url,
+    workspaceRoot: binding.workspaceRoot,
+    generationSha256: binding.generationSha256,
+  });
+}
 // Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
 export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
 
@@ -2898,18 +2916,24 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
     "/home/node/openclaw-runtime-assets/plugin-skills", "/app/extensions/*/skills",
   ];
   const nodes = fileConfig.nodes ??= {};
-  if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
+  const externalWorkspace = existsSync(${JSON.stringify(EXTERNAL_WORKSPACE_OWNER_DIRECTORY + "/binding.json")});
+  if (externalWorkspace && Object.keys(nodes).some((id) => id !== workspaceNodeId)) {
+    throw new Error("An external workspace cannot use additional file node grants.");
+  }
+  if (externalWorkspace || (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined)) {
     // Native workspace.skills checks the source root for discovery, the skill directory for
     // resources and the instruction file for reads. This release needs exactly those paths.
-    const managedSkillPaths = managedPluginInstallations().flatMap(({ skills, skill }) =>
-      skill ? [skills, skill.directory, skill.instructions] : []);
+    const managedSkillPaths = externalWorkspace ? [] : managedPluginInstallations().flatMap(
+      ({ skills, skill }) => skill ? [skills, skill.directory, skill.instructions] : []);
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
         remoteRoot,
         remoteRoot + "/**",
-        "/home/node/.openclaw",
-        ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ...(externalWorkspace ? [] : [
+          "/home/node/.openclaw",
+          ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ]),
         ...managedSkillPaths,
       ],
       allowWritePaths: [

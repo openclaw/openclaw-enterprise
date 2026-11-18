@@ -65,11 +65,15 @@ binds empty-history proof to the selected Agent.
 Provenance `patches` records each patch's SHA-256 in order; tests compare
 `scripts/build-runtime-assets.ts` with the Dockerfile.
 
-Dedicated Gateways require the supporting source recorded in this recipe and
-validate their effective native configuration before starting. The required
-Gateway tool policy covers core dispatch, automation authority and Codex
-dynamic tools. Older or unknown source images remain unready; source checks
-and configuration validation do not replace runtime qualification.
+### External workspace binding
+
+`openclaw-codex-external-workspace.patch` makes a dedicated Codex Gateway enforce the
+[external workspace binding](../../docs/reference/drivers/sandbox.md#harness-transport) that Compute mounts.
+
+Dedicated Gateways require this recipe's source and validate effective native
+configuration before startup. Required tool policy covers core dispatch,
+automation authority, and dynamic Codex tools. Older or unknown images stay
+unready; runtime qualification remains separate.
 
 The Codex adapter preserves namespaced IDs with an explicit native
 provider. For a custom endpoint, OCE compiles its private Gateway model references
