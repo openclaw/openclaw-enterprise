@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-18
-last_updated_session: authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99
+last_updated_session: authoring-run/8402abbe-3326-4701-82d2-ef491121ad47
 ---
 
 # Protected credential request flow
@@ -60,11 +60,12 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-Bundled OpenShell rejects new static OpenAI use via
+Bundled OpenShell rejects new strict static OpenAI use through
 `InstalledDriver.assertNewStaticProviderUse`: source refusal precedes material
-reads; deployment refusal precedes counterpart probes. Retained revisions keep
-their provider, authorization, withdrawal and cleanup under the
-[current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
+reads; deployment refusal precedes counterpart probes. Full request-time model
+configuration can separately admit an [online model source](credential-source-egress/model-requests.md).
+Retained revisions keep their original provider, authorization, withdrawal and
+cleanup under the [Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
 OCC checks source and Secret permissions; existing sources need opt-in. Version 3
 binds Sandbox and Proxy to one registered Driver.
@@ -343,6 +344,8 @@ Absent rules name no slot. Audit excludes values. Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-18 06:18: Distinguish retired strict admission from configured online model sources. (authoring-run/8402abbe-3326-4701-82d2-ef491121ad47 - a87a1af97472f3dcbb9c5a5d4cda835212446e00)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
 

@@ -1,8 +1,8 @@
 # Set up per-request model credential authorization
 
 Use this path to give a dedicated Codex Agent access to one admitted OpenAI
-Responses model while keeping the API key outside the guest. It requires an
-explicit `online-request` source and a qualified OpenShell installation.
+Responses model while keeping the API key outside the guest. It requires a source admitted with the
+`online-request` profile and a qualified OpenShell installation.
 The source implementation is available; it does not establish qualification of
 an installed OpenShell and Codex pair. Complete the checks below before rollout.
 Agent deployment rejects an online source paired with OpenClaw or a Harness that
@@ -155,17 +155,18 @@ controlled destination before deploying the acceptance Agent.
 ```bash
 MODEL_BASE_URL='https://<approved-model-host>/v1'
 jq -n --argjson ref "$SECRET_REF" --arg base "$MODEL_BASE_URL" \
-  '{name: "model-requests", type: "openai", authorization: "online-request",
+  '{name: "model-requests", type: "openai",
     config: {authorized_base_url: $base}, secrets: {api_key: $ref}}' > model-source.json
 SOURCE_ID="$(./bin/occ credential-source create --file model-source.json -o json | jq -r .id)"
-./bin/occ credential-source get "$SOURCE_ID" -o json
+./bin/occ credential-source get "$SOURCE_ID" -o json | jq -e '
+  .type == "openai" and .state == "ready" and
+  .ownerCapability == "credential_gateway" and
+  .egress.adoption == "live" and .egress.retention == "none" and
+  .egress.authorization == "online-request"'
 ```
 
-Require `type: openai`, `state: ready`, `egress.adoption: live`,
-`egress.retention: none` and `ownerCapability: credential_gateway`. The public
-response omits the provider ID and authorization profile; these fields alone
-do not distinguish online authorization from strict admission. Retain
-`model-source.json` with its explicit authorization selection, and complete the
+Stop if the profile is `exact-dispatch`, `unavailable`, or absent. The response
+records the admitted profile, not installed enforcement; complete the
 installed-path checks below. Gateway ownership does not mean it holds the key.
 A source update retains its selected provider and cannot change authorization
 profiles.

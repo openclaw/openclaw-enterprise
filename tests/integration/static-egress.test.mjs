@@ -349,7 +349,11 @@ test("protected inference uses real admission, fresh IAM, versioned Secret reads
   const f = await staticEgressFixture(t, { physicalPlacement: true });
   assert.notEqual(f.namespace.name, f.runtimeNamespace.name);
   assert.equal(f.namespace.id, f.runtimeNamespace.id);
-  assert.deepEqual(f.source.egress, { adoption: "live", retention: "none" });
+  assert.deepEqual(f.source.egress, {
+    adoption: "live",
+    retention: "none",
+    authorization: "exact-dispatch",
+  });
   assert.throws(
     () => pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(f.revision)),
     /explicit normalized model endpoint/,
@@ -755,7 +759,11 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   f.observed.available = true;
   const adopted = await f.request("PATCH", path, { body: consent });
   assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
-  assert.deepEqual(adopted.data.egress, { adoption: "live", retention: "none" });
+  assert.deepEqual(adopted.data.egress, {
+    adoption: "live",
+    retention: "none",
+    authorization: "exact-dispatch",
+  });
   assert.deepEqual(
     [...f.providers.values()],
     before,
