@@ -78,6 +78,7 @@
     "drizzle-kit": "0.31.11",
     "eslint": "10.14.0",
     "globals": "17.14.0",
+    "jiti": "2.6.1",
     "pg": "8.23.1",
     "playwright": "1.65.0",
     "prettier": "3.9.10",

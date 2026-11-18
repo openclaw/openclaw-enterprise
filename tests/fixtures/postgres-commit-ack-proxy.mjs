@@ -223,7 +223,12 @@ export async function commitAckProxy(databaseUrl, options = {}) {
         throw new Error("The single-use fault is already armed or consumed.");
       }
       if (egressDispatch) {
-        if (!/^[a-f0-9-]{36}$/.test(options.instanceId)) {
+        if (
+          typeof options.instanceId !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            options.instanceId,
+          )
+        ) {
           throw new Error("Expected supervisor instance UUID.");
         }
         expectedInstance = options.instanceId;

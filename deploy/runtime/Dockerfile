@@ -257,6 +257,13 @@ COPY deploy/runtime/openclaw-chat-absent-selected-agent.patch /tmp/openclaw-chat
 RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp/openclaw-chat-absent-selected-agent.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-chat-absent-selected-agent.patch
 
+# Remove when the pinned OpenClaw scopes restart resume (upstream change prepared for
+# finding 3347): a turn cut by stop, replacement or deletion must not resume under the
+# next revision. Kubernetes and Docker Compute set the scope to the revision ID.
+COPY deploy/runtime/openclaw-restart-resume-scope.patch /tmp/openclaw-restart-resume-scope.patch
+RUN echo 'da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f  /tmp/openclaw-restart-resume-scope.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-restart-resume-scope.patch
+
 # TODO: Remove when the pinned OpenClaw retries safe restart admission and passive Codex recovery.
 COPY deploy/runtime/openclaw-restart-harness-readiness.patch /tmp/openclaw-restart-harness-readiness.patch
 RUN echo '0ed9cabbd7dc813ab686cf7b2146ec76b48c5295231739c79dc5ad4019093bd8  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
@@ -327,6 +334,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
+    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.test.ts \
+    -t "interrupted under scope" \
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.

@@ -3971,16 +3971,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     "--wait=true",
     "--timeout=120s",
   );
-  topology.gatewayPod = await waitFor("a replacement gateway Pod with a new UID", async () =>
-    (await resources("pods", topology.gatewayPlacement)).find(
-      (pod) =>
-        pod.metadata.uid !== previousUid &&
-        !pod.metadata.deletionTimestamp &&
-        pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
-        pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
-        hasReadyCondition(pod),
-    ),
-  );
+  topology.gatewayPod = await waitForReadyGatewayPod(topology, topology.revision.id, previousUid);
   const retained = await assertGatewayPrivateResources(topology);
   assert.equal(retained.metadata.uid, privateClaim.metadata.uid);
   await assertConversation(topology, sessionKey, nonce);
@@ -4749,6 +4740,7 @@ async function waitForReadyGatewayPod(topology, revisionId, previousUid) {
     (await resources("pods", topology.gatewayPlacement)).find(
       (pod) =>
         (previousUid === undefined || pod.metadata.uid !== previousUid) &&
+        !pod.metadata.deletionTimestamp &&
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
         pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
         gatewayConsumesRevision(pod, topology.agent.id, revisionId) &&

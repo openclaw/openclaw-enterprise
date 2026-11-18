@@ -44,8 +44,7 @@ disconnect, and committed role, scope, and profile revocation.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
-after the Control UI's access is refused. Remove each once upstream does the
-same.
+after the Control UI's access is refused. Remove each once upstream matches.
 `openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
 private Linux PID namespace stopped recover its Gateway records, or, inside it,
 any record whose PID is dead. OC compares its lock fingerprint first.
@@ -58,10 +57,11 @@ final delivery retains its progress window after a long Codex turn.
 or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
-and pairing recovery. Remove this bridge when the selected source provides that contract.
+and pairing recovery. Remove this bridge once the source provides that contract.
 The pin includes OpenClaw #197151: chat-only members can start an unused main conversation.
-The #200358 follow-up is still required; `openclaw-chat-absent-selected-agent.patch`
+Until #200358 lands, `openclaw-chat-absent-selected-agent.patch`
 binds empty-history proof to the selected Agent.
+`openclaw-restart-resume-scope.patch` resumes turns only within one revision.
 Provenance `patches` records each patch's SHA-256 in order; tests compare
 `scripts/build-runtime-assets.ts` with the Dockerfile.
 
