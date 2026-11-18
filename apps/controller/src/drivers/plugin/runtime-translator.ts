@@ -1155,7 +1155,7 @@ export function openClawRuntimeArtifact(
 }
 
 export function describeNativeOpenClawDeployment({
-  pluginId,
+  plugin: { pluginId },
   selection,
   connections,
 }: Parameters<PluginDeploymentContract["describeDeployment"]>[0]): PluginDeploymentDescription {
@@ -1173,6 +1173,7 @@ export function describeNativeOpenClawDeployment({
     // The Gateway installs each selected package, including a disabled one.
     tools: [
       {
+        kind: "installation",
         id: toolId,
         role: "gateway",
         installation: {

@@ -9,7 +9,11 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import type { CredentialGatewayDriver, SandboxDriver } from "../../packages/contracts/src/index.ts";
+import type {
+  CredentialGatewayDriver,
+  CredentialRefreshDriver,
+  SandboxDriver,
+} from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -21,6 +25,7 @@ import {
   identifier,
   injectedRequest,
 } from "./occ-api-injected-fixture.ts";
+import { credentialGatewayOverProviders } from "./sandbox-driver-credential-fixture.ts";
 
 function record(value: unknown) {
   const result = asRecord(value);
@@ -123,13 +128,26 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       beforeTokenUse();
       return use(value);
     });
+  const googleGateway = credentialGatewayOverProviders({
+    refresh: true,
+    toolBinaries: ["/usr/local/lib/oce/plugins/google/bin/gog"],
+  }).driver;
   const gateway: CredentialGatewayDriver & { rotateSource: typeof unexpectedGatewayCall } = {
     id: "credential-gateway-slack-admission",
     capability: "credential_gateway",
     implementation: "openshell",
-    validateSourceConfig() {},
-    async listSourceTypes() {
+    validateSourceConfig(input) {
+      if (input.type === "oauth2-refresh-token") {
+        return googleGateway.validateSourceConfig(input);
+      }
+    },
+    async listSourceTypes(context) {
+      const googleType = (await googleGateway.listSourceTypes(context)).find(
+        ({ type }) => type === "oauth2-refresh-token",
+      );
+      assert.ok(googleType);
       return [
+        googleType,
         {
           type: "openai",
           config: [],
@@ -158,6 +176,21 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       return { state: "ready" };
     },
     withSourceToken: unexpectedGatewayCall,
+  };
+  // OCC registers the Google source normally. This fixture reports the first refresh as
+  // ready so the test can exercise deployment without contacting Google's token endpoint.
+  const refresh: CredentialRefreshDriver = {
+    id: "credential-refresh-openshell",
+    capability: "credential_refresh",
+    implementation: "openshell",
+    async configureRefresh() {
+      return { state: "pending" };
+    },
+    async rotate() {
+      return { state: "ready" };
+    },
+    refreshStatus: unexpectedGatewayCall,
+    removeRefresh: unexpectedGatewayCall,
   };
   const sandbox: SandboxDriver = {
     id: "sandbox-slack-admission",
@@ -223,7 +256,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const { controller, platformState } = fixture;
   assert(controller && platformState);
   const pluginDriver = new OCCPluginDriver();
-  for (const driver of [sandbox, gateway]) {
+  for (const driver of [sandbox, gateway, refresh]) {
     controller.registerDriver(driver);
     controller.selectDriver(driver.capability, driver.id);
   }
@@ -256,6 +289,29 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));
   const sourceId = string(record(source.data).id);
+  const googleSecret = await request("POST", `${base}/secrets`, {
+    body: { name: "Google refresh token", value: "fixture-google-refresh-token" },
+  });
+  assert.equal(googleSecret.status, 201, JSON.stringify(googleSecret.body));
+  const googleSource = await request("POST", `${base}/credential-sources`, {
+    body: {
+      name: "Google account",
+      type: "oauth2-refresh-token",
+      config: {
+        host: "gmail.googleapis.com",
+        path: "/gmail/**",
+        env_var: "GOG_ACCESS_TOKEN",
+        client_id: "google-admission-fixture",
+        scope: "https://www.googleapis.com/auth/gmail.readonly",
+        token_url: "https://oauth2.googleapis.com/token",
+      },
+      secrets: {
+        refresh_token: { kind: "secret", namespaceId, id: string(record(googleSecret.data).id) },
+      },
+    },
+  });
+  assert.equal(googleSource.status, 201, JSON.stringify(googleSource.body));
+  const googleSourceId = string(record(googleSource.data).id);
   tokenReads = 0;
   const model = await request("POST", `${base}/credential-sources`, {
     body: { name: "Model account", type: "openai" },
@@ -272,7 +328,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.match(configurationId, identifier("cfg"));
   assert.equal(configuration.namespaceId, namespaceId);
   assert.deepEqual(configuration.values, configurationValues);
-  const credentialSources = [{ sourceId: modelId }, { sourceId }];
+  const credentialSources = [{ sourceId: modelId }, { sourceId: googleSourceId }, { sourceId }];
   const created = await request("POST", `${base}/agents`, {
     body: {
       name: "Slack Agent",
@@ -461,9 +517,20 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   );
   assert.deepEqual(slot.sources, [{ id: sourceId, name: "Slack account" }]);
   assert.equal(slot.toolDiscovery, true);
-  const google = { "occ-plugin:google@1.0.0": { enabled: true } };
+  const googleId = "occ-plugin:google@1.0.0";
+  const google = { [googleId]: { enabled: true } };
+  const googleSlot = record(
+    credentialSlots.find((entry: unknown) => asRecord(entry)?.pluginId === googleId),
+  );
+  assert.deepEqual(googleSlot.sources, [{ id: googleSourceId, name: "Google account" }]);
   const pluginsFor = (toolNames: string[]) => ({
-    ...google,
+    [googleId]: {
+      enabled: true,
+      driverPolicy: {
+        releaseSha256: googleSlot.releaseSha256,
+        credentials: { account: googleSourceId },
+      },
+    },
     [pluginId]: {
       enabled: true,
       driverPolicy: {
@@ -498,8 +565,9 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.deepEqual(record(deployed.data).credentialSources, credentialSources);
 
   const descriptionFor = (id: string) => {
-    const call = describe.mock.calls.find(({ arguments: [input] }) => input.pluginId === id);
+    const call = describe.mock.calls.find(({ arguments: [input] }) => input.plugin.pluginId === id);
     assert.ok(call?.result, `deployment must describe ${id}`);
+    assert.deepEqual(call.arguments[0].plugin, { catalog: "driver", pluginId: id });
     return call.result;
   };
   const catalog = new URL("../../apps/controller/plugins/", import.meta.url);
@@ -511,6 +579,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.equal(slack.releaseSha256, slot.releaseSha256);
   const [server] = slack.tools;
   assert.ok(server);
+  assert.equal(server.kind, "installation");
   assert.equal(server.role, "harness");
   assert.deepEqual(server.installation, {
     kind: "hosted-mcp",
@@ -555,10 +624,60 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     ],
   );
 
-  // An installed Google plugin still supplies both image artifacts without a connected account.
-  const workspace = await descriptionFor("occ-plugin:google@1.0.0");
-  assert.deepEqual(workspace.credentials, { account: {} });
-  assert.deepEqual(workspace.networkRequirements, []);
+  const workspace = await descriptionFor(googleId);
+  const googleAccount = workspace.credentials.account?.default;
+  assert.ok(googleAccount);
+  assert.deepEqual(googleAccount.sourceRef, {
+    kind: "credential_source",
+    namespaceId,
+    id: googleSourceId,
+  });
+  assert.deepEqual(googleAccount.projection, {
+    environment: "GOG_ACCESS_TOKEN",
+    presentation: "bearer",
+  });
+  // Both requests use the same worker executable and Gmail host. Only the Gmail action
+  // needs this account's bearer; discovery fetches the public API description.
+  const gmailGet = workspace.networkRequirements.filter(
+    ({ purpose, match }) =>
+      purpose === "invocation" &&
+      match.host === "gmail.googleapis.com" &&
+      match.binary === "/usr/local/lib/oce/plugins/google/bin/gog" &&
+      match.requestPolicy?.type === "http" &&
+      match.requestPolicy.method === "GET",
+  );
+  const action = gmailGet.find(({ match }) => match.requestPolicy?.path === "/gmail/v1/users/**");
+  assert.ok(action);
+  assert.ok(googleAccount.networkRequirementIds.includes(action.id));
+  assert.deepEqual(googleAccount.toolIds, [action.toolId]);
+  const discoveryRules = gmailGet.filter(
+    ({ match }) => match.requestPolicy?.path === "/$discovery/rest",
+  );
+  assert.ok(discoveryRules.length > 0);
+  assert.ok(discoveryRules.every((rule) => !googleAccount.networkRequirementIds.includes(rule.id)));
+  for (const { id, match } of workspace.networkRequirements) {
+    if (match.host === "gmail.googleapis.com" && googleAccount.networkRequirementIds.includes(id)) {
+      assert.ok(match.requestPolicy?.type === "http");
+      assert.match(
+        match.requestPolicy.path,
+        /^\/gmail\//,
+        "the bearer must stay under the Gmail API path",
+      );
+    }
+  }
+  // This description covers the release before OCC intersects it with a source. Chat
+  // expands resource names across segments. A grant on /v1/** would also cover custom emojis.
+  const chatPaths = workspace.networkRequirements.flatMap(({ id, match }) =>
+    googleAccount.networkRequirementIds.includes(id) &&
+    match.host === "chat.googleapis.com" &&
+    match.requestPolicy?.type === "http" &&
+    match.requestPolicy.method === "GET"
+      ? [match.requestPolicy.path]
+      : [],
+  );
+  assert.ok(chatPaths.includes("/v1/spaces/**"));
+  assert.ok(chatPaths.includes("/v1/users/**"));
+  assert.ok(!chatPaths.includes("/v1/**"));
   const release = record(
     JSON.parse(
       await readFile(new URL("oce-google-workspace/ai.openclaw.oce/release.json", catalog), "utf8"),
@@ -571,9 +690,10 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     ]),
   );
   assert.deepEqual(
-    workspace.tools.map(({ role, installation }) => ({ role, installation })),
+    workspace.tools.map(({ kind, role, installation }) => ({ kind, role, installation })),
     [
       {
+        kind: "installation",
         role: "gateway",
         installation: {
           kind: "image-skill",
@@ -582,6 +702,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
         },
       },
       {
+        kind: "installation",
         role: "harness",
         installation: {
           kind: "image-executable",
@@ -592,10 +713,17 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     ],
   );
 
-  const cleared = await save(google);
+  describe.mock.resetCalls();
+  // Keep all three sources attached while removing both plugin connections from the draft.
+  const cleared = await request("PATCH", agentPath, {
+    body: { configurationId, plugins: google, credentialSources },
+  });
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
   assert.deepEqual(record(cleared.data).plugins, google);
   assert.deepEqual(record(cleared.data).credentialSources, credentialSources);
+  const unconnected = await descriptionFor(googleId);
+  assert.deepEqual(unconnected.credentials, { account: {} });
+  assert.deepEqual(unconnected.networkRequirements, []);
   const revision = await request(
     "GET",
     `${agentPath}/revisions/${string(record(deployed.data).id)}`,

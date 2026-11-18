@@ -6,10 +6,11 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import {
+  googleActionPath,
+  googleCatalog,
   googleDiscoveryRoutes,
-  googleWorkspaceDestinations,
+  googleSourcePathMatches,
 } from "./google-workspace/operations.ts";
-import { googleWorkspaceRequestPolicies } from "./google-workspace/request-policy.ts";
 import {
   managedCredentialBinding,
   managedMcpCredentialBinding,
@@ -18,23 +19,48 @@ import {
   type ManagedMcpInstall,
 } from "./managed-catalog.ts";
 
+const googleDiscovery = googleDiscoveryRoutes().map(({ host, path }) => ({
+  host,
+  path,
+  method: "GET",
+}));
+
+const googleActions = Object.values(googleCatalog.operations).map((operation) => {
+  const { origin, method } = operation;
+  const host = new URL(origin).hostname;
+  const path = googleActionPath(operation);
+  if (
+    origin !== `https://${host}` ||
+    googleDiscovery.some(
+      (route) => route.host === host && googleSourcePathMatches(path, route.path),
+    )
+  ) {
+    throw new Error("Google action endpoints must be HTTPS and separate from public discovery.");
+  }
+  return { host, method, path };
+});
+
 function googleNetworks(
   install: ManagedCliInstall,
   purpose: "action" | "discovery",
 ): PluginDeploymentNetworkRequirement[] {
-  const routes = purpose === "action" ? googleWorkspaceDestinations : googleDiscoveryRoutes();
-  const evaluator = googleWorkspaceRequestPolicies[purpose];
-  return [...new Set(routes.map(({ host }) => host))].sort().map((host) => ({
-    id: `${purpose}:${host}`,
-    toolId: install.executable,
-    purpose: "invocation",
-    match: {
-      binary: install.binaryPath,
-      host,
-      ports: [{ from: 443, to: 443 }],
-      requestPolicy: { type: "evaluator", id: evaluator.id, digest: evaluator.releaseSha256 },
-    },
-  }));
+  const routes = purpose === "action" ? googleActions : googleDiscovery;
+  const rules = new Map<string, PluginDeploymentNetworkRequirement>();
+  for (const { host, method, path } of routes) {
+    const id = `${purpose}:${host}:${method}:${path}`;
+    rules.set(id, {
+      id,
+      toolId: install.executable,
+      purpose: "invocation",
+      match: {
+        binary: install.binaryPath,
+        host,
+        ports: [{ from: 443, to: 443 }],
+        requestPolicy: { type: "http", method, path },
+      },
+    });
+  }
+  return [...rules.values()];
 }
 
 function mcpNetworks(
@@ -67,7 +93,6 @@ export function describeManagedDeployment(
   const accounts = input.connections[requirement] ?? {};
   const sourceRef = accounts.default;
   if (
-    input.pluginId !== install.id ||
     Object.keys(input.connections).some((key) => key !== requirement) ||
     Object.keys(accounts).some((key) => key !== "default") ||
     sourceRef?.id !== binding?.sourceId ||
@@ -97,6 +122,7 @@ export function describeManagedDeployment(
       throw new ConfigurationHarnessError("The selected CLI has no reviewed deployment policy.");
     }
     tools.push({
+      kind: "installation",
       id: install.skill,
       role: "gateway",
       installation: {
@@ -107,6 +133,7 @@ export function describeManagedDeployment(
       selectedTools: [],
     });
     consumer = {
+      kind: "installation",
       id: install.executable,
       role: "harness",
       installation: {
@@ -117,14 +144,13 @@ export function describeManagedDeployment(
       selectedTools: [install.executable],
     };
     if (sourceRef) {
-      // The action evaluator requires the admitted source scope. Public discovery can share
-      // a hostname with an action, but its evaluator never qualifies for credential injection.
       credentialRules = googleNetworks(install, "action");
       publicRules = googleNetworks(install, "discovery");
     }
   } else {
     const selectedTools = mcp?.toolNames ?? [];
     consumer = {
+      kind: "installation",
       id: install.server,
       role: "harness",
       installation: {

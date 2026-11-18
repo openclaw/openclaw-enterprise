@@ -408,7 +408,12 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   readonly credentials = managedPluginCredentials(this);
 
   async describeDeployment(input: Parameters<PluginDeploymentContract["describeDeployment"]>[0]) {
-    const install = managedInstalls.find(({ id }) => id === input.pluginId);
+    if (input.plugin.catalog !== "driver") {
+      throw new ConfigurationHarnessError(
+        "OpenClaw deployment requires a Driver catalog selection.",
+      );
+    }
+    const install = managedInstalls.find(({ id }) => id === input.plugin.pluginId);
     return install
       ? describeManagedDeployment(install, input)
       : describeNativeOpenClawDeployment(input);

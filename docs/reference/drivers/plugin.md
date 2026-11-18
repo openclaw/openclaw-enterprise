@@ -39,14 +39,18 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   undefined. A plugin that needs a bound credential can refuse an Installation
   that cannot deliver it. OCC checks placement before saving selections and
   again when it admits deployment.
-- `describeDeployment({pluginId, selection, connections})` (optional) returns
+- `describeDeployment({plugin, selection, connections})` (optional) returns
   [deployment requirements](../../../packages/contracts/src/drivers/plugin/deployment.ts)
-  for one selected plugin. Each tool names its Gateway or Harness, installation
-  material and selected tools. Network rules identify installation or invocation.
+  for one admitted catalog identity. The OpenClaw Driver accepts
+  `{catalog: "driver", pluginId}`. Its `installation` tools name the Gateway or
+  Harness, the material to install and the selected tools. Network rules identify
+  installation or invocation. Google actions use HTTP methods and exact paths
+  or path subtrees. Public discovery uses exact GET paths and has no credential
+  association. Slack uses MCP methods and selected tool names.
   Each configured credential names its source, environment, presentation, tool IDs
   and invocation rule IDs under `credentials[requirement][connection]`.
   An empty connection map preserves an unconnected slot. A credentialless plugin
-  declares no slots. The OpenClaw Driver implements this method.
+  declares no slots.
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.

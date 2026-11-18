@@ -510,7 +510,11 @@ export function managedPluginCredentials(
             },
           ),
         );
-        const deployment = await driver.describeDeployment({ pluginId, selection, connections });
+        const deployment = await driver.describeDeployment({
+          plugin: { catalog: "driver", pluginId },
+          selection,
+          connections,
+        });
         for (const [requirement, accounts] of Object.entries(deployment.credentials)) {
           for (const { sourceRef } of Object.values(accounts)) {
             const source = attached.get(sourceRef.id);

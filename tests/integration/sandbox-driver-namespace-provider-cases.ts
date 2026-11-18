@@ -202,11 +202,7 @@ export function registerSandboxDriverNamespaceProviderCases({
         },
       };
       if (acceptable) {
-        // The previous guard advertised the same Google release but only knew the combined evaluator.
-        const service = {
-          ...negotiatedGoogleGuard(),
-          implementation_version: managedGoogleInstall.releaseSha256,
-        };
+        const service = { ...negotiatedGoogleGuard(), implementation_version: "old-release" };
         f.client.getGatewayInfo = async () => ({ extensions: [service] });
         await assert.rejects(f.driver.attachForRevision(attachment), /has not negotiated/);
         Object.assign(service, negotiatedGoogleGuard());

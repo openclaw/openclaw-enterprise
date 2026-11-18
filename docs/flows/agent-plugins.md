@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-17
-last_updated_session: 01a1eb01-409e-7270-a471-5a104ce7b468
+updated: 2026-11-18
+last_updated_session: authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532
 ---
 
 # Agent Plugin Deployment Flow
@@ -137,13 +137,14 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 At save and deployment, the OpenClaw Driver’s
 [credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts)
-maps each selected slot to its default connection, then calls
+passes the admitted catalog identity and slot connections to
 [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts).
-It requires a compatible attached source authorized by OCC.
+It checks connections against sources OCC authorized. Google accounts reference
+only action rules. Public discovery uses separate GET paths on shared hosts.
 
 OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks Driver–Harness compatibility. Gateway and worker verify assets against Compute’s package descriptors.
 
-- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) attaches a Google credential only when the guard advertises the expected fingerprint of evaluator IDs and release digests. The guard checks each request before injection.
+- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The [OpenShell Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) checks the guard version before attaching a Google credential. The signed guard enforces the source scope and reviewed request rules at runtime.
 - **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
@@ -375,6 +376,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)
+
 - 2026-11-17 21:20: Check guard compatibility before attachment. (01a1eb01-409e-7270-a471-5a104ce7b468 - a5ebff48cd9cb180ea21ecd9740a034fde254864)
 
 - 2026-11-17 19:48: Trace OpenClaw deployment requirements through account validation. (01a1eb01-409e-7270-a471-5a104ce7b468 - 23b54e2855d0a8d60b2168588fe8c7d7f06e9b36)
@@ -388,11 +391,5 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 - 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
 
 - 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
-
-- 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
-
-- 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
-
-- 2026-11-02 23:59: Discover live MCP tools. (authoring-run/f6c72b81-af00-4c3d-9758-96b1d6ca64b1 - 6f95625048a1d20ebb5cc6e26368192b3300849c)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.
