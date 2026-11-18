@@ -307,8 +307,23 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
       options,
     );
     assert.match(cleared.stdout, /sizeLimit: "128Mi"/);
-    assert.doesNotMatch(cleared.stdout, /cpu: 100m/);
-    assert.doesNotMatch(cleared.stdout, /memory: 128Mi/);
+    const clearedObjects = await parseProductionChart(cleared.stdout);
+    for (const [kind, name] of [
+      ["Deployment", "api"],
+      ["Deployment", "worker"],
+      ["DaemonSet", "collector"],
+    ] as const) {
+      const workload = clearedObjects.find(
+        (object) =>
+          isRecord(object) &&
+          object.kind === kind &&
+          isRecord(object.metadata) &&
+          object.metadata.name === `openclaw-enterprise-${name}`,
+      );
+      const containers = chartArray(podSpec(workload).containers, `${name} containers`);
+      const container = containers.find((item) => isRecord(item) && item.name === name);
+      assert.equal(chartObject(container, name).resources, null);
+    }
     await assert.rejects(
       render(
         { ...collector, resources: "null" },

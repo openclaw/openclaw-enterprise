@@ -305,8 +305,6 @@ export function registerDatabaseCaCases({
         "/etc/openclaw/execution",
         "/etc/openclaw/repository-registry",
         "/etc/openclaw/repository-ca",
-        "/var/run/secrets/kubernetes.io/serviceaccount",
-        "/run/secrets/kubernetes.io/serviceaccount",
         "/run/openclaw/repository-control",
         "/var/run/openclaw/repository-control",
         "/etc/openclaw/gateway-api-key",

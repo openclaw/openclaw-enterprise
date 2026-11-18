@@ -164,12 +164,29 @@ export async function verifyDatabaseStartupTrust(t: TestContext) {
   };
   for (const action of ["job", "identity-job"] as const) {
     const generated = await generate(action);
-    assert.deepEqual(generated.initContainers, api.initContainers);
+    assert.deepEqual(generated.initContainers, [assembler(api)]);
     assert.deepEqual(
       generated.volumes.find(({ name }) => name === "oidc-ca"),
       api.volumes.find(({ name }) => name === "oidc-ca"),
     );
     const command = firstContainer(generated);
+    // The check Job keeps Kubernetes API access without the Deployment's unprepared scratch.
+    const access = api.volumes.find(({ name }) => name === "controller-api-access");
+    assert.ok(access);
+    assert.deepEqual(
+      generated.volumes.find(({ name }) => name === access.name),
+      access,
+    );
+    assert.deepEqual(
+      command.volumeMounts.find(({ name }) => name === access.name),
+      {
+        name: access.name,
+        mountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
+        readOnly: true,
+      },
+    );
+    assert.ok(!generated.volumes.some(({ name }) => name === "controller-scratch"));
+    assert.ok(!command.volumeMounts.some(({ mountPath }) => mountPath === "/tmp"));
     const argv = command.args.map((arg) =>
       arg.startsWith("/etc/") ? wiring.resolve(arg) : arg.replaceAll("/app/", process.cwd() + "/"),
     );

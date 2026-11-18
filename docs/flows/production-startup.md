@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-16"
-last_updated_session: "authoring-run/04994f45-a986-442f-8747-1595e124325f"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/29f792b0-48c8-4cac-88b2-1cbdbbc6722a"
 ---
 
 # Production Startup Flow
@@ -49,8 +49,8 @@ graph TD
         V -->|No| O{"Canonical migration history?"}
         O -->|No| P
         O -->|Yes| G["Apply migrations, bootstrap administrators and write protected key output"]
-        G --> H["Start private API Deployment"]
-        G --> I["Start independent worker Deployment"]
+        G --> H["Prepare private scratch and start API"]
+        G --> I["Prepare private scratch and start worker"]
         I --> R{"Repository credentials enabled?"}
         R -->|Yes| S["Sidecar copies protected inputs and starts private control"]
         S --> Q["Sidecar probe gates worker Pod readiness"]
@@ -203,6 +203,19 @@ Existing output, unsafe permissions, or inconsistent accounts/IAM identity fail
 the Job. Helm failure does not imply database-hook rollback.
 
 ### 4. Start private API and worker Deployments
+
+`deploy/helm/openclaw-enterprise/templates/deployments.yaml:prepare-controller-scratch`
+creates private UID/GID `1000`, mode-`0700` scratch. The
+controller mounts it at `/tmp` with a read-only root filesystem. Its 64 MiB memory
+`emptyDir` survives container restarts, then disappears with the Pod.
+Initialization failure blocks startup. With the broker, the worker remains a
+restartable init container so drain ordering is unchanged.
+
+Both Pods disable automatic ServiceAccount mounts. Only the API or worker
+container mounts the token, root CA, and namespace projection. These files use
+Kubernetes' standard client path, `/var/run/secrets/kubernetes.io/serviceaccount`.
+`scripts/upgrade-startup-preflight.ts:job` keeps this projection for upgrade
+checks. The check Jobs omit the Deployment's scratch mount and initializer.
 
 `apps/controller/src/api-startup.ts:configuration`, `apps/controller/src/worker.ts:312`
 
@@ -391,6 +404,8 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
+- 2026-11-18 01:27: Prepare private scratch and project Kubernetes credentials only into the API and worker containers. (authoring-run/29f792b0-48c8-4cac-88b2-1cbdbbc6722a - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)
+
 - 2026-11-16 09:47: Document the request helper’s scoped path validation. (authoring-run/04994f45-a986-442f-8747-1595e124325f - b4a03d909a2815bbf6c44eb6e195d4503a59fe70)
 
 - 2026-11-14 17:11: Identify the generated API CA programs and link their TypeScript source layout. (authoring-run/6b781d32-d772-4aed-beb9-1598b28632b4 - 4ecdd59c5a64f217f0b7fafdf7a034e74b890ffc)
@@ -398,25 +413,5 @@ The shell initializes the missing annotation, patches with UID and
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 
 - 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
-
-- 2026-11-13: Document the opt-in check of an existing Installation and its bootstrap administrator. (authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94 - 3c8ee8b97066d1e82a4ba9f95ad6d6f6afea5df8)
-
-- 2026-11-12 09:45: Skip completed writable DDL; preserve read-only refusal. (authoring-run/eedb034b-cdad-4526-af11-0ce3490e267a - 11e22a5dc95b54a4fd7eb05e68a06f732033e7f8)
-
-- 2026-11-12 06:35: Document static Helm template refusal guidance without changing recovery. (authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973 - 64358aae61847dea8a3834fbe06bed079b5727cc)
-
-- 2026-11-11 17:05: Coalesce database readiness. (authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
-
-- 2026-11-11 15:06: Preserve explicit PostgreSQL caller options after URL parsing. (authoring-run/8367ab20-ba98-4ec6-9700-296442c6eb96 - ee419a1969d414d4aa934c59b39b868e8777b127)
-
-- 2026-11-07 21:10: Stop install dispatch on intent output failure and return final report write errors. (authoring-run/f573af51-9766-49f8-88ff-2c6294283466 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)
-
-- 2026-11-08 07:15: Clarify receipt directory. (authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40 - 7e2eb23a7f55b5f375e52883fcb6a7bb0f10049e)
-
-- 2026-11-08 05:16: Document the preserved intent and stop before dispatch when the receipt notice write fails. (authoring-run/5809b7e1-70ee-4446-8c3a-020e78a0e7af - e0d329d9ad9560e954ce94889079ef55ba43080f)
-
-- 2026-11-04 23:30: Check complete handoff reports, including receipt outcomes. (authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a - ce06d47cfb0b4fb29495ad4bc85bb71aa5941975)
-
-- 2026-11-04 23:14: Document report write failures. (authoring-run/58196aeb-45b5-4ea5-850d-e368b48f15f9 - 582236adfbbb392c2247995dde054eef929ca6c1)
 
 [Production startup documentation history](production-startup/history.md) preserves the older dated entries.

@@ -79,7 +79,7 @@ const podTemplateShape = Type.Object({
     spec: Type.Object({
       securityContext: Type.Object({ runAsNonRoot: Type.Boolean() }),
       containers: Type.Array(containerShape),
-      initContainers: Type.Optional(Type.Array(containerShape)),
+      initContainers: Type.Optional(Type.Array(Type.Pick(containerShape, ["name"]))),
       volumes: Type.Array(
         Type.Object({
           name: Type.String(),
@@ -145,7 +145,7 @@ export function firstContainer(pod: Pod) {
 
 export function assembler(pod: Pod) {
   const init = pod.initContainers?.find(({ name }) => name === "assemble-api-ca");
-  assert.ok(init, "Expected the API CA init container");
+  assert.ok(Check(containerShape, init), "Expected the complete API CA init container");
   return init;
 }
 
