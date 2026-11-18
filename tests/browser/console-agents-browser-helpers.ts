@@ -84,7 +84,7 @@ import { waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
-import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
+import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.ts";
 import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { restrict } from "../helpers/iam-grants.ts";
