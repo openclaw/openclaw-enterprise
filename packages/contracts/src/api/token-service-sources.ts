@@ -11,7 +11,19 @@ import {
   NamespaceId,
   SecretValue,
 } from "./common.ts";
+import { ConnectionTemplateId } from "./connection-templates.ts";
 import { CredentialSourceStatusSchema } from "./resources.ts";
+
+const connectionTemplateApproval = Type.Object(
+  {
+    id: ConnectionTemplateId,
+    version: Type.Integer({ minimum: 1 }),
+  },
+  {
+    additionalProperties: false,
+    description: "Connection Template version approved by the credential owner.",
+  },
+);
 
 const material = Type.Record(Type.String(), SecretValue, {
   propertyNames: { pattern: CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.source },
@@ -25,6 +37,7 @@ export const RegisterTokenServiceSourceBody = Type.Object(
   {
     name: Name,
     type: CredentialSourceType,
+    connectionTemplate: Type.Optional(connectionTemplateApproval),
     config: Type.Optional(CredentialSourceConfig),
     secret: Type.Optional(material),
   },
@@ -62,6 +75,7 @@ export const TokenServiceSourceMetadata = Type.Object(
     name: Name,
     type: CredentialSourceType,
     config: CredentialSourceConfig,
+    connectionTemplate: Type.Optional(connectionTemplateApproval),
     state: Type.Union([
       Type.Literal("registering"),
       Type.Literal("ready"),

@@ -209,6 +209,19 @@
             },
             "type": "object"
           },
+          "connectionTemplate": {
+            "additionalProperties": false,
+            "description": "Connection Template version approved by the credential owner.",
+            "properties": {
+              "id": {
+                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              "version": { "minimum": 1, "type": "integer" }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
           "name": {
             "maxLength": 200,
             "minLength": 1,
@@ -255,6 +268,19 @@
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]{0,63}$"
             },
+            "type": "object"
+          },
+          "connectionTemplate": {
+            "additionalProperties": false,
+            "description": "Connection Template version approved by the credential owner.",
+            "properties": {
+              "id": {
+                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              "version": { "minimum": 1, "type": "integer" }
+            },
+            "required": ["id", "version"],
             "type": "object"
           },
           "delivery": {
