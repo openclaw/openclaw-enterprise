@@ -36,7 +36,8 @@ node scripts/ci/cleanup.ts --state "$state"
 Run cleanup after a preparation or test failure too. Preserve the private state
 file until cleanup completes. Do not run another Keycloak lane on the same host.
 
-The focused wrapper runs the same `oidc-agent-chat` scenario as the QA matrix.
+The focused wrapper runs the fresh-install OIDC journey. The QA matrix runs that
+journey and the previous-source upgrade journey described below.
 Lane preparation attaches PostgreSQL to the disposable cluster before it
 discovers and publishes the host port. Test files preserve that attachment;
 lane cleanup removes PostgreSQL before the cluster network. Set
@@ -48,8 +49,9 @@ deploys only embedded OpenClaw Agents with `RuntimeDefault` seccomp. Preparing
 the full `gateway-routing` lane still requires the Codex probe for its dedicated
 execution cases. The hosted OIDC job retains a browser recording and screenshot
 of the real model exchange; recording starts after sign-in.
-To reuse an already prepared local environment through the QA entrypoint, keep its
-Kubernetes, database, routing, and Keycloak variables, then run:
+To run both journeys through the QA entrypoint, prepare the full `gateway-routing`
+lane without `--selected-file`. Keep its Kubernetes, database, routing, Keycloak,
+fixed baseline image, and source receipt variables, then run:
 
 ```sh
 OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_SCENARIOS=oidc-agent-chat \
@@ -57,11 +59,60 @@ OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_SCENARIOS=oidc-agent-chat \
   node --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-`OPENCLAW_ENTERPRISE_CI_STATE` must identify the prepared cluster and database.
+`OPENCLAW_ENTERPRISE_CI_STATE` must identify that full Gateway Routing state.
+The upgrade stage rejects a state focused on the fresh-install file. Both its
+standalone wrapper and the direct QA stage allocate a separate database; neither
+can reuse an Installation initialized by the fresh-install journey.
 When Keycloak belongs to a separate prepared state, also set
 `OCC_TEST_KEYCLOAK_STATE` to that private JSON file. Keep both states until their
 owners finish using the resources. The shared-lane setup needs no separate
 Keycloak state variable.
+
+## Previous-source installation upgrade
+
+The permanent upgrade case runs in the same hosted native-browser job and
+full Gateway Routing lane. To focus it, use the commands above with
+`tests/integration/native-profile-upgrade-k3d-real.test.ts` as `file` and a new state path.
+A selected run must pass without skips. Missing baseline inputs fail preparation.
+
+Preparation builds the previous controller and runtime from the detached source
+`535e08cae41dfd5bda0c072fcb37039e699203eb`, the exact pre-feature main parent,
+using the checkout's object store. This is not a previous published release.
+The full runtime tree fixes its nine bridges and native source
+`b58996d69286d55d1bbbd9b5c03b4ad837baac45`. Image labels, imported manifest
+references, and running Pod image IDs bind the observation to the selected pair.
+Old images are not obtained from mutable tags or expiring CI artifacts. The
+candidate receipt records its actual tested checkout, recipes, native pin, and
+bridge inventory independently; it is not forced to the old nine-bridge set.
+
+The case owns a new database with only administrator-provisioned roles and
+empty schemas. The old image migrates with `--expect-empty`, checks its complete
+catalog, and runs its production bootstrap entrypoint. No current schema
+template or current bootstrap initializes that Installation. After both old
+writers stop, the candidate runs its actual migrations and checks its own
+current catalog; it need not equal the baseline. Only initialization receives
+the migrator credential. The API and Worker use the limited application role.
+
+Two real OIDC users create history under the old shared native identity. After
+completed model turns, the fixture removes both old controller writers, runs the
+candidate migration and incumbent-bootstrap verification, and starts the new API
+and Worker. The retained old Agent revision must refuse browser access without
+a delegation credential. Normal API deploy then upgrades that same Agent; the
+test does not patch its saved authentication or invent new human ownership.
+
+Assertions retain Installation, account, Principal, Agent service-Principal, and
+Gateway PVC identities. Historical shared creator/sender records remain unchanged.
+Fresh owner/operator model turns require distinct profiles and exact scopes.
+Reconnect, Pod replacement, selective withdrawal/regrant, and replay of the old
+shared credential exercise the upgraded authorization boundary. The retained
+`native-profile-upgrade-receipt.json` contains only fixed source metadata, image
+references, Pod/PVC identifiers, and completed check predicates. Screenshots and
+recordings begin after sign-in; credentials and raw transcripts are not receipts.
+
+This proves the real in-cluster production-entrypoint installation transition,
+not a Helm installation/upgrade, release publication, or a different native pin.
+Source checks and command fixtures alone do not prove it. Require the selected
+hosted case's terminal result and cleanup receipt for real upgrade qualification.
 
 ## What the test exercises
 
@@ -132,8 +183,8 @@ prepared server and cluster resources.
 
 On an eligible same-repository PR, the `full-qa` label selects the advisory
 **native Agent browser** job. It runs the complete `gateway-routing` lane:
-workspace routing, dedicated native administration, embedded sharing, and OIDC
-owner/operator chat. The existing protected environment and credential gates
+five cases: workspace routing, dedicated native administration, embedded sharing,
+OIDC owner/operator chat, and the previous-source installation upgrade. The existing protected environment and credential gates
 still apply. See [QA advisory triggers](ci/qa-advisory.md#when-it-runs).
 
 The job uses the same Blacksmith runner and pinned Playwright Chromium setup as

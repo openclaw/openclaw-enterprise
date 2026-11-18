@@ -160,6 +160,15 @@ test(
         () => runOidcAgentChatScenario(context),
         "oidc-agent-chat",
       );
+      const { runNativeProfileUpgradeScenario } =
+        await import("../helpers/native-profile-upgrade.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "fixed pre-feature OCE installation upgrades the same retained Agent to delegated native profiles",
+        () => runNativeProfileUpgradeScenario(context),
+        "oidc-agent-chat-upgrade",
+      );
     }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");

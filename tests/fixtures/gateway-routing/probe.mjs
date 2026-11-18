@@ -321,7 +321,7 @@ switch (input.action) {
     try {
       result = await requestGatewayHello({
         ...input,
-        native: { scopes: ["operator.admin"] },
+        native: { ...input.native, scopes: ["operator.admin"] },
         onConnected: async (client, hello) => {
           const self = input.readProfile
             ? await client.request("users.self", {}, { timeoutMs: 15000 })

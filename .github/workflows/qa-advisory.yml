@@ -260,6 +260,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-browser-evidence/**/*.png
             ${{ runner.temp }}/native-browser-evidence/**/*.webm
+            ${{ runner.temp }}/native-browser-evidence/**/native-profile-upgrade-receipt.json
           if-no-files-found: ${{ steps.native-browser-lane.outcome == 'success' && 'error' || 'warn' }}
           retention-days: 7
 

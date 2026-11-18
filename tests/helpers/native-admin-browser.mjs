@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
 import { tlsPeerCertificate } from "./tls-peer-certificate.ts";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1146,7 +1146,7 @@ async function delegationSecret(topology) {
 function boundaryProbe(
   topology,
   key,
-  { browser = true, authenticated = true, readProfile = true } = {},
+  { browser = true, authenticated = true, readProfile = true, deviceToken } = {},
 ) {
   const routing = topology.workspaceGateway.routing;
   const authority = routing.endpointPort
@@ -1157,6 +1157,7 @@ function boundaryProbe(
     url: `wss://${authority}${browser ? "/native-browser" : ""}/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
     ...(authenticated ? { apiKey: topology.workspaceGateway.apiKey } : {}),
     readProfile,
+    ...(deviceToken === undefined ? {} : { native: { deviceToken } }),
     extraHeaders: {
       "x-occ-identity": "oce:v1:" + "a".repeat(64),
       "x-openclaw-scopes": "operator.admin",
@@ -1721,6 +1722,10 @@ async function assertChatAdministrationDenied(
 
 /** The QA matrix reuses the native browser harness with a real, prepared OIDC provider. */
 export async function runOidcAgentChatScenario(context) {
+  await runOidcAgentChatUpgradeScenario(context);
+}
+
+export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefined) {
   const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
   const secrets = JSON.parse(await readFile(process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE, "utf8"));
   const caCert = await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT, "utf8");
@@ -1791,6 +1796,9 @@ export async function runOidcAgentChatScenario(context) {
   }
   const topology = await arrangeProductionTopology(context, "embedded", undefined, {
     publicOrigin: ingress.origin,
+    ...(upgrade === undefined
+      ? {}
+      : { images: upgrade.baseline, databaseUrl: upgrade.databaseUrl, upgrade }),
     defaultUser: true,
     nativeAdmin: { enabled: true, domain: nativeDomain },
     nativeOptions: { controlUi: { enabled: true } },
@@ -1843,6 +1851,7 @@ export async function runOidcAgentChatScenario(context) {
       resourceId,
     });
     assert.equal(result.status, 201, JSON.stringify(result.error));
+    return result.data;
   };
   const signIn = async (username, password = secrets.users[username].password) => {
     const browserContext = await browser.newContext();
@@ -1949,13 +1958,256 @@ export async function runOidcAgentChatScenario(context) {
       }
     }),
   );
-  const detailUrl = new URL(
+  let detailUrl = new URL(
     agentDetailPath({ agent: created.data, revision: deployed.data }),
     ingress.origin,
   ).href;
   await ownerPage.goto(detailUrl);
-  const ownerNativePage = await openNativeAdminConsole(ownerPage, ownerStatus.data.origin);
+  let ownerNativePage = await openNativeAdminConsole(ownerPage, ownerStatus.data.origin);
+  let legacy;
+  if (upgrade !== undefined) {
+    const legacyRole = await role("Legacy upgrade operator", [
+      { action: "read", resourceKind: "agent" },
+      { action: "operate", resourceKind: "agent" },
+    ]);
+    const legacyBinding = await bind(carol, legacyRole, "agent", created.data.id);
+    const legacyFrames = [];
+    firstOperatorPage
+      .context()
+      .on("page", (page) =>
+        page.on("websocket", (socket) =>
+          socket.on("framereceived", (frame) => legacyFrames.push({ ...frame, socket, page })),
+        ),
+      );
+    await firstOperatorPage.goto(detailUrl);
+    const legacyPage = await openNativeAdminConsole(
+      firstOperatorPage,
+      ownerStatus.data.origin,
+      "chat",
+    );
+    const sharedOwner = await nativeRpc(ownerNativePage, "users.self");
+    const sharedOperator = await nativeRpc(legacyPage, "users.self");
+    assert.equal(sharedOwner.response.ok, true);
+    assert.equal(sharedOperator.response.ok, true);
+    assert.equal(
+      sharedOperator.response.payload.profile.id,
+      sharedOwner.response.payload.profile.id,
+      "the pre-feature image must reproduce the shared native profile, not the candidate behavior",
+    );
+    const history = [];
+    for (const [page, frames, label] of [
+      [ownerNativePage, ownerFrames, "owner"],
+      [legacyPage, legacyFrames, "operator"],
+    ]) {
+      const marker = "before-upgrade-" + label + "-" + randomUUID();
+      const reply = await recordNativeChatTurn(page, marker, frames, media, "legacy-" + label);
+      const sessionKey = JSON.parse(textFromFrame(reply)).payload.sessionKey;
+      const listed = await nativeRpc(ownerNativePage, "sessions.list", { limit: 100 });
+      assert.equal(listed.response.ok, true);
+      const session = listed.response.payload.sessions.find(({ key }) => key === sessionKey);
+      assert.ok(session, "the old real browser turn must create durable history");
+      const transcript = await nativeRpc(ownerNativePage, "chat.history", {
+        sessionKey,
+        limit: 100,
+      });
+      assert.equal(transcript.response.ok, true);
+      const message = transcript.response.payload.messages.find(
+        (entry) => entry.role === "user" && JSON.stringify(entry.content).includes(marker),
+      );
+      assert.ok(message);
+      history.push({
+        sessionKey,
+        marker,
+        createdActor: session.createdActor,
+        senderIdentity: message.__openclaw?.senderIdentity,
+      });
+    }
+    const hello = ownerFrames
+      .map((frame) => JSON.parse(textFromFrame(frame)))
+      .find((frame) => typeof frame.payload?.auth?.deviceToken === "string");
+    assert.ok(hello, "the legacy UI must actually receive its shared reusable credential");
+    const owned = { ...topology, agent: created.data, revision: deployed.data };
+    const previousPod = await waitForReadyGatewayPod(owned, deployed.data.id);
+    assert.equal(
+      previousPod.spec.containers.find(({ name }) => name === "gateway").image,
+      upgrade.baseline.runtime,
+    );
+    const claims = previousPod.spec.volumes
+      .filter((volume) => volume.persistentVolumeClaim)
+      .map((volume) => volume.persistentVolumeClaim.claimName);
+    assert.ok(claims.length > 0, "upgrade must retain an actual Gateway PVC");
+    const claimUids = await Promise.all(
+      claims.map(async (name) => ({
+        name,
+        uid: (await resource("persistentvolumeclaim", name, topology.gatewayPlacement)).metadata
+          .uid,
+      })),
+    );
+    const identity = await topology.observerPool.query(
+      "SELECT id, namespace_id, service_principal_id FROM occ.agents WHERE id = $1",
+      [created.data.id],
+    );
+    assert.equal(identity.rows.length, 1);
+    await ownerNativePage.close();
+    await legacyPage.close();
+    await waitFor("old controller work to settle before replacing both writers", async () => {
+      const queued = await topology.observerPool.query(
+        "SELECT count(*) AS pending FROM occ.controller_work WHERE state IN ('queued','claimed')",
+      );
+      return Number(queued.rows[0].pending) === 0;
+    });
+    const images = await topology.upgradeInstallation();
+    context.diagnostic("native upgrade controller image custody: " + JSON.stringify(images));
+    assert.deepEqual(
+      (
+        await topology.observerPool.query(
+          "SELECT id, namespace_id, service_principal_id FROM occ.agents WHERE id = $1",
+          [created.data.id],
+        )
+      ).rows,
+      identity.rows,
+    );
+    assert.deepEqual(
+      await readAccount(alice.userId),
+      alice,
+      "OCE owner identity must survive the software upgrade",
+    );
+    assert.deepEqual(
+      await readAccount(carol.userId),
+      carol,
+      "OCE operator identity must survive the software upgrade",
+    );
+    const beforeRedeploy = await ownerRequest("GET", agentPath + "/native-admin");
+    assert.equal(
+      beforeRedeploy.status,
+      503,
+      "retained revision without a delegation credential must fail closed",
+    );
+    assert.equal(beforeRedeploy.error?.code, "DEPENDENCY_UNAVAILABLE");
+    const refusedPage = await ownerPage.context().newPage();
+    try {
+      const refused = await refusedPage.goto(ownerStatus.data.origin + "/healthz");
+      assert.equal(
+        refused.status(),
+        503,
+        "the retained legacy browser host must not fall back to machine access",
+      );
+      assert.equal((await refused.json()).error?.code, "DEPENDENCY_UNAVAILABLE");
+    } finally {
+      await refusedPage.close();
+    }
+    const retainedPod = await waitForReadyGatewayPod(owned, deployed.data.id);
+    assert.equal(
+      retainedPod.metadata.uid,
+      previousPod.metadata.uid,
+      "controller rollout alone must not manufacture a new Agent deployment",
+    );
+    const next = await ownerRequest("POST", agentPath + "/deploy");
+    assert.equal(next.status, 202, JSON.stringify(next.error));
+    assert.notEqual(next.data.id, deployed.data.id, "normal deploy must create the new revision");
+    deployed.data = next.data;
+    await waitFor("upgraded same Agent revision to become active", async () => {
+      const response = await ownerRequest("GET", agentPath);
+      assert.equal(response.status, 200);
+      assert.equal(response.data.id, created.data.id);
+      assert.equal(response.data.configurationId, created.data.configurationId);
+      return response.data.activeRevisionId === next.data.id;
+    });
+    assert.deepEqual(
+      (
+        await topology.observerPool.query(
+          "SELECT id, namespace_id, service_principal_id FROM occ.agents WHERE id = $1",
+          [created.data.id],
+        )
+      ).rows,
+      identity.rows,
+      "normal redeploy must preserve the same Agent service Principal",
+    );
+    const currentPod = await waitForReadyGatewayPod(owned, next.data.id);
+    assert.equal(
+      currentPod.spec.containers.find(({ name }) => name === "gateway").image,
+      process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
+    );
+    for (const claim of claimUids) {
+      assert.equal(
+        (await resource("persistentvolumeclaim", claim.name, topology.gatewayPlacement)).metadata
+          .uid,
+        claim.uid,
+      );
+      assert.ok(
+        currentPod.spec.volumes.some(
+          (volume) => volume.persistentVolumeClaim?.claimName === claim.name,
+        ),
+      );
+    }
+    const removed = await topology.adminRequest(
+      "DELETE",
+      policyPath + "/access-bindings/" + legacyBinding.id,
+    );
+    assert.equal(removed.status, 204);
+    detailUrl = new URL(
+      agentDetailPath({ agent: created.data, revision: next.data }),
+      ingress.origin,
+    ).href;
+    await ownerPage.goto(detailUrl);
+    ownerNativePage = await openNativeAdminConsole(ownerPage, ownerStatus.data.origin);
+    legacy = {
+      images,
+      claimUids,
+      runtime: [previousPod, currentPod].map((pod) => ({
+        uid: pod.metadata.uid,
+        image: pod.spec.containers.find(({ name }) => name === "gateway").image,
+        imageID: pod.status.containerStatuses.find(({ name }) => name === "gateway").imageID,
+      })),
+      history,
+      sharedProfileId: sharedOwner.response.payload.profile.id,
+      deviceToken: hello.payload.auth.deviceToken,
+    };
+  }
   const ownerProfile = await nativeProfile(ownerNativePage, "operator.admin");
+  if (legacy !== undefined) {
+    assert.notEqual(
+      ownerProfile.id,
+      legacy.sharedProfileId,
+      "new delegated owner must not reuse the shared identity",
+    );
+    for (const saved of legacy.history) {
+      const listed = await nativeRpc(ownerNativePage, "sessions.list", { limit: 100 });
+      assert.equal(listed.response.ok, true);
+      const session = listed.response.payload.sessions.find(({ key }) => key === saved.sessionKey);
+      assert.ok(
+        session,
+        "historical shared session must remain available to the native administrator",
+      );
+      assert.deepEqual(
+        session.createdActor,
+        saved.createdActor,
+        "never rewrite historical ownership to a new person",
+      );
+      const transcript = await nativeRpc(ownerNativePage, "chat.history", {
+        sessionKey: saved.sessionKey,
+        limit: 100,
+      });
+      assert.equal(transcript.response.ok, true);
+      const message = transcript.response.payload.messages.find(
+        (entry) => entry.role === "user" && JSON.stringify(entry.content).includes(saved.marker),
+      );
+      assert.ok(message);
+      assert.deepEqual(
+        message.__openclaw?.senderIdentity,
+        saved.senderIdentity,
+        "historical sender attribution must not be reassigned during upgrade",
+      );
+    }
+    const owned = { ...topology, agent: created.data, revision: deployed.data };
+    const denied = await boundaryProbe(owned, undefined, { deviceToken: legacy.deviceToken });
+    assert.equal(
+      denied.connected,
+      false,
+      "the actual old shared credential must not bypass the new browser delegation fence",
+    );
+    assert.equal(denied.authReason, "trusted_proxy_delegation_denied");
+  }
   const ownerMarker = `oidc-owner-${randomUUID()}`;
   const ownerReply = await recordNativeChatTurn(
     ownerNativePage,
@@ -2042,7 +2294,7 @@ export async function runOidcAgentChatScenario(context) {
     { action: "read", resourceKind: "agent" },
     { action: "operate", resourceKind: "agent" },
   ]);
-  await bind(carol, operatorRole, "agent", created.data.id);
+  const operatorBinding = await bind(carol, operatorRole, "agent", created.data.id);
   const operatorPage = await signIn("carol");
   const operatorRequest = requestFor(operatorPage);
   assert.equal((await operatorRequest("GET", "/api/auth/session")).data.user.id, carol.userId);
@@ -2142,6 +2394,127 @@ export async function runOidcAgentChatScenario(context) {
       "retained native storage preserves each OIDC person's profile after Pod replacement",
     );
     await assertNativeAttribution(page, reply, profile.id, marker);
+  }
+  if (upgrade !== undefined) {
+    assert.notEqual(operatorProfile.id, legacy.sharedProfileId);
+    const stillOwner = await recordNativeChatTurn(
+      ownerNativePage,
+      "upgraded-owner-live-" + randomUUID(),
+      ownerFrames,
+      media,
+      "upgraded-owner-live",
+    );
+    const stillOperator = await recordNativeChatTurn(
+      nativePage,
+      "upgraded-operator-live-" + randomUUID(),
+      frames,
+      media,
+      "upgraded-operator-live",
+    );
+    assert.equal(stillOwner.socket.isClosed(), false);
+    assert.equal(stillOperator.socket.isClosed(), false);
+    await Promise.all([
+      stillOperator.socket.waitForEvent("close", { timeout: 30_000 }),
+      (async () => {
+        const revoked = await topology.adminRequest(
+          "DELETE",
+          policyPath + "/access-bindings/" + operatorBinding.id,
+        );
+        assert.equal(revoked.status, 204);
+      })(),
+    ]);
+    assert.equal((await operatorRequest("GET", agentPath + "/native-admin")).status, 403);
+    assert.equal(
+      stillOwner.socket.isClosed(),
+      false,
+      "withdrawal must not close the upgraded owner's stream",
+    );
+    await waitFor("upgraded operator's authorization-denied close audit", async () => {
+      const audit = await topology.observerPool.query(
+        "SELECT id FROM occ.audit_events WHERE actor_id = $1 AND resource_id = $2 AND action = 'openclaw.agents.native_admin.websocket.close' AND details->'nativeAdmin'->>'closeReason' = 'authorization_denied'",
+        [carol.principalId, created.data.id],
+      );
+      return audit.rowCount > 0 ? true : undefined;
+    });
+    const unaffectedMarker = "upgraded-owner-after-withdrawal-" + randomUUID();
+    const unaffectedReply = await recordNativeChatTurn(
+      ownerNativePage,
+      unaffectedMarker,
+      ownerFrames,
+      media,
+      "upgraded-owner-after-withdrawal",
+    );
+    await assertNativeAttribution(
+      ownerNativePage,
+      unaffectedReply,
+      ownerProfile.id,
+      unaffectedMarker,
+    );
+    await bind(carol, operatorRole, "agent", created.data.id);
+    await nativePage.reload({ waitUntil: "domcontentloaded" });
+    await waitForStockUi(nativePage);
+    assert.equal(
+      (await nativeProfile(nativePage, "operator.sessions.write")).id,
+      operatorProfile.id,
+    );
+    await assertChatAdministrationDenied(nativePage, ownerSubject);
+    const marker = "upgraded-regrant-" + randomUUID();
+    const reply = await recordNativeChatTurn(nativePage, marker, frames, media, "upgraded-regrant");
+    await assertNativeAttribution(nativePage, reply, operatorProfile.id, marker);
+    await assertDelegationSecretRecovery(
+      {
+        ...topology,
+        agent: created.data,
+        revision: deployed.data,
+        gatewayPod: await waitForReadyGatewayPod(
+          { ...topology, agent: created.data },
+          deployed.data.id,
+        ),
+      },
+      ownerNativePage,
+      ownerProfile.id,
+    );
+    // Strictly selected public build/Pod custody and successful predicates only.
+    // Never serialize the legacy object: it also holds a real device credential.
+    for (const pod of legacy.runtime) {
+      assert.match(pod.imageID, /sha256:[a-f0-9]{64}$/);
+    }
+    await writeFile(
+      join(media, "native-profile-upgrade-receipt.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          kind: "native-profile-installation-upgrade",
+          baseline: upgrade.sourceReceipt,
+          candidateRevision: upgrade.candidateRevision,
+          candidateSource: upgrade.candidateSource,
+          controllerPods: { before: legacy.images.before, after: legacy.images.after },
+          initialization: legacy.images.initialization,
+          runtimePods: legacy.runtime,
+          retainedClaimUids: legacy.claimUids.map(({ uid }) => uid),
+          historicalSessions: legacy.history.length,
+          checks: {
+            sharedBaseline: true,
+            baselineOwnedBootstrap: true,
+            bothOldWritersStopped: true,
+            retainedInstallation: true,
+            sameAgentRedeployed: true,
+            retainedHistoryAttribution: true,
+            distinctProfiles: true,
+            newAttributedModelTurns: true,
+            oldCredentialRefused: true,
+            selectiveWithdrawal: true,
+            regrantProfileStable: true,
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      { mode: 0o600 },
+    );
+    context.diagnostic(
+      "Old-image bootstrap and shared-profile negative control, stopped old API/Worker, candidate migration/rollout, same-Agent normal redeploy, retained PVC/history, distinct new attribution, credential refusal and selective withdrawal/regrant completed.",
+    );
   }
   await nativePage.screenshot({ path: join(media, "oidc-operator-chat.png"), fullPage: true });
   context.diagnostic(
