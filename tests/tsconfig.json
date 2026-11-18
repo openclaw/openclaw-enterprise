@@ -98,6 +98,7 @@
     "conformance/plugin-driver-openclaw-tool-denial-cases.ts",
     "fixtures/codex-catalog-peer.mts",
     "fixtures/egress-send-receipt-owner.mts",
+    "fixtures/egress-custody-postgres-observer.ts",
     "conformance/standing-approval-history-cases.ts",
     "conformance/oauth-renewal-refusal-cases.ts",
     "integration/postgres-worker-agent-revision-dispatch-cases.ts",
