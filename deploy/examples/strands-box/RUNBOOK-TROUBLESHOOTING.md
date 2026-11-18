@@ -86,6 +86,9 @@ profile strands-box <box-dir>/* flags=(unconfined) {
   ([known gap](KNOWN-GAPS.md#box-releases-ship-for-linux-arm64-only)).
 - More than one execution per host, more than one Worker replica, or a Box
   host on a different node from the Worker and Gateway.
+- A first deployment with a model source and no repository binding under the
+  whole step 7 fragment. It was not tried on a never-deployed Agent; if it
+  pairs the Agent, the pairing form is not needed.
 - Model ids other than the one id the proven runs sent, endpoints with WebSocket transport, and
   public model certificates without an upstream CA bundle.
 - A Controller image built with `pnpm-lock.yaml` regenerated, as
