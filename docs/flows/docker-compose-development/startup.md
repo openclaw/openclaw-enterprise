@@ -1,6 +1,6 @@
 ---
 created: 2026-09-09
-updated: "2026-11-18 22:15"
+updated: "2026-11-18 22:31"
 last_updated_session: "authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d"
 ---
 
@@ -270,7 +270,8 @@ and worker sidecar. Discovery checks approved references and profiles. See
 
 Compose builds separately before `--no-build` creation or startup.
 `internal/occdev/command.go:invokeComposeCommand` also owns bootstrap build, creation
-and lookup. Builds honor cancellation outside readiness deadlines. On Linux
+and lookup. Podman requires one project container; Docker selects bootstrap.
+Builds honor cancellation outside readiness deadlines. On Linux
 and macOS, `internal/occdev/compose_process_unix.go:ownComposeProcessGroup` stops
 and drains provider descendants on cancellation or completion.
 Unconfirmed termination keeps recovery state and prevents rollback.
@@ -413,6 +414,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 
 ## Changelog
 
+- 2026-11-18 22:31: Fix native bootstrap container discovery. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - cd9e0ae68e78e7004ce9e93039ccc2ebd2dfb757)
+
 - 2026-11-18 22:15: Drain bootstrap Compose providers before rollback. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - 1b0e6c3e0cfea0532b55e8d1f815e4a939ead034)
 
 - 2026-11-18 21:57: Reconcile native Compose configuration and cancellation with precreated bootstrap credentials in the accompanying uncommitted integration. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - 5783a737f848b6ab7780225e33bf6a5e54d87b5d)
@@ -432,9 +435,5 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 - 2026-11-12 00:24: Correct readiness ownership. (authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291 - 6b44940d40419e4cd9889cf4b0316d95a798be56)
 
 - 2026-11-12 00:18: Handle checkout aliases and clean incomplete pre-start state. (authoring-run/40b08b7d-d158-4f4d-8a93-1e53f45a5999 - 2d5cf2bf7138c2d7bd40b3fa630a4c9d8b9dafe4)
-
-- 2026-11-12 00:05: Copy default bootstrap SQL into private owned state with container-readable permissions. (authoring-run/bd5e5418-5167-4b5f-b5bc-b9047ed8b68b - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
-
-- 2026-11-11 23:56: Report probe readiness. (authoring-run/1189518e-cadf-4a8f-aabe-bcdbff4d434e - c6aad5bf134ae15bb9abea127b978756f843769f)
 
 [Compose development startup documentation history](startup/history.md) preserves the older dated entries.

@@ -33,7 +33,12 @@ func (r *runner) prepareBootstrapMounts(ctx context.Context, directory string, p
 	if r.engine == "docker" {
 		args = append(args, "--all")
 	}
-	args = append(args, "--quiet", "bootstrap")
+	args = append(args, "--quiet")
+	if r.engine == "docker" {
+		args = append(args, "bootstrap")
+	}
+	// podman-compose 1.5 rejects service arguments to ps. Only bootstrap has
+	// been created in this project; retain the single-container refusal below.
 	id, err := r.invokeComposeCommand(ctx, prefix, true, args...)
 	if err != nil {
 		return err

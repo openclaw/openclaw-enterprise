@@ -8,6 +8,10 @@ This record preserves the dated changes to the Compose development startup page.
 
 ## Changelog
 
+- 2026-11-12 00:05: Copy default bootstrap SQL into private owned state with container-readable permissions. (authoring-run/bd5e5418-5167-4b5f-b5bc-b9047ed8b68b - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
+
+- 2026-11-11 23:56: Report probe readiness. (authoring-run/1189518e-cadf-4a8f-aabe-bcdbff4d434e - c6aad5bf134ae15bb9abea127b978756f843769f)
+
 - 2026-11-10 17:50: Prepare private browser TLS file ownership for Compose without OpenShell. (authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6 - c40baead7e51977b832d0036518b4f613a68935d)
 
 - 2026-11-10 14:26: Classify image-import failures. (authoring-run/b1516512-8ce3-4006-b41c-0989435694a2 - 68319de0899f5de7fe1ed5e9ef800e2dadb88571)
