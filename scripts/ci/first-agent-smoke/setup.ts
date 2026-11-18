@@ -3,7 +3,6 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { cookieHeaderFromSetCookie } from "../../../packages/utils/src/index.ts";
 import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.mjs";
 import {
   minute,
@@ -296,6 +295,7 @@ export function kubectl(
 }
 
 export async function signInLocalAdministrator(stack: LocalSetup): Promise<Api> {
+  const { cookieHeaderFromSetCookie } = await import("../../../packages/utils/src/index.ts");
   assert.ok(stack.state.browserOrigin, "Local Setup did not record the Console origin");
   const origin = new URL(stack.state.browserOrigin);
   assert.equal(origin.protocol, "https:");
