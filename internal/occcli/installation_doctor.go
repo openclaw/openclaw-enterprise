@@ -352,9 +352,14 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	case checked && expectedAttempt == "" && migration("--require-current"):
 		hook = "separate upgrade"
 	}
-	// The current and released charts use exact direct programs. Both forms require
-	// the same checked initialization steps.
-	if hook == "" || (!is(p.Containers, "bootstrap", "scripts/bootstrap-installation.ts") &&
+	// Match the current selector exactly and retain direct-path evidence from older charts.
+	bootstrap := false
+	if len(p.Containers) == 1 && p.Containers[0].Name == "bootstrap" && len(p.Containers[0].Command) == 0 {
+		a := p.Containers[0].Args
+		bootstrap = len(a) == 3 && a[0] == "-e" && a[2] == "--" &&
+			fmt.Sprintf("%x", sha256.Sum256([]byte(a[1]))) == "67dac3a12bcb6fff612b4fc24467846a4a0aa4f988467d4d9b88bbcbad4e033a"
+	}
+	if hook == "" || (!bootstrap && !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.ts") &&
 		!is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs")) {
 		return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. Job steps do not match the supported chart."}
 	}

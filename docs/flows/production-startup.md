@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9"
+last_updated_session: "authoring-run/f67a604c-e411-4131-9cab-20d72a067871"
 ---
 
 # Production Startup Flow
@@ -76,12 +76,8 @@ graph TD
 Migration, bootstrap, API and worker use
 [`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts) with
 [password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
-For each password-mode connection, the factory parses the URL before applying
-explicit caller limits and startup options. It retains TLS-file reads and the
-effective IP-host certificate check.
-Failover, maintenance restart, `idle_session_timeout` or proxy reset discards the
-idle client and logs only its error code to stderr as `database.idle-client-error`.
-The process continues; the next query opens a new connection.
+Password connections retain caller limits, TLS-file reads and IP-host certificate checks.
+An idle connection failure logs `database.idle-client-error`; the next query reconnects.
 
 ### 1. Prepare native production inputs
 
@@ -145,7 +141,10 @@ Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
 API rollout. The migration container evaluates the chart's
 `files/migrate-selected-image.cjs` program. It validates the selected image's
 `db:migrate:production` package command, forwards the exact mode argument, and imports
-that image's migration entry point in the same Node process.
+that image's migration entry point in the same Node process. The bootstrap container
+uses `files/bootstrap-selected-image.cjs` to validate the image's
+`db:bootstrap:production` task and regular executable, then replaces Node with
+that executable. Doctor recognizes the exact selector or retained direct paths.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
 up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
 `OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
@@ -159,7 +158,7 @@ The hook validates its name and distinct database Secret keys; both database con
 Before reading the Job, [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress)
 `internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the receipt target.
 `initializationEvidence` checks marker, UID, exact chart steps, controller and terminal status,
-accepting current and retained bootstrap commands. Separate-upgrade Jobs verify schema first.
+Separate-upgrade Jobs verify schema first.
 Missing, replaced, refused or inconclusive evidence leaves the checkpoint unknown.
 Doctor reports Helm separately; write errors exit `1`.
 
@@ -318,14 +317,13 @@ Fresh bootstrap [checks both output paths](../reference/authentication/service-a
 
 `internal/occclient/client.go:Client.GetInstallation`
 
-After Helm readiness, use the approved reader to save
-`initial-admin-service-key.json` from protected bootstrap storage to an
-owner-readable file. A completed Job cannot serve the file via exec. The API and
-worker cannot retrieve it for the operator.
+After Helm readiness, save `initial-admin-service-key.json` from protected
+bootstrap storage to an owner-readable file. A completed Job cannot serve it
+through exec; neither Deployment can retrieve it.
 
-Use `occ installation get` with the service key. The Installation's `ID` must
-match `meta.installationId` from the key response. Its startup Secret annotation
-`openclaw.dev/installation-id` binds upgrades to the selected Installation.
+Use `occ installation get` with the service key. The Installation ID must match
+`meta.installationId`. The startup Secret's `openclaw.dev/installation-id`
+annotation binds upgrades to that Installation.
 
 The operator session's `upgrade_installation` checks Helm's deployed revision
 and API Pod binding. The scoped `docs/snippets/openshell-quickstart/request.mts`
@@ -385,6 +383,8 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
+- 2026-11-18 05:59: Select and directly execute the controller image's bootstrap program. (authoring-run/f67a604c-e411-4131-9cab-20d72a067871 - 90db5bf2bc4d9365b2c582025ce305a834115e6e)
+
 - 2026-11-18 02:53: Select the migration entry point from each controller image and retain signal handlers through cleanup. (authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9 - 4616630e8ab5edf25de29af948e80c72627af9c4)
 
 - 2026-11-18 02:26: Run the migration entry directly and distinguish separate-upgrade verification. (authoring-run/c3b46e7f-1066-4c87-9808-34e281ccaa98 - 8e8474eec4c7027bb45b5fe470e675e2e3e321cf)
@@ -396,6 +396,8 @@ The shell initializes the missing annotation, patches with UID and
 - 2026-11-14 17:11: Identify the generated API CA programs and link their TypeScript source layout. (authoring-run/6b781d32-d772-4aed-beb9-1598b28632b4 - 4ecdd59c5a64f217f0b7fafdf7a034e74b890ffc)
 
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
+
+- 2026-11-14 09:29: Trace the fixed Helm bootstrap task and receipt matching. (authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7 - e23d8854d8eec8701c29e4067e7899cb04fff97c)
 
 - 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
 

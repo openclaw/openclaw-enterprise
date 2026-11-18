@@ -109,6 +109,14 @@ test("console themes mount only on the API and restart it when the checksum chan
   }
 });
 const repository = fileURLToPath(new URL("../../", import.meta.url));
+const selectedImageBootstrapEntry = [
+  "-e",
+  await readFile(
+    join(repository, "deploy/helm/openclaw-enterprise/files/bootstrap-selected-image.cjs"),
+    "utf8",
+  ),
+  "--",
+];
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
@@ -1973,6 +1981,51 @@ test(
 );
 
 test(
+  "the stock chart directly executes the bootstrap declared by each controller image",
+  tooling,
+  async (t) => {
+    const objects = await resources((await renderProductionChart({}, { isUpgrade: true })).stdout);
+    const bootstrap = findResourceByComponent(
+      objects,
+      "Job",
+      "initialization",
+    ).spec.template.spec.containers.find(({ name }) => name === "bootstrap");
+    for (const extension of ["mjs", "ts"]) {
+      const directory = await temporaryDirectory(t, "occ-bootstrap-layout-");
+      await mkdir(join(directory, "scripts"));
+      const entry = `scripts/bootstrap-installation.${extension}`;
+      await writeFile(
+        join(directory, "package.json"),
+        JSON.stringify({
+          type: "module",
+          scripts: { "db:bootstrap:production": `NODE_ENV=production node ${entry}` },
+        }),
+      );
+      // A bootstrap imported by an evaluator does not run its guarded CLI entry point.
+      await writeFile(
+        join(directory, entry),
+        `if (!import.meta.main) throw new Error("bootstrap was not executed directly");
+process.stdout.write(JSON.stringify({ pid: process.pid, entry: process.argv[1] }));
+process.exitCode = Number(process.env.BOOTSTRAP_EXIT_CODE ?? 0);
+`,
+      );
+      const running = execute(process.execPath, bootstrap.args, { cwd: directory });
+      assert.deepEqual(JSON.parse((await running).stdout), {
+        pid: running.child.pid,
+        entry: join(directory, entry),
+      });
+      await assert.rejects(
+        execute(process.execPath, bootstrap.args, {
+          cwd: directory,
+          env: { ...process.env, BOOTSTRAP_EXIT_CODE: "23" },
+        }),
+        ({ code, stdout }) => code === 23 && JSON.parse(stdout).entry === join(directory, entry),
+      );
+    }
+  },
+);
+
+test(
   "the staged sign-in chart preserves the historical worker probes for both Helm operations",
   tooling,
   async (t) => {
@@ -1991,9 +2044,10 @@ test(
       const current = await renderProductionChart({}, { isUpgrade });
       const staged = await renderProductionChart({}, { chartDirectory, isUpgrade });
       const expected = await resources(
-        current.stdout
-          .replaceAll("scripts/production-healthcheck.ts", "scripts/production-healthcheck.mjs")
-          .replaceAll("scripts/bootstrap-installation.ts", "scripts/bootstrap-installation.mjs"),
+        current.stdout.replaceAll(
+          "scripts/production-healthcheck.ts",
+          "scripts/production-healthcheck.mjs",
+        ),
       );
       const rendered = await resources(staged.stdout);
       assert.deepEqual(rendered, expected);
@@ -2165,17 +2219,17 @@ test(
     assert.equal(migration.name, "migration");
     assert.deepEqual(migration.args, [...selectedImageMigrationEntry, "--expect-empty"]);
     assert.equal(bootstrap.name, "bootstrap");
-    assert.deepEqual(bootstrap.args, ["scripts/bootstrap-installation.ts"]);
+    assert.deepEqual(bootstrap.args, selectedImageBootstrapEntry);
     assert.equal(bootstrap.command, undefined);
 
-    // Upgrade may migrate an initialized database, but invokes the same direct bootstrap program.
+    // Upgrade may migrate an initialized database and selects bootstrap from the controller image.
     const upgrade = findResourceByComponent(
       await renderObjects(controlPlaneSelectorValues, { isUpgrade: true }),
       "Job",
       "initialization",
     ).spec.template.spec;
     assert.deepEqual(upgrade.initContainers[1].args, selectedImageMigrationEntry);
-    assert.deepEqual(upgrade.containers[0].args, ["scripts/bootstrap-installation.ts"]);
+    assert.deepEqual(upgrade.containers[0].args, selectedImageBootstrapEntry);
     assert.equal(upgrade.containers[0].command, undefined);
     assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
     assert.ok(!migration.env.some(({ name }) => name === "OCC_DATABASE_URL"));

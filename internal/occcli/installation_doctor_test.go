@@ -33,7 +33,12 @@ func installationCheckArg(t *testing.T) string {
 
 func selectedMigrationArg(t *testing.T) string {
 	t.Helper()
-	program, err := os.ReadFile("../../deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs")
+	return selectedProgramArg(t, "migrate-selected-image.cjs")
+}
+
+func selectedProgramArg(t *testing.T, name string) string {
+	t.Helper()
+	program, err := os.ReadFile(filepath.Join("../../deploy/helm/openclaw-enterprise/files", name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +70,7 @@ func TestInstallationDoctor(t *testing.T) {
 	const migration = `"scripts/migrate-production.mjs"`
 	const currentMigration = `"scripts/migrate-production.ts"`
 	selectedMigration := selectedMigrationArg(t)
+	selectedBootstrap := selectedProgramArg(t, "bootstrap-selected-image.cjs")
 	failed := strings.Replace(strings.Replace(job, `"type":"Complete"`, `"type":"Failed"`, 1), `"succeeded":1`, `"failed":1`, 1)
 	wrongRelease := strings.Replace(job, `io/instance":"demo"`, `io/instance":"other"`, 1)
 	upgrade := strings.Replace(job, migration+`,"--expect-empty"`, migration, 1)
@@ -78,6 +84,9 @@ func TestInstallationDoctor(t *testing.T) {
 		success    bool
 		uid        string
 	}{
+		{"selected-bootstrap", 200, strings.Replace(job, bootstrapTask, selectedBootstrap, 1), "install hook): complete", true, ""},
+		{"altered-selected-bootstrap", 200, strings.Replace(job, bootstrapTask, `"-e","process.exit(0)","--"`, 1), "steps do not match", false, ""},
+		{"selected-bootstrap-extra-arg", 200, strings.Replace(job, bootstrapTask, selectedBootstrap+`,"unexpected"`, 1), "steps do not match", false, ""},
 		{"selected-install", 200, strings.Replace(job, migration, selectedMigration, 1), "Initialization Job (install hook): complete", true, ""},
 		{"selected-upgrade", 200, strings.Replace(upgrade, migration, selectedMigration, 1), "upgrade hook): complete", true, ""},
 		{"selected-separate-upgrade", 200, strings.Replace(upgrade, migration, selectedMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
