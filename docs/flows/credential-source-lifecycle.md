@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-17
-last_updated_session: 01a1eb01-0dea-7f01-8613-761574377d3f
+updated: 2026-11-18
+last_updated_session: authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7
 ---
 
 # Credential source lifecycle Flow
@@ -81,10 +81,10 @@ with `ResourceConflictError` before effects. OCC commits intermediate State befo
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`,
 `packages/occ/src/index.ts:createCredentialSource`
 
-The current route accepts `name`, `type`, optional `config` and lowercase-keyed `secrets`.
-Fastify also publishes [TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts)
-as OpenAPI components. The [CRUD routes](../../packages/contracts/src/api/routes.ts) continue to use
-Secret references until the registration handler, source store and callers switch to the selected owner.
+OCC checks catalog field names before advertising capabilities. Fastify reports a malformed
+`config` key at its escaped field path. The [CRUD routes](../../packages/contracts/src/api/routes.ts)
+use Secret references. Fastify publishes the [TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts)
+as standalone OpenAPI components.
 One transaction authorizes `credential_source:create`, locks the ready Namespace,
 requires its selected source Driver, then reads the catalog.
 An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
@@ -376,6 +376,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 12:46: Check catalog field names and report malformed config keys. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 4875ab0f5)
 
 - 2026-11-17 19:44: Distinguish the published TokenService schemas from the current registration handler. (01a1eb01-0dea-7f01-8613-761574377d3f - 23b54e285)
 

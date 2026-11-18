@@ -400,10 +400,11 @@ export const CredentialSourceReference = Type.Object(
   },
 );
 
+export const CREDENTIAL_SOURCE_FIELD_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const credentialSourceFieldName = {
   minLength: 1,
   maxLength: 64,
-  pattern: "^[a-z][a-z0-9_]{0,63}$",
+  pattern: CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.source,
 };
 
 export const CredentialSourceType = Type.String({

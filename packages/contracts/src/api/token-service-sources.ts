@@ -2,6 +2,7 @@ import { Type } from "typebox";
 
 import {
   BackendId,
+  CREDENTIAL_SOURCE_FIELD_NAME_PATTERN,
   CredentialSourceConfig,
   CredentialSourceId,
   CredentialSourceReference,
@@ -13,7 +14,7 @@ import {
 import { CredentialSourceStatusSchema } from "./resources.ts";
 
 const material = Type.Record(Type.String(), SecretValue, {
-  propertyNames: { pattern: "^[a-z][a-z0-9_]{0,63}$" },
+  propertyNames: { pattern: CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.source },
   minProperties: 1,
   maxProperties: 16,
   writeOnly: true,

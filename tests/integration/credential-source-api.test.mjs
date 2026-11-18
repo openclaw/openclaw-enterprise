@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { Check } from "typebox/value";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import { InstallationResponse } from "../../packages/contracts/src/api/resources.ts";
 
 import {
   createOpenShellBackend,
@@ -319,6 +320,8 @@ test("source API rejects routing inputs and registers independently authorized d
   });
   // Neither an old routing field nor permission to use a default-provider key selects a route.
   assertRefused(await f.create("routing", { base_url: endpoint }), "base_url", /has no field/);
+  // Schema validation runs before catalog lookup and must escape the submitted key as one segment.
+  assertRefused(await f.create("invalid field", { "bad/key~name": "x" }), "bad~1key~0name");
   await f.assertNothingSaved();
   assert.equal((await f.create("default")).status, 201);
   assert.equal(
@@ -530,6 +533,20 @@ test("Installation discovery serializes OpenShell model authentication and refre
   assert.equal(refreshToken?.required, true);
   assert.equal(refreshToken?.issuerRotated, true);
   assert.deepEqual(f.mutations, []);
+});
+
+test("Installation discovery refuses a catalog field that registration cannot accept", async (t) => {
+  const f = await fixture(t);
+  const { body } = await f.request("GET", "/installation");
+  assert.ok(Check(InstallationResponse, body));
+  // Change one name in an otherwise valid catalog, then offer it through the selected Driver.
+  const types = body.data.capabilities.credentialSources.types;
+  types.find(({ type }) => type === "openai").config[0].name = "client-id";
+  assert.equal(Check(InstallationResponse, body), false);
+  f.driver.listSourceTypes = async () => types;
+  const response = await f.request("GET", "/installation");
+  assert.equal(response.status, 503);
+  assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
 test("credential source HTTP admission rejects invalid endpoints without retaining records", async (t) => {

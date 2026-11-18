@@ -270,6 +270,7 @@ import type {
   HarnessAuthSnapshot,
 } from "@openclaw-enterprise/contracts";
 import {
+  CREDENTIAL_SOURCE_FIELD_NAME_PATTERN,
   HARNESS_EXECUTION_MODES,
   isName,
   NAME_RULE,
@@ -2668,6 +2669,18 @@ export class OpenClawController {
       openclaw,
       ...(gatewayTypes || types.length ? { credentialSources: { types } } : {}),
     };
+    if (
+      capabilities.credentialSources?.types.some(({ config, secrets }) =>
+        [...config, ...secrets].some(
+          ({ name }) =>
+            typeof name !== "string" || !CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.test(name),
+        ),
+      )
+    ) {
+      throw new DependencyUnavailableError(
+        "The credential source catalog contains an invalid field name.",
+      );
+    }
     const catalogs = this.enabledPluginDrivers().map((driver) => ({
       harnessId: driver.harnessId,
       pluginPolicies: {

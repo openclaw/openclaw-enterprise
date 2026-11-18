@@ -13073,7 +13073,10 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
+                                            "name": {
+                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                                              "type": "string"
+                                            },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -13117,7 +13120,10 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
+                                            "name": {
+                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                                              "type": "string"
+                                            },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -13497,7 +13503,10 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
+                                            "name": {
+                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                                              "type": "string"
+                                            },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -13541,7 +13550,10 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
+                                            "name": {
+                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                                              "type": "string"
+                                            },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -15067,7 +15079,10 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
+                                            "name": {
+                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                                              "type": "string"
+                                            },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -15111,7 +15126,10 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
+                                            "name": {
+                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                                              "type": "string"
+                                            },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
