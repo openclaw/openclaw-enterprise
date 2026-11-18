@@ -18,16 +18,16 @@ import {
   validatePackage,
   validatePreparedImage,
   verifyGhcr,
-} from "../../scripts/ci/container-release.mjs";
+} from "../../scripts/ci/container-release.ts";
 import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.ts";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import {
   chartArchiveContent,
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
-import { writeCommand } from "../helpers/fake-commands.ts";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const sourceSha = "a".repeat(40);
@@ -681,6 +681,394 @@ async function writeOciBlob(layout: string, value: object): Promise<BlobIdentity
   return { digest: `sha256:${hash}`, size: bytes.length };
 }
 
+test("offline download client projection binds image metadata to the selected publication platform", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-runtime-download-projection-");
+  await mkdir(join(directory, "blobs/sha256"), { recursive: true });
+  const selectedPath = "/opt/tools/bin/example";
+  const selectionFile = "deploy/runtime/additional-download-clients.json";
+  await mkdir(join(directory, "deploy/runtime"), { recursive: true });
+  const selectionPath = join(directory, selectionFile);
+  await writeFile(selectionPath, JSON.stringify([selectedPath]));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
+  git("init", "--quiet", "--template=");
+  git("add", selectionFile);
+  git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "commit",
+    "--quiet",
+    "-m",
+    "Select the runtime clients",
+  );
+  const selectedSource = git("rev-parse", "HEAD");
+  // A local edit must not change the selection from the authenticated publication.
+  await writeFile(selectionPath, JSON.stringify(["/opt/tools/bin/unreviewed"]));
+  const nodeBaseImage = `docker.io/library/node:24.22.1@sha256:${"a".repeat(64)}`;
+  const platformRecords = await Promise.all(
+    (["amd64", "arm64"] as const).map(async (architecture) => {
+      const config = await writeOciBlob(directory, {
+        os: "linux",
+        architecture,
+        config: { Labels: { "org.opencontainers.image.revision": selectedSource } },
+        rootfs: { type: "layers", diff_ids: [] },
+      });
+      const mediaType = "application/vnd.oci.image.manifest.v1+json";
+      const manifest = await writeOciBlob(directory, {
+        schemaVersion: 2,
+        mediaType,
+        config: { ...config, mediaType: "application/vnd.oci.image.config.v1+json" },
+        layers: [],
+      });
+      return {
+        manifest: { ...manifest, mediaType, platform: { os: "linux", architecture } },
+        seal: {
+          platform: `linux/${architecture}`,
+          digest: manifest.digest,
+          configDigest: config.digest,
+        },
+      };
+    }),
+  );
+  const index = await writeOciBlob(directory, {
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests: platformRecords.map(({ manifest }) => manifest),
+  });
+  const platformDigests = platformRecords.map(({ seal }) => seal);
+  const [amd64, arm64] = platformDigests;
+  assert.ok(amd64 && arm64);
+  const image = `${runtimeReceipt.destination}@${index.digest}`;
+  const publication = {
+    sourceSha: selectedSource,
+    workflowSha: selectedSource,
+    tag: `sha-${selectedSource}`,
+    nodeBaseImage,
+    platforms: platformDigests.map((row) => row.platform),
+    archiveSha256: "f".repeat(64),
+  };
+  const controller = { ...controllerReceipt, ...publication };
+  const runtime = { ...runtimeReceipt, ...publication, digest: index.digest, platformDigests };
+  const receipt = [controller, runtime];
+  const receiptPath = join(directory, "publication.json");
+  const metadataPath = join(directory, "provenance.json");
+  const metadataTar = join(directory, "metadata.tar");
+  const imageTar = join(directory, "image.tar");
+  execFileSync("tar", ["-cf", imageTar, "-C", directory, "blobs"]);
+  const apt = { resolvedBinary: "/usr/lib/apt/methods/http", binarySha256: "3".repeat(64) };
+  const downloadClients = {
+    [selectedPath]: { resolvedBinary: selectedPath, binarySha256: "6".repeat(64) },
+    "/usr/bin/curl": { resolvedBinary: "/usr/bin/curl", binarySha256: "2".repeat(64) },
+    "/usr/lib/apt/methods/http": apt,
+    "/usr/lib/apt/methods/https": apt,
+    "/usr/local/bin/node": { resolvedBinary: "/usr/local/bin/node", binarySha256: "4".repeat(64) },
+  };
+  async function archiveMetadata(clients: Record<string, typeof apt>, architecture = "arm64") {
+    await writeFile(
+      metadataPath,
+      JSON.stringify({ platform: "linux", architecture, downloadClients: clients }),
+    );
+    execFileSync("tar", ["--format=ustar", "-cf", metadataTar, "-C", directory, "provenance.json"]);
+  }
+  await writeFile(receiptPath, JSON.stringify(receipt));
+  await archiveMetadata(downloadClients);
+  // Replace only Docker I/O. The real verifier parses the hashed OCI export,
+  // and the real extractor parses the tar returned for the exact image path.
+  const container = "9".repeat(64);
+  const extractLog = join(directory, "create.log");
+  await writeCommand(
+    directory,
+    "docker",
+    `
+import json, os, pathlib, signal, sys
+root = pathlib.Path(__file__).parent
+args = sys.argv[1:]
+owned = root / "container-label"
+platform = os.environ.get("FIXTURE_PLATFORM", "linux/arm64")
+architecture = platform.split("/")[1]
+children = {"linux/amd64": "${amd64.digest}", "linux/arm64": "${arm64.digest}"}
+if args[:2] == ["image", "inspect"]:
+    assert args[2:] in [["${image}"], ["--platform", platform, "${image}"]]
+    selected = "--platform" in args
+    digest = children[platform] if selected else "${index.digest}"
+    print(json.dumps([{"Descriptor": {"digest": digest}, "Os": "linux", "Architecture": architecture}]))
+elif args == ["image", "save", "--platform", platform, "${image}"]:
+    sys.stdout.buffer.write((root / "image.tar").read_bytes())
+elif args[0] == "create":
+    assert args[-5:] == ["--platform", platform, "--pull=never", "${image}", "/bin/true"]
+    with (root / "create.log").open("a") as log:
+        log.write("create\\n")
+    owned.write_text(args[args.index("--label") + 1].split("=", 1)[1])
+    if os.environ.get("INTERRUPT_CREATE") == "1":
+        os.kill(os.getppid(), signal.SIGTERM)
+        signal.pause()
+    print("${container}")
+elif args == ["cp", "${container}:/opt/oce/runtime/provenance.json", "-"]:
+    sys.stdout.buffer.write((root / "metadata.tar").read_bytes())
+elif args[0] == "ps":
+    if owned.exists():
+        print("${container}")
+elif args[:2] == ["container", "inspect"] and args[-1] == "${container}":
+    print(owned.read_text())
+elif args == ["rm", "--volumes", "${container}"]:
+    owned.unlink()
+else:
+    sys.exit(2)
+`,
+    { interpreter: "python3" },
+  );
+  const project = (extraEnv: NodeJS.ProcessEnv = {}, nativePreload?: string) =>
+    spawnSync(
+      process.execPath,
+      [
+        ...(nativePreload ? ["--import", nativePreload] : []),
+        fileURLToPath(
+          new URL("../../scripts/ci/runtime-download-client-projection.ts", import.meta.url),
+        ),
+        receiptPath,
+        ...(nativePreload ? [amd64.platform, "--native-selection"] : [arm64.platform]),
+      ],
+      {
+        encoding: "utf8",
+        timeout: 15_000,
+        cwd: directory,
+        env: {
+          ...process.env,
+          PATH: commandPath(directory),
+          SOURCE_SHA: selectedSource,
+          PUBLICATION_RUN_ID: "123",
+          PUBLICATION_ATTEMPT: "1",
+          NODE_BASE_IMAGE: nodeBaseImage,
+          GHCR_RUNTIME_IMAGE: runtimeReceipt.destination,
+          ...extraEnv,
+        },
+      },
+    );
+  const projected = project();
+  assert.equal(projected.status, 0, projected.stderr);
+  assert.deepEqual(JSON.parse(projected.stdout), {
+    sourceImage: image,
+    platformImage: `${runtimeReceipt.destination}@${arm64.digest}`,
+    platform: arm64.platform,
+    downloadClients,
+  });
+
+  // An incorrect platform seal must fail before a container can be created.
+  const mismatchedSeal = [
+    controller,
+    { ...runtime, platformDigests: [amd64, { ...arm64, configDigest: digest }] },
+  ];
+  await writeFile(receiptPath, JSON.stringify(mismatchedSeal));
+  const rejectedSeal = project();
+  assert.equal(rejectedSeal.status, 1, rejectedSeal.stderr);
+  assert.match(rejectedSeal.stderr, /differs from the publication platform seal/);
+  assert.equal(rejectedSeal.stdout, "");
+  assert.equal(await readFile(extractLog, "utf8"), "create\n");
+
+  await writeFile(receiptPath, JSON.stringify(receipt));
+  // Valid provenance in the first member must not admit an unexpected second member.
+  execFileSync("tar", [
+    "--format=ustar",
+    "-cf",
+    metadataTar,
+    "-C",
+    directory,
+    "provenance.json",
+    selectionFile,
+  ]);
+  const rejectedArchive = project();
+  assert.equal(rejectedArchive.status, 1, rejectedArchive.stderr);
+  assert.match(
+    rejectedArchive.stderr,
+    /Image file archive contains nonzero padding or additional data/,
+  );
+  assert.equal(rejectedArchive.stdout, "");
+  await assert.rejects(readFile(join(directory, "container-label")), { code: "ENOENT" });
+
+  await archiveMetadata({
+    ...downloadClients,
+    "/usr/lib/apt/methods/https": { ...apt, binarySha256: "5".repeat(64) },
+  });
+  const rejectedMetadata = project();
+  assert.equal(rejectedMetadata.status, 1, rejectedMetadata.stderr);
+  assert.match(rejectedMetadata.stderr, /Executable aliases disagree/);
+  assert.equal(rejectedMetadata.stdout, "");
+
+  const { [selectedPath]: selectedClient, ...remainingClients } = downloadClients;
+  await archiveMetadata({ ...remainingClients, "/opt/tools/bin/unreviewed": selectedClient });
+  const substituted = project();
+  assert.equal(substituted.status, 1);
+  assert.match(substituted.stderr, /Missing runtime download client provenance/);
+  assert.equal(substituted.stdout, "");
+
+  await archiveMetadata({
+    ...downloadClients,
+    [selectedPath]: { ...selectedClient, resolvedBinary: "/usr/local/bin/node" },
+  });
+  const redirected = project();
+  assert.equal(redirected.status, 1);
+  assert.match(redirected.stderr, /resolves to an unexpected path/);
+  assert.equal(redirected.stdout, "");
+
+  // Simulate Docker creating the resource while the CLI loses its create reply.
+  // Shutdown must reconcile the owned container before exiting without a projection.
+  const interrupted = project({ INTERRUPT_CREATE: "1" });
+  assert.equal(interrupted.status, 143, interrupted.stderr);
+  assert.equal(interrupted.stdout, "");
+  await assert.rejects(readFile(join(directory, "container-label")), { code: "ENOENT" });
+
+  await t.test(
+    "optional native selection joins the protected smoke ZIP to the publication",
+    async () => {
+      await archiveMetadata(downloadClients, "x64");
+      const preload = join(directory, "actions.mjs");
+      const name = "platform-runtime-amd64-123-1";
+      const zipDigest = "8".repeat(64);
+      const actions = {
+        id: 234,
+        name,
+        expired: false,
+        digest: `sha256:${zipDigest}`,
+        created_at: "2026-11-14T10:30:00Z",
+        workflow_run: {
+          id: 123,
+          repository_id: 456,
+          head_repository_id: 456,
+          head_branch: "main",
+          head_sha: selectedSource,
+        },
+      };
+      // Stub GitHub transport alongside the fixture's Docker commands. The CLI
+      // still verifies the sealed image and reads its executable provenance.
+      await writeFile(
+        preload,
+        `
+import assert from "node:assert/strict";
+import { MessageChannel } from "node:worker_threads";
+const { FIXTURE_ARTIFACT, FIXTURE_ATTEMPT, FIXTURE_PUBLISH, FIXTURE_INTERRUPT, GH_TOKEN } = process.env;
+const repo = { id: 456, full_name: ${JSON.stringify(repository)}, private: false };
+const workflow = { id: 345, path: ${JSON.stringify(publishWorkflow)}, state: "active" };
+const run = {
+  id: 123, run_attempt: Number(FIXTURE_ATTEMPT ?? "1"), workflow_id: workflow.id, path: workflow.path,
+  repository: repo, head_repository: repo, head_branch: "main", head_sha: "${selectedSource}",
+  event: "workflow_dispatch", status: "completed", conclusion: "success",
+};
+const job = { head_sha: run.head_sha, status: "completed", conclusion: "success" };
+const prefix = "/repos/" + repo.full_name + "/actions";
+const responses = new Map([
+  [prefix + "/runs/123", run],
+  [prefix + "/workflows/container-publish.yml", workflow],
+  [prefix + "/runs/123/attempts/1/jobs?per_page=100&page=1", { jobs: [
+    { ...job, name: "Publish exact OCI digests to public GHCR", conclusion: FIXTURE_PUBLISH ?? job.conclusion },
+    { ...job, name: "prepare / Smoke runtime (amd64)", started_at: "2026-11-14T10:00:00Z", completed_at: "2026-11-14T10:40:00Z" },
+  ] }],
+  [prefix + "/runs/123/artifacts?name=${name}&per_page=100&page=1", { artifacts: JSON.parse(FIXTURE_ARTIFACT) }],
+]);
+globalThis.fetch = async (url, options) => {
+  const { origin, pathname, search } = new URL(url);
+  assert.equal(origin, "https://api.github.com");
+  assert.equal(options.headers.Authorization, "Bearer " + GH_TOKEN);
+  if (FIXTURE_INTERRUPT === "1" && pathname.endsWith("/artifacts")) {
+    const { port1, port2 } = new MessageChannel();
+    port1.ref();
+    return new Promise((_, reject) => {
+      options.signal.addEventListener("abort", () => {
+        port1.close();
+        port2.close();
+        reject(options.signal.reason);
+      }, { once: true });
+      process.kill(process.pid, "SIGTERM");
+    });
+  }
+  return responses.has(pathname + search)
+    ? Response.json(responses.get(pathname + search))
+    : new Response(null, { status: 404 });
+};
+`,
+      );
+      const select = (artifacts: Record<string, unknown>[], extraEnv: NodeJS.ProcessEnv = {}) =>
+        project(
+          {
+            FIXTURE_PLATFORM: amd64.platform,
+            FIXTURE_ARTIFACT: JSON.stringify(artifacts),
+            GH_TOKEN: "synthetic-actions-read-token",
+            ...extraEnv,
+          },
+          preload,
+        );
+      const admitted = select([actions]);
+      assert.deepEqual([admitted.status, admitted.stderr], [0, ""]);
+      assert.deepEqual(JSON.parse(admitted.stdout), {
+        sourceImage: image,
+        platformImage: `${runtimeReceipt.destination}@${amd64.digest}`,
+        configDigest: amd64.configDigest,
+        archive: "platform.zip",
+        archiveSha256: zipDigest,
+        artifactId: "234",
+        artifactName: name,
+        sourceSha: selectedSource,
+        workflowSha: selectedSource,
+        runId: "123",
+        attempt: "1",
+        ciRunId: "456",
+        ciAttempt: "1",
+        nodeBaseImage,
+      });
+      const cases = [
+        [[], /exactly one Actions artifact/, {}],
+        [[{ ...actions, name: "container-runtime-123-1" }], /exactly one Actions artifact/, {}],
+        [[actions, { ...actions, id: 235 }], /exactly one Actions artifact/, {}],
+        [[{ ...actions, expired: true }], /unexpired native runtime artifact/, {}],
+        [[{ ...actions, digest: undefined }], /GitHub Actions ZIP digest/, {}],
+        [
+          [{ ...actions, workflow_run: { ...actions.workflow_run, id: 124 } }],
+          /unbound to the original publication run/,
+          {},
+        ],
+        [
+          [{ ...actions, created_at: "2026-11-14T09:30:00Z" }],
+          /not uploaded during the selected smoke job/,
+          {},
+        ],
+        [
+          [actions],
+          /Require a successful Publish exact OCI digests/,
+          { FIXTURE_PUBLISH: "skipped" },
+        ],
+      ] as const;
+      for (const [artifacts, diagnostic, extraEnv] of cases) {
+        const refused = select([...artifacts], extraEnv);
+        assert.deepEqual([refused.status, refused.stdout], [1, ""], refused.stderr);
+        assert.match(refused.stderr, diagnostic);
+      }
+      const otherAttempt = select([actions], { FIXTURE_ATTEMPT: "2" });
+      assert.deepEqual([otherAttempt.status, otherAttempt.stdout], [1, ""], otherAttempt.stderr);
+      assert.match(otherAttempt.stderr, /'2' !== '1'/);
+      const interrupted = select([actions], { FIXTURE_INTERRUPT: "1" });
+      assert.deepEqual([interrupted.status, interrupted.stdout], [143, ""], interrupted.stderr);
+      assert.match(interrupted.stderr, /Interrupted by SIGTERM/);
+      await writeFile(
+        receiptPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          images: receipt,
+          preparation: { artifacts: [] },
+          publication: { runId: "125", attempt: "1" },
+        }),
+      );
+      const resumed = select([actions]);
+      assert.deepEqual([resumed.status, resumed.stdout], [1, ""], resumed.stderr);
+      assert.match(resumed.stderr, /authenticated direct publication receipt/);
+    },
+  );
+});
+
 test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
   const directory = await temporaryDirectory(t, "enterprise-oci-platforms-");
   await mkdir(join(directory, "blobs/sha256"), { recursive: true });
@@ -945,7 +1333,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   function assemble(input: Awaited<ReturnType<typeof prepare>>) {
     return execFileSync(
       process.execPath,
-      ["scripts/ci/container-release.mjs", "assemble", input.output],
+      ["scripts/ci/container-release.ts", "assemble", input.output],
       {
         env: input.env,
         encoding: "utf8",
@@ -962,7 +1350,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   ) {
     return execFileSync(
       process.execPath,
-      ["scripts/ci/container-release.mjs", command, join(untested.output, arch)],
+      ["scripts/ci/container-release.ts", command, join(untested.output, arch)],
       {
         env: {
           ...untested.env,
@@ -1023,7 +1411,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
     return JSON.parse(
       execFileSync(
         process.execPath,
-        ["scripts/ci/container-release.mjs", "verify-platform", join(valid.output, arch)],
+        ["scripts/ci/container-release.ts", "verify-platform", join(valid.output, arch)],
         {
           env: {
             ...valid.env,
@@ -1098,7 +1486,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   }
   assemble(valid);
   const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
-  execFileSync(process.execPath, ["scripts/ci/container-release.mjs", "seal", valid.output], {
+  execFileSync(process.execPath, ["scripts/ci/container-release.ts", "seal", valid.output], {
     env: { ...valid.env, IMAGE_DIGEST: digest },
   });
   const sealed = record(JSON.parse(await readFile(join(valid.output, "metadata.json"), "utf8")));
@@ -1280,7 +1668,7 @@ esac`,
   );
   const result = spawnSync(
     process.execPath,
-    ["scripts/ci/container-release.mjs", "smoke", directory],
+    ["scripts/ci/container-release.ts", "smoke", directory],
     {
       env: {
         ...process.env,

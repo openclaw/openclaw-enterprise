@@ -172,7 +172,7 @@ spec:
       containers:
         - name: bootstrap
           image: {{ .Values.images.controller | quote }}
-          args: ["--run", "db:bootstrap:production"]
+          args: ["scripts/bootstrap-installation.ts"]
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}
           resources:

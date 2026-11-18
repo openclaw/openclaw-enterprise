@@ -81,8 +81,9 @@ pnpm test:integration
 ```
 
 Use `pnpm format:fix` to format active workspace changes, then inspect the diff
-for unrelated formatting. `typecheck` and `build` currently invoke the same
-TypeScript build. Do not run `npm run precommit`.
+for unrelated formatting. `pnpm build` compiles the workspace projects listed
+in `tsconfig.json`. `pnpm typecheck` also checks the projects defined in
+`tests/tsconfig.json` and `scripts/tsconfig.json`. Do not run `npm run precommit`.
 
 For documentation changes, including docs-site presentation, use formatting,
 the [docs build and link checks](docs/contributing/documentation.md#preview-and-check),

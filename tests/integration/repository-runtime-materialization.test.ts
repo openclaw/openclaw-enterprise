@@ -23,7 +23,7 @@ import {
   type ClientFiles,
 } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/access/client/environment.ts";
-import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.ts";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -40,12 +40,10 @@ before(async (t) => {
   const build = join(root, "build");
   await mkdir(join(build, "scripts"), { recursive: true });
   await mkdir(join(build, "apps/controller/dist"), { recursive: true });
-  for (const extension of ["mjs", "ts"]) {
-    await cp(
-      join(repository, `scripts/build-repository-credentials.${extension}`),
-      join(build, `scripts/build-repository-credentials.${extension}`),
-    );
-  }
+  await cp(
+    join(repository, "scripts/build-repository-credentials.ts"),
+    join(build, "scripts/build-repository-credentials.ts"),
+  );
   // Like the detached-package suite, use the real artifact builder and this
   // checkout's TypeScript output. A workspace build is a prerequisite.
   await cp(join(repository, "apps/controller/dist"), join(build, "apps/controller/dist"), {
@@ -59,7 +57,7 @@ before(async (t) => {
   await symlink(join(repository, "node_modules"), join(build, "node_modules"));
   const result = spawnSync(
     process.execPath,
-    [join(build, "scripts/build-repository-credentials.mjs")],
+    [join(build, "scripts/build-repository-credentials.ts")],
     {
       encoding: "utf8",
       timeout: 30000,

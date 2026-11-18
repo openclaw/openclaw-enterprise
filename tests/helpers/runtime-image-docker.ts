@@ -5,9 +5,9 @@ import {
   type ExecFileOptionsWithStringEncoding,
 } from "node:child_process";
 import { promisify } from "node:util";
-import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { followContainer } from "./docker-follow.ts";
-import { withTestOwnerLabel } from "./docker-test-owner.mjs";
+import { withTestOwnerLabel } from "./docker-test-owner.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 
 export const execute = promisify(execFile);
@@ -41,7 +41,7 @@ export async function runDocker(
 
 // Runs a docker command. A failure rejects with dockerCommandFailure's error. A command that
 // creates a container, volume or network labels it with this process as owner, so a signal
-// that stops the test still removes it (docker-test-owner.mjs). Failures name the caller's
+// that stops the test still removes it (docker-test-owner.ts). Failures name the caller's
 // arguments, without the label.
 export function runDockerCommand(
   dockerBin: string,
@@ -61,7 +61,7 @@ export async function runDockerCommand(
   options: DockerCommandOptions = {},
   input?: string | Uint8Array,
 ) {
-  const labeledArgs: readonly unknown[] = withTestOwnerLabel(dockerBin, dockerArgs);
+  const labeledArgs = withTestOwnerLabel(dockerBin, dockerArgs);
   const { redact = [], ...execOptions } = options;
   const timeout = execOptions.timeout ?? 60_000 * imageSmokeTimeoutMultiplier;
   const startedAt = Date.now();
@@ -246,7 +246,7 @@ export function commandOutput(error: object) {
   return `${stdout ?? ""}\n${stderr ?? ""}`;
 }
 
-// CI keeps only the first 16 KiB of a failure message (scripts/ci/reporter.mjs),
+// CI keeps only the first 16 KiB of a failure message (scripts/ci/reporter.ts),
 // so a whole container log in an error loses its end: the wrapper's stderr and
 // the actual failure (finding 976 misread a cut log as a Doctor stall). Errors
 // carry at most the last `limit` characters of process output instead, from a

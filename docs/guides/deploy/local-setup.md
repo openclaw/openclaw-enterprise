@@ -55,7 +55,7 @@ private directory created above, even after changing checkouts.
 ```bash
 # Stage the network policy for cluster startup and the configuration script for the Helm reload.
 install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
-install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mts "$RUN_DIR/configure-installation.mts"
 source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
@@ -89,11 +89,11 @@ The launcher enables Gateway TLS, mTLS and authentication before startup. Wait f
 
 Run this from the matching release checkout. The configuration script removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
 
-The [configuration script](../../snippets/openshell-quickstart/configure-installation.mjs) checks that the generated rule matches the expected settings before changing it.
+The [configuration script](../../snippets/openshell-quickstart/configure-installation.mts) checks that the generated rule matches the expected settings before changing it.
 
 ```bash
 # Edit the fresh installation.yaml once, before provisioning Agents.
-node "$RUN_DIR/configure-installation.mjs"
+node "$RUN_DIR/configure-installation.mts"
 ```
 
 Step 4 reloads this edit through the authenticated operator session, preserving the

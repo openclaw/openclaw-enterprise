@@ -12,7 +12,7 @@ import {
 import type { Identity } from "../../packages/contracts/src/index.ts";
 import { DEVICE_ACCESS_TOKEN } from "../helpers/device-credential-gateway.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import {
   assertDeviceAudit,
   assertNoCredentials,

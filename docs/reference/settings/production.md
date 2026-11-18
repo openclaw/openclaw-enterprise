@@ -209,7 +209,7 @@ same guarded sign-in profile and recovery user and Google.
 ### Production Installation bootstrap environment
 
 Compose runs `node scripts/bootstrap-installation.ts` in development. After the
-Installation check and migration, the Helm Job runs `node --run db:bootstrap:production`.
+Installation check and migration, the Helm Job runs `node scripts/bootstrap-installation.ts`.
 The task starts the TypeScript script in production mode. For direct runs, set
 `NODE_ENV` to `development` or `production`. Development uses the
 [`OPENCLAW_DEV_*` defaults](development.md#required-development-controller-environment)

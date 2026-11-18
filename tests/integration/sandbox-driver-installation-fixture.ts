@@ -5,7 +5,7 @@ import {
   ConfigurationValidationError,
   type OpenShellBackendConfiguration,
 } from "../../packages/contracts/src/index.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 
 type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
@@ -17,7 +17,6 @@ export function openShellWorkspaceHarnessConfiguration() {
   const configuration = {
     gateway,
     kubernetes: {
-      runtimeClassName: "openshell-sandbox",
       userNamespaces: false,
       serviceAccount: {
         mode: "gatewayConfigured",

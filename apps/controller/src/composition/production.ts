@@ -86,7 +86,7 @@ export type ProductionStartupPhase =
 
 /**
  * Code-only dependencies, kept out of `ProductionConfig` so that no setting can supply them:
- * api-startup.mjs passes none. Tests pass a cheap `passwordHasher`; without one the
+ * api-startup.ts passes none. Tests pass a cheap `passwordHasher`; without one the
  * controller hashes with `scryptPasswordHasher`.
  */
 export interface CompositionDependencies {
@@ -381,7 +381,7 @@ export async function composeProduction(
         enabled: config.agentRuntimeLogsEnabled !== false,
         cursorSecret: config.authSecret,
       },
-      ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
+      ...(config.gatewayApiKeyPath !== undefined
         ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-13
-last_updated_session: "authoring-run/91737212-2ec5-4aca-981d-501670320fd5"
+updated: 2026-11-17
+last_updated_session: "authoring-run/01a1bfc4-452e-7521-a7b2-2e1c44f855df"
 ---
 
 # Namespace IAM Policy Flow
@@ -220,7 +220,14 @@ behavior.
   instead authorizes `create` on the Namespace collection at the Installation
   before it creates the Namespace.
   `fenceAgentProvisioning` also takes the IAM configuration lock before
-  `lockNamespace`.
+  `lockNamespace`. The final `completeNamespaceConnection` transaction holds the
+  browser session, then this shared lock before authorizing and granting
+  exact-source access. `updateAgent` takes it at transaction entry for
+  `repositoryStandingApproval`; ordinary edits are unchanged. Startup's
+  `initializeDefaultPresets` takes the same
+  lock before Installation authorization and Namespace locks. A configured
+  permission withdrawal commits before these decisions or after durable
+  authority and success audit commit.
 - **Agent Backend selection.** `createAgent` resolves a supplied Backend ID and
   checks its type only after the second `agent:create` authorization. A caller
   without that grant receives `403` for both configured and unknown valid IDs.
@@ -250,10 +257,11 @@ behavior.
 
 ## Debugging and Verification
 
-- `node --test tests/integration/occ-api.test.mjs` checks the HTTP contract and
-  API admission behavior for Namespace IAM policy, including refusal of all five
-  writes without declared transaction participation. The Agent Backend case
-  also checks equal create denials for configured and unknown valid Backend IDs,
+- `node --test tests/integration/occ-api-namespace-iam-policy.test.ts` checks the
+  Namespace IAM HTTP contract and API admission, including refusal of all five
+  writes without declared transaction participation.
+- The Agent Backend case in `tests/integration/occ-api.test.mjs` checks equal
+  create denials for configured and unknown valid Backend IDs,
   request-correlated authorization audit, unchanged process-local Agent,
   Configuration, IAM policy, ServicePrincipal, and operation State, and creation
   by a non-administrator with the required grants.
@@ -261,7 +269,7 @@ behavior.
   real PostgreSQL and HTTP admission, the configured rows, membership, Owner
   bindings in `default`, refusal of a second member, deploy-time grants, a
   configuration change at restart, and the authority fences.
-- `node --test tests/conformance/occ-api-security.test.mjs` checks that Agent
+- `node --test tests/conformance/occ-api-security.test.ts` checks that Agent
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.ts` checks
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.
@@ -297,6 +305,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-17 19:20: Order Connection ownership, standing repository approval, and startup Preset ownership against configured-policy changes. (authoring-run/01a1bfc4-452e-7521-a7b2-2e1c44f855df - ecf6a80b605ec64c9d68a150cb07dbda5055d2a8)
 - 2026-11-13 06:59: Condense the Namespace IAM policy flow while retaining authorization and transaction boundaries. (authoring-run/91737212-2ec5-4aca-981d-501670320fd5 - 6192588c3a8fce971689a174fc34ae9deb1c8c80)
 - 2026-11-13 05:56: Authorize Agent creation before configured Backend lookup; preserve creator and catalog permissions, distinguish Namespace creation admission, and cover denial audit and unchanged State. (authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)

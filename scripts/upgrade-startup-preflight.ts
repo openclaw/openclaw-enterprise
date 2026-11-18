@@ -37,10 +37,17 @@ const identityCheck = `
 let identityPool;
 let identityClient;
 let identityMismatch = false;
+// True while the Pod opens its connection: a failure or the deadline then means the database
+// was not reached (or refused the session), not that its contents are wrong. A dropped
+// connection, such as egress that does not admit the database address, otherwise looks
+// exactly like an unreadable Installation table (finding 3255).
+let identityConnecting = false;
 const identityFailure = () => {
   process.stderr.write(identityMismatch
     ? "Candidate application database does not identify the incumbent Installation.\\n"
-    : "Candidate application database Installation identity could not be verified.\\n");
+    : identityConnecting
+      ? "Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database. Check that PostgreSQL is running and that the chart's database egress (database.cidrs) admits its current address; a refused sign-in or a failed TLS handshake also stops here.\\n"
+      : "Candidate application database Installation identity could not be verified.\\n");
   process.exit(1);
 };
 // Older pool helpers do not honor every timeout option. Bound the whole operation,
@@ -57,7 +64,9 @@ try {
   }
   const { createPostgresPool } = await import("/app/packages/occ/src/state/postgres-pool.ts");
   identityPool = await createPostgresPool(process.env.OCC_DATABASE_URL, { max: 1 });
+  identityConnecting = true;
   identityClient = await identityPool.connect();
+  identityConnecting = false;
   identityClient.on("error", identityFailure);
   // BEGIN precedes all reads, even if the supplied role normally has write access.
   await identityClient.query("BEGIN READ ONLY");

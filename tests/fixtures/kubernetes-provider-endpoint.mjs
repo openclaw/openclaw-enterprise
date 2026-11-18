@@ -87,6 +87,13 @@ export function tlsPinnedWorkspaceSetupCode(url, expiresAtMs) {
   ).toString("base64url");
 }
 
+/**
+ * @typedef {import("../../packages/contracts/src/index.ts").AgentRevision} AgentRevision
+ * @typedef {import("../../packages/contracts/src/index.ts").ComputeRevisionContext} ComputeRevisionContext
+ * @typedef {Omit<ComputeRevisionContext, "secretEnvironment"> & Partial<Pick<ComputeRevisionContext, "secretEnvironment">>} FixtureRevisionContext
+ * @typedef {{apiVersion: string, kind: string, metadata: {name: string, namespace?: string}, spec?: Record<string, unknown>}} WrittenObject
+ */
+
 // In-memory Kubernetes transport plus Sandbox/lifecycle responses. No cluster I/O.
 // Tests own readiness transitions and assertions; prepare/activate remain real Driver calls.
 /**
@@ -184,6 +191,7 @@ export function providerEndpointFixture({
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const gatewayNamespace = kubernetesNamespaceName(tenant.id);
   const objects = new Map();
+  /** @type {WrittenObject[]} */
   const writes = [];
   const key = (kind, name, target = namespace) =>
     `${kind}:${kind === "Namespace" ? "" : target}:${name}`;
@@ -350,12 +358,21 @@ export function providerEndpointFixture({
     save,
     read,
     // These delegate to the production Driver without caching readiness between calls.
+    /**
+     * @param {AgentRevision} [targetRevision]
+     * @param {FixtureRevisionContext} [context]
+     */
     prepare(targetRevision = revision, context = authContext(targetRevision)) {
-      return driver.prepareRevision(targetRevision, context);
+      return driver.prepareRevision(targetRevision, { secretEnvironment: [], ...context });
     },
+    /**
+     * @param {AgentRevision} [targetRevision]
+     * @param {FixtureRevisionContext} [context]
+     */
     activate(targetRevision = revision, context = authContext(targetRevision)) {
-      return driver.activateRevision(targetRevision, context);
+      return driver.activateRevision(targetRevision, { secretEnvironment: [], ...context });
     },
+    /** @param {(ReturnType<typeof fixture.pod> | null)[]} pods */
     observePods(pods) {
       fixture.setObservation({ items: pods });
     },
@@ -380,6 +397,7 @@ export function providerEndpointFixture({
       gateway.status = { observedGeneration: 1, replicas: 1, updatedReplicas: 1, readyReplicas: 1 };
       save(gateway);
     },
+    /** @param {boolean} value */
     setSetupAvailable(value) {
       workspaceNodeSetupAvailable = value;
     },

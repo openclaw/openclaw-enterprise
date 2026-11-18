@@ -1,164 +1,32 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import type {
-  AdmittedRepositoryBinding,
-  Agent,
-  Namespace,
-  RepositoryCredentialGrantIdentity,
-  RepositoryRevisionState,
-} from "@openclaw-enterprise/contracts";
+import type { RepositoryRevisionState } from "@openclaw-enterprise/contracts";
 import type { Pool, PoolClient } from "pg";
-import type { RepositorySessionPhase } from "../../packages/occ/src/ports/repository-sessions.ts";
 import type {
-  ConfigurationOwnership,
-  PlatformStateStore,
-} from "../../packages/occ/src/state/platform-state.ts";
+  RepositorySessionPhase,
+  RepositorySessionRepository,
+} from "../../packages/occ/src/ports/repository-sessions.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
-import type { RepositorySessionCaseBuilders } from "../conformance/repository-session-state-cases.ts";
 import {
-  seedSessionRevision as buildSeedSessionRevision,
-  sessionAttempt as buildSessionAttempt,
+  seedSessionRevision,
+  sessionAttempt,
   verifyRepositorySessions,
-} from "../conformance/repository-sessions.contract.mjs";
+} from "../conformance/repository-sessions.contract.ts";
 import {
-  repositoryBinding as buildRepositoryBinding,
-  repositoryCredentials as buildRepositoryCredentials,
-  repositoryGrant as buildRepositoryGrant,
-} from "../fixtures/repository-credentials/session-state.mjs";
+  repositoryBinding,
+  repositoryCredentials,
+  repositoryGrant,
+} from "../fixtures/repository-credentials/session-state.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockHolder } from "../helpers/postgres-locks.ts";
 
-type SessionCase = Awaited<ReturnType<RepositorySessionCaseBuilders["seedSessionRevision"]>>;
-type SessionRevision = Pick<
-  SessionCase["revision"],
-  "id" | "namespaceId" | "agentId" | "createdAt"
-> & {
-  readonly repositoryCredentials: Pick<RepositoryRevisionState, "deadlineWallMs">;
-};
-type AttemptInput = ReturnType<RepositorySessionCaseBuilders["sessionAttempt"]>;
-type AttemptDefaults = Pick<AttemptInput, keyof ReturnType<typeof buildSessionAttempt>>;
-type SnapshotDefaults = ReturnType<typeof buildRepositoryCredentials>;
+type AttemptInput = Parameters<RepositorySessionRepository["createAttempt"]>[0];
 
-// PostgreSQL receives these malformed values directly, without the State repository's typing.
+// PostgreSQL can receive integers beyond the State contract's safe numeric range.
 type RawAttempt = Omit<AttemptInput, "durationSeconds"> & {
   readonly durationSeconds: number | `${bigint}`;
 };
-type RawGrant = RepositoryCredentialGrantIdentity & { readonly bearer?: string };
-type RawBinding = Omit<AdmittedRepositoryBinding, "grant"> & {
-  readonly grant: RawGrant | null;
-  readonly bearer?: string;
-};
-type RawSnapshot = Omit<RepositoryRevisionState, "driver" | "bindings"> & {
-  readonly driver: RepositoryRevisionState["driver"] & { readonly bearer?: string };
-  readonly bindings: readonly RawBinding[] | Record<string, never>;
-  readonly bearer?: string;
-};
-
-// Each builder shallow-spreads its overrides after its defaults. An optional
-// override leaves the default in place when the property is absent.
-type RepositoryFixtureResult<Defaults, Overrides> = Overrides extends object
-  ? {
-      [Key in keyof Defaults]: Key extends keyof Overrides
-        ? Record<never, never> extends Pick<Overrides, Key>
-          ? Defaults[Key] | Required<Overrides>[Key]
-          : Overrides[Key]
-        : Defaults[Key];
-    } & Omit<Overrides, keyof Defaults>
-  : Defaults;
-
-type RepositoryFixtureBuilder<Defaults, Input> = {
-  (overrides?: undefined): Defaults;
-  <Overrides extends Partial<Input> | undefined>(
-    overrides: Overrides,
-  ): RepositoryFixtureResult<Defaults, Overrides>;
-};
-
-// The seed reads credentials and retains the supplied object in the revision.
-type SeedCredentials = RepositoryRevisionState & {
-  readonly bearer?: never;
-  readonly driver: RepositoryRevisionState["driver"] & { readonly bearer?: never };
-  readonly bindings: readonly (AdmittedRepositoryBinding & {
-    readonly bearer?: never;
-    readonly grant: RepositoryCredentialGrantIdentity & { readonly bearer?: never };
-  })[];
-};
-type SessionSeed = Awaited<ReturnType<typeof buildSeedSessionRevision>>;
-type SeedScope = Pick<ConfigurationOwnership, "namespaceId" | "createdAt">;
-type SeedHarnessAuth = Extract<
-  Agent["harnessAuth"],
-  { method: "api_key"; source: { kind: "secret" } }
->;
-type SeedAgent = Omit<SessionSeed["agent"], keyof SeedScope | "executionMode" | "harnessAuth"> &
-  SeedScope & {
-    readonly executionMode: Agent["executionMode"];
-    readonly gatewayManagedMode: true;
-    readonly harnessAuth: SeedHarnessAuth;
-  };
-type SeedRevision = Omit<
-  SessionSeed["revision"],
-  keyof SeedScope | "harness" | "harnessAuth" | "repositoryCredentials"
-> &
-  SeedScope & {
-    readonly configurationKind: ConfigurationOwnership["kind"];
-    readonly executionAdmission: Extract<
-      SessionCase["revision"]["executionAdmission"],
-      { mode: "unprotected" }
-    >;
-    readonly gatewayManagedMode: true;
-    readonly harness: Omit<SessionSeed["revision"]["harness"], "mode"> & {
-      readonly mode: SeedAgent["executionMode"];
-    };
-    readonly harnessAuth: SeedHarnessAuth &
-      Pick<SessionSeed["revision"]["harnessAuth"], "secretDriverId">;
-  };
-type SeedOptions = {
-  readonly createdAt?: string | undefined;
-  readonly namespaceId?: string | undefined;
-  readonly executionMode?: Agent["executionMode"] | undefined;
-};
-type SeededSession<Credentials extends RepositoryRevisionState> = {
-  readonly namespace: Omit<SessionSeed["namespace"], "id" | "createdAt"> &
-    Pick<Namespace, "id" | "createdAt"> & { readonly status: "ready" };
-  readonly configuration: Omit<SessionSeed["configuration"], keyof SeedScope> &
-    SeedScope & { readonly kind: ConfigurationOwnership["kind"] };
-  readonly agent: SeedAgent;
-  readonly revision: SeedRevision & { readonly repositoryCredentials: Credentials };
-};
-
-// The unchecked JavaScript declarations omit the effects of object spread and
-// widen the seed's literal fields. These aliases describe the same functions.
-const seedSessionRevision = buildSeedSessionRevision as {
-  (
-    store: PlatformStateStore,
-    credentials?: undefined,
-    options?: SeedOptions,
-  ): Promise<SeededSession<SnapshotDefaults>>;
-  <Credentials extends SeedCredentials | undefined>(
-    store: PlatformStateStore,
-    credentials: Credentials,
-    options?: SeedOptions,
-  ): Promise<SeededSession<Credentials extends SeedCredentials ? Credentials : SnapshotDefaults>>;
-};
-const sessionAttempt = buildSessionAttempt as {
-  (revision: SessionRevision, overrides?: undefined): AttemptDefaults;
-  <Overrides extends Partial<RawAttempt> | undefined>(
-    revision: SessionRevision,
-    overrides: Overrides,
-  ): RepositoryFixtureResult<AttemptDefaults, Overrides>;
-};
-const repositoryGrant = buildRepositoryGrant as RepositoryFixtureBuilder<
-  ReturnType<typeof buildRepositoryGrant>,
-  RawGrant
->;
-const repositoryBinding = buildRepositoryBinding as RepositoryFixtureBuilder<
-  ReturnType<typeof buildRepositoryBinding>,
-  RawBinding
->;
-const repositoryCredentials = buildRepositoryCredentials as RepositoryFixtureBuilder<
-  SnapshotDefaults,
-  RawSnapshot
->;
 
 function insertAttempt(
   pool: Pool | PoolClient,
@@ -242,9 +110,12 @@ test(
         } satisfies Record<string, Partial<RawAttempt>>;
         for (const [name, override] of Object.entries(invalidAttempts)) {
           await t.test(name, async () => {
-            await assert.rejects(insertAttempt(pool, sessionAttempt(revision, override)), {
-              code: "23514",
-            });
+            await assert.rejects(
+              insertAttempt(pool, { ...sessionAttempt(revision), ...override }),
+              {
+                code: "23514",
+              },
+            );
           });
         }
         await t.test("phase is unknown", async () => {
@@ -490,26 +361,29 @@ test(
             );
           });
         }
+        // Build malformed JSON separately from the typed, valid credential fixtures.
         const invalidSnapshots = {
           "snapshot is null": null,
           "bindings are empty": repositoryCredentials({ bindings: [] }),
-          "bindings are an object": repositoryCredentials({ bindings: {} }),
-          "driver contains an extra field": repositoryCredentials({
-            driver: {
-              id: "repository-credentials",
-              implementation: "github",
-              bearer: "unexpected",
-            },
-          }),
-          "binding contains an extra field": repositoryCredentials({
-            bindings: [repositoryBinding({ bearer: "unexpected" })],
-          }),
-          "grant is null": repositoryCredentials({
-            bindings: [repositoryBinding({ grant: null })],
-          }),
-          "grant contains an extra field": repositoryCredentials({
-            bindings: [repositoryBinding({ grant: repositoryGrant({ bearer: "unexpected" }) })],
-          }),
+          "bindings are an object": { ...repositoryCredentials(), bindings: {} },
+          "driver contains an extra field": {
+            ...repositoryCredentials(),
+            driver: { ...revision.repositoryCredentials.driver, bearer: "unexpected" },
+          },
+          "binding contains an extra field": {
+            ...repositoryCredentials(),
+            bindings: [{ ...repositoryBinding(), bearer: "unexpected" }],
+          },
+          "grant is null": {
+            ...repositoryCredentials(),
+            bindings: [{ ...repositoryBinding(), grant: null }],
+          },
+          "grant contains an extra field": {
+            ...repositoryCredentials(),
+            bindings: [
+              { ...repositoryBinding(), grant: { ...repositoryGrant(), bearer: "unexpected" } },
+            ],
+          },
           "deadline is fractional": repositoryCredentials({ deadlineWallMs: 1.5 }),
           "driver identity contains a newline": repositoryCredentials({
             driver: { id: "bad\nidentity", implementation: "native" },
@@ -529,7 +403,7 @@ test(
           "grant identity is empty": repositoryCredentials({
             bindings: [repositoryBinding({ grant: repositoryGrant({ grantId: "" }) })],
           }),
-          "snapshot contains an extra field": repositoryCredentials({ bearer: "extra" }),
+          "snapshot contains an extra field": { ...repositoryCredentials(), bearer: "extra" },
         };
         // Insert variants of a real admitted row so the repository snapshot is the only invalid input.
         for (const [name, credentials] of Object.entries(invalidSnapshots)) {

@@ -11,12 +11,10 @@ import {
   memoryLogger,
 } from "../helpers/production-sign-in.mjs";
 import {
-  account,
   events,
   first,
   injectLocalhost,
   passwordSignIn,
-  record,
   text,
   type App,
   type Credentials,
@@ -25,7 +23,7 @@ import {
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { scryptPasswordHasher } from "../helpers/password-hasher.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.ts";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
 const ingress = "10.0.0.9";
 const wrongPassword = "wrong-guess-password";
@@ -113,7 +111,21 @@ test(
         secrets: { "occ-auth/secret": "password-limit-auth-test-secret-at-least-32-bytes" },
       },
     );
-    const onboarded = await onboard({
+    const {
+      admin,
+      accounts: {
+        member,
+        target,
+        secondAdmin,
+        plainAdmin,
+        typist,
+        knownMember,
+        knownOther,
+        knownAdmin,
+        knownReset,
+        proofFairness,
+      },
+    } = await onboard({
       // The limiter and its timing parity are under test: keep the real scrypt cost.
       passwordHasher: scryptPasswordHasher,
       accounts: {
@@ -130,18 +142,6 @@ test(
         proofFairness: { email: "limit-proof-fairness@example.test" },
       },
     });
-    const admin = account(onboarded.admin);
-    const accounts = record(onboarded.accounts);
-    const member = account(accounts.member);
-    const target = account(accounts.target);
-    const secondAdmin = account(accounts.secondAdmin);
-    const plainAdmin = account(accounts.plainAdmin);
-    const typist = account(accounts.typist);
-    const knownMember = account(accounts.knownMember);
-    const knownOther = account(accounts.knownOther);
-    const knownAdmin = account(accounts.knownAdmin);
-    const knownReset = account(accounts.knownReset);
-    const proofFairness = account(accounts.proofFairness);
     const proxiedLog = memoryLogger();
     const app = (apps.app = await composeApp(
       { ...defaultInstallSettings, OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/24" },

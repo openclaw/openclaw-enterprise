@@ -158,7 +158,7 @@ SOURCE_SHA="$expected_sha" GITHUB_WORKFLOW_SHA="$workflow_sha" \
 GITHUB_RUN_ID="$run_id" GITHUB_RUN_ATTEMPT="$attempt" \
 CI_RUN_ID='' CI_ATTEMPT='' NODE_BASE_IMAGE="$pinned_node_base" \
 IMAGE=runtime PLATFORM=linux/arm64 IMAGE_DIGEST="$build_digest" \
-node scripts/ci/container-release.mjs verify-platform "$extracted_layout"
+node scripts/ci/container-release.ts verify-platform "$extracted_layout"
 ```
 
 For a manual **CI** run that requests native images, use that CI run’s own ID

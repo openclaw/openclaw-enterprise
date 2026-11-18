@@ -41,12 +41,12 @@ func TestInstallationDoctor(t *testing.T) {
 	if _, err := exec.LookPath("kubectl"); err != nil {
 		t.Skip("requires kubectl")
 	}
-	const unchecked = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["--run","db:bootstrap:production"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
+	const unchecked = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.ts"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
 	checkArg := installationCheckArg(t)
 	alteredCheckArg := strings.TrimSuffix(checkArg, `"`) + ` "`
 	check := installationCheckContainer(checkArg)
 	job := strings.Replace(unchecked, `"initContainers":[`, `"initContainers":[`+check+`,`, 1)
-	const bootstrapTask = `"--run","db:bootstrap:production"`
+	const bootstrapTask = `"scripts/bootstrap-installation.ts"`
 	const historicalBootstrap = `"scripts/bootstrap-installation.mjs"`
 	historical := strings.Replace(job, bootstrapTask, historicalBootstrap, 1)
 	const migration = `"scripts/migrate-production.mjs"`
@@ -69,7 +69,7 @@ func TestInstallationDoctor(t *testing.T) {
 		{"historical-install", 200, historical, "install hook): complete", true, "id"},
 		{"historical-altered-check", 200, strings.Replace(historical, checkArg, alteredCheckArg, 1), "steps do not match", false, "id"},
 		{"historical-extra-bootstrap-arg", 200, strings.Replace(historical, historicalBootstrap, historicalBootstrap+`,"unexpected"`, 1), "steps do not match", false, "id"},
-		{"wrong-bootstrap-task", 200, strings.Replace(job, "db:bootstrap:production", "db:bootstrap", 1), "steps do not match", false, "id"},
+		{"wrong-bootstrap-task", 200, strings.Replace(job, "bootstrap-installation.ts", "bootstrap-installation.js", 1), "steps do not match", false, "id"},
 		{"extra-bootstrap-arg", 200, strings.Replace(job, bootstrapTask, bootstrapTask+`,"unexpected"`, 1), "steps do not match", false, "id"},
 		{"bootstrap-command-override", 200, strings.Replace(job, `{"name":"bootstrap"`, `{"name":"bootstrap","command":["node"]`, 1), "steps do not match", false, "id"},
 		{"extra-bootstrap-container", 200, strings.Replace(job, `"containers":[{`, `"containers":[{"name":"sidecar"},{`, 1), "steps do not match", false, "id"},

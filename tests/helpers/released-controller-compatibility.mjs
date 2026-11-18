@@ -4,9 +4,9 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
-import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { settled } from "./child-processes.mjs";
-import { withTestOwnerLabel } from "./docker-test-owner.mjs";
+import { withTestOwnerLabel } from "./docker-test-owner.ts";
 
 const exec = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: "2026-11-14"
-last_updated_session: "authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7"
+updated: 2026-11-18
+last_updated_session: authoring-run/9a169618-9c17-48f1-927c-556605a302b2
 ---
 
 # Platform Startup Flow
@@ -22,7 +22,7 @@ requests and the worker starts polling PostgreSQL for queued operations.
 
 - Trigger: Start the API with `node apps/controller/src/server.mjs`; start the
   worker separately with `node apps/controller/src/worker.mjs`.
-- Source: `apps/controller/src/api-startup.mjs:startApi`,
+- Source: `apps/controller/src/api-startup.ts:startApi`,
   `apps/controller/src/worker.mjs:configuration`, and
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`.
 - Assumptions: PostgreSQL-backed startup requires the same migrated application
@@ -78,18 +78,19 @@ graph TD
 
 ### 1. Launch independent API and worker processes
 
-`apps/controller/src/api-startup.mjs:startApi`
+`apps/controller/src/api-startup.ts:startApi`
 
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
-[history preflight](../../scripts/migration-history.mjs) accepts only reviewed
+[history preflight](../../scripts/migration-history-preflight.ts) accepts only reviewed
 receipt and catalog prefixes, including the two published 31-receipt completed
 lineages: the current Backend terminology history and the historical Provider
 terminology history. The append-only compatibility migration converts the
 Provider schema and owned persisted JSON to Backend terminology without
 rewriting applied receipts or terminal provisioning fingerprints. It refuses
 mixed receipt histories, manually edited catalogs, and the older divergent
-credential history before migration DDL. The
+credential history before migration DDL. It also refuses invalid release metadata
+before connecting to PostgreSQL. The
 [migration history reference](../reference/settings/operations.md#migration-history)
 owns the exact supported shapes and recovery boundary. Neither API nor worker
 startup rewrites migration receipts or converts an unsupported database.
@@ -135,7 +136,7 @@ comes from server-owned singleton state, never startup YAML.
 
 API and worker use matching logical Driver identities but separate instances.
 Each IAM Driver loads current persisted policy for every identity lookup and
-authorization decision. Only `api-startup.mjs` reads the mounted ChatGPT admin key,
+authorization decision. Only `api-startup.ts` reads the mounted ChatGPT admin key,
 constructs `Backend<ChatGPTClient>`, and injects it into the optional
 ServiceAccount Driver factory. The worker consumes only nonsecret Backend
 metadata and never receives the client or admin credential. Startup validates
@@ -246,8 +247,9 @@ execution begins in the adjacent
 
 ## Debugging and Verification
 
-- Verify matching selection and process-local instances with
-  `node --test --test-name-pattern='independent API and worker startup construct the same selected runtime Drivers' tests/integration/configuration-startup.test.mjs`.
+- Check the startup errors reported when no Installation ID is set with
+  `node --test --test-name-pattern='production server and worker resolve singleton startup without an Installation ID' tests/integration/configuration-startup.test.mjs`.
+  The API rejects the missing authentication base URL before it loads Drivers. The worker reports the unavailable PostgreSQL connection.
 - Expect API `{"event":"listening",...}` and worker
   `{"event":"worker.started","computeDriverId":"..."}` events, followed by
   `worker.health`. Startup failures emit `startup-error` or
@@ -284,6 +286,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 01:13: Record release-metadata refusal before the migration connection. (authoring-run/9a169618-9c17-48f1-927c-556605a302b2 - 254d0a96f86744b23f2394d233f0d7728480e844)
 
 - 2026-11-14 09:29: Point to the TypeScript initializer before API and worker startup. (authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7 - e23d8854d8eec8701c29e4067e7899cb04fff97c)
 

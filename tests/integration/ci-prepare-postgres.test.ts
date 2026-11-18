@@ -1,13 +1,48 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { spawnResult } from "../helpers/ci-prepare-fixture.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
-const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
+const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
+const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
+
+async function readJson(path: string): Promise<unknown> {
+  const decoded: unknown = JSON.parse(await readFile(path, "utf8"));
+  return decoded;
+}
+
+function journalResources(journal: unknown): readonly unknown[] {
+  const resources = asRecord(journal)?.resources;
+  assert.ok(Array.isArray(resources));
+  return resources;
+}
+
+async function readResources(path: string): Promise<readonly unknown[]> {
+  return journalResources(await readJson(path));
+}
+
+function observedProject([entry]: readonly unknown[]) {
+  const server = asRecord(entry);
+  assert.ok(server);
+  const { composeFile, name, directory } = server;
+  assert.ok(typeof composeFile === "string");
+  assert.ok(typeof name === "string");
+  assert.ok(typeof directory === "string");
+  return { server, compose: `compose -f ${composeFile} -p ${name}`, directory, name };
+}
+
+// Preparation writes to the runner's GitHub output files unless the test clears them.
+function runPrepare(args: string[], env: NodeJS.ProcessEnv) {
+  return spawnResult(process.execPath, [preparePath, ...args], {
+    env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
+  });
+}
 
 const container = "a".repeat(64);
 const malformedPortResponse = "private-invalid-json";
@@ -58,15 +93,7 @@ esac`,
     };
     const prepared = spawnSync(
       process.execPath,
-      [
-        "scripts/ci/prepare.mjs",
-        "--lane",
-        "postgres-auth",
-        "--state",
-        statePath,
-        "--github-env",
-        githubEnv,
-      ],
+      [preparePath, "--lane", "postgres-auth", "--state", statePath, "--github-env", githubEnv],
       { cwd: repositoryRoot, encoding: "utf8", env, timeout: 30_000 },
     );
     assert.equal(prepared.status, 1);
@@ -80,13 +107,12 @@ esac`,
     );
     await assert.rejects(stat(githubEnv), { code: "ENOENT" });
     assert.doesNotMatch(prepared.stderr, /private-invalid-json/);
-    const state = JSON.parse(await readFile(statePath, "utf8"));
-    const [server] = state.resources;
-    const compose = `compose -f ${server.composeFile} -p ${server.name}`;
+    const resources = await readResources(statePath);
+    const { server, compose, directory, name: project } = observedProject(resources);
     const lookup =
       podmanIds === undefined
         ? `${compose} ps -q postgres`
-        : `ps --no-trunc --filter label=com.docker.compose.project=${server.name} --filter label=com.docker.compose.service=postgres --format {{.ID}}`;
+        : `ps --no-trunc --filter label=com.docker.compose.project=${project} --filter label=com.docker.compose.service=postgres --format {{.ID}}`;
     assert.deepEqual(await commandCalls(log), [
       "version --format {{.Server.Version}}",
       `${compose} up -d --wait`,
@@ -101,7 +127,7 @@ esac`,
     const file = spawnSync(
       process.execPath,
       [
-        "scripts/ci/prepare.mjs",
+        preparePath,
         "--lane",
         "postgres-auth",
         "--state",
@@ -112,9 +138,9 @@ esac`,
       { cwd: repositoryRoot, encoding: "utf8", env, timeout: 30_000 },
     );
     assert.equal(file.status, 1);
-    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).resources, state.resources);
+    assert.deepEqual(await readResources(statePath), resources);
     assert.match(file.stderr, /PostgreSQL server is not ready/);
-    const cleaned = spawnSync(process.execPath, ["scripts/ci/cleanup.mjs", "--state", statePath], {
+    const cleaned = spawnSync(process.execPath, ["scripts/ci/cleanup.ts", "--state", statePath], {
       cwd: repositoryRoot,
       encoding: "utf8",
       env,
@@ -127,7 +153,7 @@ esac`,
       ),
     );
     await assert.rejects(stat(statePath), { code: "ENOENT" });
-    await assert.rejects(stat(server.directory), { code: "ENOENT" });
+    await assert.rejects(stat(directory), { code: "ENOENT" });
   });
 }
 
@@ -153,17 +179,13 @@ esac`,
     const env = { ...process.env, OCC_DOCKER_BIN: docker, TEST_DOCKER_FAILURE: failure };
     const prepared = spawnSync(
       process.execPath,
-      ["scripts/ci/prepare.mjs", "--lane", "postgres-auth", "--state", statePath],
+      [preparePath, "--lane", "postgres-auth", "--state", statePath],
       { cwd: repositoryRoot, encoding: "utf8", env, timeout: 30_000 },
     );
     assert.equal(prepared.status, 1, prepared.stderr);
-    const state: {
-      resources: { status: string; composeFile: string; name: string; directory: string }[];
-    } = JSON.parse(await readFile(statePath, "utf8"));
-    assert.equal(state.resources.length, 1);
-    const [server] = state.resources;
-    assert.ok(server);
-    const compose = `compose -f ${server.composeFile} -p ${server.name}`;
+    const resources = await readResources(statePath);
+    assert.equal(resources.length, 1);
+    const { server, compose, directory } = observedProject(resources);
     const originalError = `${docker} ${compose} up -d --wait failed: ${failure}\n`;
     if (!subnetExhaustion) {
       assert.equal(prepared.stderr, originalError);
@@ -177,7 +199,7 @@ esac`,
     // Run the printed command to check quoting and the teardown of the recorded project.
     const cleanupCommand = prepared.stderr
       .split("\n")
-      .find((line) => line.startsWith("node scripts/ci/cleanup.mjs --state "));
+      .find((line) => line.startsWith("node scripts/ci/cleanup.ts --state "));
     assert.ok(cleanupCommand, prepared.stderr);
     const cleaned = spawnSync("/bin/sh", ["-c", cleanupCommand], {
       cwd: repositoryRoot,
@@ -192,6 +214,214 @@ esac`,
       `${compose} down --volumes --remove-orphans`,
     ]);
     await assert.rejects(stat(statePath), { code: "ENOENT" });
-    await assert.rejects(stat(server.directory), { code: "ENOENT" });
+    await assert.rejects(stat(directory), { code: "ENOENT" });
   });
+}
+
+test(
+  "PostgreSQL preparation records staging before creating its directory",
+  {
+    skip:
+      process.platform === "win32" || process.getuid?.() === 0
+        ? "Requires POSIX permission enforcement for a non-root caller."
+        : false,
+  },
+  async (t) => {
+    const root = await temporaryDirectory(t, "ci-prepare-postgres-");
+    const stateDirectory = join(root, "state");
+    const runnerTemp = join(root, "runner-temp");
+    await mkdir(stateDirectory);
+    await mkdir(runnerTemp);
+    const statePath = join(stateDirectory, "state.json");
+    const docker = join(root, "docker.mjs");
+    await writeFile(
+      docker,
+      `#!${process.execPath}
+import { chmodSync } from "node:fs";
+// The initial state exists, but its next durable write must fail.
+chmodSync(process.env.CI_TEST_STATE_DIRECTORY, 0o500);
+console.log("29.9.2");
+`,
+      { mode: 0o700 },
+    );
+    let result: Awaited<ReturnType<typeof runPrepare>>;
+    try {
+      result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+        OCC_DOCKER_BIN: docker,
+        RUNNER_TEMP: runnerTemp,
+        CI_TEST_STATE_DIRECTORY: stateDirectory,
+      });
+    } finally {
+      await chmod(stateDirectory, 0o700);
+    }
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /EACCES/);
+    assert.deepEqual(await readResources(statePath), []);
+    assert.deepEqual(await readdir(stateDirectory), ["state.json"]);
+    assert.deepEqual(await readdir(runnerTemp), []);
+  },
+);
+
+for (const retirementFails of [false, true]) {
+  test(
+    `PostgreSQL competing bootstrap survives cleanup (retirement fails: ${retirementFails})`,
+    {
+      skip:
+        process.platform === "win32" || process.getuid?.() === 0
+          ? "Requires POSIX permission enforcement for a non-root caller."
+          : false,
+    },
+    async (t) => {
+      const root = await temporaryDirectory(t, "ci-prepare-postgres-");
+      const stateDirectory = join(root, "state");
+      await mkdir(stateDirectory);
+      const statePath = join(stateDirectory, "state.json");
+      const contentionPath = join(root, "contention.json");
+      const preload = join(root, "competing-directory.mjs");
+      const docker = join(root, "docker.mjs");
+      await writeFile(docker, `#!${process.execPath}\nconsole.log("29.9.2");\n`, { mode: 0o700 });
+      // Schedule real competing filesystem operations at mkdir; do not replace its result.
+      // This proves EEXIST handling, not the operating system's scheduling behavior.
+      await writeFile(
+        preload,
+        `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { join, dirname } from "node:path";
+if (process.argv[1] === ${JSON.stringify(preparePath)}) {
+  const mkdir = fs.mkdir;
+  fs.mkdir = async (path, options) => {
+    const state = await fs.readFile(${JSON.stringify(statePath)}, "utf8")
+      .then(JSON.parse, (error) => { if (error.code === "ENOENT") return undefined; throw error; });
+    const resource = state?.resources.find((entry) => entry.kind === "compose-postgres");
+    if (resource?.directory === path) {
+      await mkdir(path, { mode: 0o700 });
+      await fs.writeFile(join(path, "init-local.sql"), "foreign bootstrap");
+      await fs.writeFile(${JSON.stringify(contentionPath)}, JSON.stringify({ directory: path }));
+      if (${retirementFails}) await fs.chmod(dirname(${JSON.stringify(statePath)}), 0o500);
+    }
+    return mkdir(path, options);
+  };
+  syncBuiltinESMExports();
+}
+`,
+      );
+      let result: Awaited<ReturnType<typeof runPrepare>>;
+      try {
+        result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+          OCC_DOCKER_BIN: docker,
+          NODE_OPTIONS: `--import=${preload}`,
+        });
+      } finally {
+        await chmod(stateDirectory, 0o700);
+      }
+      const directory = asRecord(await readJson(contentionPath))?.directory;
+      assert.ok(typeof directory === "string");
+      const cleanup = await spawnResult(
+        process.execPath,
+        [join(repositoryRoot, "scripts/ci/cleanup.ts"), "--state", statePath],
+        { env: { ...process.env, OCC_DOCKER_BIN: docker } },
+      );
+      assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "foreign bootstrap");
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, retirementFails ? /EACCES/ : /EEXIST/);
+      if (retirementFails) {
+        assert.equal(cleanup.status, 1);
+        assert.match(cleanup.stderr, /unconfirmed PostgreSQL bootstrap ownership/);
+        const resources = await readResources(statePath);
+        assert.equal(resources.length, 1);
+        assert.equal(asRecord(resources[0])?.directoryCreated, false);
+      } else {
+        assert.equal(cleanup.status, 0, cleanup.stderr);
+        await assert.rejects(stat(statePath), { code: "ENOENT" });
+      }
+    },
+  );
+}
+
+for (const scenario of ["symlink", "regular-file", "confirmation-failure"]) {
+  test(
+    `PostgreSQL staging preserves unconfirmed SQL after ${scenario}`,
+    {
+      skip:
+        process.platform === "win32" || process.getuid?.() === 0
+          ? "Requires POSIX symlinks and permission enforcement for a non-root caller."
+          : false,
+    },
+    async (t) => {
+      const root = await temporaryDirectory(t, "ci-prepare-postgres-");
+      const statePath = join(root, "state.json");
+      const target = join(root, "unrelated.sql");
+      await writeFile(target, "unrelated content");
+      const preload = join(root, "sql-write-boundary.mjs");
+      const docker = join(root, "docker.mjs");
+      await writeFile(
+        docker,
+        `#!${process.execPath}
+if (process.argv.includes("up")) process.exit(17);
+console.log("29.9.2");
+`,
+        { mode: 0o700 },
+      );
+      // Schedule real filesystem changes around the original writer, without replacing its result.
+      // A failed confirmation save must preserve even a file that this process successfully wrote.
+      await writeFile(
+        preload,
+        `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { dirname, join } from "node:path";
+if (process.argv[1] === ${JSON.stringify(preparePath)}) {
+  const writeFile = fs.writeFile;
+  fs.writeFile = async (path, data, options) => {
+    const state = await fs.readFile(${JSON.stringify(statePath)}, "utf8")
+      .then(JSON.parse, (error) => { if (error.code === "ENOENT") return undefined; throw error; });
+    const resource = state?.resources.find((entry) => entry.kind === "compose-postgres");
+    if (resource?.directory && path === join(resource.directory, "init-local.sql")) {
+      if (${scenario === "symlink"}) await fs.symlink(${JSON.stringify(target)}, path);
+      if (${scenario === "regular-file"}) await writeFile(path, "unrelated content");
+      const result = await writeFile(path, data, options);
+      if (${scenario === "confirmation-failure"}) await fs.chmod(dirname(${JSON.stringify(statePath)}), 0o500);
+      return result;
+    }
+    return writeFile(path, data, options);
+  };
+  syncBuiltinESMExports();
+}
+`,
+      );
+      let result: Awaited<ReturnType<typeof runPrepare>>;
+      try {
+        result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+          OCC_DOCKER_BIN: docker,
+          NODE_OPTIONS: `--import=${preload}`,
+        });
+      } finally {
+        await chmod(root, 0o700);
+      }
+      const state = await readJson(statePath);
+      const server = asRecord(journalResources(state)[0]);
+      const directory = server?.directory;
+      assert.ok(typeof directory === "string");
+      const initSql = join(directory, "init-local.sql");
+      const expectedSql =
+        scenario === "confirmation-failure"
+          ? await readFile(join(repositoryRoot, "migrations/init-local.sql"), "utf8")
+          : "unrelated content";
+      const cleanup = await spawnResult(
+        process.execPath,
+        [join(repositoryRoot, "scripts/ci/cleanup.ts"), "--state", statePath],
+        { env: { ...process.env, OCC_DOCKER_BIN: docker } },
+      );
+
+      assert.equal(await readFile(initSql, "utf8"), expectedSql);
+      assert.equal(await readFile(target, "utf8"), "unrelated content");
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, scenario === "confirmation-failure" ? /EACCES/ : /EEXIST/);
+      assert.equal(cleanup.status, 1);
+      assert.match(cleanup.stderr, /unconfirmed PostgreSQL bootstrap SQL ownership/);
+      assert.equal(server?.initSqlCreated, false);
+      assert.deepEqual(await readJson(statePath), state);
+    },
+  );
 }

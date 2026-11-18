@@ -208,8 +208,8 @@ HTTP shares a deadline and response-byte cap; State bounds pending attempts and 
 State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
 elapsed work. Expired completion releases no cookie.
 
-`scripts/auth-maintain.mjs` parses arguments with
-`scripts/lib/auth-maintain-arguments.mjs:parseAuthMaintainArguments` before
+`scripts/auth-maintain.ts` parses arguments with
+`scripts/lib/auth-maintain-arguments.ts:parseAuthMaintainArguments` before
 configuration or database access. Undeclared commands, including inherited object
 properties, exit `64` with usage. The
 [maintenance procedure](../guides/deploy/auth-maintenance.md) lists supported operations

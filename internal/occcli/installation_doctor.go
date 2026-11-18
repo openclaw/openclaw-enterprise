@@ -339,9 +339,9 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	case checked && expectedAttempt == "" && is(init, "migration", migrate):
 		hook = "upgrade"
 	}
-	// The current chart uses the image's package task. Older charts invoked the
-	// script directly. Both forms require the same checked initialization steps.
-	if hook == "" || (!is(p.Containers, "bootstrap", "--run", "db:bootstrap:production") &&
+	// The current and released charts use exact direct programs. Both forms require
+	// the same checked initialization steps.
+	if hook == "" || (!is(p.Containers, "bootstrap", "scripts/bootstrap-installation.ts") &&
 		!is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs")) {
 		return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. Job steps do not match the supported chart."}
 	}
