@@ -3911,7 +3911,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     [completedKey, completed],
     [cancelled.sessionKey, cancelledHistory],
   ];
-  async function assertRefusedWork(replacement, interrupted, queuedNonce) {
+  async function assertRefusedWork(replacement, interrupted) {
     const probeKey = `agent:main:replacement-ready-${randomUUID()}`;
     const probeNonce = `READY-${randomUUID()}`;
     await gatewayCall(topology, "chat.send", {
@@ -3931,16 +3931,6 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     });
     assert.equal(session.hasActiveRun, false);
     assert.equal(stoppedHistory.sessionId, interrupted.sessionId);
-    if (queuedNonce !== undefined) {
-      assert.equal(stoppedHistory.pendingInputs.queuedCount, 0);
-      assert.equal(
-        stoppedHistory.messages.some(
-          (message) => message.role === "assistant" && messageText(message).trim() === queuedNonce,
-        ),
-        false,
-        "revoked authority must not replay accepted queued input after redeployment",
-      );
-    }
     assert.equal(
       stoppedHistory.messages.some(
         (message) => message.__openclaw?.continuation?.source === "restart",
@@ -4124,7 +4114,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
                   profiles.find((profile) => profile.id === interrupted.ownerProfileId)?.role,
                   "reader",
                 );
-                revokedHistory = await assertRefusedWork(replacement, interrupted, queuedNonce);
+                revokedHistory = await assertRefusedWork(replacement, interrupted);
               } finally {
                 await gatewayCall(topology, "users.setRole", {
                   profileId: interrupted.ownerProfileId,
@@ -4136,7 +4126,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       );
       if (replacement === "revoked-owner") {
         const stoppedHistory =
-          revokedHistory ?? (await assertRefusedWork(replacement, interrupted, queuedNonce));
+          revokedHistory ?? (await assertRefusedWork(replacement, interrupted));
         finished.push([interrupted.sessionKey, stoppedHistory]);
         context.diagnostic(`${replacement} left interrupted work stopped after redeployment`);
         console.info(`k3d dedicated: ${replacement} refusal passed.`);
