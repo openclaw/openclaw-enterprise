@@ -22,6 +22,7 @@ export function bindPlatformUnitOfWork(
       "createInstallation",
       "holdPrincipalAccount",
       "holdAuthenticationSession",
+      "holdIAMConfiguration",
     ]),
     namespaces: bindRepository(repositories.namespaces, lifetime, [
       "findNamespace",
@@ -143,6 +144,8 @@ export function bindPlatformUnitOfWork(
       "delete",
     ]),
     agents: bindRepository(repositories.agents, lifetime, [
+      "findPredecessorReplacement",
+      "recordPredecessorReplacement",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
       "findAgent",
@@ -181,6 +184,13 @@ export function bindPlatformUnitOfWork(
       "listServicePrincipals",
       "getServicePrincipal",
       "createServicePrincipal",
+      "listConfiguredPolicy",
+      "putConfiguredRole",
+      "deleteConfiguredRole",
+      "createConfiguredGroup",
+      "deleteConfiguredGroup",
+      "createOCCBinding",
+      "deleteConfiguredBinding",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findStandingExecution",
@@ -189,6 +199,7 @@ export function bindPlatformUnitOfWork(
       "recordStandingExecution",
       "approveStanding",
       "revokeStanding",
+      "withdrawFinite",
 
       "findAttempt",
       "findBrokerReceipt",
@@ -226,6 +237,7 @@ export function bindPlatformUnitOfWork(
       "list",
       "findWork",
       "findWorkAttempt",
+      "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
       "retryFailedAgentDeletion",
       "retryFailedNamespaceDeletion",

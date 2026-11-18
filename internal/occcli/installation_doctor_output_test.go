@@ -46,8 +46,9 @@ func TestInstallationHandoffOutput(t *testing.T) {
 					script := `#!/bin/sh
 printf '%s\n' "$*" >> "$0.calls"
 [ "$#" = 7 ] && [ "$1" = '--kubeconfig=synthetic-config' ] && [ "$2" = '--context=synthetic-context' ] && [ "$3" = get ] && [ "$4" = jobs.v1.batch ] && [ "$5" = synthetic-initialization ] && [ "$6" = '--namespace=synthetic' ] && [ "$7" = '--output=json' ] || exit 91
-printf '%s\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"synthetic-initialization","namespace":"synthetic","uid":"synthetic-job","labels":{"app.kubernetes.io/instance":"synthetic","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{` + status + `}}'
+printf '%s\n' "$FIXTURE_JOB"
 `
+					t.Setenv("FIXTURE_JOB", `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"synthetic-initialization","namespace":"synthetic","uid":"synthetic-job","labels":{"app.kubernetes.io/instance":"synthetic","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[`+installationCheckContainer(installationCheckArg(t))+`,{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{`+status+`}}`)
 					executable := filepath.Join(dir, "kubectl")
 					if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
 						t.Fatal(err)
@@ -104,20 +105,6 @@ printf '%s\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"synthet
 	}
 }
 
-type handoffFailingWriter struct {
-	remaining int
-	err       error
-}
-
-func (w *handoffFailingWriter) Write(p []byte) (int, error) {
-	n := min(len(p), w.remaining)
-	w.remaining -= n
-	if n < len(p) {
-		return n, w.err
-	}
-	return n, nil
-}
-
 // The receipt branch adds a Helm outcome line before the Job report. An output
 // error on that first line must not be hidden by later successful writes.
 func TestInstallationReceiptOutput(t *testing.T) {
@@ -125,7 +112,7 @@ func TestInstallationReceiptOutput(t *testing.T) {
 		t.Skip("requires kubectl")
 	}
 	const attempt = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	const job = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade","openclaw.dev/installation-attempt":"` + attempt + `"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
+	job := `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade","openclaw.dev/installation-attempt":"` + attempt + `"}},"spec":{"template":{"spec":{"initContainers":[` + installationCheckContainer(installationCheckArg(t)) + `,{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && serveJobDiscovery(w, r.URL.Path) {

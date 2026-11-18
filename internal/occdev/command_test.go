@@ -2,11 +2,13 @@ package occdev
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakePodman puts a `podman` on PATH that answers the inventory commands
@@ -258,6 +260,60 @@ func TestContainerEngineSelectionHonorsServerIdentity(t *testing.T) {
 	}
 }
 
+func TestContainerEngineSelectionPreservesProbeCancellation(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("PATH", directory)
+	const docker = `#!/bin/sh
+case "$*" in
+'version --format {{json .Server}}')
+	: > version-started || exit 1
+	exec /bin/sleep 30
+	;;
+*) exit 99 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(directory, "docker"), []byte(docker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{opts: Options{Repository: directory}, env: map[string]string{"PATH": directory}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- r.selectEngine(ctx, "docker") }()
+
+	// Wait for the version subprocess to start so an early lookup failure or
+	// a pre-canceled context cannot satisfy the regression.
+	started := filepath.Join(directory, "version-started")
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
+	timeout := time.After(5 * time.Second)
+	for {
+		_, err := os.Stat(started)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("engine selection finished before its version probe started: %v", err)
+		case <-timeout:
+			t.Fatal("Docker version probe did not start")
+		case <-poll.C:
+		}
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("engine selection returned %v, want context cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("engine selection continued after cancellation")
+	}
+}
+
 func TestPodmanComposeProviderPrefersDockerCompose(t *testing.T) {
 	// The Kubernetes-profile Compose command passes --project-directory, which
 	// standalone podman-compose does not support. With both providers installed,
@@ -307,6 +363,15 @@ func TestContainerEngineSelectionRetainsCapabilityGates(t *testing.T) {
 				r, err, calls := engineSelection(t, docker, tc.requested, tc.missing, tc.failure, compose, false, false)
 				if (err != nil) != (want == "") || r.engine != want {
 					t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
+				}
+				if tc.missing == "docker" {
+					message := "a running docker container engine is required"
+					if compose {
+						message = "a running docker container engine with its Compose provider is required"
+					}
+					if err == nil || err.Error() != message {
+						t.Fatalf("missing engine returned %v, want %q", err, message)
+					}
 				}
 				if !compose && (strings.Contains(calls, "compose version") || r.env["PODMAN_COMPOSE_PROVIDER"] != "") {
 					t.Fatal("image selection required a Compose provider")

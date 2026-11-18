@@ -64,7 +64,7 @@ openssl x509 -req -in "$tls_dir/tls.csr" -CA "$tls_dir/ca.crt" -CAkey "$tls_dir/
   -CAcreateserial -days 28 -extfile "$tls_dir/leaf.ext" -out "$tls_dir/tls.crt"
 openssl verify -CAfile "$tls_dir/ca.crt" -verify_hostname "$console_host" "$tls_dir/tls.crt"
 kubectl -n "$PLATFORM_NS" create secret tls oce-owner-browser-tls --cert="$tls_dir/tls.crt" --key="$tls_dir/tls.key"
-kubectl -n "$PLATFORM_NS" create configmap oce-owner-listener --from-file="$assets/owner-listener.mjs"
+kubectl -n "$PLATFORM_NS" create configmap oce-owner-listener --from-file="$assets/owner-listener.mts"
 kubectl -n "$PLATFORM_NS" get svc openclaw-enterprise-api -o json > "$RUN_DIR/api-service.json"
 kubectl -n kube-system get svc kube-dns -o json > "$RUN_DIR/dns-service.json"
 jq -n --arg image "$CONTROLLER_IMAGE" --argjson api "$(cat "$RUN_DIR/api-service.json")" \

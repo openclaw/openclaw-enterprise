@@ -1,7 +1,7 @@
 # OIDC controller settings
 
 `auth.oidc.enabled` enables generic OpenID Connect sign-in for the API. It requires
-the [single-controller external sign-in profile](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+the [single-controller external sign-in profile](../authentication/external-sign-in.md#external-sign-in-profile)
 and a recovery account. Use [Enable OIDC sign-in](../../guides/deploy/oidc-sign-in.md)
 for setup.
 
@@ -13,13 +13,18 @@ for setup.
 | `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
 | `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
 
+`OCC_AUTH_OIDC_ENROLLMENT` (Helm `auth.oidc.enrollment`) accepts the JSON
+[OIDC enrollment policy](../authentication/team-enrollment.md). The installation
+profile uses `controlPlane.oidc.enrollment`. Absence requires explicit identity
+attachment and disables automatic account creation.
+
 With `auth.oidc.enabled`, the chart adds the API-only egress policy
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
 allows any address except link-local `169.254.0.0/16`. The port is the destination Pod's
 port; an IdP inside the cluster on another target port needs
-[its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering fails on values the API refuses,
-a Secret shared with GitHub, Google or any other chart Secret, `agentNativeAdmin.enabled`
-with OIDC, or an HTTP base URL.
+[its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering rejects invalid endpoint settings,
+a Secret shared with Google or another chart credential Secret, or an HTTP base URL.
+OIDC supports native Agent access.
 
 `auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
 CA bundle from a Secret in the release namespace. Both default to empty; set both

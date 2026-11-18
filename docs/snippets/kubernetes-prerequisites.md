@@ -12,8 +12,7 @@ published: false
   Provide an approved internal HTTPS origin and exact IPv4 `/32` egress destinations.
 - **Operator tools:** Helm, a version-compatible `kubectl`, Python 3, `jq`, `yq` v4,
   and the [OCC CLI](/guides/cli/). Use Bash for image selection and model
-  verification. To generate a custom Installation from a profile, use Node.js 24.22.1
-  or newer. The manual YAML examples skip profile generation.
+  verification. To generate a custom Installation from a profile, use Node.js satisfying `engines.node` in the selected release checkout's `package.json`. The manual YAML examples skip profile generation.
 - **Images:** Docker and Git to [select published images](/guides/deploy/published-images/)
   and their matching source checkout and chart. Use immutable controller and
   runtime image digests. Buildx is needed only when building images. Every eligible

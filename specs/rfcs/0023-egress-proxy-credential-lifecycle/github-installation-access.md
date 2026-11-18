@@ -97,6 +97,39 @@ Apply confirmed replacement, explicit stop and withdrawal of Git or model author
 rules. Verify repeated missing Git evidence while normal Harness and model supervision continues;
 distinguish observation from authorization.
 
+### Report repository execution that cannot resume
+
+Propose an explicit terminal result on the existing read-only
+`ComputeDriver.verifyRepositoryExecution` and `SandboxRepositoryAccess.verifyExecution`
+contracts. A Driver may throw OCC's `RepositoryExecutionRequiresRedeployError` only when
+it has durable evidence that repository authority cannot resume on this execution.
+Missing evidence, a timeout, an unavailable dependency or absence of local process state
+is not that evidence: those paths keep their current unknown/retry behavior.
+
+The OpenShell implementation uses this result for a held launch whose exact persisted
+binding, owner and unchanged fence establish replacement by a worker that cannot inherit
+that launch. The verification remains read-only. It does not adopt the route, issue
+material, relax recipient identity or authorize an uncertain provider write.
+
+OCC revalidates its claim and the active revision under the existing ownership locks.
+In one transaction it closes repository admission, registers the existing standing
+withdrawal obligation and completes the originating maintenance work with
+`REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. Subsequent workers continue withdrawal and
+independent runtime supervision, rather than retrying Git renewal. The existing cleanup
+owner retains or retires the runtime according to its actual evidence; this result does
+not by itself prove that model execution can safely continue.
+
+The authorized deployment-detail read projects this exact revision-bound outcome as
+optional `repositoryAccess` with state `redeploy-required`, the fixed code and recovery
+guidance. It preserves the historical deployment status and exposes no provider payload
+or credential. An absent field does not prove current Git availability. No new endpoint,
+resource, table or permission is introduced.
+
+Use the typed result rather than a general retry limit: an outage must remain recoverable.
+Verify a real worker and OpenShell runtime-owner replacement over PostgreSQL, no new Git
+issuance, durable recovery guidance across another restart, and unchanged transient
+recovery. This amendment remains proposed.
+
 ### Prove the same Agent can still fetch after the old deadline
 
 1. Install without the repository broker. Grant standing access once. Use a controlled private

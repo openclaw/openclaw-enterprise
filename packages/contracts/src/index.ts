@@ -1,6 +1,9 @@
 import type { Static } from "typebox";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
-import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
+import type {
+  ComputeAgentProvisioningCapabilities,
+  RepositoryWorkerRestartDisposition,
+} from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
 import type {
   ExecutionAdmission,
@@ -333,7 +336,7 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
-  /** The API offers native admin configuration during Agent provisioning. */
+  /** The API can configure Agent browser access during creation or provisioning. */
   readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
@@ -1094,6 +1097,7 @@ export interface InstallationDeploymentInventoryAgent {
   readonly executionMode: HarnessExecutionMode;
   readonly activeRevisionId?: string;
   readonly deploymentInProgress: boolean;
+  readonly repositoryWorkerRestart?: RepositoryWorkerRestartDisposition;
 }
 
 export interface InstallationDeploymentInventoryNamespace {
@@ -1114,6 +1118,10 @@ export interface HarnessDescriptor {
 
 export interface RevisionHarnessDescriptor extends HarnessDescriptor {
   readonly mode: HarnessExecutionMode;
+  /** Requested settings, normalized by the selected Compute Driver. */
+  readonly overrides?: Readonly<Record<string, unknown>>;
+  /** Resolved once at admission; execution must not reconstruct these from defaults. */
+  readonly configuration?: Readonly<Record<string, unknown>>;
 }
 
 export interface AgentRevision extends Scope {
@@ -1129,12 +1137,17 @@ export interface AgentRevision extends Scope {
   readonly configurationGeneration: number;
   readonly configuration: OpenClawConfigurationDocument;
   readonly gatewayManagedMode: boolean;
-  readonly harness: RevisionHarnessDescriptor;
+  readonly harness: RevisionHarnessDescriptor & {
+    readonly overrides: Readonly<Record<string, unknown>>;
+    readonly configuration: Readonly<Record<string, unknown>>;
+  };
   readonly compute: {
     readonly id: string;
     readonly implementation: string;
     /** Private, immutable admission state owned by the selected Compute Driver. */
     readonly admission?: string;
+    /** Optional private runtime inputs; separate from authority admission for older readers. */
+    readonly runtimeInputs?: string;
   };
   readonly sandboxDriverId?: string;
   readonly sandboxPolicy?: SandboxPolicySnapshot;
@@ -1165,11 +1178,13 @@ export type AgentRevisionMetadata = Pick<
 >;
 
 /**
- * A revision without its saved settings: metadata plus the database-checked fields that tell
- * revisions apart. List routes return it; reading it never decodes the admitted snapshot.
+ * Revision metadata, its Harness descriptor and any recorded Harness settings. List routes
+ * return this projection without decoding the full admitted snapshot.
  */
 export type AgentRevisionSummary = AgentRevisionMetadata &
-  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "harness">;
+  Pick<AgentRevision, "configurationId" | "configurationGeneration"> & {
+    readonly harness: RevisionHarnessDescriptor;
+  };
 
 /** One page of revision summaries, newest first, and the revision number the next page starts below. */
 export interface AgentRevisionSummaryPage {
@@ -1200,7 +1215,7 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.repositoryCredentials === undefined
       ? {}
       : { repositoryCredentials: immutableCopy(revision.repositoryCredentials) }),
-    harness: Object.freeze({ ...revision.harness }),
+    harness: immutableCopy(revision.harness),
     compute: Object.freeze({ ...revision.compute }),
     harnessAuth: immutableCopy(revision.harnessAuth),
     ...(revision.credentialSources === undefined
@@ -1242,6 +1257,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "administer",
   "read_logs",
   "manage_policy",
+  "read_audit",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1272,6 +1288,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "administer",
     "read_logs",
     "manage_policy",
+    "read_audit",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
@@ -1290,6 +1307,21 @@ export interface Role extends Scope {
   readonly namespaceId?: string;
   readonly name?: string;
   readonly permissions: readonly Permission[];
+}
+
+/**
+ * ID prefixes of the Roles, Groups, and Group bindings that OCC writes from the Installation
+ * `iam` configuration (RFC-0026). OCC adds, changes, and deletes only rows with these prefixes
+ * when the configuration changes.
+ */
+export const CONFIGURED_IAM_ID_PREFIXES = Object.freeze({
+  role: "role_config_",
+  group: "group_config_",
+  binding: "binding_config_",
+} as const);
+
+export function isConfiguredRoleId(roleId: string): boolean {
+  return roleId.startsWith(CONFIGURED_IAM_ID_PREFIXES.role);
 }
 
 export interface Group extends Scope {
@@ -1325,10 +1357,22 @@ export interface Restriction extends Scope {
   readonly effect: "deny";
 }
 
+/** Resource kinds that belong to one Agent, so an exact binding on that Agent applies to them. */
+export const AGENT_CHILD_RESOURCE_KINDS = Object.freeze([
+  "agent_revision",
+  "sandbox_policy",
+] as const);
+
 export interface AuthorizationRequest {
   readonly principalId: string;
   readonly action: PermissionAction;
   readonly resource: ResourceRef;
+  /**
+   * The Agent that owns an `agent_revision` or `sandbox_policy` resource, supplied by OCC from
+   * stored state. An exact binding on this Agent also applies its Role's permissions for the
+   * requested kind. Absent for every other kind.
+   */
+  readonly parentAgentId?: string;
 }
 
 /** Asks whether one identity already holds every grant of another identity. */
@@ -1360,9 +1404,34 @@ export type IdentityLookup = Scope &
   );
 
 /** `access` records an audited read, such as viewing or downloading runtime log text. */
-export type AuditEventKind = "bootstrap" | "mutation" | "access" | "authorization_denial";
+export type AuditEventKind =
+  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request";
 
 export type AuditOutcome = "success" | "denied" | "failure";
+
+export const API_REQUEST_AUDIT_ACTIONS = {
+  admitted: "openclaw.api.request.admitted",
+  result: "openclaw.api.request.result",
+} as const;
+
+export const CONTROLLER_WORK_AUDIT_ACTIONS = {
+  queued: "openclaw.controller_work.queued",
+  claimed: "openclaw.controller_work.claimed",
+  deferred: "openclaw.controller_work.deferred",
+  completed: "openclaw.controller_work.completed",
+  provisioningCancelled: "openclaw.agents.provision.cancelled",
+} as const;
+
+export type ApiRequestAuditObservation =
+  | { readonly action: typeof API_REQUEST_AUDIT_ACTIONS.admitted; readonly outcome: "success" }
+  | {
+      readonly action: typeof API_REQUEST_AUDIT_ACTIONS.result;
+      readonly outcome: AuditOutcome;
+      readonly statusCode: number;
+      /** The exact resource returned by a successful, authorized read. */
+      readonly readTarget?: ResourceRef;
+      readonly reasonCode?: "COMMIT_OUTCOME_UNKNOWN";
+    };
 
 export interface AuditEvent extends Scope {
   readonly id: string;
@@ -1413,6 +1482,10 @@ export type {
   IAMManagedRoleInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
+  IAMOwnerBindingInput,
+  IAMConfiguredPolicy,
+  IAMConfiguredPolicyInput,
+  IAMConfiguredPolicyChanges,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
 export type {
@@ -1473,13 +1546,13 @@ export type {
   ChannelCredentialReader,
 } from "./drivers/channel/index.ts";
 export type {
+  RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  AgentChatCompletionsEndpoint,
+  AgentChatCompletionsResolution,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,
-  NamespaceLifecycleFailure,
-  NamespaceEnsureResult,
-  NamespaceDeleteResult,
   PluginDeploymentWarning,
   RuntimeFailureCause,
   RuntimeFailureEvidence,
@@ -1510,6 +1583,13 @@ export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./se
 
 export * from "./api/common.ts";
 export {
+  AGENT_AUDIT_PAGE_LIMIT,
+  AGENT_AUDIT_PROJECTION_VERSION,
+  type AgentAuditEntry,
+  type AgentAuditPage,
+  type AgentAuditQuery,
+} from "./api/agent-audit.ts";
+export {
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
@@ -1527,6 +1607,8 @@ export type {
   Preset,
   PresetSummary,
   PresetTemplate,
+  PresetDraftTemplate,
+  PresetDraftDefinition,
   PresetLaunchSettings,
   PresetVariable,
 } from "./presets.ts";
@@ -1538,11 +1620,13 @@ export {
   validatePresetTemplate,
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
+  presetValueHasVariables,
   requiredPresetVariables,
-} from "./preset-variables.mjs";
+} from "./preset-variables.mts";
 
 export {
   CODEX_FAILURE_OUTPUT_CLASSES,
+  CRASH_LOOP_CHECK,
   PROCESS_EXIT_ERROR_CODES,
   PROCESS_EXIT_MAX_STATUS,
   PROCESS_EXIT_SIGNALS,
@@ -1554,7 +1638,7 @@ export {
   WORKSPACE_SETUP_CHECK,
   WORKSPACE_SETUP_FAILED,
   WORKSPACE_SETUP_REFUSED,
-} from "./runtime-failure.mjs";
+} from "./runtime-failure.ts";
 
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";
 export { normalizeInitialWorkspaceFiles, normalizeWorkspaceDefaultsId } from "./workspace-setup.ts";
@@ -1562,7 +1646,7 @@ export {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
-} from "./workspace-defaults.mjs";
+} from "./workspace-defaults.ts";
 
 export type {
   ProtectedRepositoryGitAuthority,
@@ -1580,3 +1664,13 @@ export type {
   RepositoryGitOnlineDecision,
   RepositoryGitSendPermit,
 } from "./protected-repository-git.ts";
+
+export type {
+  NamespaceLifecycleFailure,
+  NamespaceEnsureResult,
+  NamespaceDeleteResult,
+  NamespaceDeletionEligibility,
+  NamespaceLifecycleContext,
+  NamespaceLifecycleHooks,
+  NamespaceLifecycleParticipant,
+} from "./drivers/namespace-lifecycle.ts";

@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
-import { createServer as createSecureServer } from "node:https";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -15,11 +13,12 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
-import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
-import { refusingPort } from "../helpers/available-port.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { registerOpenShellCodexReadinessCases } from "./openshell-harness-codex-readiness-cases.ts";
+import {
+  close,
+  registerOpenShellServiceTransportCases,
+} from "./openshell-harness-service-transport-cases.ts";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -28,11 +27,14 @@ import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
 const TOKEN = "fixture-transport-token";
+const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const started = { type: "thread.started", thread_id: "thread" };
 const turnStarted = { type: "turn.started" };
 const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
 const completed = { type: "turn.completed" };
+
+registerOpenShellCodexReadinessCases(TOKEN, serviceUrl);
 
 function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   const directory = mkdtempSync(join(tmpdir(), "openshell-held-failure-"));
@@ -282,21 +284,6 @@ test("a provider-owned Codex Harness with a working model starts the app-server 
   );
 });
 
-async function listen(server, host = "127.0.0.1") {
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, host, resolve);
-  });
-  return server.address().port;
-}
-
-async function close(server) {
-  server.closeAllConnections?.();
-  await new Promise((resolve) => server.close(resolve));
-}
-
-const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
-
 test("the OpenShell client reads a held failure from the real Harness wrapper through the service host", async (t) => {
   const { servers } = runCodexEntrypoint({
     env: providerEnv,
@@ -360,491 +347,7 @@ test("the OpenShell client reads a held failure from the real Harness wrapper th
   });
 });
 
-test("the OpenShell client reaches a bearer-passthrough service through the gateway listener", async (t) => {
-  const seen = [];
-  let answer = (_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ runtimeFailure: { code: "MODEL_PROBE_FAILED" } }));
-  };
-  let upgrade = (request, socket) => {
-    const accept = createHash("sha1")
-      .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-      .digest("base64");
-    // Consume the client's close frame so this raw upgrade fixture observes EOF.
-    socket.resume();
-    socket.end(
-      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
-    );
-  };
-  const gateway = createServer((request, response) => {
-    seen.push({
-      method: request.method,
-      url: request.url,
-      host: request.headers.host,
-      authorization: request.headers.authorization,
-    });
-    answer(request, response);
-  });
-  gateway.on("upgrade", (request, socket) => {
-    seen.push({
-      upgrade: request.headers.upgrade,
-      url: request.url,
-      host: request.headers.host,
-      authorization: request.headers.authorization,
-    });
-    upgrade(request, socket);
-  });
-  const port = await listen(gateway);
-  t.after(() => close(gateway));
-  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
-  const signal = AbortSignal.timeout(5_000);
-
-  assert.deepEqual(
-    await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-    { status: 200, json: { runtimeFailure: { code: "MODEL_PROBE_FAILED" } } },
-  );
-  assert.deepEqual(seen.at(-1), {
-    method: "GET",
-    url: "/openclaw/runtime/status",
-    host: "tenant--sandbox.openshell.localhost:8080",
-    authorization: `Bearer ${TOKEN}`,
-  });
-
-  // OpenShell's own refusals are plain text: never a status document.
-  answer = (_request, response) => {
-    response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-    response.end("Service endpoint is not reachable");
-  };
-  assert.deepEqual(
-    await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-    { status: 502 },
-  );
-  answer = (_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ padding: "x".repeat(20_000) }));
-  };
-  assert.deepEqual(
-    await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-    { status: 200 },
-    "an oversized answer is not parsed",
-  );
-  answer = (_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end("{not json");
-  };
-  assert.deepEqual(
-    await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-    { status: 200 },
-  );
-  // A JSON body under another content type is still not a status document.
-  answer = (_request, response) => {
-    response.writeHead(200, { "content-type": "text/plain" });
-    response.end(JSON.stringify({ runtimeFailure: { code: "MODEL_PROBE_FAILED" } }));
-  };
-  assert.deepEqual(
-    await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-    { status: 200 },
-  );
-
-  assert.equal(await client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal), true);
-  assert.deepEqual(seen.at(-1), {
-    upgrade: "websocket",
-    url: "/",
-    host: "tenant--sandbox.openshell.localhost:8080",
-    authorization: `Bearer ${TOKEN}`,
-  });
-  upgrade = (_request, socket) => {
-    socket.end(
-      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: wrong\r\n\r\n",
-    );
-  };
-  assert.equal(
-    await client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal),
-    false,
-    "a handshake must echo this request's key",
-  );
-  upgrade = (_request, socket) => {
-    socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-  };
-  assert.equal(await client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal), false);
-
-  for (const bearer of ["", "two words", "line\nbreak"]) {
-    await assert.rejects(
-      client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", bearer, signal),
-      /token68/,
-    );
-  }
-  for (const origin of [
-    "http://user:pass@host/",
-    "http://host/path",
-    "http://host/?query",
-    "ftp://host/",
-    "not a url",
-  ]) {
-    await assert.rejects(
-      client.getServiceDocument(origin, "/x", TOKEN, signal),
-      /HTTP origin|valid URL/,
-      origin,
-    );
-  }
-  for (const path of ["openclaw/runtime/status", "//other.example.test/x"]) {
-    await assert.rejects(
-      client.getServiceDocument(serviceUrl, path, TOKEN, signal),
-      /must be absolute/,
-      path,
-    );
-  }
-
-  const aborted = new AbortController();
-  answer = () => aborted.abort(new Error("caller cancelled"));
-  await assert.rejects(
-    client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, aborted.signal),
-    /caller cancelled/,
-  );
-});
-
-test("an accepted OpenShell probe closes its WebSocket normally without sending a Harness request", async (t) => {
-  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
-  const peers = new WebSocketServer({ noServer: true });
-  const gateway = createServer();
-  let requests = 0;
-  gateway.on("upgrade", (request, socket, head) => {
-    assert.equal(request.headers.authorization, `Bearer ${TOKEN}`);
-    peers.handleUpgrade(request, socket, head, (peer) => {
-      peer.on("message", () => requests++);
-      peers.emit("connection", peer);
-    });
-  });
-  const port = await listen(gateway);
-  t.after(async () => {
-    for (const peer of peers.clients) {
-      peer.terminate();
-    }
-    await new Promise((resolve) => peers.close(resolve));
-    await close(gateway);
-  });
-  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
-  t.after(() => client.close());
-  const deadline = AbortSignal.timeout(5_000);
-  const closed = once(peers, "connection", { signal: deadline }).then(([peer]) =>
-    once(peer, "close", { signal: deadline }),
-  );
-  const handshake = client
-    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
-    .then((accepted) => assert.equal(accepted, true));
-  // The real WebSocket peer reports 1006 when a probe drops TCP without a close frame.
-  const [, [code, reason]] = await Promise.all([handshake, closed]);
-  assert.equal(code, 1000);
-  assert.equal(reason.length, 0);
-  assert.equal(requests, 0, "readiness must not invoke the Harness");
-});
-
-test("an OpenShell probe gives a peer that delays TCP closure its full cleanup deadline", async (t) => {
-  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { Receiver, Sender } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
-  const gateway = createServer();
-  const sockets = new Set();
-  let closeCode;
-  let closeReceivedAt;
-  gateway.on("upgrade", (request, socket, head) => {
-    sockets.add(socket);
-    const accept = createHash("sha1")
-      .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-      .digest("base64");
-    socket.write(
-      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
-    );
-    // Use the real protocol codec, but withhold TCP EOF after acknowledging Close.
-    const receiver = new Receiver({ isServer: true });
-    const sender = new Sender(socket);
-    receiver.once("conclude", (code, reason) => {
-      closeCode = code;
-      closeReceivedAt = performance.now();
-      sender.close(code, reason, false, () => {});
-    });
-    if (head.length > 0) {
-      receiver.write(head);
-    }
-    socket.pipe(receiver);
-  });
-  const port = await listen(gateway);
-  t.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await close(gateway);
-  });
-  const client = new GrpcOpenShellGatewayClient({
-    endpoint: `http://127.0.0.1:${port}`,
-    requestTimeoutMs: 1_000,
-  });
-  t.after(() => client.close());
-  const deadline = AbortSignal.timeout(5_000);
-  let endedAt;
-  const ended = once(gateway, "upgrade", { signal: deadline }).then(([, socket]) =>
-    once(socket, "end", { signal: deadline }).then(() => {
-      endedAt = performance.now();
-    }),
-  );
-  const started = performance.now();
-  const handshake = client
-    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
-    .then((accepted) => {
-      assert.equal(accepted, true);
-      // Readiness must be visible while the peer still holds TCP open, not after cleanup.
-      assert.equal(endedAt, undefined);
-      assert.ok(performance.now() - started < 750, "readiness waited for connection cleanup");
-    });
-  await Promise.all([handshake, ended]);
-  assert.equal(closeCode, 1000);
-  const cleanupElapsed = endedAt - closeReceivedAt;
-  // Allow scheduling tolerance, but detect both early FIN and a doubled cleanup deadline.
-  assert.ok(endedAt - started >= 950, "client ended TCP before the cleanup deadline");
-  assert.ok(cleanupElapsed < 1_500, "client exceeded the configured cleanup deadline");
-});
-
-test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
-  let socket;
-  let closed = false;
-  let markClosed;
-  const closing = new Promise((resolve) => (markClosed = resolve));
-  const gateway = createServer();
-  gateway.on("upgrade", (_request, peer) => {
-    socket = peer;
-    peer.resume();
-    peer.once("end", () => peer.end());
-    peer.once("close", () => {
-      closed = true;
-      markClosed();
-    });
-    // Headers already prove refusal; the peer never finishes its advertised body.
-    peer.write(
-      "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial",
-    );
-  });
-  const port = await listen(gateway);
-  try {
-    const client = new GrpcOpenShellGatewayClient({
-      endpoint: `http://127.0.0.1:${port}`,
-      requestTimeoutMs: 1_000,
-    });
-    assert.equal(
-      await client.serviceWebSocketHandshake(serviceUrl, TOKEN, AbortSignal.timeout(5_000)),
-      false,
-    );
-    // Disposal must happen even though send() clears the completed request's timer: the socket
-    // closes within 1.5 s (the wait ends as soon as it does).
-    let timer;
-    await Promise.race([closing, new Promise((resolve) => (timer = setTimeout(resolve, 1_500)))]);
-    clearTimeout(timer);
-    assert.equal(closed, true, "a completed refusal must not retain its HTTP socket");
-  } finally {
-    // Complete the base implementation's held response without manufacturing a reset.
-    socket?.end("x".repeat(93));
-    await close(gateway);
-  }
-});
-
-test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async (t) => {
-  // A released port can be taken by a parallel test's listener; this one keeps refusing.
-  const refusing = await refusingPort();
-  t.after(() => refusing.release());
-  const { port } = refusing;
-  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
-  for (const observe of [
-    () =>
-      client.getServiceDocument(
-        serviceUrl,
-        "/openclaw/runtime/status",
-        TOKEN,
-        AbortSignal.timeout(5_000),
-      ),
-    () => client.serviceWebSocketHandshake(serviceUrl, TOKEN, AbortSignal.timeout(5_000)),
-  ]) {
-    await assert.rejects(observe(), (error) => {
-      assert.ok(error instanceof DependencyUnavailableError, String(error));
-      // The reason is closed vocabulary for the worker's transient-dependency log.
-      assert.ok(error instanceof OpenShellServiceTransportError);
-      assert.equal(error.reason, "unreachable");
-      return true;
-    });
-  }
-});
-
-test("an OpenShell service that never answers times out as a dependency failure", async (t) => {
-  const held = [];
-  const gateway = createServer((_request, response) => held.push(response));
-  gateway.on("upgrade", (_request, socket) => held.push(socket));
-  const port = await listen(gateway);
-  t.after(() => {
-    for (const socket of held) {
-      socket.destroy();
-    }
-    return close(gateway);
-  });
-  const client = new GrpcOpenShellGatewayClient({
-    endpoint: `http://127.0.0.1:${port}`,
-    requestTimeoutMs: 1_000,
-  });
-  for (const observe of [
-    (signal) => client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-    (signal) => client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal),
-  ]) {
-    // The caller's own deadline is longer: the request bound must fire first.
-    await assert.rejects(observe(AbortSignal.timeout(20_000)), (error) => {
-      assert.ok(error instanceof DependencyUnavailableError, String(error));
-      assert.ok(error instanceof OpenShellServiceTransportError);
-      assert.equal(error.reason, "timeout");
-      assert.match(error.message, /timed out/);
-      return true;
-    });
-  }
-});
-
-const selfSignedCertificate = (directory, name, subjectAltName) =>
-  selfSigned(directory, { name, commonName: "openshell-gateway", subjectAltName });
-
-// A TLS gateway listener that records the SNI and Host of every request it receives.
-function tlsGateway(keyPath, certPath, seen) {
-  const gateway = createSecureServer(
-    { key: readFileSync(keyPath), cert: readFileSync(certPath) },
-    (request, response) => {
-      seen.push({ servername: request.socket.servername, host: request.headers.host });
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ runtimeFailure: { code: "MODEL_PROBE_FAILED" } }));
-    },
-  );
-  gateway.on("upgrade", (request, socket) => {
-    seen.push({ servername: socket.servername, host: request.headers.host });
-    const accept = createHash("sha1")
-      .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-      .digest("base64");
-    // Consume the client's close frame so this raw upgrade fixture observes EOF.
-    socket.resume();
-    socket.end(
-      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
-    );
-  });
-  return gateway;
-}
-
-test("the OpenShell client verifies a TLS gateway listener against its root certificate and name", async (t) => {
-  const directory = temporaryDirectorySync(t, "openshell-service-tls-");
-  // The certificate names only the control endpoint, never the service host.
-  const { keyPath, certPath } = await selfSignedCertificate(directory, "tls", "DNS:localhost");
-  const seen = [];
-  const gateway = tlsGateway(keyPath, certPath, seen);
-  const port = await listen(gateway);
-  t.after(() => close(gateway));
-  const signal = AbortSignal.timeout(5_000);
-  // SNI needs a name. The listener is IPv4; Node falls back to it if localhost resolves to ::1.
-  const endpoint = `https://localhost:${port}`;
-  const client = new GrpcOpenShellGatewayClient({ endpoint, rootCertificatePath: certPath });
-
-  // TLS is verified against the control endpoint's name (SNI), while Host names the service.
-  assert.deepEqual(
-    await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-    { status: 200, json: { runtimeFailure: { code: "MODEL_PROBE_FAILED" } } },
-  );
-  assert.equal(await client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal), true);
-  assert.deepEqual(seen, [
-    { servername: "localhost", host: "tenant--sandbox.openshell.localhost:8080" },
-    { servername: "localhost", host: "tenant--sandbox.openshell.localhost:8080" },
-  ]);
-
-  // Without the gateway CA the listener cannot be verified: an outage, not a starting Harness.
-  const untrusted = new GrpcOpenShellGatewayClient({ endpoint });
-  for (const observe of [
-    () => untrusted.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-    () => untrusted.serviceWebSocketHandshake(serviceUrl, TOKEN, signal),
-  ]) {
-    await assert.rejects(observe(), (error) => {
-      assert.ok(error instanceof DependencyUnavailableError, String(error));
-      return true;
-    });
-  }
-  assert.equal(seen.length, 2, "an unverified listener never receives the bearer");
-});
-
-test("the OpenShell client verifies an IP-literal TLS gateway listener against the endpoint address, not Host", async (t) => {
-  const directory = temporaryDirectorySync(t, "openshell-service-tls-ip-");
-  // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
-  const probe = createServer();
-  const ipv6 = await new Promise((resolve) => {
-    probe.once("error", () => resolve(false));
-    probe.listen(0, "::1", () => probe.close(() => resolve(true)));
-  });
-  const cases = [
-    // TLS forbids an IP in SNI: the certificate must carry the endpoint IP itself.
-    { name: "ipv4", san: "IP:127.0.0.1", bind: "127.0.0.1", host: "127.0.0.1", verified: true },
-    { name: "ipv6", san: "IP:::1", bind: "::1", host: "[::1]", verified: true, needsIpv6: true },
-    // A hex IPv6 literal (IPv4-mapped, so it reaches the IPv4 loopback listener).
-    {
-      name: "ipv6-hex",
-      san: "IP:::ffff:7f00:1",
-      bind: "127.0.0.1",
-      host: "[::ffff:7f00:1]",
-      verified: true,
-      needsIpv6: true,
-    },
-    {
-      name: "wrong-ip",
-      san: "IP:127.0.0.2",
-      bind: "127.0.0.1",
-      host: "127.0.0.1",
-      verified: false,
-    },
-    // A certificate for the service host named in Host does not vouch for the endpoint.
-    {
-      name: "service-host",
-      san: "DNS:tenant--sandbox.openshell.localhost",
-      bind: "127.0.0.1",
-      host: "127.0.0.1",
-      verified: false,
-    },
-  ];
-  for (const { name, san, bind, host, verified, needsIpv6 } of cases) {
-    await t.test(
-      name,
-      { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
-      async (t) => {
-        const { keyPath, certPath } = await selfSignedCertificate(directory, name, san);
-        const seen = [];
-        const gateway = tlsGateway(keyPath, certPath, seen);
-        const port = await listen(gateway, bind);
-        t.after(() => close(gateway));
-        const endpoint = `https://${host}:${port}`;
-        const client = new GrpcOpenShellGatewayClient({ endpoint, rootCertificatePath: certPath });
-        const signal = AbortSignal.timeout(5_000);
-        const observations = [
-          () => client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
-          () => client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal),
-        ];
-        if (verified) {
-          assert.deepEqual(await observations[0](), {
-            status: 200,
-            json: { runtimeFailure: { code: "MODEL_PROBE_FAILED" } },
-          });
-          assert.equal(await observations[1](), true);
-          // No SNI is sent for an IP endpoint, and Host still names the service.
-          assert.deepEqual(seen, [
-            { servername: false, host: "tenant--sandbox.openshell.localhost:8080" },
-            { servername: false, host: "tenant--sandbox.openshell.localhost:8080" },
-          ]);
-          return;
-        }
-        for (const observe of observations) {
-          await assert.rejects(observe(), (error) => {
-            assert.ok(error instanceof DependencyUnavailableError, String(error));
-            return true;
-          });
-        }
-        assert.deepEqual(seen, [], "an unverified listener never receives the bearer");
-      },
-    );
-  }
-});
+registerOpenShellServiceTransportCases(TOKEN, serviceUrl);
 
 // Finding 1605: a request target that does not parse as a URL path, such as "//",
 // used to throw in a wrapper's HTTP handler. Node then ends the wrapper process,
@@ -1089,7 +592,10 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
               return { status: upfrontStatus, stdout: upfrontStdout };
             }
             assert.equal(command, "node");
-            assert.equal(args[0], "/app/openclaw.mjs");
+            // The CLI loads the CPU window preload from its own probe directory.
+            assert.equal(args[0], "--require");
+            assert.match(args[1], /\/openclaw-auth-probe-[^/]+\/cpu-window\.cjs$/);
+            assert.equal(args[2], "/app/openclaw.mjs");
             return {
               status: 0,
               stdout: JSON.stringify({

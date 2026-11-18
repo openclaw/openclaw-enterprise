@@ -30,7 +30,7 @@ _request_at_pod() {
     '{method:$method,path:$path,ip:$ip,key:$key[0].data.key,responseMode:$mode} +
       (if $body[0]==null then {} else {body:$body[0]} end)' |
     kube -n "$PLATFORM_NS" exec -i "$pod" -c api -- \
-      node --input-type=module -e "$(cat "$RUN_DIR/request.mjs")" || rc=$?
+      node --input-type=module-typescript -e "$(cat "$RUN_DIR/request.mts")" || rc=$?
   rm -f "$body_file"
   return "$rc"
 }
@@ -42,7 +42,7 @@ turn() {
   read -r pod ip < <(api_pod) || return 1
   kube -n "$PLATFORM_NS" exec -i "$pod" -c api -- \
     env OCE_TEST_NAMESPACE_ID="$namespace" OCE_TEST_AGENT_ID="$agent" OCE_TEST_PROMPT="$prompt" \
-    node --input-type=module < "$RUN_DIR/chat.mjs"
+    node --input-type=module-typescript < "$RUN_DIR/chat.mts"
 }
 wait_deployment() {
   local revision=$1 result status attempt
@@ -150,7 +150,7 @@ upgrade_installation() {
 }
 git_audit() {
   kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
-    node --input-type=module - "$namespace" "$agent" "$1" < "$RUN_DIR/git-revision-audit.mjs"
+    node --input-type=module-typescript - "$namespace" "$agent" "$1" < "$RUN_DIR/git-revision-audit.mts"
 }
 stop_and_retire() {
   local revision=$1 i

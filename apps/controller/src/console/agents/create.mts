@@ -1,7 +1,6 @@
 import type {
   Agent,
   AgentCredentialSourceBinding,
-  AgentDeploymentStatusWire,
   Configuration,
   CredentialSourceMetadata,
   CredentialSourceReference,
@@ -38,12 +37,7 @@ import {
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
-import {
-  agentCreateDenied,
-  askAdministratorTo,
-  CONFIGURATION_CREATE_REFUSED,
-  notIncluded,
-} from "./access-reasons.mjs";
+import { agentCreateDenied, CONFIGURATION_CREATE_REFUSED, notIncluded } from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -227,6 +221,7 @@ function onRefocus(recheck: () => void) {
 // Revisit catalog refresh and credential-aware discovery after the basic creation flow ships.
 const MODEL_CHOICES = {
   openai: [
+    "gpt-6.1-sol",
     "gpt-6-astra",
     "gpt-6-sol",
     "gpt-6-luna",
@@ -490,15 +485,6 @@ async function cancelledAgentState(request: CreateRequest, namespaceId: string, 
   }
 }
 
-// First-deployment waits that someone must act on: a full Pod quota (finding 1617) and an image
-// the nodes cannot pull (finding 1881). The deployment's own fixed sentence replaces the bare
-// provisioning line. The deployment read needs read access to the Agent. Clear the reason if the
-// deployment is no longer readable or names a different wait; keep it through a cancelled read
-// or temporary outage (finding 1637).
-const NAMED_DEPLOYMENT_WAITS = new Set([
-  "NAMESPACE_POD_QUOTA_EXCEEDED",
-  "REVISION_IMAGE_PULL_FAILED",
-]);
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
@@ -509,49 +495,37 @@ const NATIVE_WORKERS_UNAVAILABLE =
   "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an Installation administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
 const NO_SANDBOX_DRIVER_DEDICATED =
   "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
-// The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
-const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
-
-// The deployment's actionable wait (a sentence), none (null), DEPLOYMENT_UNREADABLE, or undefined
-// when the read was cut off or temporarily unavailable.
-async function namedDeploymentWait(
+// A refused read returns false. An unavailable read returns undefined so Create can try again.
+async function firstDeploymentReadable(
   request: CreateRequest,
   namespaceId: string,
-  job: ProvisioningJob,
+  job: { agentId: string; revisionId: string },
   signal: AbortSignal,
 ) {
-  if (
-    typeof job.agentId !== "string" ||
-    !job.agentId ||
-    typeof job.revisionId !== "string" ||
-    !job.revisionId
-  ) {
-    return null;
-  }
   try {
-    const deployment = await request(
+    await request(
       `${namespacePath(namespaceId)}/agents/${encodeURIComponent(job.agentId)}/deployments/${encodeURIComponent(job.revisionId)}`,
       { signal },
     );
-    const attempt = (deployment as AgentDeploymentStatusWire)?.progress?.lastAttempt;
-    return NAMED_DEPLOYMENT_WAITS.has(attempt?.code ?? "") &&
-      typeof attempt?.message === "string" &&
-      attempt.message
-      ? attempt.message
-      : null;
+    return true;
   } catch (error) {
-    return [401, 403, 404].includes(requestFailure(error).status ?? 0)
-      ? DEPLOYMENT_UNREADABLE
-      : undefined;
+    const { status } = requestFailure(error);
+    if (status === 401) {
+      throw error;
+    }
+    return status === 403 || status === 404 ? false : undefined;
   }
 }
 
-// The wait a job past handoff names for its first deployment (finding 1690), as the deployment's
-// status does: its fixed sentence after the provisioning line. A reader who can't read the
-// deployment gets the job's own PROVISIONING_DEPLOYMENT_PENDING, which says no more than the
-// provisioning line, so that line stays. A wait someone must act on stands alone, as above, and
-// so does a stop, which provisioning no longer continues.
-const STANDALONE_JOB_WAITS = new Set([...NAMED_DEPLOYMENT_WAITS, "AGENT_STOP_YIELDED"]);
+// The wait a job names for its first deployment (findings 1617, 1690, 1881): a full Pod quota or
+// an image the nodes cannot pull stands alone, since someone must act on it, and so does a stop,
+// which provisioning no longer continues. Other waits follow the provisioning line. The job's own
+// PROVISIONING_DEPLOYMENT_PENDING says no more than that line, so the line stays.
+const STANDALONE_JOB_WAITS = new Set([
+  "NAMESPACE_POD_QUOTA_EXCEEDED",
+  "REVISION_IMAGE_PULL_FAILED",
+  "AGENT_STOP_YIELDED",
+]);
 
 function jobDeploymentWait(job: ProvisioningJob) {
   const attempt = job.progress?.lastAttempt;
@@ -582,31 +556,37 @@ async function waitForProvisioning({
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
-  // The actionable wait the last fresh deployment read named. It fills in when a later read is
-  // cut off or unavailable and the job names no wait, so the line doesn't flip back to the bare
-  // text (finding 1637); a fresh answer or a refusal replaces it.
-  let named: string | null = null;
+  let deploymentRefused = false;
   while (current?.status === "queued" || current?.status === "running") {
-    started ||= current.status === "running";
-    // Spend the interval between polls on optional detail. At the next poll, stop that read
-    // even if only its headers arrived; the provisioning job remains the source of truth.
-    const detail = new AbortController();
-    const nextPoll = wait(1_000).then(() => detail.abort());
-    const read = await namedDeploymentWait(request, namespaceId, current, detail.signal);
-    let detailText;
-    if (read === DEPLOYMENT_UNREADABLE) {
-      // A refusal clears every detail, the job's too: the job was read before the refusal.
-      named = null;
-      detailText = null;
-    } else if (read !== undefined) {
-      // A fresh answer's actionable wait comes first; otherwise the job names the wait.
-      named = read;
-      detailText = read ?? jobDeploymentWait(current);
-    } else {
-      // Without a fresh answer, the job's wait is newer than the one kept from an earlier read.
-      detailText = jobDeploymentWait(current) ?? named;
+    // Give the optional deployment read one poll interval, including its response body.
+    const probe = new AbortController();
+    const nextPoll = wait(1_000).then(() => probe.abort());
+    const { agentId, revisionId } = current;
+    // After handoff, the Deployment tab owns progress and recovery. The job can still be
+    // readable when the deployment is refused.
+    if (agentId && revisionId && !deploymentRefused) {
+      const readable = await firstDeploymentReadable(
+        request,
+        namespaceId,
+        { agentId, revisionId },
+        probe.signal,
+      );
+      if (!isCurrent()) {
+        throw new DOMException("View closed", "AbortError");
+      }
+      if (readable) {
+        status.textContent = "Agent created. Opening its first deployment…";
+        return { agentId, revisionId, tab: "deployment" as const };
+      }
+      deploymentRefused = readable === false;
     }
-    setText(status, detailText ?? provisioningStatusText(started ? "running" : current.status));
+    started ||= current.status === "running";
+    // A refusal also clears detail from the earlier job read, which may predate an access change.
+    setText(
+      status,
+      (deploymentRefused ? null : jobDeploymentWait(current)) ??
+        provisioningStatusText(started ? "running" : current.status),
+    );
     await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");
@@ -644,7 +624,11 @@ async function waitForProvisioning({
   if (typeof current.revisionId !== "string" || !current.revisionId) {
     throw new Error("Provisioning status did not include an AgentRevision.");
   }
-  return { agentId: current.agentId, revisionId: current.revisionId };
+  return {
+    agentId: current.agentId,
+    revisionId: current.revisionId,
+    tab: "configuration" as const,
+  };
 }
 
 class ProvisioningFailure extends Error {
@@ -808,10 +792,12 @@ export function renderCreateAgent(
   );
 }
 
-// A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
+// A member's deploy gives the Agent access to each Secret and credential source it uses that the
+// member may operate (RFC-0026), so the member finishes without an administrator.
 const MEMBER_CREDENTIAL_ACCESS =
-  "An Installation administrator then gives the new Agent access to its Secrets.";
-const MEMBER_GRANT_REFUSED = `The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. ${askAdministratorTo("open the saved Agent and grant it")}`;
+  "Deploying the new Agent gives it access to the Secrets and credential sources it uses.";
+const MEMBER_GRANT_REFUSED =
+  "The Agent was created as a draft. Deploy it from its page: deploying gives it access to its model and channel Secrets.";
 // The Installation read was refused and the Namespace's permission answer is unknown (its read
 // failed), so whether this account may create Agents here is not known (finding 2110).
 const PERMISSIONS_UNREAD =
@@ -882,6 +868,7 @@ function renderAgentForm(
       Object.keys(agent.initialWorkspaceFiles).every((filename) =>
         workspaceFileNames.includes(filename),
       ));
+  let presetPluginApprovers: PluginApprovers | undefined;
   // Name the first field the form cannot use, so a Preset editor knows what to fix.
   const invalidField = (() => {
     if (agent.name !== undefined && typeof agent.name !== "string") {
@@ -900,15 +887,18 @@ function renderAgentForm(
     if (agent.plugins !== undefined && !isObject(agent.plugins)) {
       return "agent.plugins must be an object";
     }
-    if (
-      agent.pluginApprovers !== undefined &&
-      (!Array.isArray(agent.pluginApprovers) ||
-        !agent.pluginApprovers.every(
-          (entry) =>
+    if (agent.pluginApprovers !== undefined) {
+      const approvers = agent.pluginApprovers;
+      if (
+        !Array.isArray(approvers) ||
+        !approvers.every(
+          (entry: unknown): entry is PluginApprovers[number] =>
             isObject(entry) && typeof entry.channel === "string" && typeof entry.id === "string",
-        ))
-    ) {
-      return "agent.pluginApprovers must list objects with text channel and id";
+        )
+      ) {
+        return "agent.pluginApprovers must list objects with text channel and id";
+      }
+      presetPluginApprovers = approvers;
     }
     if (!hasRenderableWorkspaceFiles) {
       return `agent.initialWorkspaceFiles must be an object with only ${workspaceFileNames.join(", ")}`;
@@ -1912,7 +1902,7 @@ function renderAgentForm(
     control.addEventListener("change", resetPluginDiscovery);
   }
   let pluginApprovers = structuredClone(
-    Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
+    Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : presetPluginApprovers,
   );
   const directorySecret = createSecretReferenceField({
     context: secretContext,
@@ -1977,9 +1967,10 @@ function renderAgentForm(
   let capabilityDiscoveryFailed = false;
   let capabilityDiscoveryDenied = false;
   // The Installation read is refused, but the Namespace's permission answer grants Agent create
-  // (UX plan A2, finding 1901). The form proceeds without the Installation's capabilities, so it
-  // refuses no option the API might accept: the preflight and Agent create still decide, before
-  // and when anything is saved. capabilityDiscoveryDone stays false, so no hint claims an outcome.
+  // (UX plan A2, finding 1901). The form then reads the Namespace's Agent capabilities (RFC-0026);
+  // when that read succeeds, capabilityDiscoveryDone is set as for an administrator. Otherwise the
+  // form refuses no option the API might accept: the preflight and Agent create still decide,
+  // before and when anything is saved, and no hint claims an outcome.
   let capabilitiesUnreadable = false;
   const capabilitiesSettled = () => capabilityDiscoveryDone || capabilitiesUnreadable;
   // A refused create shows the API's 400 sentence. Its denial names nobody to ask once the
@@ -2024,6 +2015,7 @@ function renderAgentForm(
   let savedCredentialSource = draft.savedCredentialSource;
   let credentialRegistration: CredentialRegistration | null = null;
   let credentialRegistrationRejected = false;
+  let registrationRefusal = "";
   let failedCredentialSource: RegisteredCredential | null = null;
   let provisioningRequestId = createClientRequestId();
   // The API admitted (or may have admitted) a job under provisioningRequestId. Create Agent
@@ -2180,8 +2172,9 @@ function renderAgentForm(
         if (credentialRegistrationRejected) {
           credentialRegistration = null;
           credentialRegistrationRejected = false;
-          feedback.textContent =
-            "No credential registration exists. Correct the source configuration and try again.";
+          feedback.textContent = `${registrationRefusal ? registrationRefusal + " " : ""}No credential registration exists. Correct the source configuration and try again.`;
+        } else if (registrationRefusal) {
+          feedback.textContent = `${registrationRefusal} No credential registration is visible. The selected Secret remains saved. Resolve the reported problem with an administrator if needed, then select Create Agent to retry.`;
         } else {
           feedback.textContent =
             "No credential registration is visible. Select Create Agent to retry the same registration.";
@@ -2348,7 +2341,7 @@ function renderAgentForm(
   const nativeAdminField = element(
     "div",
     { className: "field" },
-    element("label", {}, nativeAdmin, " Enable Native admin UI"),
+    element("label", {}, nativeAdmin, " Enable browser chat"),
     nativeAdminHelp,
   );
   const channelEditor = element("div", { className: "create-channels" });
@@ -2888,10 +2881,12 @@ function renderAgentForm(
     );
     return true;
   }
+  // A member cannot provision, so its form registers the model source and saves a draft that the
+  // member deploys (RFC-0026); an administrator's form provisions.
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
-    (!shouldProvision() || !modelSourceType());
+    (!(shouldProvision() || capabilitiesUnreadable) || !modelSourceType());
   const updateControls = () => {
     setText(intro, introText(!repositories.unavailable()));
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
@@ -2925,20 +2920,17 @@ function renderAgentForm(
     for (const node of actions.querySelectorAll("button")) {
       node.disabled = pending;
     }
-    nativeAdmin.disabled ||=
-      Boolean(savedConfiguration) || !nativeAdminAvailable || !shouldProvision();
+    nativeAdmin.disabled ||= Boolean(savedConfiguration) || !nativeAdminAvailable;
     let nativeAdminHint =
-      "Chat with this Agent through its OCE URL after deployment. Requires Agent administer permission; enables native administration and trusted-proxy device approval.";
+      "Open this Agent in the browser after deployment. Agent operate permission allows chat; Agent administer permission also allows native administration.";
     if (!capabilityDiscoveryDone) {
-      nativeAdminHint = "Native admin UI availability depends on installation capabilities.";
+      nativeAdminHint = "Browser chat availability depends on installation capabilities.";
     } else if (!nativeAdminAvailable) {
       nativeAdminHint =
-        "Native admin UI access is not enabled on this installation. Ask an Installation administrator to enable it.";
-    } else if (!shouldProvision()) {
-      nativeAdminHint = "Native admin UI setup requires Dedicated provisioning.";
+        "Browser chat is not enabled on this installation. Ask an Installation administrator to enable it.";
     }
     setText(nativeAdminHelp, nativeAdminHint);
-    if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
+    if (!planLocked && capabilityDiscoveryDone && !nativeAdminAvailable) {
       nativeAdmin.checked = false;
     }
     if (pluginHarness !== harness.value) {
@@ -3383,26 +3375,7 @@ function renderAgentForm(
       if (!context.isCurrent()) {
         return;
       }
-      installationCapabilities = installation.capabilities;
-      applyPluginCapabilities();
-      nativeAdminAvailable = installation.capabilities?.nativeAdmin === true;
-      nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
-      const openclawModes = installation.capabilities?.openclaw?.executionModes;
-      openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
-      sandboxDriverUnavailable =
-        installation.capabilities?.openclaw?.sandboxDriverUnavailable === true;
-      const settingRefusal = installation.capabilities?.openclaw?.settingRefusals?.dedicated;
-      dedicatedSettingRefusal =
-        typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
-      credentialSourceTypes = installation.capabilities?.credentialSources?.types;
-      // Drivers that offer no device login refuse every start (finding 2991).
-      oauthLogin.setOffered(deviceLoginOffered(installation.capabilities));
-      provisionableExecutionModes.clear();
-      for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
-        []) {
-        provisionableExecutionModes.add(executionMode);
-      }
-      capabilityDiscoveryDone = true;
+      applyCapabilities(installation.capabilities);
       // A readable Installation is an administrator's: without a permission answer, the form
       // goes on as allowed, and so do its repository choices. A known refusal (a kept draft a
       // Restriction now refuses) reads none and says why: nothing else on the form does.
@@ -3411,20 +3384,7 @@ function renderAgentForm(
       } else {
         repositories.start();
       }
-      // A mode the form chose but the Installation refuses becomes the usable one, if any.
-      if (
-        openclawExecutionModes !== undefined &&
-        modeDefaulted &&
-        harness.value === "openclaw" &&
-        !embeddedRequired() &&
-        !savedConfiguration &&
-        !openclawModeUsable(mode.value) &&
-        openclawModeUsable(defaultOpenClawMode())
-      ) {
-        mode.value = defaultOpenClawMode();
-        renderChannelEditor();
-      }
-      void checkRuntimeBinding();
+      afterCapabilities();
     } catch (error) {
       if (!context.isCurrent()) {
         return;
@@ -3438,7 +3398,7 @@ function renderAgentForm(
       // A denial is permanent for this account, so retrying the read cannot help.
       capabilityDiscoveryDenied = status === 403;
       if (capabilityDiscoveryDenied) {
-        settleRefusedCapabilities();
+        await settleRefusedCapabilities();
         return;
       }
       capabilityStatus.textContent = `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
@@ -3448,12 +3408,48 @@ function renderAgentForm(
       }
     }
   }
+  function applyCapabilities(capabilities: InstallationCapabilities | undefined) {
+    installationCapabilities = capabilities;
+    applyPluginCapabilities();
+    nativeAdminAvailable = capabilities?.nativeAdmin === true;
+    nativeWorkersAvailable = capabilities?.nativeWorkers !== undefined;
+    const openclawModes = capabilities?.openclaw?.executionModes;
+    openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
+    sandboxDriverUnavailable = capabilities?.openclaw?.sandboxDriverUnavailable === true;
+    const settingRefusal = capabilities?.openclaw?.settingRefusals?.dedicated;
+    dedicatedSettingRefusal =
+      typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
+    credentialSourceTypes = capabilities?.credentialSources?.types;
+    // Drivers that offer no device login refuse every start (finding 2991).
+    oauthLogin.setOffered(deviceLoginOffered(capabilities));
+    provisionableExecutionModes.clear();
+    for (const executionMode of capabilities?.agentProvisioning?.executionModes ?? []) {
+      provisionableExecutionModes.add(executionMode);
+    }
+    capabilityDiscoveryDone = true;
+  }
+  function afterCapabilities() {
+    // A mode the form chose but the Installation refuses becomes the usable one, if any.
+    if (
+      openclawExecutionModes !== undefined &&
+      modeDefaulted &&
+      harness.value === "openclaw" &&
+      !embeddedRequired() &&
+      !savedConfiguration &&
+      !openclawModeUsable(mode.value) &&
+      openclawModeUsable(defaultOpenClawMode())
+    ) {
+      mode.value = defaultOpenClawMode();
+      renderChannelEditor();
+    }
+    void checkRuntimeBinding();
+  }
   // After a refused Installation read, the permission answer decides. A member the Namespace lets
   // create Agents goes on without the Installation's capabilities (UX plan A2); only an explicit
   // grant does. An unknown answer says the check failed and offers a retry of it (finding 2110).
   // A known denial shows what a fresh load with that answer shows: the refusal instead of the form
   // (finding 2908). A form that already saved resources keeps them in view, under the same refusal.
-  function settleRefusedCapabilities() {
+  async function settleRefusedCapabilities() {
     const create = namespacePermissions?.agents?.create;
     permissionsUnknown = typeof create !== "boolean";
     capabilityStatus.textContent = "";
@@ -3461,6 +3457,7 @@ function renderAgentForm(
       capabilitiesUnreadable = true;
       showAccess("info", memberAccess);
       repositories.start();
+      await loadNamespaceCapabilities();
       return;
     }
     if (permissionsUnknown) {
@@ -3472,6 +3469,29 @@ function renderAgentForm(
       showAccess("danger", agentCreateDenied(namespacePermissions));
       // The block above gives the reason; the held repository line no longer waits for anything.
       repositories.refuse();
+    }
+  }
+  // A member cannot read the Installation, so the Namespace answers the capabilities Agent create
+  // needs, such as the Credential Gateway's source types (RFC-0026). A failed read leaves the form
+  // as it was without them: the preflight and Agent create still decide.
+  async function loadNamespaceCapabilities() {
+    try {
+      const answer = (await request(`${namespacePath(namespaceId)}/agent-capabilities`)) as {
+        capabilities?: InstallationCapabilities;
+      };
+      if (!context.isCurrent()) {
+        return;
+      }
+      applyCapabilities(answer.capabilities);
+      afterCapabilities();
+    } catch (error) {
+      if (context.isCurrent() && requestFailure(error).status === 401) {
+        context.onExpired();
+      }
+    } finally {
+      if (context.isCurrent()) {
+        updateControls();
+      }
     }
   }
   async function rereadPermissions() {
@@ -3500,7 +3520,10 @@ function renderAgentForm(
     // failed again; once answered it hides and the answer takes focus rather than the page.
     const active = document.activeElement;
     const focusOutcome = !active || active === document.body || active === retryPermissionCheck;
-    settleRefusedCapabilities();
+    await settleRefusedCapabilities();
+    if (!context.isCurrent()) {
+      return;
+    }
     if (!form.isConnected) {
       // The refusal replaced the form: it is the answer.
       const refusal = context.view.querySelector<HTMLElement>(".state-panel");
@@ -3546,13 +3569,13 @@ function renderAgentForm(
         isCurrent: context.isCurrent,
       });
       focusFeedbackLine(savedStatus);
-      const { agentId, revisionId } = await finishing;
+      const { agentId, revisionId, tab } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
       provisioningAttempt = null;
       repositories.recordSuccessfulSave();
-      context.navigate(`agents/${agentId}?revision=${revisionId}&tab=configuration`);
+      context.navigate(`agents/${agentId}?revision=${revisionId}&tab=${tab}`);
     } catch (cause) {
       const error = {
         ...requestFailure(cause),
@@ -3953,6 +3976,7 @@ function renderAgentForm(
     context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
+    let postingRegistration = false;
     const requestedSecretName = requestedModelSecretName();
     let refusedInConfiguration = false;
     try {
@@ -4002,11 +4026,14 @@ function renderAgentForm(
           };
           mutationStarted = true;
           credentialRegistrationRejected = false;
+          registrationRefusal = "";
+          postingRegistration = true;
           const result = await request(`${namespacePath(namespaceId)}/credential-sources`, {
             method: "POST",
             expectedStatus: 201,
             body: credentialRegistration,
           });
+          postingRegistration = false;
           if (!context.isCurrent()) {
             return;
           }
@@ -4109,6 +4136,9 @@ function renderAgentForm(
               harnessAuth,
               credentialSources,
               configurationId: savedConfiguration.id,
+              ...(nativeAdmin.checked && nativeAdminAvailable
+                ? { nativeAdmin: true, expectedConfigurationGeneration: 1 }
+                : {}),
             },
           }),
         );
@@ -4153,13 +4183,8 @@ function renderAgentForm(
         Object.values(savedConfiguration.secretBindings ?? {}).some(
           (binding) => binding?.source?.kind === "secret",
         );
-      if (needsCredentialAccess) {
-        if (context.installationAdmin === false) {
-          credentialGrantRefused = true;
-          feedback.textContent = MEMBER_GRANT_REFUSED;
-          focusFeedbackLine(feedback);
-          return;
-        }
+      // A member's deploy writes these grants (RFC-0026), so only an administrator grants here.
+      if (needsCredentialAccess && context.installationAdmin !== false) {
         // IAM binds a credential to a principal, not to an Agent ID. Confirm the principal on
         // the saved Agent before granting access. An explicit retry reads that same Agent again;
         // it never reuses a principal from a create response we could not confirm.
@@ -4234,6 +4259,9 @@ function renderAgentForm(
       }
       const registrationProblem =
         error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
+      if (postingRegistration && knownRejection) {
+        registrationRefusal = registrationProblem.trim();
+      }
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
       // member sees MEMBER_GRANT_REFUSED below), so its denial names nobody to ask (finding 2113).
       const detail = credentialRegistration

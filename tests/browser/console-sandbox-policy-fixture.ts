@@ -1,3 +1,5 @@
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import type { SandboxNetworkGrant } from "../../packages/contracts/src/sandbox-policy.ts";
@@ -15,7 +17,6 @@ export async function createPolicyConsole(
     {
       gateway: { workspaceMode: "operator" },
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",
@@ -40,7 +41,10 @@ export async function createPolicyConsole(
       backend: {
         id: "openshell",
         drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
-        client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
+        client: new OpenShellGateway(
+          { serviceName: "openshell-gateway" },
+          { gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()) },
+        ),
       },
     },
   );

@@ -113,8 +113,16 @@ export const SandboxPolicyValidateBody = Type.Object(
   { additionalProperties: false },
 );
 export const SandboxPolicyApplyBody = Type.Object(
-  { expectedVersion: SandboxPolicyVersion, revisionId: RevisionId },
-  { additionalProperties: false },
+  {
+    expectedVersion: SandboxPolicyVersion,
+    revisionId: RevisionId,
+    additions: Type.Optional(SandboxNetworkGrantsSchema),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+  },
 );
 export const SandboxPolicyEditingBody = Type.Object(
   { enabled: Type.Boolean() },

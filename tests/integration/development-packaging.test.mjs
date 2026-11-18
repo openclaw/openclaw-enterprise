@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { composeConfiguration, composeConfigurationProvider } from "../helpers/compose.mjs";
+import { composeConfiguration, composeConfigurationProvider } from "../helpers/compose.ts";
 
 import { firstAgentComposeImages } from "../helpers/local-first-agent-stack.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -84,7 +84,6 @@ test("prepared first-Agent Compose images replace builds and preserve service co
     OCC_DEVELOPMENT_NETWORK_NAME: "first-agent-compose-config",
     OCC_DEVELOPMENT_BROWSER_ORIGIN: "https://console.example.test:8443",
     OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
-    OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN: ".example.test",
     OCC_DEVELOPMENT_BROWSER_PORT: "8443",
     OCC_DEVELOPMENT_BROWSER_TLS_CERT: join(directory, "tls.crt"),
     OCC_DEVELOPMENT_BROWSER_TLS_KEY: join(directory, "tls.key"),

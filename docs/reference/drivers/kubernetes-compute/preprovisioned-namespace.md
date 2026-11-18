@@ -27,7 +27,7 @@ refuses the value unless all of these are set:
 - `executionCluster.enabled: false`
 - `gatewayRouting.enabled: true` with `gatewayRouting.serviceType: ClusterIP`
 - `egressAuthority.enabled: true` or `openshellGit.enabled: true`
-- `auth.passwordSignIn: all`, with `auth.github`, `auth.google`, `auth.oidc`
+- `auth.passwordSignIn: all`, with `auth.google` and `auth.oidc`
   and `agentNativeAdmin` disabled
 
 Helm passes the binding to the API and worker as the JSON environment variable
@@ -93,6 +93,11 @@ set to the Namespace ID. Their NetworkPolicies must use
   resources. Compute refuses Namespace deletion:
   `The operator retains the preprovisioned Namespace and owns its teardown.`
 - Compute refuses `existingNamespace` placement and any other Namespace ID.
+
+Both policy checks accept Kubernetes omitting an empty `ingress` or `egress`
+list when `policyTypes` explicitly includes that direction. They still compare
+policy types, selectors, nonempty rules and all other spec fields. An empty
+rule object (`[{}]`) allows traffic and is never equivalent to an empty list.
 
 Namespace mismatches report `KUBERNETES_OWNERSHIP_CONFLICT`, for example
 `Preprovisioned Kubernetes Namespace identity, ownership, gateway membership,

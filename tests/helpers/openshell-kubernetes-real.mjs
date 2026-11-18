@@ -1,7 +1,9 @@
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -16,32 +18,139 @@ import {
   diagnosticDeadlineMs,
   productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
+import { readCodexPolicyThread } from "./codex-policy-thread-evidence.ts";
+import { runGatewayInstallation } from "./openshell-installation.ts";
+
+import { parseJson, record } from "./egress-observation-values.ts";
+import { appServerUrlShape, nativeFailureMarker } from "./egress-native-exec-observation.ts";
+import { observeConnectedOperation, rememberKubectlOutcome } from "./egress-connected-failure.ts";
 
 const execute = promisify(execFile);
+const kubectlKillSignal = "SIGKILL";
+
+// Stock OpenShell shorthand timestamps describe rendering, not event occurrence. This
+// bounded tail inventory is deliberately uncorrelated with the failed curl request.
+export async function assertAllowedCredentialRoute(
+  { probe, sourceType, destination, capture, write = (text) => process.stderr.write(text) },
+  { timeoutMs = diagnosticDeadlineMs } = {},
+) {
+  try {
+    assert.equal(
+      probe.httpStatus,
+      "200",
+      "a command Codex runs must authenticate at the allowed source endpoint.",
+    );
+  } catch (failure) {
+    const unavailable = { status: "unavailable" };
+    const supervisorTail = await withinDiagnosticDeadline(
+      async () => {
+        try {
+          const logs = await capture();
+          if (typeof logs !== "string") {
+            return unavailable;
+          }
+          let providerEnvironmentChanges = 0;
+          let selectedDestinationStaleGenerationDenials = 0;
+          for (const line of logs.split("\n")) {
+            // Exact v0.1.6 shorthand grammar; discard both rendering/CRI timestamps.
+            const record = line.match(/^(?:\d{4}-\d{2}-\d{2}T[\d:.]+Z ){1,2}OCSF (.*)$/u)?.[1];
+            if (
+              /^CONFIG:DETECTED \[INFO\] Settings poll: config change detected \[old_revision:\d+ new_revision:\d+ policy_changed:(?:true|false) provider_env_changed:true\]$/u.test(
+                record ?? "",
+              )
+            ) {
+              providerEnvironmentChanges++;
+            }
+            const closed = record?.match(
+              /^NET:OPEN \[MED\] DENIED (\S+) \[reason:L7 tunnel closed before inspection because policy changed: policy generation is stale \[captured_generation:\d+ current_generation:\d+\]\]$/u,
+            );
+            if (closed !== null && closed !== undefined && closed[1] === destination) {
+              selectedDestinationStaleGenerationDenials++;
+            }
+          }
+          return {
+            status:
+              providerEnvironmentChanges + selectedDestinationStaleGenerationDenials > 0
+                ? "recognized"
+                : "no_match",
+            providerEnvironmentChanges,
+            selectedDestinationStaleGenerationDenials,
+          };
+        } catch {
+          return unavailable;
+        }
+      },
+      { timeoutMs, timedOut: unavailable },
+    );
+    const status = (value) => (typeof value === "string" && /^\d{3}$/u.test(value) ? value : null);
+    try {
+      write(
+        `OpenShell integration: allowed credential route failure ${JSON.stringify({
+          sourceType: ["codex-pat", "openai"].includes(sourceType) ? sourceType : null,
+          httpStatus: status(probe.httpStatus),
+          connectStatus: status(probe.connectStatus),
+          exitCode:
+            Number.isInteger(probe.exitCode) && probe.exitCode >= 0 && probe.exitCode <= 255
+              ? probe.exitCode
+              : null,
+          uncorrelatedSupervisorTail: supervisorTail,
+        })}\n`,
+      );
+    } catch {
+      // Diagnostic output failure must not replace the original route assertion.
+    }
+    throw failure;
+  }
+}
+
 const sandboxApiResource = "sandboxes.agents.x-k8s.io";
 const harnessPort = 18790;
 const gatewayPort = 8080;
 const transportSecretPrefix = "openclaw-agent-transport";
 
-function safeKubectlFailure(error, signal) {
-  // A child-process Error carries raw stdout/stderr. Returning it as a cause
-  // would let the test reporter publish model or credential bytes.
+function safeKubectlFailure(error, child, signal, nativeTag) {
+  // execFile's error.killed includes attempted kills, even after the child exits
+  // while inherited pipes remain open. Require the private child's confirmation
+  // that a kill was sent. Buffer overflow and cancellation have their own codes.
+  const exitCode = Number.isInteger(error.code) ? error.code : (child?.exitCode ?? null);
+  const terminationSignal = error.signal ?? child?.signalCode ?? null;
   let outcome = "transport";
-  if (Number.isInteger(error.code)) {
-    outcome = `exit ${error.code}`;
-  } else if (signal?.aborted) {
+  if (error.code === "ABORT_ERR") {
     outcome = "cancelled";
-  } else if (error.killed) {
+  } else if (Number.isInteger(error.code)) {
+    outcome = "exit";
+  } else if (error.code === null && child?.killed === true && error.signal === kubectlKillSignal) {
     outcome = "deadline";
+  } else if (error.code === null && terminationSignal !== null) {
+    outcome = "signal";
   }
-  return new Error(`OpenShell fixture kubectl failed (${outcome})`);
+  // Keep raw command, output, and AbortSignal reason out of the new Error.
+  const description = outcome === "exit" ? `exit ${exitCode}` : outcome;
+  return rememberKubectlOutcome(
+    new Error(`OpenShell fixture kubectl failed (${description})`),
+    {
+      outcome,
+      exitCode,
+      signal: terminationSignal,
+      killed: child?.killed ?? error.killed,
+      signalAborted: signal?.aborted === true,
+    },
+    nativeTag === undefined
+      ? undefined
+      : {
+          stderr: error.stderr,
+          tag: nativeTag,
+          clientExit:
+            outcome === "exit" && (exitCode === 1 || exitCode === modelAtCapacityExitCode),
+        },
+  );
 }
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47
-// crates/openshell-driver-kubernetes/src/config.rs:425-455,731-758.
+// NVIDIA/OpenShell f3d976590d3eb1379690a2abaf0f0e26c21d487d
+// crates/openshell-driver-kubernetes/src/config.rs:476,754-785.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -89,6 +198,85 @@ export function registerOpenShellInstallationCleanups(context, operations) {
   if (stopped !== undefined) {
     throw stopped;
   }
+}
+
+export class OpenShellDeploymentFailedError extends Error {
+  constructor(revisionId, code, workerEvents = []) {
+    // Only emit codes from the controller's fixed deployment failure vocabulary.
+    const reason =
+      typeof code === "string" && Object.hasOwn(DEPLOYMENT_FAILURE_STEPS, code) ? code : undefined;
+    let detail = reason;
+    if (reason === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+      const completed = workerEvents.findLast(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === revisionId &&
+          event.code === reason,
+      );
+      // The worker joins these categories in canonical order. Omit the entire
+      // value if any part differs, including mixed known and unknown fields.
+      const categories = ["sandbox-mode-denied", "named-profile-denied", "reviewer-denied"];
+      const parts = typeof completed?.failure === "string" ? completed.failure.split("_") : [];
+      const denied = categories.filter((category) => parts.includes(category)).join("_");
+      if (denied && denied === completed.failure) {
+        detail = `${reason}: ${denied}`;
+      }
+    }
+    super(
+      `OpenShell revision ${revisionId} deployment failed${detail === undefined ? "" : ` (${detail})`}.`,
+    );
+    this.code = reason;
+  }
+}
+
+export function waitForOpenShellRevisionActivation(
+  /** @type {(description: string | (() => string), read: () => Promise<unknown>) => Promise<unknown>} */ waitFor,
+  /** @type {{
+   *   request: (method: string, path: string) => Promise<{status: number, data: unknown}>,
+   *   agentPath: string,
+   *   revisionId: string,
+   *   workerEvents?: readonly Readonly<Record<string, unknown>>[],
+   *   checkDeploymentBeforeActivation?: boolean,
+   *   reportDeploymentStatusOnTimeout?: boolean,
+   * }} */
+  {
+    request,
+    agentPath,
+    revisionId,
+    workerEvents = [],
+    checkDeploymentBeforeActivation = false,
+    reportDeploymentStatusOnTimeout = false,
+  },
+) {
+  const description = `OpenShell revision ${revisionId} activation`;
+  let lastDeploymentStatus;
+  const describeTimeout = () =>
+    lastDeploymentStatus === undefined
+      ? description
+      : `${description} (last deployment status: ${lastDeploymentStatus})`;
+  return waitFor(reportDeploymentStatusOnTimeout ? describeTimeout : description, async () => {
+    const observed = await request("GET", agentPath);
+    assert.equal(observed.status, 200, "OpenShell Agent status read failed.");
+    if (observed.data.activeRevisionId === revisionId && !checkDeploymentBeforeActivation) {
+      return observed.data;
+    }
+    const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
+    assert.equal(deployment.status, 200, "OpenShell deployment status read failed.");
+    const status = deployment.data.status;
+    if (status === "failed") {
+      throw new OpenShellDeploymentFailedError(
+        revisionId,
+        deployment.data.error?.code,
+        workerEvents,
+      );
+    }
+    if (reportDeploymentStatusOnTimeout) {
+      // Each completed read replaces the observation, including an unknown status.
+      lastDeploymentStatus =
+        status === "queued" || status === "running" || status === "succeeded" ? status : undefined;
+    }
+    return observed.data.activeRevisionId === revisionId ? observed.data : undefined;
+  });
 }
 
 // One poll of the gateway-outage proof: the revision's work back in `queued` after a pass, then
@@ -170,6 +358,11 @@ export function modelAtCapacityOutcome(error) {
 // condition, not the product's. A turn that had begun a command keeps its unknown outcome and
 // is never run again. Either way an at-capacity failure says so on its first line, since the
 // kubectl failure itself starts with the command line; any other failure is thrown at once.
+/**
+ * @template Result
+ * @param {() => Promise<Result>} turn
+ * @param {{ attempts?: number, firstDelayMs?: number, sleep?: (ms: number) => Promise<unknown>, log?: (message: string) => void }} [options]
+ */
 export async function retryModelAtCapacity(
   turn,
   {
@@ -220,6 +413,7 @@ export function openshellHash(value, length = 12) {
   return sha256Hex(value, length);
 }
 
+/** @param {string} agentId */
 export function openShellAgentName(agentId) {
   return `agent-${openshellHash(agentId)}`;
 }
@@ -228,27 +422,51 @@ export function openShellGatewayName(agentId) {
   return `gateway-${openshellHash(agentId)}`;
 }
 
+/** @param {{agentId: string, id: string}} revision */
 export function openShellRevisionName(revision) {
   return `${openShellAgentName(revision.agentId)}-rev-${openshellHash(revision.id)}`;
 }
 
+/**
+ * @param {string} namespace
+ * @param {{namespaceId: string, agentId: string, id: string}} revision
+ * @param {{apiVersion: string, metadata: {namespace: string, name: string, uid: string, labels?: Record<string, string>}}} sandbox
+ * @param {Required<Pick<import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1Pod, "metadata">> &
+ *   {spec: Pick<import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1PodSpec,
+ *     "serviceAccountName" | "automountServiceAccountToken" | "volumes">}} pod
+ * @param {string} [profile] Untrusted profile names are rejected by this oracle.
+ * @param {string} [configuredServiceAccountName]
+ */
 export function assertOpenShellHarnessBinding(
   namespace,
   revision,
   sandbox,
   pod,
   profile = "perAgent",
+  configuredServiceAccountName,
 ) {
   assert.equal(sandbox.metadata.namespace, namespace);
   assert.equal(pod.metadata.namespace, namespace);
   assert.ok(sandbox.metadata.name, "Sandbox must have a stable resource name.");
-  assert.ok(["perAgent", "maintainedLauncher"].includes(profile), "unknown identity profile");
+  assert.ok(
+    ["perAgent", "maintainedLauncher", "namespaceShared"].includes(profile),
+    "unknown identity profile",
+  );
   // internal/occdev/openshell.go selects this literal for the maintained launcher.
   // Keep the per-Agent oracle as the default for callers qualifying that contract.
-  assert.equal(
-    pod.spec.serviceAccountName,
-    profile === "maintainedLauncher" ? "openshell-sandbox" : openShellAgentName(revision.agentId),
-  );
+  let expectedServiceAccountName = openShellAgentName(revision.agentId);
+  if (profile === "maintainedLauncher") {
+    expectedServiceAccountName = "openshell-sandbox";
+  } else if (profile === "namespaceShared") {
+    // Read the configured namespace Gateway account independently of this Pod.
+    assert.ok(
+      typeof configuredServiceAccountName === "string" &&
+        configuredServiceAccountName.trim().length > 0,
+      "the namespace-shared profile requires its configured ServiceAccount",
+    );
+    expectedServiceAccountName = configuredServiceAccountName;
+  }
+  assert.equal(pod.spec.serviceAccountName, expectedServiceAccountName);
   assert.equal(pod.metadata.labels?.["openclaw.dev/namespace"], revision.namespaceId);
   assert.equal(pod.metadata.labels?.["openclaw.dev/agent"], revision.agentId);
   assert.equal(pod.metadata.labels?.["openclaw.dev/revision"], revision.id);
@@ -270,9 +488,8 @@ export function assertOpenShellHarnessBinding(
     true,
     "the Agent Sandbox controller, not Compute, must own the Harness Pod.",
   );
-  if (profile === "maintainedLauncher") {
-    // The supervisor runs in a separate Pod. The maintained launcher's workload
-    // must bootstrap from its Secret without receiving a ServiceAccount token.
+  if (profile === "maintainedLauncher" || profile === "namespaceShared") {
+    // Shared accounts must not give workloads a Kubernetes ServiceAccount token.
     assert.equal(pod.spec.automountServiceAccountToken, false);
     assert.equal(
       (pod.spec.volumes ?? []).some(({ projected }) =>
@@ -281,6 +498,8 @@ export function assertOpenShellHarnessBinding(
       false,
       "the workload Pod must not project a ServiceAccount token, even for init containers.",
     );
+  }
+  if (profile === "maintainedLauncher") {
     const sandboxId = sandbox.metadata.labels?.["openshell.ai/sandbox-id"];
     assert.ok(typeof sandboxId === "string" && sandboxId.length > 0);
     assert.equal(pod.metadata.annotations?.["openshell.ai/sandbox-id"], sandboxId);
@@ -418,7 +637,6 @@ export function createOpenShellInstallationConfiguration({
   platformNamespace,
   gatewayImage,
   codexImage,
-  openShellRuntimeClass = "openshell-sandbox",
   cluster,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
@@ -488,7 +706,6 @@ export function createOpenShellInstallationConfiguration({
         networkPolicyResources: [],
       },
       kubernetes: {
-        runtimeClassName: openShellRuntimeClass,
         // Match the Compute-owned Harness budget. The cluster's 1 GiB default
         // can OOM-kill a real worker while it installs the Gateway bundle.
         agentResources: structuredClone(
@@ -510,7 +727,7 @@ export function createOpenShellInstallationConfiguration({
       policy: {
         filesystem: {
           includeWorkdir: true,
-          readOnly: ["/app"],
+          readOnly: ["/bin", "/usr", "/lib", "/proc", "/dev/urandom", "/etc", "/var/log", "/app"],
           readWrite: ["/sandbox/.openclaw-runtime", "/dev/null"],
         },
         process: { runAsUser: "1000", runAsGroup: "1000" },
@@ -615,7 +832,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.6 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -721,6 +938,17 @@ export function openShellGatewayNetworkPolicies(namespace, apiPeers) {
   };
 }
 
+/**
+ * @param {Parameters<typeof createRealKubernetesFixture>[0] & {
+ *   codexCommandGraceMs?: number | undefined,
+ *   modelAtCapacityRetry?: Parameters<typeof retryModelAtCapacity>[1],
+ *   openShellGatewayImage?: string | undefined, openShellSandboxImage?: string | undefined,
+ *   openShellSupervisorImage?: string | undefined,
+ *   openShellHelmPath?: string | undefined, openShellHelmChart?: string | undefined,
+ *   openShellWorkspaceHelmChart?: string | undefined, openShellChartVersion?: string | undefined,
+ *   commandTimeoutMs?: number | undefined, signal?: AbortSignal | undefined,
+ * }} options
+ */
 export function createOpenShellKubernetesFixture({
   kubeconfigPath,
   kubernetesContext,
@@ -735,11 +963,10 @@ export function createOpenShellKubernetesFixture({
   openShellGatewayImage,
   openShellSandboxImage,
   openShellSupervisorImage,
-  openShellRuntimeClass = "openshell-sandbox",
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.6",
+  openShellChartVersion = "0.1.8",
   commandTimeoutMs,
   signal,
 }) {
@@ -754,26 +981,26 @@ export function createOpenShellKubernetesFixture({
   if (commandTimeoutMs !== undefined) {
     assert.ok(Number.isSafeInteger(commandTimeoutMs) && commandTimeoutMs > 0);
   }
+  async function boundedKubectl(args, nativeTag) {
+    let execution;
+    try {
+      execution = execute("kubectl", original.kubectlArguments(args), {
+        timeout: commandTimeoutMs,
+        killSignal: kubectlKillSignal,
+        signal,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      const { stdout } = await execution;
+      return stdout;
+    } catch (error) {
+      throw safeKubectlFailure(error, execution?.child, signal, nativeTag);
+    }
+  }
   const base = {
     ...original,
     ...(commandTimeoutMs === undefined
       ? {}
-      : createKubernetesClient({
-          selection,
-          async kubectl(...args) {
-            try {
-              const { stdout } = await execute("kubectl", original.kubectlArguments(args), {
-                timeout: commandTimeoutMs,
-                killSignal: "SIGKILL",
-                signal,
-                maxBuffer: 4 * 1024 * 1024,
-              });
-              return stdout;
-            } catch (error) {
-              throw safeKubectlFailure(error, signal);
-            }
-          },
-        })),
+      : createKubernetesClient({ selection, kubectl: (...args) => boundedKubectl(args) })),
   };
   assert.ok(
     Number.isSafeInteger(codexCommandGraceMs) &&
@@ -830,7 +1057,6 @@ export function createOpenShellKubernetesFixture({
       maxBuffer: 1024 * 1024,
     });
     const kubeconfig = await base.validatePrerequisites();
-    await kubectl("get", "runtimeclass", openShellRuntimeClass, "-o", "json");
     const resources = await kubectl("api-resources", "--api-group=agents.x-k8s.io", "-o", "name");
     assert.match(
       resources,
@@ -1002,100 +1228,90 @@ export function createOpenShellKubernetesFixture({
       `--set-string=gateway.serviceAccount.namespace=${namespace}`,
       `--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance=${instance}`,
     ];
-    await execute(
-      openShellHelmPath,
-      [
-        "upgrade",
-        "--install",
-        `${instance}-workspace`,
-        openShellWorkspaceHelmChart,
-        "--namespace",
-        namespace,
-        "--kubeconfig",
-        kubeconfigPath,
-        "--kube-context",
-        kubernetesContext,
-        "--wait",
-        "--timeout",
-        "240s",
-        ...workspaceValues,
-      ],
-      { maxBuffer: 8 * 1024 * 1024 },
-    );
-    const values = [
-      `--set-string=fullnameOverride=${instance}`,
-      "--set=pkiInitJob.enabled=false",
-      "--set=server.disableTls=true",
-      "--set=server.auth.allowUnauthenticatedUsers=true",
-      "--set=server.drivers.kubernetes.allowDriverConfig=true",
-      // The gateway rejects every Sandbox template label it does not allow; Harness
-      // Pods carry the OCE selector labels that NetworkPolicies and Services match.
-      `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
-      "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
-      "--set-string=server.drivers.kubernetes.workspaceMode=operator",
-      "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
-      "--set=workspaceResources.enabled=false",
-      "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-      `--set-string=server.defaultRuntimeClassName=${openShellRuntimeClass}`,
-      ...chartImageValues("gateway.image", openShellGatewayImage),
-      ...chartImageValues("sandboxRuntime.image", openShellSandboxImage),
-      ...chartImageValues("supervisor.image", openShellSupervisorImage),
-    ];
-    if (sandboxServiceAccountName !== undefined) {
-      values.push("--set=sandboxServiceAccount.create=false");
-      values.push(`--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName}`);
-    }
-    if (extraTrustPem !== undefined) {
-      const trust = "oce-gateway-extra-trust";
-      const directory = await mkdtemp(join(tmpdir(), "openshell-gateway-trust-"));
-      const path = join(directory, "configmap.json");
-      try {
-        await writeFile(
-          path,
-          JSON.stringify({
-            apiVersion: "v1",
-            kind: "ConfigMap",
-            metadata: { name: trust, namespace },
-            data: { "ca.crt": [...rootCertificates, extraTrustPem].join("\n") },
-          }),
-          { mode: 0o600 },
-        );
-        // The bundle exceeds what client-side apply can record in its annotation.
-        await kubectl("apply", "--server-side", "--namespace", namespace, "-f", path);
-      } finally {
-        await rm(directory, { recursive: true, force: true });
-      }
-      values.push(
-        `--set-string=server.extraVolumes[0].name=${trust}`,
-        `--set-string=server.extraVolumes[0].configMap.name=${trust}`,
-        `--set-string=server.extraVolumeMounts[0].name=${trust}`,
-        "--set-string=server.extraVolumeMounts[0].mountPath=/etc/ssl/certs/ca-certificates.crt",
-        "--set-string=server.extraVolumeMounts[0].subPath=ca.crt",
-        "--set=server.extraVolumeMounts[0].readOnly=true",
+    function installChart(release, chart, values) {
+      assert.ok(openShellHelmPath, "the Gateway installation requires Helm");
+      return execute(
+        openShellHelmPath,
+        [
+          "upgrade",
+          "--install",
+          release,
+          chart,
+          "--namespace",
+          namespace,
+          "--kubeconfig",
+          kubeconfigPath,
+          "--kube-context",
+          kubernetesContext,
+          "--wait",
+          "--timeout",
+          "240s",
+          ...values,
+        ],
+        { maxBuffer: 8 * 1024 * 1024 },
       );
     }
+    async function gatewayValues() {
+      const values = [
+        `--set-string=fullnameOverride=${instance}`,
+        "--set=pkiInitJob.enabled=false",
+        "--set=server.disableTls=true",
+        "--set=server.auth.allowUnauthenticatedUsers=true",
+        "--set=server.drivers.kubernetes.allowDriverConfig=true",
+        // The gateway rejects every Sandbox template label it does not allow; Harness
+        // Pods carry the OCE selector labels that NetworkPolicies and Services match.
+        `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
+        "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
+        "--set-string=server.drivers.kubernetes.workspaceMode=operator",
+        "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
+        "--set=workspaceResources.enabled=false",
+        "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
+        ...chartImageValues("gateway.image", openShellGatewayImage),
+        ...chartImageValues("sandboxRuntime.image", openShellSandboxImage),
+        ...chartImageValues("supervisor.image", openShellSupervisorImage),
+      ];
+      if (sandboxServiceAccountName !== undefined) {
+        values.push("--set=sandboxServiceAccount.create=false");
+        values.push(`--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName}`);
+      }
+      if (extraTrustPem !== undefined) {
+        const trust = "oce-gateway-extra-trust";
+        const directory = await mkdtemp(join(tmpdir(), "openshell-gateway-trust-"));
+        const path = join(directory, "configmap.json");
+        try {
+          await writeFile(
+            path,
+            JSON.stringify({
+              apiVersion: "v1",
+              kind: "ConfigMap",
+              metadata: { name: trust, namespace },
+              data: { "ca.crt": [...rootCertificates, extraTrustPem].join("\n") },
+            }),
+            { mode: 0o600 },
+          );
+          // The bundle exceeds what client-side apply can record in its annotation.
+          await kubectl("apply", "--server-side", "--namespace", namespace, "-f", path);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+        values.push(
+          `--set-string=server.extraVolumes[0].name=${trust}`,
+          `--set-string=server.extraVolumes[0].configMap.name=${trust}`,
+          `--set-string=server.extraVolumeMounts[0].name=${trust}`,
+          "--set-string=server.extraVolumeMounts[0].mountPath=/etc/ssl/certs/ca-certificates.crt",
+          "--set-string=server.extraVolumeMounts[0].subPath=ca.crt",
+          "--set=server.extraVolumeMounts[0].readOnly=true",
+        );
+      }
 
-    await execute(
-      openShellHelmPath,
-      [
-        "upgrade",
-        "--install",
-        openShellGatewayServiceName(namespace),
-        openShellHelmChart,
-        "--namespace",
-        namespace,
-        "--kubeconfig",
-        kubeconfigPath,
-        "--kube-context",
-        kubernetesContext,
-        "--wait",
-        "--timeout",
-        "240s",
-        ...values,
-      ],
-      { maxBuffer: 8 * 1024 * 1024 },
+      return values;
+    }
+    const gateway = await runGatewayInstallation(
+      () => installChart(`${instance}-workspace`, openShellWorkspaceHelmChart, workspaceValues),
+      gatewayValues,
+      (values) => installChart(instance, openShellHelmChart, values),
+      () => waitForOpenShellGateway(namespace),
     );
-    const gateway = await waitForOpenShellGateway(namespace);
     assertRenderedOpenShellImages({
       gatewayPod: gateway,
       statefulSet: await base.resource("statefulset", instance, namespace),
@@ -1150,6 +1366,115 @@ export function createOpenShellKubernetesFixture({
     );
   }
 
+  async function readPermissionHarnessLogs(namespace, revision, since, signal) {
+    const read = async (...args) =>
+      (
+        await execute(
+          "kubectl",
+          base.kubectlArguments(["--namespace", namespace, "--request-timeout=5s", ...args]),
+          {
+            env: { PATH: process.env.PATH, HOME: process.env.HOME },
+            signal,
+            killSignal: "SIGKILL",
+            maxBuffer: 256 * 1024,
+          },
+        )
+      ).stdout;
+    const selector = [
+      `openclaw.dev/namespace=${revision.namespaceId}`,
+      `openclaw.dev/agent=${revision.agentId}`,
+      `openclaw.dev/revision=${revision.id}`,
+      "openclaw.dev/workload-role=agent",
+    ].join(",");
+    const harness = async () => {
+      const sandboxes = JSON.parse(
+        await read(
+          "get",
+          sandboxApiResource,
+          "--selector",
+          `openshell.ai/sandbox-name=os-${openshellHash(revision.id, 16)}`,
+          "-o",
+          "json",
+        ),
+      ).items;
+      if (sandboxes.length !== 1) {
+        return undefined;
+      }
+      const [sandbox] = sandboxes;
+      if (
+        sandbox.metadata?.namespace !== namespace ||
+        sandbox.metadata.deletionTimestamp !== undefined ||
+        !sandbox.metadata.name ||
+        !sandbox.metadata.uid ||
+        !sandbox.apiVersion
+      ) {
+        return undefined;
+      }
+      const { items } = JSON.parse(await read("get", "pods", "--selector", selector, "-o", "json"));
+      if (items.length !== 1) {
+        return undefined;
+      }
+      const [pod] = items;
+      const agent = pod.status?.containerStatuses?.find(({ name }) => name === "agent");
+      if (
+        pod.metadata?.namespace !== namespace ||
+        pod.metadata.deletionTimestamp !== undefined ||
+        !pod.metadata.ownerReferences?.some(
+          (owner) =>
+            owner.kind === "Sandbox" &&
+            owner.apiVersion === sandbox.apiVersion &&
+            owner.name === sandbox.metadata.name &&
+            owner.uid === sandbox.metadata.uid &&
+            owner.controller === true,
+        ) ||
+        !pod.metadata.name ||
+        !pod.metadata.uid ||
+        !agent?.containerID ||
+        !agent.state?.running
+      ) {
+        return undefined;
+      }
+      return {
+        name: pod.metadata.name,
+        uid: pod.metadata.uid,
+        container: agent.containerID,
+        sandboxUid: sandbox.metadata.uid,
+      };
+    };
+    const before = await harness();
+    if (before === undefined) {
+      return undefined;
+    }
+    const logs = await read(
+      "logs",
+      before.name,
+      "--container=agent",
+      "--timestamps",
+      `--since-time=${since}`,
+      "--limit-bytes=131072",
+    );
+    const after = await harness();
+    if (
+      after?.uid !== before.uid ||
+      after.container !== before.container ||
+      after.sandboxUid !== before.sandboxUid
+    ) {
+      return undefined;
+    }
+    // kubectl sends sinceTime at second precision. Preserve the diagnostic's
+    // actual start boundary using the timestamps attached by the container log API.
+    const startedAt = Date.parse(since);
+    return logs
+      .split("\n")
+      .flatMap((line) => {
+        const separator = line.indexOf(" ");
+        return separator !== -1 && Date.parse(line.slice(0, separator)) >= startedAt
+          ? [line.slice(separator + 1)]
+          : [];
+      })
+      .join("\n");
+  }
+
   async function waitForSandbox(namespace, revision) {
     return await base.waitFor(
       `OpenShell Sandbox for revision ${revision.id}`,
@@ -1194,8 +1519,16 @@ export function createOpenShellKubernetesFixture({
     sandbox,
     pod,
     profile = "perAgent",
+    configuredServiceAccountName,
   ) {
-    assertOpenShellHarnessBinding(namespace, revision, sandbox, pod, profile);
+    assertOpenShellHarnessBinding(
+      namespace,
+      revision,
+      sandbox,
+      pod,
+      profile,
+      configuredServiceAccountName,
+    );
     assert.equal(
       await maybeResource("deployment", openShellRevisionName(revision), namespace),
       undefined,
@@ -1341,12 +1674,65 @@ export function createOpenShellKubernetesFixture({
     assert.equal(claims.sub, `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`);
   }
 
-  function assertApprovedOpenShellPrivileges(pod) {
+  async function assertRestrictedPodSecurity(namespace) {
+    const tenant = await base.resource("namespace", namespace);
     assert.equal(
-      pod.spec.runtimeClassName,
-      openShellRuntimeClass,
-      "OpenShell Pods must use the trusted RuntimeClass selected for the admission exemption.",
+      tenant.metadata.labels?.["pod-security.kubernetes.io/enforce"],
+      "restricted",
+      "admission proof must use the actual restricted Agent tenant, without relabeling it",
     );
+    const directory = await mkdtemp(join(tmpdir(), "openshell-tenant-psa-"));
+    try {
+      // Admission must reject valid API input for both forbidden privilege paths
+      // in the same tenant where this journey admits real OpenShell workloads.
+      for (const privileged of [true, false]) {
+        const name = privileged ? "privileged" : "capability";
+        const path = join(directory, `${name}.json`);
+        await writeFile(
+          path,
+          JSON.stringify({
+            apiVersion: "v1",
+            kind: "Pod",
+            metadata: { name: `openshell-psa-${name}`, namespace },
+            spec: {
+              restartPolicy: "Never",
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 10001,
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+              containers: [
+                {
+                  name: "probe",
+                  image: openShellSandboxImage,
+                  command: ["sh", "-c", "true"],
+                  securityContext: privileged
+                    ? { privileged: true, capabilities: { drop: ["ALL"] } }
+                    : {
+                        allowPrivilegeEscalation: false,
+                        capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
+                      },
+                },
+              ],
+            },
+          }),
+          { mode: 0o600 },
+        );
+        await assert.rejects(
+          () => kubectl("apply", "--namespace", namespace, "--dry-run=server", "-f", path),
+          (error) =>
+            /violates PodSecurity ["']restricted/.test(`${error.stderr ?? ""}\n${error.message}`),
+          `the Agent tenant must reject the ${name} probe through restricted PSA, not API validation or RBAC`,
+        );
+      }
+    } finally {
+      // Server-side dry runs persist no Pods; only local manifest files need cleanup.
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  function assertApprovedOpenShellPrivileges(pod) {
+    assert.equal(pod.spec.runtimeClassName, undefined, "OCE must not select a runtime class.");
     const initCapabilities = new Set(
       (pod.spec.initContainers ?? []).flatMap(
         (container) => container.securityContext?.capabilities?.add ?? [],
@@ -1355,7 +1741,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.6 must not add capabilities to workload Pod init containers.",
+      "OpenShell must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -1363,7 +1749,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.6 must keep its network supervisor outside the workload Pod.",
+      "OpenShell must keep its network supervisor outside the workload Pod.",
     );
     const container = pod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container, "the provider-owned Pod must contain its Agent container.");
@@ -1415,19 +1801,18 @@ export function createOpenShellKubernetesFixture({
     appServerUrl,
     appServerTokenPath,
     readThreadId,
+    gatewayTurn = false,
     observeFailure = false,
     timeoutMs = 300_000,
   }) {
     assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300_000);
+    // Keep the tag out of RPC payloads and separate from the marker in script source
+    // so Node's own startup diagnostics cannot accidentally contain a valid frame.
+    const nativeTag = gatewayTurn && commandTimeoutMs !== undefined ? randomUUID() : undefined;
     const script = String.raw`
-      const appServerUrl = ${JSON.stringify(appServerUrl)} ?? process.env.APP_SERVER_URL;
-      const appServerToken = ${
-        appServerTokenPath === undefined
-          ? "process.env.APP_SERVER_TOKEN"
-          : `require("node:fs").readFileSync(${JSON.stringify(appServerTokenPath)}, "utf8")`
-      };
-      // While a command's terminal is awaited, running out of time leaves its outcome unknown.
-      const timeout = setTimeout(() => commandDeadline ? unknownCommandOutcome() : fail(new Error("Codex harness turn timed out")), ${timeoutMs});
+      const nativeTag = ${JSON.stringify(nativeTag)};
+      let timeout, socket;
+      let urlShape = "unknown", tokenPresent = null;
       const pending = new Map();
       const items = [];
       const pendingCommands = new Map();
@@ -1441,6 +1826,9 @@ export function createOpenShellKubernetesFixture({
       let assistant = "";
       let finished = false;
       let phase = "connect";
+      let lastAcknowledged = null;
+      let terminalEventIndex;
+      const errorEventIndexes = [];
       let receivedMessages = 0;
       let completedCommands = 0;
       let failedCommands = 0;
@@ -1496,8 +1884,24 @@ export function createOpenShellKubernetesFixture({
       }
 
       // Diagnostics only: the caller never decides from stderr whether to run the turn again.
-      function writeFailure(error, retrySafe) {
+      function writeFailure(error, retrySafe, failureSite = "client") {
         clearTimeout(timeout);
+        if (nativeTag !== undefined) {
+          // Write the entire bounded frame before process.exit. Never mix a remote
+          // error or stack with this record, even when a provider supplies the error.
+          try {
+            const marker = ${JSON.stringify(nativeFailureMarker)} + nativeTag;
+            const record = {
+              phase, lastAcknowledged, pendingRequests: [...pending.values()].map(({ method }) => method),
+              receivedMessages: Math.min(receivedMessages, 1000000), actionSeen,
+              failureSite, urlShape, tokenPresent,
+            };
+            require("node:fs").writeSync(2, "\n" + marker + " " + JSON.stringify(record) + "\n");
+          } catch {
+            // Failure to write diagnostics does not change the turn exit.
+          }
+          return;
+        }
         process.stderr.write(${observeFailure}
             ? "Codex harness failed before its terminal result"
             : (error?.stack || String(error)));
@@ -1513,8 +1917,8 @@ export function createOpenShellKubernetesFixture({
         }));
       }
 
-      function fail(error) {
-        writeFailure(error, false);
+      function fail(error, failureSite) {
+        writeFailure(error, false, failureSite);
         process.exit(1);
       }
 
@@ -1526,9 +1930,9 @@ export function createOpenShellKubernetesFixture({
         process.stdout.write(${JSON.stringify(modelAtCapacityReceipt)}, () => process.exit(${modelAtCapacityExitCode}));
       }
 
-      function unknownCommandOutcome() {
+      function unknownCommandOutcome(failureSite) {
         const unknown = "Codex command outcome is unknown; not sending another turn";
-        fail(new Error(finalError === undefined ? unknown : finalError.message + "\n" + unknown));
+        fail(new Error(finalError === undefined ? unknown : finalError.message + "\n" + unknown), failureSite);
       }
 
       function waitForCommandDeadline() {
@@ -1548,7 +1952,11 @@ export function createOpenShellKubernetesFixture({
         // Exit once the result is flushed. Through the OpenShell service route the WebSocket
         // close handshake never completes, so waiting for it would hold kubectl exec open.
         process.stdout.write(JSON.stringify({ assistant, items,
-          ...(${observeFailure} ? { status: turnStatus, error: turnError } : {})
+          ...(${observeFailure} ? { status: turnStatus, error: turnError,
+            ...(${gatewayTurn} && terminalEventIndex !== undefined && {
+              terminalObservation: { lastAcknowledged, terminalEventIndex, errorEventIndexes },
+            }),
+          } : {})
         }), () => process.exit(0));
       }
 
@@ -1561,9 +1969,33 @@ export function createOpenShellKubernetesFixture({
         });
       }
 
-      const socket = new WebSocket(appServerUrl, {
-        headers: { authorization: "Bearer " + appServerToken },
-      });
+      let appServerUrl, appServerToken;
+      try {
+        appServerUrl = ${JSON.stringify(appServerUrl)} ?? process.env.APP_SERVER_URL;
+        if (nativeTag !== undefined) urlShape = (${appServerUrlShape.toString()})(appServerUrl);
+        appServerToken = ${
+          appServerTokenPath === undefined
+            ? "process.env.APP_SERVER_TOKEN"
+            : `require("node:fs").readFileSync(${JSON.stringify(appServerTokenPath)}, "utf8")`
+        };
+        if (nativeTag !== undefined) tokenPresent = Boolean(appServerToken);
+      } catch (error) {
+        if (nativeTag === undefined) throw error;
+        fail(error, "startup");
+      }
+
+      // While a command's terminal is awaited, running out of time leaves its outcome unknown.
+      timeout = setTimeout(() => commandDeadline ? unknownCommandOutcome() : fail(new Error("Codex harness turn timed out")), ${timeoutMs});
+      try {
+        socket = new WebSocket(appServerUrl, {
+          headers: { authorization: "Bearer " + appServerToken },
+        });
+      } catch (error) {
+        if (nativeTag === undefined) throw error;
+        const failureSite = ["missing", "empty", "malformed"].includes(urlShape)
+          ? "configuration" : "websocket-constructor";
+        fail(error, failureSite);
+      }
 
       socket.addEventListener("open", async () => {
         try {
@@ -1610,7 +2042,16 @@ export function createOpenShellKubernetesFixture({
       socket.addEventListener("message", ({ data }) => {
         if (finished) return;
         receivedMessages += 1;
-        const message = JSON.parse(String(data));
+        let message;
+        try {
+          message = JSON.parse(String(data));
+          if (nativeTag !== undefined && message === null) {
+            throw new TypeError("Codex harness message is null");
+          }
+        } catch (error) {
+          if (nativeTag === undefined) throw error;
+          return fail(error, "message-decode");
+        }
         if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
         const item = params?.item;
@@ -1650,6 +2091,14 @@ export function createOpenShellKubernetesFixture({
         }
         rememberFailureSignals(message);
         items.push(message);
+        if (${gatewayTurn && observeFailure} && method === "error" && message.id === undefined &&
+            typeof threadId === "string" && threadId && turnId && lastAcknowledged === "turn/start" &&
+            params?.threadId === threadId && params?.turnId === turnId &&
+            typeof params.willRetry === "boolean") {
+          // Keep only the last four bound notices. The caller projects their error fields.
+          if (errorEventIndexes.length === 4) errorEventIndexes.shift();
+          errorEventIndexes.push(items.length - 1);
+        }
         if (starting) {
           pendingCommands.set(item.id, item.command);
           commandTimes.set(item.id, { startedAt: performance.now(), deltas: 0, bytes: 0 });
@@ -1677,11 +2126,19 @@ export function createOpenShellKubernetesFixture({
               turnId = id;
               phase = "turn";
             }
+            if (message.result && typeof message.result === "object" && !Array.isArray(message.result)) {
+              lastAcknowledged = entry.method;
+            }
             entry.resolve(message.result);
           }
         } else if (method === "item/completed") {
           if (item?.type === "agentMessage") assistant = item.text ?? "";
         } else if (message.method === "turn/completed") {
+          if (${gatewayTurn && observeFailure} &&
+              (message.id !== undefined || typeof threadId !== "string" || !threadId ||
+               !turnId || lastAcknowledged !== "turn/start")) {
+            return;
+          }
           const status = params?.turn?.status;
           if (params?.threadId !== threadId || params?.turn?.id !== turnId) {
             fail(new Error("Codex completed a different turn"));
@@ -1693,6 +2150,9 @@ export function createOpenShellKubernetesFixture({
           }
           turnStatus = status;
           turnError = params?.turn?.error;
+          if (${gatewayTurn && observeFailure}) {
+            terminalEventIndex = items.length - 1;
+          }
           // A command can outlive its turn: Codex returns a long command to the model, which
           // may reply before it ends. Observe only its original socket until its completion
           // event or the fixture's bound; the overall turn deadline still applies. Never extend
@@ -1726,43 +2186,68 @@ export function createOpenShellKubernetesFixture({
       });
       socket.addEventListener("error", () => {
         if (finished) return;
-        if (commandDeadline) return unknownCommandOutcome();
-        fail(new Error("Codex harness connection failed"));
+        if (commandDeadline) return unknownCommandOutcome("websocket-error");
+        fail(new Error("Codex harness connection failed"), "websocket-error");
       });
       socket.addEventListener("close", () => {
         if (finished) return;
-        if (commandDeadline) return unknownCommandOutcome();
-        fail(new Error("Codex harness connection closed before completion"));
+        if (commandDeadline) return unknownCommandOutcome("websocket-close");
+        fail(new Error("Codex harness connection closed before completion"), "websocket-close");
       });
     `;
     const containerArguments = container === undefined ? [] : ["--container", container];
-    return JSON.parse(
-      await retryModelAtCapacity(
-        () =>
-          kubectl(
-            "exec",
-            pod,
-            "--namespace",
-            namespace,
-            ...containerArguments,
-            "--",
-            "node",
-            "-e",
-            script,
-          ),
+    const args = [
+      "exec",
+      pod,
+      "--namespace",
+      namespace,
+      ...containerArguments,
+      "--",
+      "node",
+      "-e",
+      script,
+    ];
+    const run = async () => {
+      const output = await retryModelAtCapacity(
+        () => (nativeTag === undefined ? kubectl(...args) : boundedKubectl(args, nativeTag)),
         modelAtCapacityRetry,
-      ),
-    );
+      );
+      try {
+        return parseJson(output);
+      } catch (error) {
+        if (error instanceof Error && commandTimeoutMs !== undefined && gatewayTurn) {
+          rememberKubectlOutcome(error, {
+            outcome: "exit",
+            exitCode: 0,
+            signal: null,
+            killed: null,
+            signalAborted: record(signal).aborted === true,
+          });
+        }
+        throw error;
+      }
+    };
+    return gatewayTurn ? observeConnectedOperation("gateway-codex-exec", run) : run();
   }
 
+  /**
+   * @param {{ namespace: string, gatewayPod: string, threadId: string }} input
+   */
   async function readCodexThreadFromGatewayPod({ namespace, gatewayPod, threadId }) {
     assert.ok(typeof threadId === "string" && threadId.length > 0);
-    return requestCodexFromPod({ namespace, pod: gatewayPod, readThreadId: threadId });
+    const thread = await requestCodexFromPod({
+      namespace,
+      pod: gatewayPod,
+      readThreadId: threadId,
+    });
+    return readCodexPolicyThread(thread, threadId);
   }
 
+  /** @param {{ namespace: string, gatewayPod: string, container?: string | undefined, providerModel?: string | undefined, prompt?: string | undefined, observeFailure?: boolean | undefined, timeoutMs?: number | undefined }} options */
   async function requestCodexTurnFromGatewayPod({
     namespace,
     gatewayPod,
+    container,
     providerModel,
     prompt,
     observeFailure = false,
@@ -1771,6 +2256,8 @@ export function createOpenShellKubernetesFixture({
     return requestCodexFromPod({
       namespace,
       pod: gatewayPod,
+      container,
+      gatewayTurn: true,
       providerModel,
       prompt,
       observeFailure,
@@ -1806,6 +2293,7 @@ export function createOpenShellKubernetesFixture({
     customResources,
     maybeResource,
     readAgentTransportCredentials,
+    readPermissionHarnessLogs,
     waitForOpenShellGateway,
     installOpenShellGateway,
     startOpenShellGatewayPortForward,
@@ -1815,6 +2303,7 @@ export function createOpenShellKubernetesFixture({
     assertWorkspaceMounts,
     assertServicePrincipalTokenProjection,
     assertApprovedOpenShellPrivileges,
+    assertRestrictedPodSecurity,
     assertGatewayBootstrapPolicies,
     assertNoSecretBytes,
     requestCodexTurnFromGatewayPod,

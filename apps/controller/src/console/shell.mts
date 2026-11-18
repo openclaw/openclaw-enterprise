@@ -133,8 +133,8 @@ export function sorted<T extends { id: string; name?: string }>(items: readonly 
 }
 
 const backendTypes = {
-  chatgpt: "ChatGPT",
   github: "GitHub",
+  chatgpt: "ChatGPT",
   openshell: "OpenShell",
 } satisfies Record<BackendSummary["type"], string>;
 
@@ -456,28 +456,37 @@ export function createShell({
   // where the clipboard is unavailable (an http origin, say), so it can be copied by hand.
   function agentIdentity(agentId: string) {
     const id = element("span", { className: "resource-id", title: "Agent ID" }, agentId);
-    const copied = element("span", { className: "page-meta-copied", role: "status" });
-    let clearCopied: number | undefined;
+    const feedback = element("span", { className: "page-meta-copied" });
+    const status = element("span", { role: "status" }, feedback);
+    let clearFeedback: number | undefined;
+    let latestCopy = 0;
     const copy = button(
       "",
-      () => {
-        const done = () => {
-          copied.textContent = "Copied";
-          clearTimeout(clearCopied);
-          clearCopied = setTimeout(() => {
-            copied.textContent = "";
+      async () => {
+        const attempt = ++latestCopy;
+        clearTimeout(clearFeedback);
+        feedback.textContent = "";
+
+        let copied = false;
+        try {
+          if (typeof navigator.clipboard?.writeText === "function") {
+            await navigator.clipboard.writeText(agentId);
+            copied = true;
+          }
+        } catch {
+          // Fall back to manual copying when the browser rejects the write.
+        }
+        if (attempt !== latestCopy || !id.isConnected) {
+          return;
+        }
+        if (copied) {
+          feedback.textContent = "Copied";
+          clearFeedback = window.setTimeout(() => {
+            feedback.textContent = "";
           }, 2000);
-        };
-        const select = () => {
-          const range = document.createRange();
-          range.selectNodeContents(id);
-          document.getSelection()?.removeAllRanges();
-          document.getSelection()?.addRange(range);
-        };
-        if (typeof navigator.clipboard?.writeText === "function") {
-          navigator.clipboard.writeText(agentId).then(done, select);
         } else {
-          select();
+          document.getSelection()?.selectAllChildren(id);
+          feedback.textContent = "Copy selection";
         }
       },
       {
@@ -488,8 +497,9 @@ export function createShell({
         title: "Copy Agent ID",
       },
     );
+    copy.style.flexShrink = "0";
     copy.append(copyIcon());
-    return element("span", { className: "page-meta-id" }, id, copy, copied);
+    return element("span", { className: "page-meta-id" }, id, copy, status);
   }
 
   // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open
@@ -551,9 +561,14 @@ export function createShell({
     const subpage = feature === "agents" && state.page ? state.page : null;
     // A page held during a navigation shows Namespace recovery only if it already did.
     const recovery = state.recovery ?? true;
+    const focused = document.activeElement;
+    // After admission the reader can Tab to the header's selector while the page read runs.
+    const focusedNamespace =
+      focused === namespaceSelect && namespaceSelect?.closest(".page-header")
+        ? namespaceSelect.value
+        : null;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
-    const focused = document.activeElement;
     const menuFocus =
       focused instanceof HTMLElement && menuControls?.contains(focused) ? focused : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
@@ -860,6 +875,12 @@ export function createShell({
       // If focus can't return (the menu is hidden), don't leave it open out of sight.
       if (document.activeElement !== menuFocus) {
         menuControls?.close();
+      }
+    }
+    if (focusedNamespace && document.activeElement === document.body) {
+      const replacement = scopeSelector?.querySelector("select");
+      if (replacement?.value === focusedNamespace && !replacement.disabled) {
+        replacement.focus({ preventScroll: true });
       }
     }
     return { view, refresh, diagnostics, scopeSelector, actions };

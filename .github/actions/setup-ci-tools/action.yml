@@ -1,0 +1,32 @@
+name: Set up CI tools
+description: Restore verified tool downloads and set up the requested CI profile.
+inputs:
+  profile:
+    description: Tool setup profile passed to scripts/ci/setup-tools.sh.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Restore pinned yq and k3d downloads
+      id: tool-cache
+      if: inputs.profile == 'postgres' || inputs.profile == 'images' || inputs.profile == 'k3d' || inputs.profile == 'full'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/pinned-tool-downloads
+        key: pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-${{ inputs.profile }}
+        restore-keys: |
+          pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-
+    - name: Set up CI tools
+      shell: bash
+      env:
+        CI_TOOL_PROFILE: ${{ inputs.profile }}
+        CI_PINNED_TOOL_CACHE: ${{ runner.temp }}/pinned-tool-downloads
+      run: bash scripts/ci/setup-tools.sh "$CI_TOOL_PROFILE"
+    - name: Save verified yq and k3d downloads
+      if: (inputs.profile == 'postgres' || inputs.profile == 'images' || inputs.profile == 'k3d' || inputs.profile == 'full') && steps.tool-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/pinned-tool-downloads
+        key: pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-${{ inputs.profile }}
