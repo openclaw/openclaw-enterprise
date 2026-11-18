@@ -113,7 +113,7 @@ export async function probePackagedCodex(
           "openclaw-chat-absent-selected-agent.patch":
             "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
           "openclaw-restart-resume-scope.patch":
-            "329ccd83fad1e4c878f8feb2b335f84c85eddbca4193d9e25d60a2ca00f861b8",
+            "da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);

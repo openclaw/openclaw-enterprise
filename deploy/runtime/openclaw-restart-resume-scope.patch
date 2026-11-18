@@ -1,9 +1,9 @@
 diff --git a/src/config/sessions/session-restart-resume-scope.ts b/src/config/sessions/session-restart-resume-scope.ts
 new file mode 100644
-index 00000000000..4becbbacac3
+index 00000000000..6dd928b937d
 --- /dev/null
 +++ b/src/config/sessions/session-restart-resume-scope.ts
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,46 @@
 +import type { InternalSessionEntry } from "./types.js";
 +
 +type RestartResumeMarker = NonNullable<InternalSessionEntry["resumeAfterRestart"]>;
@@ -35,6 +35,20 @@ index 00000000000..4becbbacac3
 +  scope = resolveRestartResumeScope(),
 +): boolean {
 +  return marker.scope === scope;
++}
++
++/**
++ * The pending-input target of a session whose marker was written under another scope, so
++ * its queued inputs can be settled once the marker is cleared; otherwise undefined.
++ */
++export function outOfScopeRestartTarget<T extends object>(
++  entry: Pick<InternalSessionEntry, "resumeAfterRestart" | "sessionId">,
++  target: T,
++  scope = resolveRestartResumeScope(),
++): (T & { sessionId: string }) | undefined {
++  return entry.resumeAfterRestart && !isRestartResumeMarkerInScope(entry.resumeAfterRestart, scope)
++    ? { ...target, sessionId: entry.sessionId }
++    : undefined;
 +}
 diff --git a/src/config/sessions/session-run-lifecycle-projection.ts b/src/config/sessions/session-run-lifecycle-projection.ts
 index 5f38f592882..08f76a781bc 100644
@@ -202,22 +216,21 @@ index 54a2291f9ff..78eba1521b3 100644
 +    }),
 +);
 diff --git a/src/gateway/session-restart-resume.ts b/src/gateway/session-restart-resume.ts
-index f22c0567163..53c6fbdd4ed 100644
+index f22c0567163..a5642b5f23a 100644
 --- a/src/gateway/session-restart-resume.ts
 +++ b/src/gateway/session-restart-resume.ts
-@@ -19,6 +19,11 @@ import {
+@@ -19,6 +19,10 @@ import {
  } from "../config/sessions/session-accessor.js";
  import { captureSessionQueuedInputsForRestart } from "../config/sessions/session-pending-input-history.js";
  import { interruptOrphanedSessionPendingInputs } from "../config/sessions/session-pending-input-withdrawal.js";
 +import {
 +  createRestartResumeMarker,
-+  isRestartResumeMarkerInScope,
-+  resolveRestartResumeScope,
++  outOfScopeRestartTarget,
 +} from "../config/sessions/session-restart-resume-scope.js";
  import {
    derivePersistedSessionLifecyclePatch,
    restartResumeSkipReason,
-@@ -246,10 +251,10 @@ async function persistRunningSessions(
+@@ -246,10 +250,10 @@ async function persistRunningSessions(
                sessionKey,
                entry: {
                  ...entry,
@@ -230,23 +243,15 @@ index f22c0567163..53c6fbdd4ed 100644
                },
              });
              preserve.push({ session, preserve: queued.preserve });
-@@ -440,6 +445,7 @@ async function resumeRestartStore(
-     { target, entries },
-   );
-   const summary = createRestartResumeSummary("startup");
-+  const scope = resolveRestartResumeScope();
-   const entryKeys = new Set(entries.map(({ sessionKey }) => sessionKey));
-   for (const { sessionKey } of entries) {
-     summary.record(
-@@ -471,6 +477,7 @@ async function resumeRestartStore(
+@@ -471,6 +475,7 @@ async function resumeRestartStore(
        const agentId = parseAgentSessionKey(sessionKey)?.agentId ?? target.agentId;
        let authority: Awaited<ReturnType<typeof prepareSessionSystemTurnAuthority>> | undefined;
        let interrupted = false;
-+      let scopeChanged: { sessionId: string } | undefined;
++      let stale: Parameters<typeof interruptOrphanedSessionPendingInputs>[0] | undefined;
        try {
          await waitForAgentInputAdmission(agentId, {
            sessionKey,
-@@ -508,7 +515,15 @@ async function resumeRestartStore(
+@@ -508,7 +513,11 @@ async function resumeRestartStore(
                !hasAgentRunContextExecutionOwner(selected.lifecycleRunId) &&
                (!selected.activeWriterRunId ||
                  !hasAgentRunContextExecutionOwner(selected.activeWriterRunId));
@@ -254,45 +259,31 @@ index f22c0567163..53c6fbdd4ed 100644
 +            // A marker from another scope belongs to an ended deployment generation, such
 +            // as an explicit stop. Clear it without resuming; its queued inputs are settled
 +            // below, like a crash's.
-+            scopeChanged =
-+              selected.resumeAfterRestart !== undefined &&
-+              !isRestartResumeMarkerInScope(selected.resumeAfterRestart, scope)
-+                ? { sessionId: selected.sessionId }
-+                : undefined;
++            stale = outOfScopeRestartTarget(selected, { ...target, sessionKey });
 +            const recovered: InternalSessionEntry["resumeAfterRestart"] =
                selected.resumeAfterRestart ??
                (parked ||
                (orphanedRun &&
-@@ -525,7 +540,8 @@ async function resumeRestartStore(
+@@ -525,7 +534,8 @@ async function resumeRestartStore(
                  selected.updatedAt >= performance.timeOrigin - LEGACY_RESTART_RESUME_WINDOW_MS)
                  ? { queuedInputIds: [] }
                  : undefined);
 -            if (!marker && !selected.mainRestartRecovery && !orphanedRun) {
-+            const marker = scopeChanged ? undefined : recovered;
-+            if (!marker && !scopeChanged && !selected.mainRestartRecovery && !orphanedRun) {
++            const marker = stale ? undefined : recovered;
++            if (!marker && !stale && !selected.mainRestartRecovery && !orphanedRun) {
                return { result: undefined };
              }
              const entry = {
-@@ -562,10 +578,21 @@ async function resumeRestartStore(
+@@ -562,6 +572,12 @@ async function resumeRestartStore(
            },
          });
          if (!resumed) {
-+          if (scopeChanged) {
++          if (stale) {
 +            // The cleared marker no longer keeps custody of the input queued behind it.
-+            await interruptOrphanedSessionPendingInputs(
-+              { ...target, sessionKey, sessionId: scopeChanged.sessionId },
-+              () => signal.throwIfAborted(),
-+            );
++            await interruptOrphanedSessionPendingInputs(stale, () => signal.throwIfAborted());
++            summary.record(agentId, sessionKey, "scope-changed");
++            continue;
 +          }
            summary.record(
              agentId,
              sessionKey,
--            interrupted ? "orphaned-run-interrupted" : "marker-not-current-or-legacy-ineligible",
-+            scopeChanged
-+              ? "scope-changed"
-+              : interrupted
-+                ? "orphaned-run-interrupted"
-+                : "marker-not-current-or-legacy-ineligible",
-           );
-           continue;
-         }
