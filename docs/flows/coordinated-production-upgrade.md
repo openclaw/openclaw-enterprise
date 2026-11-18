@@ -79,14 +79,11 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`scripts/upgrade-production:main` converts an owner-only profile and operation into canonical arguments,
-rejects overrides and checkout mismatches, then execs `scripts/upgrade-production-images`.
+`scripts/upgrade-production:main` validates the private profile, operation and checkout, then execs `scripts/upgrade-production-images` with canonical arguments.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.md),
-mismatched `HEAD`/`--source-revision`, chart edits/symlinks and evidence/baseline aliases before access.
-Other edits/image provenance are unchecked.
+Before access, reject [Helm overrides](../guides/deploy/production-upgrade.md), source mismatch, chart edits/symlinks and evidence/baseline aliases. Other edits/image provenance are unchecked.
 
 `preprovisionedNamespace` must yield one `false` before access
 (`preprovisioned-namespace.err`).
@@ -100,17 +97,13 @@ and wrapping one registration. `agentNativeAdmin.sharedCookieDomain` is removed 
 from baseline projection; live comparison stays exact. Immutable switches require string keys.
 Startup validates controllers; broker checks references only.
 
-`read_restart_inventory` validates complete authorized inventory ownership, IDs and selections. Retained running revisions require accepted
+`read_restart_inventory` validates complete authorized inventory ownership, IDs and selections. Retained revisions require accepted
 [restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only `occ agent revision AGENT_ID REVISION_ID` requires one owned
-revision with object-valued Harness settings; retain IDs and outcome. Drafts cannot substitute.
-Runtime upgrades record replacements; draft validation requires image/size support.
-Quiescence is nonatomic; repository continuity is unverified.
+Controller-only upgrades require an owned revision with object-valued Harness settings; drafts cannot substitute.
+Runtime upgrades record replacements and validate draft image/size support. Quiescence is nonatomic; repository continuity is unverified.
 
-`OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`:
-unreadable snapshots yield `unknown`; database/identity errors propagate.
-`getInstallationDeploymentInventory` invokes Compute outside State transactions within ten seconds,
-then rechecks authorized fleet/Driver selections. Drift refuses; owner failures yield `unknown`.
+`OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`: unreadable snapshots yield `unknown`; database/identity errors propagate.
+`getInstallationDeploymentInventory` calls Compute outside State transactions with a ten-second budget, then rechecks fleet/Driver selections. Drift refuses; owner failures yield `unknown`.
 
 Refuse nonterminal deployments. Runtime upgrades require baseline versions/ready Namespaces. Exclude stopped/deleting
 Agents; allow pending repository cleanup.
@@ -156,22 +149,9 @@ theme bundles. Both writers use `loadStartupConfigurationSnapshot` and
 `loadInstallationConfiguration` without database access. For OpenShell
 `bearerTokenFile`, each Job checks file type and readability without reading the token.
 
-`connectionPlan` refuses unknown chart entrypoints. Private OIDC CA trust retains
-the chart's database preload, CA argument, and assembler mounts. Both writer Jobs
-require `OCC_DATABASE_URL`. The candidate's `createPostgresPool` reads up to two
-`occ.installation` IDs in a read-only transaction. Exactly one must match the
-authenticated API/startup-Secret ID. Statement and lock timeouts are five seconds.
-Authentication through cleanup has a 15-second deadline. Fixed diagnostics
-distinguish refusal from an incomplete check without exposing connection errors
-or rows. The Jobs check writer connections. Migrator identity and data continuity
-remain unverified.
+`connectionPlan` refuses unknown chart entrypoints. Private OIDC CA trust retains database preload, CA argument and assembler mounts. Writer Jobs require `OCC_DATABASE_URL`. Candidate `createPostgresPool` reads at most two `occ.installation` IDs read-only; exactly one must match the authenticated API/startup-Secret ID. Statement/lock timeouts are five seconds; authentication through cleanup has 15 seconds. Fixed diagnostics distinguish refusal from incomplete checks without exposing connection errors or rows. Migrator identity and data continuity remain unverified.
 
-Before further quiescence or Helm submission, `preflight_resume` runs all three
-Jobs in one `upgrade-preflight-resume.*` attempt: migration history plus API/worker
-identity-only checks, including both-stopped recovery. The frozen
-`installation-id` is revalidated against the live startup Secret; these checks
-need no API call. Completed Helm releases skip
-these Jobs. Historical migration-only attempt records remain valid for cleanup.
+Before quiescence or Helm, `preflight_resume` runs migration history and API/worker identity checks together, including both-stopped recovery. It revalidates frozen `installation-id` against the live startup Secret without calling the API. Completed Helm releases skip these Jobs. Historical migration-only records remain valid for cleanup.
 `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` filters
 typed refusals to up to 32 field diagnostics. The final successful preflight poll
 supplies the Job/Pod identity check immediately before log retrieval. Preflight
@@ -396,7 +376,7 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
-- 2026-11-18 10:15: Trace the private operator profile command handoff alongside progress output. (authoring-run/f93ed972-08b6-4310-8194-a6c8c9aeef37 - 1c25039d84024c830b7ec4b9235a87bba15657dd)
+- 2026-11-18 10:20: Trace the private profile handoff alongside progress output. (authoring-run/f93ed972-08b6-4310-8194-a6c8c9aeef37 - 2cedf84d05b8c05d812264dffd179eb3ca537fee)
 
 - 2026-11-18 05:39: Trace progress output. (authoring-run/19a81e0c-0cb0-48eb-828d-e65e72b6c576 - 8cbb31a6893016f3aa74be9471fce69d3dbc60e7)
 

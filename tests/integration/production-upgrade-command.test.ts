@@ -96,7 +96,7 @@ test("operations hand off the selected profile and mode without changing the can
     ["preflight", ["--preflight-only"]],
     ["upgrade", []],
     ["resume", ["--resume"]],
-  ]) {
+  ] as const) {
     assert.equal(run(action, f, ["--", "--timeout-seconds", "1200"], options).status, 0);
     assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
       ...upgrade,
