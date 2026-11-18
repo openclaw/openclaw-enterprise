@@ -36,15 +36,17 @@ import { bindRole } from "../helpers/iam-grants.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
+  unreadablePluginSecretRefusal,
+  appServerUnreadablePluginSecretRefusal,
+  unreadableGatewayPasswordRefusal,
+  invalidSecretProviderDefaultsRefusal,
+} from "../helpers/refusal-credential-diagnostics.ts";
+import {
   catalogRowNoModel,
   catalogRowUnselected,
   referenceFormRefusal,
   dedicatedCodexVariableRefusal,
   unboundPluginSecretRefusal,
-  unreadablePluginSecretRefusal,
-  appServerUnreadablePluginSecretRefusal,
-  unreadableGatewayPasswordRefusal,
-  invalidSecretProviderDefaultsRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,

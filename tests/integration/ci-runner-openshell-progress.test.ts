@@ -295,7 +295,7 @@ test("CI retains the unfinished upstream stage without changing the failed case"
     const steps = ["installation", "exposure-auth", "initial-model", "replacement"];
     const selected = steps.slice(0, steps.indexOf(stage) + 1);
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       "export async function prepareFile() { return { cleanup: async () => {} }; }",
     );
     await writeFile(
@@ -540,7 +540,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         await writeFile(wrapper, wrapperSource);
       }
       await writeFile(
-        join(root, "scripts/ci/prepare.mjs"),
+        join(root, "scripts/ci/prepare.ts"),
         `import { writeFile } from "node:fs/promises";
          export async function prepareFile() {
            return { cleanup: () => writeFile(${JSON.stringify(cleanupMarker)}, "cleaned") };

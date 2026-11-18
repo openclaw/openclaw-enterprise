@@ -10,7 +10,7 @@ const codexOnlyFiles = new Set([
 
 /**
  * @param {string} lane
- * @param {string} file
+ * @param {string | undefined} file
  * @param {NodeJS.ProcessEnv} env
  */
 export function openShellHarnessError(lane, file, env) {
