@@ -9,7 +9,7 @@ The existing `k3d-model` CI lane includes this case.
 
 The model writes a marker in its Harness workspace and waits in a tool call.
 The test observes the write and active run, then exercises Gateway Pod replacement,
-Agent redeployment that replaces both Gateway and Harness, and native Gateway
+replacement of both Pods within the same Agent revision, and native Gateway
 process loss with its wrapper alive. In the process-loss case, the finite remote
 command remains active; recovery waits for it to finish before adopting its thread. It sends no additional user message for each
 interrupted session. Native OpenClaw startup must admit a
@@ -20,15 +20,19 @@ marker, one final result, and one workspace write. Completed and explicitly
 cancelled sessions must remain unchanged. A healthy replacement Pod or a
 successful new user turn alone does not satisfy these checks.
 
+Agent redeployment is a negative control. It creates a new revision and must
+leave the predecessor's interrupted work stopped. The test completes a fresh
+turn on the replacement before checking that the interrupted session has no
+continuation or final result and that its workspace effect was not repeated.
+See the [revision boundary](../reference/agents/interrupted-turns.md).
+
 The [native recovery flow](../flows/harness-restart-recovery.md) describes the
 workspace reconnect and remote-turn waits, including their refusal conditions.
 
-Local ARM64 k3d qualification on November 17, 2026 passed all three recovery
-scenarios and the negative controls with Codex 0.164.0 and `gpt-6-astra`.
-The runtime used OpenClaw `b58996d69286d55d1bbbd9b5c03b4ad837baac45`
-with the restart bridge in this checkout. This establishes those recovery cases;
-it does not replace the required native container checks on both architectures
-before merge.
+Run the case against the current runtime containing both the revision-scope and
+Harness-readiness bridges. Results from before revision scoping do not qualify
+the current redeployment behavior. Real-model proof does not replace the required
+native container checks on both architectures before merge.
 
 ## Recovery boundaries
 

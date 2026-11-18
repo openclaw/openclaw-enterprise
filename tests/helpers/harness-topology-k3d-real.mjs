@@ -2570,7 +2570,7 @@ async function assertActualModelTurn(topology) {
       // A Gateway turn, unlike a direct app-server call, exercises OpenClaw's
       // model resolver. Native records must retain the endpoint provider and full ID.
       /** @type {unknown} */
-      const rollouts = await codexRollouts(topology);
+      const rollouts = await codexRollouts(topology, nonce);
       assert.ok(Array.isArray(rollouts), "Native Codex rollouts must be an array");
       /** @type {readonly unknown[]} */
       const nativeRollouts = rollouts;
@@ -3708,7 +3708,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     [completedKey, completed],
     [cancelled.sessionKey, cancelledHistory],
   ];
-  for (const replacement of ["gateway-pod", "deployment", "gateway-process"]) {
+  for (const replacement of ["gateway-pod", "workload-pods", "gateway-process", "deployment"]) {
     const interrupted = await startInterruptedWork(replacement);
     const previousUid = topology.gatewayPod.metadata.uid;
     if (replacement === "gateway-process") {
@@ -3746,8 +3746,8 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       assert.equal(topology.gatewayPod.metadata.uid, previousUid);
     } else if (replacement === "deployment") {
       const previousHarnessUid = topology.harnessPod.metadata.uid;
-      // Use the supported Agent deployment path to replace both workloads. Direct
-      // Pod deletion cannot prove the controller's stop/start ordering.
+      // A new Agent revision ends the old recovery scope. This is a negative
+      // control: replacement must not restart work under different authority.
       const deployed = await topology.request(
         "POST",
         `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
@@ -3762,6 +3762,84 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         ),
       );
       topology.revision = deployed.data;
+      topology.harnessPod = await waitForReadyAgentPod(
+        topology,
+        topology.revision.id,
+        previousHarnessUid,
+      );
+      topology.gatewayPod = await waitForReadyGatewayPod(
+        topology,
+        topology.revision.id,
+        previousUid,
+      );
+      const probeKey = `agent:main:replacement-ready-${randomUUID()}`;
+      const probeNonce = `READY-${randomUUID()}`;
+      await gatewayCall(topology, "chat.send", {
+        sessionKey: probeKey,
+        idempotencyKey: randomUUID(),
+        message: `Reply with exactly ${probeNonce}. Do not use tools.`,
+      });
+      // A completed fresh turn proves the new revision finished startup. It does
+      // not send input to the interrupted session or manufacture its recovery.
+      await assertConversation(topology, probeKey, probeNonce);
+      const stoppedHistory = await gatewayCall(topology, "chat.history", {
+        sessionKey: interrupted.sessionKey,
+        limit: 100,
+      });
+      const { session } = await gatewayCall(topology, "sessions.describe", {
+        key: interrupted.sessionKey,
+      });
+      assert.equal(session.hasActiveRun, false);
+      assert.equal(stoppedHistory.sessionId, interrupted.sessionId);
+      assert.equal(
+        stoppedHistory.messages.some(
+          (message) => message.__openclaw?.continuation?.source === "restart",
+        ),
+        false,
+        "a new revision must not continue the predecessor's interrupted turn",
+      );
+      assert.equal(
+        stoppedHistory.messages.some(
+          (message) =>
+            message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFileInPod(
+          topology.placement,
+          topology.harnessPod.metadata.name,
+          interrupted.ledger,
+        ),
+        "started\n",
+      );
+      finished.push([interrupted.sessionKey, stoppedHistory]);
+      context.diagnostic("revision replacement left interrupted work stopped");
+      continue;
+    } else if (replacement === "workload-pods") {
+      const previousHarnessUid = topology.harnessPod.metadata.uid;
+      // Replace both Pods without changing the Agent revision or its recovery
+      // scope. The actual retained volumes and native shutdown paths remain in use.
+      await Promise.all([
+        kubectl(
+          "delete",
+          "pod",
+          topology.gatewayPod.metadata.name,
+          "--namespace",
+          topology.gatewayPlacement,
+          "--wait=true",
+          "--timeout=120s",
+        ),
+        kubectl(
+          "delete",
+          "pod",
+          topology.harnessPod.metadata.name,
+          "--namespace",
+          topology.placement,
+          "--wait=true",
+          "--timeout=120s",
+        ),
+      ]);
       topology.harnessPod = await waitForReadyAgentPod(
         topology,
         topology.revision.id,
@@ -3931,9 +4009,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
   // thread must offer no tool that would list, edit or run commands there instead of the Harness.
   // Earlier cases started other threads; this session's thread is the one holding its nonce.
   const rolloutsBefore =
-    topology.harnessPod === undefined
-      ? undefined
-      : (await codexRollouts(topology)).filter(({ text }) => text.includes(nonce));
+    topology.harnessPod === undefined ? undefined : await codexRollouts(topology, nonce);
   if (rolloutsBefore !== undefined) {
     assert.equal(rolloutsBefore.length, 1, "the session must own exactly one Codex rollout");
     assert.deepEqual(
@@ -4017,9 +4093,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     );
   }
   if (rolloutsBefore !== undefined) {
-    const rolloutsAfter = (await codexRollouts(topology)).filter(({ text }) =>
-      text.includes(afterNonce),
-    );
+    const rolloutsAfter = await codexRollouts(topology, afterNonce);
     assert.deepEqual(
       rolloutsAfter.map(({ file, threadId }) => ({ file, threadId })),
       rolloutsBefore.map(({ file, threadId }) => ({ file, threadId })),
@@ -4077,8 +4151,8 @@ function assertCustomCodexModelSelection(rollout) {
   );
 }
 
-// Every Codex rollout in the Harness, with its thread ID and the dynamic tools it was given.
-async function codexRollouts(topology) {
+// Select inside the Pod so unrelated retained threads cannot exhaust kubectl output.
+async function codexRollouts(topology, nonce) {
   const output = await execNode(
     topology.placement,
     topology.harnessPod.metadata.name,
@@ -4094,8 +4168,9 @@ async function codexRollouts(topology) {
       }
     };
     walk("/home/node/.codex/sessions");
-    process.stdout.write(JSON.stringify(files.sort().map((file) => {
+    process.stdout.write(JSON.stringify(files.sort().flatMap((file) => {
       const text = fs.readFileSync(file, "utf8");
+      if (!text.includes(${JSON.stringify(nonce)})) return [];
       const records = text.split("\\n").filter(Boolean).map((line) => JSON.parse(line));
       const meta = records[0].payload;
       const names = (meta.dynamic_tools ?? []).flatMap((tool) =>
@@ -4296,7 +4371,6 @@ async function assertDedicatedNativeChildRelay(topology) {
     topology.gatewayPod.metadata.name,
     parentThreadId,
     marker,
-    childTask,
     prompt,
   );
   assert.equal(
@@ -4338,7 +4412,6 @@ export async function readDedicatedNativeChildEvidence(
   pod,
   parentThreadId,
   marker,
-  childTask,
   prompt,
   run = execNode,
 ) {
@@ -4384,7 +4457,6 @@ export async function readDedicatedNativeChildEvidence(
       const expiresAt = Date.now() + 20_000;
       const deadline = setTimeout(() => socket.terminate(), 20_000);
       const marker = ${JSON.stringify(marker)};
-      const childTask = ${JSON.stringify(childTask)};
       const prompt = ${JSON.stringify(prompt)};
       const userTexts = (turn) => turn.items.filter((item) => item.type === "userMessage")
         .flatMap((item) => item.content.filter((block) => block.type === "text").map((block) => block.text));
@@ -4450,10 +4522,13 @@ export async function readDedicatedNativeChildEvidence(
               assert.equal(child.id, childId, "read must return the selected native child");
               observation.parentMatches = child.parentThreadId === parent.id;
               assert.ok(observation.parentMatches, "child must belong to this Gateway turn");
-              const taskTurns = child.turns.filter((turn) => userTexts(turn).includes(childTask));
-              observation.childTaskTurnCount = taskTurns.length;
-              assert.ok(taskTurns.length <= 1, "expected one child turn for the forwarded task");
-              const turn = taskTurns[0];
+              // Native child history can omit its initial userMessage. The exact
+              // parent turn's spawn and parentThreadId establish task ownership;
+              // require one child turn so an answer from later work cannot pass.
+              observation.stage = "child-completion";
+              observation.childTurnCount = child.turns.length;
+              assert.ok(child.turns.length <= 1, "expected one turn for the fresh native child");
+              const turn = child.turns[0];
               observation.childTaskCompleted = turn?.status === "completed" && turn.error == null;
               if (observation.childTaskCompleted) {
                 const messages = turn.items.filter((item) => item.type === "agentMessage");
