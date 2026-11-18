@@ -105,8 +105,8 @@ live Secret without a Gateway copy.
 `packages/occ/src/index.ts:newSourceAdmission` permits configured ordinary Gateway
 delivery. Otherwise `staticEgressProvider` selects the external Driver’s first matching
 provider. A bundled owner with retirement policy requires one eligible provider for the
-type; missing or ambiguous choices refuse before Secret reads. Updates resolve the exact
-admitted reference. Admission rechecks the provider and callbacks around material resolution.
+type; missing or ambiguous choices refuse before Secret reads. Updates validate the original
+profile and eligible successor. Admission rechecks Sandbox pairing, provider and callbacks through audit.
 
 `packages/occ/src/index.ts:credentialSourceProtection` reports live model protection
 on create, GET and list. It checks the exact provider, lifecycle, backend, sender and
@@ -279,8 +279,8 @@ Until deletion, the Namespace remains nonempty.
 One transaction authorizes `credential_source:update`, reads the Namespace,
 locks only the source, and requires a ready source offered by the catalog (`409`
 otherwise). Device-authorized sources reject PATCH before Secret reads or refresh
-changes. Static sources validate replacement references, authorize each
-`secret:operate`, and read through `withValue`. Gateway `updateSource` runs with
+changes. Protected updates recheck admission after the success audit. Gateway sources
+authorize `secret:operate` and read replacements through `withValue`. Gateway `updateSource` runs with
 Compute's placement while the source lock is held; OpenShell requires matching
 ownership and nonempty values because `UpdateProvider` merges credentials.
 Only subsequently started processes receive the update.
