@@ -70,6 +70,7 @@ import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-k
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
+  createDedicatedDeployEnrollmentFixture,
   createDedicatedDeployKubernetesFixture,
   nativeHarnessResource,
   nativeSandboxIdentity,
@@ -583,32 +584,7 @@ function dedicatedFirstDeployFixture({
   splitCluster = false,
   revision: revisionOverrides = {},
 } = {}) {
-  const state = {
-    setupCalls: 0,
-    connected: false,
-    // A retained setup receipt can name a device that is currently disconnected.
-    redeemedDeviceId: undefined,
-    setupDelivery: "confirmed",
-    // Registry presence does not imply a completed token-authenticated connection.
-    possessionAvailable: undefined,
-    possessionDevices: [],
-    enrollmentAvailable: true,
-    // The node OpenClaw reports applied through the wrapper's runtime status,
-    // or the reason it has not.
-    gatewayWorkspaceNodeId: undefined,
-    gatewayWorkspaceNodeFailure: undefined,
-    gatewayAppliesBinding: true,
-    // With a fake clock: when set, the node host pairs this long after its setup
-    // reaches the Harness.
-    pairAfterSetupMs: undefined,
-    // The wait each setup observation was given.
-    observeWaits: [],
-    // With a fake clock: when the node pairs, and when a waiting observation fails.
-    pairAtMs: undefined,
-    failAtMs: undefined,
-    // With a fake clock: observe poll by poll, asking `stopWaiting` between reads.
-    stepObservations: false,
-  };
+  const { state, nodeEnrollment } = createDedicatedDeployEnrollmentFixture(clock);
   const driver = new KubernetesComputeDriver(
     routedOptions({
       ...(splitCluster ? { executionCluster: twoClusterOptions().executionCluster } : {}),
@@ -635,77 +611,7 @@ function dedicatedFirstDeployFixture({
       sandboxDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
-      nodeEnrollment: {
-        async createSetup() {
-          state.setupCalls++;
-          return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
-        },
-        async observeSetup(_url, _setupId, signal, options) {
-          if (!state.enrollmentAvailable) {
-            throw new Error("Gateway is restarting after the Harness replacement");
-          }
-          // Like the client: one connection, re-read until connected or the wait ends.
-          state.observeWaits.push(options?.waitMs ?? 0);
-          if (state.redeemedDeviceId !== undefined) {
-            return {
-              deviceId: state.redeemedDeviceId,
-              connected: state.connected,
-              delivery: state.setupDelivery,
-            };
-          }
-          if (clock !== undefined && state.stepObservations) {
-            // Like the client, poll by poll: read, then ask whether other Work
-            // is waiting for the worker before the next read.
-            const deadline = clock.now + (options?.waitMs ?? 0);
-            for (;;) {
-              if (state.pairAtMs !== undefined && state.pairAtMs <= clock.now) {
-                state.connected = true;
-              }
-              if (
-                state.connected ||
-                clock.now + 250 > deadline ||
-                (options?.stopWaiting !== undefined && (await options.stopWaiting()))
-              ) {
-                return state.connected
-                  ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-                  : undefined;
-              }
-              clock.now += 250;
-            }
-          }
-          if (clock !== undefined) {
-            const deadline = clock.now + (options?.waitMs ?? 0);
-            if (state.failAtMs !== undefined && state.failAtMs <= deadline) {
-              clock.now = Math.max(clock.now, state.failAtMs);
-              throw new Error("Gateway connection closed");
-            }
-            if (!state.connected && state.pairAtMs !== undefined && state.pairAtMs <= deadline) {
-              clock.now = Math.max(clock.now, state.pairAtMs);
-              state.connected = true;
-            } else if (!state.connected) {
-              clock.now = deadline;
-            }
-            return state.connected
-              ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-              : undefined;
-          }
-          const deadline = Date.now() + (options?.waitMs ?? 0);
-          while (!state.connected && Date.now() < deadline) {
-            if (options?.stopWaiting !== undefined && (await options.stopWaiting())) {
-              break;
-            }
-            signal.throwIfAborted();
-            await new Promise((resolve) => setTimeout(resolve, 2));
-          }
-          return state.connected
-            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-            : undefined;
-        },
-        async isConnected(_url, deviceId) {
-          state.possessionDevices.push(deviceId);
-          return state.possessionAvailable ?? state.connected;
-        },
-      },
+      nodeEnrollment,
     },
   );
   if (clock === undefined) {
@@ -917,7 +823,7 @@ test("shared OpenAI provider leaves a roster-selected Anthropic provider unchang
   const providers = JSON.parse(document.data["openclaw.json"]).models.providers;
   assert.equal(providers.anthropic.baseUrl, "https://api.anthropic.com");
   assert.equal(providers.openai.baseUrl, "https://unselected.example.test/v1");
-  assert.equal(fixture.revision.compute.admission, undefined);
+  assert.doesNotMatch(fixture.revision.compute.admission ?? "", /model-provider:/);
 });
 
 test("invalid runtime snapshots cannot fall back to current images", async () => {
@@ -3483,6 +3389,44 @@ test(
   checkTrustedProxyIdentities,
 );
 
+test("HTTP completion resolution preserves scope, opt-out and revision-specific routing", () => {
+  const configured = routedOptions({
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  const driver = createKubernetesComputeDriver(configured);
+  const revision = routedRevision(driver);
+  // Auth and HTTP defaults are derived from the saved admission, not required in authored settings.
+  delete revision.configuration.gateway.auth.mode;
+  assert.equal(driver.getChatCompletionsEndpoint(revision).status, "available");
+  const old = structuredClone(revision);
+  delete old.compute.admission;
+  assert.deepEqual(driver.getChatCompletionsEndpoint(old), { status: "unavailable" });
+  revision.configuration.gateway.http = { endpoints: { chatCompletions: { enabled: false } } };
+  revision.configuration.gateway.auth.mode = "token";
+  // Opt-out cannot qualify an incompatible authentication mode.
+  assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "unsupported" });
+  revision.configuration.gateway.auth.mode = "trusted-proxy";
+  assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "disabled" });
+  revision.configuration.gateway.http.endpoints.chatCompletions.enabled = true;
+  const endpoint = driver.getChatCompletionsEndpoint(revision);
+  assert.equal(endpoint.status, "available");
+  assert.equal(endpoint.model, "openclaw:main");
+  assert.equal(
+    new URL(endpoint.url).pathname,
+    `/http-chat/namespaces/${tenant.id}/agents/${revision.agentId}/revisions/${revision.id}/v1/chat/completions`,
+  );
+  assert.notEqual(
+    driver.getChatCompletionsEndpoint({ ...revision, id: "replacement-revision" }).url,
+    endpoint.url,
+  );
+  assert.deepEqual(
+    createKubernetesComputeDriver(
+      options({ runtime: configured.runtime }),
+    ).getChatCompletionsEndpoint(revision),
+    { status: "unavailable" },
+  );
+});
+
 test("gateway chat routes enforce a distinct exact-Agent scope ceiling", () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -4390,52 +4334,17 @@ test("gateway routing startup validation and namespace membership fail closed", 
       SharedConfigurationValidationError,
     );
   }
-  for (const gatewayRouting of [
-    {
-      hostname: "agents.example.internal:443",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "https://agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: " ",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: 42,
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "OCE",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw/system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy/system",
-    },
+  for (const invalidGatewayRouting of [
+    { ...gatewayRouting, hostname: "agents.example.internal:443" },
+    { ...gatewayRouting, hostname: "https://agents.example.internal" },
+    { ...gatewayRouting, hostname: " " },
+    { ...gatewayRouting, hostname: 42 },
+    { ...gatewayRouting, gatewayName: "OCE" },
+    { ...gatewayRouting, gatewayNamespace: "openclaw/system" },
+    { ...gatewayRouting, envoyNamespace: "envoy/system" },
   ]) {
     assert.throws(
-      () => createKubernetesComputeDriver(routedOptions({ gatewayRouting })),
+      () => createKubernetesComputeDriver(routedOptions({ gatewayRouting: invalidGatewayRouting })),
       SharedConfigurationValidationError,
     );
   }
@@ -6485,6 +6394,19 @@ async function exerciseEmbeddedReplacement(scenario) {
   const replaced = objects.get(key("Deployment", gatewayName));
   assert.equal(replaced.metadata.annotations["openclaw.dev/agent-revision-id"], replacement.id);
   assert.equal(replaced.spec.strategy.type, "Recreate");
+  // The shared Gateway keeps its state across the replacement, but a turn the predecessor
+  // was cut in resumes only under its own revision's scope (finding 3347).
+  for (const [deployment, revision] of [
+    [predecessor, oldRevision],
+    [replaced, replacement],
+  ]) {
+    assert.equal(
+      deployment.spec.template.spec.containers[0].env.find(
+        ({ name }) => name === "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE",
+      )?.value,
+      revision.id,
+    );
+  }
   for (const [deployment, managed] of [
     [predecessor, predecessorManagedMode],
     [replaced, true],

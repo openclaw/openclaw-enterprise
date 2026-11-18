@@ -40,16 +40,16 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
-    sha256: "5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494",
+    sha256: "b6261ce5be40e7d3c8f2d263aba7320301cbdd66381540edbb4362e95794139a",
     field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
   },
   {
     file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
+    sha256: "e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
-    sha256: "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
+    sha256: "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
   },
   {
     file: "openclaw-google-worker-placeholder.patch",
@@ -57,15 +57,19 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
+    sha256: "197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8",
   },
   {
     file: "openclaw-planned-completion.patch",
-    sha256: "c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4",
+    sha256: "c3985dc0e7e79c10590be553b59f03a005324e3f06ec49be73f69bd65ea9ea96",
   },
   {
-    file: "openclaw-native-turn-settlement.patch",
-    sha256: "5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6",
+    file: "openclaw-chat-absent-selected-agent.patch",
+    sha256: "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
+  },
+  {
+    file: "openclaw-restart-resume-scope.patch",
+    sha256: "da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f",
   },
 ];
 const runtimePaths = [

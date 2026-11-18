@@ -20,6 +20,7 @@ import {
 } from "./console-agents-browser-helpers.ts";
 import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
 import { liftRestriction } from "../helpers/iam-grants.ts";
+import { callbackGate } from "../helpers/wait-for.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -256,12 +257,12 @@ test("Create Agent keeps the form ready to retry when the configuration check ti
   const { page, agentsUrl, configuration } = form;
   const entered = await configuration.inputValue();
   // The real check succeeds, but its reply does not reach the form before the client deadline.
-  const checked = Promise.withResolvers<number>();
-  await page.route(`${agentsUrl}/validate`, async (route) => {
-    checked.resolve((await route.fetch()).status());
-  });
+  const checked = callbackGate<number>("the configuration check's server answer");
+  await page.route(`${agentsUrl}/validate`, (route) =>
+    checked.run(async () => checked.resolve((await route.fetch()).status())),
+  );
   await submitWithKeyboard(page);
-  assert.equal(await checked.promise, 204);
+  assert.equal(await checked.reached(), 204);
   // Chromium's virtual time advances the native AbortSignal.timeout, unlike a JavaScript clock.
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setVirtualTimePolicy", { policy: "advance", budget: 15_001 });

@@ -9,6 +9,7 @@
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.ts",
     "tests/integration/ci-prepare-image-cache.test.ts",
+    "tests/integration/migration-source-refusal.test.ts",
     "tests/integration/ci-prepare.test.mjs",
     "tests/integration/ci-prepare-lane-action.test.ts",
     "tests/conformance/repository-credentials-source-boundary.test.ts",
@@ -73,7 +74,7 @@
     "tests/integration/ci-image-reconciliation.test.ts",
     "tests/conformance/repository-runtime-material.test.ts",
     "tests/integration/repository-credentials-server-timeout.test.ts",
-    "tests/integration/protected-repository-metadata-read.test.mjs",
+    "tests/integration/protected-repository-metadata-read.test.ts",
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
@@ -154,11 +155,13 @@
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
+    "tests/helpers/password-hasher.test.ts",
     "tests/helpers/socket-relay.test.ts",
     "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
+    "tests/integration/first-agent-sandbox-policy.test.ts",
     "tests/integration/staged-signin-proof.test.ts",
     "tests/integration/shared-session-cookie.test.ts",
     "tests/integration/workspace-gateway-host-route.test.ts"
@@ -199,6 +202,9 @@
     },
     {
       "path": "tests/integration/tls-peer-certificate.test.ts"
+    },
+    {
+      "path": "tests/helpers/password-hasher.test.ts"
     },
     {
       "path": "tests/helpers/socket-relay.test.ts"
@@ -312,7 +318,9 @@
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
         "run reports bounded OpenShell progress before the test file finishes",
-        "CI retains the unfinished upstream stage without changing the failed case"
+        "CI retains the unfinished upstream stage without changing the failed case",
+        "CI records only observed upstream replacement checkpoints on failure",
+        "CI binds upstream replacement progress to the case cutoff"
       ]
     },
     {
@@ -415,6 +423,9 @@
     },
     {
       "path": "tests/integration/ci-prepare-image-cache.test.ts"
+    },
+    {
+      "path": "tests/integration/migration-source-refusal.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare.test.mjs"
@@ -632,7 +643,7 @@
       "path": "tests/integration/repository-credentials-config.test.ts"
     },
     {
-      "path": "tests/integration/protected-repository-metadata-read.test.mjs"
+      "path": "tests/integration/protected-repository-metadata-read.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-http.test.ts"
@@ -845,6 +856,7 @@
         "external-repository-fixture registers its real structured validator and rejects malformed input safely",
         "github registers its real structured validator and rejects malformed input safely",
         "openshell registers its real structured validator and rejects malformed input safely",
+        "the external protected factory closes a registration it refuses",
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
@@ -875,6 +887,20 @@
         "operator forwarder shutdown escalates a stubborn child before returning",
         "operator forwarder shutdown refuses an exited child with an open inherited pipe",
         "forwarder launch failure remains available after confirmed cleanup"
+      ]
+    },
+    {
+      "path": "tests/integration/first-agent-sandbox-policy.test.ts",
+      "expectedTests": [
+        "cancelled installer identity preparation cannot launch a port-forward",
+        "the installer reads policy through the child port announced on a complete line",
+        "a Sandbox returned after the policy deadline cannot satisfy the assertion",
+        "parent abort reaches an in-flight Sandbox read and rejects its late result",
+        "parent cancellation closes the forward before lazy gRPC setup settles and closes its late transport",
+        "the shared policy timer closes the forward while a read stays pending",
+        "parent abort during Sandbox retry sleep preserves the abort reason",
+        "the installer reports fixed forward startup errors and closes each child",
+        "policy failure remains the cause when Gateway client cleanup fails"
       ]
     },
     {

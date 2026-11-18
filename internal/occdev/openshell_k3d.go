@@ -259,14 +259,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	fmt.Fprintf(r.opts.Out, "Creating Kubernetes-only k3d cluster %s...\n", state.Cluster)
-	admissionPath := ""
-	if sandboxDriver == "openshell" {
-		admissionPath, err = prepareOpenShellAdmission(directory)
-		if err != nil {
-			return err
-		}
-	}
-	clusterArgs := kubernetesOnlyClusterArgs(state, timeoutSeconds, kubernetesPort, threshold, admissionPath)
+	clusterArgs := kubernetesOnlyClusterArgs(state, timeoutSeconds, kubernetesPort, threshold)
 	resolverArgs, err := r.prepareDevelopmentResolver(state)
 	if err != nil {
 		return err
@@ -502,9 +495,8 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 }
 
 // kubernetesOnlyClusterArgs pins the k3d node and keeps verified local images
-// for the Kubernetes-only profile. A nonempty admission path mounts the
-// OpenShell Pod Security admission configuration.
-func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernetesPort, threshold int, admissionPath string) []string {
+// for the Kubernetes-only profile.
+func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernetesPort, threshold int) []string {
 	args := []string{
 		"cluster", "create", state.Cluster,
 		"--timeout", (time.Duration(timeoutSeconds) * time.Second).String(),
@@ -524,9 +516,6 @@ func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernet
 	}
 	if state.BrowserPort != 0 {
 		args = append(args, "--port", fmt.Sprintf("127.0.0.1:%d:30081@loadbalancer", state.BrowserPort))
-	}
-	if admissionPath != "" {
-		args = append(args, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
 	}
 	return args
 }
@@ -891,7 +880,10 @@ func (r *runner) helmUpgrade(ctx context.Context, state *developmentState, value
 // `k3d cluster stop` and `start` or a host reboot. The chart admits PostgreSQL
 // and the Kubernetes API only as explicit /32 hosts, and both addresses can
 // change on restart. This launcher-owned policy adds the same egress by
-// PostgreSQL Pod label and by the owned k3d network subnet.
+// PostgreSQL Pod label and by the owned k3d network subnet. The image upgrade
+// helper's startup preflight Pods (component upgrade-preflight) check the
+// candidate database and Compute as the API and worker do, so they get the
+// same egress; without it a moved PostgreSQL Pod refuses every upgrade.
 func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *developmentState, clusterIP string, clusterPort int) error {
 	subnet, err := r.developmentNodeSubnet(ctx, state, clusterIP)
 	if err != nil {
@@ -910,7 +902,7 @@ func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *devel
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-postgres-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": components("api", "worker", "initialization"), "policyTypes": []string{"Egress"},
+					"podSelector": components("api", "worker", "initialization", "upgrade-preflight"), "policyTypes": []string{"Egress"},
 					"egress": []any{map[string]any{
 						"to":    []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]string{"app": "postgres"}}}},
 						"ports": []any{map[string]any{"protocol": "TCP", "port": 5432}},
@@ -920,7 +912,7 @@ func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *devel
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-kubernetes-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": components("api", "worker", "initialization", "collector"), "policyTypes": []string{"Egress"},
+					"podSelector": components("api", "worker", "initialization", "upgrade-preflight", "collector"), "policyTypes": []string{"Egress"},
 					"egress": []any{map[string]any{
 						"to":    []any{map[string]any{"ipBlock": map[string]string{"cidr": subnet}}},
 						"ports": []any{map[string]any{"protocol": "TCP", "port": clusterPort}},

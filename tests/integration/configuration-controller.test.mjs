@@ -35,15 +35,17 @@ import { bindRole } from "../helpers/iam-grants.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
+  unreadablePluginSecretRefusal,
+  appServerUnreadablePluginSecretRefusal,
+  unreadableGatewayPasswordRefusal,
+  invalidSecretProviderDefaultsRefusal,
+} from "../helpers/refusal-credential-diagnostics.ts";
+import {
   catalogRowNoModel,
   catalogRowUnselected,
   referenceFormRefusal,
   dedicatedCodexVariableRefusal,
   unboundPluginSecretRefusal,
-  unreadablePluginSecretRefusal,
-  appServerUnreadablePluginSecretRefusal,
-  unreadableGatewayPasswordRefusal,
-  invalidSecretProviderDefaultsRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
@@ -2648,28 +2650,24 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     secretName: "model-provider-key",
   });
   const other = "anthropic/claude-opus-4";
-  const fallback = setting(
-    "agents.defaults.model.fallbacks",
-    "must use the primary model's provider",
-  );
   // A default model setting off the openai provider, and the refusal that names it.
   const offDefaults = (path, settings) => [
-    { agents: { defaults: { ...runtimeDefaults, ...settings } } },
+    withAgents({ defaults: { ...runtimeDefaults, ...settings } }),
     setting(`agents.defaults.${path}`, openaiOnly),
+  ];
+  const [imageValues, imageRefusal] = offDefaults("imageModel", { imageModel: other });
+  const defaultFallback = [
+    withModel({ primary: runtimeDefaults.model, fallbacks: [other] }),
+    setting("agents.defaults.model.fallbacks", "must use the primary model's provider"),
   ];
   const offProvider = [
     offDefaults("subagents.model", { subagents: { model: other } }),
-    offDefaults("imageModel", { imageModel: other }),
+    [imageValues, imageRefusal],
     offDefaults("pdfModel.primary", { pdfModel: { primary: other } }),
     // Finding 1306: OpenClaw's explicit /model allowlist, on the defaults and on an Agent entry.
     offDefaults("modelPolicy.allow", { modelPolicy: { allow: [runtimeDefaults.model, other] } }),
     [
-      {
-        agents: {
-          defaults: runtimeDefaults,
-          entries: { main: { modelPolicy: { allow: ["openai/*", other] } } },
-        },
-      },
+      withAgents({ entries: { main: { modelPolicy: { allow: ["openai/*", other] } } } }),
       setting("agents.entries.main.modelPolicy.allow", openaiOnly),
     ],
     // Finding 1310: OpenClaw reads openrouter:auto and openrouter:free, which have no slash, as
@@ -2704,17 +2702,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
         "must be unset: the Agent's Harness authentication binding serves only openai models",
       ),
     ],
-    [
-      {
-        agents: {
-          defaults: {
-            ...runtimeDefaults,
-            model: { primary: runtimeDefaults.model, fallbacks: [other] },
-          },
-        },
-      },
-      fallback,
-    ],
+    defaultFallback,
   ];
   // One subtest per refusal, so each stands on its own. The console's Save Configuration sends
   // the PATCH; a Preset save refuses the same text.
@@ -2728,16 +2716,11 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
 
   // A row stored before the fallback rule still reads; Agent save and deployment name it.
   await t.test("a stored fallback on another provider", async () => {
-    const entryFallback = {
-      agents: {
-        defaults: runtimeDefaults,
-        entries: {
-          main: { model: { primary: runtimeDefaults.model, fallbacks: [other] } },
-        },
-      },
-    };
+    const entryFallback = withAgents({
+      entries: { main: { model: { primary: runtimeDefaults.model, fallbacks: [other] } } },
+    });
     for (const [values, message] of [
-      [offProvider.at(-1)[0], fallback],
+      defaultFallback,
       [
         entryFallback,
         setting("agents.entries.main.model.fallbacks", "must use the primary model's provider"),
@@ -2856,12 +2839,12 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     ];
     const memberAgentRead = await request(context.app, "GET", agentPath);
     assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
-    const refused = await answers(offProvider[1][0], 400);
-    assert.equal(refused.message, offProvider[1][1]);
+    const refused = await answers(imageValues, 400);
+    assert.equal(refused.message, imageRefusal);
     await answers(valid, 200);
     // A zero-grant member gets the uniform 403, whatever the values.
     role.permissions = [];
-    for (const values of [valid, offProvider[1][0]]) {
+    for (const values of [valid, imageValues]) {
       const denied = await answers(values);
       assert.equal(denied.code, "FORBIDDEN");
     }
@@ -2889,26 +2872,28 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     model: "openai/{{ vars.model }}",
     models: { "openai/{{ vars.model }}": { agentRuntime: { id: "openclaw" } } },
   };
+  const withTemplatedDefaults = (settings) =>
+    withAgents({ defaults: { ...templated, ...settings } });
+  const variableFallbackDefaults = () => ({
+    model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
+    models: {
+      ...templated.models,
+      "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
+    },
+  });
   const refused = [
     [
       { agents: { defaults: { ...runtimeDefaults, imageModel: other } } },
       setting("agents.defaults.imageModel", openaiOnly),
     ],
     [
-      {
-        agents: { defaults: { ...templated, subagents: { model: "anthropic/{{ vars.model }}" } } },
-      },
+      withTemplatedDefaults({ subagents: { model: "anthropic/{{ vars.model }}" } }),
       setting("agents.defaults.subagents.model", openaiOnly),
     ],
     [
-      {
-        agents: {
-          defaults: {
-            ...templated,
-            model: { primary: templated.model, fallbacks: ["anthropic/{{ vars.model }}"] },
-          },
-        },
-      },
+      withTemplatedDefaults({
+        model: { primary: templated.model, fallbacks: ["anthropic/{{ vars.model }}"] },
+      }),
       setting("agents.defaults.model.fallbacks", "must use the primary model's provider"),
     ],
     [
@@ -2935,11 +2920,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     ],
     // Finding 1306: an allowlist entry is checked like a selection, a written provider at save.
     [
-      {
-        agents: {
-          defaults: { ...templated, modelPolicy: { allow: ["anthropic/{{ vars.model }}"] } },
-        },
-      },
+      withTemplatedDefaults({ modelPolicy: { allow: ["anthropic/{{ vars.model }}"] } }),
       setting("agents.defaults.modelPolicy.allow", openaiOnly),
     ],
     [
@@ -2950,23 +2931,12 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     ],
     // Finding 1310: an OpenRouter compatibility selector names the openrouter provider.
     [
-      { agents: { defaults: { ...templated, utilityModel: "openrouter:free" } } },
+      withTemplatedDefaults({ utilityModel: "openrouter:free" }),
       setting("agents.defaults.utilityModel", openaiOnly),
     ],
     // A fallback and a policy key whose provider waits on a variable leave the rest checked.
     [
-      {
-        agents: {
-          defaults: {
-            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
-            models: {
-              ...templated.models,
-              "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
-            },
-            imageModel: other,
-          },
-        },
-      },
+      withAgents({ defaults: { ...variableFallbackDefaults(), imageModel: other } }),
       setting("agents.defaults.imageModel", openaiOnly),
     ],
     // So does an Agent entry whose model's provider waits on one.
@@ -3035,6 +3005,15 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
   // variable saves and is checked once filled; so is a primary whose provider does, which
   // selects no supported provider yet.
   await t.test("accepts a Preset whose provider waits on a variable", async () => {
+    const unresolvedPrimary = withAgents({
+      defaults: {
+        model: "{{ vars.provider }}/{{ vars.model }}",
+        models: {
+          "{{ vars.provider }}/{{ vars.model }}": { agentRuntime: { id: "openclaw" } },
+        },
+        imageModel: other,
+      },
+    });
     const accepted = [
       {
         agents: {
@@ -3052,28 +3031,8 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
           },
         },
       },
-      {
-        agents: {
-          defaults: {
-            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
-            models: {
-              ...templated.models,
-              "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
-            },
-          },
-        },
-      },
-      {
-        agents: {
-          defaults: {
-            model: "{{ vars.provider }}/{{ vars.model }}",
-            models: {
-              "{{ vars.provider }}/{{ vars.model }}": { agentRuntime: { id: "openclaw" } },
-            },
-            imageModel: other,
-          },
-        },
-      },
+      withAgents({ defaults: variableFallbackDefaults() }),
+      unresolvedPrimary,
       // An Agent entry's fallback, and an apiKey SecretRef whose default env alias, secrets source
       // name or source body waits on a variable.
       {
@@ -3106,7 +3065,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
     }
     // Filled with another provider, the launch's Configuration is refused by name.
-    const launched = await launch({ variables, configuration: { values: accepted[2] } });
+    const launched = await launch({ variables, configuration: { values: unresolvedPrimary } });
     assertRefused(launched, setting("agents.defaults.imageModel", openaiOnly));
   });
 

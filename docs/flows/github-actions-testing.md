@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-16 14:39"
-last_updated_session: "authoring-run/e5aafd87-9592-4149-91ef-70e267b07458"
+updated: "2026-11-18 01:27"
+last_updated_session: "authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef"
 ---
 
 # GitHub Actions testing flow
@@ -131,16 +131,14 @@ Dependency caches for PR merge-refs and main exclude results and credential-bear
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:main` and `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
+`scripts/ci/prepare-cli.ts:runPreparationCli` and `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
 
-See [resource preparation](github-actions-testing/preparation.md).
+[Resource preparation](github-actions-testing/preparation.md).
 
-`scripts/ci/prepare.mjs:prepareLane` pre-pulls `logging-collector`’s configured
-Collector and Node images and the shared Prometheus and Grafana pins.
+`scripts/ci/prepare.mjs:prepareLane` pre-pulls `logging-collector`’s
+Collector and Node images plus Prometheus and Grafana pins.
 `scripts/ci/k3d-image-admission.ts:ensureDockerSourceImage` verifies local digests or calls
-`scripts/ci/image-pull.ts:pullImage` and checks the downloaded digest. Registry 5xx/rate
-limits retry within the shared budget; missing manifests/authorization refusals
-fail immediately. Unpinned Node overrides retain test-owned pulls.
+`scripts/ci/image-pull.ts:pullImage` and checks the downloaded digest. Registry 5xx/rate limits retry within budget; missing manifests or authorization refusals fail immediately. Unpinned Node overrides retain test-owned pulls.
 
 Full Integration requires [compatible cache exports](github-actions-testing/preparation.md)
 before OpenShell source builds. These retain their builder and fixed epoch;
@@ -296,6 +294,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 01:27: Update preparation pointer. (authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)
 
 - 2026-11-16 14:39: Trace k3d reset. (authoring-run/e5aafd87-9592-4149-91ef-70e267b07458 - 6b5a5de39078edb635f92d983bef6f364af1007d)
 

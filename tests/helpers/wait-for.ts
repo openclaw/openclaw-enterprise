@@ -116,3 +116,40 @@ export async function within<T>(
     clearTimeout(timer);
   }
 }
+
+/**
+ * A gate that a callback the test does not call itself (a Playwright route handler, a server
+ * hook, an exposed function) resolves for the test to await. A plain gate stays pending forever
+ * when that callback never runs (its request was not sent, or another route took it) or throws
+ * before resolving it, and a route handler's throw is not reported to the waiting test: the file
+ * then hangs silently until the runner kills it. `run(work)` runs the callback's work; a throw
+ * while the gate is pending rejects the gate with that error (a throw after it settled propagates
+ * as before). `reached()` awaits the gate with `within`'s deadline, naming `description`.
+ */
+export function callbackGate<T = void>(description: Description, timeoutMs = 10_000) {
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
+  promise.catch(() => {});
+  let pending = true;
+  return {
+    resolve(value: T) {
+      pending = false;
+      resolve(value);
+    },
+    async run(work: () => unknown): Promise<void> {
+      try {
+        await work();
+      } catch (error) {
+        if (!pending) {
+          throw error;
+        }
+        pending = false;
+        reject(error);
+      }
+    },
+    reached: () => within(promise, () => `waiting for ${text(description)}`, timeoutMs),
+  };
+}
+
+function text(description: Description): string {
+  return typeof description === "function" ? description() : description;
+}
