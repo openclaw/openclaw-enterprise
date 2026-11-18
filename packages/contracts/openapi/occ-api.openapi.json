@@ -1,6 +1,13 @@
 {
   "components": {
     "examples": {
+      "BAD_GATEWAY": {
+        "summary": "BAD_GATEWAY",
+        "value": {
+          "error": { "code": "BAD_GATEWAY", "message": "The Agent request was interrupted." },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
       "CHANNEL_DIRECTORY_RATE_LIMITED": {
         "summary": "CHANNEL_DIRECTORY_RATE_LIMITED",
         "value": {
@@ -28,6 +35,13 @@
             "code": "FORBIDDEN",
             "message": "The caller is not allowed to perform this operation."
           },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
+      "GATEWAY_TIMEOUT": {
+        "summary": "GATEWAY_TIMEOUT",
+        "value": {
+          "error": { "code": "GATEWAY_TIMEOUT", "message": "The runtime request timed out." },
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
@@ -118,6 +132,13 @@
             "code": "RATE_LIMITED",
             "message": "Too many requests. Wait for Retry-After and try again."
           },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
+      "REQUEST_TIMEOUT": {
+        "summary": "REQUEST_TIMEOUT",
+        "value": {
+          "error": { "code": "REQUEST_TIMEOUT", "message": "The request body deadline expired." },
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
@@ -1658,6 +1679,373 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agents/{agentId}/chat": {
+      "post": {
+        "description": "Requires operate permission on the requested Agent.",
+        "operationId": "chatWithAgent",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "messages": [{ "content": "Reply with a short greeting.", "role": "user" }],
+                    "stream": false
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "messages": { "items": {}, "type": "array" },
+                  "model": { "const": "openclaw", "type": "string" },
+                  "stream": { "type": "boolean" },
+                  "user": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["messages"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "choices": [
+                        {
+                          "finish_reason": "stop",
+                          "index": 0,
+                          "message": { "content": "Hello.", "role": "assistant" }
+                        }
+                      ],
+                      "created": 1792411200,
+                      "id": "chatcmpl-example",
+                      "model": "openclaw:main",
+                      "object": "chat.completion"
+                    }
+                  }
+                },
+                "schema": {}
+              },
+              "text/event-stream": {
+                "examples": {
+                  "example": {
+                    "summary": "Native SSE completion",
+                    "value": "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"Hello.\"},\"index\":0}]}\n\ndata: [DONE]\n\n"
+                  }
+                },
+                "schema": { "type": "string" }
+              }
+            },
+            "description": "Native Chat Completions JSON or SSE, without an OCC envelope."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/REQUEST_TIMEOUT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request body deadline expired."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/BAD_GATEWAY" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The Agent request was interrupted."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/GATEWAY_TIMEOUT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The runtime request timed out."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Native application error",
+                    "value": {
+                      "error": {
+                        "message": "Invalid completion request.",
+                        "type": "invalid_request_error"
+                      }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": { "error": {} },
+                  "required": ["error"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Native application error; status and body pass through unchanged."
+          }
+        },
+        "summary": "Submit an Agent turn and receive native JSON or SSE",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/api/auth/accounts": {
       "post": {
         "description": "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",

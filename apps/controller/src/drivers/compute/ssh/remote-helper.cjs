@@ -680,6 +680,9 @@ async function initializeWorkspace(input, agentDir, owner) {
 
 // The operator upgrades the host runtime and redeploys each Agent, so OpenClaw must not
 // check for or apply its own updates. The operator env file, read later, can override this.
+// The restart resume scope is the revision ID (a validated identity, no spaces, quotes, $ or
+// %), so a turn cut by stop or replacement never resumes in the next revision. Launch
+// environment cannot set OPENCLAW_* names.
 function renderUnit(input, agentDir, port, runtimeUser) {
   const { runtime, revision } = input;
   const password = revision.configuration.gateway?.auth?.password !== undefined;
@@ -706,6 +709,7 @@ Environment=OPENCLAW_STATE_DIR=${agentDir}/state
 Environment=OPENCLAW_CONFIG_PATH=${agentDir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
 Environment=OPENCLAW_NO_AUTO_UPDATE=1
+Environment=OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE=${revision.id}
 ${extraEnvironment}${password ? `EnvironmentFile=${agentDir}/gateway-password.env\n` : ""}EnvironmentFile=-${agentDir}/env
 ${setup}ExecStart=${runtime.nodePath} ${runtime.openclawPath} gateway --port ${port}
 Restart=always

@@ -274,7 +274,11 @@ activation retries, then one status read per retry. That wait and the pairing wa
 early when other Work is claimable.
 
 On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
-removal before stopping the Harness, allowing active work to finish. Idle
+removal before stopping the Harness. The Gateway's graceful shutdown aborts
+active turns and records them for restart recovery under its
+`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, the revision ID. Only a Gateway of the
+same revision resumes them; a stop, replacement or deletion never does
+([interrupted turns](../reference/agents/interrupted-turns.md)). Idle
 Gateways and pre-start wrappers exit promptly. Forced termination requires proof
 the previous owner stopped before retained state can be reused.
 [Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
@@ -368,18 +372,6 @@ removal.
 
 - 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
 
-- 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
-
-- 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
-
-- 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
-
-- 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
-
-- 2026-11-05 13:08: Trace safe temporary SQLite staging before node startup. (authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128 - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
-
-- 2026-11-04 23:04: Require Compute-owned Codex RPC readiness. (authoring-run/5cb8a94e-e57d-47d0-b87e-890ea5b3f40e - 381845c12d3694fc19f836786831bb98cbe2c3e1)
-
-- 2026-11-03 18:15: Trace provider guards. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
+- 2026-11-17 23:51: A turn cut by stop, replacement or deletion does not resume; the Gateway's restart recovery is scoped to its revision. (finding 3347)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.
