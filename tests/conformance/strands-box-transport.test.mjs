@@ -125,7 +125,9 @@ test("the worker port allows readiness but refuses native upgrades with the same
       `GET ${path} HTTP/1.1\r\nAuthorization: Bearer ${token}\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n`,
     );
     const chunks = [];
-    for await (const chunk of socket) chunks.push(chunk);
+    for await (const chunk of socket) {
+      chunks.push(chunk);
+    }
     return Buffer.concat(chunks).toString();
   };
   assert.match(await read("/revisions/test-revision/readiness"), /200 OK[\s\S]*starting/u);
