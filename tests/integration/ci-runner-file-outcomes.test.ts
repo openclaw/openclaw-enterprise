@@ -58,7 +58,7 @@ function onlyFile(summary: RunSummary) {
 
 async function writeCleanupFixture(root: string) {
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     [
       'import { appendFile } from "node:fs/promises";',
       "export async function prepareFile({ file, statePath }) {",

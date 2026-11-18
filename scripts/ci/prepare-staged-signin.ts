@@ -114,7 +114,7 @@ async function prepare(expectedPlanHash: string | undefined) {
     });
   }
   const support = await inspectSigninSupport(run, refs);
-  const { prepareStagingSigninCluster } = await import("./prepare.mjs");
+  const { prepareStagingSigninCluster } = await import("./prepare.ts");
   const statePath = join(directory, "cluster-state.json");
   const existingVolumes = new Set(
     (await run("docker", ["volume", "ls", "-q"])).trim().split(/\r?\n/u),

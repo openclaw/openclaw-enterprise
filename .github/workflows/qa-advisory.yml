@@ -171,7 +171,7 @@ jobs:
       CI: "1"
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
-      # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs.
+      # Keep in step with defaultK3sImage in scripts/ci/prepare.ts.
       OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: ${{ matrix.installation }}
       OCC_TEST_QA_PRESET: ${{ matrix.preset }}

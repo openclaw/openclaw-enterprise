@@ -33,7 +33,7 @@ on:
       - scripts/build-repository-credentials.ts
       - scripts/build-runtime-assets.ts
       - scripts/ci/download-pinned.sh
-      - scripts/ci/prepare.mjs
+      - scripts/ci/prepare.ts
       - scripts/ci/prepare-inputs.ts
       - scripts/ci/warm-image-cache.ts
       - scripts/ci/prepare-command.ts
