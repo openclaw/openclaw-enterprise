@@ -369,7 +369,6 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.scope.test.ts \
     src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
     src/config/sessions/session-entry-json.test.ts \
-    -t "only at startup scope|in scope across a second restart|keeps a graceful resume marker" \
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.

@@ -255,7 +255,6 @@ import { discoverHarnessModels } from "../model-discovery.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
   DELIBERATE_RESTART_MESSAGE,
-  GATEWAY_RESTART_RESUME_SCOPE,
   UNEXPLAINED_EXITS_MESSAGE,
 } from "../runtime-startup.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
@@ -677,7 +676,6 @@ interface GatewayConfigurationSnapshot {
   readonly name: string;
   readonly revision: number;
   readonly revisionId: string;
-  readonly restartResumeScope: string;
   readonly gatewayManagedMode: boolean;
   readonly auditCodexModelAttempts?: boolean;
   readonly usesGatewayPasswordEnv: boolean;
@@ -3446,13 +3444,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   requiresStoppedPredecessors(revision: AgentRevision): boolean {
     return revision.harness.mode === "dedicated";
-  }
-
-  restartContinuationDomain(revision: Readonly<AgentRevision>): string | undefined {
-    // Only locally owned dedicated Codex workloads qualify. The runtime snapshot
-    // includes exact scope, retained storage and execution policy, excluding image tags.
-    const runtime = decodeReplacementRuntime(this.snapshotRuntimeInputs(revision));
-    return runtime ? `kubernetes-codex:v1:${runtime.compatibility}` : undefined;
   }
 
   private validateGatewayManagedMode(revision: Readonly<AgentRevision>): void {
@@ -13932,7 +13923,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
-      restartResumeScope: revision.restartContinuation?.generation ?? revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
       ...(this.usesAuditedCodexServer(revision) && { auditCodexModelAttempts: true }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
@@ -17376,14 +17366,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
     const variables: V1EnvVar[] = [];
-    // The admitted generation permits compatible replacement, but an explicit stop
-    // ends it. Unsupported topologies retain the existing revision boundary.
-    if (role === "gateway" && configuration !== undefined) {
-      variables.push({
-        name: GATEWAY_RESTART_RESUME_SCOPE,
-        value: configuration.restartResumeScope,
-      });
-    }
     const providerNetwork =
       providerEndpoint === undefined ? undefined : this.options.network.providerHarness;
     if (providerEndpoint !== undefined && providerNetwork === undefined) {

@@ -324,9 +324,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (ne $installationName (trim $installationName)) (hasPrefix "\uFEFF" $installationName) (hasSuffix "\uFEFF" $installationName) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $installationName)) -}}
 {{- fail "installation.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
 {{- end -}}
-{{- if or (hasKey .Values.bootstrap "password") (hasKey .Values.bootstrap "serviceKey") -}}
-{{- fail "bootstrap output settings are removed; use bootstrap.credentials" -}}
-{{- end -}}
 {{- if .Release.IsInstall -}}
 {{- $secret := required "bootstrap.credentials.secretName must reference a precreated Secret" .Values.bootstrap.credentials.secretName -}}
 {{- include "openclaw.requireString" (dict "label" "bootstrap.credentials.secretName" "value" $secret) -}}
