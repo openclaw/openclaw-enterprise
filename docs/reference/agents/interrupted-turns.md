@@ -59,6 +59,10 @@ and cancels orphaned queued inputs. Recovery also refuses to reacquire child
 completion custody from an ended scope. Current authority and cancellation checks
 still apply; the generation grants no permissions.
 
+These are native Gateway authority checks. OCC's native browser proxy uses a
+shared native identity; it does not give each OCC user a distinct native profile.
+See [native authority](../agent-native-admin.md#native-authority-and-drift).
+
 A surviving Codex turn can finish before adoption. Recovery waits for up to two
 minutes of polling and refuses takeover if it stays active; an in-flight read
 keeps its native RPC timeout. Completed or explicitly cancelled work does not

@@ -27,6 +27,18 @@ deploys a replacement. A fresh turn must complete while the stopped session has
 no continuation or final result and its workspace effect was not repeated.
 See the [generation boundary](../reference/agents/interrupted-turns.md).
 
+The native-profile control creates a session through the authenticated native-admin
+WebSocket over a pinned local TLS ingress. It first proves compatible recovery,
+then assigns the profile a read-only role before another replacement. OCC's proxy
+uses the shared `occ-workspace-files` profile, so this revocation also blocks OCC
+readiness requests. The test proves refusal and a fresh shared-secret-owner turn
+before restoring the profile's prior role and waiting for deployment to finish.
+Later replacements must leave that refused session unchanged. This proves native
+profile authority, not distinct identity propagation or revocation for each OCC user.
+
+An incompatible configuration is a separate refusal control. Neither refusal is
+proved by an unready runtime: each replacement must complete a fresh model turn.
+
 The PostgreSQL replacement suite separately checks concurrent deployments, stop
 followed by two admissions before activation, changed and unsupported domains,
 and the database pair constraint. It uses the real controller and worker with a

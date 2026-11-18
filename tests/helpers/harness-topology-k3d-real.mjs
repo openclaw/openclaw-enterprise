@@ -3968,13 +3968,13 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
 
   for (const replacement of [
     "owner",
+    "revoked-owner",
+    "incompatible",
     "gateway-pod",
     "workload-pods",
     "gateway-process",
     "deployment",
     "explicit-stop",
-    "revoked-owner",
-    "incompatible",
   ]) {
     const interrupted = await startInterruptedWork(replacement);
     let queuedNonce;
