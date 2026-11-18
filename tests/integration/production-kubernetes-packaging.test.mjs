@@ -918,9 +918,8 @@ test("upgrades ignore the bootstrap output settings earlier charts required", to
   const initializerPod = objects.find(({ kind }) => kind === "Job").spec.template.spec;
   assert.ok(!initializerPod.volumes.some(({ persistentVolumeClaim }) => persistentVolumeClaim));
   // A fresh install still has to name the precreated credentials Secret.
-  await assert.rejects(
-    render(retired),
-    ({ stderr }) => /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr),
+  await assert.rejects(render(retired), ({ stderr }) =>
+    /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr),
   );
 });
 
