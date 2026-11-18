@@ -17,6 +17,7 @@ export function observeGatewayInstallation(
     gatewayValues: Operation<Values>,
     gatewayHelm: (values: Values) => Promise<unknown>,
     gatewayPodReady: Operation<T>,
+    verifyRenderedImages: (gateway: T) => Promise<void>,
   ): Promise<T> {
     const invocation = ++invocationCount;
     const start = now();
@@ -55,7 +56,9 @@ export function observeGatewayInstallation(
     await measure("workspace-helm", workspaceHelm);
     const values = await gatewayValues();
     await measure("gateway-helm", () => gatewayHelm(values));
-    return measure("gateway-pod-ready", gatewayPodReady);
+    const gateway = await measure("gateway-pod-ready", gatewayPodReady);
+    await measure("rendered-images", () => verifyRenderedImages(gateway));
+    return gateway;
   };
 }
 
