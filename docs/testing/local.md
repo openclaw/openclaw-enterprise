@@ -127,7 +127,7 @@ retain source identity, observed resource identities, refusal output, assertion
 outcomes and final cleanup status. The normal PR lane does not forward this
 optional directory; use its ordinary result and cleanup reports.
 
-Prepare the digest-pinned K3s image selected by `scripts/ci/prepare.mjs` and
+Prepare the digest-pinned K3s image selected by `scripts/ci/prepare.ts` and
 k3d's support images before execution. Allow capacity for one disposable
 single-server cluster and one small volume consumer at a time. The host must
 expose its local Docker socket and the server's PID/cgroup identity. The fixture
@@ -338,7 +338,7 @@ NetworkPolicy. Use a fresh private state directory for each run:
 ```sh
 OBS_LANE=k3d-observability
 OBS_RUN_DIR=$(mktemp -d)
-env -u OPENAI_API_KEY node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+env -u OPENAI_API_KEY node scripts/ci/prepare.ts --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
   env -u OPENAI_API_KEY node scripts/ci/run-tests.ts run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
@@ -367,7 +367,7 @@ Run from the checkout root with a fresh state directory.
 ```sh
 OBS_LANE=k3d-otel
 OBS_RUN_DIR=$(mktemp -d)
-corepack pnpm exec node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+corepack pnpm exec node scripts/ci/prepare.ts --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
   corepack pnpm exec node scripts/ci/run-tests.ts run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
