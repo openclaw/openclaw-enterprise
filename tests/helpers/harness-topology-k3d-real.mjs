@@ -3167,6 +3167,7 @@ const gatewayPrivatePaths = [
   ["media", "/home/node/.openclaw/media"],
   ["worktrees", "/home/node/.openclaw/worktrees"],
   ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
+  ["skill-library", "/home/node/.openclaw/skill-library"],
 ];
 
 async function assertGatewayPrivateResources(topology) {
