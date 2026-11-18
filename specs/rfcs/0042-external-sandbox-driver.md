@@ -64,14 +64,14 @@ any external Sandbox uses from one provider's adapter.
 
 Proposed. Who holds the model key at rest is question 1.
 
-| Owner | Decides and holds | Never holds |
-|---|---|---|
-| Kubernetes Compute | Gateway workload, revision pins, signed release, activation, cleanup of what it created | provider host state |
-| Package, `sandbox` view (API, Worker) | host provisioning, execution identity, endpoint and status observations | repository tokens |
-| Package, `credential_proxy` view (Worker) | execution authentication, relay of each held request to OCE | App key, request rules, stored credentials |
+| Owner                                     | Decides and holds                                                                            | Never holds                                   |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| Kubernetes Compute                        | Gateway workload, revision pins, signed release, activation, cleanup of what it created      | provider host state                           |
+| Package, `sandbox` view (API, Worker)     | host provisioning, execution identity, endpoint and status observations                      | repository tokens                             |
+| Package, `credential_proxy` view (Worker) | execution authentication, relay of each held request to OCE                                  | App key, request rules, stored credentials    |
 | Trusted process (outside the confinement) | workload launch, egress policy, workspace mounts, injection of OCE's answer into one request | App key, request rules, stored tokens or keys |
-| Worker prepared-git owner | App key, repository-scoped installation tokens, grant checks, request decision, use records | — |
-| Agent Gateway | enforcement of the mounted binding on every native connection and turn | provider credentials |
+| Worker prepared-git owner                 | App key, repository-scoped installation tokens, grant checks, request decision, use records  | —                                             |
+| Agent Gateway                             | enforcement of the mounted binding on every native connection and turn                       | provider credentials                          |
 
 ### Contract surface
 
@@ -84,12 +84,12 @@ route to a provider Harness (`apps/controller/src/drivers/compute/kubernetes/ind
 
 **Proposed.**
 
-| Member | Rule | Draft |
-|---|---|---|
+| Member                                                  | Rule                                                                                                                                                                                                                                                                                                               | Draft   |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
 | `SandboxDriver.harnessTransportCredential?: "verifier"` | Harness launch requirements carry the transport verifier, not the bearer Secret reference; read on every reconcile. `harnessStatus` and enrollment still receive the bearer; the package sends it only to the Harness, after verifying the pinned TLS peer, and never puts it in host state, logs or the workload. | [#6345] |
-| `maintenanceIntervalMs?`, `existingHarnessOnly` | Maintenance of an active revision reports a missing Harness and never recreates it. | [#6098] |
-| `@openclaw-enterprise/controller/workspace-node-launch` | Exports the stock file-only node command allowlist and the programs Compute renders, so a package imports no controller source; the prototype still does. | [#6353] |
-| `worker.sandboxControlClaimName` (optional) | An existing claim mounted read-only at `/run/openclaw-sandbox-control` in the Worker only, for a host control socket. Requires `controlPlane.nodeSelector["kubernetes.io/hostname"]`; refuses `executionCluster.enabled`, the bootstrap claim and overlap with the database CA mount. Empty changes nothing. | [#6356] |
+| `maintenanceIntervalMs?`, `existingHarnessOnly`         | Maintenance of an active revision reports a missing Harness and never recreates it.                                                                                                                                                                                                                                | [#6098] |
+| `@openclaw-enterprise/controller/workspace-node-launch` | Exports the stock file-only node command allowlist and the programs Compute renders, so a package imports no controller source; the prototype still does.                                                                                                                                                          | [#6353] |
+| `worker.sandboxControlClaimName` (optional)             | An existing claim mounted read-only at `/run/openclaw-sandbox-control` in the Worker only, for a host control socket. Requires `controlPlane.nodeSelector["kubernetes.io/hostname"]`; refuses `executionCluster.enabled`, the bootstrap claim and overlap with the database CA mount. Empty changes nothing.       | [#6356] |
 
 **Binding (proposed, [#6354]; no run has used these names).** Compute mounts the ordinary binding at
 `/etc/openclaw-external-workspace/`: `ca.pem` and `binding.json` with exactly the keys
