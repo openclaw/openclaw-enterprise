@@ -108,6 +108,12 @@ flowchart TB
 
 ### Listener isolation
 
+One listener per Agent does not scale: listener configuration and port allocations
+grow with the Agent count. This is an interim solution until Agent workload
+identity is available. The target design uses shared listeners and per-Agent
+routing rules enforced by Envoy's authorization engine, selected by verified
+identity rather than a dedicated port. See [future workload identity](#future-workload-identity).
+
 Each serving Agent has its own actual Envoy listener port. Separate Service
 names forwarding to the same port do not provide isolation. Both Gateway
 egress and Envoy ingress policies bind the exact managed namespace, Agent,
