@@ -109,9 +109,13 @@ export async function probePackagedCodex(
           "openclaw-planned-completion.patch":
             "c3985dc0e7e79c10590be553b59f03a005324e3f06ec49be73f69bd65ea9ea96",
           "openclaw-node-setup-renewal.patch":
-            "197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8",
+            "1ebd7e0f3ca32976430c7629a7e91783048940b24355e0fce3748d443d6b6b41",
           "openclaw-chat-absent-selected-agent.patch":
             "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
+          "openclaw-restart-resume-scope.patch":
+            "49d55438e2a1803f1ab5a8847a018b76c4a3025d5bbd0ecad5af2ee52c7d46ff",
+          "openclaw-restart-harness-readiness.patch":
+            "0ed9cabbd7dc813ab686cf7b2146ec76b48c5295231739c79dc5ad4019093bd8",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);

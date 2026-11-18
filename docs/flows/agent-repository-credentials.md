@@ -270,7 +270,7 @@ accepts [CLI metadata](../reference/repository-credentials/protected-openshell-g
 `git-write` `draftScope` excludes the timezone header.
 `installationApiOperation` admits `gh auth status` API-root reads under current
 GitHub API grants. The grant owner authorizes signed requests.
-`apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
+`apps/controller/src/drivers/repo/github/access/protected-requests.ts:validGitHubRequestBinding`
 uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`.
 Draft heads require concrete refs. Receive-pack rejects disallowed refs before approval.
 [Access levels](../reference/repository-credentials/access-levels.md) define the grants.

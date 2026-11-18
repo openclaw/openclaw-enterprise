@@ -255,6 +255,7 @@ import { discoverHarnessModels } from "../model-discovery.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
   DELIBERATE_RESTART_MESSAGE,
+  GATEWAY_RESTART_RESUME_SCOPE,
   UNEXPLAINED_EXITS_MESSAGE,
 } from "../runtime-startup.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
@@ -264,8 +265,8 @@ import {
   computeWorkWaiting,
   currentComputeAbortSignal,
   isYieldingComputeStop,
-  recordNamespaceEnsureHint,
   withComputeAbortSignal,
+  withTenantAccessHint,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import {
@@ -658,6 +659,7 @@ interface GatewayConfigurationSnapshot {
   readonly name: string;
   readonly revision: number;
   readonly revisionId: string;
+  readonly restartResumeScope: string;
   readonly gatewayManagedMode: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
@@ -673,7 +675,9 @@ interface GatewayConfigurationSnapshot {
 }
 
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
+const PROXY_CODEX_LAUNCH = "explicit-proxy-codex-launch:v1:";
 const OPENSHELL_CODEX_LAUNCH = "openshell-codex-launch:v1:";
+const CODEX_LAUNCH_PREFIXES = [OPENSHELL_CODEX_LAUNCH, PROXY_CODEX_LAUNCH];
 
 interface PluginRuntimeSnapshot {
   readonly name: string;
@@ -3401,6 +3405,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return revision.harness.mode === "dedicated";
   }
 
+  restartContinuationDomain(revision: Readonly<AgentRevision>): string | undefined {
+    // Only locally owned dedicated Codex workloads qualify. The runtime snapshot
+    // includes exact scope, retained storage and execution policy, excluding image tags.
+    const runtime = decodeReplacementRuntime(this.snapshotRuntimeInputs(revision));
+    return runtime ? `kubernetes-codex:v1:${runtime.compatibility}` : undefined;
+  }
+
   private validateGatewayManagedMode(revision: Readonly<AgentRevision>): void {
     if (revision.gatewayManagedMode === true && this.options.runtime === undefined) {
       throw new ConfigurationHarnessError(
@@ -5961,18 +5972,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       } else if (this.preprovisionedNamespace) {
         await this.verifyExistingNetworkPolicies(name, ownership);
       }
-      try {
-        await this.prepareNamespaceInfrastructure(ownership, name);
-      } catch (error) {
-        // Only this call reconciles the tenant resources. The Gateway uses the same helper.
-        if (
-          numericErrorStatus(error) === 403 &&
-          error instanceof (await import("@kubernetes/client-node")).ApiException
-        ) {
-          recordNamespaceEnsureHint("KUBERNETES_TENANT_ACCESS_DENIED");
-        }
-        throw error;
-      }
+      // Only this call reconciles the tenant resources. The Gateway uses the same helper.
+      await withTenantAccessHint(() => this.prepareNamespaceInfrastructure(ownership, name));
       if (!(await this.ensureGatewayNamespace(ownership))) {
         return result;
       }
@@ -6257,18 +6258,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.verifyGatewayNamespace(gateway, ownership);
         }
       }
+      // Only tenant-resource cleanup is hinted; control-plane Gateway and broker policy denials are not tenant grants.
       await this.reconcileRepositoryIngress({ namespace: name.name, namespaceId: namespace.id });
       if (!(await this.deleteGatewayNamespace(ownership))) {
         return result;
       }
       if (external) {
         if (this.options.network.repositoryCredentials !== undefined) {
-          const references = await this.repositoryMaterialReferences(ownership, name);
-          if (!(await (await this.repositoryMaterialStore(name)).cleanup(ownership, references))) {
+          const cleaned = await withTenantAccessHint(async () => {
+            const references = await this.repositoryMaterialReferences(ownership, name);
+            return (await this.repositoryMaterialStore(name)).cleanup(ownership, references);
+          });
+          if (!cleaned) {
             return result;
           }
         }
-        const deleted = await this.deleteOwnedNamespaceResources(name, ownership);
+        const deleted = await withTenantAccessHint(() =>
+          this.deleteOwnedNamespaceResources(name, ownership),
+        );
         if (!deleted) {
           return result;
         }
@@ -13560,6 +13567,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
+      restartResumeScope: revision.restartContinuation?.generation ?? revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
@@ -14991,34 +14999,38 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   private runtimeAdmission(revision: Readonly<AgentRevision>): string | undefined {
     const saved = this.savedRuntimeAdmission(revision);
-    return saved?.startsWith(OPENSHELL_CODEX_LAUNCH)
-      ? saved.slice(OPENSHELL_CODEX_LAUNCH.length) || undefined
-      : saved;
+    const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
+    return prefix === undefined ? saved : saved?.slice(prefix.length) || undefined;
   }
 
-  private usesOpenShellCodexLaunch(
+  private providerCodexLaunchPrefix(
     revision: Readonly<AgentRevision>,
     sandbox: SandboxDriver | undefined,
-  ): boolean {
-    return (
-      this.options.runtime !== undefined &&
-      sandbox?.implementation === "openshell" &&
-      sandbox.provisionHarness !== undefined &&
-      revision.harness.id === "codex" &&
-      revision.harness.mode === "dedicated"
-    );
+  ): string | undefined {
+    if (
+      this.options.runtime === undefined ||
+      sandbox?.provisionHarness === undefined ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated"
+    ) {
+      return undefined;
+    }
+    return sandbox.implementation === "openshell" ? OPENSHELL_CODEX_LAUNCH : PROXY_CODEX_LAUNCH;
   }
 
   private codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch {
-    const updated = this.savedRuntimeAdmission(revision)?.startsWith(OPENSHELL_CODEX_LAUNCH);
-    if (updated && !this.usesOpenShellCodexLaunch(revision, sandbox)) {
+    const saved = this.savedRuntimeAdmission(revision);
+    const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
+    if (prefix !== undefined && prefix !== this.providerCodexLaunchPrefix(revision, sandbox)) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const auth = revision.harnessAuth;
+    const providerOwned = sandbox?.provisionHarness !== undefined;
     return {
-      providerOwned: sandbox?.provisionHarness !== undefined,
+      providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
-      ...(updated && {
+      ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
+      ...(prefix === OPENSHELL_CODEX_LAUNCH && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
           auth.method === "credential_source" &&
@@ -15041,10 +15053,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // Select the updated renderer only when admitting a new revision.
     if (
       revision.sandboxDriverId !== undefined &&
-      revision.sandboxDriverId === this.sandboxDriver?.id &&
-      this.usesOpenShellCodexLaunch(revision, this.sandboxDriver)
+      revision.sandboxDriverId === this.sandboxDriver?.id
     ) {
-      runtime = OPENSHELL_CODEX_LAUNCH + (runtime ?? "");
+      const prefix = this.providerCodexLaunchPrefix(revision, this.sandboxDriver);
+      if (prefix !== undefined) {
+        runtime = prefix + (runtime ?? "");
+      }
     }
     const provider = this.providerAdmission(revision);
     const admission =
@@ -16931,6 +16945,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
     const variables: V1EnvVar[] = [];
+    // The admitted generation permits compatible replacement, but an explicit stop
+    // ends it. Unsupported topologies retain the existing revision boundary.
+    if (role === "gateway" && configuration !== undefined) {
+      variables.push({
+        name: GATEWAY_RESTART_RESUME_SCOPE,
+        value: configuration.restartResumeScope,
+      });
+    }
     const providerNetwork =
       providerEndpoint === undefined ? undefined : this.options.network.providerHarness;
     if (providerEndpoint !== undefined && providerNetwork === undefined) {

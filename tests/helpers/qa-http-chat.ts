@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type IncomingMessage } from "node:http";
 import { posix } from "node:path";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
@@ -130,6 +130,200 @@ async function verifyToolAction(
   }
 }
 
+const proofResponseLimit = 1024 * 1024;
+
+// RFC 9110 allows token and quoted-string parameter values on a single media type.
+const httpToken = /[!#$%&'*+.^_`|~0-9a-z-]+/.source;
+const httpQuotedString = /"(?:[\t \x21\x23-\x5b\x5d-\x7e\x80-\xff]|\\[\t \x21-\x7e\x80-\xff])*"/
+  .source;
+const sseMediaType = new RegExp(
+  String.raw`^[ \t]*text/event-stream[ \t]*(?:;[ \t]*(?:${httpToken}=(?:${httpToken}|${httpQuotedString})[ \t]*)?)*$`,
+  "i",
+);
+
+const sseFailureStages = {
+  "request-transport": "request",
+  "http-status": "response",
+  "media-type": "response",
+  "body-transport": "body",
+  "response-limit": "body",
+  "body-decode": "body",
+  "native-error-evidence": "verification",
+  "missing-stream": "verification",
+  "application-error": "verification",
+  "invalid-event": "verification",
+  "invalid-choice": "verification",
+  "missing-done": "verification",
+  "missing-chunk": "verification",
+  "final-answer": "verification",
+} as const;
+
+const httpStatusClasses = ["unavailable", "1xx", "2xx", "3xx", "4xx", "5xx"] as const;
+type SseFailureReason = keyof typeof sseFailureStages;
+type SseAttempt = {
+  statusClass: (typeof httpStatusClasses)[number];
+  reason: SseFailureReason;
+};
+type RecordedSseAttempt = SseAttempt & { actor: "human" | "service" };
+
+export async function readQaHttpChatSse(
+  body: AsyncIterable<Buffer> & Readonly<Pick<IncomingMessage, "complete" | "headersDistinct">>,
+  check?: (reason: SseFailureReason) => void,
+) {
+  check?.("media-type");
+  const contentTypes = body.headersDistinct["content-type"] ?? [];
+  assert.ok(
+    contentTypes.length === 1 &&
+      contentTypes.every((contentType) => sseMediaType.test(contentType)),
+    "native SSE must have a valid text/event-stream Content-Type",
+  );
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const lineParts: string[] = [];
+  const data: string[] = [];
+  const answer: string[] = [];
+  const nativeErrors: string[] = [];
+  let size = 0;
+  let applicationError = false;
+  let malformedReason: "invalid-event" | "invalid-choice" | undefined;
+  let hasChunk = false;
+  let done = false;
+  let observedBeforeTerminal = false;
+  let incremental = false;
+
+  function readLine(line: string) {
+    if (done) {
+      if (line !== "") {
+        malformedReason ??= "invalid-event";
+      }
+      return;
+    }
+    if (line !== "") {
+      const colon = line.indexOf(":");
+      const field = colon === -1 ? line : line.slice(0, colon);
+      if (field === "data") {
+        data.push(colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, ""));
+      }
+      return;
+    }
+    if (data.length === 0) {
+      return;
+    }
+    const payload = data.join("\n");
+    data.length = 0;
+    if (payload === "") {
+      return;
+    }
+    if (payload === "[DONE]") {
+      done = true;
+      incremental = observedBeforeTerminal;
+      return;
+    }
+
+    let event: unknown;
+    try {
+      event = JSON.parse(payload);
+    } catch {
+      malformedReason ??= "invalid-event";
+      return;
+    }
+    if (typeof event !== "object" || event === null) {
+      malformedReason ??= "invalid-event";
+      return;
+    }
+    if ("error" in event) {
+      applicationError = true;
+      const error = event.error;
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "message" in error &&
+        typeof error.message === "string"
+      ) {
+        nativeErrors.push(error.message);
+      }
+      return;
+    }
+    if (
+      !("object" in event) ||
+      event.object !== "chat.completion.chunk" ||
+      !("choices" in event) ||
+      !Array.isArray(event.choices)
+    ) {
+      malformedReason ??= "invalid-event";
+      return;
+    }
+    const choices: unknown[] = event.choices;
+    // The fixture requests one answer. A lone unindexed choice also refers to choice zero.
+    if (choices.length > 1) {
+      malformedReason ??= "invalid-choice";
+      return;
+    }
+    for (const choice of choices) {
+      if (
+        typeof choice !== "object" ||
+        choice === null ||
+        !("delta" in choice) ||
+        ("index" in choice && choice.index !== 0)
+      ) {
+        malformedReason ??= "invalid-choice";
+        return;
+      }
+      const delta = choice.delta;
+      if (typeof delta !== "object" || delta === null || Array.isArray(delta)) {
+        malformedReason ??= "invalid-choice";
+        return;
+      }
+      if ("content" in delta && delta.content !== null) {
+        if (typeof delta.content !== "string") {
+          malformedReason ??= "invalid-choice";
+          return;
+        }
+        answer.push(delta.content);
+      }
+    }
+    hasChunk = true;
+  }
+
+  check?.("body-transport");
+  for await (const chunk of body) {
+    size += chunk.byteLength;
+    check?.("response-limit");
+    assert.ok(size <= proofResponseLimit, "proof response exceeded 1 MiB");
+    check?.("body-decode");
+    const text = decoder.decode(chunk, { stream: true });
+    let start = 0;
+    for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
+      lineParts.push(text.slice(start, end));
+      const line = lineParts.join("").replace(/\r$/, "");
+      lineParts.length = 0;
+      readLine(line);
+      start = end + 1;
+    }
+    if (start < text.length) {
+      lineParts.push(text.slice(start));
+    }
+    // Node can expose several reads after the HTTP parser has received the entire body.
+    observedBeforeTerminal ||= hasChunk && !done && !body.complete;
+    check?.("body-transport");
+  }
+  check?.("body-decode");
+  decoder.decode(); // Reject an incomplete UTF-8 sequence at EOF.
+  if (lineParts.length > 0 || data.length > 0) {
+    malformedReason ??= "invalid-event";
+  }
+
+  return {
+    applicationError,
+    malformed: malformedReason !== undefined,
+    malformedReason,
+    hasChunk,
+    done,
+    incremental,
+    answer: answer.join(""),
+    nativeErrors,
+  };
+}
+
 export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> {
   const transport = createConsoleFixtureTransport(f.consoleUrl, f.apiUrl);
   const session = await signInWithEmailPassword({
@@ -171,16 +365,25 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     httpRequests: 0,
     completedJsonResponses: 0,
     completedSseResponses: 0,
+    // In request order, so a valid but coalesced response stays distinct from a failed response.
+    sseObservations: [] as ("failed" | "unmeasured" | "incremental")[],
     verifiedToolActions: 0,
   };
+  let pendingSse: RecordedSseAttempt | undefined;
   const send = async (
     headers: Record<string, string>,
     body: Record<string, unknown>,
     url = path,
     during?: () => Promise<void>,
+    attempt?: SseAttempt,
   ) => {
+    const check = (reason: SseFailureReason) => {
+      if (attempt !== undefined) {
+        attempt.reason = reason;
+      }
+    };
     evidence.httpRequests += 1;
-    const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
       const request = httpRequest(
         f.apiUrl + url,
         {
@@ -197,38 +400,57 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
       request.once("error", reject);
       request.end(JSON.stringify(body));
     });
+    if (attempt !== undefined) {
+      attempt.statusClass =
+        httpStatusClasses[Math.floor((response.statusCode ?? 0) / 100)] ?? "unavailable";
+    }
     let text = "";
-    let chunks = 0;
-    let firstChunkAt: number | undefined;
+    let size = 0;
     let interrupted = false;
     let intervened = false;
-    try {
-      for await (const chunk of response) {
-        firstChunkAt ??= Date.now();
-        chunks += 1;
-        text += String(chunk);
-        assert.ok(Buffer.byteLength(text) <= 1024 * 1024, "proof response exceeded 1 MiB");
-        if (during !== undefined && !intervened) {
-          intervened = true;
-          await during();
+    const sse =
+      body.stream === true && response.statusCode === 200 && during === undefined
+        ? await readQaHttpChatSse(response, check).catch((error: unknown) => {
+            response.destroy();
+            throw error;
+          })
+        : undefined;
+    if (sse === undefined) {
+      const decoder = new TextDecoder();
+      try {
+        check("body-transport");
+        for await (const chunk of response as AsyncIterable<Buffer>) {
+          size += chunk.byteLength;
+          check("response-limit");
+          assert.ok(size <= proofResponseLimit, "proof response exceeded 1 MiB");
+          text += decoder.decode(chunk, { stream: true });
+          check("body-transport");
+          if (during !== undefined && !intervened) {
+            intervened = true;
+            await during();
+          }
         }
+      } catch (error) {
+        if (
+          during === undefined ||
+          !(error instanceof Error) ||
+          !["ECONNRESET", "ERR_STREAM_PREMATURE_CLOSE"].includes(Reflect.get(error, "code"))
+        ) {
+          throw error;
+        }
+        interrupted = true;
       }
-    } catch (error) {
-      if (
-        during === undefined ||
-        !(error instanceof Error) ||
-        !["ECONNRESET", "ERR_STREAM_PREMATURE_CLOSE"].includes(Reflect.get(error, "code"))
-      ) {
-        throw error;
-      }
-      interrupted = true;
+      text += decoder.decode();
     }
-    const nativeErrors: string[] = [];
-    if (response.statusCode === 500 || (body.stream === true && response.statusCode === 200)) {
+    const nativeErrors = sse?.nativeErrors ?? [];
+    if (
+      sse === undefined &&
+      (response.statusCode === 500 || (body.stream === true && response.statusCode === 200))
+    ) {
       const payloads =
         body.stream === true
           ? text
-              .split("\n")
+              .split(/\r?\n/)
               .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
               .map((line) => line.slice(6))
           : [text];
@@ -236,16 +458,18 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
         try {
           const message = JSON.parse(payload)?.error?.message;
           if (typeof message === "string") {
-            nativeErrors.push(
-              redactedQaTail(message, f.env, { lines: 3, lineChars: 600 }).join(" "),
-            );
+            nativeErrors.push(message);
           }
         } catch {
           // Only structured native errors are diagnostic output.
         }
       }
     }
+    for (const [index, message] of nativeErrors.entries()) {
+      nativeErrors[index] = redactedQaTail(message, f.env, { lines: 3, lineChars: 600 }).join(" ");
+    }
     if (response.statusCode === 500 || nativeErrors.length > 0) {
+      check("native-error-evidence");
       await f.record(`http-chat-${agent.id}-native-response-error`, { messages: nativeErrors });
       try {
         const logs = await f.api(
@@ -271,9 +495,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
       status: response.statusCode,
       nativeErrors,
       text,
-      chunks,
-      firstChunkAt,
-      endedAt: Date.now(),
+      sse,
       interrupted,
     };
   };
@@ -357,7 +579,10 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     });
     assert.equal(bodyDeadline, 408);
     // Verify a real tool side effect inside the selected Harness, not a model's claim of execution.
-    for (const headers of [human, service]) {
+    for (const [actor, headers] of [
+      ["human", human],
+      ["service", service],
+    ] as const) {
       const marker = `proof-${randomUUID()}`;
       await verifyToolAction(f, agent, marker, async (file) => {
         completion(
@@ -422,6 +647,13 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
         assert.equal(policies[0].sandboxPolicy, "danger-full-access");
         assert.equal(policies[0].approvalPolicy, "on-request");
       }
+      const observation = evidence.sseObservations.push("failed") - 1;
+      const attempt: RecordedSseAttempt = {
+        actor,
+        reason: "request-transport",
+        statusClass: "unavailable",
+      };
+      pendingSse = attempt;
       const streamed = await send(
         headers,
         message(
@@ -429,30 +661,36 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
           undefined,
           true,
         ),
+        path,
+        undefined,
+        attempt,
       );
+      attempt.reason = "http-status";
       assert.equal(streamed.status, 200);
+      const { sse } = streamed;
+      attempt.reason = "missing-stream";
+      assert.ok(sse);
+      attempt.reason = "application-error";
       assert.ok(
-        streamed.chunks > 1 && streamed.firstChunkAt! < streamed.endedAt,
-        "SSE must arrive incrementally",
-      );
-      assert.match(streamed.text, /data: \[DONE\]/);
-      assert.match(streamed.text, /chat.completion.chunk/);
-      const events = streamed.text
-        .split("\n")
-        .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
-        .map((line) => JSON.parse(line.slice(6)));
-      assert.ok(
-        events.every((event) => event.error === undefined),
+        !sse.applicationError,
         `native SSE must not report an application error: ${streamed.nativeErrors.join("; ")}`,
       );
-      const answer = events
-        .flatMap((event) => event.choices ?? [])
-        .map((choice) => choice.delta?.content ?? "")
-        .join("");
-      assert.match(
-        answer,
-        /40|forty/i,
+      attempt.reason = sse.malformedReason ?? "invalid-event";
+      assert.ok(!sse.malformed, "native SSE must contain complete, valid events");
+      attempt.reason = "missing-done";
+      assert.ok(sse.done, "native SSE must end with a complete [DONE] frame");
+      attempt.reason = "missing-chunk";
+      assert.ok(sse.hasChunk, "native SSE must contain a chat completion chunk");
+      attempt.reason = "final-answer";
+      assert.ok(
+        /(?:^|\s)(?:40|forty)\s*$/i.test(sse.answer),
         "the streamed model answer must reach the requested final number",
+      );
+      evidence.sseObservations[observation] = sse.incremental ? "incremental" : "unmeasured";
+      pendingSse = undefined;
+      assert.ok(
+        sse.incremental,
+        "SSE must expose a complete chunk before the terminal read while HTTP is open",
       );
       evidence.completedSseResponses += 1;
     }
@@ -658,6 +896,16 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     record: () =>
       f.record(`http-chat-${agent.id}-outcomes`, {
         ...evidence,
+        ...(pendingSse === undefined
+          ? {}
+          : {
+              sseFailure: {
+                actor: pendingSse.actor,
+                stage: sseFailureStages[pendingSse.reason],
+                reason: pendingSse.reason,
+                statusClass: pendingSse.statusClass,
+              },
+            }),
         preset: agent.preset,
         verificationMode: process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE || "workspace-write",
         // These count HTTP completions, not internal provider calls or automatic retries.

@@ -22,7 +22,7 @@ import {
   SecretReference,
 } from "../../packages/contracts/src/api/common.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";

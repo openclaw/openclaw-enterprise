@@ -17,7 +17,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { administrativeActor } from "../helpers/administrative-actor.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitForLockHolder, waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitUntil, within } from "../helpers/wait-for.ts";

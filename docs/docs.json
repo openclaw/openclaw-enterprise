@@ -130,6 +130,10 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/interrupted-turns",
+                    "label": "Interrupted turns"
+                  },
+                  {
                     "page": "reference/agents/planned-replacement",
                     "label": "Planned replacement"
                   },
@@ -766,6 +770,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/production-upgrade-command",
+                    "label": "Upgrade Commands"
+                  },
+                  {
                     "page": "guides/deploy/separate-database-upgrade",
                     "label": "Separate Database Deployment"
                   },
@@ -984,6 +992,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/harness-restart-recovery",
               "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
@@ -1285,6 +1294,7 @@
               "flows/service-account-driver-credential-delivery",
               "flows/service-api-keys",
               "flows/harness-execution-topology",
+              "flows/harness-restart-recovery",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/connection-templates",

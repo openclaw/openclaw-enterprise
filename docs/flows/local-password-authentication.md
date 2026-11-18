@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-18 07:50"
-last_updated_session: "authoring-run/ecdff9cc-850a-496d-a883-2485233e72ab"
+updated: "2026-11-18 14:31"
+last_updated_session: "authoring-run/71818c11-eeb5-4a34-8231-ea32f513c574"
 ---
 
 # Bootstrap and human authentication flow
@@ -9,8 +9,7 @@ last_updated_session: "authoring-run/ecdff9cc-850a-496d-a883-2485233e72ab"
 ## Overview
 
 Native IAM bootstrap commits administrators with the Installation and protects
-their credentials. Human sign-in leads to exact IAM authorization. See
-[service API key verification, rotation and revocation](service-api-keys.md).
+their credentials. Human sign-in leads to exact IAM authorization.
 
 ## Entry Points
 
@@ -67,8 +66,7 @@ graph TD
 loads the singleton Installation. For existing Installations, including those
 predating service-administrator bootstrap, it verifies the administrator's
 immutable account/IAM identity without issuing keys, changing output, or repairing
-grants. Both verification paths first check the base URL. `verifiedWithoutAuth`
-checks the administrator's `occ."user"` row and IAM Principal before loading
+grants. Both paths check the base URL; `verifiedWithoutAuth` checks the administrator's `occ."user"` row and IAM Principal before loading
 Better Auth. Success logs `installation.already-bootstrapped` with `step: "fast-path"`.
 A miss or error runs the full Better Auth check.
 
@@ -85,8 +83,8 @@ Additional-account provisioning creates no service administrator.
 
 [`apps/controller/src/auth/index.ts:createServiceKey`](../../apps/controller/src/auth/index.ts)
 persists the Better Auth key `bootstrap-admin` outside the OCC transaction. The key
-defaults to 30 days and is scoped to this Installation and service principal.
-Normal OCC operations require committed IAM. The controller serves after bootstrap succeeds.
+defaults to 30 days, scoped to the Installation and service principal.
+OCC operations and controller startup require committed IAM.
 
 [`bootstrap-output.ts:writeProtectedBootstrapFile`](../../apps/controller/src/composition/bootstrap-output.ts)
 exclusively creates and syncs owner-only output before OCC commit. Key JSON contains
@@ -95,8 +93,8 @@ same protected PVC. Development writes key JSON to its bootstrap-only volume or
 explicit direct-initialization path. No plaintext reaches logs, audit, bootstrap
 HTTP responses or the worker.
 
-The initializer commits Installation, IAM and audit once. Singleton constraints
-reject competing initializers. API startup verifies committed state without
+The initializer commits Installation, IAM and audit once; singleton constraints
+reject competitors. API startup verifies committed state without
 calling `POST /installation/bootstrap`.
 
 On error the initializer logs `installation.bootstrap-failed` with available
@@ -172,14 +170,17 @@ check account, method, version and Principal; sessions expire after eight hours
 without refresh. HTTPS uses the [shared session cookie](../reference/authentication.md#native-admin-shared-sessions);
 session reads and logout reject duplicates.
 
-The Console discovers OIDC and posts to
-`/api/auth/providers/oidc/start`. `auth/human-login.ts:oidcProvider` binds the
-five-minute attempt to the provider instance, client-secret digest, and effective
-enrollment-policy digest. `createPostgresControllerAuth` fills omitted Group IDs
-from Installation defaults before computing that digest. The attempt stores
-state and browser-secret digests, callback and PKCE verifier. A host-only HttpOnly
-cookie binds the browser. Callback consumption commits before code exchange.
-Invalid or consumed attempts cannot exchange codes.
+OIDC start reaches `auth/human-login.ts:oidcProvider`. It binds the five-minute
+attempt to the provider instance, client-secret digest, and enrollment-policy
+digest; `createPostgresControllerAuth` resolves default Groups first. The attempt
+stores state and browser-secret digests, callback, and PKCE verifier. A host-only
+HttpOnly cookie binds the browser. Callback consumption commits before exchange;
+invalid or consumed attempts cannot exchange codes.
+
+`auth/oidc.ts:oidcLoginConfiguration` pins the selected HTTPS endpoints.
+`exchangeOidcSubject` sends client authentication only to the token URL, fetches
+the selected JWKS, and checks the issuer exactly;
+`auth/provider-transport.ts:providerJSON` refuses redirects.
 
 `apps/controller/src/auth/oidc.ts:exchangeOidcSubject` verifies the ID token and,
 when configured, its admission claim. One string is one group. Arrays require
@@ -194,8 +195,8 @@ matching origin and session cookie.
 
 Google reuses `auth/human-login.ts:externalProviderEndpoints`.
 `apps/controller/src/auth/google.ts:exchangeGoogleSubject` verifies its ID token,
-including `hd` and `email_verified` when allowed domains are set, and returns
-`sub`. It does not use the OIDC enrollment policy.
+including `hd` and `email_verified` for allowed domains, and returns `sub` without
+applying OIDC enrollment policy.
 
 `apps/controller/src/auth/client-address.ts:clientAddressConfiguration` canonicalizes
 IPv4-mapped addresses before prefix validation, refusing entries covering every
@@ -229,21 +230,21 @@ administrator, then designates that account and removes unbound historical
 sessions in one State transaction before serving. See the
 [deployment procedure](../guides/deploy/production-installation.md#enable-external-browser-sign-in).
 
-For [account and recovery routes](../reference/authentication/external-sign-in.md#session-and-recovery-controls),
-State locks actor and target and checks `expectedVersion`. After method/recovery locks,
-`human-authentication.ts:guardAuthority` uses `0073_account_administration_policy.sql`
-to hold all six IAM tables through commit. It awaits the selected IAM Driver through
-the route's actor callback, then rechecks the session. `READ COMMITTED` sees grant
-changes during lock waits. `NOWAIT` contention returns retryable `503`. Denials
-roll back before HTTP audit.
-Attachment, disablement and account-wide revocation advance the version and
-invalidate target sessions and proofs without changing IAM. Guarded reads return
-current account and method state without a receipt for a prior operation.
-Unknown completion returns a dependency failure. Resolve it before proceeding,
-without replay or compensation. Without an external provider, composition omits
-account operations. Routes still authorize the caller before `409 RESOURCE_CONFLICT`.
-Logout commits deletion and audit before clearing the cookie. See
-[external sign-in configuration and recovery limits](../reference/authentication/external-sign-in.md#external-sign-in-profile).
+`apps/controller/src/index.ts:humanAccountActor` requires a current human session,
+Native IAM Installation `administer`, and the configured `Origin`. For a GET without
+`Origin`, it requires the configured Console `Host` and same-origin browser Fetch
+Metadata. Reads return current state, not prior-operation receipts. The [session and recovery controls](../reference/authentication/external-sign-in.md#session-and-recovery-controls)
+define the headers. Authorized calls without an external provider return `409 RESOURCE_CONFLICT`.
+
+State locks actor and target to check `expectedVersion`. After method or recovery
+locks, `human-authentication.ts:guardAuthority` holds six IAM tables through commit
+(`0073_account_administration_policy.sql`), rechecks IAM through the actor
+callback, then rechecks the session. `READ COMMITTED` sees grant changes during
+waits. `NOWAIT` contention returns retryable `503`. HTTP audits after denial rollback.
+Attaching, disabling or revoking advances the account version and ends target sessions
+and proofs. IAM grants persist. Unknown outcomes return a dependency failure.
+Resolve them before another action, without replay or compensation.
+Logout commits deletion and audit before clearing the cookie.
 
 ### 4. Admit and authorize protected API calls
 
@@ -265,8 +266,8 @@ The controller rejects bearer credentials and caller-supplied identity headers.
 After [admission and throttling](../reference/authentication.md#account-provisioning)
 and password hashing, `apps/controller/src/auth/index.ts:createPostgresAuthAccountProvisioner`
 holds the original session, shared IAM configuration, and Native IAM
-account-administration policy in that order through the original State
-`READ COMMITTED` transaction's commit. The originally selected IAM Driver rechecks
+account-administration policy, in order, through the original State
+`READ COMMITTED` commit. The originally selected IAM Driver rechecks
 `administer` on the same Installation. State revalidates the requested Role and atomically writes the
 account, password method, Principal, grants, enrollment, and final success audit.
 Earlier session revocation, expiry by `COMMIT`, or a denied final IAM decision
@@ -278,7 +279,7 @@ unknown outcome. Never compensate or replay.
 ### 6. Enroll an OIDC identity
 
 `auth/oidc-enrollment.ts:oidcEnrollmentPolicy` validates and canonicalizes policy.
-During composition, `resolveOidcEnrollmentPolicy` fills default Groups and
+`resolveOidcEnrollmentPolicy` fills default Groups and
 fingerprints the policy once, including resolved `createAccount.requireVerifiedEmail`.
 Composition applies configured IAM before checking Role, Namespace and Group references.
 `auth/oidc.ts:oidcEnrollmentProfile` validates email and enforces the verification
@@ -292,8 +293,8 @@ password and asks native IAM for the configured initial binding or no direct gra
 
 `packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.enrollExternal`
 serializes by provider and subject, holds the shared IAM configuration lock,
-validates references and resolves the identity again. For existing identities,
-State checks attempt currentness and disabled status. New identities reuse
+validates references and resolves the identity again. Existing identities retain
+attempt-currentness and disabled-status checks; new identities reuse
 `insertPasswordAccount`. Only the inserting transaction can snapshot new methods
 without an older attempt timestamp. State writes the actual verification boolean
 to `email_verified`. Account, Principal, external method, initial Role binding,
@@ -306,9 +307,8 @@ issuing its cookie.
 - `tests/integration/postgres-auth-account-session.test.ts` covers provisioning
   races and uncertain commits in the `postgres-auth` lane.
 - `node --test tests/integration/postgres-oidc-enrollment.test.ts` exercises
-  production authentication, PostgreSQL and IAM through the ordinary Agent API.
-  OIDC responses and Compute are fixtures, leaving live provider registration
-  and model execution unverified. `oidc-agent-chat` uses real Keycloak, a deployed
+  production authentication, PostgreSQL and IAM through the Agent API.
+  OIDC and Compute fixtures leave provider registration and model execution unverified. `oidc-agent-chat` uses real Keycloak, a deployed
   Agent and a model reply.
 - `node --test tests/integration/native-admin-access.test.mjs` covers trusted and
   untrusted origins on session mutations and sign-out, plus service-key admission.
@@ -320,14 +320,12 @@ issuing its cookie.
   existing Installations.
 - `node --test tests/integration/bootstrap-output.test.ts` covers exclusive
   output, unsafe-path refusal, and file retention on write failure.
-  Runtime proof requires running the database cases with
-  [disposable PostgreSQL](../testing/postgresql.md#postgresql-test-environment).
+  Database proofs require [disposable PostgreSQL](../testing/postgresql.md#postgresql-test-environment).
 - `postgres-bootstrap-failures.test.ts` with `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`
-  uses a dedicated loopback database to verify concurrent production bootstrap,
+  uses a dedicated loopback database for concurrent production bootstrap,
   credential preservation after lost COMMIT acknowledgement in both modes, and
   fast/full-path selection.
-- Check copied output mode is `0600` without printing the contents. Check current
-  authority with a key-authenticated `GET /installation` and Namespace create/read.
+- Check copied output is `0600` without printing it. Check authority with a key-authenticated `GET /installation` and Namespace create/read.
   `401` means credential rejection. `403` means identity, scope or policy denial.
   After bootstrap failure, follow
   [operator recovery](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
@@ -336,8 +334,7 @@ issuing its cookie.
   and lost COMMIT replies. The two-controller fixture checks the State invariant
   only. Production multi-controller qualification is separate.
 - `pnpm typecheck`, `pnpm format:check`, and `pnpm check:workspace` check source
-  and workspace structure. Compose/PVC permissions require runtime evidence
-  of storage access beyond chart rendering.
+  and workspace structure. Compose/PVC storage permissions require runtime evidence.
 
 ## Related docs
 
@@ -355,6 +352,11 @@ issuing its cookie.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 14:31: Compose recovery, OIDC transport and account-read traces. (authoring-run/71818c11-eeb5-4a34-8231-ea32f513c574 - 0cdebc5eda71caeb08b5036d15655a1f23f23903)
+- 2026-11-18 09:44: Trace same-origin browser reads of account and recovery state. (authoring-run/05059b24-93d6-4c07-b659-2d0b084a3070 - 43194d2b141b43d5da490c21661c85a91662ec83)
+
+- 2026-11-18 06:03: Trace OIDC endpoint routing. (authoring-run/9be587a9-79fa-49ca-9b7c-c0a743b5a058 - d8d985bc57d5d6861f244bac8b3f18d070658ca2)
 
 - 2026-11-18 07:50: Condense the bootstrap and authentication trace. (authoring-run/ecdff9cc-850a-496d-a883-2485233e72ab - 4657570be473fd721dc059021d0f6dda1f9451eb)
 - 2026-11-18 03:10: Order recovery-only password-session creation with online replacement. (authoring-run/99c6c84d-1684-4d25-9675-3414cb6273cf - 4657570be473fd721dc059021d0f6dda1f9451eb)

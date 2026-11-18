@@ -150,12 +150,20 @@ user. The caller needs every IAM grant of the current holder's Principal (else
 `403`). The variable, like `auth:maintain activate --recovery-user`, then only
 seeds first activation; a differing value warns, and each start re-checks the holder.
 
-Account reads and mutations require a human session, exact `Origin`, and
-Installation `administer`; service keys are refused. Account mutations also
-require every IAM grant of the target account's Principal (else `403`, audited as
-`ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED` with the target `userId` and `principalId`, the current
-holder's for a recovery move); Agent `administer`
-counts for a delegated Agent `read_logs` grant, as for [service keys](service-api-keys.md#issuance).
+Account and recovery routes require a current human session and Native IAM
+Installation `administer`. For `GET /api/auth/accounts/:userId` and
+`GET /api/auth/recovery`, send the exact configured `Origin` or use a browser
+fetch from the Console origin. When a GET has no `Origin`, the controller
+requires the configured Console `Host`, `Sec-Fetch-Site: same-origin`,
+`Sec-Fetch-Mode: cors` or `same-origin`, and `Sec-Fetch-Dest: empty`.
+
+Account and recovery mutations require the exact configured `Origin`. For a
+mutation that takes `expectedVersion`, the caller must also hold every IAM grant
+of the target account's Principal. For a recovery move, this check applies to the
+current holder. A refusal returns `403` and records
+`ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED` with the affected `userId` and `principalId`.
+Agent `administer` counts for a delegated Agent `read_logs` grant, as for
+[service keys](service-api-keys.md#issuance).
 After locking, State rechecks caller authority, target coverage and the
 recovery successor, then the session. Policy stays stable through commit.
 Lock contention returns retryable `503`; lost caller authority or target coverage
