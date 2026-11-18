@@ -9,13 +9,14 @@ not listed unless they are also documented settings.
 
 ## CLI
 
-Command-line flags override these variables. See the [CLI reference](../cli.md).
+Resource-command flags override connection settings. See the [CLI reference](../cli.md).
 
 - `OCC_URL` — Control Plane HTTP(S) origin; required for resource commands.
 - `OCC_SERVICE_KEY_FILE` — Path to a service-key JSON response; required for resource commands.
 - `OCC_NAMESPACE` — Namespace ID for scoped resource commands.
 - `OCC_CA_BUNDLE` — Additional PEM certificate-authority bundle for HTTPS.
 - `OCC_TIMEOUT_SECONDS` — OCC request or installation handoff timeout in whole seconds; default: `30`.
+- `XDG_STATE_HOME` — Absolute local state root for generated installation recovery inputs; defaults to `$HOME/.local/state`. Keep it outside the checkout.
 
 ## Controller and authentication
 
@@ -77,16 +78,16 @@ for authentication modes and TLS requirements.
 
 ## Installation bootstrap
 
-These belong to the initializer, not the running API or worker. See
+These belong to initialization and its setup tools, not the running API or worker. See
 [production bootstrap settings](../settings/production.md#production-installation-bootstrap-environment)
 and [development defaults](../settings/development.md#required-development-controller-environment).
 
 - `OCC_BOOTSTRAP_ADMIN_EMAIL` — Initial production administrator email.
 - `OCC_BOOTSTRAP_INSTALLATION_NAME` — Initial production Installation display name.
-- `OCC_BOOTSTRAP_PASSWORD_FILE` — New protected output path for the production administrator password.
-- `OCC_BOOTSTRAP_SERVICE_KEY_FILE` — New private absolute output path for the initial service-key JSON; used in production and development.
+- `OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE` — Absolute UTF-8 input file for the initial administrator password; required for fresh initialization in both modes.
+- `OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE` — Absolute UTF-8 input file for the cryptographically generated initial service key; required for fresh initialization in both modes.
 - `OPENCLAW_DEV_EMAIL` — Development administrator email; default: `admin@openclaw.local`.
-- `OPENCLAW_DEV_PASSWORD` — Development administrator password.
+- `OPENCLAW_DEV_PASSWORD` — Development setup-tool password input; the initializer reads the private password file instead.
 - `OPENCLAW_DEV_INSTALLATION_NAME` — Development Installation display name; default: `OpenClaw Local Development`.
 
 ## Worker

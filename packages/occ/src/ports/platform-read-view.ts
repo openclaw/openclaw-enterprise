@@ -76,7 +76,6 @@ export function createPlatformReadView(
     ]),
     workspaceSetups: bindRepository(repositories.workspaceSetups, lifetime, ["find"]),
     agents: bindRepository(repositories.agents, lifetime, [
-      "findRestartContinuation",
       "findPredecessorReplacement",
       "findAgent",
       "listAgents",

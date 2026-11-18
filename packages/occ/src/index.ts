@@ -544,6 +544,7 @@ export {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
+  RecoveryPasswordPolicyError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -14086,34 +14087,14 @@ export class OpenClawController {
           ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
         },
       });
-      const domain = compute.restartContinuationDomain?.(admittedDraft);
-      const currentContinuation = await state.agents.findRestartContinuation(
-        namespace.id,
-        lockedAgent.id,
-      );
-      const restartContinuation =
-        domain === undefined
-          ? undefined
-          : {
-              generation:
-                lockedAgent.desiredRuntimeState === "running" &&
-                currentContinuation?.domain === domain
-                  ? currentContinuation.generation
-                  : crypto.randomUUID(),
-              domain,
-            };
-      const continuationDraft = freezeAgentRevision({
-        ...admittedDraft,
-        ...(restartContinuation === undefined ? {} : { restartContinuation }),
-      });
-      const runtimeInputs = compute.snapshotRuntimeInputs?.(continuationDraft);
+      const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
-          ...continuationDraft,
+          ...admittedDraft,
           compute: {
             ...admittedDraft.compute,
             ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
@@ -14154,7 +14135,6 @@ export class OpenClawController {
       if (running === undefined) {
         throw new ResourceStateConflictError("The Agent lifecycle changed during deployment.");
       }
-      await state.agents.setRestartContinuation(namespace.id, lockedAgent.id, restartContinuation);
       await this.record(state, {
         kind: "agent_revision",
         action: "reconcile",

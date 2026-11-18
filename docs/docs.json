@@ -1265,6 +1265,7 @@
               "design/safeguards",
               "reference/settings/programmatic",
               "flows/platform-startup",
+              "flows/installation-preparation",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
               "flows/coordinated-production-upgrade/preflight-cleanup",

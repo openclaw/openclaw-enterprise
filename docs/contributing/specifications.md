@@ -256,13 +256,14 @@ Plan filenames and historical commit links retain their original names.
 | `0027-shared-model-provider.md`               | [RFC-0028](../../specs/rfcs/0028-shared-model-provider.md)               |
 | `0031-repository-worker-restart-preflight.md` | [RFC-0033](../../specs/rfcs/0033-repository-worker-restart-preflight.md) |
 | `0040-runtimeclass-agnostic-deployment.md`    | [RFC-0041](../../specs/rfcs/0041-runtimeclass-agnostic-deployment.md)    |
-| `0030-installation-network-policy-ceiling.md` | [RFC-0043](../../specs/rfcs/0043-installation-network-policy-ceiling.md) |
-| `0037-installation-network-policy-ceiling.md` | [RFC-0043](../../specs/rfcs/0043-installation-network-policy-ceiling.md) |
-| `0038-installation-network-policy-ceiling.md` | [RFC-0043](../../specs/rfcs/0043-installation-network-policy-ceiling.md) |
-| `0039-installation-network-policy-ceiling.md` | [RFC-0043](../../specs/rfcs/0043-installation-network-policy-ceiling.md) |
-| `0040-installation-network-policy-ceiling.md` | [RFC-0043](../../specs/rfcs/0043-installation-network-policy-ceiling.md) |
-| `0041-installation-network-policy-ceiling.md` | [RFC-0043](../../specs/rfcs/0043-installation-network-policy-ceiling.md) |
-| `0042-installation-network-policy-ceiling.md` | [RFC-0043](../../specs/rfcs/0043-installation-network-policy-ceiling.md) |
+| `0030-installation-network-policy-ceiling.md` | [RFC-0044](../../specs/rfcs/0044-installation-network-policy-ceiling.md) |
+| `0037-installation-network-policy-ceiling.md` | [RFC-0044](../../specs/rfcs/0044-installation-network-policy-ceiling.md) |
+| `0038-installation-network-policy-ceiling.md` | [RFC-0044](../../specs/rfcs/0044-installation-network-policy-ceiling.md) |
+| `0039-installation-network-policy-ceiling.md` | [RFC-0044](../../specs/rfcs/0044-installation-network-policy-ceiling.md) |
+| `0040-installation-network-policy-ceiling.md` | [RFC-0044](../../specs/rfcs/0044-installation-network-policy-ceiling.md) |
+| `0041-installation-network-policy-ceiling.md` | [RFC-0044](../../specs/rfcs/0044-installation-network-policy-ceiling.md) |
+| `0042-installation-network-policy-ceiling.md` | [RFC-0044](../../specs/rfcs/0044-installation-network-policy-ceiling.md) |
+| `0043-installation-network-policy-ceiling.md` | [RFC-0044](../../specs/rfcs/0044-installation-network-policy-ceiling.md) |
 
 Earlier versions of the Credential Proxy proposal used these provisional paths.
 RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.

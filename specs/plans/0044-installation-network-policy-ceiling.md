@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0043-installation-network-policy-ceiling.md
+rfc: ../rfcs/0044-installation-network-policy-ceiling.md
 ---
 
 # Implementation plan: Manage the Installation network policy ceiling
 
-- **ID:** RFC-0043
+- **ID:** RFC-0044
 - **Delivery status:** In progress
 - **Owner:** russellb
-- **Authority:** [RFC-0043](../rfcs/0043-installation-network-policy-ceiling.md)
+- **Authority:** [RFC-0044](../rfcs/0044-installation-network-policy-ceiling.md)
 - **Source baseline:** `6bf16386658e8b1f81a7f90a04ccd0697c23805c`
 
 ## Outcome and scope
@@ -308,6 +308,10 @@ Main at `4237a824c` subsequently owns 0082 for authentication state. Ceiling
 migrations now use 0083–0084 with unchanged SQL; combined snapshots and measured
 native/restore catalogs include that schema. Published history and RFC status stay
 unchanged.
+
+Main `30fb467c8` subsequently owns RFC-0043 and migration 0083. The ceiling now uses
+RFC-0044 and migrations 0084–0085. SQL, published history, Manual Notes and decision
+status remain unchanged.
 
 ## Manual Notes
 

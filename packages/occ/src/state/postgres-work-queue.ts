@@ -829,7 +829,19 @@ export class PostgresWorkQueue {
     }
   }
 
-  async enqueue(input: EnqueueWork, requestId?: string): Promise<ControllerWork> {
+  /** A relative delay is measured by the same database clock that makes Work claimable. */
+  async enqueue(
+    input: EnqueueWork,
+    requestId?: string,
+    options: { readonly delayMs?: number } = {},
+  ): Promise<ControllerWork> {
+    const { delayMs } = options;
+    if (
+      delayMs !== undefined &&
+      (!isPositiveSafeInteger(delayMs) || input.availableAt !== undefined)
+    ) {
+      throw new ScopeViolationError("The relative Work delay is invalid.");
+    }
     const idempotencyKey = nonempty(input.idempotencyKey, "Controller work idempotency key");
     const kind = input.kind ?? "lifecycle";
     if (kind !== "lifecycle" && kind !== "provisioning") {
@@ -892,7 +904,10 @@ export class PostgresWorkQueue {
          state, available_at, attempt_count, created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8,
-         'queued', COALESCE($9::timestamptz, clock_timestamp()), 0,
+         'queued', COALESCE(
+           $9::timestamptz,
+           clock_timestamp() + COALESCE($10::double precision, 0) * interval '1 millisecond'
+         ), 0,
          clock_timestamp(), clock_timestamp()
        )
        ON CONFLICT (idempotency_key) DO NOTHING
@@ -907,10 +922,11 @@ export class PostgresWorkQueue {
       namespaceTarget,
       agentTarget,
       availableAt,
+      delayMs ?? null,
     ];
     const inserted =
       requestId !== undefined || this.controlPlaneAuditEnabled
-        ? await this.client.query(enqueueWithAuditSql(insert, 10), [
+        ? await this.client.query(enqueueWithAuditSql(insert, 11), [
             ...parameters,
             requestId ?? null,
           ])

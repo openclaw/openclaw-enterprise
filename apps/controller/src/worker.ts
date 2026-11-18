@@ -491,10 +491,6 @@ class ClaimLeaseLostError extends WorkClaimLostError {
   }
 }
 
-class RestartContinuationEndedError extends Error {
-  readonly code = "RESTART_CONTINUATION_ENDED";
-}
-
 /**
  * Stopping a refused candidate failed or yielded to other Work. The pass waits as
  * `REFUSED_CANDIDATE_STOP_PENDING`, whose evidence and log keep the refusal code the stop was
@@ -1430,6 +1426,14 @@ export class ControllerWorker {
       if (!validSandboxDriver(this.sandbox)) {
         throw new Error("The selected Sandbox Driver is unavailable.");
       }
+      if (this.sandbox.maintenanceIntervalMs !== undefined) {
+        positiveInteger(this.sandbox.maintenanceIntervalMs, "Sandbox maintenance interval");
+        // Only a provider can honor existingHarnessOnly. Compute applies its own Harness
+        // Deployment and would recreate a missing one during the restricted pass.
+        if (this.sandbox.provisionHarness === undefined) {
+          throw new Error("A Sandbox maintenance interval requires provider-owned Harnesses.");
+        }
+      }
       if (!validLifecycleHooks(this.sandbox)) {
         throw new Error("The selected Sandbox Driver exposes invalid lifecycle hooks.");
       }
@@ -1968,17 +1972,6 @@ export class ControllerWorker {
     return decision;
   }
 
-  private async assertRestartContinuation(revision: Readonly<AgentRevision>): Promise<void> {
-    const current = await this.state.read((view) =>
-      view.agents.findRestartContinuation(revision.namespaceId, revision.agentId),
-    );
-    if (!isDeepStrictEqual(current, revision.restartContinuation)) {
-      throw new RestartContinuationEndedError(
-        "The Agent ended this revision's recovery generation.",
-      );
-    }
-  }
-
   private async stagedRevision(
     operation: "activateRevision" | "deactivateRevision",
     revision: Readonly<AgentRevision>,
@@ -1989,7 +1982,6 @@ export class ControllerWorker {
       throw new Error(`The selected production Compute Driver requires ${operation}.`);
     }
     if (operation === "activateRevision") {
-      await this.assertRestartContinuation(revision);
       if (!this.revisionPluginDriverAvailable(revision)) {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
@@ -2080,6 +2072,12 @@ export class ControllerWorker {
     return undefined;
   }
 
+  private sandboxMaintenanceInterval(revision: Readonly<AgentRevision>): number | undefined {
+    return this.sandbox?.id === revision.sandboxDriverId
+      ? this.sandbox?.maintenanceIntervalMs
+      : undefined;
+  }
+
   private revisionMaintenanceInterval(revision: Readonly<AgentRevision>): number | undefined {
     const repositoryInterval =
       revision.repositoryCredentials === undefined
@@ -2088,9 +2086,12 @@ export class ControllerWorker {
     const standingInterval = revision.repositoryCredentials?.standingApprovalId
       ? Math.max(100, Math.min(10_000, (this.repositoryCredentials.validate(revision) ?? 1) * 100))
       : undefined;
-    const intervals = [this.maintenanceIntervalMs, repositoryInterval, standingInterval].filter(
-      (interval): interval is number => interval !== undefined,
-    );
+    const intervals = [
+      this.maintenanceIntervalMs,
+      repositoryInterval,
+      standingInterval,
+      this.sandboxMaintenanceInterval(revision),
+    ].filter((interval): interval is number => interval !== undefined);
     return intervals.length === 0 ? undefined : Math.min(...intervals);
   }
 
@@ -2348,7 +2349,6 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
-    await this.assertRestartContinuation(revision);
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
@@ -2386,7 +2386,6 @@ export class ControllerWorker {
       prepared = { ...prepared, repositoryCredentials };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
-      await this.assertRestartContinuation(revision);
       observation = await this.withClaimHeartbeat(claim, () =>
         this.compute.prepareRevision(revision, prepared),
       );
@@ -2587,6 +2586,7 @@ export class ControllerWorker {
         if (!maintenancePending && expiryRevision.repositoryCredentials?.standingApprovalId) {
           const interval = Math.min(
             this.maintenanceIntervalMs ?? Infinity,
+            this.sandboxMaintenanceInterval(expiryRevision) ?? Infinity,
             this.repositoryCleanupRetryMs,
           );
           await this.enqueueMaintenance(queue, claim, expiryRevision, previous, interval);
@@ -4856,20 +4856,16 @@ export class ControllerWorker {
         await this.assertRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
-      if (
+      const activeMaintenance =
         agent.activeRevisionId === revision.id &&
-        revision.harnessAuth.method === "credential_source" &&
-        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)
-      ) {
+        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`);
+      if (activeMaintenance && revision.harnessAuth.method === "credential_source") {
         if (await this.requiredModelCredentialWithdrawn(revision)) {
           await this.completeWithdrawnRevisionMaintenance(claim, revision);
           return;
         }
       }
-      if (
-        agent.activeRevisionId === revision.id &&
-        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)
-      ) {
+      if (activeMaintenance) {
         await this.recoverPendingCredentialWithdrawals(claim, revision);
       }
       // Deploy and repair work must never re-attach a withdrawn source.
@@ -4929,7 +4925,17 @@ export class ControllerWorker {
           const compute = this.compute;
           // Publishing the active pointer precedes activation. Reobserve even when
           // periodic maintenance is disabled so recovery verifies current readiness.
-          const prepared = await this.prepareRevision(claim, revision, secretContext.context);
+          const existingHarnessOnly =
+            activeMaintenance &&
+            this.sandbox?.maintenanceIntervalMs !== undefined &&
+            this.sandbox.id === revision.sandboxDriverId;
+          const prepared = await this.prepareRevision(
+            claim,
+            revision,
+            existingHarnessOnly
+              ? { ...secretContext.context, existingHarnessOnly: true }
+              : secretContext.context,
+          );
           const observation = prepared.observation;
           const context = prepared.context;
           if (!validRevisionObservation(observation, revision)) {
@@ -4966,7 +4972,6 @@ export class ControllerWorker {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
           if (
             error instanceof WorkClaimLostError ||
-            error instanceof RestartContinuationEndedError ||
             error instanceof RepositoryCredentialAuthorityError ||
             error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
@@ -5113,7 +5118,6 @@ export class ControllerWorker {
           // could not authenticate retries within the attempt budget first (finding 1694).
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
-          error instanceof RestartContinuationEndedError ||
           error instanceof RepositoryCredentialAuthorityError ||
           // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
           // can never enroll, so it fails now instead of at the convergence deadline.
@@ -6404,14 +6408,7 @@ export class ControllerWorker {
           activeRevisionChanged = true;
           return;
         }
-        const continuation = await unit.agents.findRestartContinuation(
-          claim.namespaceId,
-          current.id,
-        );
-        if (
-          current.desiredRuntimeState !== "running" ||
-          !isDeepStrictEqual(continuation, resolved.revision.restartContinuation)
-        ) {
+        if (current.desiredRuntimeState !== "running") {
           stoppedCandidate = resolved.revision;
           return;
         }
@@ -6559,10 +6556,7 @@ export class ControllerWorker {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        if (
-          error instanceof RestartContinuationEndedError ||
-          error instanceof RepositoryCredentialAuthorityError
-        ) {
+        if (error instanceof RepositoryCredentialAuthorityError) {
           await this.finalizeRevision(
             claim,
             { outcome: "permanent", code: error.code },
@@ -7463,14 +7457,13 @@ export class ControllerWorker {
     withdrawnInterval?: number,
   ): Promise<void> {
     const interval = withdrawnInterval ?? this.revisionMaintenanceInterval(revision)!;
-    const candidateAvailableAt = new Date(Date.now() + interval);
-    let maintenanceBucket = Math.floor(candidateAvailableAt.getTime() / interval);
+    let maintenanceBucket = Math.floor((Date.now() + interval) / interval);
     const maintenancePrefix = `agent_revision:${revision.id}:maintenance:`;
     const currentBucket = previousMaintenanceKey.startsWith(maintenancePrefix)
       ? Number(previousMaintenanceKey.slice(maintenancePrefix.length))
       : undefined;
-    // Clock skew must not deduplicate the successor against its completed claim.
-    let availableAt = candidateAvailableAt;
+    // A clock adjustment or cadence change can leave the next time bucket behind
+    // the durable key. Advance the key without interpreting a prior bucket as a date.
     if (
       currentBucket !== undefined &&
       Number.isSafeInteger(currentBucket) &&
@@ -7478,20 +7471,18 @@ export class ControllerWorker {
       maintenanceBucket <= currentBucket
     ) {
       maintenanceBucket = currentBucket + 1;
-      // After withdrawal the interval may be longer than the standing renewal interval.
-      // Advance the key, but do not reinterpret the old bucket at that slower cadence.
-      if (withdrawnInterval === undefined) {
-        availableAt = new Date(maintenanceBucket * interval);
-      }
     }
-    await queue.enqueue({
-      idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      revisionId: revision.id,
-      actorId: claim.actorId,
-      availableAt,
-    });
+    await queue.enqueue(
+      {
+        idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        actorId: claim.actorId,
+      },
+      undefined,
+      { delayMs: interval },
+    );
   }
 
   private async appendRevisionObservation(

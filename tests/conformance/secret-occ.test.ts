@@ -44,7 +44,7 @@ import {
   type ActionsByKind,
 } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-secret-administrator";

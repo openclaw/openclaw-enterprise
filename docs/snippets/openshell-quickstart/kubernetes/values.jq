@@ -14,8 +14,10 @@
   },
   "bootstrap": {
     "adminEmail": $email,
-    "password": {
-      "claimName": "occ-bootstrap-admin-password"
+    "credentials": {
+      "secretName": "occ-bootstrap-credentials",
+      "passwordKey": "admin-password",
+      "serviceKeyKey": "admin-service-key"
     }
   },
   "database": {

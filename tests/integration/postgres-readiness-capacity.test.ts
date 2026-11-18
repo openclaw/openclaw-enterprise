@@ -14,6 +14,7 @@ import {
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { bootstrapInstallation } from "../../scripts/bootstrap-installation.mjs";
+import { productionBootstrapEnvironment } from "../helpers/bootstrap-installation.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -69,31 +70,26 @@ test(
       join(statePath === undefined ? tmpdir() : dirname(statePath), "readiness-capacity-"),
     );
     context.after(() => rm(directory, { recursive: true, force: true }));
-    const initialKeyPath = join(directory, "initial-service-key.json");
+    const environment = productionBootstrapEnvironment({
+      databaseUrl,
+      directory,
+      authSecret: secret,
+      authBaseURL: origin,
+      email: `readiness-${randomUUID()}@example.test`,
+      installationName: "Readiness capacity test",
+      environment: {},
+    });
+    const serviceKey = await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE, "utf8");
 
     // The normal initialization Job supplies the real Native IAM grants and
     // service key. No State, authentication, or pool result is substituted.
     assert.equal(
       await bootstrapInstallation({
-        environment: {
-          NODE_ENV: "production",
-          OCC_DATABASE_URL: databaseUrl,
-          OCC_AUTH_SECRET: secret,
-          OCC_AUTH_BASE_URL: origin,
-          OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
-          OCC_BOOTSTRAP_ADMIN_EMAIL: `readiness-${randomUUID()}@example.test`,
-          OCC_BOOTSTRAP_PASSWORD_FILE: join(directory, "initial-password"),
-          OCC_BOOTSTRAP_SERVICE_KEY_FILE: initialKeyPath,
-          OCC_BOOTSTRAP_INSTALLATION_NAME: "Readiness capacity test",
-        },
+        environment,
         args: [],
       }),
       0,
     );
-    const bootstrap = JSON.parse(await readFile(initialKeyPath, "utf8")) as {
-      data: { key: string };
-    };
-    assert.equal(typeof bootstrap.data.key, "string");
 
     const originalQuery = pg.Pool.prototype.query;
     const originalConnect = pg.Pool.prototype.connect;
@@ -157,7 +153,7 @@ test(
             url: authenticated ? "/namespaces" : "/readyz",
             headers: {
               host: new URL(origin).host,
-              ...(authenticated ? { "x-api-key": bootstrap.data.key } : {}),
+              ...(authenticated ? { "x-api-key": serviceKey } : {}),
             },
           }),
         );

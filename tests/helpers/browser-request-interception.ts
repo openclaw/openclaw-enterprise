@@ -1,3 +1,5 @@
+import type { BrowserContext } from "playwright";
+
 // Playwright turns Chromium request interception on when a page or context gains its first
 // route and off when the last one is removed. A request the page sends while interception is
 // being turned off is never continued: it stalls without reaching the server until the page
@@ -8,6 +10,6 @@
 // into the test process.
 const noUrl = /(?!)/;
 
-export async function keepRequestInterceptionEnabled(context) {
+export async function keepRequestInterceptionEnabled(context: BrowserContext) {
   await context.route(noUrl, (route) => route.fallback());
 }
