@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/839744da-eafc-4b7e-81a4-91094255f4f0"
+last_updated_session: "authoring-run/3fdef1cf-e0cc-4e68-a3f4-4950c5f43c02"
 ---
 
 # Production Startup Flow
@@ -118,11 +118,10 @@ change controller configuration.
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
 kubeconfig/chart/values, checks release states and syncs intent and its directory.
-A failed stdout notice preserves and names intent, stopping before dispatch or
-Helm. Otherwise it syncs the unknown marker and starts Helm.
-`observeInstallationJob` records the first recognized attempt-matched Job UID
-(installs only). Helm's outcome stays separate; final report write errors fail
-the command without changing that outcome or replaying install.
+A failed stdout notice names and preserves intent before dispatch. Otherwise it
+syncs the unknown marker and starts Helm. `observeInstallationJob` records the
+first attempt-matched Job UID (installs only). Final report errors fail the
+command while preserving Helm's outcome without replaying Helm.
 
 Template failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
 Helm stderr is bounded to 4 MiB in memory; raw diagnostics are not printed or saved.
@@ -141,12 +140,11 @@ checks routing, ports and peer labels. See [routing opt-out](../guides/deploy/wo
 and [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
 Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
-(generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap and
-API rollout. The migration container evaluates the chart's
-`files/migrate-selected-image.cjs` loader. It reads the image's
-`db:migrate:production` command and forwards arguments in the same Node process.
-For a mode argument, the loader requires the `NODE_ENV=production` command
-introduced with strict option parsing. A legacy bare command permits only unflagged apply.
+(generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap
+and API rollout. The migration container evaluates `files/migrate-selected-image.cjs`,
+which validates the image's `db:migrate:production` entry and forwards mode arguments
+in the same Node process. Modes require the `NODE_ENV=production` declaration
+introduced with strict parsing. Bare legacy entries permit only unflagged apply.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
 up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
 `OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
@@ -167,18 +165,17 @@ Doctor reports Helm separately; report write errors exit `1`.
 `scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
 After source verification, all modes reject PostgreSQL before 17 with
-fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access
+`MIGRATION_SERVER_UNSUPPORTED` before locking or catalog access
 ([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
-On SIGINT or SIGTERM, the command uses a second migrator connection to terminate its
-uniquely named database session and waits for cleanup before exit. Listeners ignore repeated signals during cleanup. If the control
-connection fails, the command reports `migration.cancellation-failed` and waits for the
-migration to return.
-Under the advisory lock, the same connection verifies roles and receipts,
-then catalogs and grants against native or reviewed restore digests. Unsupported
-history fails before DDL/bootstrap. After option guards, completed apply
-skips Drizzle only when `SHOW transaction_read_only` returns `off`.
-Otherwise Drizzle retains pending migration and read-only refusal.
-`finally` releases the lock and client
+On SIGINT/SIGTERM, a second migrator connection terminates the uniquely named
+session. Cleanup ignores repeated signals and finishes before exit. If the
+connection fails, the command reports `migration.cancellation-failed` and waits
+for migration completion.
+Under the advisory lock, the migration client verifies roles, receipts, catalogs and
+grants against native or reviewed restore digests. Unsupported history fails
+before DDL/bootstrap. After option guards, completed apply skips Drizzle only
+when `SHOW transaction_read_only` returns `off`. Drizzle otherwise retains pending
+migration and read-only refusal. `finally` releases the lock and client
 ([history](../reference/settings/operations.md#migration-history)).
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
@@ -385,6 +382,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 13:11: Shorten startup prose (PST). (authoring-run/3fdef1cf-e0cc-4e68-a3f4-4950c5f43c02 - ced12b9028ea989d2da2893ebff60cdcb9d4e689)
 
 - 2026-11-18 20:56: Trace the selected image's migration mode guard before import. (authoring-run/839744da-eafc-4b7e-81a4-91094255f4f0 - 084874338baf51ad05d0b1a2b438e8bcd0120c1b)
 
