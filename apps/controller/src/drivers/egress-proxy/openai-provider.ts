@@ -8,6 +8,9 @@ import type {
   EgressRequest,
   EgressResponse,
   EgressOperation,
+  EgressBinding,
+  EgressRef,
+  EgressRoute,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
@@ -149,6 +152,135 @@ export const openAiStaticProviderRef = Object.freeze({
   generation: 3,
 });
 
+function openAiSourceType(): CredentialProviderDefinition["sourceType"] {
+  return {
+    type: "openai",
+    config: [
+      {
+        name: "authorized_base_url",
+        required: false,
+        description: "Immutable destination authorization; must match the revision destination.",
+      },
+    ],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "external",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  };
+}
+
+const normalizeConfig: CredentialProviderDefinition["normalizeConfig"] = (config) => {
+  if (Object.keys(config).some((field) => field !== "authorized_base_url")) {
+    throw new Error("Unsupported inference source configuration.");
+  }
+  const baseUrl = normalizeOpenAiBaseUrl(config.authorized_base_url ?? "https://api.openai.com/v1");
+  if (!baseUrl) {
+    throw new Error("Unsupported inference source endpoint.");
+  }
+  return { authorized_base_url: baseUrl };
+};
+
+const normalizeGrant: CredentialProviderDefinition["normalizeGrant"] = (models) => {
+  if (models.length !== 1 || !models[0] || models[0].length > 256) {
+    throw new Error("Protected inference requires one explicit model.");
+  }
+  return immutableCopy({ kind: "inference", models, providerTools: "none" as const });
+};
+
+function openAiDestination(
+  source: Parameters<CredentialProviderDefinition["routes"]>[0],
+  harnessConfiguration: Parameters<CredentialProviderDefinition["routes"]>[2],
+): URL {
+  normalizeConfig(source.config);
+  const modelProvider = savedModelProvider(harnessConfiguration);
+  requireModelSourceDestination(source.config, modelProvider);
+  return new URL(modelProviderBaseUrl(modelProvider));
+}
+
+function openAiRoute(
+  base: URL,
+  binding: EgressBinding,
+  operation: "responses" | "chat/completions",
+  responsePolicy: EgressRef,
+): EgressRoute {
+  return immutableCopy({
+    route: { id: `${binding.binding.id}/${operation}`, generation: binding.binding.generation },
+    binding,
+    origin: base.origin,
+    path: `${base.pathname}/${operation}`,
+    method: "POST" as const,
+    operationPolicy: { id: "openai-bounded-inference", generation: 1 },
+    responsePolicy,
+    deadlineMs: 30_000,
+  });
+}
+
+const classify: CredentialProviderDefinition["classify"] = (route, request, refused) => {
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return undefined;
+  }
+  if (
+    url.href !== request.url ||
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    request.method !== route.method ||
+    url.origin !== route.origin ||
+    url.pathname !== route.path
+  ) {
+    return undefined;
+  }
+  const body = jsonRequest(request);
+  if (
+    !body ||
+    typeof body.model !== "string" ||
+    route.binding.grant.kind !== "inference" ||
+    route.binding.grant.providerTools !== "none" ||
+    !route.binding.grant.models.includes(body.model)
+  ) {
+    return undefined;
+  }
+  if (route.path.endsWith("/responses")) {
+    const rule = responsesRequestFailure(body);
+    if (rule !== undefined) {
+      refused?.(rule);
+      return undefined;
+    }
+  } else if (!validChatRequest(body)) {
+    return undefined;
+  }
+  return { kind: "inference", action: "generate", model: body.model };
+};
+
+const inject: CredentialProviderDefinition["inject"] = (value) => {
+  if (value.length < 8 || value.length > 8192 || /[^\x21-\x7e]/.test(value)) {
+    throw new Error("Static inference credential format is unsupported.");
+  }
+  return [["authorization", `Bearer ${value}`]];
+};
+
+const credentialRejected: CredentialProviderDefinition["credentialRejected"] = (response) => {
+  if (
+    response.status !== 401 ||
+    response.body.byteLength > maximumResponseBytes ||
+    !jsonType.test(contentType(response.headers)) ||
+    response.headers.some(([name]) => name.toLowerCase() === "content-encoding")
+  ) {
+    return false;
+  }
+  try {
+    const body = asRecord(parseUnambiguousJson(utf8.decode(response.body)));
+    const error = asRecord(body?.error);
+    return error?.code === "invalid_api_key" && error.type === "invalid_request_error";
+  } catch {
+    return false;
+  }
+};
+
 /** Bounded inference with Harness-local tools and complete finite Responses SSE custody. */
 export function createOpenAiStaticProvider(): CredentialProviderDefinition {
   return Object.freeze<CredentialProviderDefinition>({
@@ -156,122 +288,20 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
     // grants must not be reinterpreted under the shared provider contract.
     ref: openAiStaticProviderRef,
     schemaVersion: 1,
-    sourceType: {
-      type: "openai",
-      config: [
-        {
-          name: "authorized_base_url",
-          required: false,
-          description: "Immutable destination authorization; must match the revision destination.",
-        },
-      ],
-      secrets: [{ name: "api_key", required: true }],
-      rotation: "external",
-      harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-    },
-    normalizeConfig(config) {
-      if (Object.keys(config).some((field) => field !== "authorized_base_url")) {
-        throw new Error("Unsupported inference source configuration.");
-      }
-      const baseUrl = normalizeOpenAiBaseUrl(
-        config.authorized_base_url ?? "https://api.openai.com/v1",
-      );
-      if (!baseUrl) {
-        throw new Error("Unsupported inference source endpoint.");
-      }
-      return { authorized_base_url: baseUrl };
-    },
-    normalizeGrant(models) {
-      if (models.length !== 1 || !models[0] || models[0].length > 256) {
-        throw new Error("Protected inference requires one explicit model.");
-      }
-      return immutableCopy({ kind: "inference", models, providerTools: "none" as const });
-    },
+    sourceType: openAiSourceType(),
+    normalizeConfig,
+    normalizeGrant,
     routes(source, binding, harnessConfiguration) {
-      this.normalizeConfig(source.config);
-      const modelProvider = savedModelProvider(harnessConfiguration);
-      requireModelSourceDestination(source.config, modelProvider);
-      const base = new URL(modelProviderBaseUrl(modelProvider));
-      return ["responses", "chat/completions"].map((operation) =>
-        immutableCopy({
-          route: {
-            id: `${binding.binding.id}/${operation}`,
-            generation: binding.binding.generation,
-          },
-          binding,
-          origin: base.origin,
-          path: `${base.pathname}/${operation}`,
-          method: "POST" as const,
-          operationPolicy: { id: "openai-bounded-inference", generation: 1 },
-          responsePolicy: { id: "openai-bounded-response", generation: 1 },
-          deadlineMs: 30_000,
-        }),
-      );
+      const base = openAiDestination(source, harnessConfiguration);
+      const responsePolicy = { id: "openai-bounded-response", generation: 1 };
+      return [
+        openAiRoute(base, binding, "responses", responsePolicy),
+        openAiRoute(base, binding, "chat/completions", responsePolicy),
+      ];
     },
-    classify(route, request, refused) {
-      let url: URL;
-      try {
-        url = new URL(request.url);
-      } catch {
-        return undefined;
-      }
-      if (
-        url.href !== request.url ||
-        url.protocol !== "https:" ||
-        url.username ||
-        url.password ||
-        url.search ||
-        url.hash ||
-        request.method !== route.method ||
-        url.origin !== route.origin ||
-        url.pathname !== route.path
-      ) {
-        return undefined;
-      }
-      const body = jsonRequest(request);
-      if (
-        !body ||
-        typeof body.model !== "string" ||
-        route.binding.grant.kind !== "inference" ||
-        route.binding.grant.providerTools !== "none" ||
-        !route.binding.grant.models.includes(body.model)
-      ) {
-        return undefined;
-      }
-      if (route.path.endsWith("/responses")) {
-        const rule = responsesRequestFailure(body);
-        if (rule !== undefined) {
-          refused?.(rule);
-          return undefined;
-        }
-      } else if (!validChatRequest(body)) {
-        return undefined;
-      }
-      return { kind: "inference", action: "generate", model: body.model };
-    },
-    inject(value) {
-      if (value.length < 8 || value.length > 8192 || /[^\x21-\x7e]/.test(value)) {
-        throw new Error("Static inference credential format is unsupported.");
-      }
-      return [["authorization", `Bearer ${value}`]];
-    },
-    credentialRejected(response) {
-      if (
-        response.status !== 401 ||
-        response.body.byteLength > maximumResponseBytes ||
-        !jsonType.test(contentType(response.headers)) ||
-        response.headers.some(([name]) => name.toLowerCase() === "content-encoding")
-      ) {
-        return false;
-      }
-      try {
-        const body = asRecord(parseUnambiguousJson(utf8.decode(response.body)));
-        const error = asRecord(body?.error);
-        return error?.code === "invalid_api_key" && error.type === "invalid_request_error";
-      } catch {
-        return false;
-      }
-    },
+    classify,
+    inject,
+    credentialRejected,
     protectResponse: (response, value, request, operation) =>
       value === undefined ? undefined : protectedResponse(response, value, request, operation),
   });
@@ -279,19 +309,26 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
 
 /** The same bounded request policy, with online release instead of dispatch/response custody. */
 export function createOpenAiRequestProvider(): CredentialProviderDefinition {
-  const strict = createOpenAiStaticProvider();
-  return Object.freeze({
-    ...strict,
+  return Object.freeze<CredentialProviderDefinition>({
     ref: { id: "openai-online-request", generation: 1 },
-    authorization: "online-request" as const,
-    routes(...args: Parameters<CredentialProviderDefinition["routes"]>) {
-      return strict
-        .routes(...args)
-        .filter((route) => route.path.endsWith("/responses"))
-        .map((route) => ({
-          ...route,
-          responsePolicy: { id: "online-request-no-response-custody", generation: 1 },
-        }));
+    authorization: "online-request",
+    schemaVersion: 1,
+    sourceType: openAiSourceType(),
+    normalizeConfig,
+    normalizeGrant,
+    routes(source, binding, harnessConfiguration) {
+      const base = openAiDestination(source, harnessConfiguration);
+      return [
+        openAiRoute(base, binding, "responses", {
+          id: "online-request-no-response-custody",
+          generation: 1,
+        }),
+      ];
     },
+    classify,
+    inject,
+    // Online authorization never receives the upstream response.
+    credentialRejected: () => false,
+    protectResponse: () => undefined,
   });
 }
