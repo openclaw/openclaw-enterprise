@@ -1,7 +1,8 @@
 # Upgrade production images
 
-Upgrade [Kubernetes Compute releases](production-installation.md) using
-`scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
+Upgrade [Kubernetes Compute releases](production-installation.md) with
+`scripts/upgrade-production-images` or [profile commands](production-upgrade-command.md)
+and the [OCC CLI](../cli.md#connect-to-your-installation).
 [Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
 lack the required chart-owned initializer.
 
