@@ -15,8 +15,9 @@ Run Agent plugin tests for API, Driver, persistence, and runtime behavior from t
 | Coverage                 | Command                                                                                                                                                                          |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | API and contracts        | `pnpm test:conformance` and `node --test tests/integration/occ-api.test.mjs`                                                                                                     |
-| Driver and startup       | `node --test tests/conformance/plugin-driver.test.mjs tests/integration/plugin-driver-startup.test.ts`                                                                           |
-| Compute boundaries       | `node --test tests/conformance/plugin-compute.test.mjs tests/conformance/plugin-compute-codex-install.test.ts tests/conformance/ssh-compute.test.mjs`                            |
+| Plugin discovery         | `node --test tests/integration/plugin-discovery-api.test.ts`                                                                                                                     |
+| Driver and startup       | `node --test tests/conformance/plugin-driver.test.ts tests/integration/plugin-driver-startup.test.ts`                                                                            |
+| Compute boundaries       | `node --test tests/conformance/plugin-compute.test.ts tests/conformance/plugin-compute-codex-install.test.ts tests/conformance/ssh-compute.test.ts`                              |
 | Persistence and recovery | Run the prepared `postgres-application` and `postgres-platform` lanes using the [PostgreSQL procedure](postgresql.md#revision-worker-tests); each lane needs its own state file. |
 
 The discovery fixture uses simulated provider responses. These checks do not prove a live provider or native runtime.
@@ -26,7 +27,7 @@ The discovery fixture uses simulated provider responses. These checks do not pro
 Prepare a [disposable Kubernetes fixture](kubernetes.md), a worker node, and a migrated `openclaw_k8s_*` database. Set `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`, `OCC_TEST_KUBERNETES_IMAGE`, `OCC_TEST_DATABASE_URL`, and `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` to the comma-separated API-server proxy source CIDRs from the [networking reference](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
 
 ```sh
-node --test tests/integration/kubernetes-plugin-status-real.test.mjs
+node --test tests/integration/kubernetes-plugin-status-real.test.ts
 ```
 
 This checks status transport and restart behavior with controlled producers. It does not prove native plugin compatibility.

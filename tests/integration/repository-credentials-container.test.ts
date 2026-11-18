@@ -2,12 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
-import { repositoryRoot } from "../fixtures/repository-credentials/runtime.mjs";
+import { repositoryRoot } from "../fixtures/repository-credentials/runtime.ts";
 import {
   cleanEnvironment,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

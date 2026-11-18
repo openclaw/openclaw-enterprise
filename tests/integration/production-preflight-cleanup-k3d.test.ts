@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { run } from "../fixtures/repository-credentials/process.mjs";
+import { run } from "../fixtures/repository-credentials/process.ts";
 import {
   explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 
 type Slot = "secret" | "networkpolicy" | "api" | "worker";
 type PlannedSlot = Record<string, unknown> & { kind: string; name: string };
@@ -277,7 +277,13 @@ test(
           ],
           kubeconfigSha256: digest(await readFile(selection.kubeconfigPath)),
           scriptSha256: digest(await readFile("scripts/upgrade-production-images")),
-          startupPreflightSha256: digest(await readFile("scripts/upgrade-startup-preflight.mjs")),
+          startupPreflightSha256: digest(await readFile("scripts/upgrade-startup-preflight.ts")),
+          selectedImageMigrationSha256: digest(
+            await readFile("scripts/lib/selected-image-migration.ts"),
+          ),
+          selectedImageMigrationProgramSha256: digest(
+            await readFile("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"),
+          ),
           preflightStateSha256: digest(await readFile("scripts/upgrade-preflight-state.py")),
           preflightCleanupSha256: digest(
             await readFile("scripts/lib/upgrade-preflight-cleanup.sh"),

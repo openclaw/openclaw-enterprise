@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,74 +7,24 @@ import { join, resolve } from "node:path";
 import { prepareNativeAdminConfiguration } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { availablePort } from "./available-port.ts";
-import { selectComposeSubnet } from "./compose-network.mjs";
-import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
+import { selectComposeSubnet } from "./compose-network.ts";
+import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
+import { runQaCommand } from "./qa-command.ts";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
-import { grantQaRepositoryBranch } from "./qa-repository.mjs";
-import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
+import { grantQaRepositoryBranch, readQaRepositoryRegistry } from "./qa-repository-preparation.ts";
+import { dumpYaml, loadYaml } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
 import {
   protectedText,
   protectedModelApiKey,
   registerQaSecret,
   grantQaSecret,
-  qaCommandFailureDetail,
   redactedQaTail,
-} from "./qa-secrets.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.mjs";
+} from "./qa-secrets.ts";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
 
-function execute(command, args, options) {
-  const { input, allowExitCodes = [0], timeout = 0, ...rest } = options;
-  assert.ok(Number.isInteger(timeout) && timeout >= 0, "command timeout must be non-negative");
-  const started = performance.now();
-  return new Promise((accept, reject) => {
-    let timedOut = false;
-    let timer;
-    const fail = (error, stdout = "", stderr = "") =>
-      reject(
-        Object.assign(error, {
-          stdout,
-          stderr,
-          timedOut,
-          elapsedMs: Math.round(performance.now() - started),
-          timeoutMs: timeout,
-        }),
-      );
-    const child = execFile(command, args, rest, (error, stdout, stderr) => {
-      clearTimeout(timer);
-      if (timedOut) {
-        fail(
-          error ??
-            Object.assign(new Error("command deadline exceeded"), {
-              code: child.exitCode,
-              signal: child.signalCode,
-            }),
-          stdout,
-          stderr,
-        );
-      } else if (error && !allowExitCodes.includes(error.code)) {
-        fail(error, stdout, stderr);
-      } else {
-        accept({ stdout, stderr });
-      }
-    });
-    if (timeout > 0) {
-      timer = setTimeout(() => {
-        timedOut = true;
-        // Match execFile's timeout teardown, but retain the deadline as the primary
-        // cause even if writing to a closed pipe ends the child with SIGPIPE.
-        child.stdout?.destroy();
-        child.stderr?.destroy();
-        try {
-          child.kill(rest.killSignal ?? "SIGTERM");
-        } catch (error) {
-          fail(error);
-        }
-      }, timeout);
-    }
-    child.stdin.end(input);
-  });
-}
+export { imageBuildFailureOutput, recordImageBuildFailure, runQaCommand } from "./qa-command.ts";
+
 const repository = resolve(import.meta.dirname, "../..");
 export function launcherEnvironment() {
   // Runtime credentials are delivered later through the Secret API. Never pass
@@ -86,6 +36,7 @@ export function launcherEnvironment() {
   );
   for (const name of [
     "OCC_DEVELOPMENT_K3S_IMAGE",
+    "OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE",
     "OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR",
     "OCC_DEVELOPMENT_K3D_DNS_RESOLVER",
     "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT",
@@ -96,133 +47,6 @@ export function launcherEnvironment() {
     }
   }
   return env;
-}
-
-// The output of the image build step that failed, from a docker (BuildKit) or podman build's
-// stderr, at most `lines` lines; undefined when stderr shows no failed image build. A failed
-// build's own error keeps only its last lines, which name the step but not why it failed (an
-// upstream test run inside the runtime image build, finding 2020). BuildKit prefixes every line
-// of a step's output with "#<step> " and interleaves steps, so the failed step is the one whose
-// "#<step> ERROR:" line comes last; without one (podman), the last lines of stderr. One dev-up can
-// run several builds, each numbering its steps from #0, so only the last build is read: a build
-// stops dev-up at its first failure.
-export function imageBuildFailureOutput(stderr, { lines = 200 } = {}) {
-  const text = String(stderr ?? "").trimEnd();
-  // Newer buildx says "ERROR: failed to build: failed to solve: ...".
-  if (!/^ERROR: (?:failed to build: )?failed to solve: |^Error: building at STEP /m.test(text)) {
-    return undefined;
-  }
-  const all = text.split("\n");
-  const first = Math.max(
-    0,
-    all.findLastIndex((line) =>
-      /^#0 building with |^#1 \[internal\] load build definition/.test(line),
-    ),
-  );
-  const build = all.slice(first);
-  // Private keys are masked over all of stderr before the step and its last lines are cut out: a
-  // key whose BEGIN line falls outside the cut would otherwise keep its body (finding 2026). As in
-  // redactedQaTail, an unterminated BEGIN ... PRIVATE KEY line anywhere earlier masks everything
-  // after it, the failed step included: the safe direction, so the evidence is then all markers.
-  const masked = maskPrivateKeyLines(all).slice(first);
-  const step = build.findLast((line) => /^#\d+ ERROR: /.test(line))?.match(/^#\d+ /)[0];
-  return (step ? masked.filter((_, index) => build[index].startsWith(step)) : masked).slice(-lines);
-}
-
-// Records a failed image build step's output, redacted like any QA command output, as a QA
-// evidence file (the cell uploads its *.json evidence; the private state directory is not
-// uploaded). Returns the file's name, or undefined when stderr shows no failed image build.
-export async function recordImageBuildFailure(record, stderr, env) {
-  const output = imageBuildFailureOutput(stderr);
-  if (output === undefined) {
-    return undefined;
-  }
-  return record(`image-build-failure-${Date.now()}`, {
-    lines: redactedQaTail(output.join("\n"), env, { lines: output.length, lineChars: 800 }),
-  });
-}
-
-function startupCommandTimings(stdout) {
-  // Only the fixed records emitted by internal/occdev/timing.go are public.
-  // Do not retain free-form stdout, including unknown or malformed stage records.
-  const pattern =
-    /(?:^|\n)\[occ-dev-timing\] stage=(runtime-build|controller-build|compose-build-and-start|compose-build|image-pull|image-export|image-import|node-image-pull|cluster-create|k3d-image-import|kubernetes-readiness|helm-install) elapsed_ms=(0|[1-9][0-9]{0,15}) failed=(true|false)(?=\n|$)/g;
-  const records = [];
-  let omittedRecords = 0;
-  for (const match of String(stdout ?? "").matchAll(pattern)) {
-    if (!Number.isSafeInteger(Number(match[2]))) {
-      continue;
-    }
-    records.push({ stage: match[1], elapsedMs: Number(match[2]), failed: match[3] === "true" });
-    if (records.length > 64) {
-      records.shift();
-      omittedRecords++;
-    }
-  }
-  return { records, omittedRecords };
-}
-
-// Runs one command of a QA installation `f` (its env, private directories, and evidence
-// `record`). A failure writes the command's output to the private directory and throws with
-// redacted stderr; failed image builds and selected startup timings become bounded evidence.
-export async function runQaCommand(f, command, args, options = {}) {
-  const {
-    privateFailureOutput = false,
-    captureStartupTimings = false,
-    ...executeOptions
-  } = options;
-  try {
-    const result = await execute(command, args, {
-      cwd: repository,
-      env: f.env,
-      timeout: 300_000,
-      maxBuffer: 32 * 1024 * 1024,
-      ...executeOptions,
-    });
-    return result.stdout;
-  } catch (error) {
-    await writeFile(
-      join(f.directory, `command-failure-${Date.now()}.log`),
-      privateFailureOutput
-        ? "protected subprocess output withheld\n"
-        : `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
-      { mode: 0o600 },
-    );
-    if (f.credentials?.password) {
-      registerQaSecret(f.credentials.password);
-    }
-    const detail = privateFailureOutput
-      ? ""
-      : qaCommandFailureDetail(error.stderr, executeOptions.env ?? f.env);
-    const buildOutput = privateFailureOutput
-      ? undefined
-      : await recordImageBuildFailure(f.record, error.stderr, executeOptions.env ?? f.env).catch(
-          (recordError) => `not recorded (${recordError?.message ?? recordError})`,
-        );
-    let startupTimings;
-    if (captureStartupTimings && !privateFailureOutput) {
-      const timings = startupCommandTimings(error.stdout);
-      if (timings.records.length > 0) {
-        try {
-          startupTimings = await f.record(`startup-timings-${Date.now()}`, timings);
-        } catch {
-          // A failed artifact write must not replace the command failure or expose its path.
-          startupTimings = "unavailable";
-        }
-      }
-    }
-    // execFile errors embed argv and output, potentially containing tokens.
-    // Keep arguments and raw stdout private; include redacted stderr and evidence filenames.
-    const timing = Number.isInteger(error.elapsedMs)
-      ? ` after ${error.elapsedMs} ms (limit ${error.timeoutMs} ms)`
-      : "";
-    error.message = `${command.split("/").at(-1)} ${error.timedOut ? "timed out" : "failed"}${timing} (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${startupTimings ? `; startup timings: ${startupTimings}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
-    delete error.cmd;
-    delete error.stdout;
-    delete error.stderr;
-    delete error.stack;
-    throw error;
-  }
 }
 
 // Deploys a QA Agent's current configuration and waits for the deployment to succeed.
@@ -462,7 +286,12 @@ export async function createQaInstallation(
   context,
   controlPlane,
   artifacts,
-  { repositoryInputs = true, sandboxDriver = "none", sandboxNetworkPolicyFile = undefined } = {},
+  {
+    repositoryInputs = true,
+    sandboxDriver = "none",
+    sandboxNetworkPolicyFile = undefined,
+    disableNativeAdmin = false,
+  } = {},
 ) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
   assert.ok(["none", "openshell"].includes(sandboxDriver));
@@ -506,9 +335,7 @@ export async function createQaInstallation(
   if (sourceInput) {
     repositoryInput = join(directory, "repository-input");
     await mkdir(repositoryInput, { mode: 0o700 });
-    const registry = JSON.parse(
-      await protectedText(join(sourceInput, "registry.json"), "repository registry"),
-    );
+    const registry = await readQaRepositoryRegistry(sourceInput);
     grantQaRepositoryBranch(registry, suffix);
     await writeFile(join(repositoryInput, "registry.json"), JSON.stringify(registry), {
       mode: 0o600,
@@ -616,6 +443,7 @@ export async function createQaInstallation(
         "-f",
         join(stateDirectory, "compose.yaml"),
         ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
+        ...(f.nativeAdminComposeFile === undefined ? [] : ["-f", f.nativeAdminComposeFile]),
         ...args,
       ]);
     },
@@ -862,6 +690,39 @@ export async function createQaInstallation(
     };
   }
   registerQaSecret(f.credentials.password);
+  assertQaConsoleReady(f);
+  if (disableNativeAdmin) {
+    if (controlPlane === "compose") {
+      f.nativeAdminComposeFile = await f.write("http-chat.compose.json", {
+        services: { controller: { environment: { OCC_AGENT_NATIVE_ADMIN_ENABLED: "false" } } },
+      });
+      await f.compose("up", "-d", "--no-deps", "--force-recreate", "controller");
+    } else {
+      await f.kubectl(
+        "-n",
+        f.state.platformNamespace,
+        "set",
+        "env",
+        "deployment/openclaw-enterprise-api",
+        "OCC_AGENT_NATIVE_ADMIN_ENABLED=false",
+      );
+      await f.kubectl(
+        "-n",
+        f.state.platformNamespace,
+        "rollout",
+        "status",
+        "deployment/openclaw-enterprise-api",
+        "--timeout=300s",
+      );
+    }
+    await f.waitFor("HTTP API with native browser access disabled", async () => {
+      try {
+        return await f.api("GET", "/installation");
+      } catch {
+        return undefined;
+      }
+    });
+  }
   await f.record("startup", {
     installationId: f.installation.id,
     defaultNamespaceId: f.defaultNamespace.id,
@@ -979,7 +840,7 @@ export async function createQaAgent(
   presetName,
   browserOrigin,
   nameSuffix = "",
-  { apiKeyAuth = false } = {},
+  { apiKeyAuth = false, httpChat = false } = {},
 ) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
@@ -1010,7 +871,22 @@ export async function createQaAgent(
     f.configuration.drivers.plugin?.some(({ id }) => id === pluginDriverId),
     "prepare the preset before starting parallel Agent scenarios",
   );
-  values.gateway.http = { endpoints: { chatCompletions: { enabled: true } } };
+  if (process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE === "danger-full-access") {
+    assert.ok(httpChat, "Container-only verification requires the explicit HTTP chat scenario.");
+    if (codex) {
+      values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+      // A named workspace network profile supersedes the legacy sandbox selector.
+      // Kubernetes NetworkPolicies remain the network boundary for this explicit test mode.
+      values.plugins.entries.codex.config.appServer.networkProxy = { enabled: false };
+    }
+  }
+  if (httpChat) {
+    // Exercise Compute defaults without a native browser launch or endpoint opt-in.
+    delete values.gateway.http;
+    values.gateway.controlUi = { enabled: false };
+  } else {
+    values.gateway.http = { endpoints: { chatCompletions: { enabled: true } } };
+  }
   values.gateway.controlUi = {
     ...values.gateway.controlUi,
     ...(browserOrigin ? { allowedOrigins: [browserOrigin] } : {}),
@@ -1038,7 +914,7 @@ export async function createQaAgent(
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
   agent.harnessAuth = auth;
-  if (f.controlPlane === "kubernetes") {
+  if (f.controlPlane === "kubernetes" && !httpChat) {
     // Persist the same native access opt-in as Agent provisioning, including the required scope header.
     const nativeValues = prepareNativeAdminConfiguration(values, {
       publicOrigin: f.consoleUrl,
@@ -1074,3 +950,32 @@ export async function createQaAgent(
 }
 
 export { repository };
+
+/**
+ * @typedef {{
+ *   consoleUrl: string,
+ *   credentials: import("./auth-session.mjs").SignInCredentials,
+ * }} QaConsoleBindings
+ */
+
+/**
+ * @template {object} Fixture
+ * @param {Fixture} fixture
+ * @returns {asserts fixture is Fixture & QaConsoleBindings}
+ */
+function assertQaConsoleReady(fixture) {
+  assert.ok(
+    "consoleUrl" in fixture && typeof fixture.consoleUrl === "string",
+    "expected the QA Console URL",
+  );
+  const credentials = "credentials" in fixture ? fixture.credentials : undefined;
+  assert.ok(
+    credentials !== null &&
+      typeof credentials === "object" &&
+      "email" in credentials &&
+      typeof credentials.email === "string" &&
+      "password" in credentials &&
+      typeof credentials.password === "string",
+    "expected the QA sign-in credentials",
+  );
+}

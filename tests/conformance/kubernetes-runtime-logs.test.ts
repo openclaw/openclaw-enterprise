@@ -7,8 +7,8 @@ import {
   DependencyUnavailableError,
   RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
-import { options, routedOptions } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
+import { options, routedOptions } from "../helpers/kubernetes-routed-options.ts";
 import { createRuntimeLogDriverFixture } from "./kubernetes-runtime-log-fixture.ts";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;

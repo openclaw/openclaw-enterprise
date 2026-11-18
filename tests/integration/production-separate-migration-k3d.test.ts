@@ -9,8 +9,8 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { NamespaceId } from "../../packages/contracts/src/index.ts";
-import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   installObservabilityControlPlane,
@@ -465,7 +465,7 @@ test(
             automountServiceAccountToken: false,
             restartPolicy: "Never",
             securityContext: record(template.securityContext),
-            containers: [{ ...migration, args: ["scripts/migrate-production.mjs"] }],
+            containers: [{ ...migration, args: array(migration.args).slice(0, -1) }],
             volumes: array(template.volumes).filter((volume) =>
               mounts.has(string(record(volume).name)),
             ),

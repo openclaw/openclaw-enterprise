@@ -4,7 +4,7 @@ import test from "node:test";
 import type { Pool } from "pg";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
 
@@ -53,7 +53,7 @@ test(
 
     const admittedAction = "openclaw.api.request.admitted";
     const resultAction = "openclaw.api.request.result";
-    const logs: Record<string, unknown>[] = [];
+    const logs: unknown[] = [];
     const { app, pool, state, principal, inject, deployAgent } = await createPostgresAgentApp(t, {
       label: "api-audit",
       authSecret,
@@ -187,6 +187,7 @@ test(
     assert.equal(agentReadDenied.statusCode, 403, agentReadDenied.body);
     assert.deepEqual(
       logs
+        .map(requireLogRecord)
         .filter(({ event }) => event === "http.audit_append_failed")
         .map(({ requestId, action, operationId }) => ({ requestId, action, operationId })),
       [
@@ -349,6 +350,7 @@ test(
     assert.equal(overCapacity.statusCode, 503, overCapacity.body);
     assert.deepEqual(
       logs
+        .map(requireLogRecord)
         .filter(
           (entry) =>
             entry.event === "http.audit_append_failed" &&

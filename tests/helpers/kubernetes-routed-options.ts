@@ -2,7 +2,7 @@ import type {
   KubernetesComputeDriverOptions,
   KubernetesGatewayRoutingOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { conformanceKubernetesOptions } from "./kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "./kubernetes-compute.ts";
 
 type OptionsOverrides = Partial<KubernetesComputeDriverOptions>;
 type RoutedOptionsOverrides = Omit<OptionsOverrides, "network"> & {

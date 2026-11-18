@@ -146,14 +146,28 @@ export function skipperOperationDiagnostic(value: unknown) {
   ) {
     return undefined;
   }
-  const { operation, exitCode, signal, code, gatewayCategory, httpStatus } = diagnostic;
+  const { operation, exitCode, signal, code, gatewayCategory, httpStatus, gatewayFetchElapsedMs } =
+    diagnostic;
   const gatewayChatPhase = skipperGatewayChatPhases.find(
     (phase) => phase === diagnostic.gatewayChatPhase,
   );
   const { runtimeSignal, modelRequestObservation, gatewayTransportCause, helperEntered } =
     diagnostic;
   const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
+  const timedTransport =
+    gatewayCategory === "transport" &&
+    (gatewayTransportCause === "socket-closed" ||
+      gatewayTransportCause === "connection-reset" ||
+      gatewayTransportCause === "headers-timeout");
   return {
+    ...(attributed &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    gatewayCategory === "transport" &&
+    modelRequestObservation === "observed" &&
+    diagnostic.modelFixtureSelectedTerminalSuccess === true
+      ? { modelFixtureSelectedTerminalSuccess: true as const }
+      : {}),
     ...(attributed &&
     typeof runtimeSignal === "string" &&
     [
@@ -169,13 +183,19 @@ export function skipperOperationDiagnostic(value: unknown) {
       ? { modelRequestObservation }
       : {}),
     ...(operation === "gateway-exec" && helperEntered === true ? { helperEntered } : {}),
+    ...(operation === "gateway-chat" &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    (timedTransport || gatewayCategory === "client-deadline") &&
+    typeof gatewayFetchElapsedMs === "number" &&
+    Number.isInteger(gatewayFetchElapsedMs) &&
+    gatewayFetchElapsedMs >= 0 &&
+    gatewayFetchElapsedMs <= 240_000
+      ? { gatewayFetchElapsedMs }
+      : {}),
     ...(attributed &&
     httpStatus === 0 &&
-    gatewayCategory === "transport" &&
-    typeof gatewayTransportCause === "string" &&
-    ["socket-closed", "connection-reset", "headers-timeout", "other"].includes(
-      gatewayTransportCause,
-    )
+    (timedTransport || (gatewayCategory === "transport" && gatewayTransportCause === "other"))
       ? { gatewayTransportCause }
       : {}),
     ...(attributed &&

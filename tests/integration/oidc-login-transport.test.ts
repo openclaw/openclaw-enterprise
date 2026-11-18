@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import { oidcLoginConfiguration, oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
+import { refusingPort } from "../helpers/available-port.ts";
 import {
   assertSafeEqual,
   assertSafeThrows,
@@ -12,18 +13,19 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
-  parseAuthorizationUrl,
   providerAttemptId,
   providerInstanceId,
-  readProviderRequestBody,
-  redirectProviderFetch,
   responseFields,
-  startProviderServer,
   testOversizedProviderBodies,
   type LoginFixtureOptions,
-  type ProviderHandler,
 } from "../helpers/human-login-transport.ts";
-import { refusingPort } from "../helpers/available-port.ts";
+import {
+  parseAuthorizationUrl,
+  readProviderRequestBody,
+  redirectProviderFetch,
+  startProviderServer,
+  type ProviderHandler,
+} from "../helpers/provider-http-transport.ts";
 
 const subject = "auth0|65f0c1d2e3a4b5c6d7e8f901";
 const environment = {

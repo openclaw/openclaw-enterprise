@@ -799,7 +799,7 @@ def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -968,7 +968,7 @@ read_preflight_child() {
   "${kube[@]}" --request-timeout="$request_timeout" --namespace "$namespace" get pods \
     --selector "batch.kubernetes.io/controller-uid=$job_uid" --output json \
     >"$evidence_dir/preflight-$component-pods.json" || return 1
-  node scripts/upgrade-startup-preflight.mjs child \
+  node scripts/upgrade-startup-preflight.ts child \
     "$evidence_dir/preflight-$component-job-status.json" "$job_uid" \
     "$evidence_dir/preflight-$component-pods.json" "$previous_uid"
 }
@@ -986,7 +986,7 @@ run_preflight_jobs() {
   job_prefix=${job_prefix%.}
   for component in "${components[@]}"; do
     job="$job_prefix-upgrade-preflight-$component-$suffix"
-    node scripts/upgrade-startup-preflight.mjs "${preflight_action:-job}" "$evidence_dir/preflight-rendered.jsonl" \
+    node scripts/upgrade-startup-preflight.ts "${preflight_action:-job}" "$evidence_dir/preflight-rendered.jsonl" \
       "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret" \
       "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
       >"$evidence_dir/preflight-$component-job.json" ||
@@ -1031,7 +1031,7 @@ run_preflight_jobs() {
             '{apiVersion:"v1",kind:"DeleteOptions",propagationPolicy:"Background",preconditions:{uid:$uid}}')
           acknowledge_preflight "$component-pod" "pod/$pod" "$delete_options"
         fi
-        phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
+        phase=$(node scripts/upgrade-startup-preflight.ts phase "$evidence_dir/preflight-$component-status.json" \
           "$evidence_dir/preflight-$component-job-status.json")
       fi
       case "$phase" in
@@ -1072,7 +1072,7 @@ sys.stdout.buffer.write(data)') || logs_status=$?
         printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
         printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
         logs=
-        phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
+        phase=$(node scripts/upgrade-startup-preflight.ts phase "$evidence_dir/preflight-$component-status.json" \
           "$evidence_dir/preflight-$component-job-status.json")
         if [[ "$log_container" == assemble-api-ca ]]; then
           # Init output is diagnostic only, even if the later Pod observation changed.
@@ -1117,7 +1117,7 @@ sys.stdout.buffer.write(data)') || logs_status=$?
             "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
           draft_refusals=
           if [[ "$component" == api && -n "$drafts" ]]; then
-            draft_refusals=$(node scripts/upgrade-startup-preflight.mjs refusals \
+            draft_refusals=$(node scripts/upgrade-startup-preflight.ts refusals \
               "$evidence_dir/preflight-api.log") || draft_refusals=
           fi
           if [[ "$component" == migration ]]; then
@@ -1147,6 +1147,10 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
             [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
             if ((resume)); then
               message="the $component application identity preflight failed: ${message}No additional OCC writer was stopped. Preserve the original evidence and writer freeze; reconcile the application connection before --resume."
+            elif grep -q '^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\.' \
+              "$evidence_dir/preflight-$component.log"; then
+              # Not an Installation refusal: the database, its sign-in or the egress that reaches it.
+              message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the database, the chart's database values (database.cidrs) or the network policies that admit this Pod's database egress, then start again with a new evidence directory."
             else
               message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the Installation and start again with a new evidence directory."
             fi
@@ -1180,7 +1184,7 @@ preflight_startup() {
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ "$preflight_action" == job && -s "${agent_drafts:-}" ]]; then
     drafts="$evidence_dir/inventory/agent-drafts.json.gz"
-    node scripts/upgrade-startup-preflight.mjs drafts "$agent_drafts" "$candidate_installation" \
+    node scripts/upgrade-startup-preflight.ts drafts "$agent_drafts" "$candidate_installation" \
       "$drafts" >/dev/null || drafts_status=$?
     if ((drafts_status == 3)); then
       warn "the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it."
@@ -1214,7 +1218,7 @@ preflight_startup() {
         die "certificate admission preflight failed; no ${writer_qualifier}OCC writer was stopped. Check cert-manager and see preflight-certificates.err in the evidence directory."
     fi
   fi
-  node scripts/upgrade-startup-preflight.mjs networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
+  node scripts/upgrade-startup-preflight.ts networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
     "$secret" "$namespace" "$release" >"$evidence_dir/preflight-networkpolicy.json" ||
     die "cannot build the startup preflight NetworkPolicy from the rendered chart; no ${writer_qualifier}OCC writer was stopped."
   local network_policy=false
@@ -1227,7 +1231,7 @@ preflight_startup() {
       unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret" preflight-networkpolicy-create.err $?
     acknowledge_preflight networkpolicy "networkpolicy.networking.k8s.io/$secret" "$delete_options"
   fi
-  delete_options=$(node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
+  delete_options=$(node scripts/upgrade-startup-preflight.ts secret "$candidate_installation" \
     "$installation_key" "$secret" "$namespace" "$release" "$drafts" |
     create_preflight secret - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
@@ -1701,7 +1705,7 @@ if [[ "$repository_enabled" == true ]]; then
     "$evidence_dir/node-selector-values.json" >"$evidence_dir/eligible-nodes.json" ||
     die "cannot identify a single eligible control-plane platform."
   qualified_platform=$(jq -er '.platform' "$evidence_dir/eligible-nodes.json")
-  node scripts/upgrade-repository-image-probe.mjs "$controller_image" "$broker_image" \
+  node scripts/upgrade-repository-image-probe.ts "$controller_image" "$broker_image" \
     "$qualified_platform" >"$evidence_dir/pair-proof.json" ||
     die "the selected repository image pair failed compatibility qualification."
   python3 - "$evidence_dir/parameters.json" "$evidence_dir/pair-proof.json" "$evidence_dir/eligible-nodes.json" "$evidence_dir/node-selector-values.json" \
@@ -1898,7 +1902,7 @@ PYTHON
   if ((resume)); then
     resume_pair_proof=$(mktemp "$evidence_dir/pair-resume.XXXXXXXX.json")
     qualified_platform=$(jq -er '.platform' "$evidence_dir/eligible-nodes.json")
-    node scripts/upgrade-repository-image-probe.mjs "$controller_image" "$broker_image" \
+    node scripts/upgrade-repository-image-probe.ts "$controller_image" "$broker_image" \
       "$qualified_platform" >"$resume_pair_proof" || die "the selected image pair could not be requalified."
     jq -e --slurpfile original "$evidence_dir/pair-proof.json" \
       '.controller == $original[0].controller and .broker == $original[0].broker' \
@@ -2147,7 +2151,7 @@ if ((helm_complete == 0)); then
       ' >"$staged_handoff" || die "Cannot record the stopped Deployment generations."
       mv "$staged_handoff" "$handoff"
     fi
-    die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers fenced. Run node scripts/migrate-production.mjs in the selected controller image against this Installation with the dedicated migrator credential. Confirm --require-current succeeds, then use --resume --migration-history-checked with this evidence directory. The Helm hook independently requires the complete candidate schema." 3
+    die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers fenced. Run the chart-selected migration command in the selected controller image against this Installation with the dedicated migrator credential. Confirm the same command with --require-current succeeds, then use --resume --migration-history-checked with this evidence directory. The Helm hook independently requires the complete candidate schema." 3
   fi
 
   install_atomically "$candidate_values" "$values"
@@ -2464,17 +2468,41 @@ poll_deployment_status() (
   printf '%s\n' "$status"
 )
 
+# At the timeout, name each Agent whose deployment had not succeeded: its ID, its name and the
+# last status read (none when the deadline passed before the first poll), so the operator
+# knows which Agent to inspect.
+incomplete_agents() {
+  local namespace_id agent_id status agent_name observed
+  while IFS=' ' read -r namespace_id agent_id status; do
+    agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
+    observed="no status read"
+    [[ -z "$status" ]] || observed="last status $status"
+    printf '  - Agent %s %s: %s, waiting for succeeded\n' "$agent_id" "${agent_name:-(name unavailable)}" "$observed"
+  done
+}
+
 pending=$target_count
+incomplete=()
+while IFS= read -r deployment; do
+  json_fields "$deployment" namespace_id=namespaceId agent_id=agentId
+  incomplete+=("$namespace_id $agent_id")
+done <"$deployments"
 while ((pending > 0)); do
-  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
+  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout:
+$(printf '%s\n' "${incomplete[@]}" | incomplete_agents)
+Their last statuses are in $evidence_dir/status."
   pending=0
   failed=0
+  incomplete=()
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
     status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file")
     case "$status" in
-      queued | running) ((pending += 1)) ;;
+      queued | running)
+        ((pending += 1))
+        incomplete+=("$namespace_id $agent_id $status")
+        ;;
       succeeded) ;;
       failed) failed=1 ;;
     esac

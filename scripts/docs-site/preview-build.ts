@@ -42,7 +42,7 @@ function sourceSnapshot() {
 }
 
 type Generation = { directory: string; readers: number };
-type PreviewState = { revision: string; error: string };
+export type PreviewState = { revision: string; error: string };
 
 function isErrorCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
@@ -66,7 +66,7 @@ export async function createPreviewBuild(onState: (state: PreviewState) => void)
   let snapshot = sourceSnapshot();
   let requested = 1;
 
-  const state = () => ({ revision, error });
+  const state = (): PreviewState => ({ revision, error });
   function report(message: string) {
     error = message;
     console.error(`Docs preview: ${message}`);
