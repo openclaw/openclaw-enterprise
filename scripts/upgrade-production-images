@@ -2216,14 +2216,15 @@ PYTHON
   fi
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
+  helm_status=0
   {
     helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
-      --values "$values" --wait --timeout 5m ||
-      native_command_failed "$?" helm-upgrade release
+      --values "$values" --wait --timeout 5m || helm_status=$?
   } >"$evidence_dir/helm-attempts/$helm_attempt/helm-upgrade.txt"
   if ((verbose)); then
     cat "$evidence_dir/helm-attempts/$helm_attempt/helm-upgrade.txt" || true
   fi
+  ((helm_status == 0)) || native_command_failed "$helm_status" helm-upgrade release
 fi
 
 progress "Waiting for OCC recovery."

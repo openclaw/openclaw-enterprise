@@ -668,6 +668,10 @@ if [[ "$1" == status ]]; then
 elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
+  if [[ "\${HELM_UPGRADE_FAILURE:-}" == 1 ]]; then
+    printf 'native Helm failure output\\n'
+    exit 9
+  fi
   while (($#)); do
     if [[ "$1" == --values ]]; then cp "$2" "$LIVE_VALUES_FILE"; break; fi
     shift
@@ -898,6 +902,49 @@ esac
       await rm(commandLog);
     });
   }
+
+  // Helm may produce useful stdout before failing; verbose output must expose
+  // that saved evidence without changing the native status or failure receipt.
+  const helmFailureEvidence = join(directory, "helm-failure-evidence");
+  await assert.rejects(
+    execute(
+      upgradeScript,
+      [...upgradeArguments(helmFailureEvidence, ["controller"]), "--verbose"],
+      {
+        cwd: repository,
+        env: {
+          ...environment,
+          COMMAND_LOG: commandLog,
+          HELM_UPGRADE_FAILURE: "1",
+          OBSERVED_CONTROLLER_IMAGE: controllerImage,
+        },
+      },
+    ),
+    (error: unknown) => {
+      const failure = processFailure(error);
+      assert.equal(failure.code, 9, failure.stderr);
+      assert.equal(
+        failure.stdout.split("native patch output\n").at(-1),
+        "native Helm failure output\n",
+      );
+      return true;
+    },
+  );
+  const [helmAttempt] = await readdir(join(helmFailureEvidence, "helm-attempts"));
+  assert.ok(helmAttempt !== undefined);
+  assert.equal(
+    await readFile(
+      join(helmFailureEvidence, "helm-attempts", helmAttempt, "helm-upgrade.txt"),
+      "utf8",
+    ),
+    "native Helm failure output\n",
+  );
+  assert.equal(
+    await readFile(join(helmFailureEvidence, "native-command-failures.tsv"), "utf8"),
+    "helm-upgrade\trelease\t9\n",
+  );
+  await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
+  await rm(commandLog);
 
   // A controller release changes only the Helm-owned image. It must not replace
   // the Installation Secret or create Agent revisions; it checks active snapshots.
