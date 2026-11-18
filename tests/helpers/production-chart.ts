@@ -50,7 +50,7 @@ export const productionValues = {
   "auth.secretName": "occ-auth",
   "auth.secretKey": "secret",
   "bootstrap.adminEmail": "admin@example.invalid",
-  "bootstrap.password.claimName": "occ-bootstrap-admin-password",
+  "bootstrap.credentials.secretName": "occ-bootstrap-credentials",
   "api.clients[0].namespace": "operator-tools",
   "api.clients[0].podLabels.app": "operator",
   "database.cidrs[0]": "10.45.0.12/32",

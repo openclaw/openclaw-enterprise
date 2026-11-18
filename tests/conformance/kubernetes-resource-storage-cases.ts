@@ -4,6 +4,7 @@ import {
   harnessWorkspacePreparationScript,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
+  type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   type SandboxWorkspaceMount,
@@ -50,7 +51,7 @@ export function checkRequiredResourceFields() {
       },
       "/resources/namespace/containerDefaults/requests/memory",
     ],
-  ]) {
+  ] satisfies [KubernetesComputeDriverOptions["resources"], string][]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ resources })),
       (error) => {
@@ -322,11 +323,14 @@ export function checkResourceRequestLimits() {
   }
 }
 
-function optionsWithRuntime(overrides: {
-  transportSecretPrefix?: string;
-  gatewayStorageClassName?: string | undefined;
-  gatewayStorageSizeGiB?: number | string | null;
-}) {
+function optionsWithRuntime(
+  overrides: Partial<
+    Pick<
+      NonNullable<KubernetesComputeDriverOptions["runtime"]>,
+      "transportSecretPrefix" | "gatewayStorageClassName" | "gatewayStorageSizeGiB"
+    >
+  >,
+) {
   return options({
     runtime: {
       transportSecretPrefix: "transport",
@@ -355,10 +359,16 @@ export function checkTransportSecretPrefix() {
 
 export function checkRequiredGatewayStorageClass() {
   for (const gatewayStorageClassName of [undefined, "", " "]) {
-    assert.throws(
-      () => createKubernetesComputeDriver(optionsWithRuntime({ gatewayStorageClassName })),
-      ConfigurationValidationError,
-    );
+    const configured =
+      gatewayStorageClassName === undefined
+        ? optionsWithRuntime({})
+        : optionsWithRuntime({ gatewayStorageClassName });
+    if (gatewayStorageClassName === undefined) {
+      assert.ok(
+        Reflect.set(configured, "runtime", { ...configured.runtime, gatewayStorageClassName }),
+      );
+    }
+    assert.throws(() => createKubernetesComputeDriver(configured), ConfigurationValidationError);
   }
 }
 
@@ -393,7 +403,15 @@ export function checkGatewayStorageCapacity() {
     "100",
     null,
   ]) {
-    const configured = optionsWithRuntime({ gatewayStorageSizeGiB });
+    const configured =
+      typeof gatewayStorageSizeGiB === "number"
+        ? optionsWithRuntime({ gatewayStorageSizeGiB })
+        : optionsWithRuntime({});
+    if (typeof gatewayStorageSizeGiB !== "number") {
+      assert.ok(
+        Reflect.set(configured, "runtime", { ...configured.runtime, gatewayStorageSizeGiB }),
+      );
+    }
     assert.throws(
       () => requireConfiguration(KubernetesComputeDriver, configured),
       ConfigurationValidationError,
@@ -495,6 +513,9 @@ function checkPrivateStatePreparation(
     );
     assert.ok(initialization.includes(`/${name}/${subPath}`));
   }
+  if (privateMount.mountPath === "/gateway-state") {
+    assert.ok(initialization.includes("/gateway-state/skill-library"));
+  }
   // Avoid recursively changing ownership of retained data on every start.
   assert.equal(security.fsGroup, 1000);
   assert.equal(security.fsGroupChangePolicy, "OnRootMismatch");
@@ -578,6 +599,7 @@ export function checkGatewayAndHarnessStorage() {
         [`${home}/media`, "media"],
         [`${home}/worktrees`, "worktrees"],
         [`${home}/worktree-sources`, "worktree-sources"],
+        [`${home}/skill-library`, "skill-library"],
         embedded
           ? [`${home}/workspace`, "workspace"]
           : [`${home}/agents/main/sessions`, "sessions"],

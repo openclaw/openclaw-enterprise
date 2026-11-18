@@ -301,18 +301,26 @@ test("cleanupLogging removes the owned Collector backend and rejects foreign pat
   assert.deepEqual(calls, [["docker", ["rm", "--force", containerName]]]);
   await assert.rejects(() => stat(directory), { code: "ENOENT" });
 
+  // A rejected foreign path must retain its contents, even if cleanup fails after a mutation.
+  const foreignDirectory = resolve(root, "foreign-state");
+  const sentinelPath = join(foreignDirectory, "sentinel");
+  const sentinel = Buffer.from("foreign state must remain intact\n");
+  await mkdir(foreignDirectory, { mode: 0o700 });
+  await writeFile(sentinelPath, sentinel);
+
   await assert.rejects(
     () =>
       cleanupLogging(
         {
           kind: ciOtelBackendResourceKind,
           containerName,
-          directory: resolve(root, "foreign-state"),
+          directory: foreignDirectory,
         },
         { execFile, env: { OCC_DOCKER_BIN: "docker" } },
       ),
     /outside ownership/,
   );
+  assert.deepEqual(await readFile(sentinelPath), sentinel);
 });
 
 test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned", async (t) => {

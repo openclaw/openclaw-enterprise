@@ -142,7 +142,7 @@ the previous controller image after the check below.
 
 Before selecting an older image, verify it can read candidate state.
 [Restore the retained candidate database](upgrade-baseline.md#restore-the-retained-candidate-database) if needed.
-Preserve Agents, versions, PVCs and the bootstrap volume.
+Preserve Agents, versions, PVCs and retained bootstrap credentials.
 After return, [check the original conversation](production-handoff.md#check-conversation-continuity).
 
 For stalled ReplicaSet creation, check [namespace object capacity](upgrade-checklist.md#check-replicaset-capacity).

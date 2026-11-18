@@ -198,14 +198,14 @@ unless `OCC_CONFIG_PATH` explicitly selects another trusted Driver set.
 Compose runs the shared initializer after migration and before the API or
 worker. Fresh setup creates the configured human administrator, service
 administrator, and singleton Installation; existing state is retained. Only
-the initializer mounts the protected initial-key output volume. The
+the initializer mounts the protected credential input secrets. The
 [authentication reference](../authentication.md#installation-and-account-ownership)
 owns credential creation and recovery; the
 [Compose development flow](../../flows/docker-compose-development.md) traces ordering.
 
-The cleanup command printed by `dev-up` keeps `occ_postgres_data`,
-`occ_configuration_data`, and the bootstrap-only `occ_bootstrap_data` volume.
-Adding `--volumes` deletes all three, including the initial service-key JSON.
+The cleanup command printed by `dev-up` keeps `occ_postgres_data` and
+`occ_configuration_data`. Adding `--volumes` deletes both. Credential files
+remain outside those volumes; retain them privately according to your policy.
 
 ### Gateway authentication
 

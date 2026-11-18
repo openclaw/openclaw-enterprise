@@ -12,6 +12,9 @@ import {
   AgentRuntimeResponse,
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
+  ModelProviderSchema,
+  ModelProviderModelSchema,
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
@@ -310,6 +313,7 @@ const RESOURCE_ID_PREFIX = {
   configurationId: "cfg_",
   serviceAccountId: "sa_",
   secretId: "sec_",
+  sessionId: "sec_",
   credentialSourceId: "cs_",
   agentId: "agt_",
   revisionId: "rev_",
@@ -648,7 +652,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId.endsWith("DeviceAuthorization")) {
     const saved = operation.operationId.includes("SavedAgent");
-    return [
+    const permissions: RequiredPermission[] = [
       {
         action: saved ? "update" : "create",
         resourceKind: "agent",
@@ -657,12 +661,17 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       ...(saved
         ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
         : []),
-      {
-        action: operation.operationId.startsWith("start") ? "create" : "operate",
-        resourceKind: "secret",
-        scope: operation.operationId.startsWith("start") ? "namespace" : "requested",
-      },
     ];
+    if (operation.operationId.startsWith("start")) {
+      permissions.push({ action: "create", resourceKind: "credential_source", scope: "namespace" });
+    } else if (operation.operationId.startsWith("poll")) {
+      permissions.push({
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+      });
+    }
+    return permissions;
   }
 
   if (operation.operationId === "createNamespace") {
@@ -1175,6 +1184,13 @@ function permissionDescription(
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
       }
+      if (
+        operation?.operationId.startsWith("poll") &&
+        operation.operationId.endsWith("DeviceAuthorization") &&
+        resourceKind === "credential_source"
+      ) {
+        return `Requires ${action} permission on the exact credential source associated with the login.`;
+      }
       switch (scope) {
         case "installation":
           return `Requires ${action} permission for ${name} resources in the Installation.`;
@@ -1188,6 +1204,12 @@ function permissionDescription(
     })
     .join(" ");
 
+  if (
+    operation?.operationId.endsWith("DeviceAuthorization") &&
+    !operation.operationId.startsWith("start")
+  ) {
+    return `${description} Only the initiating actor can poll or cancel the login.`;
+  }
   if (operation?.operationId === "deployAgent") {
     return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
   }
@@ -1386,6 +1408,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
+  app.addSchema(ErrorResponse);
+  app.addSchema(AgentDeploymentDiagnosticsResponse);
+  app.addSchema(AgentRuntimeResponse);
+  app.addSchema(AgentRuntimeLogsResponse);
+  app.addSchema(AgentRuntimeCredentialResponse);
+  app.addSchema(SecretResponse);
+  app.addSchema(CredentialSourceResponse);
+  app.addSchema(OAuthConnectionTemplateVersionSchema);
+  app.addSchema(ConnectionTemplateSchema);
+  app.addSchema(StaticKeyConnectionTemplateVersionSchema);
+  app.addSchema(ModelProviderModelSchema);
+  app.addSchema(ModelProviderSchema);
   void app.register(swagger, {
     convertConstToEnum: false,
     openapi: {
@@ -2368,6 +2402,40 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       validateConfiguration(body);
     }
 
+    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
+    // Older handlers would otherwise ignore a requested provider or credential destination.
+    if (
+      body?.mode === "static_bearer" &&
+      (operation.operationId === "createConnectionTemplate" ||
+        operation.operationId === "updateConnectionTemplate")
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Static Connection Templates are unavailable on this controller.",
+      );
+    }
+    if (
+      (body &&
+        "modelProviderId" in body &&
+        ["createAgent", "provisionAgent", "validateAgentCreate", "updateAgent"].includes(
+          operation.operationId,
+        )) ||
+      [
+        "listModelProviders",
+        "getModelProvider",
+        "createModelProvider",
+        "updateModelProvider",
+        "listUsableModelProviders",
+      ].includes(operation.operationId)
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Named model providers are unavailable on this controller.",
+      );
+    }
+
     if (operation.operationId === "bootstrapInstallation") {
       if (controller || bootstrapping) {
         throw failure(409, "INSTALLATION_EXISTS", "The deployment already owns an Installation.");
@@ -2695,14 +2763,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         result = await controller.pollAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
         );
       } else {
         await controller.cancelAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
         );
       }
@@ -4800,15 +4868,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   void app.register(async (routes) => {
-    routes.addSchema(ErrorResponse);
-    routes.addSchema(AgentDeploymentDiagnosticsResponse);
-    routes.addSchema(AgentRuntimeResponse);
-    routes.addSchema(AgentRuntimeLogsResponse);
-    routes.addSchema(AgentRuntimeCredentialResponse);
-    routes.addSchema(SecretResponse);
-    routes.addSchema(CredentialSourceResponse);
-    routes.addSchema(OAuthConnectionTemplateVersionSchema);
-    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {

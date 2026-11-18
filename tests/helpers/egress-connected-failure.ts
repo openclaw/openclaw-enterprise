@@ -142,7 +142,7 @@ export async function safeConnectedFailure(
   const header = headers.find((value) => stack.startsWith(value + "\n"));
   const frames = header === undefined ? "" : stack.slice(header.length + 1);
   const frame = frames.match(
-    /^ +at [^\n]*[/\\]((?:agent-openshell-static-egress-k3d-real\.test|egress-(?:connected-inputs|custody-observations|installed-(?:agent|resource-cleanup|stack)|managed-workload-exec|supplier-custody-transitions)|openshell-kubernetes-real)\.mjs|egress-(?:controller-(?:upgrade|processes|retirement|retained-state)|supervisor-(?:reconnect|processes|sessions))\.ts):(\d{1,5}):(\d{1,4})(?:\))?$/m,
+    /^ +at [^\n]*[/\\]((?:agent-openshell-static-egress-k3d-real\.test|egress-(?:connected-inputs|custody-observations|installed-(?:agent|resource-cleanup|stack)|managed-workload-exec)|openshell-kubernetes-real)\.mjs|egress-(?:supplier-custody-transitions|controller-(?:upgrade|processes|retirement|retained-state)|supervisor-(?:reconnect|processes|sessions))\.ts):(\d{1,5}):(\d{1,4})(?:\))?$/m,
   );
   const location = frame ? `${frame[1]}:${frame[2]}:${frame[3]}` : "external-operation";
   const kind =

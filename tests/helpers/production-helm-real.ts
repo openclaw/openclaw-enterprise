@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   V1NetworkPolicyPeer,
@@ -110,6 +111,7 @@ type PrepareOptions = HelmTarget &
     authBaseURL: string;
     agentNativeAdminDomain: string;
     installationName: string;
+    bootstrapCredentials?: "generate" | "existing";
     apiClients: readonly PodPeer[];
     channelDirectoryProxyUrl?: string | undefined;
     databaseName?: string | undefined;
@@ -166,7 +168,7 @@ export async function prepareProductionHelmControlPlane({
   run,
   kubernetes,
   createSecretValue,
-  record,
+  bootstrapCredentials = "existing",
 }: PrepareOptions) {
   // The values this installation creates, so a failure diagnostic can redact them.
   const secretValues: string[] = [];
@@ -181,7 +183,7 @@ export async function prepareProductionHelmControlPlane({
     assert.match(databaseTLS.serverSecretName, /^[a-z0-9-]+$/);
     assert.notEqual(databaseTLS.caSecretName, databaseTLS.serverSecretName);
   }
-  const { kubectl, waitFor } = kubernetes;
+  const { kubectl } = kubernetes;
   const apply = (object: FixtureResource) =>
     run("kubectl", kubernetes.kubectlArguments(["apply", "-f", "-"]), {
       input: JSON.stringify(object),
@@ -231,55 +233,18 @@ export async function prepareProductionHelmControlPlane({
     "init.sql": `CREATE ROLE occ_migrator LOGIN PASSWORD '${migrationPassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\nCREATE ROLE occ_app LOGIN PASSWORD '${appPassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\nGRANT CREATE ON DATABASE ${databaseName} TO occ_migrator;\nCREATE SCHEMA occ AUTHORIZATION occ_migrator;\nCREATE SCHEMA drizzle AUTHORIZATION occ_migrator;\nREVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
   });
   await createClaim("postgres-data");
-  await createClaim("bootstrap-password");
-  await apply({
-    apiVersion: "v1",
-    kind: "Pod",
-    metadata: metadata("bootstrap-password-prepare"),
-    spec: {
-      restartPolicy: "Never",
-      ...nodePlacement,
-      automountServiceAccountToken: false,
-      securityContext: {
-        runAsUser: 0,
-        runAsGroup: 0,
-        seccompProfile: { type: "RuntimeDefault" },
-      },
-      containers: [
-        {
-          name: "prepare",
-          image: images.controller,
-          imagePullPolicy: "IfNotPresent",
-          command: [
-            "node",
-            "-e",
-            "const fs=require('node:fs');const root='/var/lib/openclaw/bootstrap';for(const name of ['initial-admin-password','initial-admin-service-key.json']){if(fs.existsSync(`${root}/${name}`))throw new Error(`${name} already exists on fresh bootstrap PVC`)}fs.chownSync(root,1000,1000);fs.chmodSync(root,0o700);const s=fs.statSync(root);console.log(JSON.stringify({uid:s.uid,gid:s.gid,mode:s.mode&0o777}));",
-          ],
-          securityContext: {
-            allowPrivilegeEscalation: false,
-            capabilities: { drop: ["ALL"], add: ["CHOWN", "FOWNER"] },
-          },
-          resources,
-          volumeMounts: [{ name: "bootstrap", mountPath: "/var/lib/openclaw/bootstrap" }],
-        },
-      ],
-      volumes: [{ name: "bootstrap", persistentVolumeClaim: { claimName: "bootstrap-password" } }],
-    },
-  });
-  await waitFor("fresh bootstrap PVC preparation", async () => {
-    const pod = asRecord(await get("pod", "bootstrap-password-prepare"));
-    const status = asRecord(pod?.status);
-    assert.ok(status, "Expected bootstrap PVC preparation Pod status");
-    assert.notEqual(status.phase, "Failed", "bootstrap PVC preparation Pod failed");
-    return status.phase === "Succeeded";
-  });
-  const permissionEvidence: unknown = JSON.parse(
-    (await kubectl("-n", system, "logs", "bootstrap-password-prepare")).trim(),
-  );
-  assert.deepEqual(permissionEvidence, { uid: 1000, gid: 1000, mode: 0o700 });
-  await record("Fresh bootstrap PVC root prepared for UID 1000 output", {
-    claimName: "bootstrap-password",
-  });
+  const adminPassword = bootstrapCredentials === "existing" ? secret() : undefined;
+  const serviceKey =
+    bootstrapCredentials === "existing"
+      ? `occ_${randomBytes(32).toString("base64url")}`
+      : undefined;
+  if (adminPassword !== undefined && serviceKey !== undefined) {
+    secretValues.push(serviceKey);
+    await createSecret("occ-bootstrap-credentials", {
+      "admin-password": adminPassword,
+      "admin-service-key": serviceKey,
+    });
+  }
   await apply({
     apiVersion: "v1",
     kind: "Pod",
@@ -424,7 +389,7 @@ export async function prepareProductionHelmControlPlane({
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
     agentNativeAdmin: { domain: agentNativeAdminDomain },
-    bootstrap: { adminEmail, password: { claimName: "bootstrap-password" } },
+    bootstrap: { adminEmail, credentials: { secretName: "occ-bootstrap-credentials" } },
     database: {
       cidrs: [`${postgresIP}/32`],
       ...(databaseTLS && {
@@ -453,7 +418,12 @@ export async function prepareProductionHelmControlPlane({
   await writeFile(valuesPath, JSON.stringify(values), { mode: 0o600 });
   return {
     adminEmail,
+    adminPassword,
+    serviceKey,
     valuesPath,
+    registerBootstrapSecrets: (password: string, key: string) => {
+      secretValues.push(password, key);
+    },
     diagnose: (error: unknown) =>
       withHelmInstallDiagnostic(error, {
         selection,
@@ -480,7 +450,84 @@ export async function installProductionHelmControlPlane(
     run,
     record,
   } = options;
-  const prepared = await prepareProductionHelmControlPlane(options);
+  const mode = options.bootstrapCredentials ?? "generate";
+  const prepared = await prepareProductionHelmControlPlane({
+    ...options,
+    bootstrapCredentials: mode,
+  });
+  if (mode === "generate") {
+    const occ = join(options.directory, "occ");
+    const receipt = join(options.directory, "install-receipt");
+    const state = join(options.directory, "installer-state");
+    await run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
+    async function retainedInputs() {
+      const record: unknown = JSON.parse(
+        await readFile(join(receipt, "bootstrap-secret.json"), "utf8"),
+      );
+      const directory = asRecord(record)?.inputDirectory;
+      assert.ok(typeof directory === "string" && directory.startsWith(state + "/"));
+      const password = await readFile(join(directory, "initial-admin-password"), "utf8");
+      const key = await readFile(join(directory, "initial-admin-service-key"), "utf8");
+      prepared.registerBootstrapSecrets(password, key);
+      return { adminPassword: password, serviceKey: key };
+    }
+    try {
+      await run(
+        occ,
+        [
+          "installation",
+          "install",
+          "--kubeconfig",
+          selection.kubeconfigPath,
+          "--context",
+          selection.kubernetesContext,
+          "--kube-namespace",
+          system,
+          "--release",
+          release,
+          "--chart",
+          chartDirectory,
+          "--values",
+          prepared.valuesPath,
+          "--receipt",
+          receipt,
+          "--wait-timeout",
+          "5m",
+        ],
+        { timeout: 330_000, env: { ...process.env, XDG_STATE_HOME: state } },
+      );
+    } catch (error) {
+      // Read generated inputs before collecting any Pod diagnostics so errors
+      // can redact material produced inside the real CLI process.
+      await retainedInputs().catch(() => undefined);
+      throw await prepared.diagnose(error);
+    }
+    const inputs = await retainedInputs();
+    // The CLI injects its attempt ID through --set-string. Future upgrades must
+    // compare against the actual release values, not the pre-dispatch input file.
+    const liveValues: unknown = JSON.parse(
+      await run("helm", [
+        "get",
+        "values",
+        release,
+        "--kubeconfig",
+        selection.kubeconfigPath,
+        "--kube-context",
+        selection.kubernetesContext,
+        "--namespace",
+        system,
+        "--output",
+        "json",
+      ]),
+    );
+    assert.ok(asRecord(liveValues), "Expected installed Helm user values");
+    await writeFile(prepared.valuesPath, JSON.stringify(liveValues), { mode: 0o600 });
+    await record("CLI-generated bootstrap, Helm initialization, API and worker ready", {
+      namespace: system,
+    });
+    return { adminEmail: prepared.adminEmail, ...inputs };
+  }
+  assert.ok(prepared.adminPassword && prepared.serviceKey);
   await run(
     "helm",
     [
@@ -505,7 +552,11 @@ export async function installProductionHelmControlPlane(
     throw await prepared.diagnose(error);
   });
   await record("Helm initialization, API and worker ready", { namespace: system });
-  return { adminEmail: prepared.adminEmail };
+  return {
+    adminEmail: prepared.adminEmail,
+    adminPassword: prepared.adminPassword,
+    serviceKey: prepared.serviceKey,
+  };
 }
 
 // A failed install says only which hook or resource failed (finding 1574: the initialization

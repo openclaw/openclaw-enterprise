@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-13
-last_updated_session: authoring-run/6366a138-6e59-492d-8eae-730c7c10e323
+updated: "2026-11-18"
+last_updated_session: "authoring-run/038990d2-f182-4b8e-8b66-afc5c706ca11"
 ---
 
 # Credential source refresh Flow
@@ -119,30 +119,24 @@ failure code. Otherwise OCC commits `ready` with audit.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-`deviceAuthorization.harnessId` sources register before login.
-`source_registering` and `source_ready` commit with state and identify actor,
-request, and source. Audit failure blocks login; failed starts retain audited sources.
+OCC checks Agent authority and Namespace `credential_source:create`, registers the
+source, then rechecks authority before starting login. It audits `source_registering`,
+`source_ready` and `session_pending` without login material. Failed starts retain the
+source. The `device_authorization` row in `occ.authentication_states` holds the sealed
+challenge and provider handle, immutable binding and versioned progress.
 
-OCC commits the session Secret's handle, actor, source, and Driver IDs with
-`session_pending`. Known commit failure deletes metadata and private Driver value;
-unknown outcomes skip compensation. Session events identify Agent or Namespace
-and source ID, excluding handles, credentials, and user codes.
+`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` retains
+`start_unconfirmed` across navigation. Agent detail keeps Credentials open for
+replies unless another tab owns the draft. A `501` or unavailable type disables
+sign-in. A poll `403` pauses checks and shows the request ID. Retry polls the same handle.
+See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
-`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
-`start_unconfirmed` before start; both authentication forms retain it across navigation.
-Agent detail keeps Credentials open during start and records late replies unless
-a newer tab owns the draft. A usable reply before navigation supplies the challenge.
-A `501`, or no offered Codex device-login type (`deviceLoginOffered`), disables
-Sign in; other refusals permit retry. Unconfirmed attempts cannot restart, poll,
-or cancel. See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
-
-Compare-and-swap serializes known-session polls. `readAgentDeviceAuthorization`
-checks actor, Namespace, and saved-Agent bindings before session writes or provider I/O. Poll/cancel
-mismatches raise `DeviceAuthorizationScopeMismatchError`; the Controller records
-one `authorization_denial` with request/route attribution and
-`DEVICE_AUTHORIZATION_SCOPE_MISMATCH`. Responses remain generic `404`, or `503`
-on audit failure, without private binding or source details. After polling, OCC rechecks permissions and both Driver selections. Uncertain exchanges close the handle but
-keep the source.
+`readAgentDeviceAuthorization` checks Agent authority, actor, Namespace and saved Agent.
+Poll also checks source `operate` before changes and after I/O.
+Scope mismatches audit `DEVICE_AUTHORIZATION_SCOPE_MISMATCH` and return `404`,
+or `503` if audit fails. Version-checked updates serialize polls and fence
+cancelled exchanges. OCC rechecks both Drivers after I/O. Cancellation and expiry
+clear encrypted state.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
 sends start, poll, and exchange requests from API Pods to fixed `auth.openai.com`
@@ -318,6 +312,14 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 21:15: Simplify authentication state. (authoring-run/038990d2-f182-4b8e-8b66-afc5c706ca11 - fb3be388136a143306686807d06e415f93c1f5e4)
+
+- 2026-11-18 16:20: Trace device login through shared OCC authentication state in the accompanying change. (authoring-run/0e501248-a309-4913-b4df-122e4c3783c2 - 5dfbd6c1db67024917c79790ee7b6155e6f753e1)
+
+- 2026-11-18 15:41: Authorize device login through Agent and credential source permissions. (authoring-run/422adac7-ed17-4891-a192-172d70a85dbc - b589e9fcf314a096cdcc89bb1af83d6a09c80630)
+
+- 2026-11-17 19:24: Trace device-login storage. (authoring-run/a1a47d55-3248-4349-81a2-ca786027b634 - c5ddcd80cb4cfcd0b969a52ef5c4cafff552a8e8)
 
 - 2026-11-13 01:14: Reconcile device-login auditing. (authoring-run/6366a138-6e59-492d-8eae-730c7c10e323 - 2f1d2561161dd49cad47dafa9710df55dddbb18e)
 

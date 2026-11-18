@@ -49,6 +49,9 @@ export function createPlatformReadView(
       "listNamespaceConnections",
       "listRevokingConnections",
     ]),
+    authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
+      "findDevice",
+    ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",
@@ -71,7 +74,6 @@ export function createPlatformReadView(
     ]),
     workspaceSetups: bindRepository(repositories.workspaceSetups, lifetime, ["find"]),
     agents: bindRepository(repositories.agents, lifetime, [
-      "findRestartContinuation",
       "findPredecessorReplacement",
       "findAgent",
       "listAgents",
