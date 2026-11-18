@@ -15,25 +15,33 @@ import (
 )
 
 func TestComposeCancellationStopsProviderDescendants(t *testing.T) {
-	for _, capture := range []bool{false, true} {
-		t.Run(strconv.FormatBool(capture), func(t *testing.T) {
+	for _, invocation := range []string{"run", "capture", "bootstrap"} {
+		t.Run(invocation, func(t *testing.T) {
 			directory := t.TempDir()
 			child := filepath.Join(directory, "child")
 			late := filepath.Join(directory, "late")
 			// The provider owns a further engine client which inherits its output
 			// pipes and ignores TERM. Killing only the outer wrapper leaves it live.
-			fakeEngine(t, "compose-engine", `*) /bin/sh -c 'trap "" TERM; echo $$ > "$CHILD"; sleep 3; touch "$LATE"' & wait ;;`)
+			fakeEngine(t, "compose-engine", `"compose build bootstrap") ;;
+*) /bin/sh -c 'trap "" TERM; echo $$ > "$CHILD"; sleep 3; touch "$LATE"' & wait ;;`)
 			r := newRunner(Options{Repository: directory})
 			r.engine = "compose-engine"
 			r.env["CHILD"], r.env["LATE"] = child, late
 			r.env["OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS"] = "1"
 			state := &developmentState{directory: directory, ComposeProject: "occ-dev-cancel"}
 			started := time.Now()
+			// Bootstrap preparation must join the same provider descendants before
+			// its caller can begin rollback or remove credential inputs.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
 			var err error
-			if capture {
-				_, err = r.composeOutput(context.Background(), state, "up")
-			} else {
-				err = r.compose(context.Background(), state, "up")
+			switch invocation {
+			case "capture":
+				_, err = r.composeOutput(ctx, state, "up")
+			case "bootstrap":
+				err = r.prepareBootstrapMounts(ctx, directory, []string{"compose"})
+			default:
+				err = r.compose(ctx, state, "up")
 			}
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("expected readiness deadline: %v", err)

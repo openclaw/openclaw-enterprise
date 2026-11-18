@@ -177,7 +177,7 @@ func TestComposeSelectedRuntimeStartupDrainsBeforeRollback(t *testing.T) {
 			commands := composeAPIPortCollisionFixture(t, "", "4000", "3000", map[string]string{
 				"docker": `
 "compose "*" config --quiet") ;;
-"compose "*" up --no-start --build --no-deps bootstrap") ;;
+"compose "*" build bootstrap"|"compose "*" up --no-start --no-build --no-deps bootstrap") ;;
 "compose "*" ps --all --quiet bootstrap") echo bootstrap-id ;;
 "inspect --format "*" bootstrap-id") echo '{"image":"controller","user":"1000:1000"}' ;;
 "run "*" -p "*) echo '[1000,1000]' ;;

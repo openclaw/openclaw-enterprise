@@ -1,6 +1,6 @@
 ---
 created: 2026-09-09
-updated: "2026-11-18 21:57"
+updated: "2026-11-18 22:15"
 last_updated_session: "authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d"
 ---
 
@@ -75,14 +75,12 @@ requires its API socket (`systemctl enable --now podman.socket`), pinned as
 `--file=FILE` overrides `COMPOSE_FILE` and defaults. Attached short options become
 `--file=FILE` to avoid Podman's help parser. Empty or missing values fail before rendering.
 
-Docker Compose renders JSON; Podman YAML is converted to JSON in private temporary
-storage. `./bin/occ dev analyze-compose` enforces loopback controller and database
+Docker Compose renders JSON; Podman YAML converts privately to JSON. `./bin/occ dev analyze-compose` enforces loopback controller and database
 publications and resolves Docker runtime image selection. The final `compose.podman.yaml` override
 mounts Podman's reported API socket at `/var/run/docker.sock` in the worker.
 Docker Compute disables worker SELinux process labeling to avoid socket relabeling;
 other services retain confinement. Migration, bootstrap, API, and worker share one image. `dev-up` builds through migration,
-uses `--no-build`; Docker uses `up --build`. Configuration and credentials
-are never printed.
+uses `--no-build`; Docker uses `up --build`. Configuration and credentials remain private.
 `command.go` and `k3d_import.go` report monotonic durations through `timing.go`. See
 [local command diagnostics](../../reference/cli/local-development.md);
 concurrent durations can overlap.
@@ -270,10 +268,11 @@ and worker sidecar. Discovery checks approved references and profiles. See
 `internal/occdev/up.go:Up`, `internal/occdev/kubernetes.go:writeKubeconfigs`,
 `internal/occdev/openshell.go:prepareOpenShell`.
 
-Compose builds the database services separately, then starts them with `--no-build`.
-The Compose startup deadline excludes builds, which still honor cancellation.
-On Linux and macOS, `internal/occdev/compose_process_unix.go:ownComposeProcessGroup`
-stops and drains the provider's process group on cancellation or completion.
+Compose builds separately before `--no-build` creation or startup.
+`internal/occdev/command.go:invokeComposeCommand` also owns bootstrap build, creation
+and lookup. Builds honor cancellation outside readiness deadlines. On Linux
+and macOS, `internal/occdev/compose_process_unix.go:ownComposeProcessGroup` stops
+and drains provider descendants on cancellation or completion.
 Unconfirmed termination keeps recovery state and prevents rollback.
 `internal/occdev/command.go:composeServiceID` looks up exact project and service labels.
 
@@ -352,7 +351,7 @@ Namespace and Workspace readiness. Readiness and repository discovery use
 `occclient.Client.WithContext` deadlines.
 Both Compose Kubernetes profiles verify HTTPS sessions with the generated CA and console name.
 
-Both profiles use `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` for `k3d cluster create --timeout`; expiry fails startup.
+`OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds `k3d cluster create --timeout`; expiry fails startup.
 
 `internal/occdev/state.go:exclusiveWrite` removes new outputs, including partial
 external keys, after chmod, write or close failure. It preserves existing targets
@@ -413,6 +412,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 22:15: Drain bootstrap Compose providers before rollback. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - 1b0e6c3e0cfea0532b55e8d1f815e4a939ead034)
 
 - 2026-11-18 21:57: Reconcile native Compose configuration and cancellation with precreated bootstrap credentials in the accompanying uncommitted integration. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - 5783a737f848b6ab7780225e33bf6a5e54d87b5d)
 
