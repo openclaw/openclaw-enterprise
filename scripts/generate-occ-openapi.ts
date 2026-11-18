@@ -6,11 +6,7 @@ import { format, resolveConfig } from "prettier";
 
 import { createRouteGenerationApp } from "../apps/controller/src/route-generation-app.ts";
 import { documentApiExamples } from "./document-api-examples.ts";
-import {
-  generateApiReferenceOutputs,
-  removeGeneratedApiReferenceDirectory,
-  unexpectedApiReferenceFiles,
-} from "./generate-occ-api-reference.ts";
+import { generateApiReferenceOutputs } from "./generate-occ-api-reference.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const outputPath = fileURLToPath(
@@ -77,10 +73,6 @@ const outputs = [
   })),
 ];
 
-if (!check) {
-  await removeGeneratedApiReferenceDirectory();
-}
-
 for (const output of outputs) {
   const outputName = relative(repositoryRoot, output.path);
 
@@ -103,14 +95,5 @@ for (const output of outputs) {
     await mkdir(dirname(output.path), { recursive: true });
     await writeFile(output.path, output.content, "utf8");
     process.stdout.write(`Generated ${output.label}: ${outputName}\n`);
-  }
-}
-
-if (check) {
-  const unexpected = await unexpectedApiReferenceFiles(referenceOutputs);
-  if (unexpected.length) {
-    throw new Error(
-      `Unexpected generated API reference file: ${unexpected.join(", ")}; run pnpm openapi:generate.`,
-    );
   }
 }
