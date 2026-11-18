@@ -112,17 +112,17 @@ Before a cold local source build, [check for an exact-source retained CI runtime
 These process environment variables are optional. First Agent Smoke has its own
 [directories and slot settings](first-agent-smoke.md#local-isolation).
 
-| Setting                                     | Default                                   | Purpose                                                                            |
-| ------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                 | Per-file test deadline; hosted lane/job deadlines still apply.                     |
-| `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                  | Per-file cleanup allowance.                                                        |
-| `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs       | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |
-| `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS`    | `300000`                                  | Container-engine/k3d cleanup command limit; database drops use at most 60 seconds. |
-| `OPENCLAW_CI_COMMAND_KILL_GRACE_MS`         | `5000`                                    | TERM-to-KILL and pipe-drain grace during preparation/cleanup.                      |
-| `OPENCLAW_CI_K3S_IMAGE`                     | Immutable pin in `scripts/ci/prepare.mjs` | Approved digest-pinned Kubernetes 1.35.x image; OpenShell has a separate pin.      |
-| `OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` | `1200000`                                 | Maximum time for a hosted BuildKit cache export.                                   |
-| `OPENCLAW_CI_BROWSER_FAILURE_DIR`           | Unset                                     | Retain browser failure evidence locally.                                           |
-| `OPENCLAW_CI_BROWSER_FAILURE_TRACE`         | Unset                                     | Set `1` to include Playwright traces.                                              |
+| Setting                                     | Default                                  | Purpose                                                                            |
+| ------------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                | Per-file test deadline; hosted lane/job deadlines still apply.                     |
+| `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                 | Per-file cleanup allowance.                                                        |
+| `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs      | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |
+| `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS`    | `300000`                                 | Container-engine/k3d cleanup command limit; database drops use at most 60 seconds. |
+| `OPENCLAW_CI_COMMAND_KILL_GRACE_MS`         | `5000`                                   | TERM-to-KILL and pipe-drain grace during preparation/cleanup.                      |
+| `OPENCLAW_CI_K3S_IMAGE`                     | Immutable pin in `scripts/ci/prepare.ts` | Approved digest-pinned Kubernetes 1.35.x image; OpenShell has a separate pin.      |
+| `OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` | `1200000`                                | Maximum time for a hosted BuildKit cache export.                                   |
+| `OPENCLAW_CI_BROWSER_FAILURE_DIR`           | Unset                                    | Retain browser failure evidence locally.                                           |
+| `OPENCLAW_CI_BROWSER_FAILURE_TRACE`         | Unset                                    | Set `1` to include Playwright traces.                                              |
 
 Cleanup timeout/grace overrides that are not positive numbers use defaults.
 Deadlines include pipe drain; a wait timeout does not prove deletion. Preparation

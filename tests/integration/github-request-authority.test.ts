@@ -917,7 +917,8 @@ test("the requests port refuses at each of its own guards", async (t) => {
           return a;
         },
       },
-      expected: refused("approval_denied", "route_not_ready", "receive-pack"),
+      // decideGitHubRequest checks the signal right after the owner answers.
+      expected: refused("aborted", "route_not_ready", "receive-pack"),
       reads: 1,
       uses: 1,
     },

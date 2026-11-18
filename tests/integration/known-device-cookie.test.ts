@@ -7,7 +7,7 @@ import type {
   ControllerAuthOptions,
 } from "../../apps/controller/src/auth/index.ts";
 import type { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.ts";
 import { keyedAdmission } from "../../apps/controller/src/auth/admission.ts";
 import {
   KNOWN_DEVICE_LIFETIME_SECONDS,

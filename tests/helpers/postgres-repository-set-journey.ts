@@ -306,7 +306,6 @@ async function repositoryGitJourney(
       {
         gateway: { workspaceMode: "operator" },
         kubernetes: {
-          runtimeClassName: "openshell-sandbox",
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {
             subPath: "workspace",

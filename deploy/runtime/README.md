@@ -44,15 +44,12 @@ disconnect, and committed role, scope, and profile revocation.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
-after the Control UI's access is refused. Remove each once upstream does the
-same.
+after the Control UI's access is refused. Remove each once upstream matches.
 `openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
 private Linux PID namespace stopped recover its Gateway records, or, inside it,
 any record whose PID is dead. OC compares its lock fingerprint first.
 Unattributed owners need operator confirmation.
-OpenClaw normalizes newly created owner-only Linux directories that inherit
-setgid and reports invalid plugin settings during startup. The build runs the
-upstream private-store regressions.
+The [restart recovery bridge](../../docs/flows/harness-restart-recovery.md) waits for workspace reconnection and surviving Codex work before continuing.
 The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
 final delivery retains its progress window after a long Codex turn.
 
@@ -60,7 +57,7 @@ final delivery retains its progress window after a long Codex turn.
 or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
-and pairing recovery. Remove this bridge when the selected source provides that contract.
+and pairing recovery. Remove this bridge once the source provides that contract.
 `openclaw-codex-box-owner.patch` binds an external Codex turn to the Compute-owned
 provider-Box generation and its WSS peer, and fences the app-server RPCs a provider
 Box may make: the chat control set is allowed, the native hook relay credential file
@@ -84,12 +81,11 @@ and which hosted PR CI does not run (it runs only under `container-check`
 building that stage (or dispatching `container-check`), not the normal PR checks.
 
 The pin includes OpenClaw #197151: chat-only members can start an unused main conversation.
-The #200358 follow-up is still required; `openclaw-chat-absent-selected-agent.patch`
+Until #200358 lands, `openclaw-chat-absent-selected-agent.patch`
 binds empty-history proof to the selected Agent.
-
-Provenance `patches` maps every patch the Dockerfile applies, in order, to its
-SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
-against the Dockerfile.
+`openclaw-restart-resume-scope.patch` resumes turns only within one revision.
+Provenance `patches` records each patch's SHA-256 in order; tests compare
+`scripts/build-runtime-assets.ts` with the Dockerfile.
 
 ### Bind a standalone Gateway to one Box execution
 
@@ -350,7 +346,7 @@ Then run the runtime startup smoke from the repository root with host Node.js
 [Image and Helm tests](../../docs/testing/docker.md#runtime-image-startup-test-environment):
 
 ```bash
-node scripts/ci/prepare.mjs --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
+node scripts/ci/prepare.ts --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
 set -a
 . /tmp/images-runtime-startup.env
 set +a

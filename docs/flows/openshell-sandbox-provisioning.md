@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: "2026-11-16"
-last_updated_session: "authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d"
+last_updated_session: "01a1e535-91ca-7273-913f-aaacfd69c1c2"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -280,8 +280,8 @@ advance only if `getSandbox` confirms absence. At 1,000 live/unresolved records,
 ([`SANDBOX_ADMISSION_LIMIT_REACHED`](../reference/drivers/openshell-sandbox.md#troubleshooting)) defers preparation until its deadline without spending attempts. Namespace work retries.
 After replay, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures) only explain refusals.
 
-Provisioning reads [Agent sizing and RuntimeClass](../reference/drivers/openshell-sandbox.md#configuration)
-from the current Installation. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
+Provisioning reads [sizing](../reference/drivers/openshell-sandbox.md#configuration);
+Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
 annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
@@ -421,6 +421,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 13:04: Remove RuntimeClass selection. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)
 
 - 2026-11-16 13:30: Trace Gateway reply checks in the operator turn helper. (authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d - 7a8e52f38b378151c8c08ef1b6dd466ab24834bb)
 
