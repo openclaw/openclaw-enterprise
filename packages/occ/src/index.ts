@@ -2777,19 +2777,24 @@ export class OpenClawController {
     return this.read(async (state) => {
       const revisions = new Map<string, Readonly<AgentRevision> | undefined>();
       const deploymentsInProgress = new Set<string>();
-      for (const operation of await state.operations.list()) {
-        // Credential withdrawal work (CREDENTIAL_WITHDRAWAL_TARGET) targets an active revision
-        // without deploying it; PlatformOperation types the literal.
-        if (operation.kind !== "agent_revision" || operation.target === "credentials_withdrawn") {
-          continue;
-        }
-        const work = await state.operations.findWork(
-          `agent_revision:${operation.resourceId}:reconcile`,
-        );
+      // Credential withdrawal targets an active revision without deploying it.
+      const deployments = (await state.operations.list())
+        .filter(
+          (operation) =>
+            operation.kind === "agent_revision" && operation.target !== "credentials_withdrawn",
+        )
+        .map(({ namespaceId, resourceId }) => ({
+          namespaceId,
+          revisionId: resourceId,
+          key: `agent_revision:${resourceId}:reconcile`,
+        }));
+      const workByKey = await state.operations.findWorkByKeys(deployments.map(({ key }) => key));
+      for (const { namespaceId, revisionId, key } of deployments) {
+        const work = workByKey.get(key);
         if (
           work === undefined ||
-          work.namespaceId !== operation.namespaceId ||
-          work.revisionId !== operation.resourceId ||
+          work.namespaceId !== namespaceId ||
+          work.revisionId !== revisionId ||
           !isNonEmptyString(work.agentId)
         ) {
           throw new DependencyUnavailableError("The Agent deployment inventory is incomplete.");

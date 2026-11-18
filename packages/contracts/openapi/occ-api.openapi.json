@@ -2628,7 +2628,7 @@
     },
     "/api/auth/accounts/{userId}": {
       "get": {
-        "description": "Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.",
+        "description": "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.",
         "operationId": "getAuthAccount",
         "parameters": [
           {
@@ -8562,7 +8562,7 @@
     },
     "/api/auth/recovery": {
       "get": {
-        "description": "Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.",
+        "description": "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.",
         "operationId": "getAuthRecovery",
         "responses": {
           "200": {

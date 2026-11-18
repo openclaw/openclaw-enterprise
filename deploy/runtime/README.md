@@ -164,6 +164,10 @@ docker build -f deploy/runtime/Dockerfile \
   .
 ```
 
+Corepack or pnpm certificate errors: use
+[`build-ca`](../../docs/guides/deploy/production-installation-preparation.md#build-and-publish-production-images);
+verify TLS. Image registries use builder trust.
+
 Set `OCC_DOCKER_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart` for the
 Compose quickstart. The Docker Compute Driver uses the same image for embedded
 OpenClaw gateways and dedicated Codex app-server containers.

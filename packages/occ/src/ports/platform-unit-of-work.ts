@@ -242,6 +242,7 @@ export function bindPlatformUnitOfWork(
       "append",
       "list",
       "findWork",
+      "findWorkByKeys",
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",

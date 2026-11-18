@@ -217,7 +217,7 @@ Inspect current human account state
 
 **Operation ID:** `getAuthAccount`
 
-**Permissions:** Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.
+**Permissions:** Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -1067,7 +1067,7 @@ Inspect the recovery account designation
 
 **Operation ID:** `getAuthRecovery`
 
-**Permissions:** Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.
+**Permissions:** Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.
 
 | Action | Resource | Scope |
 | --- | --- | --- |

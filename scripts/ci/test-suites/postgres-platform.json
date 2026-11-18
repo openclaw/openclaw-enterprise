@@ -11,6 +11,7 @@
     "tests/integration/postgres-agent-provisioning.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
+    "tests/integration/postgres-deployment-inventory.test.ts",
     "tests/integration/postgres-oidc-recovery-replacement.test.ts",
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
@@ -124,6 +125,12 @@
       "path": "tests/integration/postgres-plugin-discovery.test.ts",
       "expectedTests": [
         "saved Agent catalog discovery releases the database connection while reading Configuration"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-deployment-inventory.test.ts",
+      "expectedTests": [
+        "deployment inventory bounds PostgreSQL queries across retained revision history"
       ]
     },
     {

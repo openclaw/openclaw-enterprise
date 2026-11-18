@@ -1247,10 +1247,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     throw new Error("The native admin WebSocket lease interval must be a positive integer.");
   }
   let publicOrigin: string | undefined;
+  let publicOriginHost: string | undefined;
   if (options.publicOrigin !== undefined) {
     try {
       const parsed = new URL(options.publicOrigin);
       publicOrigin = parsed.origin;
+      publicOriginHost = parsed.host;
       if (
         parsed.username ||
         parsed.password ||
@@ -3937,11 +3939,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       targetUserId?: string,
     ) {
       const admitted = admissions.get(request);
+      const origin = request.headers.origin;
+      const fetchMode = request.headers["sec-fetch-mode"];
+      // A browser GET from the Console omits Origin. Its Fetch Metadata is scoped
+      // to the requested host, so match the configured Console authority as well.
+      const sameOriginBrowserRead =
+        request.method === "GET" &&
+        origin === undefined &&
+        request.headers.host?.toLowerCase() === publicOriginHost &&
+        request.headers["sec-fetch-site"] === "same-origin" &&
+        (fetchMode === "cors" || fetchMode === "same-origin") &&
+        request.headers["sec-fetch-dest"] === "empty";
       if (
         admitted?.method !== "session" ||
         admitted.session.userId !== context.subject ||
         publicOrigin === undefined ||
-        request.headers.origin !== publicOrigin
+        (origin !== publicOrigin && !sameOriginBrowserRead)
       ) {
         throw failure(
           403,
@@ -4081,7 +4094,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: accountReadOperation.operationId,
           summary: accountReadOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.",
+            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4310,7 +4323,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: recoveryReadOperation.operationId,
           summary: recoveryReadOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.",
+            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [

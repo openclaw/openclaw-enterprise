@@ -119,6 +119,7 @@ import {
   credentialWithdrawalWorkKey,
   type ControllerWork,
   type ControllerWorkAttempt,
+  type ControllerWorkLookup,
 } from "./controller-work.ts";
 import type {
   AgentProvisioningReadRepository,
@@ -1197,6 +1198,7 @@ export type PlatformOperation =
 export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
   findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
+  findWorkByKeys(idempotencyKeys: readonly string[]): Promise<ControllerWorkLookup>;
   findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
   /** Whether this revision completed maintenance requiring fresh repository execution. */
   hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
@@ -1397,6 +1399,37 @@ function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string
   return `${operation.kind}:${operation.resourceId}:${operation.action}${
     operation.kind === "namespace" ? `:${operation.target}` : ""
   }`;
+}
+
+function memoryLifecycleWork(
+  idempotencyKey: string,
+  operation: Readonly<PlatformOperation>,
+  revisionOwner: string | undefined,
+): Readonly<ControllerWork> {
+  const now = new Date(0);
+  return immutableCopy({
+    kind: "lifecycle",
+    idempotencyKey,
+    namespaceId: operation.namespaceId,
+    ...(operation.kind === "agent" ? { agentId: operation.resourceId } : {}),
+    ...(operation.kind === "agent_revision"
+      ? {
+          ...(revisionOwner === undefined ? {} : { agentId: revisionOwner }),
+          revisionId: operation.resourceId,
+        }
+      : {}),
+    actorId: operation.actorId,
+    ...(operation.kind === "namespace" ? { namespaceTarget: operation.target } : {}),
+    ...(operation.kind === "agent" ? { agentTarget: operation.target } : {}),
+    ...(operation.kind === "agent_revision" && operation.target !== undefined
+      ? { agentTarget: operation.target }
+      : {}),
+    state: "queued",
+    availableAt: now,
+    attemptCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 // Records that are plain data (objects, arrays, primitives) and frozen all the way down, so
@@ -4531,7 +4564,6 @@ function repositories(
         if (operation === undefined) {
           return undefined;
         }
-        const now = new Date(0);
         const revisionOwner =
           operation.kind === "agent_revision"
             ? Array.from(snapshot.revisions.values())
@@ -4542,29 +4574,60 @@ function repositories(
                     revision.id === operation.resourceId,
                 )?.agentId
             : undefined;
-        return immutableCopy({
-          kind: "lifecycle",
-          idempotencyKey,
-          namespaceId: operation.namespaceId,
-          ...(operation.kind === "agent" ? { agentId: operation.resourceId } : {}),
-          ...(operation.kind === "agent_revision"
-            ? {
-                ...(revisionOwner === undefined ? {} : { agentId: revisionOwner }),
-                revisionId: operation.resourceId,
-              }
-            : {}),
-          actorId: operation.actorId,
-          ...(operation.kind === "namespace" ? { namespaceTarget: operation.target } : {}),
-          ...(operation.kind === "agent" ? { agentTarget: operation.target } : {}),
-          ...(operation.kind === "agent_revision" && operation.target !== undefined
-            ? { agentTarget: operation.target }
-            : {}),
-          state: "queued",
-          availableAt: now,
-          attemptCount: 0,
-          createdAt: now,
-          updatedAt: now,
-        });
+        return memoryLifecycleWork(idempotencyKey, operation, revisionOwner);
+      },
+      findWorkByKeys: async (idempotencyKeys) => {
+        const pending = new Set(idempotencyKeys);
+        const works = new Map<string, Readonly<ControllerWork>>();
+        for (const key of pending) {
+          const withdrawal = snapshot.repositoryWithdrawals.get(key);
+          if (withdrawal !== undefined) {
+            works.set(key, immutableCopy(withdrawal));
+            pending.delete(key);
+          }
+        }
+        if (pending.size === 0) {
+          return works;
+        }
+        const revisionOwners = new Map<string, Map<string, string>>();
+        for (const history of snapshot.revisions.values()) {
+          for (const revision of history) {
+            let namespaceOwners = revisionOwners.get(revision.namespaceId);
+            if (namespaceOwners === undefined) {
+              namespaceOwners = new Map();
+              revisionOwners.set(revision.namespaceId, namespaceOwners);
+            }
+            if (!namespaceOwners.has(revision.id)) {
+              namespaceOwners.set(revision.id, revision.agentId);
+            }
+          }
+        }
+        for (const operation of snapshot.operations) {
+          let key: string;
+          try {
+            key = operationIdempotencyKey(operation);
+          } catch (error) {
+            return {
+              get(idempotencyKey: string) {
+                if (pending.has(idempotencyKey)) {
+                  throw error;
+                }
+                return works.get(idempotencyKey);
+              },
+            };
+          }
+          if (!pending.delete(key)) {
+            continue;
+          }
+          const revisionOwner = revisionOwners
+            .get(operation.namespaceId)
+            ?.get(operation.resourceId);
+          works.set(key, memoryLifecycleWork(key, operation, revisionOwner));
+          if (pending.size === 0) {
+            break;
+          }
+        }
+        return works;
       },
     },
   };
