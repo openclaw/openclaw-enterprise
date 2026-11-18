@@ -35,10 +35,13 @@ See [authentication](authentication.md) for supported credentials and their scop
 
 ## Error responses
 
-Non-success JSON responses use the following envelope.
+OCC errors use the following envelope. Agent HTTP chat also passes through
+native error responses, including SSE error events after HTTP `200`.
 Each operation lists its supported status codes.
 A NUL character or an unpaired UTF-16 surrogate in any request body string,
 object key or path parameter is refused with `400 INVALID_REQUEST`.
+Agent HTTP chat bodies bypass this persisted-text validation because OCC
+does not store their content; path parameters still use it.
 A JSON body with a value more than 24 levels below its root is refused
 with `400 INVALID_REQUEST` and a `TOO_DEEP` detail before it is parsed,
 so that answer comes before any other body error.
@@ -87,7 +90,7 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 53 operations |
+| [Agents](#agents) | 54 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -4432,6 +4435,7 @@ Example response
 
 | Operation | Summary |
 | --- | --- |
+| [`POST /agents/{agentId}/chat`](#post-agentsagentidchat) | Submit an Agent turn and receive native JSON or SSE |
 | [`GET /namespaces/{namespaceId}/agents`](#get-namespacesnamespaceidagents) | List authorized Agents in one exact Namespace |
 | [`POST /namespaces/{namespaceId}/agents`](#post-namespacesnamespaceidagents) | Create a Namespace-owned Agent |
 | [`POST /namespaces/{namespaceId}/agents/device-authorizations`](#post-namespacesnamespaceidagentsdeviceauthorizations) | Experimental: Start a private device login for Agent configuration |
@@ -4485,6 +4489,105 @@ Example response
 | [`PUT /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#put-namespacesnamespaceidagentsagentidworkspacefilesname) | Create or replace an allowed workspace file for one active Agent |
 | [`POST /namespaces/{namespaceId}/channel-directory/lookup`](#post-namespacesnamespaceidchanneldirectorylookup) | Search a channel directory using an authorized Namespace Secret |
 | [`GET /native-admin/return/{agentKey}`](#get-nativeadminreturnagentkey) | Resolve an authorized Agent from a copied native chat link |
+
+#### `POST /agents/{agentId}/chat`
+
+<span id="post-agentsagentidchat"></span>
+
+Submit an Agent turn and receive native JSON or SSE
+
+**Operation ID:** `chatWithAgent`
+
+**Permissions:** Requires operate permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `messages` | `array<any>` | Yes | — |
+| `model` | `"openclaw"` | No | — |
+| `stream` | `boolean` | No | — |
+| `user` | `string` | No | min length: 1; max length: 128 |
+
+Example request
+```json
+{
+  "messages": [
+    {
+      "content": "Reply with a short greeting.",
+      "role": "user"
+    }
+  ],
+  "stream": false
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Native Chat Completions JSON or SSE, without an OCC envelope. |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `408` | The request body deadline expired. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `502` | The Agent request was interrupted. |
+| `503` | A required dependency is unavailable. |
+| `504` | The runtime request timed out. |
+| `default` | Native application error; status and body pass through unchanged. |
+
+**`200` response body:** `application/json`
+
+Schema: `any`.
+
+Example response
+```json
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Hello.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1792411200,
+  "id": "chatcmpl-example",
+  "model": "openclaw:main",
+  "object": "chat.completion"
+}
+```
+
+**`200` response body:** `text/event-stream`
+
+Schema: `string`.
+
+Native SSE completion
+```json
+"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"Hello.\"},\"index\":0}]}\n\ndata: [DONE]\n\n"
+```
 
 #### `GET /namespaces/{namespaceId}/agents`
 

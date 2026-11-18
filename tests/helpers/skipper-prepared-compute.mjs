@@ -614,7 +614,7 @@ export async function sendSkipperChat({
     enter(
       "node",
       "-e",
-      `(${inGateway.toString()})(process.argv[1], process.argv[2], process.argv[3])`,
+      `(${inGateway.toString()})(process.argv[1], process.argv[2], process.argv[3], ${gatewayChatPhase === "native-git"})`,
       prompt,
       sessionKey,
       invocationId,
@@ -642,7 +642,8 @@ export async function sendSkipperChat({
     }
     throw error;
   });
-  const { status, category, content, gatewayTransportCause } = JSON.parse(text);
+  const { status, category, content, gatewayTransportCause, gatewayFetchElapsedMs } =
+    JSON.parse(text);
   if (status === 200 && category === undefined) {
     return content;
   }
@@ -680,6 +681,7 @@ export async function sendSkipperChat({
       gatewayChatPhase,
       gatewayCategory: category,
       gatewayTransportCause,
+      gatewayFetchElapsedMs,
       httpStatus: status,
       runtimeSignal,
       modelRequestObservation: observation,
@@ -701,7 +703,7 @@ export async function sendSkipperChat({
 }
 
 // Use the installed Agent Gateway, as a user of that Agent would. Never exec Git on the host.
-export async function inGateway(prompt, sessionKey, invocationId) {
+export async function inGateway(prompt, sessionKey, invocationId, measureNativeGit = false) {
   if (invocationId) {
     // Build the frame here so an error echoing the exec arguments cannot supply it.
     process.stderr.write("\nskipper-gateway-entry:" + invocationId + "\n");
@@ -710,6 +712,7 @@ export async function inGateway(prompt, sessionKey, invocationId) {
     process.stdout.write(JSON.stringify({ status: 0, category: "gateway-credential-unavailable" }));
     return;
   }
+  const fetchStartedMs = measureNativeGit ? performance.now() : undefined;
   const signal = AbortSignal.timeout(170_000);
   let res;
   try {
@@ -732,6 +735,8 @@ export async function inGateway(prompt, sessionKey, invocationId) {
       },
     );
   } catch (error) {
+    const elapsedMs =
+      fetchStartedMs === undefined ? undefined : Math.floor(performance.now() - fetchStartedMs);
     const category = signal.aborted && error === signal.reason ? "client-deadline" : "transport";
     let gatewayTransportCause;
     if (category === "transport") {
@@ -746,11 +751,21 @@ export async function inGateway(prompt, sessionKey, invocationId) {
         case "UND_ERR_HEADERS_TIMEOUT":
           gatewayTransportCause = "headers-timeout";
           break;
-        default:
-          gatewayTransportCause = "other";
       }
     }
-    process.stdout.write(JSON.stringify({ status: 0, category, gatewayTransportCause }));
+    // Fetch can reject a refused redirect as an unclassified transport error.
+    const timingEligible = category === "client-deadline" || gatewayTransportCause !== undefined;
+    process.stdout.write(
+      JSON.stringify({
+        status: 0,
+        category,
+        gatewayTransportCause:
+          category === "transport" ? (gatewayTransportCause ?? "other") : undefined,
+        ...(timingEligible && elapsedMs !== undefined && elapsedMs >= 0 && elapsedMs <= 240_000
+          ? { gatewayFetchElapsedMs: elapsedMs }
+          : {}),
+      }),
+    );
     return;
   }
   let raw;

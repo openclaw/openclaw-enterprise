@@ -64,6 +64,11 @@ import {
   nativeAdminValues,
 } from "./console-agents-test-support.ts";
 import {
+  invalidSecretProviderDefaultsRefusal,
+  unreadableGatewayPasswordRefusal,
+  unreadablePluginSecretRefusal,
+} from "../helpers/refusal-credential-diagnostics.ts";
+import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
   READ_UNAVAILABLE,
@@ -72,9 +77,6 @@ import {
   KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
   codexPluginRefusal,
   configIncludeRefusal,
-  invalidSecretProviderDefaultsRefusal,
-  unreadableGatewayPasswordRefusal,
-  unreadablePluginSecretRefusal,
   pluginEntryKeyVariantRefusal,
   pluginPolicyListRefusal,
   providerKeyVariantRefusal,

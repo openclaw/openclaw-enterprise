@@ -1,5 +1,5 @@
 diff --git a/src/cli/gateway-cli/register-recover-lock.ts b/src/cli/gateway-cli/register-recover-lock.ts
-index 41b19d80ada1ba2d09a6874ba61401632c1e4fe9..78f7f31c9f4cf957a30b164b7950287dd9b677c0 100644
+index 41b19d8..78f7f31 100644
 --- a/src/cli/gateway-cli/register-recover-lock.ts
 +++ b/src/cli/gateway-cli/register-recover-lock.ts
 @@ -3,18 +3,33 @@ import { defaultRuntime } from "../../runtime.js";
@@ -42,10 +42,10 @@ index 41b19d80ada1ba2d09a6874ba61401632c1e4fe9..78f7f31c9f4cf957a30b164b7950287d
              defaultRuntime.writeJson(result);
            } else {
 diff --git a/src/infra/gateway-lock-payload.ts b/src/infra/gateway-lock-payload.ts
-index 5ff6dbe40893bad2c969677308fbc3fcf75c858c..2513bfce56d8a91612b398b002634e23dea2a4a3 100644
+index b6533d8..9f6a470 100644
 --- a/src/infra/gateway-lock-payload.ts
 +++ b/src/infra/gateway-lock-payload.ts
-@@ -196,6 +196,8 @@ export const LockPayloadSchema = z.object({
+@@ -197,6 +197,8 @@ export const LockPayloadSchema = z.object({
      .optional(),
    stateDir: z.string().optional(),
    startTime: z.number().optional(),
@@ -55,7 +55,7 @@ index 5ff6dbe40893bad2c969677308fbc3fcf75c858c..2513bfce56d8a91612b398b002634e23
    parentStartTime: z.number().optional(),
    // Null and absent identities cannot establish the owner's process namespace.
 diff --git a/src/infra/gateway-lock-recovery.test.ts b/src/infra/gateway-lock-recovery.test.ts
-index 37a61eeaae5ab87085f84ef21ddae099b5a92959..f6b685a6e21ef2b1317d6b25c79b855b29a383e0 100644
+index 37a61ee..f6b685a 100644
 --- a/src/infra/gateway-lock-recovery.test.ts
 +++ b/src/infra/gateway-lock-recovery.test.ts
 @@ -7,7 +7,11 @@ import {
@@ -293,7 +293,7 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..f6b685a6e21ef2b1317d6b25c79b855b
    });
  });
 diff --git a/src/infra/gateway-lock-recovery.ts b/src/infra/gateway-lock-recovery.ts
-index 8ec9c1f51668cad84524aa06c723244d1aeb0940..9c9bfbf1e6733ec950e7b4cd6eb2d7f33fa01640 100644
+index 8ec9c1f..9c9bfbf 100644
 --- a/src/infra/gateway-lock-recovery.ts
 +++ b/src/infra/gateway-lock-recovery.ts
 @@ -1,12 +1,17 @@
@@ -408,19 +408,19 @@ index 8ec9c1f51668cad84524aa06c723244d1aeb0940..9c9bfbf1e6733ec950e7b4cd6eb2d7f3
  export async function recoverGatewayLock(options: { confirmation: string }) {
    const inspection = await inspectGatewayLockRecovery();
 diff --git a/src/infra/gateway-lock.ts b/src/infra/gateway-lock.ts
-index 688683ff422fd0e77c3470ab27895b427f3497c6..a8831ba0338edf5cc6e9ded30b74bf6ceddfb64d 100644
+index ef30989..d180165 100644
 --- a/src/infra/gateway-lock.ts
 +++ b/src/infra/gateway-lock.ts
-@@ -10,7 +10,7 @@ import {
- } from "@openclaw/normalization-core/number-coercion";
+@@ -11,7 +11,7 @@ import {
  import { resolveConfigPath, resolveGatewayLockDir, resolveStateDir } from "../config/paths.js";
+ import { writeConsoleDiagnosticWarning } from "../logging/json-console-line.js";
  import { createSubsystemLogger } from "../logging/subsystem.js";
 -import { isPidAlive, isPidDefinitelyDead } from "../shared/pid-alive.js";
 +import { getProcessStartTime, isPidAlive, isPidDefinitelyDead } from "../shared/pid-alive.js";
  import {
    createOpenClawDatabaseMaintenanceScope,
    getOpenClawDatabaseMaintenanceScope,
-@@ -454,6 +454,7 @@ export async function acquireGatewayLock(
+@@ -477,6 +477,7 @@ export async function acquireGatewayLock(
      role,
      processNamespace: readGatewayLockProcessNamespace(),
      machineIdentity: process.platform === "darwin" ? readProcessMachineIdentity() : undefined,
@@ -429,7 +429,7 @@ index 688683ff422fd0e77c3470ab27895b427f3497c6..a8831ba0338edf5cc6e9ded30b74bf6c
      ...(typeof opts.port === "number" &&
      Number.isInteger(opts.port) &&
 diff --git a/src/infra/gateway-owner-lease.ts b/src/infra/gateway-owner-lease.ts
-index 5f2939165456bdb57ad2f32aae2cfec8b4c8c61b..9c367619fefb83a95a9d5865ee9fec4376afdf4a 100644
+index 4a5b32d..5cca9f4 100644
 --- a/src/infra/gateway-owner-lease.ts
 +++ b/src/infra/gateway-owner-lease.ts
 @@ -3,7 +3,7 @@ import { hostname } from "node:os";
@@ -441,7 +441,7 @@ index 5f2939165456bdb57ad2f32aae2cfec8b4c8c61b..9c367619fefb83a95a9d5865ee9fec43
  import { isLiveStateRead } from "../state/artifact-preserving-state-reads.js";
  import { readAgentDatabaseLeaseProvenance } from "../state/openclaw-agent-db-lease-provenance.js";
  import type { OpenClawStateSchemaReadAdmission } from "../state/openclaw-state-db-contract.js";
-@@ -313,6 +313,7 @@ export function acquireGatewayOwnerLease(params: {
+@@ -314,6 +314,7 @@ export function acquireGatewayOwnerLease(params: {
    };
    const payload = {
      owner: processOwner,
@@ -450,7 +450,7 @@ index 5f2939165456bdb57ad2f32aae2cfec8b4c8c61b..9c367619fefb83a95a9d5865ee9fec43
      mode: params.mode,
      supervisor: params.supervisor,
 diff --git a/src/infra/state-lease-process-owner.ts b/src/infra/state-lease-process-owner.ts
-index 1aa3d8b8bf10e75bc97bf90b6cf144df86bf0e60..4d0e843f42a753b7f3f5363dc2d4610ba98cbcd7 100644
+index 48b119b..0b6ef52 100644
 --- a/src/infra/state-lease-process-owner.ts
 +++ b/src/infra/state-lease-process-owner.ts
 @@ -154,8 +154,9 @@ export function readStateLeaseProcessOwnerStatus(

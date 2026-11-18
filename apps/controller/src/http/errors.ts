@@ -41,6 +41,7 @@ import {
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
   QualifiedAuthorizationDeniedError,
+  HiddenResourceAuthorizationDeniedError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -980,7 +981,10 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
   }
-  if (error instanceof ScopeViolationError) {
+  if (
+    error instanceof ScopeViolationError ||
+    error instanceof HiddenResourceAuthorizationDeniedError
+  ) {
     return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
   if (error instanceof CredentialWithdrawalNotFoundError) {

@@ -675,6 +675,13 @@ function gatewayRequestFailureMessage(
   error: unknown,
 ): string {
   const grpcStatus = rawStatusCode(error);
+  if (method === "UpdateConfig" && grpcStatus === 10) {
+    const reason =
+      openShellErrorReason(error, grpcStatus) === "RESOURCE_VERSION_CONFLICT"
+        ? "RESOURCE_VERSION_CONFLICT"
+        : "UNKNOWN";
+    return `OpenShell UpdateConfig failed with gRPC status 10 (reason ${reason}).`;
+  }
   // A failure without a gRPC status (a local client error) keeps only its class: its message
   // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
   const detail =

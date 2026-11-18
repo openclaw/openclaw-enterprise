@@ -233,11 +233,8 @@ function utf8(bytes: Uint8Array | undefined): string | undefined {
   return bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
 }
 
-/** OpenShell's google.rpc.ErrorInfo reason from a FAILED_PRECONDITION status details trailer. */
-export function openShellErrorReason(
-  error: unknown,
-  failedPrecondition: number,
-): string | undefined {
+/** OpenShell's google.rpc.ErrorInfo reason from a matching status details trailer. */
+export function openShellErrorReason(error: unknown, expectedStatus: number): string | undefined {
   const metadata = asRecord(error)?.metadata as { get?: unknown } | undefined;
   const values =
     typeof metadata?.get === "function"
@@ -250,7 +247,7 @@ export function openShellErrorReason(
   // google.rpc.Status: 1 = code, 3 = repeated Any details; Any: 1 = type_url,
   // 2 = value; ErrorInfo: 1 = reason, 2 = domain. Scalars are last-wins.
   const status = protobufFields(details);
-  if (status === undefined || (status.varints.get(1)?.at(-1) ?? 0) !== failedPrecondition) {
+  if (status === undefined || (status.varints.get(1)?.at(-1) ?? 0) !== expectedStatus) {
     return undefined;
   }
   for (const any of status.bytes.get(3) ?? []) {

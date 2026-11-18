@@ -171,7 +171,6 @@ import {
   compareResourceQuantities,
   isNonNegativeResourceQuantity,
 } from "../compute/kubernetes/resource-quantities.ts";
-import { isKubernetesResourceName } from "../compute/kubernetes/resource-name.ts";
 import { nodeProgramArguments, prependNodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
@@ -219,7 +218,6 @@ interface OpenShellAgentResourceOverride {
   readonly agentId: string;
   readonly requests: AgentResourceQuantities;
   readonly limits: AgentResourceQuantities;
-  readonly runtimeClassName?: string;
 }
 
 export interface OpenShellSandboxDriverOptions {
@@ -241,7 +239,6 @@ export interface OpenShellSandboxDriverOptions {
     readonly networkPolicyResources?: readonly KubernetesNamespacedResource[];
   };
   readonly kubernetes: {
-    readonly runtimeClassName: string;
     readonly serviceAccount: { readonly mode: "gatewayConfigured" };
     readonly sandboxDataMount: {
       readonly claimName?: string;
@@ -1771,9 +1768,6 @@ async function prepareNativeWorkspace(
         "openshell-sandbox",
       "OpenShell Sandbox ServiceAccount",
     ),
-    runtimeClassName:
-      agentResourceOverride(options, context.revision)?.runtimeClassName ??
-      options.kubernetes.runtimeClassName,
     securityContext: {
       runAsUser: uid,
       runAsGroup: gid,
@@ -1864,7 +1858,6 @@ async function prepareNativeWorkspace(
         asRecord(expectedContainer?.readinessProbe)?.exec,
       ) ||
       !isDeepStrictEqual(observedContainer?.securityContext, expectedContainer?.securityContext) ||
-      observed?.runtimeClassName !== expected.runtimeClassName ||
       !isDeepStrictEqual(observedContainer?.volumeMounts, expectedContainer?.volumeMounts) ||
       observed?.serviceAccountName !== expected.serviceAccountName ||
       observed?.automountServiceAccountToken !== false ||
@@ -2124,16 +2117,6 @@ function validatePolicySettings(options: OpenShellSandboxDriverOptions): void {
       });
     }
     scopes.add(scope);
-    if (
-      override.runtimeClassName !== undefined &&
-      !isKubernetesResourceName(override.runtimeClassName)
-    ) {
-      details.push({
-        path: `${path}/runtimeClassName`,
-        code: "INVALID_VALUE",
-        message: "Use a Kubernetes RuntimeClass resource name.",
-      });
-    }
     if (validDefaults) {
       validateAgentResources(agentResourceMaps(options, override), path, details);
     }
@@ -2351,10 +2334,8 @@ function sandboxSpec(
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
   const volumeMounts = workspace.mounts;
   const override = agentResourceOverride(options, revision);
-  const runtimeClassName = override?.runtimeClassName ?? options.kubernetes.runtimeClassName;
   const resources = agentResourceMaps(options, override);
   const driverConfig = {
-    pod: { runtime_class_name: runtimeClassName },
     containers: {
       agent: {
         resources: {
@@ -2379,7 +2360,6 @@ function sandboxSpec(
     },
     template: {
       image: requirements.image,
-      runtime_class_name: runtimeClassName,
       labels: { ...requirements.labels },
       driver_config: { fields: toProtobufStruct({ kubernetes: driverConfig }) },
       ...(options.kubernetes.userNamespaces === undefined
@@ -2526,7 +2506,6 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     refuseIngressAlias(resource, `/gateway/operatorWorkspaceResources/${index}`);
     refuseUnsentFields(resource, "operatorWorkspaceResources", index);
   });
-  nonempty(options.kubernetes.runtimeClassName, "OpenShell RuntimeClass name");
   if (options.kubernetes.serviceAccount.mode !== "gatewayConfigured") {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell serviceAccount mode must be gatewayConfigured.",
@@ -2637,7 +2616,6 @@ export const configurationSchema = Object.freeze({
       type: "object",
       additionalProperties: false,
       properties: {
-        runtimeClassName: { type: "string" },
         serviceAccount: {
           type: "object",
           additionalProperties: false,
@@ -2673,7 +2651,6 @@ export const configurationSchema = Object.freeze({
               agentId: AgentId,
               requests: agentResourceQuantitySchema,
               limits: agentResourceQuantitySchema,
-              runtimeClassName: { type: "string" },
             },
           },
         },

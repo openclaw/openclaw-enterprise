@@ -35,6 +35,10 @@ import {
   inspectWorkerProbe,
   stageSigninChart,
 } from "../helpers/production-worker-chart.ts";
+import {
+  productionChartPath,
+  productionValuesTemplateArgs,
+} from "../helpers/production-values-template.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
@@ -673,20 +677,11 @@ test("production native examples satisfy the current Helm, Installation, and PVC
 registerProductionGatewayHostnameCase(sandboxValues);
 
 function renderProductionValuesExample(extraArgs, options = {}) {
-  return execute(
-    helm,
-    [
-      "template",
-      "oce",
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      "openclaw-system",
-      "--values",
-      "deploy/examples/production/values.yaml",
-      ...extraArgs,
-    ],
-    { cwd: repository, env: goToolEnvironment(), ...options },
-  );
+  return execute(helm, productionValuesTemplateArgs(productionChartPath, extraArgs), {
+    cwd: repository,
+    env: goToolEnvironment(),
+    ...options,
+  });
 }
 
 test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
@@ -901,14 +896,10 @@ test(
         await readFile(new URL("../../package.json", import.meta.url), "utf8"),
       );
       const archive = join(directory, `openclaw-enterprise-${release.version}.tgz`);
-      await execute(
-        helm,
-        ["package", "deploy/helm/openclaw-enterprise", "--destination", directory],
-        {
-          cwd: repository,
-          env: goToolEnvironment(),
-        },
-      );
+      await execute(helm, ["package", productionChartPath, "--destination", directory], {
+        cwd: repository,
+        env: goToolEnvironment(),
+      });
       const { stdout: metadata } = await execute(helm, ["show", "chart", archive], {
         cwd: repository,
         env: goToolEnvironment(),
@@ -919,18 +910,12 @@ test(
       assert.equal(chart.appVersion, release.version);
 
       // A registry consumer receives the archive, so it must render the same resources as source.
-      const args = [
-        "--namespace",
-        "openclaw-system",
-        "--values",
-        "deploy/examples/production/values.yaml",
-      ];
-      const source = await execute(
-        helm,
-        ["template", "oce", "deploy/helm/openclaw-enterprise", ...args],
-        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-      );
-      const packaged = await execute(helm, ["template", "oce", archive, ...args], {
+      const source = await execute(helm, productionValuesTemplateArgs(productionChartPath), {
+        cwd: repository,
+        env: goToolEnvironment(),
+        maxBuffer: 2_000_000,
+      });
+      const packaged = await execute(helm, productionValuesTemplateArgs(archive), {
         cwd: repository,
         env: goToolEnvironment(),
         maxBuffer: 2_000_000,
@@ -2704,13 +2689,16 @@ test(
       { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
       { "gatewayRouting.remoteNodeCidrs[0]": "12345::/64" },
       { "gatewayRouting.remoteNodeCidrs[0]": "::ffff:999.1.2.3/32" },
+      // A /0 prefix would remove the source restriction on the private listener.
+      { "gatewayRouting.remoteNodeCidrs[0]": "0.0.0.0/0" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "::/0" },
     ]) {
       await assert.rejects(
         render({ ...gatewayRoutingValues, ...override }),
         /gatewayRouting\.remoteNodeCidrs/,
       );
     }
-    for (const cidr of ["10.0.0.1/32", "0.0.0.0/0", "::/64", "::ffff:10.0.0.0/120"]) {
+    for (const cidr of ["10.0.0.1/32", "10.0.0.0/8", "::/64", "::ffff:10.0.0.0/120"]) {
       await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
     }
   },

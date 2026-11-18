@@ -58,7 +58,7 @@ test(
         const providerHash = createHash("sha256")
           .update(JSON.stringify(["openai-responses", inference.baseUrl, false]))
           .digest("hex");
-        const admission = `model-provider:v1:${providerHash}:protected-codex-no-connection-retry:v1`;
+        const admission = `http-chat:v1:model-provider:v1:${providerHash}:protected-codex-no-connection-retry:v1`;
         assert.equal(original.admitRevision(saved), admission);
         assert.equal(compute.admitRevision(saved), admission);
       }

@@ -146,7 +146,10 @@ The controller records storage exceptions from the composed Better Auth adapter
 for the active key verification. A failed key read, usage update, or expiry
 deletion returns `503 DEPENDENCY_UNAVAILABLE`, even if Better Auth reports an
 invalid key. Each concurrent verification retains its own failure state. Better
-Auth still owns key hashing, validity, expiry, and revocation decisions.
+Auth still owns key hashing, validity, expiry, and revocation decisions. Its log
+calls go to the structured log: a refused key is one INFO
+`authentication.request-refused` line with its `reasonCode`, never the key; other
+library errors log `authentication.library-error` at ERROR.
 
 `resolveIdentity` looks up the verified service-principal ID through the selected
 IAM Driver. The controller returns `403` for a missing identity, Agent ownership,

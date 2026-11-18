@@ -1,0 +1,289 @@
+diff --git a/src/config/sessions/session-restart-resume-scope.ts b/src/config/sessions/session-restart-resume-scope.ts
+new file mode 100644
+index 00000000000..6dd928b937d
+--- /dev/null
++++ b/src/config/sessions/session-restart-resume-scope.ts
+@@ -0,0 +1,46 @@
++import type { InternalSessionEntry } from "./types.js";
++
++type RestartResumeMarker = NonNullable<InternalSessionEntry["resumeAfterRestart"]>;
++
++/**
++ * A supervisor that starts a new deployment generation (for example after an
++ * explicit stop) sets a new scope. Shutdown stamps restart markers with the
++ * current scope; startup resumes only markers from the same scope.
++ */
++export const GATEWAY_RESTART_RESUME_SCOPE_ENV = "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE";
++
++export function resolveRestartResumeScope(
++  env: NodeJS.ProcessEnv = process.env,
++): string | undefined {
++  return env[GATEWAY_RESTART_RESUME_SCOPE_ENV]?.trim() || undefined;
++}
++
++/** Shutdown-written markers carry the scope of the Gateway that wrote them. */
++export function createRestartResumeMarker(
++  marker: Omit<RestartResumeMarker, "scope">,
++  scope = resolveRestartResumeScope(),
++): RestartResumeMarker {
++  return scope ? { ...marker, scope } : { ...marker };
++}
++
++/** Work interrupted under another scope belongs to an ended generation and never resumes. */
++export function isRestartResumeMarkerInScope(
++  marker: RestartResumeMarker,
++  scope = resolveRestartResumeScope(),
++): boolean {
++  return marker.scope === scope;
++}
++
++/**
++ * The pending-input target of a session whose marker was written under another scope, so
++ * its queued inputs can be settled once the marker is cleared; otherwise undefined.
++ */
++export function outOfScopeRestartTarget<T extends object>(
++  entry: Pick<InternalSessionEntry, "resumeAfterRestart" | "sessionId">,
++  target: T,
++  scope = resolveRestartResumeScope(),
++): (T & { sessionId: string }) | undefined {
++  return entry.resumeAfterRestart && !isRestartResumeMarkerInScope(entry.resumeAfterRestart, scope)
++    ? { ...target, sessionId: entry.sessionId }
++    : undefined;
++}
+diff --git a/src/config/sessions/session-run-lifecycle-projection.ts b/src/config/sessions/session-run-lifecycle-projection.ts
+index 5f38f592882..08f76a781bc 100644
+--- a/src/config/sessions/session-run-lifecycle-projection.ts
++++ b/src/config/sessions/session-run-lifecycle-projection.ts
+@@ -13,6 +13,7 @@ import {
+ } from "../../routing/session-key.js";
+ import type { ProviderReviewTerminalFact } from "../../sessions/provider-review-terminal.js";
+ import { buildUpdatedSessionGoalStatus } from "./goals-transitions.js";
++import { createRestartResumeMarker } from "./session-restart-resume-scope.js";
+ import type { InternalSessionEntry as SessionEntry } from "./types.js";
+ 
+ export type SessionLifecycleProviderReview = Pick<
+@@ -444,7 +445,8 @@ export function projectSessionLifecyclePatch(
+     !restartResumeSkipReason(params.canonicalKey, entry)
+   ) {
+     // A timed-out shutdown marker must not turn cancellation into a lost continuation.
+-    patch.resumeAfterRestart = entry.resumeAfterRestart ?? { queuedInputIds: [] };
++    patch.resumeAfterRestart =
++      entry.resumeAfterRestart ?? createRestartResumeMarker({ queuedInputIds: [] });
+   }
+   const stopped =
+     patch.status === "killed" &&
+diff --git a/src/config/sessions/types.ts b/src/config/sessions/types.ts
+index 370a968f401..ec9c43fa037 100644
+--- a/src/config/sessions/types.ts
++++ b/src/config/sessions/types.ts
+@@ -728,6 +728,8 @@ export type InternalSessionEntryCore = SessionEntryCore & {
+   /** Written only by committed graceful shutdown, consumed by the next startup. */
+   resumeAfterRestart?: {
+     queuedInputIds: string[];
++    /** Restart resume scope of the Gateway that wrote the marker; see session-restart-resume-scope. */
++    scope?: string;
+     /** Original per-input limits, restored only after current source revalidation. */
+     queuedInputSources?: Record<
+       string,
+diff --git a/src/gateway/session-restart-resume.test.ts b/src/gateway/session-restart-resume.test.ts
+index 54a2291f9ff..78eba1521b3 100644
+--- a/src/gateway/session-restart-resume.test.ts
++++ b/src/gateway/session-restart-resume.test.ts
+@@ -21,6 +21,7 @@ import {
+   readSessionPendingInput,
+ } from "../config/sessions/session-pending-input-history.js";
+ import * as pendingInputWithdrawal from "../config/sessions/session-pending-input-withdrawal.js";
++import { GATEWAY_RESTART_RESUME_SCOPE_ENV } from "../config/sessions/session-restart-resume-scope.js";
+ import type { InternalSessionEntry, SessionEntry } from "../config/sessions/types.js";
+ import type { OpenClawConfig } from "../config/types.openclaw.js";
+ import { claimAgentRunContext, releaseAgentRunContext } from "../infra/agent-run-registry.js";
+@@ -861,3 +862,117 @@ it("resumes recent interrupted legacy cycles once and settles crash inputs", ()
+       await live!.settled?.();
+     }
+   }));
++
++// A supervisor that ends a deployment generation (for example an explicit operator
++// stop followed by a new deployment) starts the next Gateway under a new scope. Work
++// that the old generation interrupted must not run again, and the message queued
++// behind it must not run without its sender; a restart within the same scope still
++// resumes.
++it.for([
++  { live: "run", written: "generation-a", startup: "generation-a", resumes: true },
++  { live: "turn", written: "generation-a", startup: "generation-a", resumes: true },
++  { live: "run", written: "generation-a", startup: "generation-b", resumes: false },
++  { live: "turn", written: "generation-a", startup: "generation-b", resumes: false },
++  { live: "run", written: undefined, startup: "generation-b", resumes: false },
++  { live: "run", written: "generation-a", startup: undefined, resumes: false },
++  // Without a supervisor scope the behavior is unchanged.
++  { live: "run", written: undefined, startup: undefined, resumes: true },
++  { live: "turn", written: undefined, startup: undefined, resumes: true },
++] as const)(
++  "resumes a $live interrupted under scope $written only at startup scope $startup",
++  ({ live, written, startup, resumes }) =>
++    withOpenClawTestState({ scenario: "minimal" }, async () => {
++      const cfg = { agents: { entries: { main: {} } } };
++      setRuntimeConfigSnapshot(cfg);
++      const name = `scoped-${live}-${written ?? "none"}-${startup ?? "none"}`;
++      const target = { agentId: "main", sessionKey: `agent:main:${name}`, sessionId: name };
++      replaceSessionEntrySync(target, { sessionId: target.sessionId, updatedAt: Date.now() });
++      const previousScope = process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV];
++      const setScope = (scope: string | undefined) => {
++        if (scope === undefined) {
++          delete process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV];
++        } else {
++          process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV] = scope;
++        }
++      };
++      // The live work at shutdown: a claimed agent run, or a session turn.
++      const runId = `${name}-run`;
++      const claim =
++        live === "run"
++          ? claimAgentRunContext(runId, target, { trackOwner: true, ownsContext: true })
++          : undefined;
++      const turn =
++        live === "turn"
++          ? await withSessionTurn(target, async (active) => {
++              assert(active, "Expected a real session turn");
++              return { operation: active, release: active.retainExecution() };
++            })
++          : undefined;
++      const queued = await stageSessionPendingInput(target, {
++        runId: `${name}-queued`,
++        message: {
++          role: "user",
++          content: "Sent while the turn was running",
++          timestamp: Date.now(),
++          idempotencyKey: `${name}-queued:user`,
++        },
++        assertCurrent() {},
++      });
++      assert(queued, "Queued fixture input was not admitted");
++      // Resume admission starts with the session principal's authority. Stop there:
++      // reaching it is the resume decision under test.
++      const admission = vi
++        .spyOn(systemTurnAuthority, "prepareSessionSystemTurnAuthority")
++        .mockRejectedValue(new Error("Stop after observing restart admission"));
++      const resume = vi.spyOn(sessionEvents, "enqueueSessionEventForHost");
++      const dispatch = vi
++        .spyOn(gatewayDispatch, "dispatchGatewayRequestInProcess")
++        .mockResolvedValue({});
++      try {
++        setScope(written);
++        await persistRunningSessionsForRestart({ cfg });
++        expect(loadExactSessionEntry(target)?.entry.resumeAfterRestart).toEqual({
++          queuedInputIds: [queued.inputId],
++          queuedInputSources: expect.any(Object),
++          ...(written ? { scope: written } : {}),
++        });
++        // The process ends: its run, turn and queued sender are gone.
++        if (claim !== undefined) {
++          releaseAgentRunContext(runId, claim);
++        }
++        turn?.release();
++        await turn?.operation.ownerSettlement;
++        queued.finish("interrupted");
++        await queued.settled?.();
++        openOpenClawAgentDatabase({ agentId: "main" })
++          .db.prepare(
++            "UPDATE session_pending_inputs SET state = 'queued', lifecycle_generation = 'previous-process' WHERE input_id = ?",
++          )
++          .run(queued.inputId);
++
++        setScope(startup);
++        await resumeMarkedSessions({
++          context: createContext([], () => cfg),
++          signal: new AbortController().signal,
++          log: { warn: vi.fn() },
++        });
++        expect(admission.mock.calls.length > 0).toBe(resumes);
++        expect(resume).not.toHaveBeenCalled();
++        expect(loadExactSessionEntry(target)?.entry.resumeAfterRestart).toBeUndefined();
++        if (!resumes) {
++          expect(dispatch).not.toHaveBeenCalled();
++          expect(await readSessionPendingInput(target, queued.inputId)).toMatchObject({
++            state: "cancelled",
++            message: { content: "Sent while the turn was running" },
++          });
++        }
++      } finally {
++        setScope(previousScope);
++        admission.mockRestore();
++        resume.mockRestore();
++        dispatch.mockRestore();
++        queued.finish("interrupted");
++        await queued.settled?.();
++      }
++    }),
++);
+diff --git a/src/gateway/session-restart-resume.ts b/src/gateway/session-restart-resume.ts
+index f22c0567163..a5642b5f23a 100644
+--- a/src/gateway/session-restart-resume.ts
++++ b/src/gateway/session-restart-resume.ts
+@@ -19,6 +19,10 @@ import {
+ } from "../config/sessions/session-accessor.js";
+ import { captureSessionQueuedInputsForRestart } from "../config/sessions/session-pending-input-history.js";
+ import { interruptOrphanedSessionPendingInputs } from "../config/sessions/session-pending-input-withdrawal.js";
++import {
++  createRestartResumeMarker,
++  outOfScopeRestartTarget,
++} from "../config/sessions/session-restart-resume-scope.js";
+ import {
+   derivePersistedSessionLifecyclePatch,
+   restartResumeSkipReason,
+@@ -246,10 +250,10 @@ async function persistRunningSessions(
+               sessionKey,
+               entry: {
+                 ...entry,
+-                resumeAfterRestart: {
++                resumeAfterRestart: createRestartResumeMarker({
+                   queuedInputIds: queued.queuedInputIds,
+                   queuedInputSources: queued.queuedInputSources,
+-                },
++                }),
+               },
+             });
+             preserve.push({ session, preserve: queued.preserve });
+@@ -471,6 +475,7 @@ async function resumeRestartStore(
+       const agentId = parseAgentSessionKey(sessionKey)?.agentId ?? target.agentId;
+       let authority: Awaited<ReturnType<typeof prepareSessionSystemTurnAuthority>> | undefined;
+       let interrupted = false;
++      let stale: Parameters<typeof interruptOrphanedSessionPendingInputs>[0] | undefined;
+       try {
+         await waitForAgentInputAdmission(agentId, {
+           sessionKey,
+@@ -508,7 +513,11 @@ async function resumeRestartStore(
+               !hasAgentRunContextExecutionOwner(selected.lifecycleRunId) &&
+               (!selected.activeWriterRunId ||
+                 !hasAgentRunContextExecutionOwner(selected.activeWriterRunId));
+-            const marker: InternalSessionEntry["resumeAfterRestart"] =
++            // A marker from another scope belongs to an ended deployment generation, such
++            // as an explicit stop. Clear it without resuming; its queued inputs are settled
++            // below, like a crash's.
++            stale = outOfScopeRestartTarget(selected, { ...target, sessionKey });
++            const recovered: InternalSessionEntry["resumeAfterRestart"] =
+               selected.resumeAfterRestart ??
+               (parked ||
+               (orphanedRun &&
+@@ -525,7 +534,8 @@ async function resumeRestartStore(
+                 selected.updatedAt >= performance.timeOrigin - LEGACY_RESTART_RESUME_WINDOW_MS)
+                 ? { queuedInputIds: [] }
+                 : undefined);
+-            if (!marker && !selected.mainRestartRecovery && !orphanedRun) {
++            const marker = stale ? undefined : recovered;
++            if (!marker && !stale && !selected.mainRestartRecovery && !orphanedRun) {
+               return { result: undefined };
+             }
+             const entry = {
+@@ -562,6 +572,12 @@ async function resumeRestartStore(
+           },
+         });
+         if (!resumed) {
++          if (stale) {
++            // The cleared marker no longer keeps custody of the input queued behind it.
++            await interruptOrphanedSessionPendingInputs(stale, () => signal.throwIfAborted());
++            summary.record(agentId, sessionKey, "scope-changed");
++            continue;
++          }
+           summary.record(
+             agentId,
+             sessionKey,

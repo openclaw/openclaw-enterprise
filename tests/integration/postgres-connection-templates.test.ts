@@ -8,7 +8,7 @@ import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { signedInHeaders } from "../helpers/production-sign-in.mjs";
 import {
   createBackendController,
