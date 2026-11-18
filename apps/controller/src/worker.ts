@@ -1777,12 +1777,12 @@ export class ControllerWorker {
     let nextCleanupAt = 0;
     while (!this.stopping) {
       if (Date.now() >= nextCleanupAt) {
-        // Abandoned attempts still need cleanup if browser connections were disabled.
+        // Attempts still need cleanup when connection renewal is disabled.
         nextCleanupAt = Date.now() + cleanupIntervalMs;
         try {
-          await controller.expireConnectionSessions(32);
+          await controller.expireAuthenticationStates(32);
         } catch {
-          this.emit({ event: "worker.error", code: "CONNECTION_SESSION_CLEANUP_FAILED" });
+          this.emit({ event: "worker.error", code: "AUTHENTICATION_STATE_CLEANUP_FAILED" });
         }
       }
       let waitMs = cleanupIntervalMs;

@@ -115,6 +115,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 80 && completedCount > 80) {
     return "preRestartContinuation";
   }
+  if (count === 81 && completedCount > 81) {
+    return "preAuthenticationStates";
+  }
   if (count === completedCount) {
     return "completed";
   }

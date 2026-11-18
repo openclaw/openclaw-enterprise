@@ -9,6 +9,7 @@
     "tests/integration/postgres-password-sign-in-limit.test.ts",
     "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.ts",
+    "tests/integration/postgres-device-authorization.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
     "tests/integration/postgres-deployment-inventory.test.ts",
@@ -113,6 +114,12 @@
         "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
         "API and worker startup refuse a stored Installation name outside the Name rule",
         "development bootstrap preserves credentials when COMMIT acknowledgement is lost"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-device-authorization.test.ts",
+      "expectedTests": [
+        "shared authentication state isolates browser consent from device login across API replicas"
       ]
     },
     {

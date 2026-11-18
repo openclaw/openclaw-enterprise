@@ -17303,7 +17303,7 @@
     },
     "/namespaces/{namespaceId}/agents/device-authorizations": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Secret resources in the requested Namespace.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startAgentDeviceAuthorization",
         "parameters": [
           {
@@ -17352,8 +17352,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -17378,19 +17377,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -17547,13 +17545,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}": {
       "delete": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Only the initiating actor can poll or cancel the login.",
         "operationId": "cancelAgentDeviceAuthorization",
         "parameters": [
           {
@@ -17575,11 +17573,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -17667,14 +17665,13 @@
         "summary": "Experimental: Discard a local device login without upstream revocation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.",
         "operationId": "pollAgentDeviceAuthorization",
         "parameters": [
           {
@@ -17696,11 +17693,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -17729,8 +17726,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -17755,19 +17751,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -17924,7 +17919,7 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "operate", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
@@ -26521,7 +26516,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for Secret resources in the requested Namespace.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -26585,8 +26580,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -26611,19 +26605,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -26781,13 +26774,13 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}": {
       "delete": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Only the initiating actor can poll or cancel the login.",
         "operationId": "cancelSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -26824,11 +26817,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -26917,14 +26910,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
-          { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.",
         "operationId": "pollSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -26961,11 +26953,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -26994,8 +26986,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -27020,19 +27011,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -27190,7 +27180,7 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "operate", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
