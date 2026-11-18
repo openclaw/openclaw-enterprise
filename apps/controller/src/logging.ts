@@ -257,14 +257,14 @@ function safeIdentifier(format: RegExp, value: unknown): string | undefined {
 }
 
 // On authentication events, a route pattern such as `/agents/:agentId/chat`: no query, fragment
-// or percent-encoding, so it never carries a request's own path values or parameters.
+// or percent-encoding. The shape alone cannot tell a pattern from a raw path, so a value with a
+// token shape is dropped too, and anything else that is not a route pattern is dropped.
 const ROUTE_PATTERN = /^\/[A-Za-z0-9_.~:*/{}-]{0,255}$/;
 
 function safeRoute(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  return ROUTE_PATTERN.test(value) ? value : safeString(value);
+  return typeof value === "string" && ROUTE_PATTERN.test(value) && !resemblesToken(value)
+    ? value
+    : undefined;
 }
 
 function safeCode(value: unknown): string | undefined {
