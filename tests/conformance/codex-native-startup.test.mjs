@@ -8,6 +8,7 @@ import {
   codexLaunchEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { startSupervisor } from "./workspace-node-supervisor-fixture.ts";
@@ -937,12 +938,17 @@ test("Compute preserves admitted Codex commands and forwards proxy settings on n
 
 test("a rejected Codex proxy credential stays out of diagnostics and the held failure", (t) => {
   const sentinel = ["invented", "proxy", "password"].join("-");
-  const url = new URL("http://127.0.0.1:3128");
-  url.username = "fixture";
-  url.password = sentinel;
-  const message = "unexpected status 407 Proxy Authentication Required: " + url.href;
+  const url = syntheticCredentialUrl({
+    protocol: "http",
+    username: "fixture",
+    password: sentinel,
+    host: "127.0.0.1",
+    port: 3128,
+    pathname: "/",
+  });
+  const message = "unexpected status 407 Proxy Authentication Required: " + url;
   const runtime = createCodexStartup(t, {
-    environment: { HTTPS_PROXY: url.href },
+    environment: { HTTPS_PROXY: url },
     native: [
       login(),
       probe([{ type: "turn.started" }, failedTurn(message)], { status: 1, stderr: message }),
@@ -953,7 +959,7 @@ test("a rejected Codex proxy credential stays out of diagnostics and the held fa
   );
   runtime.assertNativeScriptConsumed();
   assert.equal(runtime.appServerStarts, 0);
-  assert.equal(runtime.probeSpawns[0].env.HTTPS_PROXY, url.href);
+  assert.equal(runtime.probeSpawns[0].env.HTTPS_PROXY, url);
   const failure = runtime.status().runtimeFailure;
   assert.equal(failure?.code, "MODEL_PROBE_FAILED");
   assert.deepEqual(failure.cause, { kind: "PROBE_STATUS", detail: "turn-failed" });
