@@ -582,12 +582,21 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
 
   // Revocation between polls is honoured with the same cursor.
   viewer.revoke("administer", "agent");
+  views(4, 4);
   const revoked = await fixture.request("GET", target.logsPath(`source=gateway&cursor=${cursor}`), {
     session: viewer.session,
   });
   assert.equal(revoked.status, 403);
   assert.equal(driverReads(fixture).length, readsBefore);
-  views(5, 4);
+  const denial = views(5, 4).events.at(-1);
+  assert.equal(denial?.kind, "authorization_denial");
+  assert.equal(denial.outcome, "denied");
+  assert.equal(denial.actor?.principalId, viewer.principal.id);
+  assert.deepEqual(denial.authorization, {
+    principalId: viewer.principal.id,
+    action: "read_logs",
+    resource: { kind: "agent", id: target.agent.id, namespaceId: target.namespace.id },
+  });
 });
 
 test("minLevel filters log lines on the server and a cursor still resumes after hidden lines", async () => {
@@ -681,6 +690,8 @@ test("minLevel filters log lines on the server and a cursor still resumes after 
   const invalid = await fixture.request("GET", target.logsPath("source=gateway&minLevel=unknown"));
   assert.equal(invalid.status, 400, invalid.text);
   assert.equal(driverReads(fixture).length, reads);
+  views(2, 2);
+  assertLogAuditCounts(fixture.auditSink, DOWNLOAD_ACTION, { total: 1, successfulAccesses: 1 });
 });
 
 test("an expired runtime log cursor starts a new audited view with a labelled gap", async (t) => {
@@ -1037,4 +1048,6 @@ test("runtime log downloads use the log tier and are audited once per download",
   fixture.computeDriver.state.readError = new RuntimeLogsForbiddenByClusterError();
   const rbac = await fixture.request("GET", path, { session: administrator.session });
   apiError(rbac, 503, "RUNTIME_LOGS_CLUSTER_RBAC");
+  downloads(deniedDownloads + 3, 3);
+  views(1, 1);
 });

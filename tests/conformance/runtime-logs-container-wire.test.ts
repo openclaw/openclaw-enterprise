@@ -107,9 +107,7 @@ async function walkPages(route: LogRoute, options: WalkOptions) {
     if (options.complete(response, progress)) {
       return {
         ...progress,
-        cursor: response.data.cursor,
         response,
-        completed: true as const,
         get rows() {
           return rowIds({ records: progress.lines });
         },
@@ -316,7 +314,6 @@ test("container byte-cut checkpoints retain untimed progress or advance mixed wi
     assert.ok(pages > 1);
     assert.deepEqual(seen, range(count));
     if (mixed) {
-      assert.ok(drained);
       assert.ok(
         gapCount(drained, "window_exceeded") > 0,
         "timed advancement explicitly resets the uncertain window",
