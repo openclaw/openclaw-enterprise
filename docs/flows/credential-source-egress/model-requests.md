@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-18
-last_updated_session: authoring-run/b4aeee44-0b0d-4ac6-868d-fd747352d449
+last_updated_session: authoring-run/ca7dd0a2-dd7d-4dda-937b-b03993a2544b
 ---
 
 # Authorize model credentials per request
@@ -201,7 +201,10 @@ can request Contents and Metadata permissions. The API profile requests Pull
 Requests and Metadata permissions. The Worker verifies both profiles and their
 shared Sandbox, supervisor, and policy before it releases the held launcher.
 The provider rules select the signed token grants without attaching the Git
-request middleware. The model request policy still applies to inference.
+request middleware. The workload Git profile permits discovery, fetch, and
+authorized push paths. It omits the synthetic launcher probe because the Git
+middleware is absent. Legacy profiles retain that probe for their mandatory
+middleware refusal check. The model request policy still applies to inference.
 [Provider observation](../../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
 · [Token scopes](../../../apps/controller/src/drivers/repo/github/access/prepared-git-redemption.ts)
 
@@ -262,6 +265,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-18 09:23: Restrict the launcher probe to legacy Git profiles with mandatory middleware. (authoring-run/ca7dd0a2-dd7d-4dda-937b-b03993a2544b - 04ac009f65577cbf1f137877518c7ead540e8234)
 
 - 2026-11-18 08:58: Trace the Gateway-signed selected repository credential pull and the issuer withdrawal recheck. (authoring-run/b4aeee44-0b0d-4ac6-868d-fd747352d449 - 8c884587e3f2270b6ed8d41f575e9098fb26020d)
 

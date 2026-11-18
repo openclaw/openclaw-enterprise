@@ -394,14 +394,17 @@ export class OpenShellPreparedGitProvider {
                         : []),
                     ];
                   }),
-                  // The held launcher proves that the mandatory middleware denies this
-                  // path before OpenShell obtains a token or dispatches the request.
-                  {
-                    allow: {
-                      method: "GET",
-                      path: grantPath + "/oce-observe-request/*/info/refs",
-                    },
-                  },
+                  // Only legacy profiles have mandatory middleware to refuse this launcher probe.
+                  ...(grant?.workloadGrant
+                    ? []
+                    : [
+                        {
+                          allow: {
+                            method: "GET",
+                            path: grantPath + "/oce-observe-request/*/info/refs",
+                          },
+                        },
+                      ]),
                 ],
               },
             ]

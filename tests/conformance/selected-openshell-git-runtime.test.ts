@@ -11,8 +11,8 @@ import {
   openShellGitRouteReadiness,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
+  OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
-  type OpenShellPreparedGitProvider,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
@@ -847,6 +847,60 @@ test("the selected credential pull removes Git middleware and preserves mandator
   assert.ok(git, "legacy Git keeps its authenticated request hook");
   assert.deepEqual(Object.keys(other), ["oce-model"]);
   assert.deepEqual(pull.network_middlewares, other);
+});
+
+test("workload Git policy excludes the legacy middleware probe and retains Git transport", async (t) => {
+  const { f } = await selectedV5(t);
+  const repository = "example/repo";
+  const grant = {
+    endpoint: "https://authority.fixture.test/token",
+    audience: "execution",
+    repository,
+    allowPush: true as const,
+  };
+  const scope = {
+    workspace: "workspace",
+    workspaceId: "workspace-id",
+    sandbox: "sandbox",
+    executionId: "execution",
+    installationId: "41",
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
+    binaries: ["/usr/bin/git"],
+    observedHookPreview: true as const,
+  };
+  const policy = (workload: boolean) =>
+    new OpenShellPreparedGitProvider(fixtureClient(f), {
+      ...scope,
+      tokenGrant: {
+        ...grant,
+        ...(workload && {
+          workloadGrant: {
+            resource: `https://github.com/${repository}`,
+            scopes: ["contents:write", "metadata:read"],
+          },
+        }),
+      },
+    }).previewNetworkRule();
+  const ordinaryRules = [
+    { allow: { method: "GET", path: `/${repository}.git/info/refs` } },
+    { allow: { method: "POST", path: `/${repository}.git/git-upload-pack` } },
+    { allow: { method: "POST", path: `/${repository}.git/git-receive-pack` } },
+  ];
+  const legacy = policy(false);
+  const workload = policy(true);
+  assert.equal(legacy.endpoints.length, 1);
+  assert.equal(workload.endpoints.length, 1);
+  const legacyEndpoint = legacy.endpoints[0];
+  const workloadEndpoint = workload.endpoints[0];
+  assert.ok(legacyEndpoint && "rules" in legacyEndpoint);
+  assert.ok(workloadEndpoint && "rules" in workloadEndpoint);
+  assert.equal(workloadEndpoint.provider_credentialed, true);
+  assert.deepEqual(workloadEndpoint.rules, ordinaryRules);
+  assert.deepEqual(legacyEndpoint.rules, [
+    ...ordinaryRules,
+    { allow: { method: "GET", path: `/${repository}.git/oce-observe-request/*/info/refs` } },
+  ]);
 });
 
 // Preserve the admission checks on the supported selected-repository workflow.

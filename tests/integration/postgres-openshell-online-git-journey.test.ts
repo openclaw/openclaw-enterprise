@@ -775,9 +775,13 @@ for (const [contents, set, pullPreview] of [
           );
           const placeholder = "controlled-grant-placeholder";
           let streamedPushBytes = 0;
+          let workloadPullRequests = 0;
           const outside = "fixture/unselected";
           const secondRepository = "fixture/second";
           const origins = new Map([[fixtureRepository, peer.origin]]);
+          const installed: OpenShellProviderProfile | undefined = runtime["states"].get(revision.id)
+            ?.entry?.provider["profile"];
+          assert.ok(installed);
           if (set) {
             for (const repository of [secondRepository, outside]) {
               origins.set(
@@ -789,10 +793,6 @@ for (const [contents, set, pullPreview] of [
                 }),
               );
             }
-            const installed: OpenShellProviderProfile | undefined = runtime["states"].get(
-              revision.id,
-            )?.entry?.provider["profile"];
-            assert.ok(installed);
             assert.equal(installed.endpoints.length, 1);
             const [endpoint] = installed.endpoints;
             assert.equal(endpoint?.host, "github.com");
@@ -828,6 +828,38 @@ for (const [contents, set, pullPreview] of [
                     "Git never receives the provider token",
                   );
                   const target = new URL(incoming.url!, "https://github.com");
+                  if (pullPreview) {
+                    // This controlled relay applies the generated provider rule before acquisition.
+                    const allowed = installed.endpoints.some(
+                      (endpoint) =>
+                        endpoint.host === target.hostname &&
+                        endpoint.rules?.some(({ allow }) => {
+                          if (allow.method !== incoming.method || allow.path === undefined) {
+                            return false;
+                          }
+                          const [prefix, suffix, extra] = allow.path.split("*");
+                          if (suffix === undefined) {
+                            return allow.path === target.pathname;
+                          }
+                          const middle = target.pathname.slice(
+                            prefix!.length,
+                            target.pathname.length - suffix.length,
+                          );
+                          return (
+                            extra === undefined &&
+                            target.pathname.startsWith(prefix!) &&
+                            target.pathname.endsWith(suffix) &&
+                            !middle.includes("/")
+                          );
+                        }),
+                    );
+                    if (!allowed) {
+                      refusals.push(target.pathname);
+                      outgoing.writeHead(403).end();
+                      return;
+                    }
+                    workloadPullRequests++;
+                  }
                   const body = pullPreview ? undefined : await buffer(incoming);
                   const request = peer.input(bindingId, sandboxId, false, workspace);
                   const hidden = new Set([
@@ -981,6 +1013,25 @@ for (const [contents, set, pullPreview] of [
               allowFailure,
             );
           assert.equal(peer.gh.issuesOfTokens.length, 0, "the installed route starts cold");
+          if (pullPreview) {
+            const probe = `/${fixtureRepository}.git/oce-observe-request/probe/info/refs`;
+            const result = await git(
+              [
+                "ls-remote",
+                `https://github.com/${fixtureRepository}.git/oce-observe-request/probe`,
+              ],
+              true,
+            );
+            assert.notEqual(result.code, 0);
+            assert.equal(refusals.pop(), probe);
+            assert.equal(
+              workloadPullRequests,
+              0,
+              "the denied path never reaches the token endpoint",
+            );
+            assert.equal(peer.gh.issuesOfTokens.length, 0, "the denied path never mints a token");
+            assert.equal(calls(), before, "the denied path never reaches the origin");
+          }
           if (set) {
             assert.notEqual((await read(outside, true)).code, 0);
             assert.equal(refusals.pop(), `/${outside}.git/info/refs`);
@@ -1031,6 +1082,15 @@ for (const [contents, set, pullPreview] of [
               ),
             );
             if (pullPreview) {
+              await git(["fetch", `https://github.com/${fixtureRepository}.git`, ref]);
+              assert.equal((await git(["rev-parse", "FETCH_HEAD"])).stdout.trim(), first);
+              assert.ok(
+                peer.origin.trace.some(
+                  ({ path, method }) =>
+                    method === "POST" && path === `/${fixtureRepository}.git/git-upload-pack`,
+                ),
+                "ordinary fetch reaches the upload-pack endpoint",
+              );
               assert.ok(streamedPushBytes > 4 * 1024 * 1024, "stock Git used a large chunked push");
               t.diagnostic(
                 `Controlled sender streamed ${streamedPushBytes} native Git pack body bytes.`,
