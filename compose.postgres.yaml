@@ -11,7 +11,7 @@ services:
       - "127.0.0.1:${OCC_POSTGRES_PORT:-55432}:5432"
     volumes:
       - occ_postgres_data:/var/lib/postgresql
-      - ./migrations/init-local.sql:/docker-entrypoint-initdb.d/00-occ-roles.sql:ro,Z
+      - ${OPENCLAW_CI_POSTGRES_INIT_SQL:-./migrations/init-local.sql}:/docker-entrypoint-initdb.d/00-occ-roles.sql:ro,Z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d openclaw_enterprise"]
       interval: 2s

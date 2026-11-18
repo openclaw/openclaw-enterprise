@@ -17,8 +17,8 @@ not install OCC or publish the Helm chart and container images.
 
 - `.github/workflows/cli-release.yml:jobs.prepare`: manual dispatch on `main`
   with the exact workflow source SHA and successful main-push CI run ID.
-- `scripts/ci/cli-release.mjs:validate`: trusted source and CI gate.
-- `scripts/ci/cli-release.mjs:packageCli` and `publish`: cross-platform build,
+- `scripts/ci/cli-release.ts:validate`: trusted source and CI gate.
+- `scripts/ci/cli-release.ts:packageCli` and `publish`: cross-platform build,
   protected tag, and release publication.
 
 ## Flow
@@ -39,7 +39,7 @@ graph TD
 
 ### 1. Bind the source to a tested OCE version
 
-`scripts/ci/cli-release.mjs:validate` requires a manual dispatch from this
+`scripts/ci/cli-release.ts:validate` requires a manual dispatch from this
 repository's `main`, a full source SHA matching the selected workflow source commit,
 and a successful `CI Required` job from the exact main-push CI run. The root
 package version and chart `version` and `appVersion` must agree. These checks do
@@ -48,7 +48,7 @@ those separate releases from the same source.
 
 ### 2. Prepare the binaries before write access
 
-`scripts/ci/cli-release.mjs:packageCli` resolves its output directory to an absolute
+`scripts/ci/cli-release.ts:packageCli` resolves its output directory to an absolute
 path, including when the caller supplies `.`. Native verification executes that
 file without searching `PATH`. It builds with `CGO_ENABLED=0` for Darwin
 and Linux on amd64 and arm64 using pinned Go 1.27.3. The build embeds
@@ -62,7 +62,7 @@ failed-job rerun can use the original build artifact.
 
 ### 3. Publish only the verified bytes
 
-`scripts/ci/cli-release.mjs:publish` rechecks source, CI, the protected
+`scripts/ci/cli-release.ts:publish` rechecks source, CI, the protected
 `container-publish` environment, and each local checksum. It creates a
 lightweight version tag only when none exists; a matching tag is required on a
 retry. It finds an existing draft through the authenticated release list,
@@ -81,7 +81,7 @@ provenance.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/cli-release.test.mjs` with a writable Go
+- Run `node --test tests/integration/cli-release.test.ts` with a writable Go
   cache to build all four binaries, run the native command, and reject a changed
   binary. The retry uses current-directory output in a disposable source fixture.
   This does not publish to GitHub.

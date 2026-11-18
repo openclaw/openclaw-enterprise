@@ -1,0 +1,1202 @@
+diff --git a/docs/cli/gateway/query.md b/docs/cli/gateway/query.md
+index df822cb..7cb4635 100644
+--- a/docs/cli/gateway/query.md
++++ b/docs/cli/gateway/query.md
+@@ -540,6 +540,38 @@ returns the same details while draining, and each draining observation writes
+ one `DRAINING` line to the Gateway log. Pending final writes remain protected
+ until their persistence owner settles, even after a chat client disconnects.
+ 
++Planned-update controllers can call `gateway.suspend.prepare` with
++`completionDeadlineMs`, an absolute Unix time in milliseconds no more than
++30 minutes ahead. The Gateway tolerates five seconds of clock skew and caps
++the wait at 30 minutes on its monotonic clock. Outside the clock window it
++returns retryable unavailability. This mode rejects new independent work while admitted work
++and pending delivery finish. It does not queue rejected requests. Unlike
++`drain: true`, it does not treat cleared write custody as task completion or
++terminate terminals. Those options cannot be combined.
++
++The completion lease keeps the Gateway routable for existing work and control
++requests. Unrelated readiness failures still apply. Existing connected node work
++may finish; this mode does not change the node-reconnection rules.
++
++`system.info` advertises `deferredStopHandoff: true` when the host supports this
++handoff. Authorized controllers may read it during completion waiting to
++rediscover the exact process after reconnecting; ordinary freeze still refuses
++this read. An external supervisor can preflight `gateway.suspend.handoff` with
++`deferExit: true`, then commit the same exact-process handoff with both
++`commit: true` and `deferExit: true`.
++This irreversibly closes admission but keeps the process alive until the
++supervisor sends SIGTERM. It avoids a container being restarted before its
++workload is removed. Resume and lease expiry cannot reopen committed admission;
++the supervisor must finish stopping that workload. Hosts without this capability
++refuse the preflight.
++
++Renew the same request ID and deadline before the two-minute lease expires.
++Renewal never extends the fixed deadline. Resume or lease expiry reopens
++admission; reaching the deadline alone does not stop the process. The update
++controller owns its bounded-stop policy. Before reporting a completed handoff,
++use the process-bound `gateway.suspend.handoff` operation: it checks live work
++and pending delivery again, so an earlier ready response is not a stop permit.
++
+ ### `gateway resume <suspensionId>`
+ 
+ Release a prepared suspension after thaw or when the host operation is
+diff --git a/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js b/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
+index 9bbabaa..590df41 100644
+--- a/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
++++ b/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
+@@ -1067,7 +1067,7 @@ var External = [
+     /(^source$|^app$)/u,
+     /(^wsPath$)/u,
+     /(^released$)/u,
+-    /(^machineName$|^hostname$|^platform$|^release$|^arch$|^osLabel$|^lanAddress$|^port$|^nodeVersion$|^pid$|^processInstanceId$|^uptimeMs$|^cpuCount$|^cpuModel$|^loadAverage$|^memoryTotalBytes$|^memoryFreeBytes$|^eventLoop$|^processMemory$|^diskTotalBytes$|^diskAvailableBytes$|^diskPath$|^disks$|^defaultAgentUtilityModel$)/u,
++    /(^machineName$|^hostname$|^platform$|^release$|^arch$|^osLabel$|^lanAddress$|^port$|^nodeVersion$|^pid$|^processInstanceId$|^deferredStopHandoff$|^uptimeMs$|^cpuCount$|^cpuModel$|^loadAverage$|^memoryTotalBytes$|^memoryFreeBytes$|^eventLoop$|^processMemory$|^diskTotalBytes$|^diskAvailableBytes$|^diskPath$|^disks$|^defaultAgentUtilityModel$)/u,
+     /(^degraded$|^degradedSinceMs$|^reasons$|^intervalMs$|^delayP99Ms$|^delayMaxMs$|^utilization$|^cpuCoreRatio$|^cpuBreakdown$)/u,
+     /(^mainThreadCoreRatio$|^workerCoreRatio$|^otherThreadsCoreRatio$|^hostUtilization$|^hostCpuCount$)/u,
+     /(^rssBytes$|^heapUsedBytes$|^heapTotalBytes$|^externalBytes$|^arrayBuffersBytes$)/u,
+@@ -1571,7 +1571,7 @@ var External = [
+     /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$|^error$)/u,
+     /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$)/u,
+     /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$|^error$|^fallbackExhaustedFailure$)/u,
+-    /(^requestId$|^terminalPolicy$|^drain$)/u,
++    /(^requestId$|^terminalPolicy$|^drain$|^completionDeadlineMs$)/u,
+     /(^status$|^reason$|^retryAfterMs$|^activeCount$|^blockers$|^writeCustody$)/u,
+     /(^kind$|^count$|^message$)/u,
+     /(^phase$|^count$)/u,
+@@ -1582,7 +1582,7 @@ var External = [
+     /(^status$|^ownerId$|^phase$|^expiresAtMs$|^retryAfterMs$|^activeCount$|^blockers$|^writeCustody$)/u,
+     /(^status$|^ownerId$|^expiresAtMs$|^writeCustody$)/u,
+     /(^suspensionId$)/u,
+-    /(^suspensionId$|^commit$|^target$)/u,
++    /(^suspensionId$|^commit$|^deferExit$|^target$)/u,
+     /(^pid$|^processInstanceId$)/u,
+     /(^type$|^id$|^method$|^params$|^traceparent$|^expectedProfileId$)/u,
+     /(^nodeId$)/u,
+@@ -9437,6 +9437,9 @@ var External = [
+     (value.processInstanceId === void 0 ||
+       !("processInstanceId" in value) ||
+       check_63(value.processInstanceId)) &&
++    (value.deferredStopHandoff === void 0 ||
++      !("deferredStopHandoff" in value) ||
++      check_330(value.deferredStopHandoff)) &&
+     check_1379(value.uptimeMs) &&
+     check_1379(value.cpuCount) &&
+     (value.cpuModel === void 0 || !("cpuModel" in value) || check_276(value.cpuModel)) &&
+@@ -18782,7 +18785,10 @@ var External = [
+     (value.terminalPolicy === void 0 ||
+       !("terminalPolicy" in value) ||
+       check_2788(value.terminalPolicy)) &&
+-    (value.drain === void 0 || !("drain" in value) || check_181(value.drain)),
++    (value.drain === void 0 || !("drain" in value) || check_181(value.drain)) &&
++    (value.completionDeadlineMs === void 0 ||
++      !("completionDeadlineMs" in value) ||
++      check_192(value.completionDeadlineMs)),
+   check_2788 = (value) => check_2789(value) || check_2790(value),
+   check_2789 = (value) => typeof value == "string" && value === "preserve",
+   check_2790 = (value) => typeof value == "string" && value === "terminate",
+@@ -18987,6 +18993,7 @@ var External = [
+     ) &&
+     check_561(value.suspensionId) &&
+     (value.commit === void 0 || !("commit" in value) || check_330(value.commit)) &&
++    (value.deferExit === void 0 || !("deferExit" in value) || check_330(value.deferExit)) &&
+     check_2832(value.target),
+   check_2832 = (value) =>
+     typeof value == "object" &&
+diff --git a/packages/gateway-protocol/src/gateway-suspend.test.ts b/packages/gateway-protocol/src/gateway-suspend.test.ts
+index 175a725..0ab89da 100644
+--- a/packages/gateway-protocol/src/gateway-suspend.test.ts
++++ b/packages/gateway-protocol/src/gateway-suspend.test.ts
+@@ -30,12 +30,18 @@ describe("gateway suspension protocol", () => {
+     const target = { pid: 1, processInstanceId: "gateway-process" };
+     const params = { suspensionId: "held-lease", target };
+     const handoff = validation(validateGatewaySuspendHandoffParams);
+-    handoff.accepts(params, { ...params, commit: true });
++    handoff.accepts(
++      params,
++      { ...params, commit: true },
++      { ...params, deferExit: true },
++      { ...params, commit: true, deferExit: true },
++    );
+     handoff.rejects(
+       { ...params, target: undefined },
+       { ...params, force: true },
+       { ...params, waitMs: 0 },
+       { ...params, commit: false },
++      { ...params, deferExit: false },
+       { ...params, target: { ...target, processInstanceId: " " } },
+       { ...params, target: { ...target, pid: 0 } },
+       { ...params, target: { ...target, port: 18789 } },
+@@ -83,6 +89,15 @@ describe("gateway suspension protocol", () => {
+     );
+   });
+ 
++  it("accepts a completion deadline separately from custody draining", () => {
++    const params = { requestId: "planned-update", completionDeadlineMs: 1_800_000 };
++    validation(validateGatewaySuspendPrepareParams).accepts(params);
++    validation(validateGatewaySuspendPrepareParams).rejects(
++      { ...params, completionDeadlineMs: -1 },
++      { ...params, completionDeadlineMs: "later" },
++    );
++  });
++
+   it("accepts legacy terminal blockers in closed draining and busy prepare results", () => {
+     const draining = {
+       ...drainingResult("terminal-session"),
+diff --git a/packages/gateway-protocol/src/schema/gateway-suspend.ts b/packages/gateway-protocol/src/schema/gateway-suspend.ts
+index e155a68..7d9af47 100644
+--- a/packages/gateway-protocol/src/schema/gateway-suspend.ts
++++ b/packages/gateway-protocol/src/schema/gateway-suspend.ts
+@@ -48,6 +48,10 @@ export const GatewaySuspendPrepareParamsSchema = closedObject({
+   requestId: SuspensionTokenSchema,
+   terminalPolicy: Type.Optional(stringLiteralUnion(["preserve", "terminate"])),
+   drain: Type.Optional(Type.Boolean()),
++  /** Wait for admitted work and delivery, under a renewable lease ending by this cutoff. */
++  completionDeadlineMs: Type.Optional(
++    Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
++  ),
+ });
+ 
+ export const GatewaySuspendPrepareBusyResultSchema = closedObject({
+@@ -131,6 +135,8 @@ export const GatewaySuspendResumeResultSchema = closedObject({
+ export const GatewaySuspendHandoffParamsSchema = closedObject({
+   suspensionId: SuspensionTokenSchema,
+   commit: Type.Optional(Type.Literal(true)),
++  /** Commit admission now; let the external supervisor signal the actual exit. */
++  deferExit: Type.Optional(Type.Literal(true)),
+   target: closedObject({
+     pid: Type.Integer({ minimum: 1 }),
+     processInstanceId: SuspensionTokenSchema,
+diff --git a/packages/gateway-protocol/src/schema/system-info.ts b/packages/gateway-protocol/src/schema/system-info.ts
+index e79d7c2..b66484d 100644
+--- a/packages/gateway-protocol/src/schema/system-info.ts
++++ b/packages/gateway-protocol/src/schema/system-info.ts
+@@ -39,6 +39,8 @@ export const SystemInfoResultSchema = closedObject({
+   pid: Type.Integer(),
+   /** Process-start identity for invalidating work that cannot survive a Gateway restart. */
+   processInstanceId: Type.Optional(Type.String({ minLength: 1 })),
++  /** This live host can commit completion admission while awaiting its supervisor's stop signal. */
++  deferredStopHandoff: Type.Optional(Type.Literal(true)),
+   uptimeMs: Type.Integer(),
+   cpuCount: Type.Integer(),
+   cpuModel: Type.Optional(Type.String()),
+diff --git a/src/cli/gateway-cli/host-lifecycle.test.ts b/src/cli/gateway-cli/host-lifecycle.test.ts
+index 19b375a..ad36470 100644
+--- a/src/cli/gateway-cli/host-lifecycle.test.ts
++++ b/src/cli/gateway-cli/host-lifecycle.test.ts
+@@ -29,12 +29,13 @@ describe("Gateway host lifecycle authority", () => {
+     return { reject: pending.reject, resolve: () => pending.resolve({ execute, dispose }) };
+   }
+   const owners: ReturnType<typeof createGatewayHostLifecycle>[] = [];
+-  const owner = (commitExternalStop?: () => void) => {
++  const owner = (commitExternalStop?: () => void, commitExternalStopFence?: () => void) => {
+     const host = createGatewayHostLifecycle({
+       isCurrent: () => current,
+       isServing: () => serving,
+       acceptStop,
+       commitExternalStop,
++      commitExternalStopFence,
+       processOwner: { ownsProcessLifecycle: true, supervisor: null },
+     });
+     owners.push(host);
+@@ -71,6 +72,19 @@ describe("Gateway host lifecycle authority", () => {
+     expect(() => commitStop!()).toThrow("retired or non-serving");
+   });
+ 
++  it("exposes an external stop fence only to its current serving host", () => {
++    expect(owner().capability.externalRestart?.commitStopFence).toBeUndefined();
++    const fence = vi.fn();
++    const commitFence = owner(undefined, fence).capability.externalRestart?.commitStopFence;
++    expect(commitFence).toBeTypeOf("function");
++    commitFence!();
++    expect(fence).toHaveBeenCalledOnce();
++    expect(acceptStop).not.toHaveBeenCalled();
++    current = false;
++    expect(() => commitFence!()).toThrow("retired or non-serving");
++    expect(fence).toHaveBeenCalledOnce();
++  });
++
+   it.each(["retired", "replaced"])("refuses committed stop from a %s host", async (change) => {
+     const commit = vi.fn();
+     const host = owner(commit);
+diff --git a/src/cli/gateway-cli/host-lifecycle.ts b/src/cli/gateway-cli/host-lifecycle.ts
+index a672ce6..3d63170 100644
+--- a/src/cli/gateway-cli/host-lifecycle.ts
++++ b/src/cli/gateway-cli/host-lifecycle.ts
+@@ -19,6 +19,7 @@ export function createGatewayHostLifecycle(params: {
+   isServing: () => boolean;
+   acceptStop: () => void;
+   commitExternalStop?: () => void;
++  commitExternalStopFence?: () => void;
+   processOwner: GatewayProcessOwner;
+   getShutdownBudget?: GatewayHostLifecycle["getShutdownBudget"];
+ }) {
+@@ -42,6 +43,15 @@ export function createGatewayHostLifecycle(params: {
+       runOutsideGatewayRootWorkAdmission(commitExternalStop);
+     };
+   }
++  const commitExternalStopFence = params.commitExternalStopFence;
++  if (commitExternalStopFence) {
++    externalRestart.commitStopFence = () => {
++      if (!externalRestart.isCurrent()) {
++        throw new Error("Gateway host cannot fence stop for a retired or non-serving iteration.");
++      }
++      runOutsideGatewayRootWorkAdmission(commitExternalStopFence);
++    };
++  }
+   const assertCurrent = () => {
+     if (state === "retired" || !params.isCurrent()) {
+       throw new Error(
+diff --git a/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts b/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
+index 0e502e2..25aaf2a 100644
+--- a/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
++++ b/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
+@@ -9,6 +9,42 @@ import {
+ } from "./run-loop.test-support.js";
+ 
+ export function registerExternalHandoffShutdownTests(f: UpdateRespawnFixtures): void {
++  it("keeps the fenced process alive until the supervisor sends SIGTERM", async () => {
++    await f.withRunningGateway(async ({ captureSignal, close, start, runtime, exited }) => {
++      const host = start.mock.calls[0]?.[0]?.hostLifecycle;
++      if (!host?.externalRestart?.commitStopFence) {
++        throw new Error("Missing deferred stop capability");
++      }
++      host.externalRestart.commitStopFence();
++      expect(f.isGatewayWorkAdmissionClosed()).toBe(true);
++      expect(close).not.toHaveBeenCalled();
++      expect(runtime.exit).not.toHaveBeenCalled();
++      f.consumeGatewayRestartIntentPayload.mockResolvedValueOnce({
++        reason: "gateway.restart",
++        force: true,
++      });
++      captureSignal("SIGUSR2")();
++      await new Promise<void>((resolve) => {
++        setImmediate(resolve);
++      });
++      expect(f.gatewayLog.info).toHaveBeenCalledWith(
++        "external stop is committed; waiting for the supervisor stop signal",
++      );
++      expect(start).toHaveBeenCalledOnce();
++      expect(close).not.toHaveBeenCalled();
++      expect(runtime.exit).not.toHaveBeenCalled();
++      // A stale restart intent cannot turn the supervisor's stop into another wait.
++      f.consumeGatewayRestartIntentPayload.mockResolvedValueOnce({
++        reason: "gateway.restart",
++        force: true,
++        waitMs: 30_000,
++      });
++      captureSignal("SIGTERM")();
++      await expect(exited).resolves.toBe(0);
++      expect(start).toHaveBeenCalledOnce();
++    }, true);
++  });
++
+   it.each([
+     { fails: true, trigger: "signal" },
+     { fails: false, trigger: "commit" },
+diff --git a/src/cli/gateway-cli/run-loop-external-handoff.ts b/src/cli/gateway-cli/run-loop-external-handoff.ts
+new file mode 100644
+index 0000000..14b9215
+--- /dev/null
++++ b/src/cli/gateway-cli/run-loop-external-handoff.ts
+@@ -0,0 +1,52 @@
++import type { GatewayDrainReason } from "../../process/gateway-work-admission.js";
++import type { createGatewayHostLifecycle } from "./host-lifecycle.js";
++import { formatShutdownReason } from "./run-loop-shutdown-format.js";
++import type { createGatewayRunSignals } from "./run-loop-signals.js";
++
++type Request = Parameters<typeof createGatewayRunSignals>[0]["request"];
++type Host = ReturnType<typeof createGatewayHostLifecycle>;
++type ProcessOwner = Parameters<typeof createGatewayHostLifecycle>[0]["processOwner"];
++
++/** Commit admission while the external supervisor still owns process termination. */
++export function createExternalStopHandoff(
++  initial: {
++    lifecycleRuntime: { markGatewayDraining: (reason: GatewayDrainReason) => void };
++    supervisorMode: ProcessOwner["supervisor"];
++  },
++  params: { ownsProcessLifecycle?: boolean },
++  logger: { info: (message: string) => void },
++) {
++  let fenced = false;
++  return {
++    wrap(request: Request): Request {
++      return (action, signal, restartReason, restartIntent, hostedStop, context) => {
++        if (fenced && action !== "stop") {
++          if (signal === "SIGTERM") {
++            // Discard a stale restart intent when the supervisor terminates us.
++            request("stop", signal, undefined, undefined, hostedStop, context);
++          } else {
++            logger.info("external stop is committed; waiting for the supervisor stop signal");
++          }
++          return;
++        }
++        request(action, signal, restartReason, restartIntent, hostedStop, context);
++      };
++    },
++    hostCallbacks(request: Request, getHost: () => Host) {
++      return {
++        processOwner: {
++          ownsProcessLifecycle: params.ownsProcessLifecycle === true,
++          supervisor: initial.supervisorMode,
++        },
++        acceptStop: () => request("stop", "hosted Gateway stop", undefined, undefined, getHost()),
++        commitExternalStop: () => request("stop", "SIGTERM"),
++        commitExternalStopFence: () => {
++          fenced = true;
++          initial.lifecycleRuntime.markGatewayDraining(
++            formatShutdownReason({ action: "stop", signal: "SIGTERM" }),
++          );
++        },
++      };
++    },
++  };
++}
+diff --git a/src/cli/gateway-cli/run-loop.ts b/src/cli/gateway-cli/run-loop.ts
+index 5be7e98..92a6fe1 100644
+--- a/src/cli/gateway-cli/run-loop.ts
++++ b/src/cli/gateway-cli/run-loop.ts
+@@ -22,6 +22,7 @@ import { createGatewayHostLifecycle } from "./host-lifecycle.js";
+ import { installGatewayHostLifeline } from "./host-lifeline.js";
+ import { createGatewayRunCleanup } from "./run-loop-cleanup.js";
+ import * as loopExit from "./run-loop-exit.js";
++import { createExternalStopHandoff } from "./run-loop-external-handoff.js";
+ import {
+   isUpdateProcessRestartReason,
+   registerGatewayRunInstallationReplacement,
+@@ -68,6 +69,7 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+     restartDecision,
+     startupBudget,
+   } = initial;
++  const externalStop = createExternalStopHandoff(initial, params, gatewayLog);
+   let lock = initial.lock;
+   const cleanup = createGatewayRunCleanup(
+     params.ownsProcessLifecycle,
+@@ -862,14 +864,15 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+     startupFailedWithoutServerHandle = false;
+     runAcceptedRequest(request);
+   };
+-  const request = (
++  const request = externalStop.wrap(acceptSignalRequest);
++  function acceptSignalRequest(
+     action: GatewayRunSignalAction,
+     signal: GatewayRunSignalRequest["signal"],
+     restartReason?: string,
+     restartIntent?: GatewayRestartIntent,
+     hostedStop?: ReturnType<typeof createGatewayHostLifecycle>,
+     signalContext?: GatewayRunSignalContext,
+-  ) => {
++  ) {
+     if (terminalExitCode !== undefined || (hostExitRequested && action !== "stop")) {
+       return;
+     }
+@@ -1006,7 +1009,7 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+       return;
+     }
+     runAcceptedRequest(acceptedRequest);
+-  };
++  }
+ 
+   const signals = createGatewayRunSignals({
+     lifecycle: eagerLifecycleRuntime,
+@@ -1074,16 +1077,10 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+         break;
+       }
+       const iterationHost = createGatewayHostLifecycle({
+-        processOwner: {
+-          ownsProcessLifecycle: params.ownsProcessLifecycle === true,
+-          supervisor: supervisorMode,
+-        },
+         isCurrent: () => hostLifecycle === iterationHost,
+         isServing: () => server !== null && restartResolver !== null && !shuttingDown,
+         getShutdownBudget: () => (shuttingDown ? reportedBudget : startupBudget),
+-        acceptStop: () =>
+-          request("stop", "hosted Gateway stop", undefined, undefined, iterationHost),
+-        commitExternalStop: () => request("stop", "SIGTERM"),
++        ...externalStop.hostCallbacks(request, () => iterationHost),
+       });
+       hostLifecycle = iterationHost;
+       let startupFailedBeforeServerHandle = false;
+diff --git a/src/cli/update-cli/update-command-service-drain.native.test.ts b/src/cli/update-cli/update-command-service-drain.native.test.ts
+index b7c309b..37889cb 100644
+--- a/src/cli/update-cli/update-command-service-drain.native.test.ts
++++ b/src/cli/update-cli/update-command-service-drain.native.test.ts
+@@ -9,7 +9,7 @@ import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js"
+ import type { openSystemdBroker } from "../../daemon/systemd-peer-native.js";
+ import type { CallGatewayCliOptions } from "../../gateway/call.js";
+ import {
+-  armGatewaySuspendHandoff,
++  requestGatewaySuspendHandoff,
+   consumeGatewaySuspendHandoff,
+   getGatewaySuspendStatus,
+   prepareGatewaySuspend,
+@@ -300,7 +300,8 @@ beforeEach(() => {
+       if (!owner) {
+         throw new Error("Fixture host has no process-exit owner");
+       }
+-      const result = armGatewaySuspendHandoff({
++      const result = await requestGatewaySuspendHandoff({
++        assertCurrent: () => request.assertDispatchCurrent?.(),
+         suspensionId: stringParam(request, "suspensionId"),
+         owner,
+         ...(input.commit === true ? { commit: true } : {}),
+@@ -422,6 +423,48 @@ test.each([0, 1])(
+   },
+ );
+ 
++test(
++  "the native handoff allows a late terminal write to settle after ten seconds",
++  { timeout: 25_000 },
++  async () => {
++    let release: ReturnType<typeof setTimeout> | undefined;
++    const originalCall = mocks.call.getMockImplementation()!;
++    mocks.call.mockImplementation(async (request: CallGatewayCliOptions) => {
++      if (request.method !== "gateway.suspend.handoff") {
++        return originalCall(request);
++      }
++      // Apply the request's wire timeout to the real suspension and native stop owners.
++      let timeout: ReturnType<typeof setTimeout> | undefined;
++      try {
++        return await Promise.race([
++          originalCall(request),
++          new Promise<never>((_, reject) => {
++            timeout = setTimeout(
++              () => reject(new Error("handoff RPC timed out")),
++              request.timeoutMs ?? 10_000,
++            );
++          }),
++        ]);
++      } finally {
++        clearTimeout(timeout);
++      }
++    });
++    f.atNativeInspection = () => {
++      f.persistence = 1;
++      release = setTimeout(() => {
++        f.persistence = 0;
++      }, 12_000);
++    };
++    try {
++      await stopWithLiveDrain();
++      expect(f.events.filter((event) => event === "effect:StopUnit")).toHaveLength(1);
++      expect(f.shutdownCommitted).toBe(true);
++    } finally {
++      clearTimeout(release);
++    }
++  },
++);
++
+ test.each(["native inspection", "handoff dispatch"] as const)(
+   "refuses protected config drift at %s",
+   async (window) => {
+@@ -458,6 +501,7 @@ test.each(["expiry", "resume", "write custody", "boot replacement"] as const)(
+         expect(resumeGatewaySuspend(f.suspensionId)).toMatchObject({ ok: true, resumed: true });
+       } else if (change === "write custody") {
+         f.persistence = 1;
++        f.monotonic += 30_000;
+       } else {
+         f.bootId = "replacement-boot";
+       }
+diff --git a/src/cli/update-cli/update-command-service-drain.ts b/src/cli/update-cli/update-command-service-drain.ts
+index 66d3daa..6277727 100644
+--- a/src/cli/update-cli/update-command-service-drain.ts
++++ b/src/cli/update-cli/update-command-service-drain.ts
+@@ -77,6 +77,7 @@ export async function withGatewayMaintenanceDrain<T>(
+           "gateway.suspend.handoff",
+           { suspensionId, target: processTarget, commit: true },
+           beforeCommit,
++          Math.max(1, original.expiresAtMs - Date.now()),
+         );
+         assertResidentCurrent();
+         if (
+@@ -176,6 +177,7 @@ export async function withGatewayMaintenanceDrain<T>(
+     method: string,
+     args?: unknown,
+     beforeDispatch?: () => void,
++    timeoutMs = 10_000,
+   ): Promise<R> => {
+     assertResidentCurrent();
+     if (params.control) {
+@@ -202,8 +204,7 @@ export async function withGatewayMaintenanceDrain<T>(
+       localPortOverride: port,
+       ignoreEnvUrlOverride: true,
+       tlsFingerprint: target.tlsFingerprint,
+-      // Handoff may wait for final writes within the original 30-second drain budget.
+-      timeoutMs: method === "gateway.suspend.handoff" ? 30_000 : 10_000,
++      timeoutMs,
+       onHelloOk: (hello) => {
+         observedBootId = hello.server.bootId;
+       },
+diff --git a/src/gateway/server-methods.suspension-admission.test.ts b/src/gateway/server-methods.suspension-admission.test.ts
+index 931f2ed..4e610ae 100644
+--- a/src/gateway/server-methods.suspension-admission.test.ts
++++ b/src/gateway/server-methods.suspension-admission.test.ts
+@@ -657,10 +657,11 @@ describe("gateway request suspension admission", () => {
+       ["suspend-proof.write", "operator.write", undefined],
+       ["suspend-proof.read", "operator.read", 1_000],
+       ["agent.identity.get", "operator.read", 60_000],
++      ["system.info", "operator.read", 1_000],
+     ] as const) {
+       const blocked = await reply(method, handler, {
+         scope,
+-        core: method === "agent.identity.get",
++        core: method === "agent.identity.get" || method === "system.info",
+       });
+       expect(handler).not.toHaveBeenCalled();
+       expectRejected(blocked, {
+diff --git a/src/gateway/server-methods/suspend.integration.test.ts b/src/gateway/server-methods/suspend.integration.test.ts
+new file mode 100644
+index 0000000..a15e51d
+--- /dev/null
++++ b/src/gateway/server-methods/suspend.integration.test.ts
+@@ -0,0 +1,194 @@
++import { afterEach, expect, it, vi } from "vitest";
++import type {
++  GatewaySuspendPrepareResult,
++  SystemInfoResult,
++} from "../../../packages/gateway-protocol/src/index.js";
++import {
++  markGatewayRestartDraining,
++  tryBeginGatewayRootWorkAdmission,
++} from "../../process/gateway-work-admission.js";
++import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
++import { resetGatewayTestState } from "../gateway.test-support.js";
++import {
++  connectGatewayClient,
++  disconnectGatewayClient,
++  startGatewayWithClient,
++} from "../test-helpers.e2e.js";
++import { createAuthorityGatewayTestEnv } from "../test-helpers.env.js";
++
++// Enable the production owner which ordinary in-process Gateway tests skip.
++vi.mock("../../infra/gateway-lock.js", async (original) => {
++  const actual = await original<typeof import("../../infra/gateway-lock.js")>();
++  return {
++    ...actual,
++    acquireGatewayLock: (options: Parameters<typeof actual.acquireGatewayLock>[0]) =>
++      actual.acquireGatewayLock({ ...options, allowInTests: true }),
++  };
++});
++
++afterEach(resetGatewayTestState);
++
++it.each(["resume", "external stop"] as const)(
++  "keeps a completion wait routable while rejecting independent work: %s",
++  { timeout: 60_000 },
++  async (finish) => {
++    await withOpenClawTestState(
++      { label: "completion-wait-transport", env: createAuthorityGatewayTestEnv() },
++      async (state) => {
++        const token = "synthetic-completion-wait-token";
++        const { client, server, port } = await startGatewayWithClient({
++          configPath: state.configPath,
++          token,
++          scopes: ["operator.admin"],
++          hostLifecycle: {
++            externalRestart: {
++              isCurrent: () => true,
++              commitStopFence: () => markGatewayRestartDraining(),
++            },
++            request: async () => ({
++              ok: false,
++              error: "The external supervisor owns this test stop",
++            }),
++          },
++          cfg: {
++            gateway: {
++              mode: "local",
++              auth: { mode: "token", token },
++              http: { endpoints: { chatCompletions: { enabled: true } } },
++            },
++            agents: {
++              entries: { main: {} },
++              defaults: { workspace: state.workspaceDir, skipBootstrap: true },
++            },
++            plugins: { enabled: false, slots: { memory: "none" } },
++            cron: { enabled: false },
++            update: { checkOnStart: false },
++          },
++        });
++        const clients = [client];
++        const admitted = tryBeginGatewayRootWorkAdmission("completion-transport-proof");
++        try {
++          expect(admitted).not.toBeNull();
++          await server.startupSettled;
++          await expect
++            .poll(async () => (await fetch(`http://127.0.0.1:${port}/readyz`)).status, {
++              timeout: 15_000,
++            })
++            .toBe(200);
++          for (const invalid of [
++            { drain: true, completionDeadlineMs: Date.now() + 60_000 },
++            { terminalPolicy: "terminate", completionDeadlineMs: Date.now() + 60_000 },
++          ]) {
++            await expect(
++              client.request("gateway.suspend.prepare", { requestId: "invalid", ...invalid }),
++            ).rejects.toThrow(/invalid gateway.suspend.prepare params/i);
++          }
++          for (const offset of [-1, 31 * 60_000]) {
++            await expect(
++              client.request("gateway.suspend.prepare", {
++                requestId: "outside-window",
++                completionDeadlineMs: Date.now() + offset,
++              }),
++            ).rejects.toThrow(/outside Gateway clock window/i);
++          }
++          const approval = await client.request<{ id: string }>("exec.approval.request", {
++            command: "printf approval",
++            twoPhase: true,
++            requireDeliveryRoute: false,
++            suppressDelivery: true,
++            timeoutMs: 60_000,
++          });
++          const request = {
++            requestId: "planned-update",
++            completionDeadlineMs: Date.now() + 30 * 60_000 + 3_000,
++          };
++          const held = await client.request<GatewaySuspendPrepareResult>(
++            "gateway.suspend.prepare",
++            request,
++          );
++          expect(held.status).toBe("draining");
++          if (held.status !== "draining") {
++            throw new Error("Expected an admitted-work completion wait");
++          }
++          expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(200);
++          await expect(
++            client.request("chat.send", {
++              sessionKey: "agent:main:completion-transport-proof",
++              message: "must not execute",
++              idempotencyKey: "rejected-during-completion",
++            }),
++          ).rejects.toThrow(/paused|suspend|unavailable/i);
++          const reconnected = await connectGatewayClient({
++            url: `ws://127.0.0.1:${port}`,
++            token,
++            scopes: ["operator.admin"],
++          });
++          clients.push(reconnected);
++          const approvals = await reconnected.request<Array<{ id: string }>>(
++            "exec.approval.list",
++            {},
++          );
++          expect(approvals.map((entry) => entry.id)).toContain(approval.id);
++          await reconnected.request("exec.approval.resolve", { id: approval.id, decision: "deny" });
++          expect(await reconnected.request("exec.approval.list", {})).not.toContainEqual(
++            expect.objectContaining({ id: approval.id }),
++          );
++          const rejected = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
++            method: "POST",
++            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
++            body: JSON.stringify({
++              model: "openclaw",
++              messages: [{ role: "user", content: "busy" }],
++            }),
++          });
++          expect(rejected.status).toBe(503);
++          expect(await reconnected.request("gateway.suspend.prepare", request)).toMatchObject({
++            status: "draining",
++            suspensionId: held.suspensionId,
++          });
++          admitted?.release();
++          // Socket and startup owners may still be settling after the response.
++          await expect
++            .poll(
++              () =>
++                reconnected.request("gateway.suspend.status", { suspensionId: held.suspensionId }),
++              { timeout: 5_000 },
++            )
++            .toMatchObject({ status: "ready" });
++          expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(200);
++          if (finish === "resume") {
++            await reconnected.request("gateway.suspend.resume", {
++              suspensionId: held.suspensionId,
++            });
++            expect(
++              await reconnected.request("gateway.suspend.status", {
++                suspensionId: held.suspensionId,
++              }),
++            ).toMatchObject({ status: "running" });
++          } else {
++            const target = await reconnected.request<SystemInfoResult>("system.info", {});
++            expect(target.deferredStopHandoff).toBe(true);
++            const handoff = {
++              suspensionId: held.suspensionId,
++              deferExit: true,
++              target: { pid: target.pid, processInstanceId: target.processInstanceId },
++            };
++            expect(await reconnected.request("gateway.suspend.handoff", handoff)).toMatchObject({
++              status: "armed",
++            });
++            expect(
++              await reconnected.request("gateway.suspend.handoff", { ...handoff, commit: true }),
++            ).toMatchObject({ status: "committed" });
++            expect(tryBeginGatewayRootWorkAdmission("must remain closed")).toBeNull();
++            // The host is still alive for its external supervisor to retire it.
++            expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(503);
++          }
++        } finally {
++          admitted?.release();
++          await Promise.all(clients.map(disconnectGatewayClient));
++          await server.close({ reason: "completion transport proof finished" });
++        }
++      },
++    );
++  },
++);
+diff --git a/src/gateway/server-methods/suspend.ts b/src/gateway/server-methods/suspend.ts
+index 808a247..dc95d10 100644
+--- a/src/gateway/server-methods/suspend.ts
++++ b/src/gateway/server-methods/suspend.ts
+@@ -8,6 +8,7 @@ import {
+   validateGatewaySuspendHandoffParams,
+ } from "../../../packages/gateway-protocol/src/index.js";
+ import {
++  GATEWAY_COMPLETION_MAX_MS,
+   requestGatewaySuspendHandoff,
+   getGatewaySuspendStatus,
+   prepareGatewaySuspend,
+@@ -80,6 +81,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
+       suspensionId: params.suspensionId.trim(),
+       owner,
+       commit: params.commit,
++      deferExit: params.deferExit,
+       assertCurrent: readGatewayRequestMutationAuthority(options).assertCurrent,
+     });
+     if (!result.ok) {
+@@ -99,12 +101,39 @@ export const suspendHandlers: GatewayRequestHandlers = {
+       respond(false, undefined, invalidParams("gateway.suspend.prepare"));
+       return;
+     }
++    if (
++      params.completionDeadlineMs !== undefined &&
++      (params.drain === true || params.terminalPolicy === "terminate")
++    ) {
++      respond(false, undefined, invalidParams("gateway.suspend.prepare"));
++      return;
++    }
++    // The controller and Gateway can read different wall clocks. The Gateway
++    // still caps its actual hold at 30 minutes on its own monotonic clock.
++    const now = Date.now();
++    if (
++      params.completionDeadlineMs !== undefined &&
++      (params.completionDeadlineMs <= now ||
++        params.completionDeadlineMs > now + GATEWAY_COMPLETION_MAX_MS + 5_000)
++    ) {
++      respond(
++        false,
++        undefined,
++        errorShape(ErrorCodes.UNAVAILABLE, "Completion deadline outside Gateway clock window", {
++          retryable: true,
++        }),
++      );
++      return;
++    }
+     const requestId = params.requestId.trim();
+     const result = prepareGatewaySuspend({
+       requestId,
+       caller: `gateway.suspend.prepare ${callerDescription(client)}`,
+       terminalPolicy: params.terminalPolicy ?? "preserve",
+       ...(params.drain === true ? { drain: true } : {}),
++      ...(params.completionDeadlineMs === undefined
++        ? {}
++        : { completionDeadlineMs: params.completionDeadlineMs }),
+       pauseScheduling: () => context.cron.pauseScheduling(),
+       resumeScheduling: () => context.cron.resumeScheduling(),
+       inspect: createGatewayServerActiveWorkInspectors(context),
+diff --git a/src/gateway/server-methods/system.ts b/src/gateway/server-methods/system.ts
+index 3c3a2f3..8830626 100644
+--- a/src/gateway/server-methods/system.ts
++++ b/src/gateway/server-methods/system.ts
+@@ -175,6 +175,9 @@ async function collectSystemInfo(
+     nodeVersion: process.version,
+     pid: process.pid,
+     processInstanceId: getGatewayProcessInstanceId(),
++    ...(context.hostLifecycle?.externalRestart?.commitStopFence
++      ? { deferredStopHandoff: true as const }
++      : {}),
+     uptimeMs: Math.round(process.uptime() * 1000),
+     cpuCount,
+     ...(cpuModel ? { cpuModel } : {}),
+diff --git a/src/gateway/server-request-lifecycle.ts b/src/gateway/server-request-lifecycle.ts
+index 05558b9..4b43115 100644
+--- a/src/gateway/server-request-lifecycle.ts
++++ b/src/gateway/server-request-lifecycle.ts
+@@ -10,6 +10,7 @@ import {
+   GATEWAY_SUSPEND_UNAVAILABLE_REASON,
+ } from "../../packages/gateway-protocol/src/restart-unavailable.js";
+ import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
++import { isGatewayCompletionWaitActive } from "../infra/gateway-suspend-coordinator.js";
+ import {
+   getGatewayRestartDrainSignal,
+   getGatewaySuspendAdmissionPhase,
+@@ -27,9 +28,22 @@ const SUSPEND_CONTROL_METHODS = new Set([
+   "gateway.suspend.handoff",
+ ]);
+ 
++// These reads let a reconnected operator find existing work. Each handler still
++// applies its normal scope and per-request visibility checks.
++const COMPLETION_OBSERVATION_METHODS = new Set([
++  "system.info",
++  "exec.approval.list",
++  "plugin.approval.list",
++  "openclaw.approval.list",
++  "question.list",
++]);
++
+ export function isGatewayRootlessRequestAllowed(method: string): boolean {
+   return (
+     SUSPEND_CONTROL_METHODS.has(method) ||
++    // Reconnected completion controllers must rediscover the exact live process.
++    // Existing authorization and observation-only scope still apply.
++    (COMPLETION_OBSERVATION_METHODS.has(method) && isGatewayCompletionWaitActive()) ||
+     (method === "update.runs.get" &&
+       getGatewayRestartDrainSignal().aborted &&
+       getGatewaySuspendAdmissionPhase() === "accepting")
+diff --git a/src/gateway/server-runtime-state-prepare.ts b/src/gateway/server-runtime-state-prepare.ts
+index 732be36..eebf831 100644
+--- a/src/gateway/server-runtime-state-prepare.ts
++++ b/src/gateway/server-runtime-state-prepare.ts
+@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
+ import { loadOrCreateProcessDeviceIdentityAsync } from "../infra/device-identity-async.js";
+ import { readDevicePairingNodeSnapshot } from "../infra/device-pairing-store-readonly.js";
+ import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
++import { isGatewayCompletionWaitActive } from "../infra/gateway-suspend-coordinator.js";
+ import { loadGatewayTlsServerRuntime } from "../infra/tls/gateway.js";
+ import type { createSubsystemLogger } from "../logging/subsystem.js";
+ import { runtimeForLogger } from "../logging/subsystem.js";
+@@ -486,7 +487,8 @@ export async function prepareGatewayKernelState(params: {
+     startedAt: serverStartedAt,
+     getStartupPending: isGatewayStartupPending,
+     getStartupPendingReason: () => startupState.pendingReason,
+-    getGatewayDraining: () => lifecycle.closePreludeStarted || isGatewayDraining(),
++    getGatewayDraining: () =>
++      lifecycle.closePreludeStarted || (!isGatewayCompletionWaitActive() && isGatewayDraining()),
+   };
+   const getStartup = createStartupChecker(
+     { ...startupCheckerDeps, gatewayBootId: bootId },
+diff --git a/src/gateway/test-helpers.e2e.ts b/src/gateway/test-helpers.e2e.ts
+index d86a05e..d878bc3 100644
+--- a/src/gateway/test-helpers.e2e.ts
++++ b/src/gateway/test-helpers.e2e.ts
+@@ -315,6 +315,7 @@ export async function startGatewayWithClient(
+     onEvent?: (evt: { event?: string; payload?: unknown }) => void;
+     beforeConnect?: (server: GatewayServer) => void | Promise<void>;
+     sidecarStartup?: GatewayServerOptions["sidecarStartup"];
++    hostLifecycle?: GatewayServerOptions["hostLifecycle"];
+     hotReloadRecovery?: GatewayServerOptions["hotReloadRecovery"];
+     channelAutostartSuppression?: GatewayServerOptions["channelAutostartSuppression"];
+     tryRecoverChannelAutostartSuppression?: GatewayServerOptions["tryRecoverChannelAutostartSuppression"];
+@@ -348,6 +349,7 @@ export async function startGatewayWithClient(
+         auth: params.auth ?? { mode: "token", token: params.token },
+         controlUiEnabled: false,
+         sidecarStartup: params.sidecarStartup,
++        hostLifecycle: params.hostLifecycle,
+         hotReloadRecovery: params.hotReloadRecovery,
+         channelAutostartSuppression: params.channelAutostartSuppression,
+         tryRecoverChannelAutostartSuppression: params.tryRecoverChannelAutostartSuppression,
+diff --git a/src/infra/gateway-suspend-coordinator.test.ts b/src/infra/gateway-suspend-coordinator.test.ts
+index 4f999de..36016cf 100644
+--- a/src/infra/gateway-suspend-coordinator.test.ts
++++ b/src/infra/gateway-suspend-coordinator.test.ts
+@@ -65,6 +65,51 @@ afterEach(() => {
+ });
+ 
+ describe("gateway suspend coordinator", () => {
++  it("keeps admission closed until admitted tasks and their delivery finish", () => {
++    let tasks = 1;
++    let replies = 1;
++    const params = {
++      completionDeadlineMs: 1_801_000,
++      nowMs: () => 1_000,
++      inspect: {
++        getAgentRuns: () => tasks,
++        getPendingReplies: () => replies,
++        getTerminalPersistence: () => 0,
++      },
++    };
++    expect(prepare(params)).toMatchObject({ status: "draining", activeCount: 2 });
++    expect(tryBeginGatewayRootWorkAdmission()).toBeNull();
++    tasks = 0;
++    expect(getGatewaySuspendStatus(LEASE)).toMatchObject({ status: "draining", activeCount: 1 });
++    replies = 0;
++    expect(getGatewaySuspendStatus(LEASE).status).toBe("ready");
++    expect(tryBeginGatewayRootWorkAdmission()).toBeNull();
++    // A late delivery invalidates completion even if the earlier poll said ready.
++    replies = 1;
++    expect(
++      armGatewaySuspendHandoff({ suspensionId: LEASE, owner: { isCurrent: () => true } }).ok,
++    ).toBe(false);
++    expect(resumeGatewaySuspend(LEASE)).toEqual(resumed);
++    expect(isGatewayWorkAdmissionClosed()).toBe(false);
++  });
++
++  it("renews a completion lease without extending its fixed cutoff", () => {
++    vi.useFakeTimers();
++    let now = 1_000;
++    const params = {
++      completionDeadlineMs: 181_000,
++      nowMs: () => now,
++      inspect: { getAgentRuns: () => 1 },
++    };
++    expect(prepare(params)).toMatchObject({ status: "draining", expiresAtMs: 121_000 });
++    now = 101_000;
++    expect(prepare(params)).toMatchObject({ status: "draining", expiresAtMs: 181_000 });
++    expect(prepare({ ...params, completionDeadlineMs: 281_000 }).status).toBe("conflict");
++    now = 181_000;
++    expect(getGatewaySuspendStatus(LEASE)).toEqual({ status: "running" });
++    expect(isGatewayWorkAdmissionClosed()).toBe(false);
++  });
++
+   it.each([false, true])(
+     "lifecycle reset resumes a held scheduler before admission is cleared (drain: %s)",
+     (drain) => {
+@@ -475,6 +520,40 @@ describe("external restart handoff", () => {
+     expect(isGatewayWorkAdmissionClosed()).toBe(true);
+   });
+ 
++  it("commits admission without exiting and retains the exact host handoff until its stop signal", () => {
++    const fixture = setup(false);
++    const fence = vi.fn(markGatewayRestartDraining);
++    fixture.owner.commitStopFence = fence;
++    expect(
++      armGatewaySuspendHandoff({ suspensionId: LEASE, owner: fixture.owner, deferExit: true }),
++    ).toMatchObject({ ok: true, value: { status: "armed" } });
++    expect(fixture.commit({ deferExit: true })).toMatchObject({
++      ok: true,
++      value: { status: "committed" },
++    });
++    expect(fence).toHaveBeenCalledOnce();
++    expect(fixture.commitStop).not.toHaveBeenCalled();
++    fixture.state.now += DRAIN_BUDGET_MS + 1;
++    expect(fixture.resume()).toEqual({ ok: false, reason: "gateway-restarting" });
++    expect(tryBeginGatewayRootWorkAdmission()).toBeNull();
++    expect(consumeGatewaySuspendHandoff({ isCurrent: () => true })).toEqual({
++      ok: true,
++      value: false,
++    });
++    expect(fixture.consume()).toEqual({ ok: true, value: true });
++    expect(fixture.consume()).toEqual({ ok: true, value: false });
++    expect(fixture.params.resumeScheduling).not.toHaveBeenCalled();
++  });
++
++  it("refuses deferred stop preflight when the host only supports immediate exit", () => {
++    const fixture = setup(false);
++    expect(
++      armGatewaySuspendHandoff({ suspensionId: LEASE, owner: fixture.owner, deferExit: true }).ok,
++    ).toBe(false);
++    expect(fixture.commitStop).not.toHaveBeenCalled();
++    expect(fixture.resume()).toMatchObject({ ok: true, resumed: true });
++  });
++
+   it.each(["expired", "resumed", "write custody", "old host"] as const)(
+     "refuses committed shutdown for %s without invoking the host exit owner",
+     (reason) => {
+diff --git a/src/infra/gateway-suspend-coordinator.ts b/src/infra/gateway-suspend-coordinator.ts
+index 539ce86..1d18504 100644
+--- a/src/infra/gateway-suspend-coordinator.ts
++++ b/src/infra/gateway-suspend-coordinator.ts
+@@ -21,6 +21,7 @@ import {
+   type GatewayActiveWorkSnapshot,
+ } from "./gateway-active-work.js";
+ 
++export const GATEWAY_COMPLETION_MAX_MS = 30 * 60_000;
+ const GATEWAY_SUSPEND_TTL_MS = 2 * 60_000;
+ // Drain preparation waits for persistence, then hands running work to committed
+ // shutdown. Reconnects do not extend its deadline; freeze retains its own TTL.
+@@ -52,12 +53,14 @@ type HeldGatewaySuspension = {
+   requestId: string;
+   terminalPolicy: GatewaySuspendTerminalPolicy;
+   drain: boolean;
++  completion?: { deadlineMs: number; monotonicDeadlineMs: number };
+   suspensionId: string;
+   expiresAtMs: number;
+   deadlineAtMs: number;
+   inspect?: Partial<GatewayActiveWorkInspectors>;
+   handoff?: GatewaySuspendHandoffOwner;
+   committedStopOwner?: GatewaySuspendHandoffOwner;
++  deferredStopOwner?: GatewaySuspendHandoffOwner;
+   shutdown?: { signal: AbortSignal; phase: "interrupting" | "exiting" };
+   commitAdmission?: () => boolean;
+   nowMs: () => number;
+@@ -68,6 +71,8 @@ export type GatewaySuspendHandoffOwner = {
+   isCurrent: () => boolean;
+   /** Transfers a validated suspension into this host's synchronous one-way shutdown. */
+   commitStop?: () => void;
++  /** Fence admission irreversibly without exiting ahead of the external supervisor. */
++  commitStopFence?: () => void;
+ };
+ 
+ type GatewaySuspendCoordinatorState = {
+@@ -131,6 +136,11 @@ function currentSuspension(): HeldGatewaySuspension | null {
+   return current ? normalizeExpiredHeldSuspension(current) : null;
+ }
+ 
++/** Existing work and the lease owner still need routing while new work is refused. */
++export function isGatewayCompletionWaitActive(): boolean {
++  return !isGatewayRestartDraining() && currentSuspension()?.completion !== undefined;
++}
++
+ function resumeSchedulingBeforeReopen(params: {
+   resumeScheduling: () => void;
+   reopenAdmission: (reason?: string) => boolean;
+@@ -164,9 +174,17 @@ function armExpiry(entry: HeldGatewaySuspension): HeldGatewaySuspension {
+ }
+ 
+ function renewHeldSuspension(held: HeldGatewaySuspension, nowMs: number): void {
+-  held.expiresAtMs = nowMs + GATEWAY_SUSPEND_TTL_MS;
+-  held.deadlineAtMs = performance.now() + GATEWAY_SUSPEND_TTL_MS;
+-  scheduleResume(held, GATEWAY_SUSPEND_TTL_MS);
++  const monotonicNow = performance.now();
++  const ttlMs = held.completion
++    ? Math.min(
++        GATEWAY_SUSPEND_TTL_MS,
++        held.completion.deadlineMs - nowMs,
++        held.completion.monotonicDeadlineMs - monotonicNow,
++      )
++    : GATEWAY_SUSPEND_TTL_MS;
++  held.expiresAtMs = nowMs + ttlMs;
++  held.deadlineAtMs = monotonicNow + ttlMs;
++  scheduleResume(held, ttlMs);
+ }
+ 
+ function suspensionReady(drain: boolean, snapshot: GatewayActiveWorkSnapshot): boolean {
+@@ -207,11 +225,12 @@ function heldPrepareResult(
+     : { status: "draining", ...result, retryAfterMs: GATEWAY_SUSPEND_DRAIN_POLL_MS };
+ }
+ 
+-/** Freeze only idle work; drain preparation leaves running work for committed shutdown. */
++/** Completion waits retain admission while work finishes; custody drains may interrupt work. */
+ export function prepareGatewaySuspend(params: {
+   requestId: string;
+   terminalPolicy?: GatewaySuspendTerminalPolicy;
+   drain?: boolean;
++  completionDeadlineMs?: number;
+   pauseScheduling: () => void;
+   resumeScheduling: () => void;
+   inspect?: Partial<GatewayActiveWorkInspectors>;
+@@ -226,14 +245,28 @@ export function prepareGatewaySuspend(params: {
+     ignoreTerminalSessions: terminalPolicy === "terminate",
+   };
+   const nowMs = (params.nowMs ?? Date.now)();
+-  const ttlMs = drain ? GATEWAY_SUSPEND_DRAIN_BUDGET_MS : GATEWAY_SUSPEND_TTL_MS;
++  const completion =
++    params.completionDeadlineMs === undefined
++      ? undefined
++      : {
++          deadlineMs: params.completionDeadlineMs,
++          monotonicDeadlineMs:
++            performance.now() +
++            Math.min(GATEWAY_COMPLETION_MAX_MS, params.completionDeadlineMs - nowMs),
++        };
++  const ttlMs = completion
++    ? Math.min(GATEWAY_SUSPEND_TTL_MS, completion.deadlineMs - nowMs)
++    : drain
++      ? GATEWAY_SUSPEND_DRAIN_BUDGET_MS
++      : GATEWAY_SUSPEND_TTL_MS;
+   const deadlineAtMs = performance.now() + ttlMs;
+   const existing = currentSuspension();
+   if (existing) {
+     if (
+       existing.requestId !== params.requestId ||
+       existing.terminalPolicy !== terminalPolicy ||
+-      existing.drain !== drain
++      existing.drain !== drain ||
++      existing.completion?.deadlineMs !== completion?.deadlineMs
+     ) {
+       return { status: "conflict", expiresAtMs: existing.expiresAtMs };
+     }
+@@ -274,7 +307,7 @@ export function prepareGatewaySuspend(params: {
+       owner: params.requestId,
+       leaseId: suspensionId,
+       caller: params.caller ?? "in-process",
+-      reason: drain ? "drain" : "freeze",
++      reason: completion ? "completion-wait" : drain ? "drain" : "freeze",
+     },
+   );
+   if (!admission) {
+@@ -305,7 +338,7 @@ export function prepareGatewaySuspend(params: {
+     if ((params.nowMs ?? Date.now)() >= nowMs + ttlMs || performance.now() >= deadlineAtMs) {
+       throw new Error("gateway suspension expired during preparation");
+     }
+-    if (!snapshot.idle && !drain) {
++    if (!snapshot.idle && !drain && !completion) {
+       resume();
+       schedulingPaused = false;
+       return {
+@@ -329,6 +362,7 @@ export function prepareGatewaySuspend(params: {
+       requestId: params.requestId,
+       terminalPolicy,
+       drain,
++      completion,
+       suspensionId,
+       expiresAtMs,
+       deadlineAtMs,
+@@ -409,6 +443,9 @@ function handoffRefusal(
+   const snapshot = createGatewayActiveWorkSnapshot(held.inspect, {
+     ignoreTerminalSessions: held.terminalPolicy === "terminate",
+   });
++  if (held.completion && !snapshot.idle) {
++    return { message: "gateway admitted work or delivery is still pending" };
++  }
+   if (snapshot.counts.terminalPersistence > 0) {
+     const terminalPersistence = {
+       count: snapshot.counts.terminalPersistence,
+@@ -430,6 +467,7 @@ export function armGatewaySuspendHandoff(params: {
+   suspensionId: string;
+   owner: GatewaySuspendHandoffOwner;
+   commit?: true;
++  deferExit?: true;
+ }): Result<GatewaySuspendHandoffResult, HandoffRefusal> {
+   const committed = params.commit ? getRestartingSuspension() : undefined;
+   if (
+@@ -446,6 +484,9 @@ export function armGatewaySuspendHandoff(params: {
+   if (!held || held.suspensionId !== params.suspensionId) {
+     return resultError({ message: "gateway suspension id does not match" });
+   }
++  if (params.deferExit && !params.owner.commitStopFence) {
++    return resultError({ message: "gateway host does not support externally signalled stop" });
++  }
+   const refusal = handoffRefusal(held, params.owner);
+   if (refusal) {
+     return resultError(refusal);
+@@ -454,7 +495,8 @@ export function armGatewaySuspendHandoff(params: {
+     return resultError({ message: "gateway suspension already belongs to another host iteration" });
+   }
+   if (params.commit) {
+-    if (!params.owner.commitStop) {
++    const commitStop = params.deferExit ? params.owner.commitStopFence : params.owner.commitStop;
++    if (!commitStop) {
+       return resultError({ message: "gateway host does not support committed suspension stop" });
+     }
+     const changed = handoffRefusal(held, params.owner);
+@@ -463,7 +505,7 @@ export function armGatewaySuspendHandoff(params: {
+     }
+     held.handoff = params.owner;
+     try {
+-      params.owner.commitStop();
++      commitStop();
+     } catch {
+       // The callback may already have committed shutdown. Never reopen admission
+       // or turn an unknown stop outcome into permission to replay native effects.
+@@ -479,6 +521,9 @@ export function armGatewaySuspendHandoff(params: {
+       return resultError({ message: "gateway suspension stop commitment outcome is uncertain" });
+     }
+     held.committedStopOwner = params.owner;
++    if (params.deferExit) {
++      held.deferredStopOwner = params.owner;
++    }
+     return ok({
+       status: "committed",
+       suspensionId: held.suspensionId,
+@@ -493,6 +538,11 @@ export function armGatewaySuspendHandoff(params: {
+ export function consumeGatewaySuspendHandoff(
+   owner: GatewaySuspendHandoffOwner | undefined,
+ ): Result<boolean, string> {
++  const committed = getRestartingSuspension();
++  if (owner && committed?.deferredStopOwner === owner && owner.isCurrent()) {
++    committed.deferredStopOwner = undefined;
++    return ok(true);
++  }
+   const held = COORDINATOR_STATE.current;
+   if (!held || !owner || held.handoff !== owner) {
+     return ok(false);

@@ -59,6 +59,17 @@ at 390.
     **Create Agent**. The form explains why the first deployment ended. Check
     that its feedback uses the informational stripe and offers no retry or link.
 
+18. Open **Pages / Agent detail / New version failed, incompatible Codex policy**
+    (`pages-agent-detail--deployment-failed-codex-policy`). At 1440 and 390,
+    confirm the failure code wraps and the remedy asks the policy owner to verify
+    compatibility before redeploying. The recovery block offers **Open v7 Logs**,
+    without **Deploy again** or generic logs advice. Open the logs and confirm
+    v7 stays selected; no deployment is submitted. This is simulated presentation
+    and navigation evidence, not native policy or deployment proof. Repeat with
+    **New version failed, oversized Codex requirements**
+    (`pages-agent-detail--deployment-failed-codex-requirements-size`): the remedy
+    names the 1 MiB limit and asks the policy owner to reduce the document.
+
 ## Check Console startup recovery
 
 At 1440 and 390, open `/console/index.html` on the built Storybook server

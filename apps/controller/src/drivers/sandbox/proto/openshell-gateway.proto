@@ -1148,7 +1148,16 @@ message PolicyChunk {
   string rationale = 5; int32 hit_count = 13; string binary = 16;
 }
 enum PolicyStatus { POLICY_STATUS_UNSPECIFIED = 0; POLICY_STATUS_PENDING = 1; POLICY_STATUS_LOADED = 2; POLICY_STATUS_FAILED = 3; POLICY_STATUS_SUPERSEDED = 4; }
-message UpdateConfigRequest { string sandbox = 1; SandboxPolicy policy = 2; uint64 expected_resource_version = 8; map<string,string> annotations = 9; WorkspaceSelector workspace_scope = 10; string request_id = 11; }
+// Upstream typed setting value; this subset also supports fixture log configuration.
+message SettingValue {
+  oneof value {
+    string string_value = 1;
+    bool bool_value = 2;
+    int64 int_value = 3;
+    bytes bytes_value = 4;
+  }
+}
+message UpdateConfigRequest { string sandbox = 1; SandboxPolicy policy = 2; string setting_key = 3; SettingValue setting_value = 4; uint64 expected_resource_version = 8; map<string,string> annotations = 9; WorkspaceSelector workspace_scope = 10; string request_id = 11; }
 message UpdateConfigResponse { uint32 version = 1; string policy_hash = 2; }
 message ExecSandboxRequest {
   reserved 5;

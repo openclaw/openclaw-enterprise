@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-05
-last_updated_session: authoring-run/17947441-42c1-43df-93a6-339dac4803dc
+updated: 2026-11-06
+last_updated_session: authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf
 ---
 
 # Console Agent editing and runtime requests
@@ -71,22 +71,24 @@ plus `configurationReadError` on decode failure. Operational reads and queries s
 **Load older versions** appends, keeps selection and focuses the picker after the last page.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
-**Deployment** mounts activity, the selected record, and diagnostics
-(`agents/deployment-evidence.mts`). Polling continues across tabs.
-Activity and its label cannot anchor scrolling (`console.css`, 3016).
+**Deployment** mounts activity, selected records, and diagnostics
+(`agents/deployment-evidence.mts`); polling spans tabs.
+Activity and label cannot anchor scrolling (`console.css`).
 `detail.mts:renderTab` offers **Retry** for transient snapshot errors.
-After `FIRST_ACTIVITY_WAIT_MS`, completion and reads fold unless cleanup,
-warnings, or overview errors need attention. Overview errors preserve outcomes.
+After `FIRST_ACTIVITY_WAIT_MS`, completion folds unless cleanup, warnings,
+repository access, or overview errors need attention; outcomes remain.
 
-`createDeploymentStatusPanel` polls until completion or refusal. Transient errors retain
+`createDeploymentStatusPanel` polls until completion or refusal; transient errors retain
 progress. `invalidate` and `fail` clear caches and reads. `onFreshRecord` shares matching
-GETs. `show` never republishes. Refusals override success. Any `401` expires the session.
-`terminalOverview` tracks reconciliation, excluding denied records. For unreconciled outcomes, read Agent
-and revisions once, sharing matching reads. Retry failures explicitly.
-`readingOverview` protects explicit reads. `recordGeneration` rejects stale payloads.
-Fresh evidence renders during Refresh. **Refresh deployment** queues one full reread.
-**Refresh record** keeps focus and ignores repeats. Refusals open details.
-Matching errors share an alert.
+GETs; `show` never republishes. Refusals override success; `401` expires sessions.
+`terminalOverview` reconciles outcomes once through shared Agent/history reads, excluding
+denied records. Retry failures explicitly. `readingOverview` protects explicit reads;
+`recordGeneration` rejects stale payloads.
+**Refresh deployment** queues a full reread; **Refresh record** preserves focus, ignoring
+repeats. Refusals open details; matching errors share alerts.
+
+Each surface shows revision-specific `repositoryAccess.message` beside unchanged outcomes.
+Conditions reveal details without deploying. Missing guidance leaves repository health unknown.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
@@ -353,6 +355,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
 
 - 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
 - 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)

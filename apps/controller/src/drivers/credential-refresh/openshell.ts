@@ -278,18 +278,14 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       CODEX_ACCESS_TOKEN_ENV,
       context.signal,
     );
-    // A concurrent gateway mint is still pending; never redeem or reseed the login grant.
-    if (status?.status === "refresh_in_progress" || status?.status === "refresh_committing") {
+    const state =
+      status?.status === "configured"
+        ? (await this.rotate(context, requestId)).state
+        : status && refreshState(status.status);
+    if (state === "pending") {
       return { status: "pending" };
     }
-    let refreshed = status === undefined ? undefined : credentialRefreshStatus(status);
-    if (status?.status === "configured") {
-      refreshed = await this.rotate(context, requestId);
-    }
-    if (refreshed?.state === "pending") {
-      return { status: "pending" };
-    }
-    if (refreshed?.state !== "ready") {
+    if (state !== "ready") {
       throw new OpenShellCredentialRefreshFailure(
         "OpenShell could not establish managed Codex OAuth refresh. Connect again.",
       );

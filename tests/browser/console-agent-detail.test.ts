@@ -69,6 +69,7 @@ import {
   trackSettledFetches,
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
+import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   withholdPermissionSummary,
@@ -109,8 +110,7 @@ import {
   PLUGINS_READ_ONLY,
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
-import { importConsoleModule } from "../helpers/console-browser-module.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -2542,7 +2542,6 @@ test("a version editor without Agent update can recover a failed deployment from
   await firstPermissions.requested;
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
-  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
   await versionChooser(page).waitFor();
   const summary = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
@@ -2788,7 +2787,6 @@ test("a late permission answer relabels a reader's version entry and skips plugi
   await firstAnswer.requested;
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
-  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
   const snapshot = page
     .locator("section.agent-card")
@@ -3031,7 +3029,6 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   await firstPermissions.requested;
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
-  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
   // Until the answer lands the page assumes an editor.
   await page.getByText(/^Save and Disable update only the shared Configuration draft\./).waitFor();
@@ -3493,6 +3490,8 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
   });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  // Let the reload replace its view before changing tabs; the old metadata stays held.
+  await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(replacement));
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const reason =
     "Saving this Configuration needs Secret operate on Current bot token, which your access does not include. Ask an Installation administrator to grant it.";
@@ -3947,7 +3946,6 @@ test("a Channels tab parked before a reader's permission answer returns read-onl
   await firstPermissions.requested;
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
-  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
   await page.getByText(/^Save and Disable update only the shared Configuration draft\./).waitFor();
   // Park the editor's Channels view, then let the answer land on the Configuration tab.
@@ -4070,7 +4068,6 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     assert.ok(received);
     // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
     // out; run it out rather than wait for it.
-    const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
     await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
     assert.deepEqual(
       {

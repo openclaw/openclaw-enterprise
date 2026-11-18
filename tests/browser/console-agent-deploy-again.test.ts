@@ -12,7 +12,7 @@ import type {
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   persistedDeploymentError,
@@ -684,6 +684,7 @@ for (const [from, to] of [
                   access.status === "available"
                     ? {
                         status: "available",
+                        mode: "admin",
                         host,
                         origin: `https://${host}`,
                         activeRevisionId: current.id,

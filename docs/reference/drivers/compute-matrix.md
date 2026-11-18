@@ -75,7 +75,7 @@ with inferred support. Selection and preflight rules belong to
 
 <!-- compute-matrix:start -->
 
-<!-- Generated from docs/assets/compute-driver-matrix.json; run node scripts/generate-compute-matrix.mjs. -->
+<!-- Generated from docs/assets/compute-driver-matrix.json; run node scripts/generate-compute-matrix.ts. -->
 
 Reviewed 2026-09-16 at [23d490b93d59dc810f28430f31576209200ba9ba](https://github.com/openclaw/openclaw-enterprise/tree/23d490b93d59dc810f28430f31576209200ba9ba).
 
@@ -121,6 +121,6 @@ Reviewed 2026-09-16 at [23d490b93d59dc810f28430f31576209200ba9ba](https://github
 
 Edit `docs/assets/compute-driver-matrix.json` after reviewing the intended source
 revision. Keep implementation citations and test citations separate. Regenerate
-this table with `node scripts/generate-compute-matrix.mjs`; the docs build rejects
+this table with `node scripts/generate-compute-matrix.ts`; the docs build rejects
 a stale fallback. Follow [local preview validation](../../local-preview.md#build-and-check)
 and record executed proof separately from support judgments.

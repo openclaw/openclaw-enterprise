@@ -10,8 +10,12 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-import type { AgentRevision, Permission } from "../../packages/contracts/src/index.ts";
-import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
+import {
+  WORKSPACE_DEFAULTS,
+  type AgentRevision,
+  type Permission,
+} from "../../packages/contracts/src/index.ts";
+import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -48,9 +52,6 @@ import {
   WORKSPACE_UNREACHABLE,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
-import { importConsoleModule } from "../helpers/console-browser-module.ts";
-
-const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
 
 declare global {
   var workspaceBlurs: number;

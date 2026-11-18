@@ -1,15 +1,15 @@
 ---
 created: 2026-08-21
-updated: 2026-11-05
-last_updated_session: authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f
+updated: 2026-11-18
+last_updated_session: authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6
 ---
 
 # Harness Execution Topology Flow
 
 ## Overview
 
-Deployment freezes Gateway settings, Harness policy, placement and authentication. Compute prepares
-workloads, publishes guarded routes and retires predecessors before activation audit.
+Deployment saves settings and authentication. Compute prepares workloads, publishes
+guarded routes, and retires predecessors.
 
 ## Entry Points
 
@@ -26,7 +26,10 @@ workloads, publishes guarded routes and retires predecessors before activation a
 ```mermaid
 graph TD
   A["Authorize Agent and Configuration"] --> B["Resolve runtime, placement and native HTTP transport"]
-  B --> C["Freeze configuration, Gateway managed mode, Harness identity and authentication"]
+  B --> B1["Compute resolves Harness settings"]
+  B1 --> B2{"Source authorizes destination?"}
+  B2 -->|No| H
+  B2 -->|Yes| C["Freeze requested and resolved settings with authentication"]
   C --> D["Claim and reauthorize version work"]
   D --> E{"Approved topology"}
   E -->|embedded OpenClaw| F["Create gateway or stage replacement"]
@@ -64,17 +67,15 @@ modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before version creation and preparation:
 Docker, SSH and Kubernetes require native HTTP.
-The saved version keeps [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode), native configuration, approved Harness identity/version, mode,
-Compute selection, and Agent ServicePrincipal unchanged. Production admits approved
-`openclaw`/`embedded` and `codex`/`dedicated`, and `openclaw`/`dedicated` only when
-the selected SandboxDriver provisions Harnesses with networking, filesystem, and
-process containment and the Installation has native-worker support.
-Pinned runtime support is automatic; custom images can declare it at startup.
-An associated
-`access_token` additionally requires dedicated Codex; the frozen account
-contains only its OCC identity, credential kind, and opaque Secret reference.
-`KubernetesComputeDriver.admitRevision` saves the configured OpenAI-compatible
-API-key provider fingerprint in `AgentRevision.compute.admission`.
+The revision saves [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode),
+native configuration, Harness identity/version/mode, Compute selection, and Agent
+ServicePrincipal. Compute and Sandbox gate the [Harness topology](../reference/harness-execution.md).
+Custom images must declare native-worker support. An associated `access_token` requires dedicated Codex;
+its snapshot contains the OCC identity, credential kind, and opaque Secret reference.
+`KubernetesComputeDriver.resolveHarnessConfiguration` resolves overrides before
+admission. OCC atomically saves `harness.overrides` and `harness.configuration`;
+`validateHarnessCredentialSources` checks consent and `admitRevision` fingerprints
+the provider.
 
 ### 2. Claim work and realize the approved topology
 
@@ -196,10 +197,11 @@ claim leases. Failed preparation or preparing or activating the predecessor clea
 its record. New exclusive versions supersede old reconciliation and maintenance
 without rollback; see [production version stages](../reference/drivers/compute.md#production-revision-stages).
 For API-key inference, `modelProviderConfiguration` in
-`apps/controller/src/drivers/compute/model-provider.ts` translates the shared
-Installation provider for OpenClaw. `pluginRuntimeSnapshot` in
+`apps/controller/src/drivers/compute/model-provider.ts` translates the provider
+saved in the revision for OpenClaw. `pluginRuntimeSnapshot` in
 `apps/controller/src/drivers/compute/kubernetes/index.ts` supplies it to Codex.
-Recovery repeats this check.
+Recovery repeats snapshot validation without reading Installation defaults.
+Missing or inconsistent saved settings refuse execution before workload effects.
 Source authorization cannot override routing.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes Codex's provider and optional standalone-search declaration.
@@ -218,6 +220,13 @@ other Harnesses keep their endpoints; only the Harness holds model credentials.
 Kubernetes Compute records admitted inference launch behavior in new protected Codex revisions. The authentication probe and app-server disable unbounded
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
 original retry settings.
+
+For a new dedicated Codex revision on a provider-owned Sandbox other than OpenShell,
+Kubernetes Compute also records which probe command to use. That probe inherits the
+Harness's nonempty `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings in either case, just
+as the serving Codex process already did. Codex decides how to use them; the Sandbox
+still enforces egress. Retrying a revision admitted before this change reuses its
+original command. Deploy a new revision to pick up the fix.
 
 For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
@@ -265,17 +274,24 @@ activation retries, then one status read per retry. That wait and the pairing wa
 early when other Work is claimable.
 
 On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
-removal before stopping the Harness, allowing active work to finish. Idle
+removal before stopping the Harness. The Gateway's graceful shutdown aborts
+active turns and records them for restart recovery under its
+`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, the revision ID. Only a Gateway of the
+same revision resumes them; a stop, replacement or deletion never does
+([interrupted turns](../reference/agents/interrupted-turns.md)). Idle
 Gateways and pre-start wrappers exit promptly. Forced termination requires proof
 the previous owner stopped before retained state can be reused.
 [Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
 describes when an operator must confirm termination.
 
-Both Gateway modes persist SQLite, client credentials, media, linked worktrees and common Git metadata
-on their private claim, preserving session paths across replacement. Embedded Gateways
-retain their default workspace; dedicated Harness claims retain node identity. Claims
-precede Pods for `WaitForFirstConsumer`; [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
-defines initialization and mounts.
+Gateway state survives replacements.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.gatewayPrivateStateClaim`
+uses `runtime.gatewayStorageSizeGiB`, default 10. `verifyPersistentVolumeClaim`
+compares storage quantities exactly, accepting equivalent units while rejecting
+different capacities during reuse and deletion without resizing. Claims
+precede Pods for `WaitForFirstConsumer`; the
+[storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
+owns sizing, recovery and mounts.
 
 The enrolled Harness node serves workspace files after pairing. Gateway and
 Harness share no workspace, session, skill or image mounts. Codex receives its
@@ -299,8 +315,7 @@ version, then calls
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
 to delete exact-owned private and shared claims by UID across all selected targets,
 regardless of the Agent draft's mode. Cleanup retries precede database identity
-removal. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
-owns claim sizes, mounts, StorageClass requirements and final teardown.
+removal.
 
 ## Debugging and Verification
 
@@ -320,7 +335,7 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
   values or payloads; stderr suppression and deadlines remain.
 
 - Check placement, immutable policy, and conflicts:
-  `node --test tests/conformance/configuration-occ.test.mjs`.
+  `node --test tests/conformance/configuration-occ.test.ts`.
 - Check guarded activation and recovery:
   `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with an explicitly
   provisioned application-role PostgreSQL database.
@@ -355,28 +370,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Changelog
 
-- 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
+- 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
 
-- 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
-
-- 2026-11-05 13:08: Trace safe temporary SQLite staging before node startup. (authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128 - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
-
-- 2026-11-04 23:04: Require Compute-owned Codex RPC readiness. (authoring-run/5cb8a94e-e57d-47d0-b87e-890ea5b3f40e - 381845c12d3694fc19f836786831bb98cbe2c3e1)
-
-- 2026-11-03 18:15: Trace provider guards. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
-
-- 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
-
-- 2026-10-31 03:41: Observe catalog pipe writes and reply counts. (authoring-run/afb5c72a-ef2b-4983-990c-427173225f65 - fbe295286b26132acf6330c87710231324afd5b1)
-
-- 2026-10-31 02:28: Trace continuity comparisons and wrapper exits. (authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e - 4dc71d4678df0f9dc49bcbeaa654819d76e3ebb0)
-
-- 2026-10-29 18:43: Trace the explicit custom-provider standalone search declaration and protected-tool exclusion. (authoring-run/be4eda1a-8676-415e-9999-ffcfe3f9bd17 - 35569940c)
-
-- 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
-
-- 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
-
-- 2026-10-23 15:51: Rebase the native endpoint trace onto current lifecycle behavior; preserve older entries in linked history. (agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68 - 0b326680a7a388de9331c2ae9f0a7cadf2788fe7)
+- 2026-11-17 23:51: A turn cut by stop, replacement or deletion does not resume; the Gateway's restart recovery is scoped to its revision. (finding 3347)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.

@@ -57,11 +57,10 @@ backend authentication, separately from the operator's ordinary profile.
 `requestTimeoutMs` defaults to 10,000 milliseconds and accepts 1–60,000.
 This reader starts native app-server, calls `plugin/list`, and may update its cache.
 
-In hosted mode, Create Agent discovery hydrates entered PAT identity and reads GLOBAL
-plugin-service pages of up to 20 entries, fetching tools on demand. A
-same-Namespace Secret reference can supply the PAT; managed ServiceAccount
-references are unsupported. A nonempty query uses hosted search; the curated
-catalog searches its bundled entries.
+Hosted Create Agent discovery reads GLOBAL plugin-service pages (maximum 20),
+fetching tools on demand. App-only plugins need no `requires_local_executor` field.
+A same-Namespace Secret can supply the PAT; managed ServiceAccount references are
+unsupported. Queries use hosted search; the curated catalog searches its bundled entries.
 The console preloads the first page when a PAT is entered or selected in Create
 Agent, or an editable Agent's Plugins tab opens with a bound PAT Secret;
 **Configure plugins** reuses that page or its pending request. Replacing the PAT
