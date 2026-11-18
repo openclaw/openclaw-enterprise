@@ -5,6 +5,12 @@ synthetic marker through stock Box v0.2.2. It grants neither a general shell
 command nor additional native execution access to the agent. Leave the option
 unset in ordinary deployments.
 
+The [runbook](../RUNBOOK.md)'s x86-64 host builds the same program with
+`GOARCH=amd64` ([commands](../RUNBOOK-BUILD.md#step-2-box-verifier-and-host-helper-ran))
+and runs it under the Box fork build. On those runs, a host whose
+configuration set `workspaceVerifierSha256` exited at start when the marker
+file described below was not yet in the workspace.
+
 Build the static verifier from this checkout with the repository's Go version:
 
 ```sh
