@@ -291,7 +291,7 @@ with its `state.json`. Do not remove another attempt's resources. SIGKILL or hos
 failure can prevent a final result; a missing result is not cleanup evidence.
 
 The [runner](../../../scripts/ci/run-tests.ts) starts each phase through a private IPC channel.
-[Preparation](../../../scripts/ci/prepare.mjs) and
+[Preparation](../../../scripts/ci/prepare.ts) and
 [cleanup](../../../scripts/ci/cleanup.ts) report their owned command groups.
 The runner checks that these groups have stopped before it starts cleanup.
 
@@ -305,7 +305,7 @@ From the checkout root on a disposable host, prepare the lane and keep its priva
 state file until cleanup completes.
 
 ```sh
-corepack pnpm exec node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>
+corepack pnpm exec node scripts/ci/prepare.ts --lane <lane> --state <private-state-file>
 node scripts/ci/run-tests.ts run <lane> --state <private-state-file> --results <results-file>
 node scripts/ci/cleanup.ts --state <private-state-file>
 ```

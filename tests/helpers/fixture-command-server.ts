@@ -75,7 +75,7 @@ export function bashString(text: string) {
   return word + "'";
 }
 
-// The fake command: bash builtins only, so it is a single process that prepare.mjs's
+// The fake command: bash builtins only, so it is a single process that prepare.ts's
 // signals reach directly, and its output pipes close when it exits (except where a
 // reply makes it start a descendant on purpose). It sends its client token and then
 // NUL-terminated fields, and evaluates the reply lines that follow the server token.

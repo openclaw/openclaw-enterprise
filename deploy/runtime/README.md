@@ -49,9 +49,7 @@ after the Control UI's access is refused. Remove each once upstream matches.
 private Linux PID namespace stopped recover its Gateway records, or, inside it,
 any record whose PID is dead. OC compares its lock fingerprint first.
 Unattributed owners need operator confirmation.
-OpenClaw normalizes newly created owner-only Linux directories that inherit
-setgid and reports invalid plugin settings during startup. The build runs the
-upstream private-store regressions.
+The [restart recovery bridge](../../docs/flows/harness-restart-recovery.md) waits for workspace reconnection and surviving Codex work before continuing.
 The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
 final delivery retains its progress window after a long Codex turn.
 
@@ -321,7 +319,7 @@ Then run the runtime startup smoke from the repository root with host Node.js
 [Image and Helm tests](../../docs/testing/docker.md#runtime-image-startup-test-environment):
 
 ```bash
-node scripts/ci/prepare.mjs --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
+node scripts/ci/prepare.ts --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
 set -a
 . /tmp/images-runtime-startup.env
 set +a

@@ -41,7 +41,7 @@ provider and cluster credentials are unnecessary:
   printf 'PostgreSQL run directory: %s\n' "$PG_PLATFORM_RUN_DIR"
   trap 'pg_run_status=$?; node scripts/ci/cleanup.ts --state "$PG_PLATFORM_RUN_DIR/state.json" || pg_run_status=1; exit "$pg_run_status"' EXIT
 
-  node scripts/ci/prepare.mjs --lane postgres-platform \
+  node scripts/ci/prepare.ts --lane postgres-platform \
     --state "$PG_PLATFORM_RUN_DIR/state.json" \
     --github-env "$PG_PLATFORM_RUN_DIR/owner.env"
   node scripts/ci/run-tests.ts run postgres-platform \

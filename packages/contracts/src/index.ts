@@ -1533,7 +1533,6 @@ export type {
 export type {
   CredentialRefreshDriver,
   CredentialRefreshInput,
-  CredentialRefreshStatus,
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "./drivers/credential-refresh/index.ts";
@@ -1700,3 +1699,49 @@ export type {
   NamespaceLifecycleHooks,
   NamespaceLifecycleParticipant,
 } from "./drivers/namespace-lifecycle.ts";
+
+export type {
+  TokenServiceSourceRef,
+  InstallationClientSecretRef,
+  TokenServiceRegistration,
+  RegisteredTokenServiceSource,
+  SourceLifecycleConfig,
+  SourceRegistrationInput,
+  SourceUpdate,
+  ResolvedCredential,
+  CredentialRefreshStatus,
+  SourceRefreshOperation,
+  TokenServiceDriver,
+} from "./drivers/token-service/index.ts";
+
+export type {
+  BearerCredentialProjection,
+  CredentialProjection,
+  DeploymentWorkloadRequirement,
+  DeploymentRequestPolicy,
+  DeploymentRequestMatch,
+  NetworkAccessPolicy,
+  CredentialInjectionPolicy,
+  CredentialProxyRouting,
+  CredentialDeploymentRef,
+  CredentialDeploymentTarget,
+  CredentialDeploymentConfiguration,
+  CredentialDeploymentReadiness,
+  DeploymentCredentialBinding,
+} from "./credential-deployment.ts";
+
+export type {
+  PluginDeploymentTool,
+  PluginDeploymentNetworkRequirement,
+  PluginCredentialConnection,
+  PluginDeploymentDescription,
+  PluginDeploymentContract,
+} from "./drivers/plugin/deployment.ts";
+
+export type {
+  HarnessStartupObservation,
+  HarnessStartupRef,
+  SandboxDeploymentContract,
+} from "./drivers/sandbox/deployment.ts";
+
+export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";

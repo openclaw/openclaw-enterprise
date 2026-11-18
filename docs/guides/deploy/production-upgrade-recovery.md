@@ -86,10 +86,9 @@ history, then finish verification separately.
 
 Never start old writers against a migrated database. For a retry within the recorded pair, wait
 until the initialization Job and Pods are terminal. Run the **candidate controller
-image** with `node scripts/migrate-production.mjs --check` against the retained
-database, with its migrator credential and required CA. The Kubernetes
-[maintenance procedure](auth-maintenance.md#run-the-command) supplies these: set
-`CONTROLLER_IMAGE` and args `["scripts/migrate-production.mjs","--check"]`.
+image** with the [selected-image read-only check](separate-database-upgrade.md#run-a-selected-image-migration)
+against the retained database. Use its migrator credential and required CA. The
+Kubernetes maintenance Job must select the same candidate image.
 Retain exit-zero `migration.checked` output. [Separate migrations](separate-database-upgrade.md) require `--require-current`.
 Attest the checked outcome with `--resume --migration-history-checked`. The helper returns OCC to zero replicas
 and records the next expected revision before retrying. Prefer a reviewed forward
