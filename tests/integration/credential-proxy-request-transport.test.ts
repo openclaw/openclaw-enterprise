@@ -581,13 +581,14 @@ test(
     );
 
     const compute = controller.selectedDriver("compute");
+    const computeId = compute.id;
     const resolve = compute.resolveSandboxNamespace;
     assert.ok(resolve);
     const replacement: typeof resolve = (namespace) => Reflect.apply(resolve, compute, [namespace]);
     const preliminary = [];
-    for (const stage of ["revision", "withdrawal", "compute"] as const) {
+    for (const stage of ["revision", "withdrawal", "compute", "registration"] as const) {
       const request = fixture.request();
-      const pause = fixture.pausePreliminary(stage === "compute" ? "revision" : stage);
+      const pause = fixture.pausePreliminary(stage === "withdrawal" ? stage : "revision");
       t.after(pause.release);
       const reads = f.secretReads;
       const pending = evaluate(request);
@@ -596,8 +597,13 @@ test(
         Reflect.set(proxy, "sourceControl", { ...control });
       } else if (stage === "withdrawal") {
         providers[0] = { ...requestProvider };
-      } else {
+      } else if (stage === "compute") {
         Reflect.set(compute, "resolveSandboxNamespace", replacement);
+      } else {
+        const nextId = `compute-${randomUUID()}`;
+        Reflect.set(compute, "id", nextId);
+        controller.registerDriver(compute);
+        controller.selectDriver("compute", nextId);
       }
       pause.release();
       let decision;
@@ -607,6 +613,10 @@ test(
         Reflect.set(proxy, "sourceControl", control);
         providers[0] = requestProvider;
         Reflect.set(compute, "resolveSandboxNamespace", resolve);
+        if (stage === "registration") {
+          Reflect.set(compute, "id", computeId);
+          controller.selectDriver("compute", computeId);
+        }
       }
       const policyReads = f.secretReads - reads;
       const grant = await redeem(request);
@@ -687,6 +697,7 @@ test(
       { preliminary, placementObservation, grantObservation, reported },
       {
         preliminary: [
+          { decision: 2, reads: 0, status: 403, tokenReturned: false },
           { decision: 2, reads: 0, status: 403, tokenReturned: false },
           { decision: 2, reads: 0, status: 403, tokenReturned: false },
           { decision: 2, reads: 0, status: 403, tokenReturned: false },

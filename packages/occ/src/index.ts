@@ -8045,6 +8045,7 @@ export class OpenClawController {
     const control = proxy.sourceControl;
     const gateway = this.selections.get("credential_gateway");
     const iam = this.selections.get("iam");
+    const computeRegistration = this.selections.get("compute");
     const { compute, resolve } = this.credentialPlacement();
     const credentials = proxy.requestTimeCredentials;
     const verify = credentials?.verifyRequestInstallation;
@@ -8070,7 +8071,9 @@ export class OpenClawController {
           this.selections.get("credential_gateway") === gateway &&
           this.unchangedDriver(gateway) &&
           this.selections.get("iam") === iam &&
-          this.selectedDriver("compute") === compute &&
+          computeRegistration &&
+          this.selections.get("compute") === computeRegistration &&
+          this.unchangedDriver(computeRegistration) &&
           compute.resolveSandboxNamespace === resolve &&
           this.selectedProxyOwner() === owner &&
           proxy.sourceControl === control &&
