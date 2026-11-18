@@ -331,17 +331,26 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	is := func(cs []container, name string, args ...string) bool {
 		return len(cs) == 1 && cs[0].Name == name && len(cs[0].Command) == 0 && slices.Equal(cs[0].Args, args)
 	}
-	// Match the current chart program exactly, while recognizing retained direct-path Jobs.
+	const guardedMigrationSHA256 = "c8719ed6cf87bca2f389663f517c7191b0118d7045ebb359344905234c5f2282"
+	const legacyMigrationSHA256 = "4a6a55d777d238c127c3e0b9d357d87bdcdd91ad9937a2e5460a43e6dd7dd202"
+	// Match the chart wrapper exactly, while recognizing retained direct-path Jobs.
 	migration := func(flags ...string) bool {
 		if len(init) != 1 || init[0].Name != "migration" || len(init[0].Command) != 0 {
 			return false
 		}
 		a := init[0].Args
-		selected := len(a) == 3+len(flags) && a[0] == "-e" && a[2] == "--" &&
-			fmt.Sprintf("%x", sha256.Sum256([]byte(a[1]))) == "4a6a55d777d238c127c3e0b9d357d87bdcdd91ad9937a2e5460a43e6dd7dd202" &&
-			slices.Equal(a[3:], flags)
-		return selected || is(init, "migration", append([]string{"scripts/migrate-production.ts"}, flags...)...) ||
-			is(init, "migration", append([]string{"scripts/migrate-production.mjs"}, flags...)...)
+		if len(a) == 3+len(flags) && a[0] == "-e" && a[2] == "--" && slices.Equal(a[3:], flags) {
+			switch fmt.Sprintf("%x", sha256.Sum256([]byte(a[1]))) {
+			case guardedMigrationSHA256:
+				return true
+			case legacyMigrationSHA256:
+				// Older wrappers could invoke image programs that ignored flags.
+				return len(flags) == 0
+			}
+		}
+		// A direct historical JavaScript entry may also ignore mode flags.
+		return is(init, "migration", append([]string{"scripts/migrate-production.ts"}, flags...)...) ||
+			(len(flags) == 0 && is(init, "migration", "scripts/migrate-production.mjs"))
 	}
 	var hook string
 	switch {

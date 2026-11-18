@@ -1,15 +1,15 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/3fdef1cf-e0cc-4e68-a3f4-4950c5f43c02"
+last_updated_session: "authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6"
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-Helm initializes OCE from protected storage and approved inputs. After private
-API/worker readiness, authenticate `/installation` with the service key.
+Helm initializes OCE from approved inputs and protected storage. Authenticate
+`/installation` with the service key after private API/worker readiness.
 
 [Deployment guide](../guides/deploy.md).
 
@@ -76,12 +76,11 @@ graph TD
 Migration, bootstrap, API and worker use
 [`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts) with
 [password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
-For each password-mode connection, the factory parses the URL before applying
-explicit caller limits and startup options. It retains TLS-file reads and the
-effective IP-host certificate check.
+The factory parses password-mode URLs before applying caller limits and startup
+options. TLS-file reads and IP-host certificate checks remain.
 Failover, maintenance restart, `idle_session_timeout` or proxy reset discards the
 idle client and logs only its error code to stderr as `database.idle-client-error`.
-The process continues; the next query opens a new connection.
+Queries reconnect.
 
 ### 1. Prepare native production inputs
 
@@ -158,7 +157,9 @@ The hook validates its name and distinct database Secret keys; both database con
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
 `internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the receipt
 target before reading the Job. `initializationEvidence` checks its marker, UID, exact chart
-steps, controller and terminal status. A separate-upgrade Job verifies schema before bootstrap.
+steps, controller and terminal status. Guarded checks require the current wrapper
+or typed entry; flagged historical Jobs remain unknown. Separate-upgrade verifies schema
+before bootstrap.
 Missing, replaced, refused or inconclusive evidence leaves the checkpoint unknown.
 Doctor reports Helm separately; report write errors exit `1`.
 
@@ -382,6 +383,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 13:48: Recognize migration hooks (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 62b4fb61d91580e4080fe3bd22da3e981bffb603)
 
 - 2026-11-18 13:11: Shorten startup prose (PST). (authoring-run/3fdef1cf-e0cc-4e68-a3f4-4950c5f43c02 - ced12b9028ea989d2da2893ebff60cdcb9d4e689)
 
