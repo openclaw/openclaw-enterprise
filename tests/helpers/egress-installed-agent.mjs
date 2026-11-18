@@ -16,7 +16,7 @@ import {
 import { observeConnectedOperation } from "./egress-connected-failure.ts";
 import { summarizeGatewayTurnResult } from "./egress-gateway-turn-observation.ts";
 import { deleteInstalledResource } from "./egress-installed-resource-cleanup.mjs";
-import { createCustodyTransitions } from "./egress-supplier-custody-transitions.mjs";
+import { createCustodyTransitions } from "./egress-supplier-custody-transitions.ts";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
 import { connectedReceiptRevision, assertConnectedResponse } from "./egress-connected-inputs.mjs";
 import { startSyntheticEgressProvider } from "../fixtures/synthetic-egress-provider.mjs";

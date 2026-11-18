@@ -242,7 +242,7 @@ mapping, loaded-enforcement readiness, finite Responses protection and zero
 automatic retries, including the startup probe. Missing contracts and legacy
 gateway-copy setups cannot qualify.
 
-Bind supplier source implementing [custody events](../../tests/helpers/egress-supplier-custody-transitions.mjs)
+Bind supplier source implementing [custody events](../../tests/helpers/egress-supplier-custody-transitions.ts)
 to its image receipt. Reject missing producer code; source presence,
 enforcement capabilities and native replies cannot prove installed delivery.
 

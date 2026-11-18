@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
-import { openShellSandboxLogReader } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  openShellSandboxLogReader,
+  type OpenShellSandboxLogReader,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
 import { isArray, isRecord, readString, record } from "./egress-observation-values.ts";
 import { observeConnectedOperation, rememberCustodyOutcome } from "./egress-connected-failure.ts";
@@ -22,17 +25,39 @@ const transitions = new Set([
   "response_delivery_incomplete",
 ]);
 
+type CustodySnapshot = readonly Readonly<{ event: string; id: string }>[];
+type CustodyDiagnosticInput = Parameters<typeof rememberCustodyOutcome>[1];
+type CustodyDiagnostic = {
+  readAttempts: number;
+  successfulReads: number;
+  lastRead: string;
+  ring: string;
+  lineCount: number | null;
+  bufferTotal: number | null;
+  freshCount: number | null;
+  labels: string[];
+  sequence: string;
+  evidence: NonNullable<CustodyDiagnosticInput["evidence"]> | null;
+};
+type CustodySetup = {
+  gatewayClient: OpenShellSandboxLogReader;
+  workspace: string;
+  sandbox: string;
+  sandboxId: string;
+  supervisor: unknown;
+  readSupervisor: () => Promise<unknown>;
+};
+type CustodyOptions = { deliveryTimeoutMs?: number; pollIntervalMs?: number };
+
 /**
  * Observe one enrolled supplier Sandbox while it still exists. The supervisor's
  * LogPushLayer preserves tracing fields; its console shorthand does not. The
  * gateway binds pushed source and sandbox ID at ingestion, but push is best effort.
  * This is test evidence to join with the receipt and origin, never send authority.
- * @param {{ gatewayClient: Parameters<typeof openShellSandboxLogReader>[0], workspace: string, sandbox: string,
- *   sandboxId: string, supervisor: unknown, readSupervisor: () => Promise<unknown> }} setup
  */
 export function createCustodyTransitions(
-  { gatewayClient, workspace, sandbox, sandboxId, supervisor, readSupervisor },
-  { deliveryTimeoutMs = 20_000, pollIntervalMs = 400 } = {},
+  { gatewayClient, workspace, sandbox, sandboxId, supervisor, readSupervisor }: CustodySetup,
+  { deliveryTimeoutMs = 20_000, pollIntervalMs = 400 }: CustodyOptions = {},
 ) {
   const reader = openShellSandboxLogReader(gatewayClient);
   const baseline = record(supervisor);
@@ -41,19 +66,10 @@ export function createCustodyTransitions(
   assert.ok(isArray(statuses) && isRecord(statuses[0]), "expected enrolled supervisor container");
   const containerId = readString(statuses[0].containerID);
   assert.ok(workspace && sandbox && sandboxId && uid && containerId, "enrolled supplier identity");
-  /** @typedef {ReadonlyArray<Readonly<{ event: string, id: string }>>} CustodySnapshot */
-  /** @type {WeakSet<CustodySnapshot>} */
-  const snapshots = new WeakSet();
-  /** @type {string[]} */
-  let received = [];
-  /** @type {CustodySnapshot} */
-  let events = [];
-  /** @type {{
-   *   readAttempts: number, successfulReads: number, lastRead: string, ring: string,
-   *   lineCount: number | null, bufferTotal: number | null, freshCount: number | null,
-   *   labels: string[], sequence: string, evidence: NonNullable<Parameters<typeof rememberCustodyOutcome>[1]["evidence"]> | null
-   * }} */
-  const diagnostic = {
+  const snapshots = new WeakSet<CustodySnapshot>();
+  let received: string[] = [];
+  let events: CustodySnapshot = [];
+  const diagnostic: CustodyDiagnostic = {
     readAttempts: 0,
     successfulReads: 0,
     lastRead: "unobserved",
@@ -66,8 +82,7 @@ export function createCustodyTransitions(
     evidence: null,
   };
   let identityCheck = "unobserved";
-  /** @param {CustodySnapshot} before @param {readonly string[]} expected */
-  function describeSequence(before, expected) {
+  function describeSequence(before: CustodySnapshot, expected: readonly string[]) {
     const fresh = events.slice(before.length);
     const id = fresh[0]?.id;
     const unique = !id || !before.some((entry) => entry.id === id);
@@ -97,8 +112,7 @@ export function createCustodyTransitions(
     }
     return { fresh, id, unique, ordered };
   }
-  /** @template Result @param {() => Promise<Result>} action */
-  async function diagnose(action) {
+  async function diagnose<Result>(action: () => Promise<Result>): Promise<Result> {
     try {
       return await action();
     } catch (error) {
@@ -135,8 +149,7 @@ export function createCustodyTransitions(
     }
   }
 
-  /** @param {number} timeoutMs */
-  async function read(timeoutMs) {
+  async function read(timeoutMs: number) {
     diagnostic.readAttempts++;
     diagnostic.lastRead = "pending";
     const signal = AbortSignal.timeout(Math.min(timeoutMs, 5000));
@@ -225,8 +238,7 @@ export function createCustodyTransitions(
     // Only reread the log. A matching partial sequence may still be in flight;
     // a missing resolve, explicit no_permit, or terminal transition fails the test.
     // Reuse the original snapshot to follow an acknowledged pending operation to FIN.
-    /** @param {CustodySnapshot} before @param {readonly string[]} expected */
-    async expectAfter(before, expected) {
+    async expectAfter(before: CustodySnapshot, expected: readonly string[]) {
       diagnostic.freshCount = null;
       diagnostic.labels = [];
       diagnostic.sequence = "unobserved";
