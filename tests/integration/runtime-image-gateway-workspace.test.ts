@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { describe, test, type TestContext } from "node:test";
@@ -113,18 +113,23 @@ describe(
     });
 
     test("Kubernetes Gateway preserves an existing stage when workspace config open fails", async (t) => {
-      const { target, staged, input, env, replace } = await workspaceConfigWriteFixture(t);
+      const { state, target, staged, input, env, replace } = await workspaceConfigWriteFixture(t);
+      // Probe the process's write permissions on a separate file so the writer owns the stage open.
+      const control = join(state, "read-only-control");
+      await writeFile(control, "", { mode: 0o400 });
+      const writableControl = await open(control, "r+").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EACCES") {
+          throw error;
+        }
+      });
+      if (writableControl) {
+        await writableControl.close();
+        t.skip("This process can open a read-only file for writing");
+        return;
+      }
       await writeFile(target, "{}");
       // The parent is writable, so an unlink would delete the read-only stage despite open failing.
       await writeFile(staged, "keep", { mode: 0o400 });
-      const stageIsWritable = await fs.promises.access(staged, fs.constants.W_OK).then(
-        () => true,
-        () => false,
-      );
-      if (stageIsWritable) {
-        t.skip("This process can write the read-only stage");
-        return;
-      }
       assert.throws(replace, { code: "EACCES", syscall: "open", path: staged });
       assert.equal(await readFile(staged, "utf8"), "keep");
       assert.equal(await readFile(target, "utf8"), "{}");
