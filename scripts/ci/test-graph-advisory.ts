@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { dirname, normalize } from "node:path/posix";
 
-import { defaultManifestPath, isObject, loadRunnerManifest } from "./runner-inputs.ts";
+import { defaultManifestPath, loadRunnerManifest } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 
 const configPath = "tests/tsconfig.json";
 const buildInfo = ".build/tests/tsconfig.tsbuildinfo";
@@ -25,7 +26,7 @@ function readJson(path: string | number): unknown {
 }
 
 function object(value: unknown) {
-  return isObject(value) ? value : undefined;
+  return isRecord(value) ? value : undefined;
 }
 
 function list(value: unknown): unknown[] {
@@ -136,7 +137,7 @@ function catalog(tested: string) {
   );
   assert(tracked.has(configPath) && tracked.has(defaultManifestPath));
   const index = object(readJson(defaultManifestPath));
-  assert(index && isObject(index.lanes));
+  assert(index && isRecord(index.lanes));
   for (const ref of [...Object.values(index.lanes), index.fileDurations]) {
     if (typeof ref === "string") {
       assert(

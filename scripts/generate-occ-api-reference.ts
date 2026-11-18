@@ -1,6 +1,6 @@
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { STATUS_CODES } from "node:http";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type Entry = {
@@ -52,7 +52,6 @@ function text(value: unknown): string {
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const documentPath = new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url);
-const referenceDirectoryPath = new URL("../docs/reference/api/", import.meta.url);
 export const httpMethods = new Set([
   "get",
   "put",
@@ -708,42 +707,6 @@ export function generateApiReferenceOutputs(document: unknown): [Output, Output]
   return outputs;
 }
 
-export function generateApiReference(document: unknown) {
-  return generateApiReferenceOutputs(document)[0].content;
-}
-
-async function walkMarkdown(directoryUrl: URL): Promise<string[]> {
-  let entries;
-  try {
-    entries = await readdir(directoryUrl, { withFileTypes: true });
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-
-  const files = [];
-  for (const entry of entries) {
-    const url = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, directoryUrl);
-    if (entry.isDirectory()) {
-      files.push(...(await walkMarkdown(url)));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      files.push(relative(repositoryRoot, fileURLToPath(url)).split("\\").join("/"));
-    }
-  }
-  return files;
-}
-
-export async function unexpectedApiReferenceFiles(outputs: Output[]) {
-  const expectedPaths = new Set(outputs.map((output) => output.path));
-  return (await walkMarkdown(referenceDirectoryPath)).filter((path) => !expectedPaths.has(path));
-}
-
-export async function removeGeneratedApiReferenceDirectory() {
-  await rm(referenceDirectoryPath, { recursive: true, force: true });
-}
-
 async function run() {
   const arguments_ = process.argv.slice(2);
   if (arguments_.length > 1 || (arguments_.length === 1 && arguments_[0] !== "--check")) {
@@ -771,16 +734,8 @@ async function run() {
       }
     }
 
-    const unexpected = await unexpectedApiReferenceFiles(outputs);
-    if (unexpected.length) {
-      throw new Error(
-        `Unexpected generated API reference file: ${unexpected.join(", ")}; run pnpm openapi:generate.`,
-      );
-    }
-
     process.stdout.write(`API reference is current: ${outputs.length} generated pages\n`);
   } else {
-    await removeGeneratedApiReferenceDirectory();
     for (const output of outputs) {
       const path = resolve(repositoryRoot, output.path);
       await mkdir(dirname(path), { recursive: true });

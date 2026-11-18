@@ -9,6 +9,7 @@ import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { preloadAgentSandboxController } from "./agent-sandbox.ts";
 import { selectOpenShellCandidate, verifyOpenShellCandidate } from "./openshell-candidate.ts";
 import { downloadPinnedArtifact } from "./routing.ts";
+import { isRecord } from "./records.ts";
 
 type Environment = Parameters<typeof selectOpenShellCandidate>[0];
 type ExecuteFile = Parameters<typeof verifyOpenShellCandidate>[1]["execFile"];
@@ -291,10 +292,6 @@ async function acquireOpenShellCharts(execFile: ExecuteFile, helm: string, direc
   await execFile(helm, ["show", "chart", chartPath]);
   await execFile(helm, ["show", "chart", workspaceChartPath]);
   return { gateway: chartPath, workspace: workspaceChartPath };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isAgentSandboxNode(node: unknown): node is AgentSandboxNodes["items"][number] {
