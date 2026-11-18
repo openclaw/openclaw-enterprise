@@ -3729,18 +3729,18 @@ index 000000000..e4831c48f
 +  );
 +});
 diff --git a/src/cli/connect-cli.reconnect.test.ts b/src/cli/connect-cli.reconnect.test.ts
-index d49e4b692..bd4aecaab 100644
+index d49e4b692..d4126145e 100644
 --- a/src/cli/connect-cli.reconnect.test.ts
 +++ b/src/cli/connect-cli.reconnect.test.ts
 @@ -1,26 +1,47 @@
  // Real CLI, node-host auth, native credential storage, and WebSocket client.
 -// Only command capabilities and the remote Gateway protocol peer are fixtures.
 +// Authentication cases use fixture command capabilities and a remote Gateway protocol peer.
-+// The startup-cleanup case uses the actual runtime and a registered plugin with a real watcher.
++// Startup-cleanup cases use the actual runtime and a registered plugin with a closeable resource.
 +// Failure cases inject rejection at the native credential/configuration-store boundaries.
  import { once } from "node:events";
-+import { watch } from "node:fs";
  import fs from "node:fs/promises";
++import { MessageChannel } from "node:worker_threads";
  import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
  import { Command } from "commander";
  import { afterEach, describe, expect, it, vi } from "vitest";
@@ -3843,7 +3843,7 @@ index d49e4b692..bd4aecaab 100644
  });
  
  async function runConnect(args: string[]) {
-@@ -57,85 +98,1605 @@ async function runConnect(args: string[]) {
+@@ -57,85 +98,1616 @@ async function runConnect(args: string[]) {
    await program.parseAsync(["connect", ...args], { from: "user" });
  }
  
@@ -3871,7 +3871,7 @@ index d49e4b692..bd4aecaab 100644
 +      server.on("connection", sockets);
 +      const retire = Promise.withResolvers<void>();
 +      const watching = Promise.withResolvers<void>();
-+      let watcher: ReturnType<typeof watch> | undefined;
++      let watcher: MessageChannel | undefined;
 +      let watcherClosed = false;
 +      let preparedHandle: Awaited<ReturnType<typeof fs.open>> | undefined;
 +      let completed = false;
@@ -3896,7 +3896,9 @@ index d49e4b692..bd4aecaab 100644
 +          prepare: async () => {
 +            preparedHandle = await fs.open(state.statePath("prepared-resource"), "w+");
 +            return async () => {
-+              expect(watcherClosed).toBe(true);
++              if (watcher) {
++                expect(watcherClosed).toBe(true);
++              }
 +              await preparedHandle!.close();
 +            };
 +          },
@@ -3907,12 +3909,15 @@ index d49e4b692..bd4aecaab 100644
 +            return true;
 +          },
 +          watchAvailability: () => {
-+            watcher = watch(state.statePath("availability-input"), () => {});
++            // A MessageChannel provides a close event without consuming a filesystem watcher.
++            const channel = new MessageChannel();
++            watcher = channel;
++            const { port1, port2 } = channel;
 +            watching.resolve();
 +            return async () => {
 +              await retire.promise;
-+              const closed = once(watcher!, "close");
-+              watcher!.close();
++              const closed = Promise.all([once(port1, "close"), once(port2, "close")]);
++              port1.close();
 +              await closed;
 +              watcherClosed = true;
 +            };
@@ -3936,7 +3941,6 @@ index d49e4b692..bd4aecaab 100644
 +      plugins.setActivePluginRegistry(registry);
 +      try {
 +        await once(server, "listening");
-+        await fs.writeFile(state.statePath("availability-input"), "ready");
 +        // Both production callers must retain cleanup acquired before a later
 +        // registration/refresh fails, without publishing readiness.
 +        const start =
@@ -3962,7 +3966,13 @@ index d49e4b692..bd4aecaab 100644
 +        await Promise.race([
 +          watching.promise,
 +          running.then(() => {
-+            throw new Error("Node exited before starting the availability watcher");
++            if (workerFailure !== undefined) {
++              throw workerFailure;
++            }
++            const cliError = fixture.runtime.error.mock.lastCall?.[0];
++            throw new Error(
++              `Node exited before starting the availability watcher${cliError ? `: ${cliError}` : ""}`,
++            );
 +          }),
 +        ]);
 +        await new Promise<void>((resolve) => setImmediate(resolve));
@@ -3985,8 +3995,9 @@ index d49e4b692..bd4aecaab 100644
 +        }
 +      } finally {
 +        retire.resolve();
-+        await running;
-+        watcher?.close();
++        await running?.catch(() => {});
++        watcher?.port1.close();
++        watcher?.port2.close();
 +        await preparedHandle?.close();
 +        await closeMinimalGatewayServer(server);
 +        await claim.release();
@@ -5486,7 +5497,7 @@ index d49e4b692..bd4aecaab 100644
        } finally {
          stop();
          await running;
-@@ -150,6 +1711,18 @@ describe("connect setup-code replay", () => {
+@@ -150,6 +1722,18 @@ describe("connect setup-code replay", () => {
    it.each([
      { name: "missing node token", token: false, wrongGateway: false, args: ["--ephemeral"] },
      { name: "different saved Gateway", token: true, wrongGateway: true, args: ["--ephemeral"] },
