@@ -1444,7 +1444,7 @@ revisionTest(
           error: {
             code: "RUNTIME_STATE_LOCK_UNVERIFIED",
             message:
-              "Deployment runtime failed the startup check gateway-state-lock: it cannot verify that an earlier process holding its state lock stopped, so it waits unready. Run 'occ agent logs AGENT_ID --source gateway' for a Gateway, or '--source agent' for a Harness, to see the holder. Stop the Agent, recover the lock as the Agent troubleshooting guide describes, then deploy a new version.",
+              "Runtime failed startup check gateway-state-lock: it cannot verify that the earlier holder of its state lock stopped. To see the holder, run 'occ agent logs AGENT_ID --source gateway' (Harness: '--source agent'). Recover it per the troubleshooting guide.",
           },
         },
       })),
