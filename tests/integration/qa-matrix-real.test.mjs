@@ -157,7 +157,7 @@ test(
             },
           );
           // Reuse the real Agent API workflow, retained volumes and native model turns.
-          await assertInterruptedGatewayTurnResumes(topology, topologyContext);
+          await assertInterruptedGatewayTurnResumes(topologyContext, topology);
         },
         "native-restart",
       );

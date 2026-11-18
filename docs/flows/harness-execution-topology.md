@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-11-18
-last_updated_session: authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6
+last_updated_session: authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1
 ---
 
 # Harness Execution Topology Flow

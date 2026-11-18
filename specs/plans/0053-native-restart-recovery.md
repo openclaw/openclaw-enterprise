@@ -60,7 +60,7 @@ must be removed. Native continuation across redeployments remains the outcome.
 | Native private session contract                                      | Remove patch-added `lifecycleRestartScope`, `resumeAfterRestart.scope`, read/write/projection preservation, and scope-specific graceful/crash/queued-input/child-custody checks. Preserve native identity and authority checks. |
 | Worker failure contract                                              | Remove `RestartContinuationEndedError`, `RESTART_CONTINUATION_ENDED`, and generation refusal branches. Keep desired-state, selected-revision, lease, and predecessor checks.                                                    |
 
-Remove scope-patch build selectors, provenance, and checksums. Owners are
+Remove obsolete scope-patch build selectors, provenance, and checksums; apply the current-base adaptation below. Owners are
 [PostgreSQL state](../../packages/occ/src/state/postgres-state.ts),
 [schema](../../packages/occ/src/state/postgres-schema.ts),
 [admission](../../packages/occ/src/index.ts), and
@@ -117,20 +117,20 @@ Harness-readiness bridge. No replacement recovery interface is planned.
 
 Documentation preparation runs documentation checks only. Implementation requires:
 
-- [ ] Complete every interface row; compare declarations and HTTP/IAM contracts
+- [x] Complete every interface row; compare declarations and HTTP/IAM contracts
       against the pre-#6442 base. Add no replacement flags or permissive decoders.
-- [ ] Search active source, schemas, generated declarations, tests, launch wiring,
+- [x] Search active source, schemas, generated declarations, tests, launch wiring,
       and build metadata. Historical RFCs and applied migrations may retain names.
-- [ ] Typecheck consumers and verify unchanged HTTP schemas with `pnpm openapi:check`.
+- [x] Typecheck consumers and verify unchanged HTTP schemas with `pnpm openapi:check`.
 
-| Required outcome             | Real check and prerequisites                                                                                                                                       | Remaining proof |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
-| No recovery persistence      | Fresh install and populated upgrade in `postgres-migration-compatibility.test.mjs`; inspect actual columns/JSON, immutability and limited-role permissions         | Not run         |
-| Stop and revision ownership  | PostgreSQL worker replacement suite, Stop during deployment and overlapping revisions without generation fixtures                                                  | Not run         |
-| Unscoped native continuation | `harness-topology-k3d-real.test.mjs` through Agent API, including retained data from previous scoped runtime; same session and final result without new user input | Not run         |
-| Configuration change         | Same real suite: ordinary redeploy and harmless configuration-generation change with valid authority/storage                                                       | Not run         |
-| Negative controls            | Explicit cancellation, completed work, revoked owner, active-remote-turn refusal/wait                                                                              | Not run         |
-| Packaging and launch paths   | Native AMD64/ARM64 images, remaining patch application/startup, Kubernetes/Docker/SSH conformance; not live proof on every topology                                | Not run         |
+| Required outcome             | Real check and prerequisites                                                                                                                                       | Remaining proof                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| No recovery persistence      | Fresh install and populated upgrade in `postgres-migration-compatibility.test.mjs`; inspect actual columns/JSON, immutability and limited-role permissions         | 252-case PostgreSQL compatibility suite passed                         |
+| Stop and revision ownership  | PostgreSQL worker replacement suite, Stop during deployment and overlapping revisions without generation fixtures                                                  | 42-case PostgreSQL worker suite passed                                 |
+| Unscoped native continuation | `harness-topology-k3d-real.test.mjs` through Agent API, including retained data from previous scoped runtime; same session and final result without new user input | 48 native source tests passed; live model/previous-image proof pending |
+| Configuration change         | Same real suite: ordinary redeploy and harmless configuration-generation change with valid authority/storage                                                       | Not run                                                                |
+| Negative controls            | Explicit cancellation, completed work, revoked owner, active-remote-turn refusal/wait                                                                              | Not run                                                                |
+| Packaging and launch paths   | Native AMD64/ARM64 images, remaining patch application/startup, Kubernetes/Docker/SSH conformance; not live proof on every topology                                | 448 selected checks passed; native images pending                      |
 
 Real proof requires an enforcing disposable k3d cluster, migrated PostgreSQL
 with a limited application role, digest-pinned native images, and authorized
@@ -152,18 +152,47 @@ RFC-0043 was submitted in [PR #6502](https://github.com/openclaw/openclaw-enterp
 at `11cef2cb9` before Driver implementation. The follow-up implementation removes
 the interfaces in the checklist and updates the current references and flows.
 
-Source verification: consumer typecheck, workspace isolation, unchanged generated
-OpenAPI, CI selection audit, and 448 selected Kubernetes/Docker/SSH, startup, and
-runtime-asset tests passed with no skips. The real PostgreSQL fresh/populated
-removal test passed all four checks; the complete compatibility suite is being
-rerun after preserving the historical admitted-snapshot constraint and measuring
-real dump/restore catalogs. The worker suite is being rerun after replacing its
-obsolete generation assertion with Stop-during-preparation behavior.
+Verification of implementation `8da0b518c` and the following test/doc cleanup:
 
-Native unit checks and final image qualification are pending. No real model or
-cluster recovery result is claimed. In particular, an old scoped-runtime-to-new
-runtime transition still needs live proof. No merge, image publication, or
-production deployment is part of this delivery.
+- PostgreSQL compatibility: **252 passed, no failures or skips**, including fresh
+  and populated removal, immutable revisions, limited-role grants, rollback,
+  historical canonical/Provider upgrades, and real dump/restore catalogs.
+- PostgreSQL worker replacement: **42 passed, no failures or skips**. The former
+  generation-boundary test now proves Stop during preparation and subsequent
+  deployment. Existing overlap, supersession and authorization cases remain.
+- Selected Kubernetes/Docker/SSH conformance, startup, and runtime assets:
+  **448 passed, no failures or skips**. QA fixture checks: **127 passed**.
+- Pinned native source: **48 tests passed across five files**, including real
+  SQLite records with old scope metadata, repeated restart, graceful recovery,
+  child custody and pre-start lifecycle. Production and four affected test
+  typecheck graphs passed. These tests are not real-model cluster proof.
+- Consumer typecheck, lint, formatting, workspace isolation, unchanged OpenAPI,
+  CI selection audit, docs links/spec metadata/length, and flow validation passed.
+  The source archive checksum matched; all unchanged patches and the removal
+  patch apply in recipe order.
+
+[Native image qualification](https://github.com/openclaw/openclaw-enterprise/actions/runs/44388831231)
+runs against `8da0b518c`; both controller architectures passed and both runtimes
+are pending. Final-head image checks remain required before merge. Local
+`k3d-model` preparation created an isolated cluster and is building runtime images.
+No real-model continuation, configuration-change, Stop→Deploy, or prior-image
+upgrade result is claimed yet.
+
+PR CI at `8da0b518c` found one stale packaging assertion: the packaged-Codex
+fixture omitted the new removal patch from its expected provenance inventory.
+The fixture now checks that patch's exact reviewed SHA-256. Runtime smoke and CI
+must rerun with the corrected fixture; the equality check remains strict.
+
+Independent implementation review remains unavailable: the shared autoreview
+helper's isolated Codex process failed initialization on a read-only filesystem.
+Earlier RFC-only bot reviews do not cover the implementation. No merge, image
+publication or production deployment is authorized in this task.
+
+The proposed RFC number follows the pinned base. Other open proposals use 0043;
+recheck against main before merge. The current references own the new behavior:
+[interrupted turns](../../docs/reference/agents/interrupted-turns.md),
+[deployment](../../docs/reference/agents/deployment.md), and
+[recovery flow](../../docs/flows/harness-restart-recovery.md).
 
 ## Manual Notes
 

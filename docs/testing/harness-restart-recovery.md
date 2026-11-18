@@ -9,6 +9,19 @@ and `OCC_TEST_QA_PRESET=Codex`. That explicit selection reuses this real workflo
 and requires the same prepared `k3d-model` resources, images, model credentials,
 and native-admin TLS inputs. It is not part of the default advisory selection.
 
+After preparing the `k3d-model` file environment for
+`harness-topology-k3d-real.test.mjs`, run the selected QA workflow from the
+repository root. Keep the authorized model credentials in the calling environment:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_SCENARIOS=native-restart \
+OCC_TEST_QA_INSTALLATION=kubernetes OCC_TEST_QA_PRESET=Codex \
+  node --env-file=/path/to/prepared/test.env --test tests/integration/qa-matrix-real.test.mjs
+```
+
+The selected case must pass without skips. Use the preparation state's cleanup
+command afterward; preserve unrelated clusters and the default kubeconfig.
+
 ## What the case checks
 
 The model writes a marker in its Harness workspace and waits in a tool call.

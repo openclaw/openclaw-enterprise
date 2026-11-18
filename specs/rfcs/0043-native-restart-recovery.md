@@ -35,8 +35,8 @@ and admitted JSON that store their values. An appended migration removes the
 stored data and restores revision immutability in the same transaction.
 
 Remove `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE` from Kubernetes, Docker, and SSH
-launches. Remove the patch-added session scope fields and scope checks by removing
-the native scope patch from the build. Keep native session identity, current
+launches. Remove the former patch's session scope fields and checks from pinned native
+source, using the current-base adaptation below. Keep native session identity, current
 authority, explicit turn cancellation, and retained-state validity checks.
 Keep the Harness-readiness and reconnect bridge from
 [PR #6435](https://github.com/openclaw/openclaw-enterprise/pull/6435).
