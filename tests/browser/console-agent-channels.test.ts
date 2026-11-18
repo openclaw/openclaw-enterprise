@@ -93,16 +93,18 @@ const RETRY_REFUSED =
   "This Agent cannot use the saved Slack Secret until it is granted access. Deploying grants this Agent access.";
 const GRANT_MISSING =
   "This Agent has no access to a bound Slack Secret yet. Deploying grants this Agent access, or select Retry Secret access to grant it now.";
-// The same missing grant, read by a session that is offered no Retry.
-const GRANT_MISSING_NO_RETRY =
-  "This Agent has no access to a bound Slack Secret yet. Deploying grants this Agent access.";
+// The same missing grant, read by a session that may neither retry it nor deploy this Agent: it
+// names who can grant it.
+const GRANT_MISSING_NO_STEP =
+  "This Agent has no access to a bound Slack Secret yet. Ask an Installation administrator, or someone who may deploy this Agent and operate the Secret, to grant this Agent access.";
 // A grant request answered 400/404/409/429 left the grant unconfirmed; Retry Secret access sends it
 // again.
 const GRANT_UNCONFIRMED =
   "Configuration saved, but Secret access grants could not be confirmed. Deploying grants this Agent access, or select Retry Secret access to confirm it now.";
-// The same unconfirmed grant, read by a session that is offered no Retry (finding 2949).
-const GRANT_UNCONFIRMED_NO_RETRY =
-  "Configuration saved, but Secret access grants could not be confirmed. Deploying grants this Agent access.";
+// The same unconfirmed grant, read by a session that may neither retry it (finding 2949) nor deploy
+// this Agent.
+const GRANT_UNCONFIRMED_NO_STEP =
+  "Configuration saved, but Secret access grants could not be confirmed. Ask an Installation administrator, or someone who may deploy this Agent and operate the Secret, to grant this Agent access.";
 // A session known not to administer the Installation sends no grant: the member's deploy writes
 // it (RFC-0040). The drawer's saved notice and the Credentials tab's save outcome say so.
 const MEMBER_DRAWER_SAVED =
@@ -1576,9 +1578,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
 
   // An Installation administrator's page reads the IAM policy when it loads and finds a bound Slack
   // Secret the Agent has no grant for. Her administration ends before she opens Channels: the
-  // permission answer now refuses her Configuration update, so neither tab offers Retry Secret
-  // access, and the warning offers only the deploy instead of the Retry she no longer has.
-  test("A missing Slack Secret grant offers only the deploy once a revoke removes Retry", async (t) => {
+  // permission answer now refuses her Configuration update and Agent deploy, so neither tab offers
+  // Retry Secret access and Deploy new version is disabled. The warning names who can grant the
+  // access instead of a step she cannot take.
+  test("A missing Slack Secret grant names who can grant it once a revoke removes Retry and Deploy", async (t) => {
     const { fixture, namespace, agent } = await ungrantedSlackAgent(
       t,
       "Revoked Slack Grant",
@@ -1607,22 +1610,24 @@ describe("Agent channels", { concurrency: 3 }, () => {
 
     revoke();
     await page.getByRole("tab", { name: "Channels", exact: true }).click();
-    await page.getByText(GRANT_MISSING_NO_RETRY, { exact: true }).waitFor();
+    await page.getByText(GRANT_MISSING_NO_STEP, { exact: true }).waitFor();
     await expectNoText(page, GRANT_MISSING);
     await page.getByRole("link", { name: "Open Credentials" }).click();
     await page
       .locator(".channel-secrets")
-      .getByText(GRANT_MISSING_NO_RETRY, { exact: true })
+      .getByText(GRANT_MISSING_NO_STEP, { exact: true })
       .waitFor();
     await expectNoText(page, GRANT_MISSING);
     assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   });
 
   // Finding 2949. An Installation administrator saves a Slack Secret whose grant request is rate
   // limited, so the grant stays unconfirmed and she is offered Retry Secret access. Her
-  // administration then ends: the newer permission answer refuses her Configuration update, so
-  // neither tab offers Retry, and the shown warning is reworded in place to offer only the deploy.
-  test("An unconfirmed Slack Secret grant offers only the deploy once a revoke removes Retry", async (t) => {
+  // administration then ends: the newer permission answer refuses her Configuration update and
+  // Agent deploy, so neither tab offers Retry, and the shown warning is reworded in place to name
+  // who can grant the access.
+  test("An unconfirmed Slack Secret grant names who can grant it once a revoke removes Retry and Deploy", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Revoked unconfirmed grant");
     const botSecret: unknown = await fixture.createSecret(
       namespace.id,
@@ -1676,10 +1681,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
 
     revoke();
     await page.getByRole("tab", { name: "Channels", exact: true }).click();
-    await page.getByText(GRANT_UNCONFIRMED_NO_RETRY, { exact: true }).waitFor();
+    await page.getByText(GRANT_UNCONFIRMED_NO_STEP, { exact: true }).waitFor();
     await expectNoText(page, GRANT_UNCONFIRMED);
     await page.getByRole("link", { name: "Open Credentials" }).click();
-    await panel.getByText(GRANT_UNCONFIRMED_NO_RETRY, { exact: true }).waitFor();
+    await panel.getByText(GRANT_UNCONFIRMED_NO_STEP, { exact: true }).waitFor();
     await expectNoText(page, GRANT_UNCONFIRMED);
     assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
   });

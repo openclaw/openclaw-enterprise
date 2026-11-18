@@ -99,6 +99,8 @@ sends no grant. The form stays editable and says that deploying gives the Agent
 describes. **Deploy new version** stays available. When an administrator opens Credentials, the tab reads Namespace IAM and says
 when that grant is missing. **Deploy new version** stays available, because the deploy writes the grant.
 When your access no longer includes updating this Agent, the warning offers only the deploy.
+When it includes neither updating nor deploying this Agent, the warning says to ask an
+Installation administrator, or someone who may deploy the Agent and `operate` the credential.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
 so and offers **Retry credential access**.
@@ -142,7 +144,8 @@ confirmed. An Installation administrator's console reads that access. The save m
 deployment as the next step only after the Agent's access is confirmed. Until then, the warning
 says that deploying grants it, **Retry Secret access** grants it now, and **Deploy new version**
 stays available. When your access no longer includes editing this Configuration, the panel offers
-no Retry. If the API refuses a save for a channel setting, the panel
+no Retry. If you also cannot deploy this Agent, the warning names who can grant the access: an
+Installation administrator, or someone who may deploy the Agent and `operate` the Secret. If the API refuses a save for a channel setting, the panel
 shows the API's message, which names the setting. Fix that setting in the Configuration JSON on the
 Configuration tab. If the message asks for a Secret binding of another name, bind that name through
 the Configuration API.

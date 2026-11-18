@@ -249,7 +249,8 @@ After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCre
 grants the Agent service principal access to selected Secrets through Namespace IAM. A failed
 grant leaves Configuration saved and offers **Retry Secret access**; a timeout or 5xx stays
 unknown. A deploy writes each missing grant the deployer can `operate` (`grantDeployedAgentSources`),
-so no grant outcome holds Deploy and each warning says so. A member's session sends no grant, as
+so no grant outcome holds Deploy. Each warning offers only the steps its reader can take, or
+names who can grant access. A member's session sends no grant, as
 the save message says. An administrator's console reads every bound Secret's grant, with Slack on
 or off, and a save or Retry during one reads again before naming Deploy. With
 Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
@@ -356,7 +357,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-18 22:40: Grant warnings name who can grant access when the reader may neither retry nor deploy. (authoring-run/f86b341d-b08f-47f4-80ff-a375893c8e05 - cfbec6564415e928e74062b91ab00f19656b6a86)
 - 2026-11-17 05:44: Deploys write credential grants; no grant outcome holds Deploy. (authoring-run/08b481d4-4a5e-4aed-b768-352a6716323c - 28afb11d68da12a17148895883235d074b9bb46f)
-- 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

@@ -1184,6 +1184,7 @@ test("a missing harness grant warning follows the selected Secret", async (t) =>
     harnessAuth: { method: "api_key", source: savedSecret.ref },
   });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/iam/**`);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByRole("heading", { name: "Selected Grant Agent" }).waitFor();
@@ -1193,9 +1194,14 @@ test("a missing harness grant warning follows the selected Secret", async (t) =>
     secretOptionLabel(savedSecret),
   );
   await selectSecret(page, "API key Secret", otherSecret);
-  const grantRead = grantReadResponse(page, namespace.id);
+  const bindingsPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  assert.equal(await settledFetches(page, bindingsPath), 0);
   held.release();
-  await expectNoText(page, HARNESS_GRANT_MISSING, () => grantRead);
+  // The console has read the policy body and applied its answer before the absence is checked,
+  // so a missing grant applied late to the new selection would show here.
+  await expectNoText(page, HARNESS_GRANT_MISSING, () =>
+    waitForSettledFetches(page, bindingsPath, 1),
+  );
   assert.equal(
     await page.getByLabel("API key Secret", { exact: true }).inputValue(),
     secretOptionLabel(otherSecret),

@@ -302,8 +302,8 @@ export interface OutstandingSecretGrants {
 }
 
 // The words one grant path's warnings use: what saved (null after a retry, which saves nothing),
-// what a refused grant means, the control an Installation administrator selects to grant it, and
-// the retry this page offers.
+// what a refused grant means, the control an Installation administrator selects to grant it, the
+// retry this page offers, and the credential a deployer must operate.
 export interface GrantWarningSubject {
   saved: string | null;
   refusal: string;
@@ -311,6 +311,7 @@ export interface GrantWarningSubject {
   bound: string;
   administratorStep: string;
   retry: string;
+  credential: string;
 }
 
 const SLACK_GRANT: GrantWarningSubject = {
@@ -320,6 +321,7 @@ const SLACK_GRANT: GrantWarningSubject = {
   bound: "a bound Slack Secret",
   administratorStep: "Retry Secret access",
   retry: "Retry Secret access",
+  credential: "Secret",
 };
 
 // Granting an Agent a credential from Credentials writes Namespace IAM policy, which needs
@@ -333,32 +335,40 @@ const savedBut = (saved: string | null, problem: string) =>
   saved === null
     ? `${problem.charAt(0).toUpperCase()}${problem.slice(1)}`
     : `${saved} saved, but ${problem}`;
-const GRANT_WARNINGS: Record<SecretGrantProblem, (subject: GrantWarningSubject) => string> = {
-  refused: ({ saved, refusal }) => `${savedBut(saved, refusal)}. ${DEPLOY_GRANTS}.`,
-  unconfirmed: ({ saved, access, retry }) =>
-    `${savedBut(saved, `${access} could not be confirmed`)}. ${DEPLOY_GRANTS}, or select ${retry}${saved === null ? " again" : ""} to confirm it now.`,
-  // Only an Installation administrator's console reads a missing grant, so it names the
-  // administrator's step (finding 2260).
-  missing: ({ bound, administratorStep }) =>
-    `This Agent has no access to ${bound} yet. ${DEPLOY_GRANTS}, or select ${administratorStep} to grant it now.`,
+const GRANT_PROBLEMS: Record<SecretGrantProblem, (subject: GrantWarningSubject) => string> = {
+  refused: ({ saved, refusal }) => savedBut(saved, refusal),
+  unconfirmed: ({ saved, access }) => savedBut(saved, `${access} could not be confirmed`),
+  missing: ({ bound }) => `This Agent has no access to ${bound} yet`,
+};
+// The step this page offers to grant it now. A refused request offers none. Only an Installation
+// administrator's console reads a missing grant, so it names the administrator's step (finding
+// 2260).
+const GRANT_RETRY_STEPS: Record<SecretGrantProblem, (subject: GrantWarningSubject) => string> = {
+  refused: () => "",
+  unconfirmed: ({ saved, retry }) =>
+    `select ${retry}${saved === null ? " again" : ""} to confirm it now`,
+  missing: ({ administratorStep }) => `select ${administratorStep} to grant it now`,
 };
 
-// A reader this page offers no Retry, such as an administrator whose access ended after the policy
-// read or after a grant request failed, is not offered a step they cannot take (finding 2949).
-const NO_RETRY_GRANT_WARNINGS: Partial<
-  Record<SecretGrantProblem, (subject: GrantWarningSubject) => string>
-> = {
-  unconfirmed: ({ saved, access }) =>
-    `${savedBut(saved, `${access} could not be confirmed`)}. ${DEPLOY_GRANTS}.`,
-  missing: ({ bound }) => `This Agent has no access to ${bound} yet. ${DEPLOY_GRANTS}.`,
-};
-
+// Each warning offers only the steps this reader can take. A reader offered no Retry, such as an
+// administrator whose access ended after the policy read or after a grant request failed, is not
+// offered it (finding 2949). A reader who may not deploy this Agent is not told that deploying
+// grants access. A reader with neither step is told who can grant it.
 export function grantWarning(
   problem: SecretGrantProblem,
   subject: GrantWarningSubject,
   canRetry = true,
+  canDeploy = true,
 ) {
-  return ((!canRetry && NO_RETRY_GRANT_WARNINGS[problem]) || GRANT_WARNINGS[problem])(subject);
+  const stated = GRANT_PROBLEMS[problem](subject);
+  const retry = canRetry ? GRANT_RETRY_STEPS[problem](subject) : "";
+  if (canDeploy) {
+    return `${stated}. ${DEPLOY_GRANTS}${retry ? `, or ${retry}` : ""}.`;
+  }
+  if (retry) {
+    return `${stated}. ${retry.charAt(0).toUpperCase()}${retry.slice(1)}.`;
+  }
+  return `${stated}. Ask an Installation administrator, or someone who may deploy this Agent and operate the ${subject.credential}, to grant this Agent access.`;
 }
 
 // The harness authentication source's grant. A refusal reports the refused request, not the
@@ -374,6 +384,7 @@ export function harnessGrantSubject(kind: "secret" | "credential_source"): Grant
     bound: `its authentication ${noun}`,
     administratorStep: "Save authentication source",
     retry: "Retry credential access",
+    credential: noun,
   };
 }
 
@@ -676,6 +687,7 @@ export function createChannelSecretsPanel({
   checkGrants = false,
   canGrant = true,
   readOnly = () => false,
+  mayDeploy = () => true,
   readOnlyReason = () => CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
   bindingsToReplace = () => null,
   bindingRefusal = async () => undefined,
@@ -704,6 +716,8 @@ export function createChannelSecretsPanel({
   // True when the caller may not update this Configuration: the bindings are shown, not edited
   // (finding 2432). The page's permission answer can land after the panel is built.
   readOnly?(): boolean;
+  // False when the caller may not deploy this Agent, so a grant warning does not offer the deploy.
+  mayDeploy?(): boolean;
   // Why the bindings are read-only: Configuration update, or Secret operate on the Secrets it
   // binds, which every Configuration save also needs (finding 2437).
   readOnlyReason?(): string;
@@ -827,11 +841,12 @@ export function createChannelSecretsPanel({
     );
   }
 
-  // Retry Secret access is offered only to a reader who may save the bindings. After a Retry,
-  // the warning does not say the Configuration saved (finding 3023).
+  // Retry Secret access is offered only to a reader who may save the bindings, and the deploy
+  // only to one who may deploy. After a Retry, the warning does not say the Configuration saved
+  // (finding 3023).
   function slackGrantWarning() {
     const subject = state.grantRetried ? { ...SLACK_GRANT, saved: null } : SLACK_GRANT;
-    return grantWarning(state.grantProblem, subject, !readOnly());
+    return grantWarning(state.grantProblem, subject, !readOnly(), mayDeploy());
   }
 
   function updateGrantWarning(secretBindings = state.configuration.secretBindings ?? {}) {
