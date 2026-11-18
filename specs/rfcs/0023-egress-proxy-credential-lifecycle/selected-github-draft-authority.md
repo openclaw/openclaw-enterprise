@@ -33,7 +33,8 @@ flowchart TB
   W -.->|later edit| E["<b>GitHub Backend + OCC</b><br/>Live target and grant checks"]
   E -.->|read canonical target| G
   E -.->|match original| D
-  E -.->|authorize update| S
+  E -.->|authorize update| U["<b>Trusted Supervisor</b><br/>Update request"]
+  U -.->|send update| G
 ```
 
 All dashed arrows describe the proposed connected contract; they do not establish installed behavior.
@@ -52,4 +53,4 @@ For each edit, the Backend independently reads GitHub's canonical pull request I
 
 ## Acceptance and qualification
 
-Through the ordinary Agent workflow, create two drafts under one selected grant and update an original while it remains a draft. In the same journey, deny edits to a colleague's same-repository draft, a published pull request, a foreign repository, and stale or withdrawn authority, with zero forwarded update mutations. Missing mandatory response enforcement must prevent create dispatch. Forged, mismatched or lost responses and lost settlement acknowledgment must yield no edit authority and no repeated create mutation; any original provider effect remains possible and must be reported. Replays must not create another binding. Separately retain the bounded grant's one-create/unknown controls and installation-wide behavior. Source, integrated, released Supervisor, installed Agent and live GitHub qualification remain separate; none is established by this proposal.
+Through the ordinary Agent workflow, create two drafts under one selected grant and update an original while it remains a draft. In the same journey, deny edits to a colleague's same-repository draft, a published pull request, a foreign repository, and stale or withdrawn authority, with zero forwarded update mutations. Missing mandatory response enforcement must prevent create dispatch. Forged, mismatched or lost responses must yield no edit authority and no repeated create mutation; any original provider effect remains possible and must be reported. If settlement acknowledgment is lost, deny edits until reconciliation confirms the durable binding, and never repeat the create mutation. Replays must not create another binding. Separately retain the bounded grant's one-create/unknown controls and installation-wide behavior. Source, integrated, released Supervisor, installed Agent and live GitHub qualification remain separate; none is established by this proposal.
