@@ -12,10 +12,9 @@ rfc: ../rfcs/0043-installation-network-policy-ceiling.md
 
 ## Outcome and scope
 
-Implement the submitted RFC in PR #4920. Administrators manage the Installation
-ceiling in Settings. PostgreSQL owns the effective rules; startup seeds absent
-state once. Every Agent policy admission
-and pending application uses the saved ceiling. Running access is unchanged.
+Administrators edit the saved Installation ceiling in Settings. Startup seeds
+absent state; admission and pending applications use the PostgreSQL record.
+Running access is unchanged.
 
 ## Global Constraints
 
@@ -29,63 +28,54 @@ and pending application uses the saved ceiling. Running access is unchanged.
 
 ## Contract and source touchpoints
 
-Add a ceiling record owned by the Installation persistence repository. Its public
-shape is `{ installationId, version, rules, updatedAt, updatedBy }`. GET and PUT at
-`/installation/sandbox-network-policy-ceiling` use the standard data envelope.
-PUT takes `{ expectedVersion, rules }`. POST at the same path plus `/validate`
-previews that input through the shared server validator and returns a
-`ConfigurationResult<{ rules }>` in the data envelope without writes. It checks
-the same Installation authority and current version. Preview success grants
-no authority to PUT. Agent policy reads expose only rules.
+The Installation repository owns `{ installationId, version, rules, updatedAt, updatedBy }`.
+GET and PUT at `/installation/sandbox-network-policy-ceiling` use the standard
+data envelope. PUT takes `{ expectedVersion, rules }`; POST adds `/validate` to
+that path and returns `ConfigurationResult<{ rules }>` without writes. Both
+check Installation authority and version. Preview grants no later write
+authority. Agent policy reads expose only rules.
 
-The ceiling lock precedes Namespace and Agent locks in admission and worker
-application transactions. Shared admission locks permit unrelated Agents to
-proceed; updates and seed-once initialization use an exclusive lock. Initialization
-holds the same lock even when the record is absent. Startup must finish before
-HTTP admission; workers require an existing record and never seed it. API replicas
-read the same dynamic value and retain no startup ownership lease.
+Shared ceiling locks precede Namespace/Agent locks in admission and worker
+transactions. Updates and initialization take the exclusive lock, including when
+the record is absent. Initialization precedes HTTP admission; workers require
+saved state and never seed it. Replicas retain no startup ownership lease.
 
 ## Implementation
 
 ### Task 1: Persistence, startup, API and real callers
 
-Extend contracts, Installation state repositories, PostgreSQL schema and migration,
-controller composition, HTTP schemas/handlers, all policy admission callers, and
-worker rechecks. Reject the retired overwrite setting and preserve attributable
-transactional audit. Extend existing PostgreSQL Agent policy workflows and add focused TypeScript
-integration coverage for persistence, restart, stale saves, denials,
-rollback, concurrency and absent state. Register new tests in their actual CI lane.
+Extend contracts, Installation repositories, schema/migrations, composition,
+HTTP handlers, admission and worker rechecks. Reject the retired overwrite key.
+Extend PostgreSQL Agent workflows to prove persistence, restart, stale saves,
+denials, audit rollback, concurrency and absent state. Register coverage in CI.
 
 ### Task 2: Console Settings and UI evidence
 
-Use the existing rule editor and shared browser components for the administrator
-Settings section. Cover loading, empty, invalid, forbidden,
-conflict reload, uncertain-save recovery, successful saves, and permission loss.
-Preserve drafts on failure and require review before saving reductions. Add matching
-Storybook scenarios and workflow instructions. Rebuild, inspect controls, and
-capture before/after screenshots and a paced interaction video outside the checkout.
-Upload native GitHub attachments and identify simulated proof accurately.
+Reuse shared Settings controls. Cover loading, empty, invalid, forbidden,
+conflict, uncertain-save, success and permission-loss states. Preserve drafts;
+require review before saving. Update and rebuild Storybook, inspect controls,
+and capture before/after screenshots and video outside the checkout. Upload
+native GitHub attachments and label simulated proof.
 
 ### Task 3: Current documentation and verification
 
-Update the network policy reference, operator guide, owning runtime flow, affected
-cheat sheets and navigation. Generate API references from route schemas. Update
-RFC implementation status from actual delivery evidence and link this plan.
-Run applicable formatting, lint, types, workspace, OpenAPI and docs checks plus
-PostgreSQL and regular Agent workflow integrations. Run Fedora/Podman/k3d/OpenShell
-qualification when the selected host and authorized credentials are available.
-Complete independent review and address findings before marking the PR ready.
-Publish only as a draft while required proof or review remains incomplete.
+Update references, guides, flows, cheat sheets and navigation; generate API docs
+from route schemas. Run formatting, lint, types, boundaries, API/docs checks and
+PostgreSQL Agent integrations. Run Fedora/Podman/k3d/OpenShell qualification with
+the selected host and authorized credentials. Complete independent review.
+Preserve ready-for-review status as requested; list outstanding merge requirements.
 
 ## Review Focus
 
-- Empty persisted rules must survive a different seed and a restart.
-- Startup mode changes and concurrent saves must invalidate stale editor versions.
-- Ceiling tightening must reject later admission and pending work without changing running access.
-- A failed audit commit must roll back the setting; missing state must not use a local seed.
-- A lost save response must be recovered by reading present state without automatic retry.
+- Empty persisted rules must survive a different seed and restart.
+- Concurrent saves must reject stale editor versions.
+- Tightening rejects later admission and pending work without changing running access.
+- Failed audit commits roll back the setting; missing state cannot use a local seed.
+- Lost save responses require reading present state, without automatic retry.
 
-## Verification
+<a id="verification"></a>
+
+## Initial verification record
 
 | Outcome                     | Required proof                                                                               | Result or remaining proof                                                                     |
 | --------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
