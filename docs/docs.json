@@ -621,16 +621,29 @@
                     "label": "Overview"
                   },
                   {
-                    "page": "guides/deploy/kubernetes",
-                    "label": "Kubernetes"
-                  },
-                  {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup Without OpenShell"
-                  },
-                  {
-                    "page": "guides/deploy/production-installation",
-                    "label": "Control Plane Setup"
+                    "group": "Control Plane Setup",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/control-plane-setup",
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "guides/quickstart",
+                        "label": "Local Without OpenShell"
+                      },
+                      {
+                        "page": "guides/deploy/production-installation",
+                        "label": "Kubernetes"
+                      },
+                      {
+                        "page": "guides/deploy/openshift",
+                        "label": "OpenShift"
+                      },
+                      {
+                        "page": "guides/deploy/azure-postgresql",
+                        "label": "Azure PostgreSQL"
+                      }
+                    ]
                   },
                   {
                     "page": "guides/deploy/installation-profiles",
@@ -838,7 +851,8 @@
               "guides/deploy/published-images",
               "guides/deploy/prerequisite-diagnosis",
               "guides/deploy/production-tui",
-              "reference/settings/oidc"
+              "reference/settings/oidc",
+              "guides/deploy/kubernetes"
             ]
           },
           {

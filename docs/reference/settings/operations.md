@@ -32,7 +32,7 @@ for `https://ossrdbms-aad.database.windows.net/.default`. The SDK handles cachin
 and renewal; OCC does not persist tokens or fall back to a developer login.
 Use `pnpm db:migrate` or `pnpm db:migrate:production` in this mode.
 
-See [operator setup](../../guides/deploy/production-installation.md#azure-postgresql-workload-identity)
+See [operator setup](../../guides/deploy/azure-postgresql.md)
 for deployment-owned identity inputs and chart limits, and
 [PostgreSQL testing](../../testing/postgresql.md#azure-workload-identity-connections)
 for the available connection proof and its limits.

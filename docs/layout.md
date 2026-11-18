@@ -216,6 +216,11 @@ shipped specifications remain historical records. Keep Manual Notes unchanged.
 Put detailed contracts in their owning reference rather than expanding
 architecture pages for every feature.
 
+Keep shared control plane installation steps in `docs/guides/deploy/production-installation.md`.
+The [setup overview](guides/deploy/control-plane-setup.md) links cloud and
+distribution-specific preparation in sibling pages under `docs/guides/deploy/`.
+Register these pages in the **Control Plane Setup** sidebar group.
+
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling
 guides and inventories may remain directly under `docs/`; `docs/testing/` owns

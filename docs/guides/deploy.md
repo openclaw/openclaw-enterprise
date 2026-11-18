@@ -44,6 +44,10 @@ The [console reference](../reference/console.md) covers browser behavior and lim
 
 ## Production
 
+Choose a path in [Control plane setup](deploy/control-plane-setup.md).
+Cloud and distribution-specific settings live in its linked subpages;
+shared Kubernetes requirements and installation steps remain below.
+
 The Kubernetes and EKS setup guides install OCE with OpenShell and prepare the
 shared operator session for **Deploy your first Agent**. Do not repeat the custom
 installation sequence below after either setup guide. Installation profiles and
