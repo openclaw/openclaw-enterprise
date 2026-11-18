@@ -211,12 +211,12 @@ Compute records inference launch settings in new protected Codex revisions. The 
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
 original retry settings.
 
-For a new dedicated Codex revision on a provider-owned Sandbox other than OpenShell,
-Kubernetes Compute also records which probe command to use. That probe inherits the
-Harness's nonempty `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings in either case, just
-as the serving Codex process already did. Codex decides how to use them; the Sandbox
-still enforces egress. Retrying a revision admitted before this change reuses its
-original command. Deploy a new revision to pick up the fix.
+For new dedicated Codex revisions on provider-owned Sandboxes other than OpenShell,
+Kubernetes Compute records the probe command. Both probe commands inherit the
+Harness's nonempty `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`, as the
+serving Codex process does. Codex decides how to use them; the Sandbox enforces
+egress. Earlier revisions retain their original command on retry. Deploy a new
+revision to use the fix.
 
 For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
@@ -356,6 +356,10 @@ removal.
 - 2026-11-18 22:35: Retain native scope policy (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
 
 - 2026-11-18 20:10: Remove the recovery-generation boundary; later Gateway startup uses native eligibility (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9)
+
+- 2026-11-18 03:53: Preserve the merged proxy-probe trace and both source histories. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - b3a67847915ca3d9884bc0b4b14bd7f63f79ff1e)
+
+- 2026-11-18 03:05: Refresh restart-resume source provenance. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - f98453d0adf83a53c549c5198c3c388a5ca7fc95)
 
 - 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
 
