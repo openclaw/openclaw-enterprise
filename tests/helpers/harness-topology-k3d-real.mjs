@@ -4253,10 +4253,26 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     context.diagnostic(`automatic interrupted-turn recovery passed: ${replacement}`);
     console.info(`k3d dedicated: ${replacement} recovery passed.`);
   }
+  function transcriptSnapshot(messages) {
+    const snapshot = structuredClone(messages);
+    // chat.history projects the current profile avatar at read time. Role changes
+    // refresh its cache version; retain actor identity and all transcript evidence.
+    for (const message of snapshot) {
+      const metadata = message.__openclaw;
+      if (typeof metadata?.senderProfileAvatarUrl === "string") {
+        metadata.senderProfileAvatarUrl = metadata.senderProfileAvatarUrl.replace(/\?v=\d+$/u, "");
+      }
+    }
+    return snapshot;
+  }
   for (const [sessionKey, before] of finished) {
     const after = await gatewayCall(topology, "chat.history", { sessionKey, limit: 100 });
     assert.equal(after.sessionId, before.sessionId);
-    assert.deepEqual(after.messages, before.messages, "restart must leave finished work unchanged");
+    assert.deepEqual(
+      transcriptSnapshot(after.messages),
+      transcriptSnapshot(before.messages),
+      `restart must leave finished work unchanged: ${sessionKey}`,
+    );
   }
   context.diagnostic("dedicated interrupted turn completed automatically in its retained session");
   // Later HTTP checks use a local tunnel, which kubectl pins to the old Pod.
