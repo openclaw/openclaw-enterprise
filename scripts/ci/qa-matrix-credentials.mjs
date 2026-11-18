@@ -1,9 +1,35 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { selectQaMatrix, validateQaInputs } from "../../tests/helpers/qa-selection.mjs";
 
-const selection = selectQaMatrix();
+const directory = join(process.env.RUNNER_TEMP, "qa-matrix-credentials");
+const repository = join(directory, "repository");
+const selection = selectQaMatrix({
+  ...process.env,
+  OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: repository,
+});
+
+let registryJson;
+let registry;
+if (selection.repository) {
+  assert.ok(process.env.REPOSITORY_REGISTRY_FILE, "REPOSITORY_REGISTRY_FILE is required");
+  try {
+    registryJson = await readFile(process.env.REPOSITORY_REGISTRY_FILE, "utf8");
+  } catch {
+    throw new Error("REPOSITORY_REGISTRY_FILE must name a readable file");
+  }
+  try {
+    registry = JSON.parse(registryJson);
+  } catch {
+    throw new Error("REPOSITORY_REGISTRY_FILE must contain valid JSON");
+  }
+  assert.ok(
+    registry !== null && typeof registry === "object" && !Array.isArray(registry),
+    "REPOSITORY_REGISTRY_FILE must contain an object",
+  );
+  assert.ok(Array.isArray(registry.repositories), "repository registry must contain repositories");
+}
 
 const repositoryPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
 
@@ -13,7 +39,7 @@ function validateRepositoryFixture() {
     fixture === "default" || fixture === "isolated",
     "QA_REPOSITORY_FIXTURE must be default or isolated",
   );
-  if (fixture !== "isolated") {
+  if (fixture !== "isolated" || !selection.repository) {
     return;
   }
 
@@ -30,17 +56,6 @@ function validateRepositoryFixture() {
     "isolated QA repository fixture must not target this workflow repository",
   );
 
-  let registry;
-  try {
-    registry = JSON.parse(process.env.REPOSITORY_REGISTRY_JSON ?? "");
-  } catch {
-    throw new Error("REPOSITORY_REGISTRY_JSON must be valid JSON");
-  }
-  assert.ok(
-    registry !== null && typeof registry === "object" && !Array.isArray(registry),
-    "REPOSITORY_REGISTRY_JSON must be an object",
-  );
-  assert.ok(Array.isArray(registry.repositories), "repository registry must contain repositories");
   assert.equal(
     registry.repositories.length,
     1,
@@ -57,7 +72,16 @@ function validateRepositoryFixture() {
 // test results, command arguments, or the environment file itself.
 const repositoryFixture = process.env.QA_REPOSITORY_FIXTURE ?? "default";
 validateRepositoryFixture();
-const directory = join(process.env.RUNNER_TEMP, "qa-matrix-credentials");
+const upstreamRanges = selection.repository
+  ? await readFile(join(process.env.RUNNER_TEMP, "github-repository-egress.json"), "utf8")
+  : undefined;
+if (selection.repository) {
+  const ranges = JSON.parse(upstreamRanges).githubApiAndGit;
+  assert.ok(
+    Array.isArray(ranges) && ranges.length > 0,
+    "GitHub repository egress ranges are required",
+  );
+}
 await mkdir(directory, { mode: 0o700 });
 const mapping = {
   OPENAI_API_KEY: ["openai", "OCC_TEST_QA_OPENAI_KEY_FILE"],
@@ -65,7 +89,6 @@ const mapping = {
   SLACK_APP_TOKEN: ["slack-app", "OCC_TEST_QA_SLACK_APP_TOKEN_FILE"],
   SLACK_BOT_TOKEN: ["slack-bot", "OCC_TEST_QA_SLACK_BOT_TOKEN_FILE"],
   SLACK_SENDER_TOKEN: ["slack-sender", "OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE"],
-  REPOSITORY_OBSERVER_TOKEN: ["observer", "OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"],
 };
 const entries = [];
 for (const [source, [filename, target]] of Object.entries(mapping)) {
@@ -78,20 +101,21 @@ for (const [source, [filename, target]] of Object.entries(mapping)) {
   entries.push(`${target}=${path}`);
 }
 if (selection.repository) {
-  const repository = join(directory, "repository");
   await mkdir(repository, { mode: 0o700 });
-  for (const [source, name] of [
-    ["REPOSITORY_REGISTRY_JSON", "registry.json"],
-    ["REPOSITORY_APP_KEY", "private-key.pem"],
-    ["REPOSITORY_UPSTREAM_CIDRS_JSON", "upstream-cidrs.json"],
-  ]) {
-    assert.ok(process.env[source], `${source} is required`);
-    await writeFile(join(repository, name), process.env[source], { mode: 0o600, flag: "wx" });
-  }
+  assert.ok(process.env.REPOSITORY_APP_KEY, "REPOSITORY_APP_KEY is required");
+  await writeFile(join(repository, "private-key.pem"), process.env.REPOSITORY_APP_KEY, {
+    mode: 0o600,
+    flag: "wx",
+  });
+  await writeFile(join(repository, "upstream-cidrs.json"), upstreamRanges, {
+    mode: 0o600,
+    flag: "wx",
+  });
+  await writeFile(join(repository, "registry.json"), registryJson, { mode: 0o600, flag: "wx" });
   entries.push(`OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=${repository}`);
+  entries.push(`OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=${repository}`);
   if (repositoryFixture === "isolated") {
     entries.push("QA_REPOSITORY_FIXTURE=isolated");
-    entries.push(`OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=${repository}`);
   }
 }
 entries.push(`OCC_TEST_QA_ARTIFACTS=${join(process.env.RUNNER_TEMP, "qa-matrix-evidence")}`);

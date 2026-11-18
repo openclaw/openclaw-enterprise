@@ -38,12 +38,11 @@ import {
   setSlackSelection,
   slackSelectionValue,
   statusTone,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import {
   ACCESS_TAB_UNAVAILABLE,
   BOUND_SECRET_UNLISTED,
@@ -53,7 +52,7 @@ import {
   SLACK_RETRY_GRANTED,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type DraftAgent = Pick<Agent, "id" | "namespaceId" | "configurationId">;

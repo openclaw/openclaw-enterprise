@@ -5,7 +5,7 @@ import type {
   SecretMetadata,
 } from "../../packages/contracts/src/index.ts";
 
-import { nativeValues } from "./console-agents-browser-helpers.mjs";
+import { nativeValues } from "./console-agents-browser-helpers.ts";
 
 // The Slack channel settings an allowlisted Socket Mode Agent uses: direct messages from one user
 // and mentions in one channel.

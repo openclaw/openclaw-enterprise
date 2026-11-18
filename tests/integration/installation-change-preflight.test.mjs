@@ -1,22 +1,26 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { captureChild } from "../helpers/child-processes.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration as installation,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import {
   chartTooling,
   parseProductionChart,
   renderProductionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import {
   chartListeners,
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
+import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
+import { generateInstallationCheck } from "../../deploy/helm/src/generate-installation-check.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
@@ -79,17 +83,14 @@ async function render(values, isUpgrade) {
 }
 
 test(
-  "the upgrade hook loads the Installation with the API's files before migration",
+  "install and upgrade hooks load the Installation with the API's files before migration",
   tooling,
   async () => {
-    // A fresh install has no running API to protect and may create the Secret alongside.
-    const install = await render({}, false);
-    assert.deepEqual(
-      install.hook.initContainers.map(({ name }) => name),
-      ["migration"],
+    assert.equal(
+      await generateInstallationCheck(),
+      checkScript,
+      "Regenerate the Installation check with node deploy/helm/src/generate-installation-check.ts",
     );
-    assert.ok(!install.hook.volumes.some(({ name }) => name === "installation-startup"));
-
     for (const values of [
       {},
       repositoryCredentialValues,
@@ -100,6 +101,73 @@ test(
       issuerCaValues,
     ]) {
       const { job, hook, api } = await render(values, true);
+      const install = await render(values, false);
+      assert.deepEqual(install.hook.initContainers[0], hook.initContainers[0]);
+      assert.deepEqual(
+        install.hook.volumes.filter(({ name }) => name !== "bootstrap-credentials"),
+        hook.volumes,
+      );
+      assert.ok(!hook.volumes.some(({ name }) => name === "bootstrap-credentials"));
+      assert.deepEqual(
+        install.hook.volumes.find(({ name }) => name === "bootstrap-credentials").secret.items,
+        [
+          { key: "admin-password", path: "admin-password" },
+          { key: "admin-service-key", path: "admin-service-key" },
+        ],
+      );
+      assert.deepEqual(
+        install.hook.initContainers.map(({ name }) => name),
+        ["installation-check", "migration"],
+      );
+      assert.deepEqual(install.hook.initContainers[1].args, [
+        ...selectedImageMigrationEntry,
+        "--expect-empty",
+      ]);
+      const installedBootstrap = install.hook.containers.find(({ name }) => name === "bootstrap");
+      const upgradedBootstrap = hook.containers.find(({ name }) => name === "bootstrap");
+      assert.deepEqual(
+        installedBootstrap.volumeMounts.find(({ name }) => name === "bootstrap-credentials"),
+        {
+          name: "bootstrap-credentials",
+          mountPath: "/run/openclaw-bootstrap",
+          readOnly: true,
+        },
+      );
+      assert.ok(
+        !(upgradedBootstrap.volumeMounts ?? []).some(
+          ({ name }) => name === "bootstrap-credentials",
+        ),
+      );
+      assert.deepEqual(
+        installedBootstrap.env.filter(({ name }) => name.endsWith("_INPUT_FILE")),
+        [
+          {
+            name: "OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE",
+            value: "/run/openclaw-bootstrap/admin-password",
+          },
+          {
+            name: "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE",
+            value: "/run/openclaw-bootstrap/admin-service-key",
+          },
+        ],
+      );
+      assert.ok(!upgradedBootstrap.env.some(({ name }) => name.endsWith("_INPUT_FILE")));
+      assert.deepEqual(installedBootstrap.args, [
+        "scripts/bootstrap-installation.mjs",
+        "--require-fresh",
+      ]);
+      assert.deepEqual(upgradedBootstrap.args, ["scripts/bootstrap-installation.mjs"]);
+      assert.deepEqual(
+        {
+          ...installedBootstrap,
+          args: upgradedBootstrap.args,
+          env: installedBootstrap.env.filter(({ name }) => !name.endsWith("_INPUT_FILE")),
+          volumeMounts: installedBootstrap.volumeMounts.filter(
+            ({ name }) => name !== "bootstrap-credentials",
+          ),
+        },
+        { ...upgradedBootstrap, volumeMounts: upgradedBootstrap.volumeMounts ?? [] },
+      );
       // Pre-upgrade hooks finish before Helm updates the Deployments.
       assert.match(job.metadata.annotations["helm.sh/hook"], /(^|,)pre-upgrade(,|$)/);
       assert.equal(job.spec.backoffLimit, 0);
@@ -109,7 +177,7 @@ test(
       );
       const [check, migration] = hook.initContainers;
       const server = api.containers.find(({ name }) => name === "api");
-      assert.deepEqual(migration.args, ["scripts/migrate-production.mjs"]);
+      assert.deepEqual(migration.args, selectedImageMigrationEntry);
       assert.equal(check.image, server.image);
       assert.deepEqual(check.command, ["node"]);
       assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
@@ -170,7 +238,31 @@ test(
   },
 );
 
-async function runCheck(t, configuration, files = {}, environment = () => ({})) {
+test(
+  "a separate database deployment requires current history only on upgrade",
+  tooling,
+  async () => {
+    const values = { "database.upgradeMigration": "separate" };
+    for (const isUpgrade of [false, true]) {
+      const { hook } = await render(values, isUpgrade);
+      const migration = hook.initContainers.find(({ name }) => name === "migration");
+      assert.deepEqual(migration.args, [
+        ...selectedImageMigrationEntry,
+        isUpgrade ? "--require-current" : "--expect-empty",
+      ]);
+    }
+    await assert.rejects(
+      render({ "database.upgradeMigration": "seperate" }, true),
+      /must be hook or separate/,
+    );
+  },
+);
+
+function runCheck(t, configuration, files, environment) {
+  return runHook(t, configuration, { files, environment });
+}
+
+async function runHook(t, configuration, { files = {}, environment, refusal }) {
   const directory = await temporaryDirectory(t, "occ-installation-check-");
   const path = join(directory, "installation.yaml");
   await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -180,20 +272,81 @@ async function runCheck(t, configuration, files = {}, environment = () => ({})) 
   }
   // The chart's environment only (plus the lane's compile cache): the image's working
   // directory holds apps/.
+  const env = {
+    ...compileCacheEnvironment,
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    ...environment?.(directory),
+  };
+  const expectedStderr = refusal?.expected(directory);
+  const timeout = 30_000;
   const result = await captureChild(process.execPath, ["--input-type=module", "-e", checkScript], {
     cwd: process.cwd(),
-    env: {
-      ...compileCacheEnvironment,
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: path,
-      ...environment(directory),
-    },
-    timeout: 30_000,
+    env,
+    timeout,
+    expectedStderr,
   });
-  assert.equal(result.signal ?? null, null, result.stderr);
+  let message = result.stderr;
+  if (refusal && result.signal) {
+    const {
+      firstStderrMs,
+      expectedPrefixMs,
+      exactStderr,
+      parentSentSignal,
+      exitMs,
+      exitToCloseMs,
+    } = result.timing;
+    message = [
+      `hook=${refusal.phase}`,
+      `status=${result.status}`,
+      `signal=${result.signal}`,
+      `parentSentSignal=${parentSentSignal}`,
+      `cache=${Boolean(env.NODE_COMPILE_CACHE)}`,
+      `deadlineMs=${timeout}`,
+      `exactStderr=${exactStderr}`,
+      `firstStderrMs=${firstStderrMs ?? "unobserved"}`,
+      `expectedPrefixMs=${expectedPrefixMs ?? "unobserved"}`,
+      `exitMs=${exitMs ?? "unobserved"}`,
+      `exitToCloseMs=${exitToCloseMs ?? "unobserved"}`,
+    ].join(" ");
+  }
+  assert.equal(result.signal ?? null, null, message);
+  if (refusal) {
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, expectedStderr);
+  }
   return { ...result, directory };
 }
+
+test(
+  "the first-install check refuses malformed Compute configuration before migration",
+  tooling,
+  async (t) => {
+    const { hook } = await render({}, false);
+    const [check] = hook.initContainers;
+    assert.equal(check.name, "installation-check");
+    assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
+    const environment = () =>
+      Object.fromEntries(
+        check.env
+          .filter(({ name }) => name !== "OCC_CONFIG_PATH")
+          .map(({ name, value }) => [name, value]),
+      );
+    const configuration = installation();
+    const accepted = await runCheck(t, configuration, {}, environment);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(accepted.stdout, "installation-startup-ready\n");
+    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = [];
+    const refused = await runCheck(t, configuration, {}, environment);
+    assert.equal(refused.status, 1);
+    assert.match(
+      refused.stderr,
+      /DRIVER_CONFIGURATION_INVALID.*\/network\/gatewayTrustedProxyCidrs.*INVALID_FORMAT/,
+    );
+    assert.equal(refused.stdout, "");
+  },
+);
 
 test("the upgrade hook check passes an Installation API startup accepts", async (t) => {
   const configuration = installation();
@@ -201,9 +354,24 @@ test("the upgrade hook check passes an Installation API startup accepts", async 
   const result = await runCheck(
     t,
     configuration,
-    { "presets/team.json": JSON.stringify({ name: "Team Codex", template: {} }) },
-    // The documented example bundle, as the chart mounts it for the API.
-    () => ({ OCC_CONSOLE_THEME_DIR: resolve("deploy/examples/console-theme") }),
+    {
+      "presets/team.json": JSON.stringify({ name: "Team Codex", template: {} }),
+      "unavailable-transport.mjs": `
+        import { registerHooks } from "node:module";
+        registerHooks({
+          resolve(specifier, context, nextResolve) {
+            if (specifier === "@grpc/grpc-js") {
+              throw new Error("OpenShell transport is unavailable");
+            }
+            return nextResolve(specifier, context);
+          },
+        });
+      `,
+    },
+    (directory) => ({
+      OCC_CONSOLE_THEME_DIR: resolve("deploy/examples/console-theme"),
+      NODE_OPTIONS: `--import=${pathToFileURL(join(directory, "unavailable-transport.mjs")).href}`,
+    }),
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "installation-startup-ready\n");
@@ -302,33 +470,36 @@ test("the upgrade hook check names the key and file of a refused Installation", 
   // D407: presets.files names a file the image lacks.
   const missing = installation();
   missing.presets = { files: ["presets/missing.json"] };
-  const absent = await runCheck(t, missing);
-  assert.equal(absent.status, 1);
+  const absent = await runHook(t, missing, {
+    refusal: {
+      phase: "missing-preset",
+      expected: (directory) =>
+        `${prefix} (PRESET_FILE_INVALID): presets.files: Preset file ${join(directory, "presets/missing.json")} is unavailable.\n`,
+    },
+  });
   assert.equal(absent.stdout, "");
-  assert.equal(
-    absent.stderr,
-    `${prefix} (PRESET_FILE_INVALID): presets.files: Preset file ${join(absent.directory, "presets/missing.json")} is unavailable.\n`,
-  );
 
   // A loader message that already names the key is not prefixed twice.
   const blank = installation();
   blank.presets = { files: ["  "] };
-  const empty = await runCheck(t, blank);
-  assert.equal(empty.status, 1);
-  assert.equal(
-    empty.stderr,
-    `${prefix} (PRESET_FILE_INVALID): presets.files entries must be nonempty file paths.\n`,
-  );
+  await runHook(t, blank, {
+    refusal: {
+      phase: "blank-preset",
+      expected: () =>
+        `${prefix} (PRESET_FILE_INVALID): presets.files entries must be nonempty file paths.\n`,
+    },
+  });
 
   // Other startup refusals keep the loader's message, which names the setting.
   const observability = installation();
   observability.observability = { url: "ftp://metrics.example.test" };
-  const refused = await runCheck(t, observability);
-  assert.equal(refused.status, 1);
-  assert.equal(
-    refused.stderr,
-    `${prefix}: observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.\n`,
-  );
+  await runHook(t, observability, {
+    refusal: {
+      phase: "invalid-observability",
+      expected: () =>
+        `${prefix}: observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.\n`,
+    },
+  });
 });
 
 test(
@@ -427,7 +598,7 @@ test(
     );
     for (const [listener, files] of [
       [chartListeners.egressAuthority, mounted(api, "api")],
-      [chartListeners.openshellGit, mounted(worker, "worker")],
+      [openShellGitChartListener, mounted(worker, "worker")],
     ]) {
       for (const [path] of Object.values(listener.files)) {
         assert.ok(files.includes(path), `${listener.chart}: ${path} in ${files.join(", ")}`);
@@ -478,17 +649,17 @@ test(
       host: "0.0.0.0",
       port: 8445,
       ...Object.fromEntries(
-        Object.entries(chartListeners.openshellGit.files).map(([key, [path]]) => [key, path]),
+        Object.entries(openShellGitChartListener.files).map(([key, [path]]) => [key, path]),
       ),
     };
     const declared = { OCC_OPENSHELL_GIT_PORT: "8445" };
-    requireChartListener(transport, declared, chartListeners.openshellGit);
+    requireChartListener(transport, declared, openShellGitChartListener);
     assert.throws(
       () =>
         requireChartListener(
           { ...transport, issuerPublicKeyPath: "/etc/openclaw/openshell-git/issuer.pub" },
           declared,
-          chartListeners.openshellGit,
+          openShellGitChartListener,
         ),
       {
         name: "ChartListenerMismatchError",

@@ -28,13 +28,25 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	r := newRunner(opts)
-	sandboxDriver := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
-	if sandboxDriver != "none" && sandboxDriver != "openshell" {
-		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
+	for _, key := range []string{"OCC_AUTH_COOKIE_DOMAIN", "OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"} {
+		if _, present := r.env[key]; present {
+			return fmt.Errorf("%s is no longer supported; browser session cookies derive their domain from the Console and Agent hosts", key)
+		}
 	}
-	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
-	if controlPlane != "compose" && controlPlane != "kubernetes" {
-		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
+	profile := resolveProfile(r.env)
+	if err := profile.CheckSandboxDriver(); err != nil {
+		return err
+	}
+	if err := profile.CheckControlPlane(); err != nil {
+		return err
+	}
+	sandboxDriver, controlPlane := profile.SandboxDriver, profile.ControlPlane
+	verificationMode := r.setting("OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE", "workspace-write")
+	if verificationMode != "workspace-write" && verificationMode != "danger-full-access" {
+		return fmt.Errorf("invalid OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE")
+	}
+	if verificationMode == "danger-full-access" && sandboxDriver != "none" {
+		return fmt.Errorf("container-only Codex verification requires Sandbox Driver none")
 	}
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
@@ -90,7 +102,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	state := &developmentState{Repository: opts.Repository, Version: 3, ComputeDriver: "kubernetes", SandboxDriver: sandboxDriver, ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
 	state.SandboxNetworkPolicies = networkPolicies
 	state.SandboxNetworkPolicyCeiling = ceiling
-	if sandboxDriver == "openshell" {
+	{
 		browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
 		if err != nil {
 			return err
@@ -98,14 +110,14 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if browserPort == port {
 			return fmt.Errorf("browser and Kubernetes API ports must differ")
 		}
-		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		state.BrowserPort = browserPort
 		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
 		r.env["OCC_DEVELOPMENT_BROWSER_PORT"] = strconv.Itoa(browserPort)
 		r.env["OCC_DEVELOPMENT_BROWSER_ORIGIN"] = state.BrowserOrigin
 		r.env["OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN"] = agentDomain
-		r.env["OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"] = cookieDomain
+		r.env["OCC_AGENT_NATIVE_ADMIN_ENABLED"] = strconv.FormatBool(sandboxDriver == "openshell")
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_CERT"] = filepath.Join(directory, "browser-tls.crt")
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_KEY"] = filepath.Join(directory, "browser-tls.key")
 	}
@@ -155,6 +167,10 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.ensureAbsent(ctx, state); err != nil {
 		return err
 	}
+	// Compose interpolation needs paths before the exclusive state-directory claim;
+	// materialize credentials only after that ownership boundary is established.
+	r.env["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"] = filepath.Join(directory, "mount-admin-password")
+	r.env["OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"] = filepath.Join(directory, "mount-admin-service-key")
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	r.env["OCC_DEVELOPMENT_INSTALLATION_CONFIG"] = filepath.Join(directory, "installation.yaml")
 	r.env["OCC_DEVELOPMENT_KUBECONFIG"] = filepath.Join(directory, "container-kubeconfig")
@@ -173,6 +189,16 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := yaml.Unmarshal(config, &rendered); err != nil {
 		return fmt.Errorf("invalid rendered Compose configuration: %w", err)
 	}
+	configuration, ok := rendered.(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid rendered Compose mapping")
+	}
+	password, ok := configuration["x-openclaw-bootstrap-password"].(string)
+	if !ok {
+		return fmt.Errorf("Compose must resolve x-openclaw-bootstrap-password for setup")
+	}
+	r.env["OPENCLAW_DEV_PASSWORD"] = password
+	delete(configuration, "x-openclaw-bootstrap-password")
 	if err := setKubernetesBridgeGateway(rendered); err != nil {
 		return err
 	}
@@ -214,8 +240,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if state.BrowserPort != 0 && parsedAPI.Port() == strconv.Itoa(state.BrowserPort) {
 		return fmt.Errorf("browser and controller API ports must differ")
 	}
-	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
-	if err != nil {
+	hostPorts := []developmentHostPort{{renderedAPIPort, "OPENCLAW_DEV_PORT"}, {port, "OCC_DEVELOPMENT_KUBERNETES_API_PORT"}}
+	if state.BrowserPort != 0 {
+		hostPorts = append(hostPorts, developmentHostPort{state.BrowserPort, "OCC_DEVELOPMENT_BROWSER_PORT"})
+	}
+	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{composeProject: state.ComposeProject, cluster: state.Cluster}, hostPorts); err != nil {
 		return err
 	}
 	// The exclusive directory claim is the ownership boundary, including concurrent starts.
@@ -232,7 +261,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if result == nil {
 			return
 		}
-		if os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
+		if started && os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
 			// Inspection override: keep the failed stack, the state directory, and
 			// any copied service key for diagnosis; occ dev down with the same
 			// state directory performs the cleanup.
@@ -257,7 +286,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 			}
 		}
 		if cleanupErr != nil {
-			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr))
+			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down; clean up with %s: %w", directory, kubernetesDownCommand(directory, sandboxDriver, opts.Repository), cleanupErr))
 		}
 	}()
 	if err := exclusiveWrite(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
@@ -270,10 +299,20 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := exclusiveWrite(filepath.Join(directory, "state.json"), stateData, 0600); err != nil {
 		return err
 	}
+	if err := r.prepareBootstrapCredentials(state); err != nil {
+		return err
+	}
+	if err := prepareComposeBootstrapSQL(rendered, state); err != nil {
+		return err
+	}
+	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
+	if err != nil {
+		return err
+	}
 	if err := exclusiveWrite(filepath.Join(directory, "compose.yaml"), snapshot, 0600); err != nil {
 		return err
 	}
-	var reference, codexSeccompProfile string
+	var reference, codexSeccompProfile, routingPodCIDR string
 	var openShellAssets *openShellDevelopmentAssets
 	var routing *composeDevelopmentRouting
 	defer func() {
@@ -282,6 +321,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 	}()
 	startDatabase := func(ctx context.Context, r *runner) error {
+		if err := r.prepareBootstrapMounts(ctx, state.directory, state.composeCommand()); err != nil {
+			return err
+		}
 		fmt.Fprintln(r.opts.Out, "Starting the Compose database, migration, and bootstrap services...")
 		if err := r.compose(ctx, state, "up", "--build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
 			return err
@@ -306,15 +348,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 		clusterArgs = append(clusterArgs, resolverArgs...)
 		if sandboxDriver == "openshell" {
 			clusterImage = openShellK3sImage
-			admissionPath, err := prepareOpenShellAdmission(directory)
-			if err != nil {
-				return err
-			}
-			clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
 		}
 		clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
 		if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-			clusterCreationFailed = true
+			// A create that k3d fully rolled back leaves nothing to clean up.
+			clusterCreationFailed = !r.k3dRolledBackCleanly(ctx, err, state.Cluster)
 			return err
 		}
 		if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
@@ -326,33 +364,57 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
 			return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
 		}
-		reference, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
-		}
-		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-			return err
-		}
-		if sandboxDriver == "openshell" {
-			// Import the large runtime first so image garbage collection cannot evict
-			// idle OpenShell images before their workloads are installed.
-			fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-			openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+		prepareRuntime := func(ctx context.Context, r *runner) error {
+			var err error
+			reference, err = r.importRuntime(ctx, state)
 			if err != nil {
 				return err
 			}
-		}
-		if sandboxDriver == "openshell" {
-			fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
-			if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+			if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
 				return err
 			}
-		}
-		if sandboxDriver == "none" {
-			codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
-			if err != nil {
-				return err
+			if sandboxDriver == "openshell" {
+				// Import the large runtime first so image garbage collection cannot evict
+				// idle OpenShell images before their workloads are installed.
+				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+				openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+				if err != nil {
+					return err
+				}
 			}
+			if sandboxDriver == "openshell" {
+				fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
+				if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+					return err
+				}
+			}
+			if sandboxDriver == "none" {
+				codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		prepareRouting := func(ctx context.Context, r *runner) error {
+			if sandboxDriver != "openshell" {
+				return nil
+			}
+			fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
+			var err error
+			routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, time.Duration(timeout)*time.Second)
+			return err
+		}
+		// Controllers need only the cluster. Their rollouts can wait while selected
+		// images import and OpenShell starts; database-dependent routing waits below.
+		if sandboxDriver == "openshell" && r.engine == "docker" && r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
+			return r.concurrently(ctx, prepareRuntime, prepareRouting)
+		}
+		if err := prepareRuntime(ctx, r); err != nil {
+			return err
+		}
+		if err := prepareRouting(ctx, r); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -381,7 +443,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	// database/bootstrap as well as the cluster before configuring its allowlist.
 	if sandboxDriver == "openshell" {
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing for the Compose control plane...")
-		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, time.Duration(timeout)*time.Second)
+		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, routingPodCIDR, time.Duration(timeout)*time.Second)
 		if err != nil {
 			return err
 		}
@@ -404,6 +466,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if err := configureDevelopmentRouting(state, routing.trustedProxyCIDRs, routing.endpoint); err != nil {
 			return err
 		}
+	}
+	{
 		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
 			return err
@@ -411,8 +475,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
 	buildOption := "--build"
-	if routing != nil {
-		if err := r.prepareComposeRoutingFiles(ctx, state); err != nil {
+	if routing != nil || state.BrowserPort != 0 {
+		if err := r.prepareComposePrivateFiles(ctx, state, routing != nil); err != nil {
 			return err
 		}
 		buildOption = "--no-build"
@@ -454,11 +518,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if state.BrowserPort != 0 {
 		fmt.Fprintf(r.opts.Out, "Browser console: %s/console/\nBrowser CA certificate: %s\n", state.BrowserOrigin, filepath.Join(directory, "browser-ca.crt"))
 	}
-	cleanupSandbox := ""
-	if sandboxDriver == "openshell" {
-		cleanupSandbox = " OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell"
-	}
-	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nControl plane: Compose\nCompute Driver: Kubernetes\nSandbox Driver: %s\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes%s OCC_DEVELOPMENT_STATE_DIRECTORY=%s %s dev down\n", r.engine, sandboxDriver, apiURL, installation, state.KeyPath, filepath.Join(directory, "kubeconfig"), state.Cluster, cleanupSandbox, shellQuote(directory), shellQuote(filepath.Join(opts.Repository, "bin", "occ")))
+	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nControl plane: Compose\nCompute Driver: Kubernetes\nSandbox Driver: %s\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  %s\n", r.engine, sandboxDriver, apiURL, installation, state.KeyPath, filepath.Join(directory, "kubeconfig"), state.Cluster, kubernetesDownCommand(directory, sandboxDriver, opts.Repository))
 	return nil
 }
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
@@ -577,7 +637,7 @@ func (r *runner) ensureAbsent(ctx context.Context, s *developmentState) error {
 		}
 	}
 	// Unlabelled resources with the names Compose would adopt also belong to someone else.
-	for _, resource := range []struct{ kind, name string }{{"volume", "occ_postgres_data"}, {"volume", "occ_bootstrap_data"}, {"volume", "occ_configuration_data"}, {"network", "development"}} {
+	for _, resource := range []struct{ kind, name string }{{"volume", "occ_postgres_data"}, {"volume", "occ_configuration_data"}, {"network", "development"}} {
 		if _, err := r.output(ctx, r.engine, resource.kind, "inspect", s.ComposeProject+"_"+resource.name); err == nil {
 			return fmt.Errorf("Compose resource already exists: %s_%s", s.ComposeProject, resource.name)
 		}
@@ -646,7 +706,7 @@ func (r *runner) waitReady(ctx context.Context, s *developmentState, url string,
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return false, nil
 		}
-		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.mjs", "worker", "ready")
+		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.ts", "worker", "ready")
 		return err == nil, nil
 	})
 }
@@ -697,54 +757,7 @@ func waitBrowserReady(ctx context.Context, state *developmentState, timeout time
 	})
 }
 func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url string) (string, *occclient.Client, error) {
-	id, err := r.composeOutput(ctx, s, "ps", "--all", "-q", "bootstrap")
-	if err != nil {
-		return "", nil, err
-	}
-	if len(id) == 0 || strings.ContainsAny(string(id), "\r\n") {
-		return "", nil, fmt.Errorf("could not identify bootstrap container")
-	}
-	temporary := filepath.Join(s.directory, "bootstrap-key-copy.json")
-	if err := r.run(ctx, r.engine, "cp", string(id)+":/var/lib/openclaw/bootstrap/initial-admin-service-key.json", temporary); err != nil {
-		return "", nil, err
-	}
-	if err := os.Chmod(temporary, 0600); err != nil {
-		return "", nil, err
-	}
-	data, err := os.ReadFile(temporary)
-	if err != nil {
-		return "", nil, err
-	}
-	var key struct {
-		Meta struct {
-			InstallationID string `json:"installationId"`
-		} `json:"meta"`
-		Data struct {
-			Key string `json:"key"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &key); err != nil || key.Meta.InstallationID == "" || strings.TrimSpace(key.Data.Key) == "" {
-		return "", nil, fmt.Errorf("bootstrap service key is missing its key or Installation ID")
-	}
-	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second, Context: ctx})
-	if err != nil {
-		return "", nil, err
-	}
-	installation, err := client.GetInstallation()
-	if err != nil {
-		return "", nil, fmt.Errorf("Installation authorization failed: %w", err)
-	}
-	record, ok := installation.(map[string]any)
-	if !ok || record["id"] != key.Meta.InstallationID {
-		return "", nil, fmt.Errorf("Installation ID does not match the bootstrap service key")
-	}
-	if err := exclusiveWrite(s.KeyPath, data, 0600); err != nil {
-		return "", nil, err
-	}
-	if err := os.Remove(temporary); err != nil {
-		return "", nil, err
-	}
-	return key.Meta.InstallationID, client, nil
+	return r.verifyBootstrapKey(ctx, s, url)
 }
 
 func waitForDevelopmentNamespace(ctx context.Context, client *occclient.Client, namespaceID string, timeout time.Duration) error {

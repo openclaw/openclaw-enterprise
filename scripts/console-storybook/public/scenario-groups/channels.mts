@@ -194,12 +194,45 @@ export function channelsScenarios({
       name: "Find Slack channels by name",
       path: `${draft}&tab=channels`,
       slack: true,
-      actions: [click("Edit Slack"), { selector: "#slack-channel-ids-search", focus: true }],
+      actions: [
+        click("Edit Slack"),
+        {
+          selector: '#slack-channel-ids-search[aria-controls="slack-channel-ids-results"]',
+          focus: true,
+        },
+        { selector: '#slack-channel-ids-results > [role="option"]:first-child' },
+        { selector: "#slack-channel-ids-search", key: "Escape" },
+        {
+          selector: '#slack-channel-ids-search:focus[aria-expanded="false"]',
+          key: "ArrowDown",
+        },
+        { selector: "#slack-channel-ids-results > #slack-channel-ids-option-0.active" },
+        {
+          selector:
+            '#slack-channel-ids-search:focus[aria-expanded="true"][aria-activedescendant="slack-channel-ids-option-0"]',
+          key: "Escape",
+        },
+        {
+          selector: '#slack-channel-ids-search:focus[aria-expanded="false"]',
+          click: true,
+        },
+        {
+          selector: '#slack-channel-ids-results:not(:has(.active)) > [role="option"]:first-child',
+        },
+        {
+          selector:
+            '#slack-channel-ids-search:focus[aria-expanded="true"]:not([aria-activedescendant])',
+        },
+        {
+          selector:
+            '.slack-directory-field:has(#slack-channel-ids-search) .slack-directory-chip[data-value="CDEMO123"]:only-child',
+        },
+      ],
       description:
         "The picker shows five channels per page with the bot's workspace, names and exact IDs. Next page shows two buffered matches before another directory request. Typing waits 300 ms; Enter searches immediately. Selecting a result saves only its ID.",
       steps: [
         "Use Next page to see design and engineering, then Previous page to restore the first five without another directory request.",
-        "Use Next page twice to fetch product and announcements. Type platform and select its result.",
+        "Use Next page twice to fetch product and announcements. Type platform and wait for results. Press Escape: the input keeps its text and focus. Press Down: the list reopens and its first current result becomes active. Press Escape, then click the same input: results reopen without an active option. The chips stay unchanged until an explicit choice. Choose platform with a click or Down then Enter.",
         "Type another query, then click Save configuration once while results are open. The dropdown closes without moving Save, and only selected channel chips are saved.",
       ],
       gap: "Directory data and Secret access are simulated; no Slack API call occurs.",

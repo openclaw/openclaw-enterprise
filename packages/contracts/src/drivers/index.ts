@@ -1,3 +1,4 @@
+import type { NamespaceLifecycleHooks } from "./namespace-lifecycle.ts";
 import type { ChannelDriver } from "./channel/index.ts";
 import type { ComputeDriver, ComputeLifecycleHooks } from "./compute/index.ts";
 import type {
@@ -43,6 +44,7 @@ export interface Driver {
   readonly capability: DriverCapability;
   readonly implementation: string;
   readonly computeLifecycleHooks?: ComputeLifecycleHooks;
+  readonly namespaceLifecycleHooks?: NamespaceLifecycleHooks;
 }
 
 export type DriverByCapability = {
@@ -64,6 +66,7 @@ export type DriverByCapability = {
 export interface DriverRegistration {
   readonly capabilities: Readonly<Partial<DriverByCapability>>;
   readonly computeLifecycleHooks?: ComputeLifecycleHooks;
+  readonly namespaceLifecycleHooks?: NamespaceLifecycleHooks;
   close?(): void | Promise<void>;
 }
 

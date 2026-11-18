@@ -10,27 +10,20 @@ import {
 } from "./policy.ts";
 
 /** Explicit native delivery; installation composition keeps this module off protected startup. */
-export async function composeRepositoryAccess(input: RepositoryPolicyInput) {
+export async function composeRepositoryAccess(
+  input: RepositoryPolicyInput<Readonly<{ sessionDurationSeconds: number }>>,
+  nativeSender: Readonly<{ controlSocket: string; publicCaPath: string }>,
+) {
   const { backend: definition, selection } = input;
   const repositoryOwner = repositoryPolicyOwner(input);
-  // Native sending has its own transport contract; it is not a Repo Driver. Each contract
-  // refuses at load, before any Backend is built (finding 2214). The merged native
-  // configuration is checked only here: the Repo Driver's installation parser stays inside
-  // the repository credential import boundary.
-  const configuration = requireConfiguration<
-    Readonly<{
-      controlSocket?: string;
-      sessionDurationSeconds: number;
-      publicCaPath?: string;
-    }>
-  >(GitHubNativeRepositorySender, selection.configuration);
+  const configuration = requireConfiguration<typeof nativeSender>(
+    GitHubNativeRepositorySender,
+    nativeSender,
+  );
   const registry = await loadGitHubRepositoryRegistry(
     definition.configuration.registryPath,
     definition.id,
   );
-  if (!configuration.publicCaPath || !configuration.controlSocket) {
-    throw new Error("Native Git requires its configured repository broker and public CA.");
-  }
   const publicCa = await loadPublicCa(configuration.publicCaPath);
   const client = new UnixRepositoryCredentialControlClient({
     controlSocket: configuration.controlSocket,
@@ -38,7 +31,7 @@ export async function composeRepositoryAccess(input: RepositoryPolicyInput) {
   const policy = composeRepositoryPolicy(
     repositoryOwner,
     registry,
-    configuration.sessionDurationSeconds,
+    selection.configuration.sessionDurationSeconds,
   );
   return Object.freeze({
     ...policy,

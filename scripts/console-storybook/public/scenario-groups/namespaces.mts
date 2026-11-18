@@ -48,6 +48,7 @@ type NamespaceScenario = {
   namespaceStatus?: NamespaceStatus;
   namespaceDeleteDenied?: true;
   namespaceDeleteRestricted?: true;
+  namespaceDeleteRetryStatusFailure?: "unavailable" | "invalid";
   namespaceDeleteOutcome?: "complete" | "blocked" | "forbidden" | "pending" | "unknown" | "stalled";
   actions?: readonly StoryAction[];
   rules?: readonly NamespaceRule[];
@@ -160,6 +161,24 @@ export const namespacesScenarios = {
     description:
       "An unconfirmed write requires Refresh status. The Console does not replay deletion or assume it started.",
   },
+  namespaceDeleteInvalidStatus: {
+    group: "Pages/Namespaces",
+    name: "Delete invalid status",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "unknown",
+    namespaceDeleteRetryStatusFailure: "invalid",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "An unconfirmed write shows Status unknown. The first status check returns an invalid array once; a valid check restores the confirmed badge and deliberate retry.",
+    steps: [
+      "Check Engineering's warning Status unknown badge after the unconfirmed write. Select Refresh status: the badge remains Status unknown, with a status warning and neither deletion action available.",
+      "Select Refresh status again. Engineering shows Deleting and Request deletion again returns. Open the confirmation, then cancel; no extra DELETE is sent.",
+      "Reset to repeat. The invalid array is simulated wire corruption, not a supported Controller status. Check at desktop and phone widths.",
+    ],
+  },
   namespaceDeleteRetry: {
     group: "Pages/Namespaces",
     name: "Delete cleanup recovery",
@@ -168,6 +187,23 @@ export const namespacesScenarios = {
     namespaceDeleteOutcome: "stalled",
     description:
       "An existing deleting Namespace keeps status and deliberate retry controls. Only the backend decides whether retry is allowed.",
+  },
+  namespaceDeleteRetryStatusFailure: {
+    group: "Pages/Namespaces",
+    name: "Delete retry status unavailable",
+    path: "/console/namespaces",
+    namespaceStatus: "deleting",
+    namespaceDeleteOutcome: "stalled",
+    namespaceDeleteRetryStatusFailure: "unavailable",
+    description:
+      "A status check fails once while the retry confirmation is open. The confirmation closes and Refresh status receives focus. Rechecking restores deliberate retry.",
+    steps: [
+      "Select Request deletion again for Engineering. Leave the confirmation open until the next background status check fails.",
+      "Check that the confirmation closes, Refresh status has focus, and Request deletion again is hidden. No deletion request is sent.",
+      "Activate Refresh status. The Namespace shows Deleting and Request deletion again returns without sending a deletion request.",
+      "Open Request deletion again. The new confirmation stays usable through later status checks. Cancel it, or confirm a deliberate retry.",
+      "Reset the story to repeat the one-time failure. Responses are simulated; this preview does not prove Controller behavior.",
+    ],
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",

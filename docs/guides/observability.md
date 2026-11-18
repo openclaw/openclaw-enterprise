@@ -52,6 +52,9 @@ using this guide for OCC logs; the Driver does not change how OCC records audits
   enforcing NetworkPolicies, and permission to install the Collector DaemonSet,
   its Pod-read ClusterRole, and dedicated Secrets.
 
+For independent Kubernetes control-plane exit observations, set up the
+[worker termination observer](observability/worker-terminations.md) separately.
+
 ## Steps
 
 ### 1. Choose the log level
@@ -105,7 +108,7 @@ Start your receiver. For a receiver reachable through Docker's host alias:
 
 ```bash
 export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT='http://host.docker.internal:4318/v1/logs'
-./scripts/dev-up -- -f compose.yaml -f compose.logging.yaml
+OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./scripts/dev-up -- -f compose.yaml -f compose.logging.yaml
 ```
 
 Use a same-network DNS name if the receiver is another container. If you prepared
@@ -174,7 +177,7 @@ For custom Secret names, set
 Do not reuse application Secrets. See [Helm settings](../reference/settings/production.md#production-operational-logging-collection)
 for resource and storage limits.
 
-Before first install, finish [bootstrap PVC preparation](deploy/production-installation.md#prepare-the-fresh-bootstrap-output-pvc).
+Before first install, [choose bootstrap credential preparation](deploy/production-installation.md#choose-bootstrap-credential-preparation).
 For existing installations, apply reviewed values through the same Helm upgrade. The Collector reads
 `/var/log/pods` read-only and needs `get/list/watch` on Pods across workload
 namespaces. Namespace and node names come from Pod fields; it does not need

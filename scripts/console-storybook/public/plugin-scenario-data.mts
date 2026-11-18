@@ -26,7 +26,12 @@ export const pluginCapabilities = {
   driverPolicySchema: {
     type: "object",
     properties: {
-      destructiveEnabled: { type: "boolean", title: "Destructive tools" },
+      destructiveEnabled: {
+        type: "boolean",
+        title: "Destructive tools",
+        description:
+          "To set a default for destructive tools, leave tools enabled by default on Inherit default policy.",
+      },
     },
     additionalProperties: false,
   },

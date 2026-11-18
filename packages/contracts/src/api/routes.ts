@@ -13,11 +13,40 @@ import {
   SandboxPolicyEditingBody,
   SandboxPolicyRecommendationsResponse,
 } from "./sandbox-policy.ts";
+import {
+  ModelProviderBody,
+  UpdateModelProviderBody,
+  ModelProviderParams,
+  ModelProviderResponse,
+  ModelProviderListResponse,
+} from "./model-providers.ts";
 import { Type } from "typebox";
+import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
+import {
+  ConnectionStartResponse,
+  SavedConnectionListResponse,
+  StartNamespaceConnectionBody,
+  UsableConnectionTemplatesResponse,
+} from "./connections.ts";
+import {
+  ConnectionTemplateListResponse,
+  ConnectionTemplateParams,
+  ConnectionTemplateResponse,
+  CreateConnectionTemplateBody,
+  RotateOAuthClientSecretBody,
+  OAuthClientParams,
+  CreateOAuthClientBody,
+  OAuthClientListResponse,
+  OAuthClientResponse,
+  DiscoverTemplateBody,
+  DiscoverTemplateResponse,
+  UpdateConnectionTemplateBody,
+} from "./connection-templates.ts";
 
 import {
   AgentParams,
   FirstDeploymentIntent,
+  AgentDeploymentBody,
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
@@ -92,6 +121,7 @@ import {
   AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
+  NamespaceAgentCapabilitiesResponse,
   NamespaceCallerPermissionsResponse,
   NamespaceSecretPermissionsResponse,
   AgentResponse,
@@ -156,7 +186,56 @@ const runtimeReadErrors = {
   504: ErrorResponseRef,
 } as const;
 
+const nativeChatError = Type.Object({ error: Type.Unknown() }, { additionalProperties: true });
+const chatErrors = Object.fromEntries(
+  Object.entries({
+    ...createErrors,
+    408: ErrorResponseRef,
+    501: ErrorResponseRef,
+    502: ErrorResponseRef,
+    504: ErrorResponseRef,
+  }).map(([status, schema]) => [status, Type.Union([schema, nativeChatError])]),
+);
+
 export const occApiRoutes = [
+  {
+    operationId: "chatWithAgent",
+    method: "POST",
+    path: "/agents/:agentId/chat",
+    action: "openclaw.agents.chat",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Submit an Agent turn and receive native JSON or SSE",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object({ agentId: AgentId }, { additionalProperties: false }),
+      body: Type.Object(
+        {
+          messages: Type.Array(Type.Unknown()),
+          stream: Type.Optional(Type.Boolean()),
+          model: Type.Optional(Type.Literal("openclaw")),
+          user: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+        },
+        { additionalProperties: true },
+      ),
+      response: {
+        ...chatErrors,
+        200: {
+          description: "Native Chat Completions JSON or SSE, without an OCC envelope.",
+          content: {
+            "application/json": { schema: Type.Unknown() },
+            "text/event-stream": { schema: Type.String() },
+          },
+        },
+        default: {
+          description: "Native application error; status and body pass through unchanged.",
+          content: { "application/json": { schema: nativeChatError } },
+        },
+      },
+    },
+  },
   {
     operationId: "startAgentDeviceAuthorization",
     method: "POST",
@@ -180,7 +259,7 @@ export const occApiRoutes = [
   {
     operationId: "pollAgentDeviceAuthorization",
     method: "POST",
-    path: "/namespaces/:namespaceId/agents/device-authorizations/:secretId/poll",
+    path: "/namespaces/:namespaceId/agents/device-authorizations/:sessionId/poll",
     action: "openclaw.agents.device_authorization.poll",
     iamAction: "create",
     resourceKind: "agent",
@@ -190,7 +269,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, secretId: SecretId },
+        { namespaceId: NamespaceId, sessionId: SecretId },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -200,7 +279,7 @@ export const occApiRoutes = [
   {
     operationId: "cancelAgentDeviceAuthorization",
     method: "DELETE",
-    path: "/namespaces/:namespaceId/agents/device-authorizations/:secretId",
+    path: "/namespaces/:namespaceId/agents/device-authorizations/:sessionId",
     action: "openclaw.agents.device_authorization.cancel",
     iamAction: "create",
     resourceKind: "agent",
@@ -210,7 +289,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, secretId: SecretId },
+        { namespaceId: NamespaceId, sessionId: SecretId },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -242,7 +321,7 @@ export const occApiRoutes = [
   {
     operationId: "pollSavedAgentDeviceAuthorization",
     method: "POST",
-    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:secretId/poll",
+    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:sessionId/poll",
     action: "openclaw.agents.device_authorization.poll",
     iamAction: "update",
     resourceKind: "agent",
@@ -252,7 +331,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, secretId: SecretId },
+        { namespaceId: NamespaceId, agentId: AgentId, sessionId: SecretId },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -262,7 +341,7 @@ export const occApiRoutes = [
   {
     operationId: "cancelSavedAgentDeviceAuthorization",
     method: "DELETE",
-    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:secretId",
+    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:sessionId",
     action: "openclaw.agents.device_authorization.cancel",
     iamAction: "update",
     resourceKind: "agent",
@@ -272,7 +351,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, secretId: SecretId },
+        { namespaceId: NamespaceId, agentId: AgentId, sessionId: SecretId },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -404,6 +483,247 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "listModelProviders",
+    method: "GET",
+    path: "/model-providers",
+    action: "openclaw.model_providers.list",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "List Installation model providers",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      response: { 200: ModelProviderListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getModelProvider",
+    method: "GET",
+    path: "/model-providers/:modelProviderId",
+    action: "openclaw.model_providers.read",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Read a model provider",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      params: ModelProviderParams,
+      response: { 200: ModelProviderResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "createModelProvider",
+    method: "POST",
+    path: "/model-providers",
+    action: "openclaw.model_providers.create",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Create an Installation model provider",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      body: ModelProviderBody,
+      response: { 201: ModelProviderResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "updateModelProvider",
+    method: "PUT",
+    path: "/model-providers/:modelProviderId",
+    action: "openclaw.model_providers.update",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Replace model provider settings if the saved fingerprint matches",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      params: ModelProviderParams,
+      body: UpdateModelProviderBody,
+      response: { 200: ModelProviderResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listUsableModelProviders",
+    method: "GET",
+    path: "/namespaces/:namespaceId/model-providers",
+    action: "openclaw.model_providers.list_usable",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary: "List the model providers available when creating an Agent",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: ModelProviderListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "listConnectionTemplates",
+    method: "GET",
+    path: "/connection-templates",
+    action: "openclaw.connection_templates.list",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "List all Installation-wide and Namespace-scoped connection templates",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      response: { 200: ConnectionTemplateListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "createConnectionTemplate",
+    method: "POST",
+    path: "/connection-templates",
+    action: "openclaw.connection_templates.create",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Create an Installation-wide or Namespace-scoped connection template",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      body: CreateConnectionTemplateBody,
+      response: { 201: ConnectionTemplateResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "getConnectionTemplate",
+    method: "GET",
+    path: "/connection-templates/:connectionTemplateId",
+    action: "openclaw.connection_templates.read",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Get one connection template",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: ConnectionTemplateParams,
+      response: { 200: ConnectionTemplateResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "updateConnectionTemplate",
+    method: "PATCH",
+    path: "/connection-templates/:connectionTemplateId",
+    action: "openclaw.connection_templates.update",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Rename a connection template, or create a version with new approved values",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: ConnectionTemplateParams,
+      body: UpdateConnectionTemplateBody,
+      response: { 200: ConnectionTemplateResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "deleteConnectionTemplate",
+    method: "DELETE",
+    path: "/connection-templates/:connectionTemplateId",
+    action: "openclaw.connection_templates.delete",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Delete a connection template",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: ConnectionTemplateParams,
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+  {
+    operationId: "discoverConnectionTemplate",
+    method: "POST",
+    path: "/connection-templates/discover",
+    action: "openclaw.connection_templates.discover",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Read public MCP resource and authorization server metadata",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      body: DiscoverTemplateBody,
+      response: { 200: DiscoverTemplateResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listOAuthClients",
+    method: "GET",
+    path: "/oauth-clients",
+    action: "openclaw.oauth_clients.list",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "List registered OAuth clients",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      response: { 200: OAuthClientListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "createOAuthClient",
+    method: "POST",
+    path: "/oauth-clients",
+    action: "openclaw.oauth_clients.create",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Register an OAuth client from a connection template",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      body: CreateOAuthClientBody,
+      response: { 201: OAuthClientResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "rotateOAuthClientSecret",
+    method: "POST",
+    path: "/oauth-clients/:oauthClientId/rotate-secret",
+    action: "openclaw.oauth_clients.rotate_secret",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Rotate an OAuth client secret",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: OAuthClientParams,
+      body: RotateOAuthClientSecretBody,
+      response: { 200: OAuthClientResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "deleteOAuthClient",
+    method: "DELETE",
+    path: "/oauth-clients/:oauthClientId",
+    action: "openclaw.oauth_clients.delete",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Delete an unused OAuth client",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: OAuthClientParams,
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+
+  {
     operationId: "getInstallationDeploymentInventory",
     method: "GET",
     path: "/installation/deployment-inventory",
@@ -510,6 +830,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: NamespaceCallerPermissionsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getNamespaceAgentCapabilities",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agent-capabilities",
+    action: "openclaw.namespaces.agent_capabilities.read",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary:
+      "Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceAgentCapabilitiesResponse, ...readErrors },
     },
   },
   {
@@ -873,6 +1210,71 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "listUsableConnectionTemplates",
+    method: "GET",
+    path: "/namespaces/:namespaceId/connection-templates",
+    action: "openclaw.connection_templates.list_usable",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "List connection templates the caller may connect in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: UsableConnectionTemplatesResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "startNamespaceConnection",
+    method: "POST",
+    path: "/namespaces/:namespaceId/connections",
+    action: "openclaw.namespaces.connections.start",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "Start consent for a reusable account in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      body: StartNamespaceConnectionBody,
+      response: { 201: ConnectionStartResponse, ...createErrors, 501: ErrorResponseRef },
+    },
+  },
+  {
+    operationId: "listNamespaceConnections",
+    method: "GET",
+    path: "/namespaces/:namespaceId/connections",
+    action: "openclaw.namespaces.connections.list",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary: "List completed connections the caller can read in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: SavedConnectionListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "disconnectNamespaceConnection",
+    method: "DELETE",
+    path: "/namespaces/:namespaceId/connections/:credentialSourceId",
+    action: "openclaw.namespaces.connections.disconnect",
+    iamAction: "delete",
+    resourceKind: "credential_source",
+    authorizationTarget: "credential_source",
+    summary: "Disconnect a saved account and retire its OAuth grant",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: CredentialSourceParams,
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+  {
     operationId: "createCredentialSource",
     method: "POST",
     path: "/namespaces/:namespaceId/credential-sources",
@@ -967,7 +1369,22 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      response: { 204: Type.Null(), ...mutationErrors },
+      response: {
+        204: Type.Null(),
+        ...mutationErrors,
+        503: {
+          allOf: [ErrorResponseRef],
+          headers: {
+            "Retry-After": Type.Optional(
+              Type.String({
+                pattern: "^[1-9][0-9]*$",
+                description:
+                  "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
+              }),
+            ),
+          },
+        },
+      },
     },
   },
   {
@@ -1567,7 +1984,8 @@ export const occApiRoutes = [
     iamAction: "manage_policy",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Apply the saved policy to the running Agent revision",
+    summary:
+      "Queue policy application to the running Agent revision, optionally replacing saved additions",
     tags: ["Agents"],
     schema: {
       params: SandboxPolicyParams,
@@ -1630,6 +2048,22 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentReadResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "listAgentAuditEvents",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/audit-events",
+    action: "openclaw.audit.agent.read",
+    iamAction: "read_audit",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List audit metadata for one Agent",
+    tags: ["Agents"],
+    schema: {
+      params: AgentParams,
+      querystring: AgentAuditQuery,
+      response: { 200: AgentAuditResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1811,7 +2245,10 @@ export const occApiRoutes = [
       "Read an exact first-deployment receipt; null does not prove failure; requires Configuration read",
     tags: ["Agents"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: Type.Object(
+        { harnessOverrides: Type.Optional(Type.String({ maxLength: 8192 })) },
+        { additionalProperties: false },
+      ),
       params: Type.Object(
         { ...AgentParams.properties, ...FirstDeploymentRecoveryTuple.properties },
         { additionalProperties: false },
@@ -1838,7 +2275,8 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
-      response: { 202: AgentRevisionResponse, ...mutationErrors },
+      body: AgentDeploymentBody,
+      response: { 202: AgentRevisionResponse, ...createErrors },
     },
   },
   {

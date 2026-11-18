@@ -3,8 +3,12 @@
 Rebuild Storybook before inspecting these stories. They render production console
 components with simulated API state; they do not prove persistence or enforcement.
 
-- **Pages/Settings → Account:** inspect the selected Installation Driver schema.
-  No startup value or API mutation control is exposed.
+- **Pages/Settings → Account** and **Pages/Settings → Nested Driver values:**
+  Before expanding a Driver, check that its collapsed summary shows the Driver
+  ID, contribution key and a separate **Implementation** label. Switch from
+  **Fields** to **JSON** and back. Confirm the same labels stay visible and the
+  group stays collapsed. Expand it to inspect the values and switch views again
+  to confirm it stays open.
 - **Pages/Agent detail → Policy denials and reviewed network additions:** use
   **Add Network rules**, fill the schema fields, add a port range, then select
   **Review changes**. Preview does not change the saved version. Compare **Save**
@@ -59,3 +63,24 @@ Correct the field to `[]` or `["keep-plugin"]`, or remove it. Retry the switch
 and select `gpt-6-sol`, then `gpt-6-luna`. Check the JSON primary model and confirm
 that whole plugin entries remain. Repeat at 1440 px and 390 px. Do not create an
 Agent. Capture the error and successful retry; this is simulated UI evidence only.
+
+## Correct an out-of-range Configuration number
+
+Open **Pages → Agent detail → Invalid Configuration JSON**
+(`invalidConfiguration`) and **Pages → Create Agent → Invalid Configuration JSON**
+(`createInvalidConfiguration`). Check their initial syntax errors first. Follow
+each story's review steps to restore the complete document, then set
+`plugins.entries.knowledge` to
+`{"enabled":true,"config":{"thresholds":[1,1e400,3]}}`, preserving the other settings.
+
+The nested array has valid JSON syntax, but `1e400` is outside the supported
+number range. Select **Save Configuration** or **Create Agent**. The error under
+the editor must read: “A number is too large or too small to save. Use a number
+closer to zero.” Check editor focus, exact draft retention, and no write. In
+Create Agent, select **Enter model ID manually** if a model list is shown.
+Change **Model ID** and leave the field: the rejected JSON must remain unchanged.
+Restore the original Model ID before retrying.
+
+Replace only `1e400` with `2`. Save or create, then inspect the Configuration for
+`[1,2,3]`. Capture the rejection and successful correction. These stories use
+simulated saves; they do not prove Controller persistence or runtime behavior.

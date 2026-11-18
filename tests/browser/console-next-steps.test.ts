@@ -19,6 +19,7 @@ import {
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
 import {
+  routeFailedDeployment,
   AGENT_READ,
   apiRequests,
   authorizationDenials,
@@ -27,13 +28,12 @@ import {
   login,
   nativeValues,
   newPage,
-  routeFailedDeployment,
   routeOneVersionPerPage,
   shortId,
-  trackSettledFetches,
-  waitForIdleFetches,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 
 const stopAgentButton = (page: Page) =>

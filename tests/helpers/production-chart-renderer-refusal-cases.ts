@@ -1,0 +1,299 @@
+type ChartOverrides = Readonly<Record<string, string | boolean>>;
+type RendererRefusalCase = readonly [
+  description: string,
+  override: ChartOverrides,
+  diagnostic?: RegExp,
+];
+
+const executionKubeconfigValues = {
+  "executionCluster.enabled": "true",
+  "executionCluster.apiKubeconfigSecretName": "execution-api",
+  "executionCluster.workerKubeconfigSecretName": "execution-worker",
+  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+};
+
+const googleRecoveryValues = {
+  "auth.google.enabled": "true",
+  "auth.recoveryUserId": "recovery-admin_1",
+};
+
+function secretKeyCase(
+  description: string,
+  field: string,
+  value: string,
+  prerequisites?: ChartOverrides,
+): RendererRefusalCase {
+  const diagnostic = new RegExp(`${field.replaceAll(".", "\\.")} must be a Kubernetes Secret key`);
+  return [description, { ...prerequisites, [field]: value }, diagnostic];
+}
+
+export function productionChartRendererRefusalCases({
+  agentNativeAdminValues,
+  chatgptValues,
+  externalGatewayRoutingValues,
+  gatewayRootSecret,
+  gatewayRoutingValues,
+  googleLoginValues,
+}: {
+  agentNativeAdminValues: ChartOverrides;
+  chatgptValues: ChartOverrides;
+  externalGatewayRoutingValues: ChartOverrides;
+  gatewayRootSecret: string;
+  gatewayRoutingValues: ChartOverrides;
+  googleLoginValues: ChartOverrides;
+}): readonly RendererRefusalCase[] {
+  return [
+    ["mutable controller", { "images.controller": "registry.example/controller:latest" }],
+    ["missing Better Auth secret", { "auth.secretName": "" }],
+    ["missing bootstrap admin email", { "bootstrap.adminEmail": "" }],
+    ["missing bootstrap credential Secret", { "bootstrap.credentials.secretName": "" }],
+    ["invalid bootstrap credential Secret", { "bootstrap.credentials.secretName": "Bad_Name" }],
+    ["missing bootstrap password key", { "bootstrap.credentials.passwordKey": "" }],
+    ["invalid bootstrap password key", { "bootstrap.credentials.passwordKey": "nested/password" }],
+    ["oversized bootstrap password key", { "bootstrap.credentials.passwordKey": "a".repeat(254) }],
+    ["missing bootstrap service key", { "bootstrap.credentials.serviceKeyKey": "" }],
+    ["invalid bootstrap service key", { "bootstrap.credentials.serviceKeyKey": "nested/key" }],
+    ["shared bootstrap input key", { "bootstrap.credentials.serviceKeyKey": "admin-password" }],
+    ["retired bootstrap password output", { "bootstrap.password.claimName": "retired" }],
+    ["retired bootstrap service-key output", { "bootstrap.serviceKey.fileName": "retired.json" }],
+    ["unrestricted client namespace", { "api.clients[0].namespace": "" }],
+    ["retired database egress key", { "database.cidr": "10.45.0.12/32" }],
+    ["retired Kubernetes API egress key", { "cluster.cidr": "10.43.0.1/32" }],
+    ["missing database egress list", { "database.cidrs": "" }],
+    ["missing Kubernetes API egress list", { "cluster.cidrs": "" }],
+    ["broad database egress", { "database.cidrs[0]": "0.0.0.0/0" }],
+    ["database egress that is not an IPv4 host", { "database.cidrs[0]": "999.1.2.3/32" }],
+    ["database egress with a leading-zero octet", { "database.cidrs[0]": "01.2.3.4/32" }],
+    ["broad Kubernetes API egress", { "cluster.cidrs[0]": "10.43.0.0/16" }],
+    ["Kubernetes API egress that is not an IPv4 host", { "cluster.cidrs[0]": "256.0.0.1/32" }],
+    ["Kubernetes API egress with a leading-zero octet", { "cluster.cidrs[0]": "01.2.3.4/32" }],
+    ["invalid control-plane node selector", { "controlPlane.nodeSelector": "control" }],
+    ["false control-plane node selector", { "controlPlane.nodeSelector": false }],
+    [
+      "invalid database CA key",
+      { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
+    ],
+    secretKeyCase("overlong database CA key", "database.caKey", "a".repeat(254), {
+      "database.caSecretName": "occ-rds-ca",
+    }),
+    ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
+    ["reserved application database Secret key", { "database.appUrlKey": "." }],
+    ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
+    ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
+    ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
+    ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
+    secretKeyCase("invalid installation startup Secret key", "installation.key", "bad/key"),
+    secretKeyCase("reserved installation startup Secret key", "installation.key", "."),
+    secretKeyCase(
+      "invalid execution kubeconfig Secret key",
+      "executionCluster.kubeconfigKey",
+      "bad/key",
+      executionKubeconfigValues,
+    ),
+    secretKeyCase(
+      "reserved execution kubeconfig Secret key",
+      "executionCluster.kubeconfigKey",
+      "..kube",
+      executionKubeconfigValues,
+    ),
+    secretKeyCase("invalid Better Auth signing Secret key", "auth.secretKey", "bad/key"),
+    secretKeyCase("reserved Better Auth signing Secret key", "auth.secretKey", "."),
+    secretKeyCase("overlong Better Auth signing Secret key", "auth.secretKey", "a".repeat(254)),
+    secretKeyCase(
+      "invalid GitHub client ID Secret key",
+      "auth.google.clientIdKey",
+      "bad/key",
+      googleLoginValues,
+    ),
+    secretKeyCase(
+      "reserved GitHub client secret Secret key",
+      "auth.google.clientSecretKey",
+      ".",
+      googleLoginValues,
+    ),
+    secretKeyCase(
+      "overlong Google client secret Secret key",
+      "auth.google.clientSecretKey",
+      "a".repeat(254),
+      googleRecoveryValues,
+    ),
+    secretKeyCase("invalid OIDC client ID Secret key", "auth.oidc.clientIdKey", "bad/key", {
+      "auth.oidc.enabled": "true",
+      "auth.recoveryUserId": "recovery-admin_1",
+    }),
+    secretKeyCase(
+      "reserved Google client ID Secret key",
+      "auth.google.clientIdKey",
+      "..client-id",
+      googleRecoveryValues,
+    ),
+    ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
+    [
+      "retired ChatGPT integration key",
+      {
+        "integrations.chatgpt.enabled": "true",
+        "integrations.chatgpt.providerCidr": "198.51.100.25/32",
+      },
+    ],
+    [
+      "unrestricted ChatGPT provider egress",
+      { ...chatgptValues, "backend.chatgpt.providerCidr": "0.0.0.0/0" },
+    ],
+    [
+      "ChatGPT provider host that is not an IPv4 address",
+      { ...chatgptValues, "backend.chatgpt.providerCidr": "999.1.2.3/32" },
+    ],
+    [
+      "ChatGPT provider host with a leading-zero octet",
+      { ...chatgptValues, "backend.chatgpt.providerCidr": "01.2.3.4/32" },
+    ],
+    [
+      "ChatGPT Backend without an approved provider host",
+      { ...chatgptValues, "backend.chatgpt.providerCidr": "" },
+    ],
+    [
+      "ChatGPT admin key shared with installation configuration",
+      { ...chatgptValues, "backend.chatgpt.secretName": "occ-installation-startup" },
+    ],
+    [
+      "ChatGPT Backend without an admin Secret key",
+      { ...chatgptValues, "backend.chatgpt.key": "" },
+    ],
+    [
+      "ChatGPT Backend with an invalid admin Secret name",
+      { ...chatgptValues, "backend.chatgpt.secretName": "Bad_Name" },
+      /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
+    ],
+    secretKeyCase(
+      "ChatGPT Backend with an invalid admin Secret key",
+      "backend.chatgpt.key",
+      "bad/key",
+      chatgptValues,
+    ),
+    secretKeyCase(
+      "ChatGPT Backend with a reserved admin Secret key",
+      "backend.chatgpt.key",
+      "..admin-key",
+      chatgptValues,
+    ),
+    [
+      "ChatGPT Backend with an overlong admin Secret name",
+      { ...chatgptValues, "backend.chatgpt.secretName": "a".repeat(254) },
+      /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
+    ],
+    secretKeyCase(
+      "ChatGPT Backend with an overlong admin Secret key",
+      "backend.chatgpt.key",
+      "a".repeat(254),
+      chatgptValues,
+    ),
+    [
+      "Agent native admin enabled without a public DNS suffix",
+      { "agentNativeAdmin.enabled": "true", "agentNativeAdmin.domain": "" },
+    ],
+    [
+      "retired shared cookie domain setting",
+      { "agentNativeAdmin.sharedCookieDomain": "example.invalid" },
+      /agentNativeAdmin.sharedCookieDomain is no longer supported/,
+    ],
+    [
+      "Agent native admin configured with a wildcard DNS suffix",
+      { ...agentNativeAdminValues, "agentNativeAdmin.domain": "*.example.invalid" },
+    ],
+    [
+      "Agent native admin configured with a URL",
+      { ...agentNativeAdminValues, "agentNativeAdmin.domain": "https://agents.example.invalid" },
+    ],
+    [
+      "Agent native admin enabled without private Gateway routing",
+      {
+        "agentNativeAdmin.enabled": "true",
+        "agentNativeAdmin.domain": "agents.example.invalid",
+      },
+    ],
+    [
+      "retired workspace-files endpoint ConfigMap",
+      { "workspaceFiles.configMapName": "operator-agent-endpoints" },
+    ],
+    [
+      "private Envoy Gateway without an existing GatewayClass",
+      {
+        "gatewayRouting.enabled": "true",
+        "gatewayRouting.apiKeySecretName": "occ-gateway-api-key",
+      },
+    ],
+    [
+      "private Envoy Gateway without an Envoy namespace",
+      { ...gatewayRoutingValues, "gatewayRouting.envoyNamespace": "" },
+    ],
+    [
+      "private Envoy Gateway without an operator-created API-key Secret",
+      { ...gatewayRoutingValues, "gatewayRouting.apiKeySecretName": "" },
+    ],
+    [
+      "private Envoy Gateway sharing the Better Auth Secret",
+      { ...gatewayRoutingValues, "gatewayRouting.apiKeySecretName": "occ-auth" },
+    ],
+    [
+      "private Envoy Gateway with manual CA trust but generated issuer",
+      {
+        ...gatewayRoutingValues,
+        "gatewayRouting.caSecretName": "occ-private-ca",
+        "gatewayRouting.caSecretKey": "ca.crt",
+      },
+    ],
+    [
+      "private Envoy Gateway with an incomplete private CA Secret",
+      { ...externalGatewayRoutingValues, "gatewayRouting.caSecretName": "occ-private-ca" },
+    ],
+    secretKeyCase(
+      "private Envoy Gateway with an invalid external CA Secret key",
+      "gatewayRouting.caSecretKey",
+      "bad/key",
+      { ...externalGatewayRoutingValues, "gatewayRouting.caSecretName": "occ-private-ca" },
+    ),
+    [
+      "private Envoy Gateway with leaf TLS colliding with installation Secret",
+      { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-installation-startup" },
+    ],
+    [
+      "private Envoy Gateway with leaf TLS colliding with database Secret",
+      { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-database" },
+    ],
+    [
+      "private Envoy Gateway with leaf TLS colliding with Better Auth Secret",
+      { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-auth" },
+    ],
+    [
+      "private Envoy Gateway with leaf TLS colliding with ChatGPT provider Secret",
+      {
+        ...gatewayRoutingValues,
+        ...chatgptValues,
+        "gatewayRouting.tlsSecretName": "occ-chatgpt-admin",
+      },
+    ],
+    [
+      "private Envoy Gateway with external CA trust colliding with leaf TLS Secret",
+      {
+        ...externalGatewayRoutingValues,
+        "gatewayRouting.caSecretName": "oce-agent-gateways-tls",
+        "gatewayRouting.caSecretKey": "ca.crt",
+      },
+    ],
+    [
+      "private Envoy Gateway with generated root CA colliding with leaf TLS Secret",
+      {
+        ...gatewayRoutingValues,
+        "gatewayRouting.tlsSecretName": gatewayRootSecret,
+      },
+    ],
+    [
+      "private Envoy Gateway with an invalid tenant gateway port",
+      { ...gatewayRoutingValues, "gatewayRouting.tenantGatewayPort": "0" },
+    ],
+    [
+      "private Envoy Gateway with an invalid Envoy HTTPS target port",
+      { ...gatewayRoutingValues, "gatewayRouting.envoyHttpsTargetPort": "0" },
+    ],
+  ];
+}

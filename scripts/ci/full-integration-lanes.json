@@ -1,0 +1,104 @@
+[
+  {
+    "lane": "checks-baseline-1",
+    "title": "Checks and Conformance 1",
+    "profile": "baseline",
+    "timeout": 25
+  },
+  {
+    "lane": "checks-baseline-2",
+    "title": "Checks and Conformance 2",
+    "profile": "baseline",
+    "timeout": 25
+  },
+  {
+    "lane": "checks-browser",
+    "title": "Console Browser",
+    "profile": "baseline",
+    "timeout": 25
+  },
+  {
+    "lane": "checks-browser-2",
+    "title": "Console Browser 2",
+    "profile": "baseline",
+    "timeout": 25
+  },
+  {
+    "lane": "postgres",
+    "title": "PostgreSQL Migrations",
+    "profile": "postgres",
+    "timeout": 25
+  },
+  {
+    "lane": "postgres-application",
+    "title": "PostgreSQL Application",
+    "profile": "postgres",
+    "timeout": 25
+  },
+  {
+    "lane": "postgres-auth",
+    "title": "PostgreSQL Authentication",
+    "profile": "postgres",
+    "timeout": 25
+  },
+  {
+    "lane": "postgres-platform",
+    "title": "PostgreSQL Platform",
+    "profile": "postgres",
+    "timeout": 25
+  },
+  {
+    "lane": "k3d-fixture-configuration",
+    "title": "k3d Fixture and Configuration",
+    "profile": "k3d",
+    "timeout": 45
+  },
+  {
+    "lane": "k3d-fixture-state",
+    "title": "k3d State and Lifecycle",
+    "profile": "k3d",
+    "timeout": 45
+  },
+  {
+    "lane": "k3d-fixture-network",
+    "title": "k3d Network Isolation",
+    "profile": "k3d",
+    "timeout": 45
+  },
+  {
+    "lane": "k3d-fixture-plugins",
+    "title": "k3d Plugin Status",
+    "profile": "k3d",
+    "timeout": 45
+  },
+  {
+    "lane": "k3d-observability-demo",
+    "title": "Demo Observability Smoke",
+    "profile": "k3d",
+    "timeout": 20
+  },
+  {
+    "lane": "k3d-observability",
+    "title": "Production Observability",
+    "profile": "k3d",
+    "timeout": 45
+  },
+  {
+    "lane": "logging-collector",
+    "title": "Logging Collector",
+    "profile": "images",
+    "timeout": 30
+  },
+  {
+    "lane": "repository-credentials-container",
+    "title": "Repository Credentials",
+    "profile": "images",
+    "timeout": 40
+  },
+  {
+    "lane": "keycloak-oidc",
+    "title": "Keycloak OIDC",
+    "profile": "postgres",
+    "timeout": 25
+  }
+]

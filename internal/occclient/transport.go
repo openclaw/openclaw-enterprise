@@ -82,7 +82,7 @@ type APIError struct {
 	// ServiceKeyNamespace is local metadata recorded with the key for this request.
 	// It is not an assertion by the server or a source of authorization.
 	ServiceKeyNamespace string
-	// serviceKeyFile is the local key file path, named when OCC answers 401.
+	// serviceKeyFile is the local key file path, named when OCC refuses authentication.
 	serviceKeyFile string
 	// redirectOrigin is the Location's scheme://host when it differs from OCC_URL.
 	redirectOrigin string
@@ -101,13 +101,14 @@ func (err *APIError) Error() string {
 			err.Status, err.Location, err.redirectOrigin,
 		)
 	}
-	if err.Status == http.StatusUnauthorized && err.serviceKeyFile != "" {
-		// occ always sends the key file's key, so OCC's cookie and header advice
-		// does not apply: the key itself was refused (finding D745).
-		return fmt.Sprintf(
-			"OCC rejected the service key in %s: it is invalid, expired or revoked. Ask an Installation administrator for a new key.",
-			err.serviceKeyFile,
-		)
+	if err.Status == http.StatusUnauthorized {
+		if err.Code == "UNAUTHENTICATED" && err.serviceKeyFile != "" {
+			return fmt.Sprintf(
+				"OCC rejected the service key in %s: it is invalid, expired or revoked. Ask an Installation administrator for a new key.",
+				err.serviceKeyFile,
+			)
+		}
+		return "The configured endpoint or gateway returned HTTP 401. Check that OCC_URL (or --url) points to the origin that serves the OCC API."
 	}
 	message := fmt.Sprintf("OCC operation failed (HTTP %d)", err.Status)
 	if err.Code != "" {
@@ -432,9 +433,9 @@ func (client *Client) apiError(status int, header http.Header, body []byte) erro
 	return result
 }
 
-// serviceKeyFileAdvice ends every key-file refusal: the file must be the
-// complete JSON answer of "occ service-key create" (or of bootstrap).
-const serviceKeyFileAdvice = "Use the complete JSON file from \"occ service-key create\"."
+// serviceKeyFileAdvice accepts both ordinary issuance responses and locally
+// prepared bootstrap files; only data.key is required for authentication.
+const serviceKeyFileAdvice = "Use a JSON file containing data.key, such as a prepared bootstrap key file or the response from \"occ service-key create\"."
 
 func readServiceKey(path string) (serviceKey, error) {
 	contents, err := os.ReadFile(path)

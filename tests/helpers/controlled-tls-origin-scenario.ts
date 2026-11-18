@@ -5,8 +5,8 @@ import type { RequestListener } from "node:http";
 import type { Server } from "node:net";
 import { connect, type TlsOptions, type TLSSocket } from "node:tls";
 import { controlledTlsOrigin } from "./controlled-tls-origin.ts";
-import { harnessTlsFixture } from "./harness-tls.mjs";
-import { listen } from "./listen.mjs";
+import { harnessTlsFixture } from "./harness-tls.ts";
+import { listen } from "./listen.ts";
 
 type Observation = ReturnType<ReturnType<typeof controlledTlsOrigin>["snapshot"]>;
 

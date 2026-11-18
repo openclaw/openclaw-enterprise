@@ -113,26 +113,43 @@ func TestConcurrentStepsShareOutputAndEnvironmentSafely(t *testing.T) {
 
 func TestConcurrentStepFailureStopsItsSibling(t *testing.T) {
 	for _, failing := range []int{0, 1} {
-		t.Run("step "+strconv.Itoa(failing), func(t *testing.T) {
-			pidFile := filepath.Join(t.TempDir(), "sibling.pid")
-			cause := errors.New("import the development controller image: refused")
-			steps := []func(context.Context, *runner) error{waitingStep(pidFile), waitingStep(pidFile)}
-			steps[failing] = failingStep(pidFile, cause)
-			r := &runner{opts: Options{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}, env: map[string]string{"PATH": os.Getenv("PATH")}}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+		for _, cleanupFails := range []bool{false, true} {
+			t.Run("step "+strconv.Itoa(failing)+" cleanup "+strconv.FormatBool(cleanupFails), func(t *testing.T) {
+				pidFile := filepath.Join(t.TempDir(), "sibling.pid")
+				cause := errors.New("import the development controller image: refused")
+				steps := []func(context.Context, *runner) error{waitingStep(pidFile), waitingStep(pidFile)}
+				steps[failing] = failingStep(pidFile, cause)
+				if cleanupFails {
+					steps[1-failing] = func(ctx context.Context, r *runner) error {
+						return joinStartupCleanup(waitingStep(pidFile)(ctx, r), routingError("manifest-apply", "envoy-gateway", errors.New("secondary cleanup refused")))
+					}
+				}
+				r := &runner{opts: Options{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}, env: map[string]string{"PATH": os.Getenv("PATH")}}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
 
-			err := r.concurrently(ctx, steps...)
-			// Only the failed step's own error is reported, not the sibling's
-			// "signal: killed" from the cancellation it caused.
-			if err != cause {
-				t.Fatalf("want the failed step's error, got %v", err)
-			}
-			if ctx.Err() != nil {
-				t.Fatal("the sibling ran until the test deadline instead of being canceled")
-			}
-			assertExited(t, pidFile)
-		})
+				err := r.concurrently(ctx, steps...)
+				// Only the failed step's own error is reported, not the sibling's
+				// "signal: killed" from the cancellation it caused.
+				if !errors.Is(err, cause) || err.Error() != cause.Error() {
+					t.Fatalf("want the failed step's error and text, got %v", err)
+				}
+				if !cleanupFails && err != cause {
+					t.Fatal("unannotated errors must retain their identity")
+				}
+				stage, cleanupFailed := startupFailureDetails(err)
+				if stage != "unknown" || cleanupFailed != cleanupFails {
+					t.Fatalf("unknown primary must stay unknown while retaining sibling cleanup: %s %t", stage, cleanupFailed)
+				}
+				if routingFailureSuffix(err) != "" {
+					t.Fatal("selected import failure inherited routing details from sibling cleanup")
+				}
+				if ctx.Err() != nil {
+					t.Fatal("the sibling ran until the test deadline instead of being canceled")
+				}
+				assertExited(t, pidFile)
+			})
+		}
 	}
 }
 

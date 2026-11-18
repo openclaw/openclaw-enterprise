@@ -19,13 +19,13 @@ import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/comp
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
+} from "../conformance/repository-sessions.contract.ts";
 import {
   repositoryBinding,
   repositoryCredentials,
-} from "../fixtures/repository-credentials/session-state.mjs";
+} from "../fixtures/repository-credentials/session-state.ts";
 import { createDriver } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 
 test("Git reduction recovery observes its original operation despite discovery failure", async (t) => {
   const state = new InMemoryPlatformState();
@@ -110,7 +110,7 @@ test("Git reduction recovery observes its original operation despite discovery f
     egressPlan: plan,
     sandboxDriverId: proxy.id,
     executionAdmission: { version: 7, mode: "protected" },
-  } as AgentRevision;
+  } satisfies AgentRevision;
   const initial: EgressInstallation = {
     plan,
     sandboxId: randomUUID(),
@@ -152,6 +152,25 @@ test("Git reduction recovery observes its original operation despite discovery f
   });
   const context = { namespace: seeded.namespace as Namespace, revision, plan, signal: t.signal };
   const reduce = () => reduceCredentialPolicy(state, owner, context, undefined);
+  // Closed attempts alone do not authorize a stopped execution's policy change.
+  await state.transact((unit) =>
+    unit.agents.transitionAgentDesiredRuntimeState(
+      seeded.namespace.id,
+      seeded.agent.id,
+      "running",
+      "stopped",
+    ),
+  );
+  await assert.rejects(reduce(), /no exact admitted owner or withdrawal/);
+  assert.equal(applies, 0);
+  await state.transact((unit) =>
+    unit.agents.transitionAgentDesiredRuntimeState(
+      seeded.namespace.id,
+      seeded.agent.id,
+      "stopped",
+      "running",
+    ),
+  );
   await assert.rejects(reduce(), /discovery unavailable/);
   assert.equal(
     (

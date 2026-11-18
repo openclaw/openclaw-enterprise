@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-11-04
-last_updated_session: authoring-run/b22db461-d5cf-40f5-b1c1-43443569364c
+updated: 2026-11-10
+last_updated_session: authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761
 ---
 
 # Console sign-in and destination recovery
@@ -65,15 +65,18 @@ takes the status over in place while checking the session and announces
 and name. If the reply is malformed, the console shows **Session unavailable**
 and withholds private content and reads. **Retry** repeats the session check.
 
-`showLogin` reads `GET /api/auth/providers`; true `github`/`google` flags add their **Continue
-with** buttons, and discovery failure keeps password login. A true `oidc` flag adds a button
+`showLogin` reads `GET /api/auth/providers`; a true `google` flag adds its **Continue
+with Google** button, and discovery failure keeps password login. A true `oidc` flag adds a button
 labelled from `oidcSignIn.label` only when `oidcSignIn.authorizationUrl` is `https:`; its start
-URL must use that endpoint's origin and path, as GitHub's and Google's must use their fixed ones.
+URL must use that endpoint's origin and path, as Google's must use its fixed endpoint.
 An explicit `password: false` makes the form recovery-only and changes the
 provider-error advice from "use your password" to asking an administrator. The
-console puts an empty form behind **Recovery sign-in** when focus is outside it
-and no sign-in is pending. A late discovery reply keeps the form visible while
-focus is inside it, even if both fields are empty.
+console keeps the password form behind **Recovery sign-in** while discovery is
+pending, so early focus or autofill cannot make it the default sign-in method.
+Selecting recovery opens the form immediately; a later discovery reply preserves
+that choice, its input, and keyboard focus. Discovery that permits passwords or
+fails shows the form without requiring the recovery action. If that action has
+keyboard focus, focus moves to Email when the form replaces it.
 
 While sign-in is pending, the console ignores repeat password submissions and
 provider activations. Keyboard focus stays on the control that started the
@@ -113,10 +116,8 @@ confirmation with `GET /native-admin/return/:key`.
 A valid authorized response routes to ordinary Agent detail; failed or malformed
 responses open Agents, and a failed lookup says so once. The [native Agent host](../agent-native-admin.md) redirects
 a qualifying root or chat navigation here. Opening native chat still requires a separate user action.
-`authError=<provider>` shows a generic, one-time error; with `authError=github`, an
-`authReason` of `membership` or `membership-unavailable` explains a GitHub
-[allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist)
-refusal instead. With any provider, `account-disabled` says the account is disabled and to ask
+`authError=<provider>` shows a generic, one-time error. With Google or OIDC,
+`account-disabled` says the account is disabled and to ask
 an administrator to enable it; `provider-unavailable` and `unavailable` say to try again
 later. The
 [authentication flow](../local-password-authentication.md#3-construct-session-authentication)
@@ -164,6 +165,10 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 08:33: Keep password entry behind explicit recovery until sign-in discovery settles. (authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
+
+- 2026-11-09 15:08: Remove direct GitHub discovery and membership errors in the accompanying changes. (authoring-run/e00c2688-0a25-4443-a852-69dea27e73d0 - daecab29c452af39945f5526257288771a77bdfc)
 
 - 2026-11-04 22:07: Document Console startup failure and reload recovery. (authoring-run/b22db461-d5cf-40f5-b1c1-43443569364c - f18e8948b89cdeaabec5ae0f5824b23b7c82b906)
 

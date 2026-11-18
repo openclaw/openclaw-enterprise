@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Agent plugin testing
 
 ## Overview
@@ -9,53 +15,19 @@ Run Agent plugin tests for API, Driver, persistence, and runtime behavior from t
 | Coverage                 | Command                                                                                                                                                                          |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | API and contracts        | `pnpm test:conformance` and `node --test tests/integration/occ-api.test.mjs`                                                                                                     |
-| Driver and startup       | `node --test tests/conformance/plugin-driver.test.mjs tests/integration/plugin-driver-startup.test.mjs`                                                                          |
-| Compute boundaries       | `node --test tests/conformance/plugin-compute.test.mjs tests/conformance/ssh-compute.test.mjs`                                                                                   |
+| Plugin discovery         | `node --test tests/integration/plugin-discovery-api.test.ts`                                                                                                                     |
+| Driver and startup       | `node --test tests/conformance/plugin-driver.test.ts tests/integration/plugin-driver-startup.test.ts`                                                                            |
+| Compute boundaries       | `node --test tests/conformance/plugin-compute.test.ts tests/conformance/plugin-compute-codex-install.test.ts tests/conformance/ssh-compute.test.ts`                              |
 | Persistence and recovery | Run the prepared `postgres-application` and `postgres-platform` lanes using the [PostgreSQL procedure](postgresql.md#revision-worker-tests); each lane needs its own state file. |
 
 The discovery fixture uses simulated provider responses. These checks do not prove a live provider or native runtime.
-
-### Saved-Agent discovery with AWS Secrets Manager
-
-Use a disposable, already installed controller built from the candidate. Select
-[the AWS Secret Driver](../reference/drivers/aws-secrets-manager.md) and
-`codex-plugin` with `catalogSource: hosted`. In a ready Namespace, use the
-Secret API to store an authorized Service Accounts credential. Bind that Secret
-as the `codex_pat` source of a saved dedicated Agent. Grant the Agent's
-ServicePrincipal and the caller `operate` on the exact Secret. The caller also
-needs Agent `read` and `update`, Installation `read`, and Installation
-`administer` to inspect the selected Drivers.
-
-Forward the installed API to loopback. Set these inputs for the test process:
-
-| Input                                    | Value                                                                             |
-| ---------------------------------------- | --------------------------------------------------------------------------------- |
-| `OCC_TEST_QA_AWS_DISCOVERY_ORIGIN`       | Forwarded API origin, such as `http://127.0.0.1:18080`, without a trailing slash. |
-| `OCC_TEST_QA_AWS_DISCOVERY_KEY_FILE`     | Private regular file containing the authorized OCC service key.                   |
-| `OCC_TEST_QA_AWS_DISCOVERY_NAMESPACE_ID` | Saved Agent's Namespace ID.                                                       |
-| `OCC_TEST_QA_AWS_DISCOVERY_AGENT_ID`     | Saved Agent's ID.                                                                 |
-| `OCC_TEST_QA_AWS_DISCOVERY_PLUGIN_ID`    | Remote ID of a known entry available to the hosted account.                       |
-
-```sh
-OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes OCC_TEST_QA_PRESET=Codex \
-  OCC_TEST_QA_SCENARIOS=aws-secret-discovery node --test tests/integration/qa-matrix-real.test.mjs
-```
-
-The scenario checks the selected Drivers and Agent binding, then requests one
-plugin's details without supplying a credential. Expect the selected entry and
-an OCC request ID. Retain the installed image digest, test time and matching
-AWS audit evidence of the controller's `GetSecretValue` on the bound ARN. This
-checks a server-side Agent operation. Workload projection, model execution,
-protected sender dispatch and IAM denial after a tag change require separate
-evidence. The scenario leaves the prepared installation and its resources in
-place for their owner to clean up.
 
 ### Kubernetes status transport
 
 Prepare a [disposable Kubernetes fixture](kubernetes.md), a worker node, and a migrated `openclaw_k8s_*` database. Set `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`, `OCC_TEST_KUBERNETES_IMAGE`, `OCC_TEST_DATABASE_URL`, and `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` to the comma-separated API-server proxy source CIDRs from the [networking reference](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
 
 ```sh
-node --test tests/integration/kubernetes-plugin-status-real.test.mjs
+node --test tests/integration/kubernetes-plugin-status-real.test.ts
 ```
 
 This checks status transport and restart behavior with controlled producers. It does not prove native plugin compatibility.
@@ -138,11 +110,11 @@ For Linear, connect the account and set `OCC_TEST_CODEX_LINEAR_PROMPT`, `OCC_TES
 
 ## Per-call approval acceptance
 
-Use the [QA matrix](ci.md#qa-matrix) Calendar scenario to exercise human and automatic approval in normal Agent turns. The scenario uses harmless reads. An unselected or skipped case does not prove approval enforcement.
+The [dedicated Codex failure case](../../tests/integration/plugin-driver-real.test.mjs) verifies a successful harmless Calendar read after a plugin failure. To verify human and automatic approval separately, use normal Agent turns and record the approval decision and tool execution for each turn.
 
 ## Tool override acceptance
 
-The Calendar scenario also checks that an enabled tool exception can run and a disabled tool cannot. It does not call sibling write tools. Check the transcript, not discovery metadata alone, for execution evidence.
+To verify a tool override, enable a harmless read and confirm execution in the session transcript. Disable the same tool and confirm that the Agent cannot execute it.
 
 ## Current proof notes
 

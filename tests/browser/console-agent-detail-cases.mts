@@ -1,9 +1,10 @@
+import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import type { Locator, Page, Request } from "playwright";
+import type { Locator, Page } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { isResourceKind, PERMISSION_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type {
@@ -16,9 +17,6 @@ import type {
   ChannelDirectoryResult,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -47,14 +45,16 @@ import {
   secretOptionLabel,
   selectSecret,
   settlePageRequests,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
-  waitForSettledFetches,
   statusTone,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import {
+  trackSettledFetches,
+  waitForIdleFetches,
+  waitForSettledFetches,
+} from "./console-fetch-accounting.ts";
 
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
@@ -63,8 +63,7 @@ import {
   agentDeleteRequests,
   agentStopRequests,
   replyWithDifferentAgentId,
-  waitForLiveControls,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   callerDenied,
   DEPENDENCY_UNAVAILABLE,
@@ -82,7 +81,8 @@ import {
   NAMESPACE_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function deferred<T>() {
   let resolve: (value: T | PromiseLike<T>) => void = () =>
@@ -133,6 +133,8 @@ async function slackSelectionValue(locator: Locator): Promise<string> {
 
 export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof fileConsoleApp>) {
   test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Delete cancellation", { ready: true });
     const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
@@ -168,7 +170,8 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     const secret = `${cli} secret delete ${harnessSource.id}`;
     assert.equal(await dialog.getByText(configuration, { exact: true }).isVisible(), false);
     assert.equal(await dialog.getByText(secret, { exact: true }).isVisible(), false);
-    await dialog.getByText("View separate cleanup commands").press("Enter");
+    const disclosure = dialog.getByText("View separate cleanup commands");
+    await disclosure.press("Enter");
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     for (const [kind, command] of [
       ["Configuration", configuration],
@@ -183,6 +186,130 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         .waitFor();
       assert.equal(await page.evaluate(() => globalThis.navigator.clipboard.readText()), command);
     }
+    const clipboard = await page.evaluateHandle(() => {
+      const writes = new Map<string, { accept(): void; deny(): void }>();
+      Object.defineProperty(globalThis.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: (command: string) =>
+            new Promise<void>((resolve, reject) => {
+              writes.set(command, {
+                accept: resolve,
+                deny: () => reject(new Error("Clipboard denied by test")),
+              });
+            }),
+        },
+      });
+      return (command: string) => {
+        const write = writes.get(command);
+        if (!write) {
+          throw new Error(`No clipboard write for ${command}`);
+        }
+        writes.delete(command);
+        return write;
+      };
+    });
+    function commandRow(command: string) {
+      const row = dialog.locator(".agent-kept-command").filter({ hasText: command });
+      return {
+        command,
+        button: row.getByRole("button"),
+        status: row.getByRole("status", { includeHidden: true }),
+      };
+    }
+    type CommandRow = ReturnType<typeof commandRow>;
+    const configRow = commandRow(configuration);
+    const secretRow = commandRow(secret);
+    async function startCopy(row: CommandRow) {
+      await row.button.press("Enter");
+      const write = await clipboard.evaluateHandle((take, command) => take(command), row.command);
+      return async (outcome: "accept" | "deny") => {
+        await write.evaluate((pending, result) => pending[result](), outcome);
+        await write.dispose();
+      };
+    }
+    const selectionText = () => page.evaluate(() => globalThis.document.getSelection()?.toString());
+    async function assertManualCopy(current: CommandRow, previous: CommandRow) {
+      assert.equal(
+        await current.status.textContent(),
+        "Command selected. Use your copy shortcut to copy it.",
+      );
+      assert.equal(await previous.status.textContent(), "");
+      assert.equal(await selectionText(), current.command);
+      assert.equal(
+        await current.button.evaluate((node) => node.ownerDocument.activeElement === node),
+        true,
+      );
+    }
+
+    // A late success must not replace a newer manual selection, even for the same command.
+    const firstConfig = await startCopy(configRow);
+    assert.equal(await secretRow.status.textContent(), "", "Pending copy clears prior success");
+    const retryConfig = await startCopy(configRow);
+    await retryConfig("deny");
+    await firstConfig("accept");
+    await assertManualCopy(configRow, secretRow);
+
+    // Once denial has settled, switching rows must retire its selection notice in either direction.
+    for (const [current, previous] of [
+      [secretRow, configRow],
+      [configRow, secretRow],
+    ] as const) {
+      const next = await startCopy(current);
+      assert.equal(await previous.status.textContent(), "");
+      await next("deny");
+      await assertManualCopy(current, previous);
+    }
+
+    const pendingConfig = await startCopy(configRow);
+    const latestSecret = await startCopy(secretRow);
+    await latestSecret("deny");
+    await pendingConfig("deny");
+    await assertManualCopy(secretRow, configRow);
+
+    // Collapse ends this attempt. Neither completion while closed nor a rejection after reopening
+    // may select the hidden command or leave feedback for the next visit.
+    const pendingWhileHidden = await startCopy(configRow);
+    await disclosure.press("Enter");
+    assert.equal(await configRow.button.isVisible(), false);
+    await pendingWhileHidden("accept");
+    assert.equal(await configRow.status.textContent(), "");
+
+    await disclosure.press("Enter");
+    const pendingAcrossReopen = await startCopy(configRow);
+    await disclosure.press("Enter");
+    await disclosure.press("Enter");
+    await page.evaluate(() => globalThis.document.getSelection()?.removeAllRanges());
+    await pendingAcrossReopen("deny");
+    assert.equal(await selectionText(), "");
+    assert.equal(await configRow.status.textContent(), "");
+    assert.equal(await secretRow.status.textContent(), "");
+
+    // Keep rejection and reopening in one browser task so the rejection handler runs after both toggles.
+    await configRow.button.press("Enter");
+    await clipboard.evaluate((take, command) => {
+      const details = globalThis.document.activeElement?.closest("details");
+      if (!details?.open) {
+        throw new Error("Expected focus inside the open cleanup disclosure");
+      }
+      take(command).deny();
+      details.open = false;
+      details.open = true;
+    }, configuration);
+    assert.equal(await selectionText(), "");
+    assert.equal(await configRow.status.textContent(), "");
+
+    const canceled = await startCopy(configRow);
+    await cancel.click();
+    await dialog.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Delete Agent" }).click();
+    await disclosure.press("Enter");
+    const reopened = await startCopy(secretRow);
+    await reopened("deny");
+    await canceled("deny");
+    await assertManualCopy(secretRow, configRow);
+    await clipboard.dispose();
+
     // Attach the rejection check when the timed wait starts: on a loaded runner the click can
     // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
     // unhandled rejection (finding 1986). This only catches a DELETE sent soon after Cancel; the
@@ -294,6 +421,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     t: TestContext,
     { moveFocusDuringPoll }: { moveFocusDuringPoll: boolean },
   ) {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["scoped-deleter"] });
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Delete scoped", { ready: true });
@@ -551,6 +679,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   });
 
   test("Repeat deletion preserves bounded retry ownership feedback and ordinary denial guidance", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Retry refusal feedback", {
       ready: true,
@@ -670,6 +799,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   });
 
   test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     // The API's 400 and 409 answers for this route (contractMessage and occ's deleteAgent). Delete
     // has no form, so a schema refusal does not ask to check entered values, and the API's typed
     // 409 sentence shows with the step that recovers (finding 2538).
@@ -766,6 +896,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     t: TestContext,
     { endsAccess, readFails = false }: { endsAccess: boolean; readFails?: boolean },
   ) {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace(
       `Read before repeat${endsAccess ? " ending access" : ""}${readFails ? " failing" : ""}`,
@@ -879,6 +1010,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   }
 
   test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Repeat deletion uncertainty", {
       ready: true,
@@ -3246,8 +3378,12 @@ export function registerSharingCredentialsAndChannelsCases(
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     const directoryBodies: DirectoryBody[] = [];
-    const pendingDirectory = deferred<Request>();
     const releaseDirectory = deferred<void>();
+    const releaseChangedQuery = deferred<void>();
+    t.after(() => {
+      releaseDirectory.resolve();
+      releaseChangedQuery.resolve();
+    });
     // The browser test owns Console selection and saved API state; only provider directory data is simulated.
     await page.route(
       `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
@@ -3256,8 +3392,10 @@ export function registerSharingCredentialsAndChannelsCases(
         const ids = body.ids;
         directoryBodies.push(body);
         if (body.query === "pending") {
-          pendingDirectory.resolve(route.request());
           await releaseDirectory.promise;
+        }
+        if (body.query === "pending-query") {
+          await releaseChangedQuery.promise;
         }
         let nextCursor;
         let candidates: ChannelDirectoryResult["candidates"];
@@ -3310,8 +3448,13 @@ export function registerSharingCredentialsAndChannelsCases(
     const channelSearch = channelDialog.getByRole("combobox", { name: "Channels", exact: true });
     const channelPicker = channelSearch.locator("..").locator("..");
     await channelPicker.getByText("#existing-room", { exact: true }).waitFor();
-    await channelSearch.focus();
+    await channelSearch.click();
     await channelPicker.getByRole("option", { name: /existing-room.*CEXIST123/ }).waitFor();
+    assert.equal(
+      directoryBodies.filter((body) => body.kind === "channels" && !body.ids).length,
+      1,
+      "pointer focus and click start only one lookup",
+    );
     // Advance browser time explicitly: intermediate keystrokes and dismissed searches must not query.
     const clockTime = new Date("2026-09-27T12:00:00Z");
     await page.clock.install({ time: new Date("2026-09-27T11:59:00Z") });
@@ -3339,17 +3482,51 @@ export function registerSharingCredentialsAndChannelsCases(
       directoryBodies.some((body) => body.query === "dismissed"),
       false,
     );
-    // A new query aborts the old browser request, even while its provider response is held.
+    // Escape cancels a keyboard reopen while its synthetic directory response is held.
     await channelSearch.fill("pending");
-    await channelSearch.press("Enter");
-    const pendingRequest = await pendingDirectory.promise;
+    await channelSearch.press("Escape");
+    const pendingDirectory = page.waitForRequest(
+      (request) =>
+        request.url() === `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup` &&
+        request.method() === "POST" &&
+        directoryBody(request.postDataJSON()).query === "pending",
+      { timeout: 10_000 },
+    );
+    await channelSearch.press("ArrowDown");
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    const pendingRequest = await pendingDirectory;
+    await channelSearch.press("ArrowDown");
+    await channelSearch.press("ArrowDown");
+    await page.clock.runFor(300);
+    assert.equal(directoryBodies.filter((body) => body.query === "pending").length, 1);
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
     const canceledRequest = page.waitForEvent(
       "requestfailed",
       (request) => request === pendingRequest,
     );
-    await channelSearch.fill("general");
+    await channelSearch.press("Escape");
     await canceledRequest;
     releaseDirectory.resolve();
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    // Changing the query also aborts the exact held request, independently of dismissal.
+    const changingQuery = page.waitForRequest(
+      (request) =>
+        request.url() === `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup` &&
+        request.method() === "POST" &&
+        directoryBody(request.postDataJSON()).query === "pending-query",
+      { timeout: 10_000 },
+    );
+    await channelSearch.fill("pending-query");
+    await channelSearch.press("Enter");
+    const changedQueryRequest = await changingQuery;
+    const canceledByQuery = page.waitForEvent("requestfailed", {
+      predicate: (request) => request === changedQueryRequest,
+      timeout: 10_000,
+    });
+    await channelSearch.fill("general");
+    await canceledByQuery;
+    releaseChangedQuery.resolve();
     // Enter submits immediately and removes the queued debounce, so it cannot send the same query twice.
     await channelSearch.press("Enter");
     await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
@@ -3367,6 +3544,52 @@ export function registerSharingCredentialsAndChannelsCases(
     await channelSearch.press("Escape");
     assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
     assert.equal(await channelDialog.isVisible(), true);
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), true);
+    assert.equal(await channelSearch.inputValue(), "general");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    const directoryPath = `/namespaces/${namespace.id}/channel-directory/lookup`;
+    const directoryResponse = () =>
+      page.waitForResponse(
+        (response) =>
+          response.url() === `${fixture.origin}${directoryPath}` &&
+          response.request().method() === "POST",
+      );
+    const beforeReopen = pathRequests(requests, "POST", directoryPath).length;
+    const reopened = directoryResponse();
+    await channelSearch.press("ArrowDown");
+    assert.equal((await reopened).status(), 200);
+    await channelPicker.locator('[role="option"].active').waitFor();
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    assert.equal(directoryBodies.filter((body) => body.query === "general").length, 3);
+    assert.equal(
+      await channelSearch.getAttribute("aria-activedescendant"),
+      await channelPicker.getByRole("option").first().getAttribute("id"),
+    );
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), true);
+    await channelSearch.press("ArrowDown");
+    assert.equal(
+      await channelSearch.getAttribute("aria-activedescendant"),
+      await channelPicker.getByRole("option").nth(1).getAttribute("id"),
+    );
+    assert.equal(pathRequests(requests, "POST", directoryPath).length, beforeReopen + 1);
+    await channelSearch.press("Escape");
+    const clicked = directoryResponse();
+    await channelSearch.click();
+    assert.equal((await clicked).status(), 200);
+    await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
+    assert.equal(pathRequests(requests, "POST", directoryPath).length, beforeReopen + 2);
+    assert.equal(directoryBodies.filter((body) => body.query === "general").length, 4);
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    await channelSearch.press("Tab");
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), false);
+    assert.equal(await slackSelectionValue(channelSearch), "CEXIST123");
+    assert.deepEqual(
+      nonAuthWriteRequests(requests).filter((request) => request.path !== directoryPath),
+      [],
+    );
     await channelSearch.fill("GENERALX");
     await channelPicker.getByRole("option", { name: /GENERALX-first.*CUPPER111/ }).waitFor();
     assert.equal(await channelPicker.getByRole("option").count(), 5);

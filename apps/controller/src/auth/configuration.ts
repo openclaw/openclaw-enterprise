@@ -1,9 +1,18 @@
 import { isIP } from "node:net";
+import { domainToASCII } from "node:url";
+import { parse as parseDomain } from "tldts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 // Kept apart from index.ts so callers can check auth configuration and name the issuer
 // without loading Better Auth (the initialization Job's already-bootstrapped path).
 export const OCC_BETTER_AUTH_ISSUER_PREFIX = "occ:installation:";
+
+/** Check the shared auth requirement before startup opens or changes persistent state. */
+export function validateAuthSecret(secret: string): void {
+  if (!isNonEmptyString(secret) || secret.length < 32) {
+    throw new Error("OCC_AUTH_SECRET must contain at least 256 bits of secret material.");
+  }
+}
 
 export function betterAuthIssuer(installationId: string): string {
   if (!isNonEmptyString(installationId)) {
@@ -123,4 +132,56 @@ export function isDevelopmentBrowserOrigin(value: string): boolean {
     labels.at(-1) === "localhost" &&
     labels.every((label) => label.length > 0)
   );
+}
+
+const SAFE_COOKIE_DOMAIN =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+export function normalizeSharedCookieDomain(domain: string | undefined): string | undefined {
+  const trimmed = domain?.trim().replace(/^\./, "").replace(/\.$/, "");
+  if (!isNonEmptyString(trimmed)) {
+    return undefined;
+  }
+  const normalized = domainToASCII(trimmed).toLowerCase();
+  if (!SAFE_COOKIE_DOMAIN.test(normalized)) {
+    throw new Error("Shared session cookies require a valid DNS domain.");
+  }
+  const parsed = parseDomain(normalized, { allowPrivateDomains: true, validateHostname: true });
+  if (parsed.isIp || parsed.domain === null || parsed.publicSuffix === normalized) {
+    throw new Error(
+      "Shared session cookies require a registrable DNS domain, not an IP or public suffix.",
+    );
+  }
+  return normalized;
+}
+
+/** Derive the narrowest cookie scope shared by the Console and Agent hostnames. */
+export function deriveSharedCookieDomain(baseURL: string, agentDomain: string | undefined): string {
+  if (!validHttpBaseURL(baseURL) || new URL(baseURL).protocol !== "https:") {
+    throw new Error("OCC_AUTH_BASE_URL must be an HTTPS origin for shared session cookies.");
+  }
+  const consoleDomain = normalizeSharedCookieDomain(new URL(baseURL).hostname);
+  const normalizedAgentDomain = normalizeSharedCookieDomain(agentDomain);
+  if (consoleDomain === undefined || normalizedAgentDomain === undefined) {
+    throw new Error("OCC_AGENT_NATIVE_ADMIN_DOMAIN is required for shared session cookies.");
+  }
+  const consoleLabels = consoleDomain.split(".").reverse();
+  const agentLabels = normalizedAgentDomain.split(".").reverse();
+  const common: string[] = [];
+  for (let index = 0; index < Math.min(consoleLabels.length, agentLabels.length); index += 1) {
+    if (consoleLabels[index] !== agentLabels[index]) {
+      break;
+    }
+    common.unshift(consoleLabels[index]!);
+  }
+  const domain = normalizeSharedCookieDomain(common.join("."));
+  if (domain === undefined) {
+    throw new Error("Console and Agent hostnames must share a registrable DNS domain.");
+  }
+  return domain;
+}
+
+export function hostnameMatchesSharedCookieDomain(hostname: string, domain: string): boolean {
+  const normalizedHost = domainToASCII(hostname.trim().replace(/\.$/, "")).toLowerCase();
+  return normalizedHost === domain || normalizedHost.endsWith(`.${domain}`);
 }

@@ -16,7 +16,7 @@ import {
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createUrlCredentialChecks } from "./url-credentials.ts";
 
-export class ConfigurationValidationError extends Error {}
+export { ConfigurationValidationError } from "../../configuration-errors.ts";
 
 // A setting's location, as `options.unresolved` takes it: a list index is a number.
 type SettingPath = readonly (string | number)[];
@@ -670,7 +670,7 @@ export function validateModelCredentialReferences(
     // cannot read (refuseUnreadableGatewayPassword). Saves refuse a literal password first
     // (validateConfigurationSettings), but deployment does not run that: this call is what refuses
     // a stored document that predates the rule, with the same message.
-    refuseLiteralGatewayPassword(values);
+    refuseLiteralGatewayPassword(values, options);
     const sensitiveSlots: [SettingPath, unknown][] = [
       ...[
         ["gateway", "auth", "token"],

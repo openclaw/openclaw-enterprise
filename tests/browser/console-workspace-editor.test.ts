@@ -1,5 +1,6 @@
 /// <reference lib="es2025.regexp" />
 
+import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -9,15 +10,17 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-import type { AgentRevision, Permission } from "../../packages/contracts/src/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
+import {
+  WORKSPACE_DEFAULTS,
+  type AgentRevision,
+  type Permission,
+} from "../../packages/contracts/src/index.ts";
 import { proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  deploymentStatusResponse,
   apiRequests,
   detailUrl,
-  deploymentStatusResponse,
   expectNoText,
   holdRequests,
   login,
@@ -26,18 +29,20 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   settlePageRequests,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  trackSettledFetches,
+  waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
 } from "./console-deployment-activity-helpers.ts";
-import { waitForLiveControls } from "./console-agents-test-support.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   callerDenied,
@@ -46,6 +51,7 @@ import {
   WORKSPACE_UNREACHABLE,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 declare global {
   var workspaceBlurs: number;
@@ -210,6 +216,7 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
 // rebuild the editors: the old remount dropped focus and caret and flashed the editors disabled
 // (finding 1836). Files without unsaved edits are still reread from the new current version.
 test("a deployment finishing on the poll keeps a typing reader's Workspace editor and rereads unchanged files", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t, {
     publicOrigin: true,
     workspaceFilesAccess: {
@@ -371,6 +378,7 @@ async function openWorkspaceVersions(
   workspaceFilesAccess: ControllerWorkspaceFilesAccess,
   count = 2,
 ) {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t, { publicOrigin: true, workspaceFilesAccess });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(name, { ready: true });

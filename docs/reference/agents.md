@@ -46,11 +46,14 @@ for credential permissions and [authorization](authorization.md) for grants.
 
 ### Unreadable saved settings
 
-For unreadable saved settings, Agent and Agent revision list/detail GETs omit them
+Agent list/detail and revision detail GETs omit unreadable saved settings
 without defaults, keep readable metadata and siblings, and add
 `configurationReadError` with `code: "SAVED_CONFIGURATION_UNREADABLE"` and the
-affected `field`. Authorization and strict mutation/runtime validation are unchanged;
-query failures still fail requests. See the
+affected `field`. Revision summaries have no error field: they preserve the recorded
+Harness identity, version and mode, omitting overrides or resolved configuration
+when those settings were not recorded. Opening such a revision returns the
+metadata-only detail response. Authorization and strict mutation/runtime validation
+are unchanged; query failures still fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
 
 ## Deployment status
@@ -98,7 +101,8 @@ codes that a new deployment can clear, such as `DEPENDENCY_UNAVAILABLE` or
 unspecified. Held failures end deployment early:
 `RUNTIME_AUTHENTICATION_FAILED` (rejected credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
-or `WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
+`RUNTIME_STATE_LOCK_UNVERIFIED` (check `gateway-state-lock`), or
+`WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with
 [`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
@@ -232,12 +236,19 @@ First deployment applies them once; pending inputs have no read/update API. See
 read (Agent `read`) or replace (Agent `operate`) one file in the live workspace.
 See [live file access](agents/workspace-files.md#live-file-access).
 
+## HTTP chat
+
+Human sessions and service API keys with exact-Agent `operate` can submit turns
+through `POST /agents/:agentId/chat` on Kubernetes Compute. See the
+[HTTP chat contract](agent-http-chat.md) for native JSON/SSE responses,
+conversation scope, availability and execution limits.
+
 ## Native admin UI
 
-Trusted operators can open the selected Agent gateway's stock native admin UI
+Authorized users can open the selected Agent gateway's native browser UI
 when the Installation enables [Agent native admin UI access](agent-native-admin.md).
-The availability route requires exact Agent `administer`; `read` and `operate`
-are insufficient. The Agent must be desired running, have a selected version,
+The availability route requires exact Agent `operate` for chat or `administer`
+for administration. `read` alone is insufficient. The Agent must be desired running, have a selected version,
 and expose a private gateway endpoint through the selected Compute Driver.
 
 A derived per-Agent browser host proxies to the private gateway route using the
@@ -266,7 +277,9 @@ An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then
 clears `activeRevisionId`; version history, credentials, and persistent state
 remain. Cleanup includes failed candidate resources and interrupted predecessor
-retirement owned by the current Compute. Repeating stop is safe. To resume,
+retirement owned by the current Compute. Repeating stop is safe. On Kubernetes
+Compute, a turn cut by stop [does not resume](agents/interrupted-turns.md); SSH and
+Docker Compute have limits. To resume the Agent,
 deploy a new version; old versions cannot be restarted. See
 [stop and resume](agents/deployment.md#stop-and-resume).
 
@@ -381,6 +394,8 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18: On Kubernetes, a turn cut by stop, replacement or deletion does not resume; see [interrupted turns](agents/interrupted-turns.md). (finding 3347)
 
 - 2026-10-25: Moved workspace file request details to [Agent workspace files](agents/workspace-files.md).
 

@@ -1,0 +1,159 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import Type, { type Static } from "typebox";
+import { Check } from "typebox/value";
+import { findResource, namedChartResource } from "../helpers/production-chart-resource.ts";
+import {
+  chartTooling,
+  parseProductionChart,
+  productionValues,
+  renderProductionChart,
+} from "../helpers/production-chart.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+const labels = Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Null()]));
+const container = Type.Object({
+  name: Type.String(),
+  envFrom: Type.Optional(Type.Unknown()),
+  args: Type.Optional(Type.Array(Type.String())),
+  command: Type.Optional(Type.Array(Type.String())),
+});
+const jobShape = Type.Intersect([
+  namedChartResource,
+  Type.Object({
+    metadata: Type.Object({ labels }),
+    spec: Type.Object({
+      template: Type.Object({
+        metadata: Type.Object({ labels }),
+        spec: Type.Object({
+          initContainers: Type.Optional(Type.Array(container)),
+          containers: Type.Array(container),
+        }),
+      }),
+    }),
+  }),
+]);
+const denyPolicyShape = Type.Object({
+  spec: Type.Object({ podSelector: Type.Object({ matchLabels: labels }) }),
+});
+type Job = Static<typeof jobShape>;
+type Resource = Static<typeof namedChartResource>;
+
+const execute = promisify(execFile);
+const helper = fileURLToPath(
+  new URL("../../scripts/upgrade-startup-preflight.ts", import.meta.url),
+);
+
+test(
+  "migration preflight preserves labels and refuses ambiguous initialization Jobs",
+  await chartTooling(),
+  async (t) => {
+    const release = "preflight-test";
+    const { stdout } = await renderProductionChart({}, { isUpgrade: true, release });
+    const resources = await parseProductionChart(stdout);
+    assert.ok(Check(Type.Array(namedChartResource), resources), "Expected named Helm resources");
+    const initializer = findResource(resources, "Job", `${release}-initialization`);
+    const deny = findResource(resources, "NetworkPolicy", "openclaw-enterprise-default-deny");
+    assert.ok(Check(jobShape, initializer), "Expected the Helm initialization Job");
+    assert.ok(Check(denyPolicyShape, deny), "Expected the default-deny Pod selector");
+    const directory = await temporaryDirectory(t, "migration-preflight-");
+    const input = join(directory, "chart.jsonl");
+    const customLabel = "example.invalid/upgrade";
+    const nullableLabel = "example.invalid/presence";
+    const withInitializer = (job: Job) =>
+      resources.map((resource) => (resource === initializer ? job : resource));
+
+    async function generate(action: string, rendered: Resource[]) {
+      await writeFile(input, rendered.map((resource) => JSON.stringify(resource)).join("\n"));
+      return execute(process.execPath, [
+        helper,
+        action,
+        input,
+        "migration",
+        "preflight-migration",
+        "openclaw-system",
+        release,
+        "occ-installation-startup",
+        "candidate-installation",
+        productionValues["images.controller"],
+        "60",
+        join(directory, "unused-installation.json"),
+        "none",
+      ]);
+    }
+
+    async function refuses(action: string, rendered: Resource[], message: RegExp) {
+      await assert.rejects(generate(action, rendered), { code: 1, stdout: "", stderr: message });
+    }
+
+    for (const action of ["job", "identity-job"]) {
+      await t.test(action, async () => {
+        const selected = structuredClone(initializer);
+        const pod = selected.spec.template;
+        const bootstrap = pod.spec.containers.find(({ name }) => name === "bootstrap");
+        const migration = pod.spec.initContainers?.find(({ name }) => name === "migration");
+        assert.ok(bootstrap);
+        assert.ok(migration);
+        // Preserve all labels, including custom labels, so the chart's default-deny
+        // selector continues to cover the migration Pod.
+        selected.metadata.labels[customLabel] = "job";
+        pod.metadata.labels[customLabel] = "pod";
+        pod.metadata.labels[nullableLabel] = null;
+        bootstrap.envFrom = null;
+        migration.envFrom = null;
+        const generated: unknown = JSON.parse(
+          (await generate(action, withInitializer(selected))).stdout,
+        );
+        assert.ok(Check(jobShape, generated), "Expected the generated migration Job");
+        assert.deepEqual(generated.metadata.labels, selected.metadata.labels);
+        assert.deepEqual(generated.spec.template.metadata.labels, pod.metadata.labels);
+        for (const [key, value] of Object.entries(deny.spec.podSelector.matchLabels)) {
+          assert.equal(generated.spec.template.metadata.labels[key], value);
+        }
+        assert.deepEqual(
+          generated.spec.template.spec.containers.map(({ name, envFrom }) => ({ name, envFrom })),
+          [{ name: "migration", envFrom: null }],
+        );
+        assert.equal(generated.spec.template.spec.initContainers, undefined);
+        const [probe] = generated.spec.template.spec.containers;
+        assert.ok(probe);
+        assert.deepEqual(probe.command, ["node"]);
+        assert.deepEqual(probe.args, [...selectedImageMigrationEntry, "--check"]);
+
+        // A candidate from a historical chart must keep that image's real entry point.
+        migration.args = ["scripts/migrate-production.mjs", "--require-current"];
+        const historical: unknown = JSON.parse(
+          (await generate(action, withInitializer(selected))).stdout,
+        );
+        probe.args = ["scripts/migrate-production.mjs", "--check"];
+        assert.deepEqual(historical, generated);
+        migration.args = ["-e", "process.exit(0)", "--"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["--run", "db:migrate", "--"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["scripts/migrate-production.ts", "--expect-empty", "unexpected"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["scripts/migrate-production.ts"];
+        migration.command = ["sh"];
+        await refuses(action, withInitializer(selected), /invalid migration command/);
+        delete migration.command;
+
+        // Count both release and component matches before validating their other labels.
+        const duplicate = structuredClone(initializer);
+        duplicate.metadata.name += "-duplicate";
+        duplicate.metadata.labels[customLabel] = 7;
+        await refuses(action, [...resources, duplicate], /exactly one initialization Job/);
+
+        // Reject a label Kubernetes cannot decode before writing any Job manifest.
+        pod.metadata.labels[customLabel] = 7;
+        await refuses(action, withInitializer(selected), /invalid Pod labels/);
+      });
+    }
+  },
+);
