@@ -4,8 +4,8 @@ import type {
   InstallationCapabilities,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
-import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element, setUnavailable } from "../dom.mjs";
+import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
+import { button, element, setUnavailable, withRequestId } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { askAdministratorTo, notIncluded } from "./access-reasons.mjs";
 import { message, namespacePath } from "./list.mjs";
@@ -126,6 +126,7 @@ export function createDeviceLogin({
   let busy = false;
   let timer: number | undefined;
   let error = "";
+  let pollDenied = false;
   // Why this Installation cannot start a device login: its capabilities say so, or a start was
   // refused with 501. Sign in then stays unavailable, described by this reason (finding 2991).
   let refusal: string | null = null;
@@ -143,6 +144,7 @@ export function createDeviceLogin({
     signIn,
   );
   const start = button("Sign in with OAuth", () => void begin());
+  const retry = button("Retry login check", () => void poll());
   const cancel = button("Cancel login", () => void discard());
   const section = element(
     "div",
@@ -156,7 +158,7 @@ export function createDeviceLogin({
     element("p", { className: "hint" }, hint),
     instructions,
     status,
-    element("div", { className: "form-actions" }, start, cancel),
+    element("div", { className: "form-actions" }, start, retry, cancel),
   );
 
   function update() {
@@ -176,6 +178,7 @@ export function createDeviceLogin({
       signIn.removeAttribute("href");
     }
     start.hidden = Boolean(challenge);
+    retry.hidden = !pollDenied || challenge?.status !== "pending";
     cancel.hidden = !challenge;
     cancel.textContent = challenge?.status === "ready" ? "Clear selection" : "Cancel login";
     status.textContent =
@@ -189,16 +192,16 @@ export function createDeviceLogin({
             : challenge
               ? "Waiting for you to complete sign-in in the other tab…"
               : (refusal ?? "Sign in to connect your ChatGPT account."));
-    const left = [start, cancel].find((control) => control === focused && control.hidden);
+    const left = [start, retry, cancel].find((control) => control === focused && control.hidden);
     if (active && left) {
-      const shown = left === start ? cancel : start;
+      const shown = challenge ? cancel : start;
       shown.disabled = false;
       shown.focus();
     }
     // A focused control stays focused while a request runs (setUnavailable); an unconfirmed start
     // or a refusal keeps Sign in in the Tab order, described by the status that says why.
     const refused = !challenge && !busy && (unconfirmed || refusal !== null);
-    for (const control of [start, cancel]) {
+    for (const control of [start, retry, cancel]) {
       setUnavailable(
         control,
         disabled || busy || unconfirmed || (control === start && refusal !== null),
@@ -214,15 +217,23 @@ export function createDeviceLogin({
     const sessionId = login?.status === "pending" ? login.session.id : undefined;
     login = readLogin(result, context.namespaceId, sessionId);
     error = "";
+    pollDenied = false;
     onChange?.(login.status === "ready" ? login.source : null);
   }
 
   function fail(cause: unknown, step: DeviceLoginStep) {
     const failure = requestFailure(cause);
+    if (step === "poll") {
+      pollDenied = failure.status === 403;
+    }
     if (failure.status === 401) {
       context.onExpired();
     } else if (failure.status === 403) {
-      error = deviceLoginDenied(step, agentId !== undefined);
+      const fallback = deviceLoginDenied(step, agentId !== undefined);
+      error =
+        step === "poll"
+          ? withRequestId(namedDenial(cause) ?? fallback, failure.requestId)
+          : fallback;
     } else {
       error =
         failure.status === 410
@@ -292,6 +303,7 @@ export function createDeviceLogin({
     }
     if (Date.parse(login.expiresAt) <= Date.now()) {
       error = "This login expired. Cancel it and start a new login.";
+      pollDenied = false;
       update();
       return;
     }

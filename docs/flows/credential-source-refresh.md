@@ -119,21 +119,20 @@ failure code. Otherwise OCC commits `ready` with audit.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-OCC registers the source under Agent scope and Namespace `credential_source:create`,
-rechecks authority before the challenge, and audits `source_registering`, `source_ready`,
-and `session_pending` without login material. Failed starts retain the source. OCC seals
-the challenge and provider handle in a `device_authorization` row with immutable binding
-and versioned progress in `occ.authentication_states`, shared with browser OAuth. Human
-sign-in uses separate storage.
+OCC checks Agent authority and Namespace `credential_source:create`, registers the
+source, then rechecks authority before starting login. It audits `source_registering`,
+`source_ready` and `session_pending` without login material. Failed starts retain the
+source. The `device_authorization` row in `occ.authentication_states` holds the sealed
+challenge and provider handle, immutable binding and versioned progress.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` retains
 `start_unconfirmed` across navigation. Agent detail keeps Credentials open for
 replies unless another tab owns the draft. A `501` or unavailable type disables
-Sign in. See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
+sign-in. A poll `403` pauses checks and shows the request ID. Retry polls the same handle.
+See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
-`readAgentDeviceAuthorization` checks Agent authority and actor, Namespace and
-saved-Agent ownership; the session has no IAM grant. Poll checks source
-`operate` before changes and after I/O; cancel needs no source grant.
+`readAgentDeviceAuthorization` checks Agent authority, actor, Namespace and saved Agent.
+Poll also checks source `operate` before changes and after I/O.
 Scope mismatches audit `DEVICE_AUTHORIZATION_SCOPE_MISMATCH` and return `404`,
 or `503` if audit fails. Version-checked updates serialize polls and fence
 cancelled exchanges. OCC rechecks both Drivers after I/O. Cancellation and expiry

@@ -307,10 +307,6 @@ const DEVICE_LOGIN_START_REMEDY =
   "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
 export const DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login in this Namespace. It needs Agent create and credential source create here, ${DEVICE_LOGIN_START_REMEDY}`;
 export const AGENT_DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus credential source create in this Namespace, ${DEVICE_LOGIN_START_REMEDY}`;
-export const AGENT_DEVICE_LOGIN_POLL_DENIED = notIncluded(
-  "finishing this device login",
-  "Agent read and update on this Agent, plus credential source operate on its credential source",
-);
 export const AGENT_DEVICE_LOGIN_CANCEL_DENIED = notIncluded(
   "cancelling this device login",
   "Agent read and update on this Agent",

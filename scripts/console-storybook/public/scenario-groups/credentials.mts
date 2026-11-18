@@ -87,11 +87,18 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       deployed: true,
       auth: "oauth",
       rules: [
-        { suffix: "/poll", method: "POST", status: 403 },
-        { pathIncludes: "/device-authorizations/", method: "DELETE", status: 403 },
+        {
+          suffix: "/poll",
+          method: "POST",
+          once: true,
+          status: 403,
+          code: "FORBIDDEN",
+          message:
+            "Not authorized: this needs CredentialSource operate on a CredentialSource this request uses. Ask an Installation administrator to grant it.",
+        },
       ],
       description:
-        "Choose Sign in with OAuth, wait for the refused poll, then choose Cancel login. The poll refusal names credential source operate; the cancellation refusal names Agent read and update.",
+        "Choose Sign in with OAuth. The first poll shows the missing permission and a request ID. Choose Retry login check to finish the same login. The fixture simulates restored access.",
     },
     authOAuthStartTabSwitchRefused: {
       group: "Components/Credentials",

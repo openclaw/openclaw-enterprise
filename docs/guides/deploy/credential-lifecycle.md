@@ -128,9 +128,11 @@ Starting requires Agent-create and credential-source-create in the Namespace.
 For an existing Agent, exact Agent `read` and `update` replace Agent-create.
 Only the person who started the login can poll or close it, while retaining
 those Agent permissions. Polling also requires `credential_source:operate` on
-the resulting source. The temporary login needs no separate grant. If an
-operation returns `403`, ask an administrator to check the Agent or credential
-source permissions named in the refusal. Keep the provider's sign-in code private.
+the resulting source. The temporary login needs no separate grant. If polling
+returns `403`, give your platform operator the request ID. They can find the
+exact permission and resource in the [denial audit event](../topics/audit-log.md#access-and-limitations).
+Once an administrator restores access, select **Retry login check** before the
+login expires. Keep the provider's sign-in code private.
 
 For API clients, the start response includes a `session` handle with `id` and
 `namespaceId`. Use the same device-authorizations route that started the login:

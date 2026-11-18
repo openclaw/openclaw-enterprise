@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Check } from "typebox/value";
 
+import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
   AgentCallerPermissionsResponse,
   AgentDeviceAuthorizationResponse,
@@ -349,18 +350,27 @@ export function registerDeviceAuthorizationAgentCases(): void {
     const savedPath = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/device-authorizations`;
     for (const [index, path] of [fixture.path, savedPath].entries()) {
       const login = await fixture.start(path, session);
-      const sourceId = (await fixture.stored(login)).sourceId;
       const before = fixture.gateway.calls.length;
 
       // Polling needs operate on this exact source; possession of the login handle is insufficient.
       const denied = await fixture.poll(login, path, session);
-      assert.equal(denied.status, 403, JSON.stringify(denied.body));
+      const { error, meta } = fixture.fixtureResponse(denied, 403, ErrorResponse, "denied poll");
       assert.equal(fixture.gateway.calls.length, before);
+      // The administrator can identify the exact source using the caller's request ID.
+      const check = fixture.auditSink.events.find(
+        (event) => event.kind === "authorization_denial" && event.requestId === meta.requestId,
+      )?.authorization;
+      assert.ok(check);
+      assert.equal(check.principalId, operator.principal.id);
+      assert.equal(check.action, "operate");
+      assert.equal(check.resource.kind, "credential_source");
+      assert.equal(check.resource.namespaceId, fixture.namespace.id);
+      assert.ok(!error.message.includes(check.resource.id), "the caller cannot read the source");
       const grant = grantRole(fixture.policy, operator.principal.id, {
         id: `device-login-source-${index}`,
         namespaceId: fixture.namespace.id,
         permissions: { credential_source: ["operate"] },
-        resource: { kind: "credential_source", id: sourceId },
+        resource: check.resource,
       });
       await fixture.clock.advance(5000);
       assert.equal((await fixture.poll(login, path, session)).status, 200);

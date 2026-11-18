@@ -36,7 +36,6 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import { within } from "../helpers/wait-for.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
-  AGENT_DEVICE_LOGIN_POLL_DENIED,
   AGENT_DEVICE_LOGIN_START_DENIED,
   DEVICE_LOGIN_START_DENIED,
   DEVICE_LOGIN_NOT_CONFIGURED,
@@ -1152,7 +1151,7 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
 
 // From Agent detail, every request checks Agent read and update. Start also checks credential
 // source create; poll checks operate on that source. The login itself has no IAM grant.
-test("a refused device login on Agent detail names the grants its start, poll and cancel check", async (t) => {
+test("a refused device login on Agent detail allows the same login to finish after access is restored", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Agent refused");
   const { gateway, refresh } = createDeviceCredentialDrivers();
   for (const driver of [gateway, refresh]) {
@@ -1193,23 +1192,69 @@ test("a refused device login on Agent detail names the grants its start, poll an
   await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
   assert.deepEqual(answers, ["POST  403"]);
 
-  // With create restored the login starts. Removing source operate refuses its poll.
+  // Start needs neither source read nor operate. The first poll is refused without naming the source.
   restoreCreate();
+  const restoreOperate = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
   await waitForEnabled(start);
+  const started = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === loginsPath,
+  );
+  const firstPoll = page.waitForResponse(`**${loginsPath}/*/poll`);
   await start.click();
+  const pending = responseData(await (await started).json());
+  const sessionPath = `${loginsPath}/${jsonString(jsonObject(pending.session).id)}`;
+  const nextPoll = () =>
+    page.waitForResponse((response) => new URL(response.url()).pathname === `${sessionPath}/poll`);
+  const hidden = await firstPoll;
+  assert.equal(hidden.status(), 403);
+  const hiddenBody = jsonObject(await hidden.json());
+  const status = page.getByRole("status").filter({ hasText: "CredentialSource operate" });
+  await status.waitFor();
+  const hiddenText = await status.innerText();
+  assert.ok(hiddenText.includes("on a CredentialSource this request uses"));
+  assert.ok(
+    hiddenText.includes(`Request ID: ${jsonString(jsonObject(hiddenBody.meta).requestId)}`),
+  );
+  assert.doesNotMatch(hiddenText, /cs_[0-9a-f-]+/);
+
+  // A caller with read can give the administrator the exact source OCC named.
+  restoreRead();
+  const retry = page.getByRole("button", { name: "Retry login check" });
+  const readable = nextPoll();
+  await retry.click();
+  const readableReply = await readable;
+  assert.equal(readableReply.status(), 403);
+  const readableBody = jsonObject(await readableReply.json());
+  const reason = jsonString(jsonObject(readableBody.error).message);
+  const sourceId = /CredentialSource operate on CredentialSource (cs_[0-9a-f-]+)/.exec(reason)?.[1];
+  assert.ok(sourceId);
   await page
-    .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
+    .getByText(`${reason} Request ID: ${jsonString(jsonObject(readableBody.meta).requestId)}`, {
+      exact: true,
+    })
     .waitFor();
-  revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
-  await page.getByText(AGENT_DEVICE_LOGIN_POLL_DENIED, { exact: true }).waitFor({
-    timeout: 20_000,
-  });
+
   // Cancellation needs no source grant, but it still requires update on the saved Agent.
-  revokeAdministratorGrant(fixture, ["update", "agent"]);
+  const restoreUpdate = revokeAdministratorGrant(fixture, ["update", "agent"]);
   await page.getByRole("button", { name: "Cancel login", exact: true }).click();
   await page.getByText(AGENT_DEVICE_LOGIN_CANCEL_DENIED, { exact: true }).waitFor();
-  assert.deepEqual(
-    answers.map((answer) => answer.replace(/\/[^/ ]+(\/poll)? /, "/{login}$1 ")),
-    ["POST  403", "POST  200", "POST /{login}/poll 403", "DELETE /{login} 403"],
-  );
+  restoreUpdate();
+  restoreOperate();
+  const completed = nextPoll();
+  await retry.click();
+  const ready = responseData(await (await completed).json());
+  assert.equal(ready.status, "ready");
+  assert.equal(jsonObject(ready.source).id, sourceId);
+  await page.getByText(/ChatGPT login ready/).waitFor();
+  assert.equal(await retry.isVisible(), false);
+  const handle = sessionPath.slice(loginsPath.length);
+  assert.deepEqual(answers, [
+    "POST  403",
+    "POST  200",
+    `POST ${handle}/poll 403`,
+    `POST ${handle}/poll 403`,
+    `DELETE ${handle} 403`,
+    `POST ${handle}/poll 200`,
+  ]);
 });
