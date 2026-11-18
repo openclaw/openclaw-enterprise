@@ -27,9 +27,10 @@ Stop ends the generation in the lifecycle transaction, before workload teardown.
 A failed stop cannot let a later deployment reuse that permission. An older
 revision retry cannot prepare or activate with an ended generation.
 
-Other Compute Drivers and provider-managed Harnesses retain revision-scoped
-recovery. A new deployment ends their previous recovery scope. Missing Driver
-support never selects an Agent-wide scope.
+Other Compute Drivers and provider-managed Harnesses use a new recovery scope
+for each deployment. Missing Driver support never selects an Agent-wide scope.
+[SSH Compute](../drivers/ssh-compute.md#namespace-and-revision-lifecycle) supplies the scope setting,
+but stop protection depends on the operator-installed OpenClaw supporting it.
 
 ## HTTP chat callers
 
@@ -43,8 +44,8 @@ conversation: continue with the same `user` label to read it.
 
 ## Native enforcement and limits
 
-Both graceful shutdown markers and persisted crash ownership must match the
-Gateway's admitted scope. Missing or mismatched evidence prevents continuation
+In OCE runtime images containing the recovery bridge, both graceful shutdown
+markers and persisted crash ownership must match the Gateway's admitted scope. Missing or mismatched evidence prevents continuation
 and cancels orphaned queued inputs. Recovery also refuses to reacquire child
 completion custody from an ended scope. Current authority and cancellation checks
 still apply; the generation grants no permissions.
