@@ -3108,11 +3108,29 @@ function assertHotApplicableChange(previous, next) {
 
 // OpenClaw watches the config file: replace it whole so it never reads a partial write.
 function replaceOpenClawConfig(config) {
-  const { renameSync } = require("node:fs");
+  const { closeSync, openSync, renameSync } = require("node:fs");
   const target = writableOpenClawConfigPath();
   const staged = target + ".workspace-node-" + process.pid;
-  pluginWriteFileSync(staged, JSON.stringify(config), { mode: 0o600 });
-  renameSync(staged, target);
+  const contents = JSON.stringify(config);
+  const fd = openSync(staged, "w", 0o600);
+  let closeAttempted = false;
+  try {
+    pluginWriteFileSync(fd, contents);
+    // A failed close cannot safely be retried.
+    closeAttempted = true;
+    closeSync(fd);
+    renameSync(staged, target);
+  } catch (error) {
+    if (!closeAttempted) {
+      try { closeSync(fd); } catch {}
+    }
+    try {
+      pluginRmSync(staged, { force: true });
+    } catch {
+      // Preserve the first error if cleanup also fails.
+    }
+    throw error;
+  }
   process.env.OPENCLAW_CONFIG_PATH = target;
 }
 
@@ -4139,15 +4157,26 @@ const OPENSHELL_PAT_RECOVERY = String.raw`
     let deniedUpgrade;
 `;
 
+// A Sandbox whose egress is an explicit proxy (no direct route; the proxy named in the
+// Harness environment) can reach the model only through it, so the authentication probe of
+// a program rendered with explicitProxy keeps the standard proxy settings when they are set
+// and non-empty. Nothing else of the Harness environment reaches the probe, and the values
+// are never logged. A transparent egress sets none of them.
+const EXPLICIT_PROXY_PROBE_ENVIRONMENT =
+  ', "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"';
+
 // Nested Codex children use their own plugin lifecycle. Keep standalone commands
 // stable while omitting the unused native installer from the bounded supervisor.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
+// explicitProxy also carries the standard proxy settings into the authentication probe
+// (see EXPLICIT_PROXY_PROBE_ENVIRONMENT); without it the program renders its existing bytes.
 function agentRuntimeEntrypoint({
   protected: disableUnboundedConnectionRetries = false,
   computeOwned = false,
   withNode = false,
   patRecovery = false,
+  explicitProxy = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4562,7 +4591,7 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
         CODEX_HOME: process.env.CODEX_HOME,
         RUST_LOG: "error",
         ...Object.fromEntries(
-          ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+          ["SSL_CERT_FILE", "SSL_CERT_DIR"${explicitProxy ? EXPLICIT_PROXY_PROBE_ENVIRONMENT : ""}]
             .filter((name) => typeof process.env[name] === "string" && process.env[name].length > 0)
             .map((name) => [name, process.env[name]]),
         ),
@@ -5424,6 +5453,7 @@ export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypo
 );
 
 let patEntrypoint: string | undefined;
+const explicitProxyLaunches = new Map<string, string>();
 let compactPatLaunch: string | undefined;
 let compactProviderLaunch: string | undefined;
 let compactProtectedLaunch: string | undefined;
@@ -5438,6 +5468,12 @@ export interface CodexLaunch {
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
+  /**
+   * A provider-owned launch whose Sandbox may name an explicit egress proxy in the Harness
+   * environment: its authentication probe keeps the standard proxy settings. OpenShell's
+   * egress is transparent, and its admitted commands keep their bytes.
+   */
+  readonly explicitProxy?: boolean;
 }
 
 export function codexLaunchEntrypoint(
@@ -5447,6 +5483,7 @@ export function codexLaunchEntrypoint(
     openShellProgram,
     withNode,
     workspaceSetup,
+    explicitProxy,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
   if (!providerOwned) {
@@ -5456,6 +5493,21 @@ export function codexLaunchEntrypoint(
         : COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
     }
     return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (explicitProxy && openShellProgram === undefined) {
+    const key = `${protectedLaunch}:${Boolean(withNode)}`;
+    const cached = explicitProxyLaunches.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const child = agentRuntimeEntrypoint({
+      protected: protectedLaunch,
+      withNode: Boolean(withNode),
+      explicitProxy: true,
+    });
+    const program = withNode ? agentWithNodeEntrypoint(nodeProgramArguments(child)) : child;
+    explicitProxyLaunches.set(key, program);
+    return program;
   }
   if (!protectedLaunch && openShellProgram === "pat") {
     if (withNode) {

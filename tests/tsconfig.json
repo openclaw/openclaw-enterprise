@@ -5,6 +5,7 @@
     "composite": false,
     "declaration": false,
     "noEmit": true,
+    "incremental": true,
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": false,
     "erasableSyntaxOnly": true,
@@ -28,6 +29,7 @@
     "resolveJsonModule": true
   },
   "include": [
+    "integration/ci-prepare-advisory-cases.ts",
     "integration/docker-compute-compose-cases.ts",
     "integration/credential-source-endpoint-cases.ts",
     "integration/local-first-agent-native-failure-cases.ts",
