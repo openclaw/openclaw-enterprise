@@ -162,14 +162,14 @@ export function registerDeploymentPolicyCases(): void {
     }
   });
 
-  test("MCP admission preserves canonical UTF-8 in exact recipient paths", () => {
+  test("staged MCP admission compares canonical UTF-8 recipient paths exactly", () => {
     const operation = { type: "mcp", method: "tools/list" } as const;
     for (const path of ["/caf%C3%A9/mcp", "/team%20space/mcp"]) {
       const { input } = credentialPolicyFixture({ ...operation, path });
       assert.deepEqual(policyRefusals(input), [], path);
     }
 
-    // The source consented to the composed spelling. An equivalent display name is a different wire path.
+    // The supplied source destination uses the composed spelling. The decomposed path is distinct.
     const { input, authority } = credentialPolicyFixture({ ...operation, path: "/cafe%CC%81/mcp" });
     assert.deepEqual(
       policyRefusals({
