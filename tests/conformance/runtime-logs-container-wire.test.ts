@@ -75,41 +75,63 @@ async function cutPage(route: LogRoute, query: LogQuery) {
   assert.equal(response.data.truncated, true);
   return response;
 }
-// Follows a view until a page is not truncated (at most 10 pages).
-async function drain(
-  route: LogRoute,
-  {
-    tailLines,
-    cursor,
-    message,
-    onPage,
-  }: {
-    tailLines: number;
-    cursor?: string | null;
-    message?: string;
-    onPage?: (response: WireResponse, page: number) => void;
-  },
-) {
+type WalkProgress = Readonly<{
+  lines: Readonly<ReturnType<typeof lineRecords>>;
+  cursor: string | null | undefined;
+  pages: number;
+}>;
+type WalkOptions = {
+  tailLines: number;
+  cursor?: string | null;
+  message?: string;
+  onPage?: (response: WireResponse, page: number, progress: WalkProgress) => void | Promise<void>;
+  complete: (response: WireResponse, progress: WalkProgress) => boolean;
+  completion: string;
+};
+
+// Stop only when the caller's completion condition is met; the cap is a safety bound.
+async function walkPages(route: LogRoute, options: WalkOptions) {
   const lines: ReturnType<typeof lineRecords> = [];
-  let pages = 0;
-  while (pages < 10) {
-    const response = await boundedPage(route, { tailLines, cursor }, message);
-    onPage?.(response, pages);
-    lines.push(...lineRecords(response.data));
-    cursor = response.data.cursor;
-    pages += 1;
-    if (!response.data.truncated) {
-      break;
+  const progress = { lines, cursor: options.cursor, pages: 0 };
+  while (progress.pages < 10) {
+    const response = await boundedPage(
+      route,
+      { tailLines: options.tailLines, cursor: progress.cursor },
+      options.message,
+    );
+    const page = progress.pages;
+    progress.lines.push(...lineRecords(response.data));
+    progress.cursor = response.data.cursor;
+    progress.pages += 1;
+    await options.onPage?.(response, page, progress);
+    if (options.complete(response, progress)) {
+      return {
+        ...progress,
+        cursor: response.data.cursor,
+        response,
+        completed: true as const,
+        get rows() {
+          return rowIds({ records: progress.lines });
+        },
+      };
     }
   }
-  return {
-    lines,
-    cursor,
-    pages,
-    get rows() {
-      return rowIds({ records: lines });
-    },
-  };
+  const cursorState =
+    progress.cursor === undefined || progress.cursor === null
+      ? String(progress.cursor)
+      : `present (${progress.cursor.length} chars)`;
+  assert.fail(
+    `page walk did not reach ${options.completion} after ${progress.pages} pages; cursor ${cursorState}`,
+  );
+}
+
+// Ordinary drains must reach an untruncated page.
+async function drain(route: LogRoute, options: Omit<WalkOptions, "complete" | "completion">) {
+  return walkPages(route, {
+    ...options,
+    complete: (response) => !response.data.truncated,
+    completion: "an untruncated page",
+  });
 }
 // Every truncated page delivers at least one line.
 function advances(response: WireResponse) {
@@ -188,66 +210,66 @@ test("runtime container checkpoint suffixes survive append-only growth to a full
     route.state.lines = Array.from({ length: 20 }, (_, index) => row(index));
     const prime = await readPage(route, { tailLines: tail });
     assert.equal(prime.status, 200);
-    const seen = rowIds(prime.data);
-    assert.equal(seen.length, 20, "the baseline exceeds the retained frontier hash history");
+    const baseline = rowIds(prime.data);
+    assert.equal(baseline.length, 20, "the baseline exceeds the retained frontier hash history");
     route.state.lines.push(
       ...Array.from({ length: tail - 21 }, (_, index) => row(index + 20, true)),
     );
     assert.ok(rawBytes(route.state.lines) < 1024 * 1024);
-    let cursor = prime.data.cursor;
     let cuts = 0;
-    for (let page = 0; page < 10; page += 1) {
-      const response = await boundedPage(route, { tailLines: tail, cursor });
-      assert.ok(response.data.cursor && response.data.cursor.length <= 2048);
-      seen.push(...rowIds(response.data));
-      cuts += response.data.truncated ? 1 : 0;
-      cursor = response.data.cursor;
-      if (identical && page > 0) {
-        assert.ok(
-          gapCount(response.data, "window_exceeded") > 0,
-          "full identical-value windows retain the conservative gap even when their checkpoint drains",
-        );
-      }
-      if (page === 0) {
-        assert.equal(
-          response.data.truncated,
-          true,
-          "the short window must cut the serialized page",
-        );
-        if (tail === 100 && !identical) {
-          // The previous compact cursor had ten window entries and no inherited proof.
-          const payload = cursorPayload(cursor);
-          assert.ok(typeof payload === "object" && payload !== null && "cw" in payload);
-          assert.ok(Array.isArray(payload.cw));
-          const window: unknown[] = payload.cw;
-          if (window.length === 11) {
-            window.pop();
-          }
-          const legacyPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
-          const mac = createHmac("sha256", cursorSecret)
-            .update("occ-runtime-logs-cursor\0v2\0")
-            .update(legacyPayload)
-            .digest("base64url");
-          const legacy = await readPage(route, {
-            tailLines: 100,
-            cursor: `v2.${legacyPayload}.${mac}`,
-          });
-          assert.equal(
-            legacy.status,
-            200,
-            "legacy windows remain usable on their stable short source",
-          );
-          assert.deepEqual(
-            rowIds(legacy.data),
-            Array.from({ length: 99 - seen.length }, (_, index) => index + seen.length),
+    const walked = await drain(route, {
+      tailLines: tail,
+      cursor: prime.data.cursor,
+      async onPage(response, page, progress) {
+        assert.ok(response.data.cursor && response.data.cursor.length <= 2048);
+        cuts += response.data.truncated ? 1 : 0;
+        if (identical && page > 0) {
+          assert.ok(
+            gapCount(response.data, "window_exceeded") > 0,
+            "full identical-value windows retain the conservative gap even when their checkpoint drains",
           );
         }
-        route.state.lines.push(row(tail - 1, true));
-      }
-      if (!response.data.truncated) {
-        break;
-      }
-    }
+        if (page === 0) {
+          assert.equal(
+            response.data.truncated,
+            true,
+            "the short window must cut the serialized page",
+          );
+          if (tail === 100 && !identical) {
+            // The previous compact cursor had ten window entries and no inherited proof.
+            const payload = cursorPayload(response.data.cursor);
+            assert.ok(typeof payload === "object" && payload !== null && "cw" in payload);
+            assert.ok(Array.isArray(payload.cw));
+            const window: unknown[] = payload.cw;
+            if (window.length === 11) {
+              window.pop();
+            }
+            const legacyPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+            const mac = createHmac("sha256", cursorSecret)
+              .update("occ-runtime-logs-cursor\0v2\0")
+              .update(legacyPayload)
+              .digest("base64url");
+            const legacy = await readPage(route, {
+              tailLines: 100,
+              cursor: `v2.${legacyPayload}.${mac}`,
+            });
+            assert.equal(
+              legacy.status,
+              200,
+              "legacy windows remain usable on their stable short source",
+            );
+            const seenCount = baseline.length + progress.lines.length;
+            assert.deepEqual(
+              rowIds(legacy.data),
+              Array.from({ length: 99 - seenCount }, (_, index) => index + seenCount),
+            );
+          }
+          route.state.lines.push(row(tail - 1, true));
+        }
+      },
+    });
+    const seen = [...baseline, ...walked.rows];
+    const cursor = walked.cursor;
     assert.deepEqual(
       seen,
       range(tail).map((index) => (identical ? 7 : index)),
@@ -275,20 +297,22 @@ test("container byte-cut checkpoints retain untimed progress or advance mixed wi
     ];
     route.state.truncated = true;
     assert.ok(rawBytes(route.state.lines) < 1024 * 1024);
-    const seen: number[] = [];
-    let cursor: string | null | undefined;
-    let pages = 0;
-    let drained: AgentRuntimeLogPageWire | undefined;
-    while (seen.length < count && pages < 10) {
-      const response = await boundedPage(route, { tailLines: 1000, cursor });
-      assert.equal(response.data.truncated, true, "the underlying Driver cut remains visible");
-      const rows = rowIds(response.data);
-      assert.ok(rows.length > 0, "each wire cut advances through the complete fetched prefix");
-      seen.push(...rows);
-      cursor = response.data.cursor;
-      drained = response.data;
-      pages += 1;
-    }
+    const walked = await walkPages(route, {
+      tailLines: 1000,
+      completion: "the complete fetched prefix",
+      complete: (_response, progress) => progress.lines.length >= count,
+      onPage(response) {
+        assert.equal(response.data.truncated, true, "the underlying Driver cut remains visible");
+        assert.ok(
+          rowIds(response.data).length > 0,
+          "each wire cut advances through the complete fetched prefix",
+        );
+      },
+    });
+    const seen = walked.rows;
+    const pages = walked.pages;
+    const drained = walked.response.data;
+    let cursor = walked.cursor;
     assert.ok(pages > 1);
     assert.deepEqual(seen, range(count));
     if (mixed) {
