@@ -202,6 +202,7 @@ export function registerHttpCases(): void {
     const forged = `occ_${randomBytes(24).toString("hex")}`;
     let revoked = "";
     let revokedId = "";
+    let storedStart: unknown;
     // A browser cookie sent next to the key: request data a refusal line must never carry.
     // (This route refuses a query string before admission; the unit case below covers it.)
     const cookie = `session_${randomBytes(12).toString("hex")}`;
@@ -215,6 +216,14 @@ export function registerHttpCases(): void {
         },
         name: "logging-proof",
       });
+      // The key start the auth library itself stores next to the hash (shorter than the
+      // 12-character prefix checked below).
+      const authContext = await auth.auth.$context;
+      const stored = await authContext.adapter.findOne<Record<string, unknown>>({
+        model: "apikey",
+        where: [{ field: "id", value: issued.id }],
+      });
+      storedStart = stored?.start;
       await auth.revokeServiceKey(issued);
       revoked = issued.key;
       revokedId = issued.id;
@@ -265,8 +274,12 @@ export function registerHttpCases(): void {
     );
     const logged = JSON.stringify(lines);
     assert.ok(revoked.length > 0 && revokedId.length > 0);
-    // No key, key prefix beyond the fixed `occ_`, key ID or cookie value.
-    for (const secret of [forged, revoked, forged.slice(0, 12), revoked.slice(0, 12), revokedId]) {
+    assert.ok(typeof storedStart === "string" && storedStart.length > "occ_".length);
+    assert.equal(revoked.startsWith(storedStart), true);
+    // No key, key prefix beyond the fixed `occ_` (the stored start included), key ID or cookie
+    // value.
+    const prefixes = [forged.slice(0, 12), revoked.slice(0, 12), storedStart];
+    for (const secret of [forged, revoked, ...prefixes, revokedId]) {
       assert.equal(logged.includes(secret), false, "no key material is logged");
     }
     assert.equal(logged.includes(cookie), false, "no cookie value is logged");
@@ -369,22 +382,41 @@ export function registerHttpCases(): void {
   test("the structured log keeps a request ID and route pattern, not a path with a query", () => {
     const { logger, lines } = captureLogs("occ-api", "info");
     const requestId = `req_${randomUUID()}`;
-    emitOccLogEvent(logger, {
-      event: "authentication.request-refused",
-      requestId,
-      route: "/agents/:agentId/chat",
-    });
-    emitOccLogEvent(logger, {
-      event: "authentication.request-refused",
-      requestId: `${requestId}?token=secret`,
-      route: "/agents/a1/chat?token=secret",
-    });
+    const nativeAdminId = `nar_${randomUUID()}`;
+    // A token-shaped path segment, built from parts so no credential-like literal is committed.
+    const token = ["gh", "p_", randomBytes(18).toString("hex")].join("");
+    const cases: readonly (readonly [unknown, unknown, unknown, unknown])[] = [
+      // [requestId sent, route sent, requestId kept, route kept]
+      [requestId, "/agents/:agentId/chat", requestId, "/agents/:agentId/chat"],
+      [nativeAdminId, "/console*", nativeAdminId, "/console*"],
+      // The longest pattern the API registers, and a nested one under the auth prefix.
+      ...[
+        "/namespaces/:namespaceId/agents/:agentId/deploy-first/:key/:expectedConfigurationId/:expectedGeneration",
+        "/api/auth/accounts/:userId/providers/oidc",
+      ].map((route) => [requestId, route, requestId, route] as const),
+      [`${requestId}?token=secret`, "/agents/a1/chat?token=secret", undefined, undefined],
+      // A query string is dropped even when its name is not credential-like.
+      [requestId, "/agents/:agentId/chat?q=x", requestId, undefined],
+      // A route shape cannot tell a pattern from a raw path, so a token shape is dropped.
+      [requestId, `/agents/${token}/chat`, requestId, undefined],
+      // Not a route pattern at all.
+      [requestId, "agents", requestId, undefined],
+      // Only the IDs the API assigns: anything a general string check would keep is dropped.
+      [`client-${randomUUID()}`, "/agents/:agentId/chat", undefined, "/agents/:agentId/chat"],
+      [randomUUID(), "/agents/:agentId/chat", undefined, "/agents/:agentId/chat"],
+      ["req_not-a-uuid", "/agents/:agentId/chat", undefined, "/agents/:agentId/chat"],
+    ];
+    for (const [sentId, sentRoute] of cases) {
+      emitOccLogEvent(logger, {
+        event: "authentication.request-refused",
+        requestId: sentId,
+        route: sentRoute,
+      });
+    }
     assert.deepEqual(
       lines.map((line) => [line.requestId, line.route]),
-      [
-        [requestId, "/agents/:agentId/chat"],
-        [undefined, undefined],
-      ],
+      cases.map(([, , keptId, keptRoute]) => [keptId, keptRoute]),
     );
+    assert.equal(JSON.stringify(lines).includes(token), false);
   });
 }
