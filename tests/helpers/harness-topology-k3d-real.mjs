@@ -3643,14 +3643,21 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
     );
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
-    await waitFor("replacement Agent deployment", () =>
-      topology.events.find(
-        (event) =>
-          event.event === "worker.completed" &&
-          event.revisionId === deployed.data.id &&
-          event.outcome === "success",
-      ),
-    );
+    try {
+      await waitFor("replacement Agent deployment", () =>
+        topology.events.find(
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === deployed.data.id &&
+            event.outcome === "success",
+        ),
+      );
+    } catch (error) {
+      context.diagnostic(
+        `Replacement deployment status: ${JSON.stringify(await deploymentStatus(topology, deployed.data.id))}`,
+      );
+      throw error;
+    }
     topology.revision = deployed.data;
     topology.harnessPod = await waitForReadyAgentPod(
       topology,
@@ -3668,8 +3675,9 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
   assert.equal(configuration.status, 200);
   const recoveryValues = structuredClone(configuration.data.values);
   recoveryValues.gateway.roles = {
-    default: "writer",
+    default: "administrator",
     definitions: {
+      administrator: { scopes: ["operator.admin"], agents: "*", sessions: { others: "write" } },
       writer: { scopes: ["operator.write"], agents: "*", sessions: { others: "none" } },
       reader: { scopes: ["operator.read"], agents: "*", sessions: { others: "none" } },
     },
@@ -3876,12 +3884,23 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
           assert.equal(stoppedAgent.status, 202, JSON.stringify(stoppedAgent.error));
           await waitFor("the explicit stop to encounter denied teardown", async () => {
             const result = await topology.observerPool.query(
-              `SELECT state, attempt_count, reason_code FROM occ.controller_work
-               WHERE agent_id = $1 AND agent_target = 'stopped' ORDER BY created_at DESC LIMIT 1`,
+              `SELECT work.state, work.attempt_count, event.details->>'reasonCode' AS reason_code
+               FROM occ.controller_work AS work
+               JOIN occ.audit_events AS event
+                 ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
+                 AND event.resource_kind = 'agent' AND event.resource_id = work.agent_id
+                 AND event.kind = 'mutation' AND event.action = 'reconcile'
+                 AND event.details->>'workId' = work.idempotency_key
+                 AND event.outcome = 'failure' AND event.occurred_at >= work.created_at
+               WHERE work.agent_id = $1 AND work.agent_target = 'stopped'
+               ORDER BY work.created_at DESC, event.occurred_at DESC LIMIT 1`,
               [topology.agent.id],
             );
             const work = result.rows[0];
-            return work?.attempt_count > 0 && work.state !== "running" && work.reason_code
+            // Retry reasons belong to the durable attempt audit, not terminal work fields.
+            return work?.attempt_count > 0 &&
+              work.state === "queued" &&
+              work.reason_code === "DEPENDENCY_UNAVAILABLE"
               ? work
               : undefined;
           });
@@ -3958,6 +3977,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         );
         finished.push([interrupted.sessionKey, stoppedHistory]);
         context.diagnostic(`${replacement} left interrupted work stopped after redeployment`);
+        console.info(`k3d dedicated: ${replacement} refusal passed.`);
         continue;
       }
     } else if (replacement === "workload-pods") {
@@ -4068,6 +4088,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     );
     finished.push([interrupted.sessionKey, recovered]);
     context.diagnostic(`automatic interrupted-turn recovery passed: ${replacement}`);
+    console.info(`k3d dedicated: ${replacement} recovery passed.`);
   }
   for (const [sessionKey, before] of finished) {
     const after = await gatewayCall(topology, "chat.history", { sessionKey, limit: 100 });
