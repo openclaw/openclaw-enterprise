@@ -1,19 +1,22 @@
-// The fixtures' password hasher and the controller constructors that use it. Tests build a
-// controller through these wrappers, not the product's constructors, so this module alone
-// decides how fixtures hash passwords.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createControllerAuth as createControllerAuthWith,
   createPostgresControllerAuth as createPostgresControllerAuthWith,
   scryptPasswordHasher,
+  type PasswordHasher,
 } from "../../apps/controller/src/auth/index.ts";
+import type { composePostgresDevelopment as composePostgresDevelopmentWith } from "../../apps/controller/src/composition/development-postgres.ts";
+import type { composeProduction as composeProductionWith } from "../../apps/controller/src/composition/production.ts";
 
 export { scryptPasswordHasher };
 
-const TEST_HASH_LABEL = "test-sha256";
-const scryptVerifications = new Map();
+type DevelopmentArgs = Parameters<typeof composePostgresDevelopmentWith>;
+type ProductionArgs = Parameters<typeof composeProductionWith>;
 
-function testDigest(salt, password) {
+const TEST_HASH_LABEL = "test-sha256";
+const scryptVerifications = new Map<string, Promise<boolean>>();
+
+function testDigest(salt: string, password: string) {
   return createHash("sha256")
     .update(`${salt}\0${password.normalize("NFKC")}`)
     .digest();
@@ -32,7 +35,7 @@ function testDigest(salt, password) {
  * Tests whose subject is the hash cost, timing or stored format pass `scryptPasswordHasher`
  * instead (postgres-password-sign-in-limit; postgres-password-default checks the default).
  */
-export const testPasswordHasher = Object.freeze({
+export const testPasswordHasher = Object.freeze<PasswordHasher>({
   async hash(password) {
     const salt = randomBytes(16).toString("hex");
     return `${TEST_HASH_LABEL}:${salt}:${testDigest(salt, password).toString("hex")}`;
@@ -40,11 +43,14 @@ export const testPasswordHasher = Object.freeze({
   async verify({ hash, password }) {
     const [label, salt, key, ...rest] = hash.split(":");
     if (label !== TEST_HASH_LABEL) {
-      const remembered = `${hash}\0${password}`;
-      if (!scryptVerifications.has(remembered)) {
-        scryptVerifications.set(remembered, scryptPasswordHasher.verify({ hash, password }));
+      const cacheKey = `${hash}\0${password}`;
+      const cached = scryptVerifications.get(cacheKey);
+      if (cached !== undefined) {
+        return cached;
       }
-      return scryptVerifications.get(remembered);
+      const verification = scryptPasswordHasher.verify({ hash, password });
+      scryptVerifications.set(cacheKey, verification);
+      return verification;
     }
     if (!salt || !key || rest.length > 0 || !/^[0-9a-f]{64}$/.test(key)) {
       return false;
@@ -53,30 +59,33 @@ export const testPasswordHasher = Object.freeze({
   },
 });
 
-// The fixtures' controller constructors: the product's, with `testPasswordHasher` unless the
-// caller passes a `passwordHasher`. Test files and helpers import these instead of the
-// product's so one module chooses the fixtures' hasher.
+// Default the fixture constructors to the test hasher and allow an explicit caller override.
 
-export function createControllerAuth(options) {
+export function createControllerAuth(options: Parameters<typeof createControllerAuthWith>[0]) {
   return createControllerAuthWith({ passwordHasher: testPasswordHasher, ...options });
 }
 
-export function createPostgresControllerAuth(options) {
+export function createPostgresControllerAuth(
+  options: Parameters<typeof createPostgresControllerAuthWith>[0],
+) {
   return createPostgresControllerAuthWith({ passwordHasher: testPasswordHasher, ...options });
 }
 
-export async function composeProduction(config, dependencies = {}) {
+export async function composeProduction(
+  config: ProductionArgs[0],
+  dependencies: ProductionArgs[1] = {},
+): ReturnType<typeof composeProductionWith> {
   const { composeProduction: compose } =
     await import("../../apps/controller/src/composition/production.ts");
   return compose(config, { passwordHasher: testPasswordHasher, ...dependencies });
 }
 
 export async function composePostgresDevelopment(
-  config,
-  options,
-  serviceAccountDriverFactory,
-  dependencies = {},
-) {
+  config: DevelopmentArgs[0],
+  options?: DevelopmentArgs[1],
+  serviceAccountDriverFactory?: DevelopmentArgs[2],
+  dependencies: DevelopmentArgs[3] = {},
+): ReturnType<typeof composePostgresDevelopmentWith> {
   const { composePostgresDevelopment: compose } =
     await import("../../apps/controller/src/composition/development-postgres.ts");
   return compose(config, options, serviceAccountDriverFactory, {

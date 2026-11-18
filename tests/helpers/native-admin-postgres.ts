@@ -18,8 +18,9 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 
-import { createPostgresControllerAuth } from "./password-hasher.mjs";
+import { createPostgresControllerAuth } from "./password-hasher.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
+import { oidcLoginConfiguration } from "../../apps/controller/src/auth/oidc.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -246,26 +247,29 @@ export async function createApi(
     installation.id,
     betterAuthIssuer(installation.id),
   );
+  // Provider redirects are exercised by the browser suite; API cases use recovery login.
+  const oidc = oidcLoginConfiguration({
+    OCC_AUTH_OIDC_ISSUER: fixtureOidcIssuer.issuer,
+    OCC_AUTH_OIDC_AUTHORIZATION_URL: fixtureOidcIssuer.authorizationUrl,
+    OCC_AUTH_OIDC_TOKEN_URL: fixtureOidcIssuer.tokenUrl,
+    OCC_AUTH_OIDC_JWKS_URL: fixtureOidcIssuer.jwksUrl,
+    OCC_AUTH_OIDC_CLIENT_ID: "native-session-proof",
+    OCC_AUTH_OIDC_CLIENT_SECRET: "native-session-proof-secret",
+    OCC_AUTH_OIDC_TOKEN_AUTH: "client_secret_post",
+    OCC_AUTH_OIDC_DISPLAY_NAME: "Test SSO",
+  });
+  assert.ok(oidc);
   const auth = await createPostgresControllerAuth({
     mode: "development",
     installationId: installation.id,
     baseURL: origin,
     secret: authSecret,
     pool,
-    secureCookies: true,
     state,
     iamDriver,
     agentDomain: nativeDomain,
     sessionMode: options.exchange ? "host-only-exchange" : "shared-cookie",
-    // Provider redirects are exercised by the browser suite; API cases use recovery login.
-    oidc: {
-      ...fixtureOidcIssuer,
-      clientId: "native-session-proof",
-      clientSecret: "native-session-proof-secret",
-      tokenAuth: "client_secret_post",
-      displayName: "Test SSO",
-      recoveryUserId,
-    },
+    oidc: { ...oidc, recoveryUserId },
   });
   const computeDriver = nativeComputeDriver(upstreamPort);
   const configurationDriver = createTestConfigurationDriver({
