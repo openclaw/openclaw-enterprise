@@ -9,6 +9,7 @@
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.ts",
     "tests/integration/ci-prepare-image-cache.test.ts",
+    "tests/integration/migration-source-refusal.test.ts",
     "tests/integration/ci-prepare.test.mjs",
     "tests/integration/ci-prepare-lane-action.test.ts",
     "tests/conformance/repository-credentials-source-boundary.test.ts",
@@ -418,6 +419,9 @@
     },
     {
       "path": "tests/integration/ci-prepare-image-cache.test.ts"
+    },
+    {
+      "path": "tests/integration/migration-source-refusal.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare.test.mjs"
