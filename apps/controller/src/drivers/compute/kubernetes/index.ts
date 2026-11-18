@@ -10475,6 +10475,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (destination.managed !== undefined) {
       await this.reconcileGatewayRuntimeAuditTransport(revision, namespace, destination.managed);
     }
+    this.operationSignal().throwIfAborted();
     await enrollment.register(grant);
   }
 
