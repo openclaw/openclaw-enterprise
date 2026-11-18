@@ -14,6 +14,7 @@ import {
   workspaceSetupVerifier,
 } from "../compute/workspace-setup-runtime.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
+import { resolverEgress } from "../kubernetes/network-policy.ts";
 import type { StrandsBoxOptions } from "./strands-box.ts";
 
 const PRIVATE = [
@@ -105,6 +106,7 @@ export function strandsBoxResources(
   labels: Readonly<Record<string, string>>,
   hash: string,
   transportHash: string,
+  dns: Parameters<typeof resolverEgress>[0],
   gateway:
     | {
         readonly host: string;
@@ -332,6 +334,7 @@ export function strandsBoxResources(
     command: roles ? roles.codex : r.command.slice(workloadStart),
     revisionId: context.revision.id,
     statusPort: STRANDS_STATUS_PORT,
+    ...(roles && { workspaceOutcome: "/run/oce-workspace/outcome.sock" }),
     environment,
     secretEnvironment,
     workspace,
@@ -381,8 +384,17 @@ export function strandsBoxResources(
         "-euo",
         "pipefail",
         "-c",
-        // fsGroup sets setgid on the volume root. Keep its mode out of image directories.
-        'mkdir -p /shared-runtime/image; chmod g-s /shared-runtime/image; tar -C / -cf - -- "$@" | tar -C /shared-runtime/image --no-same-owner --delay-directory-restore -xf -',
+        // An init-container retry can reuse the Pod's emptyDir. Publish only a complete tree.
+        `cd /shared-runtime
+if test -d image; then exit 0; fi
+if test -d preparing; then
+  find preparing -type d -exec chmod u+rwx {} +
+  rm -rf -- preparing
+fi
+mkdir preparing
+chmod g-s preparing
+tar -C / -cf - -- "$@" | tar -C preparing --no-same-owner --delay-directory-restore -xf -
+mv -T preparing image`,
         "prepare",
         ...SHARED_IMAGE_PATHS,
       ],
@@ -443,6 +455,7 @@ export function strandsBoxResources(
   if (roles && enrollment && "valueFrom" in enrollment) {
     const setup = enrollment.valueFrom.secretKeyRef;
     volumes.push(
+      { name: "workspace-outcome", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } },
       { name: "node-scratch", emptyDir: { sizeLimit: "1Gi" } },
       {
         name: "node-enrollment",
@@ -473,6 +486,7 @@ export function strandsBoxResources(
         { name: "OPENCLAW_NODE_SETUP_PATH", value: "/run/node-enrollment/code" },
       ],
       volumeMounts: [
+        { name: "workspace-outcome", mountPath: "/run/oce-workspace" },
         { name: "node-scratch", subPath: "home", mountPath: "/home/node" },
         { name: "node-scratch", subPath: "tmp", mountPath: "/tmp" },
         { name: "node-enrollment", mountPath: "/run/node-enrollment", readOnly: true },
@@ -486,7 +500,7 @@ export function strandsBoxResources(
           command: [
             "node",
             "-e",
-            'const s=require("node:net").connect("/tmp/oce-file-baseline.sock");s.on("error",()=>process.exit(1));s.on("connect",()=>s.end());',
+            'const s=require("node:net").connect("/run/oce-workspace/outcome.sock");s.on("error",()=>process.exit(1));s.resume();',
           ],
         },
         periodSeconds: 5,
@@ -538,48 +552,11 @@ export function strandsBoxResources(
       ],
       egress: [
         ...(gateway ? [gateway.egress] : []),
-        {
-          to: [
-            {
-              namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } },
-              podSelector: { matchLabels: { "k8s-app": "kube-dns" } },
-            },
-          ],
-          ports: [
-            { protocol: "UDP", port: 53 },
-            { protocol: "TCP", port: 53 },
-          ],
-        },
+        resolverEgress(dns),
         ...cidrs.map(({ cidr, port: targetPort }) => ({
           to: [{ ipBlock: { cidr } }],
           ports: [{ protocol: "TCP", port: targetPort }],
         })),
-      ],
-    },
-  };
-  const workerEgress = {
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    metadata: {
-      ...metadata,
-      namespace: options.kubernetes.controlPlanePeer.namespace,
-      name: name + "-readiness",
-    },
-    spec: {
-      podSelector: { matchLabels: options.kubernetes.controlPlanePeer.podLabels },
-      policyTypes: ["Egress"],
-      egress: [
-        {
-          to: [
-            {
-              namespaceSelector: {
-                matchLabels: { "kubernetes.io/metadata.name": context.namespace.name },
-              },
-              podSelector: { matchLabels: labels },
-            },
-          ],
-          ports: [{ protocol: "TCP", port: STRANDS_STATUS_PORT }],
-        },
       ],
     },
   };
@@ -619,6 +596,9 @@ export function strandsBoxResources(
           env: [{ name: "HOME", value: "/home/node" }],
           volumeMounts: [
             ...workloadMounts,
+            ...(roles
+              ? [{ name: "workspace-outcome", mountPath: "/run/oce-workspace", readOnly: true }]
+              : []),
             { name: "probe-auth", mountPath: "/run/strands-box-probe", readOnly: true },
           ],
           securityContext,
@@ -679,5 +659,5 @@ export function strandsBoxResources(
       },
     },
   };
-  return [configMap, service, diagnosticService, network, workerEgress, deployment];
+  return [configMap, service, diagnosticService, network, deployment];
 }
