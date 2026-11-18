@@ -590,7 +590,9 @@ test(
       assert.equal(collisionInserted, true);
     } finally {
       control.assertAvailable = assertAvailable;
-      if (providers.at(-1) === collision) providers.pop();
+      if (providers.at(-1) === collision) {
+        providers.pop();
+      }
     }
     const requestProvider = providers.shift()!;
     try {
