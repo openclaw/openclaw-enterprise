@@ -129,7 +129,9 @@ async function runHarness(
   let stopped = false;
   const stop = () => {
     stopped = true;
-    for (const handler of [...stopHandlers]) handler();
+    for (const handler of [...stopHandlers]) {
+      handler();
+    }
   };
   const releases = [exitRelease].flat();
   const context = {
@@ -163,11 +165,15 @@ async function runHarness(
       stdout: { write() {} },
       execPath: "/usr/local/bin/node",
       on(signal: string, handler: () => void) {
-        if (signal === "SIGTERM") stopHandlers.push(handler);
+        if (signal === "SIGTERM") {
+          stopHandlers.push(handler);
+        }
       },
       off(signal: string, handler: () => void) {
         const index = stopHandlers.indexOf(handler);
-        if (signal === "SIGTERM" && index >= 0) stopHandlers.splice(index, 1);
+        if (signal === "SIGTERM" && index >= 0) {
+          stopHandlers.splice(index, 1);
+        }
       },
       // Only a stop exits; the program then runs on, so tests read `ends` up to the exit.
       exit: (code: number) => {
