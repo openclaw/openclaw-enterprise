@@ -3,6 +3,7 @@ import type {
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
+import { unverifiableStateLockLine } from "./embedded-gateway-owner.ts";
 
 // Reviewed Gateway tools and actions. Dedicated deployments can add reviewed
 // managed plugin tools. Ordinary tool grants remain subject to this policy.
@@ -426,7 +427,7 @@ function requireGatewayToolPolicyRuntime() {
 // refusal as its root read issue, which names OpenClaw's GatewayLockNamespaceError.
 class GatewayStateLockError extends Error {
   constructor(refusal) {
-    super("The Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds the Gateway state lock, and this container cannot verify that it stopped. It remains unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes for an unverifiable state owner. OpenClaw reported: " + refusal);
+    super(${JSON.stringify(unverifiableStateLockLine("Gateway"))} + refusal);
   }
 }
 function gatewayStateLockRefusal(stdout) {
