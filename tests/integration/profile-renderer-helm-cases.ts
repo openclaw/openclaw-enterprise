@@ -95,6 +95,25 @@ type SecretCollision = [
 
 export function registerHelmCases(): void {
   test(
+    "preflight refuses bootstrap Secret collisions as fresh Helm does",
+    { skip: helmSkip },
+    async () => {
+      const accepted = await render("openclaw", baseInput());
+      for (const name of ["occ-database", "occ-private-gateway-key", "oce-agent-gateways-tls"]) {
+        const input = baseInput();
+        input.controlPlane.bootstrapCredentialsSecretName = name;
+        await assertPreflightFailure("openclaw", input, /must name a dedicated Secret/);
+        const override = join(accepted.directory, "bootstrap-collision.json");
+        writeFileSync(
+          override,
+          JSON.stringify({ bootstrap: { credentials: { secretName: name } } }),
+        );
+        const helmError = await renderError(() => helmTemplate(accepted, [override]));
+        assert.match(processOutput(helmError), /must name a dedicated Secret/);
+      }
+    },
+  );
+  test(
     "startup-only installation changes roll API and worker pod templates",
     { skip: helmSkip },
     async () => {

@@ -47,7 +47,7 @@ function input(controlPlane: TestInput = {}) {
       authBaseUrl: "https://console.oce.example.internal",
       agentNativeAdminDomain: "agents.oce.example.internal",
       adminEmail: "admin@example.invalid",
-      bootstrapPasswordClaimName: "occ-bootstrap-admin-password",
+      bootstrapCredentialsSecretName: "occ-bootstrap-credentials",
       apiClients: [{ namespace: "operator-tools", podLabels: { app: "occ-operator" } }],
       databaseCidrs: ["192.0.2.10/32"],
       clusterCidrs: ["192.0.2.11/32"],
@@ -688,7 +688,7 @@ test(
   },
 );
 
-fieldParity("bootstrap password claim names get the same verdict from preflight and the chart", {
+fieldParity("bootstrap credential Secret names get the same verdict from preflight and the chart", {
   cases: [
     ["occ-bootstrap-admin-password", true],
     ["a".repeat(63), true],
@@ -704,9 +704,9 @@ fieldParity("bootstrap password claim names get the same verdict from preflight 
     ["occ..password", false],
     ["occ-password\n", false],
   ],
-  controlPlane: (claimName) => ({ bootstrapPasswordClaimName: claimName }),
-  values: (claimName) => ({ bootstrap: { password: { claimName } } }),
-  chartError: /bootstrap\.password\.claimName must be a DNS subdomain/,
+  controlPlane: (secretName) => ({ bootstrapCredentialsSecretName: secretName }),
+  values: (secretName) => ({ bootstrap: { credentials: { secretName } } }),
+  chartError: /bootstrap\.credentials\.secretName must be a DNS subdomain/,
 });
 
 test(
@@ -842,10 +842,10 @@ test(
         "/etc/openclaw/installation",
         "/run/openclaw-worker",
         "/var/run/openclaw-worker", // The controller image links /var/run to /run.
-        "/var/run/../var/lib/openclaw/bootstrap", // Dot segments apply after the link.
+        "/var/run/../run/openclaw-bootstrap", // Dot segments apply after the link.
         "/var/lock/../openclaw-worker", // The image links /var/lock to /run/lock, so this is /run.
         "/run/lock/../openclaw-worker",
-        "/var/lib/openclaw/bootstrap",
+        "/run/openclaw-bootstrap",
         "/etc/openclaw/gateway-api-key",
         "/etc/openclaw/gateway-ca",
       ]) {

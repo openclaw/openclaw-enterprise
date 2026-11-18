@@ -78,6 +78,7 @@ interface ChatGptValues {
   providerCidr: string;
 }
 interface SecretValues {
+  bootstrap: { adminEmail: string; credentials: { secretName: string } };
   database: { caSecretName?: string; caMountPath?: string };
   repositoryCredentials: RepositoryValues;
   backend?: { chatgpt: ChatGptValues };
@@ -104,7 +105,6 @@ interface ProfileValues extends SecretValues {
   installation: { name: string };
   auth: ExternalSignInValues & { baseUrl: string };
   agentNativeAdmin: { enabled: boolean; domain: string; sessionMode?: string };
-  bootstrap: { adminEmail: string; password: { claimName: string } };
   database: { cidrs: unknown[]; caSecretName?: string; caKey?: string; caMountPath?: string };
   api: {
     clients: { namespace: string; podLabels: InputRecord }[];
@@ -243,8 +243,7 @@ const secretKeyRule = {
   description: "a Kubernetes Secret key of at most 253 characters",
 };
 // Every image field takes a reference Kubernetes can pull, pinned to a lowercase SHA-256
-// digest. controllerImage and repository.image reach the chart, and the controller image
-// also feeds prepare-bootstrap-volume; runtime.image reaches only
+// digest. controllerImage and repository.image reach the chart; runtime.image reaches only
 // KubernetesComputeDriver (installation.yaml images.gateway and images.agent). The chart,
 // Compute and the image tools apply the same imageReferenceProblem rule.
 const digestImage = /@sha256:[a-f0-9]{64}$/;
@@ -745,7 +744,7 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
   const reserved = new Set([
     "/etc/openclaw/installation",
     "/run/openclaw-worker",
-    "/var/lib/openclaw/bootstrap",
+    "/run/openclaw-bootstrap",
     "/etc/openclaw/gateway-api-key",
     "/etc/openclaw/gateway-ca",
   ]);
@@ -881,7 +880,7 @@ function labelSyntax(
   return labels;
 }
 
-// Kubernetes node selector labels: the chart and prepare-bootstrap-volume apply this rule to
+// Kubernetes node selector labels: the chart applies this rule to
 // controlPlane.nodeSelector, and Kubernetes applies it to every Pod's nodeSelector, so the
 // runtime selectors in Installation configuration follow it too. Kubernetes allows empty
 // label values, as in `node-role.kubernetes.io/infra: ""`.
@@ -1376,7 +1375,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
       "controllerImage",
       "authBaseUrl",
       "adminEmail",
-      "bootstrapPasswordClaimName",
+      "bootstrapCredentialsSecretName",
       "apiClients",
       "databaseCidrs",
       "clusterCidrs",
@@ -1574,6 +1573,7 @@ function dedicatedSecrets(
   ]);
   const repository = values.repositoryCredentials;
   const fields: (readonly [string, string | undefined, string?])[] = [
+    ["controlPlane.bootstrapCredentialsSecretName", values.bootstrap.credentials.secretName],
     ...(values.backend?.chatgpt?.enabled
       ? [
           [
@@ -1921,14 +1921,14 @@ function buildRendered(
         validate: administratorEmail,
         description: "a valid administrator email",
       }),
-      password: {
-        claimName: asString(
+      credentials: {
+        secretName: asString(
           controlPlane,
-          ["controlPlane", "bootstrapPasswordClaimName"],
+          ["controlPlane", "bootstrapCredentialsSecretName"],
           diagnostics,
           {
             validate: isKubernetesResourceName,
-            description: "a PVC name: a DNS subdomain of at most 253 characters",
+            description: "a precreated Secret name: a DNS subdomain of at most 253 characters",
           },
         ),
       },
@@ -2483,8 +2483,9 @@ function buildRendered(
 
   diagnostics.nextSteps.push(
     `Create or update the ${namespace}/occ-installation-startup Secret from installation.yaml.`,
+    `Precreate the ${namespace}/${values.bootstrap.credentials.secretName} Secret with admin-password and admin-service-key before installing Helm.`,
     `Run helm upgrade --install ${releaseName} deploy/helm/openclaw-enterprise --namespace ${namespace} --values values.yaml.`,
-    "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
+    "Verify authenticated OCC access with the retained service key after initialization.",
   );
 
   const backendIds = new Set();

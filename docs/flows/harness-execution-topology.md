@@ -269,7 +269,8 @@ On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
 removal before stopping the Harness. The Gateway's graceful shutdown aborts
 active turns and records them for restart recovery under its
 `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, the continuation generation. Only a
-Gateway of the same generation resumes them; a stop or deletion never does
+Gateway of the same generation resumes them; a stop, an incompatible deployment
+or deletion ends the generation
 ([interrupted turns](../reference/agents/interrupted-turns.md)). Idle
 Gateways and pre-start wrappers exit promptly. Forced termination requires proof
 the previous owner stopped before retained state can be reused.

@@ -50,7 +50,6 @@ type KubernetesCommandContext = {
   save: () => void;
   output: (value: string) => void;
   fail: (message: string) => never;
-  serviceKeyFile: string;
 };
 
 export function kubernetesLifecycleCommand(
@@ -127,7 +126,7 @@ function k3d({ args, scenario, state, save, output, fail }: KubernetesCommandCon
   }
 }
 
-function kubectl({ args, output, fail, serviceKeyFile }: KubernetesCommandContext): void {
+function kubectl({ args, output, fail }: KubernetesCommandContext): void {
   if (args.includes("get") && args.includes("--raw=/version")) {
     // Reachable.
   } else if (
@@ -150,14 +149,6 @@ function kubectl({ args, output, fail, serviceKeyFile }: KubernetesCommandContex
     // Rolled out.
   } else if (args[0] === "-n" && args.includes("delete")) {
     // Deleted.
-  } else if (args[0] === "-n" && args.includes("exec")) {
-    output(serviceKeyFile);
-  } else if (
-    args[0] === "-n" &&
-    args.includes("pod") &&
-    args.includes("bootstrap-password-prepare")
-  ) {
-    output("Succeeded");
   } else if (args[0] === "-n" && args.includes("pod") && args.includes("postgres-0")) {
     output("10.42.0.20");
   } else if (

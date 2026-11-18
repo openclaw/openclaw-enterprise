@@ -186,16 +186,6 @@ function responseData<Data extends TSchema>(
   return response.data;
 }
 
-async function bootstrapServiceKeyFromFile(path: string) {
-  const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-  const key = asRecord(asRecord(parsed)?.data)?.key;
-  assert.ok(
-    typeof key === "string" && key.length > 0,
-    "bootstrap service-key file must contain data.key",
-  );
-  return key;
-}
-
 function installationAdministratorServicePrincipal(iamState: PersistedNativeIAMState) {
   const administratorRoles = new Set(
     iamState.roles
@@ -937,9 +927,7 @@ export async function createPluginDriverRealFixture(
       authBaseURL,
       installationName: `Plugin Driver real proof ${pluginDriverId}`,
     });
-    serviceKey = await bootstrapServiceKeyFromFile(
-      bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE,
-    );
+    serviceKey = await readFile(bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE, "utf8");
   }
 
   const app = await composeProduction({

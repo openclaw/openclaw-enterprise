@@ -18,8 +18,8 @@ agentNativeAdmin:
 
 bootstrap:
   adminEmail: admin@example.invalid
-  password:
-    claimName: occ-bootstrap-admin-password
+  credentials:
+    secretName: occ-bootstrap-credentials
 
 database:
   caSecretName: occ-rds-ca

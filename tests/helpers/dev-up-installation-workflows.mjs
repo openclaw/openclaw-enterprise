@@ -320,7 +320,12 @@ export function registerInstallationKeycloak() {
       } = await import("../helpers/dev-up-keycloak.mjs");
       const { chromium } = await import("playwright");
       const fixture = await keycloakLauncher(t);
+      // Bootstrap and both Keycloak setup sign-ins must use the same normalized password,
+      // including significant spaces, when an input has one Windows-style file terminator.
+      const password = ` ${randomUUID()} `;
+      fixture.environment.OPENCLAW_DEV_PASSWORD = `${password}\r\n`;
       const up = await fixture.dev("up");
+      assert.equal((await fixture.read("initial-admin-password")) === password, true);
       const instructions = keycloakInstructions(up.stdout);
       const origin = `https://${fixture.consoleHost}:${fixture.browserPort}`;
       assert.equal(instructions.consoleUrl, `${origin}/console/`);

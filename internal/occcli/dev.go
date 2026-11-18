@@ -124,6 +124,21 @@ func developmentCommand() *cobra.Command {
 			return nil
 		},
 	})
+	var bootstrapDirectory string
+	prepareBootstrap := &cobra.Command{
+		Use:    "prepare-bootstrap-mounts --directory PATH [-- COMPOSE_GLOBAL_OPTIONS...]",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			return occdev.PrepareBootstrapMounts(cmd.Context(), occdev.Options{Repository: repository, ComposeArgs: args, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}, bootstrapDirectory)
+		},
+	}
+	prepareBootstrap.Flags().StringVar(&bootstrapDirectory, "directory", "", "Private credential directory")
+	_ = prepareBootstrap.MarkFlagRequired("directory")
+	command.AddCommand(prepareBootstrap)
 	var profile string
 	analyze := &cobra.Command{
 		Use:    "analyze-compose",
