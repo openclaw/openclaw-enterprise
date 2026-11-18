@@ -137,6 +137,17 @@ including `ci-results` artifacts. A queued job has not necessarily acquired a
 runner. Use the job summary's phase timings to distinguish queue time, execution,
 and result publication. A skipped lane does not verify access to its model provider.
 
+In the Production Observability job, find `lane=k3d-observability` in the
+**Prepare lane** and **Cleanup lane** step logs. The check annotation title is
+`Production Observability timing`. Match the run ID, attempt, and tested SHA.
+Pair one start with one finish for each phase in order. Preparation measures
+`cluster-build-pull` and `workload-image-imports`. The cleanup step measures
+`lane-cleanup` through the result update. A completion reports success or
+failure with elapsed milliseconds.
+When cleanup finds no resource journal, it reports a skip with no duration.
+Missing, unmatched, malformed, duplicate, or overlapping records leave the
+measurement unavailable. Use the lane result for test and cleanup disposition.
+
 [First Agent Smoke](first-agent-smoke.md) is a separate job and is not a
 `CI Required` dependency. A green merge gate does not establish that smoke passed.
 The [CI flow](../../flows/github-actions-testing.md) describes result accounting.

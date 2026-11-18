@@ -46,6 +46,7 @@ import { createK3dPreparation, findK3dCluster, reserveLoopbackPort } from "./k3d
 import { commandAvailable, execFile } from "./prepare-command.ts";
 import { prepareGatewayRouting } from "./routing.ts";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.ts";
+import { startObservabilityPhase } from "./observability-phase-notice.ts";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.ts";
@@ -158,6 +159,7 @@ function progress(lane, message) {
  * @param {() => Result | Promise<Result>} operation
  */
 async function timedPreparation(lane, phase, operation) {
+  const finishTiming = startObservabilityPhase(lane, phase);
   const started = performance.now();
   let succeeded = false;
   try {
@@ -166,6 +168,7 @@ async function timedPreparation(lane, phase, operation) {
     return result;
   } finally {
     const elapsedMs = Math.round(performance.now() - started);
+    finishTiming?.(succeeded ? "success" : "failure", elapsedMs);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
     if (lane === "k3d-model" && process.env.GITHUB_ACTIONS === "true") {

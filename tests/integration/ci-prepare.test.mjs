@@ -385,6 +385,92 @@ test("model preparation notices preserve outcomes and require Actions and a know
   ]);
 });
 
+test("Production Observability notices retain a failed preparation phase", async (t) => {
+  const root = await fixture(t);
+  const docker = join(root, "docker");
+  const lane = "k3d-observability";
+  const sha = "a".repeat(40);
+  const canary = "synthetic-observability-command-failure";
+  // A missing executable inside the first timed phase must leave the
+  // phase red without disclosing the command path in the notice.
+  await writeFile(docker, `#!/bin/sh\nprintf '%s\\n' '${canary}' >&2\nexit 48\n`, { mode: 0o700 });
+  const result = await spawnResult(
+    process.execPath,
+    [preparePath, "--lane", lane, "--state", join(root, "state.json")],
+    {
+      env: {
+        PATH: root,
+        TMPDIR: root,
+        OCC_HELM_BIN: "/bin/true",
+        OCC_DOCKER_BIN: docker,
+        OPENCLAW_CI_K3D_BIN: "/bin/true",
+        OCC_KUBECTL_BIN: join(root, canary),
+        GITHUB_ACTIONS: "true",
+        GITHUB_RUN_ID: "12345",
+        GITHUB_RUN_ATTEMPT: "2",
+        GITHUB_SHA: sha,
+      },
+    },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  assertStderrMatch(result.stderr, new RegExp(canary));
+  const notices = result.stderr
+    .split("\n")
+    .filter((line) => line.startsWith("::notice title=Production Observability timing::"));
+  const binding = `::notice title=Production Observability timing::lane=${lane} run_id=12345 run_attempt=2 source_sha=${sha} phase=cluster-build-pull`;
+  assert.equal(notices.length, 2, "failed preparation must publish one start and one terminal");
+  assert.equal(notices[0], `${binding} event=start`);
+  assert.match(
+    notices[1],
+    new RegExp(`^${binding} event=finish outcome=failure elapsed_ms=[0-9]+$`),
+  );
+});
+
+test("Production Observability notices accept only fixed outcomes for each phase", async (t) => {
+  const root = await fixture(t);
+  const probe = join(root, "phase-outcome.mjs");
+  const noticeModule = new URL("../../scripts/ci/observability-phase-notice.ts", import.meta.url);
+  await writeFile(
+    probe,
+    `import { startObservabilityPhase } from ${JSON.stringify(noticeModule.href)};
+const [phase, outcome] = process.argv.slice(2);
+startObservabilityPhase("k3d-observability", phase)(outcome, 5);
+`,
+  );
+  const canary = "synthetic-outcome-canary";
+  const preparePhase = "workload-image-imports";
+  const cleanupPhase = "lane-cleanup";
+  const sha = "a".repeat(40);
+  const env = {
+    GITHUB_ACTIONS: "true",
+    GITHUB_RUN_ID: "12345",
+    GITHUB_RUN_ATTEMPT: "2",
+    GITHUB_SHA: sha,
+  };
+
+  for (const [phase, outcome, terminal] of [
+    [preparePhase, `failure\n::notice::${canary}`],
+    [preparePhase, `failure%0A::notice::${canary}`],
+    [cleanupPhase, "unknown"],
+    [preparePhase, "skipped"],
+    [preparePhase, "success", "success elapsed_ms=5"],
+    [preparePhase, "failure", "failure elapsed_ms=5"],
+    [cleanupPhase, "skipped", "skipped"],
+  ]) {
+    const result = await spawnResult(process.execPath, [probe, phase, outcome], { env });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.doesNotMatch(result.stderr, /^::notice::/m, "unexpected workflow command");
+    assert.doesNotMatch(result.stderr, new RegExp(canary), "unexpected outcome text");
+    const binding = `::notice title=Production Observability timing::lane=k3d-observability run_id=12345 run_attempt=2 source_sha=${sha} phase=${phase}`;
+    const expected = [`${binding} event=start\n`];
+    if (terminal) {
+      expected.push(`${binding} event=finish outcome=${terminal}\n`);
+    }
+    assert.equal(result.stderr, expected.join(""), `unexpected notices for ${phase} ${outcome}`);
+  }
+});
+
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
 // and retry backoff, so a few run at once: two per CPU, at most four. With four copies
 // of this file on one CPU, four at once still passed, while all at once missed the 3 s
