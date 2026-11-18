@@ -91,6 +91,8 @@ fresh `box_dir`, and point the host's `boxBin` at `strands-box`.
 
 ## Read next
 
+- [RUNBOOK.md](RUNBOOK.md): set up and run a valid end-to-end test against
+  real GitHub, step by step.
 - [KNOWN-GAPS.md](KNOWN-GAPS.md): what an operator must know, and what we ask
   of Box.
 - [VALIDATION.md](VALIDATION.md): what ran where.
