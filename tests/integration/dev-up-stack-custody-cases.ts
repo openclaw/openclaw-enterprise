@@ -133,7 +133,7 @@ const rollbackCases = [
   { scenario: "compose-up-failed", diagnostic: /partial compose startup/ },
   { scenario: "cluster-create-failed", diagnostic: /partial cluster creation/ },
   { scenario: "node-dns-refused", diagnostic: /cannot resolve registry-1\.docker\.io/ },
-  { scenario: "api-mismatch", diagnostic: /Installation ID does not match/ },
+  { scenario: "api-mismatch", diagnostic: /invalid Installation ID/ },
   { scenario: "api-unauthorized", diagnostic: /authorization failed/ },
 ] as const satisfies readonly { scenario: LifecycleScenario; diagnostic: RegExp }[];
 

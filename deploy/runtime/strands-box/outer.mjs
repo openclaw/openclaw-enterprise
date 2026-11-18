@@ -27,6 +27,7 @@ const { stop } = serveHarness(manifest, {
   },
 });
 box.on("error", () => {
+  console.error("Strands Box child process failed.");
   process.exitCode = 1;
   stop();
 });
