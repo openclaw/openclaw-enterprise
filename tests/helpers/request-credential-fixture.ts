@@ -10,6 +10,7 @@ import type {
   SecretReference,
   SecretDriver,
   CredentialProxyDriver,
+  CredentialSourceMetadata,
   EgressInstallation,
   RequestCredentialInput,
 } from "../../packages/contracts/src/index.ts";
@@ -43,17 +44,25 @@ export async function requestCredentialFixture(
     poolOptions?: { options: string };
     bindExchange?: CredentialProxyDriver["bindExchange"];
     installedModelDefault?: boolean;
+    retainStrictBeforeDefault?: boolean;
+    includeLegacy?: boolean;
   } = {},
 ) {
   let owner!: InstalledDriver;
   let principalId!: string;
   let state!: PlatformStateStore;
   let pool!: Awaited<ReturnType<typeof postgresApp>>["pool"];
+  let retainedStrict: CredentialSourceMetadata | undefined;
   let live: EgressInstallation | undefined;
   let nextVerification: { reached: () => void; release: Promise<void> } | undefined;
   const sandboxId = randomUUID();
-  const { activateRevision, credentialProxyCapacity, installedModelDefault, ...fixtureOptions } =
-    configuration;
+  const {
+    activateRevision,
+    credentialProxyCapacity,
+    installedModelDefault,
+    retainStrictBeforeDefault,
+    ...fixtureOptions
+  } = configuration;
   const { capacity } = resolveCredentialProxyCapacity(
     credentialProxyCapacity ?? {},
     "requestCapacity",
@@ -64,12 +73,12 @@ export async function requestCredentialFixture(
     ...(credentialProxyCapacity && { credentialProxyCapacity: capacity }),
     admitRevision: false,
     driverConfigurations: [
-      {
+      ...["request-policy-fixture", "request-policy-previous"].map((driverId) => ({
         capability: "sandbox" as const,
-        driverId: "request-policy-fixture",
+        driverId,
         implementation: "request-policy-fixture",
         definition: OpenShellSandboxDriver,
-      },
+      })),
     ],
     appFactory: async (context: TestContext, options: object = {}) => {
       const app = await postgresApp(context, {
@@ -164,6 +173,36 @@ export async function requestCredentialFixture(
           sandbox,
         ).hooks,
       };
+      if (installedModelDefault && retainStrictBeforeDefault) {
+        // Admit a strict source before changing only the Installation's policy for new sources.
+        const previousProxy = { ...proxy, id: "request-policy-previous" };
+        const previousSandbox = new Proxy(sandbox, {
+          get(target, key) {
+            return key === "id" ? "request-policy-previous" : Reflect.get(target, key);
+          },
+        });
+        const previous = new InstalledDriver(
+          { id: previousProxy.id, implementation: proxy.implementation, configuration: {} },
+          {
+            capabilities: { sandbox: previousSandbox, credential_proxy: previousProxy },
+            namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+              app.controller.selectedDriver("compute"),
+              previousSandbox,
+            ).hooks,
+          },
+        );
+        app.controller.installDriver(previous, ["sandbox", "credential_proxy"]);
+        const created = await app.request("POST", path, {
+          body: {
+            name: "retained-strict-model",
+            type: "openai",
+            config: { authorized_base_url: `${origin}/v1` },
+            secrets: { api_key: secret.ref },
+          },
+        });
+        assert.equal(created.status, 201, JSON.stringify(created.body));
+        retainedStrict = created.data;
+      }
       owner = new InstalledDriver(
         {
           id: proxy.id,
@@ -434,6 +473,7 @@ export async function requestCredentialFixture(
   return {
     f,
     owner,
+    retainedStrict,
     revision,
     exchange,
     request,

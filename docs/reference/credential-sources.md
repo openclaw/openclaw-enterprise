@@ -71,6 +71,11 @@ The `201` response includes the `cs_` source ID, binding `ref` and status. Bind 
   configuration selects the online OpenAI provider. Otherwise ordinary Gateway or strict
   admission applies. Missing or ambiguous defaults and unavailable enforcement refuse
   creation before Secret reads; existing sources retain their selected provider.
+  Create, GET, and list responses report a protected live model source's recorded
+  profile in `egress.authorization`: `exact-dispatch`, `online-request`, or
+  `unavailable` when its exact admitted registration cannot be validated. Ordinary
+  Gateway sources omit `egress`; other protected source lifecycles do not claim a
+  model profile. The value does not attest running Sandbox enforcement.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`. Custom authorization must match the
@@ -128,10 +133,7 @@ selected. Newly registered metadata sources belong to the Credential Proxy.
 A Gateway source retains its Gateway owner even when the Proxy enforces its plan.
 
 Deployment with credential sources requires a selected Sandbox Driver. The revision records each source's
-ID, type and owning Driver ID. For the `widgets-metadata` example, the protected
-plan allows `GET /repos/acme/widgets` for that execution and source generation. Follow the
-[request to GitHub and its reply](../flows/credential-source-egress.md#follow-the-metadata-get).
-Cloning, pushing or creating a pull request requires a separately admitted
+ID, type and owning Driver ID. Metadata access does not permit cloning or pushing; those require a separate
 [repository binding](repository-credentials.md).
 
 For **source-backed Harness authentication**, set `harnessAuth` to
@@ -156,7 +158,7 @@ permission on the underlying model Secret. Queued and running provisioning jobs
 keep their source referenced before the Agent exists.
 
 The Console reads the Gateway catalog from Installation or [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
-Both Dedicated Harnesses share provider and Secret controls. API-key provisioning registers the Secret first. See [Console creation](console/create-and-deploy.md).
+See [Console creation](console/create-and-deploy.md).
 
 For an Agent without repositories on the bundled Git-only Proxy, bind the matching
 ready static Harness model source from the selected Gateway as the Agent’s only

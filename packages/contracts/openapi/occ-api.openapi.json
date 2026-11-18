@@ -691,6 +691,14 @@
                       { "const": "credential_free", "type": "string" }
                     ]
                   },
+                  "authorization": {
+                    "anyOf": [
+                      { "const": "exact-dispatch", "type": "string" },
+                      { "const": "online-request", "type": "string" },
+                      { "const": "unavailable", "type": "string" }
+                    ],
+                    "description": "Recorded live model authorization profile, resolved from the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement."
+                  },
                   "retention": { "const": "none", "type": "string" }
                 },
                 "required": ["adoption", "retention"],
@@ -36265,6 +36273,14 @@
                                   { "const": "prepared", "type": "string" },
                                   { "const": "credential_free", "type": "string" }
                                 ]
+                              },
+                              "authorization": {
+                                "anyOf": [
+                                  { "const": "exact-dispatch", "type": "string" },
+                                  { "const": "online-request", "type": "string" },
+                                  { "const": "unavailable", "type": "string" }
+                                ],
+                                "description": "Recorded live model authorization profile, resolved from the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement."
                               },
                               "retention": { "const": "none", "type": "string" }
                             },

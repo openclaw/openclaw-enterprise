@@ -1,24 +1,20 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-13
-last_updated_session: authoring-run/f3a542b0-ca6b-426f-8759-3ca2500f79ce
+updated: 2026-11-18
+last_updated_session: authoring-run/37e75cb4-4947-44ab-8be4-6a3f6726be01
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-OCC authorizes sources and stores metadata/references; OpenShell holds values.
-Admission freezes identity; workers pass live sources to Compute.
-See [refresh](credential-source-refresh.md) and
-[Sandbox provisioning](openshell-sandbox-provisioning.md).
-
-[Protected sources](credential-source-egress.md) admit versioned Secret references,
-skip gateway copies and require explicit migration while unbound. Protected revisions
-refuse legacy attachments. [OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
-retains its recorded Credential Gateway and Refresh owners, including when a Git
-Proxy is later selected. Fresh OAuth enrollment is not part of the Git-only static
-model exception. Without a selected Proxy, the existing Gateway/Refresh path remains.
+OCC authorizes source admission, stores references and hands live sources to Compute.
+[Protected sources](credential-source-egress.md) skip Gateway copies and require
+unbound migration. Protected revisions refuse legacy attachments.
+[Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
+retains its Gateway and Refresh owners after Git Proxy selection; fresh OAuth is
+outside the Git-only static model exception. Without a Proxy, Gateway/Refresh
+continues. See [Sandbox provisioning](openshell-sandbox-provisioning.md).
 
 ## Entry Points
 
@@ -99,19 +95,24 @@ validation resolves it to reject token endpoints in the Gateway's Namespace;
 registration repeats this with tenant placement. The recorded Driver retains
 source ownership and cleanup.
 
-New sources use protected admission when a Credential Proxy is selected. Only
-the validated bundled Git-only installation permits fresh static model sources
-through its separately selected Credential Gateway. The catalog type must declare
-Harness authentication without refresh, device authorization or OAuth token login. Plugin, refresh and
-OAuth enrollment do not receive this exception. Prepared and credential-free types use
-their Proxy owner first. Eligible static sources in other profiles use live Secret
-reads without a Gateway write; retired or unavailable providers refuse admission.
-For static admission and explicit live adoption, `packages/occ/src/index.ts:staticEgressProvider` selects
-the first catalog entry for the requested type, then resolves its exact reference.
-Duplicate registrations for that ID and generation return `409` before a Secret
-payload read. Distinct providers of the same type retain catalog order. Updates
-resolve the recorded reference. Admission retains the provider and its callbacks
-and rechecks them, including identity uniqueness, around material resolution.
+With a selected Proxy, new sources require protected admission except for static
+Harness model sources on the validated Git-only installation. Refresh, device login,
+OAuth and plugin enrollment are ineligible for that exception. Prepared and
+credential-free types use their Proxy owner; protected static admission reads the
+live Secret without a Gateway copy.
+
+`packages/occ/src/index.ts:newSourceAdmission` applies the Installation's exact
+new-source default when authorization is omitted. Otherwise it uses explicit profile
+or ordinary Gateway/strict admission rules. `packages/occ/src/index.ts:staticEgressProvider`
+resolves the exact reference; duplicate registrations return `409` before Secret
+reads. Updates retain that reference. Admission rechecks provider identity and callbacks
+around material resolution.
+
+`packages/occ/src/index.ts:credentialSourceAuthorization` projects the recorded live
+model profile on create, GET and list. It validates the persisted provider reference
+against the selected Proxy registration, source lifecycle, backend, sender and resolver.
+Invalid registrations report `unavailable`; metadata reads remain usable. The current
+default and running Sandbox enforcement are not part of this observation.
 
 ### 2. Read Secret values
 
@@ -373,6 +374,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 05:30: Expose the recorded live model authorization profile in source metadata. (authoring-run/37e75cb4-4947-44ab-8be4-6a3f6726be01 - 514390283e7f2a3638eeee5427846e8215556c84)
 
 - 2026-11-13 15:44: Recheck the Git-only model lifecycle before Kubernetes attachment and release. (authoring-run/f3a542b0-ca6b-426f-8759-3ca2500f79ce - a14ccd99)
 

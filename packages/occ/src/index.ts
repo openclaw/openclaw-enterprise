@@ -18214,10 +18214,55 @@ export class OpenClawController {
     return entry;
   }
 
+  /** Observe the admitted live model registration without selecting a new-source default. */
+  private credentialSourceAuthorization(
+    source: Readonly<CredentialSource>,
+  ): "exact-dispatch" | "online-request" | "unavailable" | undefined {
+    const egress = source.egress;
+    if (egress?.adoption !== "live" || source.ownerCapability !== "credential_gateway") {
+      return undefined;
+    }
+    try {
+      const driver = this.selectedProxyOwner().require("credential_proxy");
+      const control = driver.sourceControl;
+      if (
+        egress.key.installationId !== this.installation.id ||
+        egress.key.namespaceId !== source.namespaceId ||
+        egress.key.source.id !== source.id ||
+        !isDeepStrictEqual(egress.key.backend, control.backend) ||
+        !isDeepStrictEqual(egress.sender, control.sender) ||
+        !isDeepStrictEqual(egress.resolver, control.resolver)
+      ) {
+        return "unavailable";
+      }
+      const provider = registeredCredentialProvider(control.providers, egress.key.provider);
+      if (
+        !provider ||
+        provider === "ambiguous" ||
+        provider.schemaVersion !== egress.schemaVersion ||
+        provider.sourceType.type !== source.type ||
+        !this.staticSourceLifecycleMatches(provider.sourceType) ||
+        provider.sourceType.secrets.length !== 1
+      ) {
+        return "unavailable";
+      }
+      if (provider.sourceType.harnessAuth === undefined) {
+        return undefined;
+      }
+      if (provider.authorization === undefined) {
+        return "exact-dispatch";
+      }
+      return provider.authorization === "online-request" ? "online-request" : "unavailable";
+    } catch {
+      return "unavailable";
+    }
+  }
+
   private credentialSourceMetadata(
     source: Readonly<CredentialSource>,
     status?: CredentialSourceStatus,
   ): Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }> {
+    const authorization = this.credentialSourceAuthorization(source);
     return Object.freeze({
       id: source.id,
       namespaceId: source.namespaceId,
@@ -18228,7 +18273,13 @@ export class OpenClawController {
       secrets: source.secrets,
       ...(source.egress === undefined
         ? {}
-        : { egress: { adoption: source.egress.adoption, retention: source.egress.retention } }),
+        : {
+            egress: {
+              adoption: source.egress.adoption,
+              retention: source.egress.retention,
+              ...(authorization === undefined ? {} : { authorization }),
+            },
+          }),
       state: source.state,
       ref: Object.freeze({
         kind: "credential_source" as const,

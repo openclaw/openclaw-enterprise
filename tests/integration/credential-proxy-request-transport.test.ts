@@ -24,6 +24,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import type {
   CredentialProxyDriver,
+  CredentialProviderDefinition,
   RequestCredentialInput,
 } from "../../packages/contracts/src/index.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
@@ -464,6 +465,75 @@ test(
       }),
     );
     assert.equal((await redeem(next)).body.access_token, "synthetic-key-rotated");
+  },
+);
+
+test(
+  "credential source HTTP metadata retains the admitted model profile across default and registration changes (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t, {
+      installedModelDefault: true,
+      retainStrictBeforeDefault: true,
+      includeLegacy: true,
+    });
+    const { f, owner, retainedStrict, revision } = fixture;
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    assert.ok(retainedStrict);
+    const ordinary = await f.request("GET", `${path}/${f.legacySource.id}`);
+    assert.equal(ordinary.status, 200, JSON.stringify(ordinary.body));
+    assert.equal(
+      ordinary.data.egress,
+      undefined,
+      "ordinary Gateway source has no protected profile",
+    );
+    assert.equal(retainedStrict.egress?.authorization, "exact-dispatch", "strict create response");
+    assert.equal(
+      f.source.egress.authorization,
+      "online-request",
+      "omitted-profile create response",
+    );
+    assert.equal(revision.egressPlan?.authorization, "online-request", "Codex stays protected");
+    const strict = await f.request("GET", `${path}/${retainedStrict.id}`);
+    const online = await f.request("GET", `${path}/${f.source.id}`);
+    assert.equal(strict.status, 200, JSON.stringify(strict.body));
+    assert.equal(
+      strict.data.egress.authorization,
+      "exact-dispatch",
+      "new default cannot rewrite an existing source",
+    );
+    assert.equal(online.status, 200, JSON.stringify(online.body));
+    assert.equal(online.data.egress.authorization, "online-request");
+    assert.deepEqual(Object.keys(online.data.egress).sort(), [
+      "adoption",
+      "authorization",
+      "retention",
+    ]);
+
+    // Missing or duplicate exact registrations cannot silently become strict, and reads remain usable.
+    const providers = owner.require("credential_proxy").sourceControl
+      .providers as CredentialProviderDefinition[];
+    const requestProvider = providers.shift()!;
+    try {
+      const missing = await f.request("GET", `${path}/${f.source.id}`);
+      const listed = await f.request("GET", path);
+      assert.equal(missing.status, 200, JSON.stringify(missing.body));
+      assert.equal(missing.data.egress.authorization, "unavailable");
+      assert.equal(listed.status, 200, JSON.stringify(listed.body));
+      assert.equal(
+        listed.data.find((entry: { id: string }) => entry.id === f.source.id).egress.authorization,
+        "unavailable",
+      );
+      providers.unshift(requestProvider, requestProvider);
+      const ambiguous = await f.request("GET", `${path}/${f.source.id}`);
+      assert.equal(ambiguous.status, 200, JSON.stringify(ambiguous.body));
+      assert.equal(ambiguous.data.egress.authorization, "unavailable");
+    } finally {
+      while (providers[0] === requestProvider) {
+        providers.shift();
+      }
+      providers.unshift(requestProvider);
+    }
   },
 );
 
