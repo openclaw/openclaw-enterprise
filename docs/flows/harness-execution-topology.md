@@ -266,15 +266,12 @@ activation retries, then one status read per retry. That wait and the pairing wa
 early when other Work is claimable.
 
 On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
-removal before stopping the Harness. The Gateway's graceful shutdown aborts
-active turns and records eligible work for native recovery. Later startup may
-continue unscoped work after Stop then Deploy. Native policy can refuse previously
-scoped work
-([interrupted turns](../reference/agents/interrupted-turns.md)). Idle
-Gateways and pre-start wrappers exit promptly. Forced termination requires proof
-the previous owner stopped before retained state can be reused.
-[Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
-describes when an operator must confirm termination.
+removal before stopping the Harness. Graceful shutdown aborts active turns and
+records eligible work for [native recovery](../reference/agents/interrupted-turns.md).
+Upstream can refuse previously scoped work. Idle Gateways and pre-start wrappers
+exit promptly. Forced termination requires proof the old owner stopped before
+reusing retained state; see
+[embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
 Gateway state survives replacements.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.gatewayPrivateStateClaim`
