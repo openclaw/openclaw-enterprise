@@ -20,6 +20,7 @@ export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-po
 export { CredentialDeliveries } from "./state/credential-deliveries.ts";
 export type { CredentialDeliveryKey } from "./state/credential-deliveries.ts";
 export { CredentialDeliveryReductions } from "./state/credential-delivery-reductions.ts";
+export type { CredentialDeliveryReduction } from "./state/credential-delivery-reductions.ts";
 export {
   eligibleRepositoryApprovalScope,
   repositoryApprovalFingerprint,
@@ -609,6 +610,7 @@ export {
 } from "./provisioning-effects.ts";
 export {
   InMemoryPlatformState,
+  type PredecessorReplacement,
   type AgentRevisionReadRepository,
   type InMemoryPlatformStateOptions,
   type PlatformAuditSink,
@@ -655,6 +657,7 @@ export {
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
+  isHttpFieldName,
   PROVIDER_MODELS_LIST,
   urlHoldsUserinfo,
 } from "./model-provider-settings.ts";
@@ -3388,6 +3391,14 @@ export class OpenClawController {
       }
       return { agent, revision, endpoint: compute.getChatCompletionsEndpoint(revision) };
     });
+  }
+
+  async getAdministerableAgent(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<Agent>> {
+    return this.getAuthorizedAgent(principalId, namespaceId, agentId, "administer");
   }
 
   /** Select the native browser authority for this exact Agent through the selected IAM Driver. */
@@ -6440,6 +6451,14 @@ export class OpenClawController {
     agentId: string,
   ): Promise<ActiveAgentRevisionSelection> {
     return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "operate");
+  }
+
+  async getAdministerableActiveAgentRevision(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<ActiveAgentRevisionSelection> {
+    return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "administer");
   }
 
   private getAuthorizedActiveAgentRevision(
