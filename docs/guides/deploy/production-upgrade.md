@@ -69,6 +69,11 @@ Prepare:
 - PostgreSQL backups for controller migrations and Agent-volume backups for
   runtime releases that can require data restoration.
 
+Values from earlier charts may keep `bootstrap.password` and `bootstrap.serviceKey`;
+upgrades ignore them. The PVC named by `bootstrap.password.claimName` is no longer
+mounted but may still hold the initial administrator password and service key.
+Delete it once those are stored elsewhere.
+
 Repository-enabled releases require `--controller-image` and `--broker-image`,
 even for unchanged digests. Stage trusted images as UID 1000 on Linux with OpenSSL
 and Docker Engine supporting platform-specific inspection and export. Nodes
