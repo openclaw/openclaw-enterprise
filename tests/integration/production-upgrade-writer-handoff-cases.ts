@@ -12,6 +12,7 @@ import {
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join, relative } from "node:path";
 import test, { describe } from "node:test";
 import {
@@ -19,6 +20,8 @@ import {
   registerUnknownAgentDeploymentResumeTest,
 } from "../helpers/production-upgrade-dispatch-restore.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { rejectPostgresStartup } from "../helpers/fake-postgres-server.ts";
+import { listen } from "../helpers/listen.ts";
 import { preflightIdentities } from "../helpers/production-upgrade-preflight-cleanup.ts";
 import {
   assertHelmIntent,
@@ -37,7 +40,11 @@ import {
   requireRecoveryPreflight,
   type RecoveryState,
 } from "../helpers/production-upgrade-recovery-state.ts";
-import { runtime, skipWithoutHelm } from "../helpers/production-upgrade-recovery-tools.ts";
+import {
+  runtime,
+  skipWithoutHelm,
+  upgradeDiagnosticLines,
+} from "../helpers/production-upgrade-recovery-tools.ts";
 import {
   createDoctorPodFixture,
   embeddedDoctorNamespace,
@@ -760,8 +767,9 @@ export function registerWriterHandoffCases({
       const prefix = join(f.evidence, "dispatch/ns_test--agt_test");
       assert.doesNotMatch(failure.stderr, /agt_ok/);
       assert.equal(existsSync(join(f.evidence, "dispatch/ns_test--agt_ok.json")), true);
+      const diagnostic = upgradeDiagnosticLines(failure.stderr);
       if (!refusal) {
-        assert.deepEqual(failure.stderr.trimEnd().split("\n"), [
+        assert.deepEqual(diagnostic, [
           `upgrade-production-images: at least one Agent deployment outcome is unknown; inspect ${join(f.evidence, "dispatch")} and reconcile it before resuming:`,
           '  - Agent agt_test "Mail triage" in Namespace ns_test',
         ]);
@@ -771,7 +779,7 @@ export function registerWriterHandoffCases({
         return;
       }
       assert.deepEqual(
-        failure.stderr.trimEnd().split("\n"),
+        diagnostic,
         keyRefused
           ? [
               `upgrade-production-images: OCC rejected the service key in ${join(f.directory, "key")}, so it did not deploy 1 recorded Agent(s) and saved no revision for them:`,
@@ -953,6 +961,31 @@ export function registerWriterHandoffCases({
       );
     });
 
+    // A deployment that never finishes stops the upgrade at its timeout. The message names
+    // the Agent (ID and name), the status last read and the status the upgrade waited for, so
+    // the operator knows which Agent to inspect without reading the evidence first.
+    test("an Agent deployment still running at the upgrade timeout is named", async (t) => {
+      const f = await fixture(t, { agent: true });
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: "rev_new", status: "running" },
+        }),
+      );
+      // 8 s leaves room for at least one status poll after the deploy.
+      const failure = await expectUpgradeFailure(
+        f.run("--timeout-seconds", "8"),
+        "the upgrade must stop at the timeout",
+      );
+      assert.deepEqual(failure.stderr.trimEnd().split("\n").slice(-3), [
+        "upgrade-production-images: 1 Agent deployments remained incomplete at the upgrade timeout:",
+        '  - Agent agt_test "Mail triage": last status running, waiting for succeeded',
+        `Their last statuses are in ${f.evidence}/status.`,
+      ]);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    });
+
     test("OpenClaw Doctor does not run while the gateway lacks free memory", async (t) => {
       const f = await fixture(t, { agent: true });
       // Every read is 1 MiB short; the timeout names the last one, even when the final poll
@@ -1104,8 +1137,14 @@ export function registerWriterHandoffCases({
         "api",
         /does not identify/,
       ],
-      ["denied", { error: "private database diagnostic" }, "api", /could not be verified/],
-      ["stalled", { hang: true }, "api", /could not be verified/],
+      // A read that fails or stalls after the connection opened keeps the plain message.
+      [
+        "denied",
+        { error: "private database diagnostic" },
+        "api",
+        /Installation identity could not be verified\.$/m,
+      ],
+      ["stalled", { hang: true }, "api", /Installation identity could not be verified\.$/m],
     ] satisfies [string, IdentityAnswer, "api" | "worker", RegExp | null][]) {
       await t.test(name, { timeout: 25_000 }, async () => {
         answer = response;
@@ -1131,13 +1170,43 @@ export function registerWriterHandoffCases({
         );
       });
     }
+    // A Pod that cannot open the connection says so instead of reporting an unreadable
+    // identity (finding 3255: egress pinned to the PostgreSQL Pod's former address dropped
+    // every connection). One server closes each connection before startup; the other
+    // accepts and never answers, as when a packet filter drops the handshake replies, so the
+    // 15 s identity deadline ends the attempt while it still connects. The message names no
+    // address, role, password or URL.
+    const refusing = await rejectPostgresStartup(t);
+    const silentPort = await listen(t, createServer());
+    for (const [name, port] of [
+      ["closed before startup", refusing.port],
+      ["never answered", silentPort],
+    ] as const) {
+      await t.test(name, { timeout: 25_000 }, async () => {
+        const previousSessions: number = f.databaseSessions.length;
+        const result = await f.runIdentityCheck("api", "identity-job", (url) =>
+          url.replace(/:\d+\//, `:${port}/`),
+        );
+        assert.equal(result.phase, "Failed");
+        const log = result.log;
+        assert.ok(typeof log === "string");
+        assert.match(
+          log,
+          /^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\. Check that PostgreSQL is running and that the chart's database egress \(database\.cidrs\) admits its current address/m,
+        );
+        assert.doesNotMatch(log, /127\.0\.0\.1|candidate_app|fixture-only|postgresql:\/\//);
+        assert.equal(f.databaseSessions.length, previousSessions);
+      });
+    }
     // pg parses other schemes as connection strings, but stock startup refuses
     // them. Neither generated entrypoint may open that otherwise reachable DB.
     answer = { rows: [{ id: "ins_test" }] };
     for (const action of ["job", "identity-job"] as const) {
       for (const component of ["api", "worker"] as const) {
         const previousSessions: number = f.databaseSessions.length;
-        const result = await f.runIdentityCheck(component, action, "https:");
+        const result = await f.runIdentityCheck(component, action, (url) =>
+          url.replace(/^[^:]+:/, "https:"),
+        );
         assert.equal(result.phase, "Failed");
         const log = result.log;
         assert.ok(typeof log === "string");

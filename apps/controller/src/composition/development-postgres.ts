@@ -183,6 +183,7 @@ export async function composePostgresDevelopment(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(drivers?.installation),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
@@ -330,7 +331,7 @@ export async function composePostgresDevelopment(
         enabled: config.agentRuntimeLogsEnabled !== false,
         cursorSecret: config.authSecret,
       },
-      ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
+      ...(config.gatewayApiKeyPath !== undefined
         ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),
       ...(configurationDriver === undefined ? {} : { configurationDriver }),

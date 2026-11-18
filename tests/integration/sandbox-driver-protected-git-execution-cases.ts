@@ -23,6 +23,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
+import type { GitWorkspaceInput } from "../fixtures/openshell-git-workspace.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
@@ -191,7 +192,7 @@ export async function verifyProtectedOpenShellGitExecution(
   assert.ok(admitted);
   assert.match(
     admitted,
-    /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
+    /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
   );
   protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
   // Preparation accepts the configured facilities independently of the release label.
@@ -303,15 +304,24 @@ export async function verifyProtectedOpenShellGitExecution(
         "--security-opt=no-new-privileges",
         "--tmpfs=/sandbox:rw,exec,nosuid,nodev,mode=755",
         "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777",
-        "--mount",
-        `type=bind,src=${fileURLToPath(new URL("../fixtures/openshell-git-workspace.cjs", import.meta.url))},dst=/proof.cjs,readonly`,
         "--entrypoint=node",
         image,
-        "/proof.cjs",
+        "-e",
+        process
+          .getBuiltinModule("node:module")
+          .stripTypeScriptTypes(
+            process
+              .getBuiltinModule("node:fs")
+              .readFileSync(
+                fileURLToPath(new URL("../fixtures/openshell-git-workspace.ts", import.meta.url)),
+                "utf8",
+              ),
+          ),
+        "fixture",
         JSON.stringify({
           workspace: workspaceMountPath,
           environment: gitEnvironment,
-        }),
+        } satisfies GitWorkspaceInput),
       ]);
     },
   );

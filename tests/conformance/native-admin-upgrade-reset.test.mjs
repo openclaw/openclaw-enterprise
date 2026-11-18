@@ -19,6 +19,10 @@ import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 import {
+  registerRefusedUpgradeAuditCase,
+  registerUpgradeShutdownAuditCases,
+} from "./native-admin-upgrade-audit-cases.ts";
+import {
   registerUpgradeAdmissionRecoveryCases,
   registerUpgradeLeaseAndResetRecoveryCases,
 } from "./native-admin-upgrade-recovery-cases.ts";
@@ -31,6 +35,7 @@ const realClearTimeout = globalThis.clearTimeout;
 
 // The active revision these cases authorize: an Agent Gateway with the native admin opt-in,
 // its Control UI allowed only from `origin`.
+/** @param {string} origin */
 function nativeAdminRevision(origin) {
   return {
     id: "rev_a",
@@ -44,22 +49,35 @@ function nativeAdminRevision(origin) {
   };
 }
 
+/**
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {string} description
+ * @param {number} [milliseconds]
+ * @returns {Promise<T>}
+ */
 function within(promise, description, milliseconds = 1_500) {
+  /** @type {NodeJS.Timeout | undefined} */
   let timer;
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      timer = realSetTimeout(() => reject(new Error(description)), milliseconds);
-    }),
-  ]).finally(() => realClearTimeout(timer));
+  /** @type {Promise<never>} */
+  const timeout = new Promise((_, reject) => {
+    timer = realSetTimeout(() => reject(new Error(description)), milliseconds);
+  });
+  return Promise.race([promise, timeout]).finally(() => realClearTimeout(timer));
 }
 
 // Only authorization and audit persistence are controlled. Admission, TLS, the
 // upgrade relay, its lease timer and both ends of each connection are real.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {import("./native-admin-upgrade-audit-cases.ts").UpgradeAuditTransportOptions} options
+ */
 async function transportOwner(t, { authorize, append, appendSocket = async () => {} }) {
   const directory = await mkdtemp(join(tmpdir(), "native-admin-audit-transport-"));
   const previousCertificates = getCACertificates("default");
+  /** @type {Set<import("node:stream").Duplex>} */
   const sockets = new Set();
+  /** @type {Parameters<typeof createNativeAdminAccess>[0]["app"] | undefined} */
   let app;
   let gateway;
   t.after(async () => {
@@ -86,7 +104,8 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
   });
   const { key, cert } = await selfSigned(directory);
   setDefaultCACertificates([...previousCertificates, cert]);
-  const peerClosed = pendingValue();
+  /** @type {PromiseWithResolvers<boolean>} */
+  const peerClosed = Promise.withResolvers();
   let gatewayConnections = 0;
   gateway = https.createServer({ key, cert });
   gateway.on("connection", (socket) => {
@@ -108,6 +127,7 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
   await within(once(gateway, "listening"), "the fixture gateway must listen");
 
   const installationId = "inst_native_admin_transport";
+  /** @satisfies {Parameters<import("./native-admin-upgrade-audit-cases.ts").UpgradeAuditTransportOptions["authorize"]>[0]["agent"]} */
   const agent = { id: "agent_a", namespaceId: "ns_a", desiredRuntimeState: "running" };
   const domain = "agents.example.com";
   const host = deriveNativeAdminHost(installationId, agent, domain);
@@ -119,14 +139,20 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
     action: "openclaw.agents.native_admin.proxy.authorize",
     resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
   };
-  const entered = pendingValue();
-  const auditEntered = pendingValue();
-  const serverClosed = pendingValue();
+  /** @type {PromiseWithResolvers<void>} */
+  const entered = Promise.withResolvers();
+  /** @type {PromiseWithResolvers<void>} */
+  const auditEntered = Promise.withResolvers();
+  /** @type {PromiseWithResolvers<boolean>} */
+  const serverClosed = Promise.withResolvers();
+  /** @type {import("../../packages/audit/src/index.ts").AuditEventCreationInput[]} */
   const audits = [];
+  /** @type {unknown[]} */
   const warnings = [];
-  const appClosed = pendingValue();
+  /** @type {PromiseWithResolvers<void>} */
+  const appClosed = Promise.withResolvers();
   app = Fastify({ logger: false });
-  t.mock.method(app.log, "warn", (fields) => warnings.push(fields));
+  t.mock.method(app.log, "warn", (/** @type {unknown} */ fields) => warnings.push(fields));
   app.addHook("onClose", async () => appClosed.resolve());
   app.server.on("connection", (socket) => {
     sockets.add(socket);
@@ -186,10 +212,12 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
     nativeAdminGatewayApiKey: async () => "transport-fixture-key",
     webSocketLeaseIntervalMs: 50,
     auditSink: {
+      /** @param {import("../../packages/audit/src/index.ts").AuditEventCreationInput} event */
       append(event) {
         audits.push(event);
         if (event.kind === "authorization_denial") {
           auditEntered.resolve();
+          assert.ok(append, "the fixture must handle any authorization denial audit");
           return append(event);
         }
         return appendSocket(event);
@@ -212,11 +240,17 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
     closeAudit: () => audits.find((event) => event.details?.nativeAdmin?.event === "close"),
     shutdown: () => app.close(),
     async open() {
-      const socket = net.connect(app.server.address().port, "127.0.0.1");
+      const address = app.server.address();
+      assert.ok(address && typeof address === "object");
+      /** @type {import("node:net").Socket} */
+      const socket = net.connect(address.port, "127.0.0.1");
       sockets.add(socket);
       socket.on("error", () => {});
-      const closed = new Promise((resolve) => socket.once("close", resolve));
-      const ready = pendingValue();
+      /** @type {PromiseWithResolvers<boolean>} */
+      const closed = Promise.withResolvers();
+      socket.once("close", closed.resolve);
+      /** @type {PromiseWithResolvers<string>} */
+      const ready = Promise.withResolvers();
       let received = "";
       socket.on("data", (chunk) => {
         received += chunk.toString();
@@ -230,176 +264,33 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
           "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
       );
-      return { closed, ready: ready.promise };
+      return { closed: closed.promise, ready: ready.promise, received: () => received };
     },
   };
 }
 
-for (const failedAudit of ["connect", "close"]) {
-  test(`native-admin shutdown releases a rejected ${failedAudit} audit`, async (t) => {
-    const rejected = new Error("Audit fixture unavailable");
-    const owner = await transportOwner(t, {
-      authorize: ({ agent, revision, mode }) => ({ agent, revision, mode }),
-      appendSocket: async (event) => {
-        if (event.details.nativeAdmin.event === failedAudit) {
-          throw rejected;
-        }
-      },
-    });
-    const client = await owner.open();
-    if (failedAudit === "connect") {
-      await within(client.closed, "failed connect audit must close the client");
-    } else {
-      await within(client.ready, "successful connect audit must allow forwarding");
-    }
-    await within(owner.shutdown(), "rejected audit must not wait out the shutdown deadline");
-    assert.deepEqual(
-      owner.audits.map((event) => event.details.nativeAdmin.event),
-      failedAudit === "connect" ? ["connect"] : ["connect", "close"],
-    );
-    assert.deepEqual(
-      owner.warnings.map((warning) => warning.event),
-      failedAudit === "connect" ? [] : ["native_admin.websocket_audit_failed"],
-    );
-  });
-}
+const auditFixture = { transportOwner, within, settleCallbacks };
+registerUpgradeShutdownAuditCases(auditFixture);
 
-for (const deadline of [false, true]) {
-  test(`native-admin shutdown drains connect and follow-on close audits${deadline ? " under one deadline" : " before onClose"}`, async (t) => {
-    const connect = pendingValue();
-    const close = pendingValue();
-    const connectEntered = pendingValue();
-    const closeEntered = pendingValue();
-    const settled = [];
-    const owner = await transportOwner(t, {
-      authorize: ({ agent, revision, mode }) => ({ agent, revision, mode }),
-      appendSocket: async (event) => {
-        const name = event.details.nativeAdmin.event;
-        if (name === "connect") {
-          connectEntered.resolve();
-          await connect.promise;
-        } else {
-          closeEntered.resolve();
-          await close.promise;
-        }
-        settled.push(name);
-      },
-    });
-    let storageMayClose = false;
-    void owner.appClosed.then(() => {
-      storageMayClose = true;
-      settled.push("onClose");
-    });
-    // In the deadline case, create and clear the handshake and drain timers on
-    // the same clock. The TCP/TLS peers and the test's I/O deadlines stay real.
-    if (deadline) {
-      t.mock.timers.enable({ apis: ["setTimeout"] });
-    }
-    const client = await owner.open();
-    let closing;
-    try {
-      await within(connectEntered.promise, "authorized upstream 101 must reach connect audit");
-      closing = owner.shutdown();
-      await within(
-        Promise.all([client.closed, owner.serverClosed, owner.peerClosed]),
-        "shutdown must close both relay ends without waiting for audit acknowledgment",
-      );
-      await settleCallbacks();
-      if (deadline) {
-        t.mock.timers.tick(3_000);
-        await settleCallbacks();
-      }
-      assert.equal(storageMayClose, false, "onClose must wait for the connect audit");
-      assert.deepEqual(settled, []);
-      assert.equal(owner.audits.length, 1);
-      connect.resolve();
-      await within(closeEntered.promise, "connect settlement must emit its close audit");
-      await settleCallbacks();
-      assert.equal(storageMayClose, false, "onClose must also wait for the follow-on close audit");
-      assert.deepEqual(settled, ["connect"]);
-      if (deadline) {
-        t.mock.timers.tick(1_999);
-        await settleCallbacks();
-        assert.equal(storageMayClose, false, "shutdown must still wait at 4,999ms");
-        assert.deepEqual(owner.warnings, []);
-        t.mock.timers.tick(1);
-        await within(closing, "close work must not get a fresh five-second budget");
-        assert.deepEqual(owner.warnings, [
-          { event: "native_admin.pending_work_unresolved", pending: 1 },
-        ]);
-        assert.deepEqual(settled, ["connect", "onClose"]);
-      }
-      close.resolve();
-      await within(closing, "shutdown must finish after both audit acknowledgments");
-      await settleCallbacks();
-      assert.deepEqual(
-        settled,
-        deadline ? ["connect", "onClose", "close"] : ["connect", "close", "onClose"],
-      );
-      if (!deadline) {
-        assert.deepEqual(owner.warnings, []);
-      }
-      assert.equal(owner.gatewayConnections(), 1);
-      assert.equal(owner.audits.length, 2, "each socket audit is attempted exactly once");
-      const [connected, closed] = owner.audits.map((event) => event.details.nativeAdmin);
-      assert.equal(connected.event, "connect");
-      assert.equal(closed.event, "close");
-      assert.match(connected.connectionId, /^naws_/);
-      assert.equal(closed.connectionId, connected.connectionId);
-      assert.equal(closed.closeReason, "shutdown");
-    } finally {
-      connect.resolve();
-      close.resolve();
-      try {
-        await within(closing ?? owner.shutdown(), "shutdown cleanup must finish");
-      } finally {
-        t.mock.reset();
-      }
-    }
-  });
-}
-
+/**
+ * @param {Pick<import("./native-admin-upgrade-audit-cases.ts").UpgradeAuditTransport, "denials" | "host">} owner
+ * @param {string | undefined} revisionId
+ */
 function assertTransportDenial(owner, revisionId) {
   assert.equal(owner.denials().length, 1, "one attributable denial audit attempt");
-  const event = owner.denials()[0];
-  assert.equal(event.actor.principalId, "actor_1");
+  const [event] = owner.denials();
+  assert.ok(event);
+  assert.equal(event.actor?.principalId, "actor_1");
   assert.equal(event.action, "openclaw.agents.native_admin.proxy.authorize");
   assert.deepEqual(event.resource, { kind: "agent", id: "agent_a", namespaceId: "ns_a" });
-  assert.equal(event.details.nativeAdmin.host, owner.host);
-  assert.equal(event.details.nativeAdmin.reason, "authorization_denied");
-  assert.equal(event.details.nativeAdmin.revisionId, revisionId);
+  const details = asRecord(event.details?.nativeAdmin);
+  assert.ok(details, "the denial audit must include native-admin details");
+  assert.equal(details.host, owner.host);
+  assert.equal(details.reason, "authorization_denied");
+  assert.equal(details.revisionId, revisionId);
 }
 
-test(
-  "real native-admin transport closes a refused upgrade while its audit is pending",
-  { timeout: 15_000 },
-  async (t) => {
-    const audit = pendingValue();
-    let auditSettled = false;
-    const owner = await transportOwner(t, {
-      authorize: ({ denied }) => Promise.reject(denied),
-      append: () =>
-        audit.promise.then(() => {
-          auditSettled = true;
-        }),
-    });
-    try {
-      const client = await owner.open();
-      await within(owner.auditEntered, "denial must reach the audit sink");
-      await within(
-        Promise.all([client.closed, owner.serverClosed]),
-        "refused upgrade must close before audit settlement",
-      );
-      assert.equal(auditSettled, false);
-      assert.equal(owner.gatewayConnections(), 0);
-      assertTransportDenial(owner, undefined);
-    } finally {
-      audit.resolve();
-      await owner.shutdown();
-    }
-    assert.equal(owner.denials().length, 1);
-  },
-);
+registerRefusedUpgradeAuditCase({ ...auditFixture, assertTransportDenial });
 
 test(
   "real native-admin transport closes both relay ends before a denied lease audit settles",

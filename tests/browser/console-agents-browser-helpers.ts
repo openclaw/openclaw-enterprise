@@ -84,7 +84,7 @@ import { waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
-import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
+import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.ts";
 import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { restrict } from "../helpers/iam-grants.ts";
@@ -1638,7 +1638,8 @@ export async function expectNoHorizontalScroll(page: Page) {
 
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
-// message and data that the API and occ return for that failure.
+// message and data that the API and occ return for that failure. The Agent ID has a real
+// ID's length, so the message length checks see what the API returns.
 export function persistedDeploymentError(
   code: NonNullable<Parameters<typeof deploymentErrorForWork>[0]["reasonCode"]>,
   data?: Parameters<typeof deploymentErrorForWork>[0]["resultData"],
@@ -1646,6 +1647,7 @@ export function persistedDeploymentError(
   const error = deploymentErrorForWork({
     state: "failed_permanent",
     reasonCode: code,
+    agentId: "agt_00000000-0000-4000-8000-000000000000",
     ...(data === undefined ? {} : { resultData: data }),
   });
   assert.ok(error);

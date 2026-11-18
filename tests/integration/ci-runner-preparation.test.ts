@@ -48,7 +48,7 @@ test("invalid prepared defaults keep bounded cleanup and its failure without sta
   );
   // Invalid defaults must still leave the runner responsible for both owned paths.
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     `
 import { writeFile, rm } from "node:fs/promises";
 export async function prepareFile({ file }) {
@@ -85,7 +85,7 @@ test("run records a preparation failure's redacted message in the diagnostics re
   const root = await createRunnerFixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "prepare");
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     [
       'import { writeFile } from "node:fs/promises";',
       "export async function prepareFile({ file, statePath }) {",
@@ -134,7 +134,7 @@ test("run records a preparation failure's redacted message in the diagnostics re
     record.error.message,
     "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE] [env:OCC_TEST_SELECTED_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
   );
-  assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.mjs:7:\d+\)/);
+  assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.ts:7:\d+\)/);
 });
 
 interface PreparationCommandDetails {
@@ -237,7 +237,7 @@ for (const scenario of [
     };
     await writeJson(join(root, "scripts/ci/preparation-error.json"), payload);
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       `
 import { readFile } from "node:fs/promises";
 export async function prepareFile() {

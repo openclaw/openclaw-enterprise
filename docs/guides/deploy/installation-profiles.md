@@ -133,6 +133,8 @@ one `@` and a dotted domain.
 }
 ```
 
+Optional `controlPlane.clusterPort` sets the Kubernetes API egress port (default 443).
+
 `controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
 `controlPlane.databaseCa.secretName` must be Kubernetes resource names of at
 most 253 characters: the existing GatewayClass that Envoy Gateway serves, the
@@ -214,6 +216,8 @@ see [OIDC setup](oidc-sign-in.md). Both require an HTTPS Console origin and the
 existing `recoveryUserId`. Google disables native access; OIDC supports it. To use host-only exchange,
 set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
 same-site HTTPS Console and Agent domains.
+
+For Keycloak, start with the [production profile example](oidc-keycloak.md#render-the-production-profile).
 
 Use `controlPlane.oidc.enrollment` for the
 [enrollment policy](../../reference/authentication/team-enrollment.md), including

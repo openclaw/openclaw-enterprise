@@ -9,7 +9,8 @@
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.ts",
     "tests/integration/ci-prepare-image-cache.test.ts",
-    "tests/integration/ci-prepare.test.mjs",
+    "tests/integration/migration-source-refusal.test.ts",
+    "tests/integration/ci-prepare.test.ts",
     "tests/integration/ci-prepare-lane-action.test.ts",
     "tests/conformance/repository-credentials-source-boundary.test.ts",
     "tests/conformance/startup-environment-boundary.test.ts",
@@ -35,11 +36,11 @@
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
     "tests/integration/console-storybook-workflow.test.ts",
-    "tests/integration/workspace-setup-api.test.mjs",
+    "tests/integration/workspace-setup-api.test.ts",
     "tests/integration/agent-create-validate-api.test.ts",
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
-    "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner.test.ts",
     "tests/integration/ci-runner-native-child.test.ts",
     "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
@@ -73,7 +74,7 @@
     "tests/integration/ci-image-reconciliation.test.ts",
     "tests/conformance/repository-runtime-material.test.ts",
     "tests/integration/repository-credentials-server-timeout.test.ts",
-    "tests/integration/protected-repository-metadata-read.test.mjs",
+    "tests/integration/protected-repository-metadata-read.test.ts",
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
@@ -106,10 +107,10 @@
     "tests/conformance/runtime-model-probe-settlement.test.ts",
     "tests/conformance/hosted-plugin-discovery.test.ts",
     "tests/integration/plugin-driver-real-preflight.test.ts",
-    "tests/conformance/postgres-transaction-commit.test.mjs",
+    "tests/conformance/postgres-transaction-commit.test.ts",
     "tests/conformance/plugin-runtime-policy.test.ts",
     "tests/integration/password-sign-in-policy.test.ts",
-    "tests/integration/compute-singleton-worker.test.mjs",
+    "tests/integration/compute-singleton-worker.test.ts",
     "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.ts",
     "tests/integration/oidc-id-token.test.ts",
@@ -154,11 +155,13 @@
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
+    "tests/helpers/password-hasher.test.ts",
     "tests/helpers/socket-relay.test.ts",
     "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
+    "tests/integration/first-agent-sandbox-policy.test.ts",
     "tests/integration/staged-signin-proof.test.ts",
     "tests/integration/shared-session-cookie.test.ts",
     "tests/integration/workspace-gateway-host-route.test.ts"
@@ -199,6 +202,9 @@
     },
     {
       "path": "tests/integration/tls-peer-certificate.test.ts"
+    },
+    {
+      "path": "tests/helpers/password-hasher.test.ts"
     },
     {
       "path": "tests/helpers/socket-relay.test.ts"
@@ -263,7 +269,7 @@
       ]
     },
     {
-      "path": "tests/integration/compute-singleton-worker.test.mjs",
+      "path": "tests/integration/compute-singleton-worker.test.ts",
       "expectedTests": [
         "before-commit Compute Drivers must expose an activation operation",
         "Compute Driver maintenance intervals must be positive safe integers"
@@ -276,7 +282,7 @@
       "path": "tests/integration/local-first-agent-session-identity.test.ts"
     },
     {
-      "path": "tests/integration/ci-runner.test.mjs",
+      "path": "tests/integration/ci-runner.test.ts",
       "expectedTests": [
         "complete lifecycle preserves phase failures and performs owned cleanup",
         "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
@@ -312,7 +318,9 @@
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
         "run reports bounded OpenShell progress before the test file finishes",
-        "CI retains the unfinished upstream stage without changing the failed case"
+        "CI retains the unfinished upstream stage without changing the failed case",
+        "CI records only observed upstream replacement checkpoints on failure",
+        "CI binds upstream replacement progress to the case cutoff"
       ]
     },
     {
@@ -417,7 +425,10 @@
       "path": "tests/integration/ci-prepare-image-cache.test.ts"
     },
     {
-      "path": "tests/integration/ci-prepare.test.mjs"
+      "path": "tests/integration/migration-source-refusal.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-prepare.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare-lane-action.test.ts",
@@ -541,7 +552,7 @@
       "path": "tests/conformance/repository-transactions.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-transaction-commit.test.mjs"
+      "path": "tests/conformance/postgres-transaction-commit.test.ts"
     },
     {
       "path": "tests/conformance/postgres-transaction-unknown-commit.test.ts",
@@ -573,7 +584,23 @@
       "path": "tests/integration/console-storybook-workflow.test.ts"
     },
     {
-      "path": "tests/integration/workspace-setup-api.test.mjs"
+      "path": "tests/integration/workspace-setup-api.test.ts",
+      "expectedTests": [
+        "Agent create stages exact partial workspace bytes privately and rejects replay without changing them",
+        "omitted and empty workspace maps retain native setup while an explicit empty file is staged",
+        "invalid workspace content and stale defaults reject the complete create without an Agent",
+        "Agent create accepts four maximum UTF-8 files even when JSON escape expansion exceeds the ordinary body limit",
+        "workspace setup creation requires exact Namespace permission, Configuration ownership, and same-site session writes",
+        "Agent save and deployment refuse initial workspace files the Configuration's main Agent cannot read",
+        "Agent save accepts initial workspace files for a main roster entry in any letter case",
+        "Agent save refuses initial workspace files in a Sandbox with a 409 that names the Sandbox",
+        "Agent create admits private workspace files through the OpenShell initializer contract",
+        "Agent admission refuses projected identity only for OpenShell-owned Harnesses",
+        "Credential-source deployment refuses OpenShell projected identity before creating a revision",
+        "Agent create refuses dedicated OpenClaw on OpenShell settings its workspace preparation refuses",
+        "Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place",
+        "Create Agent's preflight refuses a planned Harness authentication that Agent save refuses"
+      ]
     },
     {
       "path": "tests/integration/agent-create-validate-api.test.ts"
@@ -632,7 +659,7 @@
       "path": "tests/integration/repository-credentials-config.test.ts"
     },
     {
-      "path": "tests/integration/protected-repository-metadata-read.test.mjs"
+      "path": "tests/integration/protected-repository-metadata-read.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-http.test.ts"
@@ -845,6 +872,7 @@
         "external-repository-fixture registers its real structured validator and rejects malformed input safely",
         "github registers its real structured validator and rejects malformed input safely",
         "openshell registers its real structured validator and rejects malformed input safely",
+        "the external protected factory closes a registration it refuses",
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
@@ -875,6 +903,20 @@
         "operator forwarder shutdown escalates a stubborn child before returning",
         "operator forwarder shutdown refuses an exited child with an open inherited pipe",
         "forwarder launch failure remains available after confirmed cleanup"
+      ]
+    },
+    {
+      "path": "tests/integration/first-agent-sandbox-policy.test.ts",
+      "expectedTests": [
+        "cancelled installer identity preparation cannot launch a port-forward",
+        "the installer reads policy through the child port announced on a complete line",
+        "a Sandbox returned after the policy deadline cannot satisfy the assertion",
+        "parent abort reaches an in-flight Sandbox read and rejects its late result",
+        "parent cancellation closes the forward before lazy gRPC setup settles and closes its late transport",
+        "the shared policy timer closes the forward while a read stays pending",
+        "parent abort during Sandbox retry sleep preserves the abort reason",
+        "the installer reports fixed forward startup errors and closes each child",
+        "policy failure remains the cause when Gateway client cleanup fails"
       ]
     },
     {
