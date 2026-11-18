@@ -447,6 +447,36 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       DriverSelectionError,
     );
   }
+  // A Harness the provider provisions and serves may request verifier-only transport
+  // delivery and nothing else. Without both hooks Compute could not honour the request
+  // and would fall back to the bearer Secret reference, so registration refuses it.
+  const harnessEndpoint = async () => ({ url: "wss://harness.example.test/" });
+  controller.registerDriver(
+    Object.assign(createSandboxDriver({ id: "verifier-transport" }), {
+      harnessTransportCredential: "verifier",
+      harnessEndpoint,
+    }),
+  );
+  for (const [name, harnessTransportCredential, hooks] of [
+    ["secret", "secret", { harnessEndpoint }],
+    ["empty", "", { harnessEndpoint }],
+    ["number", 1, { harnessEndpoint }],
+    ["no-endpoint", "verifier", {}],
+    ["endpoint-value", "verifier", { harnessEndpoint: "wss://harness.example.test/" }],
+    ["no-provision", "verifier", { harnessEndpoint, provisionHarness: undefined }],
+  ] as const) {
+    assert.throws(
+      () =>
+        controller.registerDriver(
+          Object.assign(createSandboxDriver({ id: `invalid-transport-${name}` }), {
+            harnessTransportCredential,
+            ...hooks,
+          }),
+        ),
+      DriverSelectionError,
+      name,
+    );
+  }
   for (const hook of ["validateWorkspaceSetup", "ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>

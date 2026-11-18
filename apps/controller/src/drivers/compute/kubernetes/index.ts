@@ -672,6 +672,8 @@ interface GatewayConfigurationSnapshot {
   readonly workspace: unknown;
   readonly nativeWorkerProfile?: string;
   readonly nativeWorkerNodeId?: string;
+  /** The dedicated Harness receives the transport verifier and prepares its own Codex plugins. */
+  readonly harnessTransportVerifier?: true;
 }
 
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
@@ -7104,10 +7106,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // A provider-owned Harness gets the transport token's verifier only: Codex
         // authenticates its app-server with it, and both Codex and the dedicated
         // OpenClaw worker serve a held startup failure to the token holder.
-        (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
-          (revision.harness.id === "codex" || revision.harness.id === "openclaw")
-          ? "verifier"
-          : "secret",
+        this.deliversHarnessTransportVerifier(revision, sandboxDriver) ? "verifier" : "secret",
       ),
     );
     const gatewaySecretEnvironment = await this.prepareRevisionStage(
@@ -8158,17 +8157,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new Error("The exact AgentRevision workspace node is not enrolled.");
     }
-    const activatedHarnessAuth =
-      (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
-      (revision.harness.id === "codex" || revision.harness.id === "openclaw")
-        ? {
-            ...harnessAuth,
-            environment: [
-              ...harnessAuth.environment,
-              await this.sandboxTransportVerifier(admittedRevision),
-            ],
-          }
-        : harnessAuth;
+    const activatedHarnessAuth = this.deliversHarnessTransportVerifier(revision, sandboxDriver)
+      ? {
+          ...harnessAuth,
+          environment: [
+            ...harnessAuth.environment,
+            await this.sandboxTransportVerifier(admittedRevision),
+          ],
+        }
+      : harnessAuth;
     const codexLaunch = this.codexLaunch(revision, sandboxDriver);
     const renderAgentDeployment = (
       environment: Readonly<Record<string, string>>,
@@ -10770,6 +10767,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.sandboxDriverForRevision(revision)?.provisionHarness !== undefined
       ? PROVIDER_FENCED_NETWORK_PROFILE
       : ORDINARY_NETWORK_PROFILE;
+  }
+
+  // The one decision for verifier delivery: Harness auth, activation and both sides of
+  // Codex plugin readiness read it. A declaration this revision cannot honour is refused,
+  // never answered with the bearer Secret reference.
+  private deliversHarnessTransportVerifier(
+    revision: Readonly<AgentRevision>,
+    sandboxDriver: SandboxDriver | undefined,
+  ): boolean {
+    const supported = revision.harness.id === "codex" || revision.harness.id === "openclaw";
+    const declared =
+      revision.harness.mode === "dedicated" &&
+      sandboxDriver?.harnessTransportCredential === "verifier";
+    if (
+      declared &&
+      (!supported ||
+        sandboxDriver.provisionHarness === undefined ||
+        sandboxDriver.harnessEndpoint === undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "SandboxDriver harnessTransportCredential requires a dedicated Codex or OpenClaw Harness it provisions and serves.",
+      );
+    }
+    return (
+      supported &&
+      (revision.egressPlan !== undefined ||
+        sandboxDriver?.implementation === "openshell" ||
+        declared)
+    );
   }
 
   private sandboxDriverForRevision(revision: AgentRevision): SandboxDriver | undefined {
@@ -13590,6 +13616,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       workspaceNodeId !== undefined
         ? { nativeWorkerNodeId: workspaceNodeId }
         : {}),
+      ...(revision.harness.mode === "dedicated" &&
+      this.deliversHarnessTransportVerifier(revision, this.sandboxDriverForRevision(revision))
+        ? { harnessTransportVerifier: true as const }
+        : {}),
       // Initial workspace setup's directory: the main entry in any letter case, as OpenClaw
       // and the setup rule read it (finding 1144).
       workspace:
@@ -15059,6 +15089,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       if (prefix !== undefined) {
         runtime = prefix + (runtime ?? "");
       }
+    }
+    if (
+      revision.sandboxDriverId !== undefined &&
+      revision.sandboxDriverId === this.sandboxDriver?.id
+    ) {
+      this.deliversHarnessTransportVerifier(revision, this.sandboxDriver);
     }
     const provider = this.providerAdmission(revision);
     const admission =
@@ -17120,8 +17156,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       (role === "agent"
         ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
         : // The initial Gateway must issue node setup before the provider has an
-          // endpoint. OpenShell already selects verifier delivery in prepareRevision.
-          this.sandboxDriver?.implementation === "openshell");
+          // endpoint, so it reads the same verifier decision prepareRevision delivered.
+          configuration?.harnessTransportVerifier === true);
     if (providerPreparesCodexPlugins && role === "gateway") {
       variables.push({ name: "OPENCLAW_CODEX_PLUGINS_PREPARED", value: "true" });
     }

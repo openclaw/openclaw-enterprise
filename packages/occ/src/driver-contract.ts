@@ -148,6 +148,11 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
           "isRouteBlockedError",
         ].every((name) => typeof asRecord(candidate.repositoryAccess)?.[name] === "function")) &&
       (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
+      // Compute delivers the verifier only to a Harness the provider provisions and serves.
+      (candidate.harnessTransportCredential === undefined ||
+        (candidate.harnessTransportCredential === "verifier" &&
+          typeof candidate.provisionHarness === "function" &&
+          typeof candidate.harnessEndpoint === "function")) &&
       (candidate.validateWorkspaceSetup === undefined ||
         typeof candidate.validateWorkspaceSetup === "function") &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&

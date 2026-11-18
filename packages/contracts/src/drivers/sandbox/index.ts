@@ -253,6 +253,15 @@ export interface SandboxDriver extends Driver {
    */
   readonly harnessHome?: string;
   /**
+   * Harness launch requirements (provisioning and activation) carry the transport token's
+   * verifier instead of the bearer Secret reference. Requires `provisionHarness` and
+   * `harnessEndpoint`; registration and Compute refuse it otherwise. The Driver's own hooks,
+   * such as `harnessStatus` and protected enrollment, still receive the transport token.
+   * Compute reads it on every reconcile, so a package upgrade that adds or removes it
+   * changes delivery for existing revisions at their next reconcile.
+   */
+  readonly harnessTransportCredential?: "verifier";
+  /**
    * Side-effect-free validation for initial workspace files this provider-owned Harness can
    * initialize. Compute delegates only when this Driver also provisions the Harness; omission
    * refuses workspace setup. Configuration errors name the setting, never its value.

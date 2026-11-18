@@ -97,7 +97,10 @@ directory from `harnessHome`. The Sandbox creates that owner-only directory
 outside the Harness workspace and file-transfer roots. Compute validates the path
 and owns the relay URL and authentication.
 
-Compute calls `harnessStatus(context)` with the Agent transport token. The
+`harnessTransportCredential: "verifier"` requires `provisionHarness` and `harnessEndpoint` and
+puts the transport token's verifier, not the token, in Harness launch requirements.
+
+Compute always calls `harnessStatus(context)` with the Agent transport token. The
 Driver returns `serving` only after an authenticated handshake. It returns
 `starting` while startup is pending, or `failed` with evidence of a startup
 failure. Compute validates that evidence before it fails the revision. If the
@@ -322,9 +325,8 @@ application. Admission saves the policy used by a deployment; changing startup
 defaults does not rewrite that saved policy. See [network policy operations](#optional-network-policy-operations)
 for admission and live-update behavior.
 
-Compute supplies [provisioning inputs](#provisioning-inputs), including workload
-identity and credential references. Operators do not configure those method
-inputs as Sandbox startup fields.
+Operators do not configure Compute's [provisioning inputs](#provisioning-inputs)
+as Sandbox startup fields.
 
 ## Limits
 
