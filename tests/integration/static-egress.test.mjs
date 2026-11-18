@@ -583,8 +583,8 @@ test("protected admission requires the actual counterpart and exact loaded polic
         ports: [Number(origin.port || 443)],
         protocol: "rest",
         enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-        access: "NETWORK_ACCESS_PRESET_FULL",
         path: route.path,
+        rules: [{ allow: { method: "POST", path: route.path } }],
       },
     ]);
   }
