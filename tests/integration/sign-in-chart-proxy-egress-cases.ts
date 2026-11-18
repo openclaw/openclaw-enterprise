@@ -264,7 +264,7 @@ const invalid: readonly RefusedSignInCase[] = [
   {
     name: "OIDC without a token URL",
     values: { ...oidcUpgradeValues(recoveryUserId), "auth.oidc.tokenUrl": "" },
-    chart: /auth\.oidc\.tokenUrl must be an https URL on port 443 on the issuer's host/,
+    chart: /auth\.oidc\.tokenUrl must be an https URL on port 443 with a DNS host name/,
     base: "oidc",
     env: { OCC_AUTH_OIDC_TOKEN_URL: "" },
     parser: /OIDC sign-in requires issuer, authorization URL, token URL/,
@@ -290,7 +290,15 @@ const invalid: readonly RefusedSignInCase[] = [
   })),
   ...(
     [
-      ["an off-host token URL", "tokenUrl", "TOKEN_URL", "https://evil.example.test/token"],
+      ["a link-local IP token URL", "tokenUrl", "TOKEN_URL", "https://169.254.169.254/token"],
+      ["a Unicode-folded token host", "tokenUrl", "TOKEN_URL", "https://toKen.example.test/token"],
+      ["a Unicode-folded JWKS host", "jwksUrl", "JWKS_URL", "https://ſso.example.test/jwks"],
+      [
+        "a Unicode-folded HTTPS scheme",
+        "tokenUrl",
+        "TOKEN_URL",
+        "httpſ://oauth2.example.test/token",
+      ],
       ["userinfo in the JWKS URL", "jwksUrl", "JWKS_URL", "https://u@tenant.idp.example.test/jwks"],
       [
         "a fragment in the authorization URL",
@@ -303,11 +311,11 @@ const invalid: readonly RefusedSignInCase[] = [
   ).map<RefusedSignInCase>(([name, key, suffix, value]) => ({
     name: `OIDC with ${name}`,
     values: { ...oidcUpgradeValues(recoveryUserId), [`auth.oidc.${key}`]: value },
-    chart: new RegExp(`auth\\.oidc\\.${key} must be an https URL on port 443 on the issuer's host`),
+    chart: new RegExp(`auth\\.oidc\\.${key} must be an https URL on port 443 with a DNS host name`),
     base: "oidc",
     env: { [`OCC_AUTH_OIDC_${suffix}`]: value },
     parser: new RegExp(
-      `OCC_AUTH_OIDC_${suffix} must be an https URL on port 443 on the issuer's host`,
+      `OCC_AUTH_OIDC_${suffix} must be an https URL on port 443 with a DNS host name`,
     ),
   })),
   {

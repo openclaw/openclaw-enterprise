@@ -5,7 +5,7 @@ import { stopCleanupCommands } from "./cleanup.ts";
 import { installationPhase, type InstallationPhase } from "./openshell-installation-phase.ts";
 import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 import { removeLiveK3dCase2Directories } from "./runner-case2-receipt.ts";
-import { isObject } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 
 export type OpenShellProgress =
   | InstallationPhase
@@ -37,7 +37,7 @@ function isSignal(value: unknown): value is NodeJS.Signals {
 }
 
 function supervisorResult(value: unknown): SupervisorResult | undefined {
-  if (!isObject(value)) {
+  if (!isRecord(value)) {
     return undefined;
   }
   const { code, signal, error } = value;
@@ -48,7 +48,7 @@ function supervisorResult(value: unknown): SupervisorResult | undefined {
 }
 
 function projectedProgress(value: unknown): OpenShellProgress | undefined {
-  if (!isObject(value)) {
+  if (!isRecord(value)) {
     return undefined;
   }
   // The JS projector owns admission. Narrow its closed output at the log boundary.
@@ -233,7 +233,7 @@ export function runNode(
       // output still waits for final accounting and failure redaction below.
       try {
         const event: unknown = JSON.parse(line);
-        if (isObject(event) && event.type === "test:progress") {
+        if (isRecord(event) && event.type === "test:progress") {
           const projected: unknown = openShellProgress(event.data);
           const progress = projectedProgress(projected);
           if (progress) {
