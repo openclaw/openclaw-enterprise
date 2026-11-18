@@ -17,7 +17,7 @@ Edit `installation.drivers.plugin`, for example to
 Then render with your prepared site input:
 
 ```sh
-node scripts/render-installation-profile.mjs \
+node scripts/render-installation-profile.ts \
   --profile codex \
   --profile-file .build/profiles/codex.json \
   --input .build/profiles/input.json \
@@ -38,8 +38,8 @@ configuration must be an object. The renderer refuses an invalid Codex
 at startup; rendering does not prove startup or deployment.
 
 Required strings `description`, `recommendedPreset`, `agentHarness` and
-`pluginSelection` are descriptive metadata. They do not override infrastructure,
-change the profile family or select a Console starter.
+`pluginSelection` are descriptive metadata. They do not override infrastructure
+or change the profile family.
 
 ## Configure Preset seeding
 
@@ -52,8 +52,10 @@ seeding does not delete saved Presets. See
 [Preset initialization](../../reference/presets.md#installation-defaults) for path
 resolution and startup validation.
 
-The Console [chooses a readable starter](../../reference/presets.md#plain-console-default)
-independently of `recommendedPreset`.
+**Start with default Preset** in the Console opens the Preset named `default-codex`.
+To keep it with only your own Presets, set `"name": "default-codex"` in your
+starter file. A listed file with that name replaces the bundled copy. See
+[Plain console default](../../reference/presets.md#plain-console-default).
 
 For hosted catalogs, check the
 [discovery egress requirements](installation-profiles.md#hosted-discovery-egress).

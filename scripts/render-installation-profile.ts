@@ -205,7 +205,8 @@ interface RenderArguments {
   input?: string;
   outDir?: string;
 }
-// Checked-in profiles are trusted definitions, not operator-supplied JSON.
+// Bundled profiles and --profile-file inputs are trusted operator definitions;
+// readProfile admits only their closed shape and bundled PluginDriver selections.
 interface Profile extends InputRecord {
   name: string;
   installation: {

@@ -120,7 +120,7 @@ Fixture lanes verify NetworkPolicy enforcement.
 `scripts/ci/run-tests.ts:runLane` runs files sequentially except audited
 `parallelFiles`. State and cleanup stay runner-local.
 
-Only the native IAM barrier test receives its migrated PostgreSQL database and application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
+Only the native IAM barrier test receives its migrated PostgreSQL database and both application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
 
 `runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
 and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
