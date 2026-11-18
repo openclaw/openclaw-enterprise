@@ -478,6 +478,7 @@ test(
       includeLegacy: true,
     });
     const { f, owner, retainedStrict, revision } = fixture;
+    const controller: OpenClawController = f.controller;
     const path = `/namespaces/${f.namespace.id}/credential-sources`;
     assert.ok(retainedStrict);
     const ordinary = await f.request("GET", `${path}/${f.legacySource.id}`);
@@ -510,11 +511,11 @@ test(
     // of an ordinary Gateway source through the legacy strict-adoption operation.
     const legacyPath = `${path}/${f.legacySource.id}`;
     const legacyBefore = (await f.request("GET", legacyPath)).data;
-    const retainedBefore = await f.controller.transact((unit) =>
+    const retainedBefore = await controller.transact((unit) =>
       unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
     );
     assert.equal(
-      await f.controller.transact((unit) =>
+      await controller.transact((unit) =>
         unit.credentialSources.hasReferences(f.namespace.id, f.legacySource.id),
       ),
       false,
@@ -530,7 +531,7 @@ test(
     assert.equal(f.countSecretReads(), adoptionReads);
     assert.deepEqual((await f.request("GET", legacyPath)).data, legacyBefore);
     assert.deepEqual(
-      await f.controller.transact((unit) =>
+      await controller.transact((unit) =>
         unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
       ),
       retainedBefore,
