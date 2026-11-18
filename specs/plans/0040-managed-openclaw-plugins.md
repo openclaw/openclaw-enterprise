@@ -43,10 +43,10 @@ Current behavior is documented in the [Agent plugins reference](../../docs/refer
    - Discover tools, select permissions, and enforce policy per account, including accounts sharing an endpoint. Removing or failing one account must not affect another.
    - **Status:** Not done; depends on steps 1–3.
 7. **OpenClaw selective MCP admission:** Extend node policy admission to classify each exact account-qualified server and upstream tool before issuing worker grants.
-   - Keep eligible enabled tools without approval on same-node execution; route approval-required tools to Gateway dispatch. Do not grant disabled tools. Add `gateway.nodes.commands.requiredPolicies` to reject grants and dispatch when a required command policy owner is missing or mismatched, and invalidate stale grants when policy changes. Reuse the existing worker grant protocol.
+   - Keep eligible enabled tools without approval on same-node execution; route approval-required tools to Gateway dispatch. Do not grant disabled tools. Invalidate stale grants when policy changes and reuse the existing worker grant protocol.
    - **Status:** Not done; planned OpenClaw PR.
 8. **OCE native MCP human approval:** Install one OCE-managed Gateway MCP node policy and translate saved per-tool `all_actions`/`none` settings into it.
-   - Extend per-plugin Driver capability reporting so only supported managed MCP plugins advertise human approval. Reuse the existing `tools[id].approval` field, Agent-wide approvers, and tool-name approval prompts; freeze the binding and policy in the Agent revision. Extend the Tools picker and fail deployment when the required gate cannot be installed.
+   - Extend per-plugin Driver capability reporting so only supported managed MCP plugins advertise human approval. Reuse the existing `tools[id].approval` field, Agent-wide approvers, and tool-name approval prompts; freeze the binding and policy in the Agent revision. Extend the Tools picker and validate the packaged Gateway extension and configuration on deployment.
    - **Status:** Not done; planned OCE PR, depends on step 7.
 9. **End-to-end Console and runtime qualification:** Prove the complete launch workflow on ordinarily deployed Agents.
    - Resolve the Slack tool-assembly failure reported in #4673, then verify live Slack search, Google CLI, selection changes, renewal, worker replacement, withdrawal, and multi-account isolation. Update the owning current documentation as work ships.
@@ -58,11 +58,16 @@ Current behavior is documented in the [Agent plugins reference](../../docs/refer
 - Audit the unused shared `PluginDriver.listCatalog(context)` contract separately; remove it only through a reviewed contract change that updates all implementations.
 - **Status:** Draft PR [#6375](https://github.com/openclaw/openclaw-enterprise/pull/6375); independent of steps 1–9. The shared contract audit and live native-install qualification remain open.
 
+## OpenClaw fast follow
+
+- **Missing-policy rejection:** Reject native MCP grants and dispatch when the required managed policy fails to register. Until this exists, a Gateway extension load or registration failure can bypass native approval.
+  - **Status:** Not done; follows the happy-case OpenClaw and OCE approval PRs.
+
 ## Acceptance gates
 
 - **Onboarding:** From Console, configure a template/client, complete real consent, bind the resulting account to a plugin, discover tools, and deploy without exposing tokens to the model or browser responses.
 - **MCP enforcement:** Select a read tool while the provider grant also permits a disabled tool. Verify a successful native call and admitted script call. A script POST for the disabled upstream name must receive a denial with zero upstream calls. Change the selection, redeploy, and verify the inverse. An empty selection grants no tools.
-- **Native MCP approval:** On a dedicated Agent, verify that an eligible Allow tool stays on-node, an Ask tool reaches the MCP server once after human approval, and rejection, timeout, missing policy, cancellation, or redeployment leaves zero upstream calls. Confirm the accepted scope separately: a direct script can invoke the enabled Ask tool without Gateway approval, while a disabled tool remains blocked.
+- **Native MCP approval:** With the managed policy registered on a dedicated Agent, verify that an eligible Allow tool stays on-node, an Ask tool reaches the MCP server once after human approval, and rejection, timeout, cancellation, or redeployment leaves zero upstream calls. Confirm the accepted scope separately: a direct script can invoke the enabled Ask tool without Gateway approval, while a disabled tool remains blocked.
 - **Capability admission:** An implementation lacking the required MCP inspection or connector policy must reject the proposed settings before deployment. Unavailable or conflicting enforcement must stop credentialed requests.
 - **Imports:** Publish and deploy an uploaded skill and an uploaded OAuth MCP package. Verify pinned artifacts, discovery, selected and disabled calls, and recovery after worker replacement.
 - **Lifecycle:** Renew an expired token; detach or revoke an account from one Agent without breaking another. Removing a plugin preserves independent credential access and worker recovery.
