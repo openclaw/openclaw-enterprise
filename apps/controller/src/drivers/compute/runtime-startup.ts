@@ -30,8 +30,9 @@ export const UNEXPLAINED_EXITS_MESSAGE = "consecutive unexplained exits: ";
 export const DELIBERATE_RESTART_MESSAGE = "deliberate restart: ";
 
 /**
- * The variable each Compute Driver sets to the revision ID on a Gateway, so that only a restart
- * of the same revision resumes a cut turn (deploy/runtime/openclaw-restart-resume-scope.patch).
+ * The variable each Compute Driver sets on a Gateway, so that only a restart under the same
+ * scope resumes a cut turn: Kubernetes Compute sets the admitted continuation generation, which
+ * an explicit stop ends; Docker and SSH Compute set the revision ID. OpenClaw reads it natively.
  * The standalone SSH helper spells it out; the runtime-assets guard test checks it does.
  */
 export const GATEWAY_RESTART_RESUME_SCOPE = "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE";
@@ -104,7 +105,7 @@ async function timeStartupPhase(phase, run) {
  * a released Gateway and a released workspace node fail when a pin moves either;
  * update them with the pin.
  */
-export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 42;
+export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 43;
 export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 40;
 
 // A Gateway and a dedicated Harness's workspace node keep OpenClaw state across

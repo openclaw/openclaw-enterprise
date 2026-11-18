@@ -1,5 +1,5 @@
 diff --git a/docs/cli/gateway/query.md b/docs/cli/gateway/query.md
-index df822cb..7cb4635 100644
+index df822cb4f20..7cb46354c1e 100644
 --- a/docs/cli/gateway/query.md
 +++ b/docs/cli/gateway/query.md
 @@ -540,6 +540,38 @@ returns the same details while draining, and each draining observation writes
@@ -42,7 +42,7 @@ index df822cb..7cb4635 100644
  
  Release a prepared suspension after thaw or when the host operation is
 diff --git a/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js b/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
-index 9bbabaa..590df41 100644
+index 16ba157838e..d68a416fb25 100644
 --- a/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
 +++ b/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
 @@ -1067,7 +1067,7 @@ var External = [
@@ -54,7 +54,7 @@ index 9bbabaa..590df41 100644
      /(^degraded$|^degradedSinceMs$|^reasons$|^intervalMs$|^delayP99Ms$|^delayMaxMs$|^utilization$|^cpuCoreRatio$|^cpuBreakdown$)/u,
      /(^mainThreadCoreRatio$|^workerCoreRatio$|^otherThreadsCoreRatio$|^hostUtilization$|^hostCpuCount$)/u,
      /(^rssBytes$|^heapUsedBytes$|^heapTotalBytes$|^externalBytes$|^arrayBuffersBytes$)/u,
-@@ -1571,7 +1571,7 @@ var External = [
+@@ -1574,7 +1574,7 @@ var External = [
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$|^error$)/u,
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$)/u,
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$|^error$|^fallbackExhaustedFailure$)/u,
@@ -63,7 +63,7 @@ index 9bbabaa..590df41 100644
      /(^status$|^reason$|^retryAfterMs$|^activeCount$|^blockers$|^writeCustody$)/u,
      /(^kind$|^count$|^message$)/u,
      /(^phase$|^count$)/u,
-@@ -1582,7 +1582,7 @@ var External = [
+@@ -1585,7 +1585,7 @@ var External = [
      /(^status$|^ownerId$|^phase$|^expiresAtMs$|^retryAfterMs$|^activeCount$|^blockers$|^writeCustody$)/u,
      /(^status$|^ownerId$|^expiresAtMs$|^writeCustody$)/u,
      /(^suspensionId$)/u,
@@ -72,7 +72,7 @@ index 9bbabaa..590df41 100644
      /(^pid$|^processInstanceId$)/u,
      /(^type$|^id$|^method$|^params$|^traceparent$|^expectedProfileId$)/u,
      /(^nodeId$)/u,
-@@ -9437,6 +9437,9 @@ var External = [
+@@ -9443,6 +9443,9 @@ var External = [
      (value.processInstanceId === void 0 ||
        !("processInstanceId" in value) ||
        check_63(value.processInstanceId)) &&
@@ -82,28 +82,28 @@ index 9bbabaa..590df41 100644
      check_1379(value.uptimeMs) &&
      check_1379(value.cpuCount) &&
      (value.cpuModel === void 0 || !("cpuModel" in value) || check_276(value.cpuModel)) &&
-@@ -18782,7 +18785,10 @@ var External = [
+@@ -18842,7 +18845,10 @@ var External = [
      (value.terminalPolicy === void 0 ||
        !("terminalPolicy" in value) ||
-       check_2788(value.terminalPolicy)) &&
+       check_2799(value.terminalPolicy)) &&
 -    (value.drain === void 0 || !("drain" in value) || check_181(value.drain)),
 +    (value.drain === void 0 || !("drain" in value) || check_181(value.drain)) &&
 +    (value.completionDeadlineMs === void 0 ||
 +      !("completionDeadlineMs" in value) ||
 +      check_192(value.completionDeadlineMs)),
-   check_2788 = (value) => check_2789(value) || check_2790(value),
-   check_2789 = (value) => typeof value == "string" && value === "preserve",
-   check_2790 = (value) => typeof value == "string" && value === "terminate",
-@@ -18987,6 +18993,7 @@ var External = [
+   check_2799 = (value) => check_2800(value) || check_2801(value),
+   check_2800 = (value) => typeof value == "string" && value === "preserve",
+   check_2801 = (value) => typeof value == "string" && value === "terminate",
+@@ -19047,6 +19053,7 @@ var External = [
      ) &&
      check_561(value.suspensionId) &&
      (value.commit === void 0 || !("commit" in value) || check_330(value.commit)) &&
 +    (value.deferExit === void 0 || !("deferExit" in value) || check_330(value.deferExit)) &&
-     check_2832(value.target),
-   check_2832 = (value) =>
+     check_2843(value.target),
+   check_2843 = (value) =>
      typeof value == "object" &&
 diff --git a/packages/gateway-protocol/src/gateway-suspend.test.ts b/packages/gateway-protocol/src/gateway-suspend.test.ts
-index 175a725..0ab89da 100644
+index 175a7256a1d..0ab89da0504 100644
 --- a/packages/gateway-protocol/src/gateway-suspend.test.ts
 +++ b/packages/gateway-protocol/src/gateway-suspend.test.ts
 @@ -30,12 +30,18 @@ describe("gateway suspension protocol", () => {
@@ -143,7 +143,7 @@ index 175a725..0ab89da 100644
      const draining = {
        ...drainingResult("terminal-session"),
 diff --git a/packages/gateway-protocol/src/schema/gateway-suspend.ts b/packages/gateway-protocol/src/schema/gateway-suspend.ts
-index e155a68..7d9af47 100644
+index e155a6862a3..7d9af47371c 100644
 --- a/packages/gateway-protocol/src/schema/gateway-suspend.ts
 +++ b/packages/gateway-protocol/src/schema/gateway-suspend.ts
 @@ -48,6 +48,10 @@ export const GatewaySuspendPrepareParamsSchema = closedObject({
@@ -167,7 +167,7 @@ index e155a68..7d9af47 100644
      pid: Type.Integer({ minimum: 1 }),
      processInstanceId: SuspensionTokenSchema,
 diff --git a/packages/gateway-protocol/src/schema/system-info.ts b/packages/gateway-protocol/src/schema/system-info.ts
-index e79d7c2..b66484d 100644
+index e79d7c2004a..b66484df682 100644
 --- a/packages/gateway-protocol/src/schema/system-info.ts
 +++ b/packages/gateway-protocol/src/schema/system-info.ts
 @@ -39,6 +39,8 @@ export const SystemInfoResultSchema = closedObject({
@@ -180,7 +180,7 @@ index e79d7c2..b66484d 100644
    cpuCount: Type.Integer(),
    cpuModel: Type.Optional(Type.String()),
 diff --git a/src/cli/gateway-cli/host-lifecycle.test.ts b/src/cli/gateway-cli/host-lifecycle.test.ts
-index 19b375a..ad36470 100644
+index 19b375a3086..ad364706522 100644
 --- a/src/cli/gateway-cli/host-lifecycle.test.ts
 +++ b/src/cli/gateway-cli/host-lifecycle.test.ts
 @@ -29,12 +29,13 @@ describe("Gateway host lifecycle authority", () => {
@@ -219,7 +219,7 @@ index 19b375a..ad36470 100644
      const commit = vi.fn();
      const host = owner(commit);
 diff --git a/src/cli/gateway-cli/host-lifecycle.ts b/src/cli/gateway-cli/host-lifecycle.ts
-index a672ce6..3d63170 100644
+index a672ce66dbe..3d63170446d 100644
 --- a/src/cli/gateway-cli/host-lifecycle.ts
 +++ b/src/cli/gateway-cli/host-lifecycle.ts
 @@ -19,6 +19,7 @@ export function createGatewayHostLifecycle(params: {
@@ -247,7 +247,7 @@ index a672ce6..3d63170 100644
      if (state === "retired" || !params.isCurrent()) {
        throw new Error(
 diff --git a/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts b/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
-index 0e502e2..25aaf2a 100644
+index 0e502e22eb7..25aaf2abe52 100644
 --- a/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
 +++ b/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
 @@ -9,6 +9,42 @@ import {
@@ -295,7 +295,7 @@ index 0e502e2..25aaf2a 100644
      { fails: false, trigger: "commit" },
 diff --git a/src/cli/gateway-cli/run-loop-external-handoff.ts b/src/cli/gateway-cli/run-loop-external-handoff.ts
 new file mode 100644
-index 0000000..14b9215
+index 00000000000..14b92157fb1
 --- /dev/null
 +++ b/src/cli/gateway-cli/run-loop-external-handoff.ts
 @@ -0,0 +1,52 @@
@@ -352,7 +352,7 @@ index 0000000..14b9215
 +  };
 +}
 diff --git a/src/cli/gateway-cli/run-loop.ts b/src/cli/gateway-cli/run-loop.ts
-index 5be7e98..92a6fe1 100644
+index 73564de5032..b544ace49fc 100644
 --- a/src/cli/gateway-cli/run-loop.ts
 +++ b/src/cli/gateway-cli/run-loop.ts
 @@ -22,6 +22,7 @@ import { createGatewayHostLifecycle } from "./host-lifecycle.js";
@@ -398,7 +398,7 @@ index 5be7e98..92a6fe1 100644
  
    const signals = createGatewayRunSignals({
      lifecycle: eagerLifecycleRuntime,
-@@ -1074,16 +1077,10 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
+@@ -1076,16 +1079,10 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
          break;
        }
        const iterationHost = createGatewayHostLifecycle({
@@ -417,7 +417,7 @@ index 5be7e98..92a6fe1 100644
        hostLifecycle = iterationHost;
        let startupFailedBeforeServerHandle = false;
 diff --git a/src/cli/update-cli/update-command-service-drain.native.test.ts b/src/cli/update-cli/update-command-service-drain.native.test.ts
-index b7c309b..37889cb 100644
+index b7c309b0bc9..37889cbbc7e 100644
 --- a/src/cli/update-cli/update-command-service-drain.native.test.ts
 +++ b/src/cli/update-cli/update-command-service-drain.native.test.ts
 @@ -9,7 +9,7 @@ import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js"
@@ -497,10 +497,10 @@ index b7c309b..37889cb 100644
          f.bootId = "replacement-boot";
        }
 diff --git a/src/cli/update-cli/update-command-service-drain.ts b/src/cli/update-cli/update-command-service-drain.ts
-index 66d3daa..6277727 100644
+index f6720f7c006..743f431f9ad 100644
 --- a/src/cli/update-cli/update-command-service-drain.ts
 +++ b/src/cli/update-cli/update-command-service-drain.ts
-@@ -77,6 +77,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -80,6 +80,7 @@ export async function withGatewayMaintenanceDrain<T>(
            "gateway.suspend.handoff",
            { suspensionId, target: processTarget, commit: true },
            beforeCommit,
@@ -508,7 +508,7 @@ index 66d3daa..6277727 100644
          );
          assertResidentCurrent();
          if (
-@@ -176,6 +177,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -179,6 +180,7 @@ export async function withGatewayMaintenanceDrain<T>(
      method: string,
      args?: unknown,
      beforeDispatch?: () => void,
@@ -516,7 +516,7 @@ index 66d3daa..6277727 100644
    ): Promise<R> => {
      assertResidentCurrent();
      if (params.control) {
-@@ -202,8 +204,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -205,8 +207,7 @@ export async function withGatewayMaintenanceDrain<T>(
        localPortOverride: port,
        ignoreEnvUrlOverride: true,
        tlsFingerprint: target.tlsFingerprint,
@@ -527,7 +527,7 @@ index 66d3daa..6277727 100644
          observedBootId = hello.server.bootId;
        },
 diff --git a/src/gateway/server-methods.suspension-admission.test.ts b/src/gateway/server-methods.suspension-admission.test.ts
-index 931f2ed..4e610ae 100644
+index 931f2ed43ef..4e610aeff03 100644
 --- a/src/gateway/server-methods.suspension-admission.test.ts
 +++ b/src/gateway/server-methods.suspension-admission.test.ts
 @@ -657,10 +657,11 @@ describe("gateway request suspension admission", () => {
@@ -545,7 +545,7 @@ index 931f2ed..4e610ae 100644
        expectRejected(blocked, {
 diff --git a/src/gateway/server-methods/suspend.integration.test.ts b/src/gateway/server-methods/suspend.integration.test.ts
 new file mode 100644
-index 0000000..a15e51d
+index 00000000000..a15e51da4c7
 --- /dev/null
 +++ b/src/gateway/server-methods/suspend.integration.test.ts
 @@ -0,0 +1,194 @@
@@ -744,7 +744,7 @@ index 0000000..a15e51d
 +  },
 +);
 diff --git a/src/gateway/server-methods/suspend.ts b/src/gateway/server-methods/suspend.ts
-index 808a247..dc95d10 100644
+index 808a24770d2..dc95d1072b1 100644
 --- a/src/gateway/server-methods/suspend.ts
 +++ b/src/gateway/server-methods/suspend.ts
 @@ -8,6 +8,7 @@ import {
@@ -804,7 +804,7 @@ index 808a247..dc95d10 100644
        resumeScheduling: () => context.cron.resumeScheduling(),
        inspect: createGatewayServerActiveWorkInspectors(context),
 diff --git a/src/gateway/server-methods/system.ts b/src/gateway/server-methods/system.ts
-index 3c3a2f3..8830626 100644
+index 3c3a2f3e2ab..8830626ccd1 100644
 --- a/src/gateway/server-methods/system.ts
 +++ b/src/gateway/server-methods/system.ts
 @@ -175,6 +175,9 @@ async function collectSystemInfo(
@@ -818,7 +818,7 @@ index 3c3a2f3..8830626 100644
      cpuCount,
      ...(cpuModel ? { cpuModel } : {}),
 diff --git a/src/gateway/server-request-lifecycle.ts b/src/gateway/server-request-lifecycle.ts
-index 05558b9..4b43115 100644
+index 05558b9e50b..4b4311582ab 100644
 --- a/src/gateway/server-request-lifecycle.ts
 +++ b/src/gateway/server-request-lifecycle.ts
 @@ -10,6 +10,7 @@ import {
@@ -853,7 +853,7 @@ index 05558b9..4b43115 100644
        getGatewayRestartDrainSignal().aborted &&
        getGatewaySuspendAdmissionPhase() === "accepting")
 diff --git a/src/gateway/server-runtime-state-prepare.ts b/src/gateway/server-runtime-state-prepare.ts
-index 732be36..eebf831 100644
+index 732be36aa48..eebf8315d0d 100644
 --- a/src/gateway/server-runtime-state-prepare.ts
 +++ b/src/gateway/server-runtime-state-prepare.ts
 @@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -875,7 +875,7 @@ index 732be36..eebf831 100644
    const getStartup = createStartupChecker(
      { ...startupCheckerDeps, gatewayBootId: bootId },
 diff --git a/src/gateway/test-helpers.e2e.ts b/src/gateway/test-helpers.e2e.ts
-index d86a05e..d878bc3 100644
+index d86a05ebc86..d878bc354e6 100644
 --- a/src/gateway/test-helpers.e2e.ts
 +++ b/src/gateway/test-helpers.e2e.ts
 @@ -315,6 +315,7 @@ export async function startGatewayWithClient(
@@ -895,7 +895,7 @@ index d86a05e..d878bc3 100644
          channelAutostartSuppression: params.channelAutostartSuppression,
          tryRecoverChannelAutostartSuppression: params.tryRecoverChannelAutostartSuppression,
 diff --git a/src/infra/gateway-suspend-coordinator.test.ts b/src/infra/gateway-suspend-coordinator.test.ts
-index 4f999de..36016cf 100644
+index 4f999deebee..36016cf5eac 100644
 --- a/src/infra/gateway-suspend-coordinator.test.ts
 +++ b/src/infra/gateway-suspend-coordinator.test.ts
 @@ -65,6 +65,51 @@ afterEach(() => {
@@ -992,7 +992,7 @@ index 4f999de..36016cf 100644
      "refuses committed shutdown for %s without invoking the host exit owner",
      (reason) => {
 diff --git a/src/infra/gateway-suspend-coordinator.ts b/src/infra/gateway-suspend-coordinator.ts
-index 539ce86..1d18504 100644
+index 539ce86e450..1d18504c463 100644
 --- a/src/infra/gateway-suspend-coordinator.ts
 +++ b/src/infra/gateway-suspend-coordinator.ts
 @@ -21,6 +21,7 @@ import {
