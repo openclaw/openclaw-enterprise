@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -156,17 +156,18 @@ async function buildCli(context: TestContext) {
   const adminPassword = `${engineBinary}-admin-${randomUUID()}`;
   const serviceKey = `occ_${randomBytes(32).toString("base64url")}`;
   const bootstrapInputs = {
-    OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: join(directory, "admin-password-input"),
-    OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: join(directory, "admin-service-key-input"),
+    OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: join(directory, "mount-admin-password"),
+    OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: join(directory, "mount-admin-service-key"),
   };
-  await writeFile(bootstrapInputs.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE, adminPassword, {
-    mode: 0o600,
-    flag: "wx",
-  });
-  await writeFile(bootstrapInputs.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE, serviceKey, {
-    mode: 0o600,
-    flag: "wx",
-  });
+  // Only disposable mount copies may change owner; keep private host recovery inputs.
+  for (const [name, value] of Object.entries({
+    "admin-password-input": adminPassword,
+    "admin-service-key-input": serviceKey,
+    "mount-admin-password": adminPassword,
+    "mount-admin-service-key": serviceKey,
+  })) {
+    await writeFile(join(directory, name), value, { mode: 0o600, flag: "wx" });
+  }
   return { binary, directory, owned, bootstrapInputs, adminPassword, serviceKey };
 }
 
@@ -425,14 +426,31 @@ async function prepareLocalServiceKey({
   env,
   directory,
   baseUrl,
+  adminPassword,
   serviceKey,
 }: {
   project: string;
   env: NodeJS.ProcessEnv;
   directory: string;
   baseUrl: string;
+  adminPassword: string;
   serviceKey: string;
 }) {
+  // Ownership preparation must not change or expose the host's recovery inputs.
+  for (const [name, expected] of Object.entries({
+    "admin-password-input": adminPassword,
+    "admin-service-key-input": serviceKey,
+  })) {
+    const input = await open(join(directory, name), "r");
+    try {
+      const info = await input.stat();
+      assert.equal(info.uid, process.getuid?.());
+      assert.equal(info.mode & 0o777, 0o600);
+      assert.equal((await input.readFile("utf8")) === expected, true);
+    } finally {
+      await input.close();
+    }
+  }
   const inputPaths = ["/run/secrets/admin-password", "/run/secrets/admin-service-key"];
   const bootstrap = await composeServiceContainer(project, "bootstrap", env);
   const bootstrapMounts = inspectedObjects(bootstrap.observation.Mounts, "Bootstrap mounts");
@@ -977,6 +995,23 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
         secrets: composeSecrets,
       });
     }
+    // Use the launcher's actual-reader UID preparation even when Compose starts directly.
+    await command(
+      binary,
+      [
+        "dev",
+        "prepare-bootstrap-mounts",
+        "--directory",
+        bootstrapDirectory,
+        "--",
+        ...composeArguments(project, "up", [], composeOptions).slice(1, -1),
+      ],
+      {
+        env: { ...env, OCC_DEVELOPMENT_CONTAINER_ENGINE: engineBinary },
+        timeoutMs: 600_000,
+        secrets: composeSecrets,
+      },
+    );
     await docker(
       composeArguments(
         project,
@@ -1020,6 +1055,7 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
     env,
     directory: bootstrapDirectory,
     baseUrl,
+    adminPassword,
     serviceKey,
   });
   custody.serviceKey = serviceKey;
