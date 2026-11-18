@@ -79,6 +79,20 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       description:
         "Start a replacement sign-in and open Configuration within 3 s. The reply arrives while Configuration shows; Credentials keeps it, so returning shows the code and Cancel login. The fixture delays the reply; it does not prove provider persistence.",
     },
+    authOAuthPollDenied: {
+      group: "Components/Credentials",
+      name: "ChatGPT login poll denied (Experimental)",
+      path: `${draft}&tab=credentials`,
+      credentialSourceTypes: deviceLoginSourceTypes,
+      deployed: true,
+      auth: "oauth",
+      rules: [
+        { suffix: "/poll", method: "POST", status: 403 },
+        { pathIncludes: "/device-authorizations/", method: "DELETE", status: 403 },
+      ],
+      description:
+        "Choose Sign in with OAuth, wait for the refused poll, then choose Cancel login. The poll refusal names credential source operate; the cancellation refusal names Agent read and update.",
+    },
     authOAuthStartTabSwitchRefused: {
       group: "Components/Credentials",
       name: "ChatGPT sign-in refused on another tab (Experimental)",

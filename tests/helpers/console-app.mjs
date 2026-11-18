@@ -333,12 +333,13 @@ export async function createConsoleAppFixture(t, options = {}) {
     verification: [],
     apikey: [],
   };
+  const authSecret = `console-test-secret-${randomUUID()}-${randomUUID()}`;
   const auth = createControllerAuth({
     installationId,
     mode: authMode,
     baseURL: authBaseURL,
     agentDomain: options.nativeAdmin?.domain ?? `agents.${new URL(authBaseURL).hostname}`,
-    secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
+    secret: authSecret,
     memoryDatabase,
   });
   const credentials = {
@@ -509,6 +510,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
           options.namespaceLifecycleBindings ??
           (options.sandboxDriver?.ensureNamespace === undefined

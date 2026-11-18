@@ -79,11 +79,9 @@ export function deviceLoginOffered(capabilities: InstallationCapabilities | unde
 const NOT_OFFERED =
   "ChatGPT sign-in needs a Credential Gateway that offers ChatGPT device login and a Credential Refresh Driver, and this Installation's Drivers do not offer it. Choose another authentication method.";
 
-// What each device-authorization request checks (packages/occ/src/index.ts), so a 403 names it
-// (finding 2577). Every start creates a Secret and a credential source, and Namespace Roles cannot
-// grant create, so only an Installation administrator can start one. Create Agent's requests also
-// check Agent create; Agent detail's check Agent read and update on that Agent. Poll and cancel
-// check Secret operate on the login's Secret, and poll operate on its credential source too.
+// Each request checks Agent scope: create for a new Agent, or read and update for a saved Agent.
+// Starting also checks credential source create, and polling checks operate on that source.
+// The transient login itself is not an IAM resource.
 type DeviceLoginStep = "start" | "poll" | "cancel";
 const START_REMEDY =
   "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
@@ -91,17 +89,18 @@ const START_REMEDY =
 function deviceLoginDenied(step: DeviceLoginStep, agentScoped: boolean) {
   if (step === "start") {
     return agentScoped
-      ? `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus Secret create and credential source create in this Namespace, ${START_REMEDY}`
-      : `Your access does not include starting a device login in this Namespace. It needs Agent create, Secret create and credential source create here, ${START_REMEDY}`;
+      ? `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus credential source create in this Namespace, ${START_REMEDY}`
+      : `Your access does not include starting a device login in this Namespace. It needs Agent create and credential source create here, ${START_REMEDY}`;
   }
   const task = step === "poll" ? "finishing this device login" : "cancelling this device login";
-  const login =
-    step === "poll"
-      ? "Secret operate on the login's Secret and credential source operate on its credential source"
-      : "Secret operate on the login's Secret";
+  const scope = agentScoped
+    ? "Agent read and update on this Agent"
+    : "Agent create in this Namespace, which only an Installation administrator holds";
+  const required =
+    step === "poll" ? `${scope}, plus credential source operate on its credential source` : scope;
   return agentScoped
-    ? notIncluded(task, `Agent read and update on this Agent, plus ${login}`)
-    : `Your access does not include ${task}. It needs Agent create in this Namespace, which only an Installation administrator holds, plus ${login}. ${askAdministratorTo("check your access")}`;
+    ? notIncluded(task, required)
+    : `Your access does not include ${task}. It needs ${required}. ${askAdministratorTo("check your access")}`;
 }
 
 export function createDeviceLogin({
@@ -222,19 +221,19 @@ export function createDeviceLogin({
     const failure = requestFailure(cause);
     if (failure.status === 401) {
       context.onExpired();
+    } else if (failure.status === 403) {
+      error = deviceLoginDenied(step, agentId !== undefined);
     } else {
       error =
-        failure.status === 403
-          ? deviceLoginDenied(step, agentId !== undefined)
-          : failure.status === 410
-            ? "This login expired. Cancel it and start a new login."
-            : failure.status === 501
-              ? // The API names which Driver the Installation lacks (finding 2991).
-                `ChatGPT sign-in is unavailable for this Installation. ${failure.serverMessage ? `${failure.serverMessage} ` : ""}Choose another authentication method.`
-              : !login && failure.status === 503 && failure.code === "DEPENDENCY_UNAVAILABLE"
-                ? // Starting reaches the sign-in service from the API; its reply names the cause.
-                  `Codex sign-in failed. ${failure.serverMessage ?? "A required service is unavailable. Try again."}`
-                : `Codex login could not be completed. ${message(cause)} ${login ? "Cancel this login and sign in again." : "Try signing in again."}`;
+        failure.status === 410
+          ? "This login expired. Cancel it and start a new login."
+          : failure.status === 501
+            ? // The API names which Driver the Installation lacks (finding 2991).
+              `ChatGPT sign-in is unavailable for this Installation. ${failure.serverMessage ? `${failure.serverMessage} ` : ""}Choose another authentication method.`
+            : !login && failure.status === 503 && failure.code === "DEPENDENCY_UNAVAILABLE"
+              ? // Starting reaches the sign-in service from the API; its reply names the cause.
+                `Codex sign-in failed. ${failure.serverMessage ?? "A required service is unavailable. Try again."}`
+              : `Codex login could not be completed. ${message(cause)} ${login ? "Cancel this login and sign in again." : "Try signing in again."}`;
     }
   }
 
