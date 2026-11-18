@@ -10008,12 +10008,15 @@ export class OpenClawController {
     }
     const values = frozenValues(input.values);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
+      await this.holdAuthority(state);
+      const target: ResourceRef = {
         kind: "configuration",
         id: input.configurationId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      await this.authorize(principalId, "update", target);
       const driver = this.configurationDriver();
       const metadata = await state.configurations.lockConfiguration(
         namespace.id,
