@@ -39,6 +39,7 @@
     "integration/sandbox-driver-adoption-cases.ts",
     "integration/sandbox-driver-hook-probe-cases.ts",
     "**/*.test.ts",
+    "helpers/qa-http-chat.ts",
     "helpers/kubernetes-two-cluster-inputs.ts",
     "helpers/loaded-proxy-installation.ts",
     "conformance/openshell-harness-codex-readiness-cases.ts",
