@@ -32,7 +32,6 @@ import {
   rechecksCallerSecretGrant,
   authorizesBeforeDriverSupport,
   refusesUnsupportedAuthenticationAndMode,
-  usesCuratedCatalogForApiKeyAgent,
   readsHostedCapabilitiesWithoutSecret,
 } from "./plugin-discovery-api-saved-agent-cases.ts";
 import {
@@ -43,11 +42,7 @@ import {
   requiresExactSecretGrantAndOwnership,
   suppressesSecretBackendErrors,
 } from "./plugin-discovery-api-selected-secret-cases.ts";
-import {
-  usesEachHarnessCatalog,
-  savesCuratedSelectionsInRevision,
-  requiresHostedCredentialAndCuratedGrant,
-} from "./plugin-discovery-api-catalog-cases.ts";
+import { usesEachHarnessCatalog } from "./plugin-discovery-api-catalog-cases.ts";
 
 test(
   "Plugin discovery uses the selected Driver through authenticated HTTP without creating resources",
@@ -115,10 +110,6 @@ test(
   refusesUnsupportedAuthenticationAndMode,
 );
 test(
-  "Saved Agent uses a credential-free curated catalog for an API-key Codex Agent",
-  usesCuratedCatalogForApiKeyAgent,
-);
-test(
   "Saved Agent hosted capabilities need Agent edit grants but no Secret access",
   readsHostedCapabilitiesWithoutSecret,
 );
@@ -149,14 +140,6 @@ test(
 test(
   "Mixed Installation targets each Harness catalog before reading a discovery Secret",
   usesEachHarnessCatalog,
-);
-test(
-  "Curated discovery admits plugins with skills without provider I/O and saves selections in a revision",
-  savesCuratedSelectionsInRevision,
-);
-test(
-  "Hosted discovery requires a credential, and curated discovery still requires Agent-create authorization",
-  requiresHostedCredentialAndCuratedGrant,
 );
 
 async function usesSelectedDriver(t: TestContext) {

@@ -29,7 +29,7 @@
     "port": 5432
   },
   "api": {
-    "modelDiscoveryCidrs": [],
+    "modelDiscoveryCidrs": $discoveryCidrs,
     "clients": [
       {
         "namespace": "oce-system",

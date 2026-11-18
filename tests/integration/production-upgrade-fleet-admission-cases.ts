@@ -180,10 +180,7 @@ export function registerFleetAdmissionCases({
     const liveInstallation = requireObject(JSON.parse(installationBytes.toString("utf8")));
     const drivers = requireObject(liveInstallation.drivers);
     const compute = requireObject(requireObject(drivers.compute).configuration);
-    assert.deepEqual(drivers.plugin, [
-      { id: "occ-plugin", configuration: {} },
-      { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
-    ]);
+    assert.deepEqual(drivers.plugin, [{ id: "occ-plugin", configuration: {} }]);
     assert.equal(requireObject(compute.images).gateway, oldRuntime);
     const backend = requireObject(requireArray(liveInstallation.backend)[0]);
     assert.equal(
@@ -402,8 +399,7 @@ export function registerFleetAdmissionCases({
         "service-principal",
         "trusted-proxy",
         "configuration-authentication",
-        "plugin-executable",
-        "plugin-hosted",
+        "plugin-configuration",
         "plugin-null",
         "plugin-add-occ",
         "unreviewed-values",
@@ -419,7 +415,7 @@ export function registerFleetAdmissionCases({
             );
             const drivers = requireObject(installation.drivers);
             // Each candidate redirects an identity or trust boundary while retaining
-            // the supported proxy and catalog changes; preparation must stop first.
+            // the supported proxy change; preparation must stop first.
             if (change === "execution-kubeconfig") {
               values.executionCluster = {
                 enabled: true,
@@ -452,12 +448,9 @@ export function registerFleetAdmissionCases({
                   },
                 },
               };
-            } else if (change === "plugin-executable") {
+            } else if (change === "plugin-configuration") {
               const plugin = requireObject(requireArray(drivers.plugin)[0]);
-              requireObject(plugin.configuration).codexExecutable = "/etc/other/codex";
-            } else if (change === "plugin-hosted") {
-              const plugin = requireObject(requireArray(drivers.plugin)[0]);
-              requireObject(plugin.configuration).catalogSource = "hosted";
+              requireObject(plugin.configuration).unexpected = true;
             } else if (change === "plugin-add-occ") {
               requireArray(drivers.plugin).push({ id: "occ-plugin", configuration: {} });
             } else if (change === "plugin-null") {

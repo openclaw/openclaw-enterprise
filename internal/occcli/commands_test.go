@@ -795,7 +795,7 @@ func TestDeploymentStatusTableShowsStartupWarnings(t *testing.T) {
 		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
 			`","namespaceId":"` + testNamespaceID + `","status":"succeeded","warnings":[` +
 			`{"code":"PLUGIN_AUTH_REQUIRED","pluginId":"linear@openai-curated-remote"},` +
-			`{"code":"PLUGIN_INSTALL_FAILED","pluginId":"diffs@openai-curated"}]}`,
+			`{"code":"PLUGIN_INSTALL_FAILED","pluginId":"occ-plugin:diffs"}]}`,
 	}
 	out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision2ID)
 	if err != nil {
@@ -805,7 +805,7 @@ func TestDeploymentStatusTableShowsStartupWarnings(t *testing.T) {
 	if len(lines) != 2 || !strings.Contains(lines[0], "WARNINGS") {
 		t.Fatalf("expected a WARNINGS column:\n%s", out)
 	}
-	if !strings.HasSuffix(lines[1], "linear@openai-curated-remote (PLUGIN_AUTH_REQUIRED), diffs@openai-curated (PLUGIN_INSTALL_FAILED)") {
+	if !strings.HasSuffix(lines[1], "linear@openai-curated-remote (PLUGIN_AUTH_REQUIRED), occ-plugin:diffs (PLUGIN_INSTALL_FAILED)") {
 		t.Fatalf("expected each warning in the table row:\n%s", out)
 	}
 

@@ -41,7 +41,7 @@ export const PluginsConfigured = {
   ...story("createPluginsConfigured"),
   name: "Edit existing plugin policies",
 };
-export const PluginsCurated = story("createPluginsCurated");
+export const PluginsHostedCatalogs = story("createPluginsHostedCatalogs");
 export const PluginsDiscovered = story("createPluginsDiscovered");
 export const PluginsShortWindow = {
   ...story("createPluginsDiscovered", {

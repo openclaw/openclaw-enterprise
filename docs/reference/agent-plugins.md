@@ -25,8 +25,7 @@ get `PLUGIN_AUTH_REQUIRED` at once. Its translator accepts all four approval
 modes, independent per-tool enablement/approval overrides, a default reviewer,
 and the Codex destructive default in `driverPolicy`, but rejects per-tool
 reviewers. Scoped tool IDs must match the app's native runtime inventory before
-startup can complete; the internal Codex catalog reader currently returns
-`tools: null`.
+startup can complete.
 
 Effective enforcement of these contract and translation capabilities requires
 compatible OpenClaw and Codex runtime versions and session settings that preserve

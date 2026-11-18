@@ -164,7 +164,18 @@ aws ecr get-login-password --region "$AWS_REGION" | \
 
 Retain these values for image publication. Builder login does not authorize node pulls.
 
-[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.8 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
+[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.8 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS`, and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
+
+Codex hosted plugin discovery needs API Pod HTTPS access to `auth.openai.com` and `chatgpt.com`. Generate candidate IPv4 `/32` destinations, verify that they match the API Pods' translated destinations, and refresh them when DNS changes:
+
+```bash
+CODEX_DISCOVERY_CIDRS=$(node --input-type=module -e '
+  import { resolve4 } from "node:dns/promises";
+  const answers = await Promise.all(["auth.openai.com", "chatgpt.com"].map(host => resolve4(host)));
+  process.stdout.write(JSON.stringify([...new Set(answers.flat())].sort().map(ip => `${ip}/32`)));
+')
+export CODEX_DISCOVERY_CIDRS
+```
 
 Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
 

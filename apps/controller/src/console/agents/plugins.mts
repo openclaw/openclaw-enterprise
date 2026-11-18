@@ -211,7 +211,7 @@ export function renderAgentPlugins(
   const codex = configuredHarnessId(snapshot.values) === "codex";
   // The saved capabilities already resolve the OpenClaw Harness, including the default.
   let openClawDriver = false;
-  // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
+  // Codex plugins require a ChatGPT login; an API-key Agent gets each
   // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
   const apiKeyAuth = codex && agent.harnessAuth?.method === "api_key";
   const getSlackBotSecretId = () => {
@@ -229,10 +229,7 @@ export function renderAgentPlugins(
       !updateDenied &&
       (openClawDriver
         ? agent.executionMode === "dedicated" && catalogCredential === "none"
-        : codex &&
-          !apiKeyAuth &&
-          (catalogCredential === "none" ||
-            (catalogCredential === "required" && hasBoundCredential))),
+        : codex && !apiKeyAuth && catalogCredential === "required" && hasBoundCredential),
     canPrefetch: () => openClawDriver || hasBoundCredential,
     isPending: () => pending,
     unavailableMessage: () =>

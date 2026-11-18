@@ -1754,8 +1754,8 @@ test(
         controllerImage: upgradeImages.controller,
       });
 
-      // Configure a curated catalog and an unused documentation-range proxy in
-      // the reviewed candidate; the live baseline remains unchanged until upgrade.
+      // Configure an unused documentation-range proxy in the reviewed candidate;
+      // the live baseline remains unchanged until upgrade.
       const candidateValuesPath = join(directory, "candidate-values.json");
       const candidateInstallationPath = join(directory, "candidate-installation.json");
       const candidateValues = JSON.parse(await run("yq", ["-o=json", ".", valuesPath]));
@@ -1764,12 +1764,6 @@ test(
         channelDirectoryProxyUrl: "http://198.51.100.25:3128",
       };
       const candidateInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
-      candidateInstallation.drivers.plugin = [
-        {
-          id: "codex-plugin",
-          configuration: { catalogSource: "openai-curated" },
-        },
-      ];
       // Stage the final runtime configuration before stopping either controller.
       // The original immutable reference remains available for retained releases.
       const successorName = "occ-installation-successor";
@@ -1922,10 +1916,7 @@ test(
         "http://198.51.100.25:3128",
       );
       const upgradedInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
-      assert.equal(
-        upgradedInstallation.drivers.plugin[0].configuration.catalogSource,
-        "openai-curated",
-      );
+      assert.deepEqual(upgradedInstallation.drivers.plugin, candidateInstallation.drivers.plugin);
       for (const component of ["api", "worker"]) {
         const observed = await kubectl(
           "-n",

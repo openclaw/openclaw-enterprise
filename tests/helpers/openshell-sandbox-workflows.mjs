@@ -2070,7 +2070,7 @@ async function prepareProductionInstallation(
     configuration.drivers.plugin = [
       {
         id: "codex-plugin",
-        configuration: { catalogSource: "openai-curated" },
+        configuration: {},
       },
     ];
     // These are observed native package origins, admitted through ordinary operator

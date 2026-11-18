@@ -49,10 +49,6 @@ export interface CodexOpenClawRuntimePolicy {
   readonly baseProxyEnabled?: boolean;
 }
 
-export type CodexPluginCatalogReader = {
-  listCatalog(signal?: AbortSignal): Promise<readonly PluginCatalogEntry[]>;
-};
-
 type OpenClawPluginDescriptor = {
   readonly nativeId: string;
   readonly name: string;
@@ -448,10 +444,6 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     );
   }
 
-  function codexPluginId(nativeId: string): string {
-    return CODEX_DRIVER_ID + ":" + nativeId;
-  }
-
   function openClawNativeIdFromPluginId(pluginId: string): string {
     const prefix = OCC_DRIVER_ID + ":";
     return pluginId.startsWith(prefix) ? pluginId.slice(prefix.length) : pluginId;
@@ -504,39 +496,6 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
 
   function codexSummaryRemotePluginId(summary: Record<string, unknown>): string {
     return requiredString(summary.remotePluginId, "Codex catalog remote plugin ID");
-  }
-
-  function codexSummaryDisplayName(summary: Record<string, unknown>): string {
-    const pluginInterface = isRecord(summary.interface) ? summary.interface : undefined;
-    return (
-      optionalString(pluginInterface?.displayName) ??
-      optionalString(summary.name) ??
-      codexSlugFromNativeId(codexSummaryNativeId(summary))
-    );
-  }
-
-  function codexCatalogEntry(summary: unknown): Record<string, unknown> {
-    const record = codexPluginSummary(summary);
-    const nativeId = codexSummaryNativeId(record);
-    codexSlugFromNativeId(nativeId);
-    const pluginId = codexPluginId(nativeId);
-    return {
-      id: pluginId,
-      name: codexSummaryDisplayName(record),
-      tools: null,
-    };
-  }
-
-  function codexCatalogEntries(listResponse: unknown): readonly Record<string, unknown>[] {
-    const response = isRecord(listResponse) ? listResponse : {};
-    const marketplaces = array(response.marketplaces);
-    const curated = marketplaces.find(
-      (marketplace) => isRecord(marketplace) && marketplace.name === CODEX_MARKETPLACE,
-    );
-    if (!isRecord(curated)) {
-      return [];
-    }
-    return requiredArray(curated.plugins, "Codex catalog plugins").map(codexCatalogEntry);
   }
 
   function codexSummaryByNativeId(
@@ -1089,8 +1048,6 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   }
 
   return {
-    codexCatalogEntry,
-    codexCatalogEntries,
     codexOpenClawConfiguration,
     codexInstallPlan,
     codexNeedsToolInventory,
@@ -1157,12 +1114,6 @@ export function openClawManagedPluginIds(): readonly string[] {
 
 export function openClawCatalogEntries(): readonly PluginCatalogEntry[] {
   return pluginRuntimeTranslator.openClawCatalogEntries() as unknown as readonly PluginCatalogEntry[];
-}
-
-export function codexCatalogEntries(listResponse: unknown): readonly PluginCatalogEntry[] {
-  return pluginRuntimeTranslator.codexCatalogEntries(
-    listResponse,
-  ) as unknown as readonly PluginCatalogEntry[];
 }
 
 export function codexRuntimeReadParams(

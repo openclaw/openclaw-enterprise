@@ -2983,7 +2983,7 @@ test("Agent draft plugin browsing explains a missing hosted credential", async (
 test("Agent draft plugin picker warns that API-key Codex Agents cannot use plugins", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  const driver = new CodexPluginDriver();
   assert.ok(fixture.controller instanceof OpenClawController);
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
@@ -3070,67 +3070,10 @@ test("Agent draft plugin browsing names the Plugin Driver, not API-key auth, und
   );
 });
 
-test("Agent draft browses the curated catalog without a saved Secret", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
-  assert.ok(fixture.controller instanceof OpenClawController);
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const namespace = await fixture.createNamespace("Curated revision plugins", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Curated plugin Agent",
-    nativeValues("curated-revision", { harnessId: "codex" }),
-    // No API key: Codex serves plugins only to ChatGPT logins.
-    { executionMode: "dedicated", harnessAuth: null },
-  );
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
-  await login(page, fixture, url);
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  const linear = dialog.getByRole("button", { name: "Linear", exact: true });
-  await linear.waitFor();
-  assert.equal(pathRequests(requests, "GET", "/installation").length, 0);
-  const catalogPath = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
-  assert.deepEqual(
-    pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
-    [{}],
-  );
-  // The shared search UI must use the saved-Agent route without supplying a credential.
-  const searched = page.waitForResponse((response) => {
-    if (response.url() !== `${fixture.origin}${catalogPath}`) {
-      return false;
-    }
-    const body: unknown = response.request().postDataJSON();
-    return isObject(body) && body.q === "linear";
-  });
-  await dialog.getByLabel("Search plugins", { exact: true }).fill("linear");
-  assert.equal((await searched).status(), 200);
-  await dialog.locator('.plugin-list[aria-busy="false"]').waitFor();
-  assert.deepEqual(
-    await dialog
-      .locator(".plugin-list-item")
-      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label"))),
-    ["Linear"],
-  );
-  const searchRequest = pathRequests(requests, "POST", catalogPath).at(-1);
-  assert.ok(searchRequest);
-  assert.deepEqual(searchRequest.body, { q: "linear" });
-  await linear.click();
-  await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
-  assert.equal(pathRequests(requests, "GET", `${catalogPath}/capabilities`).length, 1);
-  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
-    "codex-plugin:linear@openai-curated-remote": { enabled: true },
-  });
-});
-
 test("Dedicated OpenClaw credentials and plugins do not offer Codex-only controls", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  const driver = new CodexPluginDriver();
   assert.ok(fixture.controller instanceof OpenClawController);
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);

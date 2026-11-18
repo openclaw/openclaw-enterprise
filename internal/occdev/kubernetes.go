@@ -453,7 +453,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
 	}
 	config["drivers"].(map[string]any)["plugin"] = []map[string]any{
-		{"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"}},
+		{"id": "codex-plugin", "configuration": map[string]any{}},
 	}
 	if s.SandboxDriver == "none" {
 		config["presets"] = map[string]any{"includeDefaults": true}

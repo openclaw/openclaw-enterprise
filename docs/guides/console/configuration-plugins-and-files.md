@@ -89,12 +89,11 @@ In **Open draft** → **Plugins**, edit the Agent's existing selections and
 tool policies with **Configure plugins** or **Plugin selections JSON**. With a bound
 Service Accounts token Secret, the tab preloads the first catalog page for the
 picker. Search and tool lookups show loading indicators. Dedicated Codex browsing
-requires exact active Agent `read`/`update` and a catalog-capable Plugin Driver. The
-curated catalog needs no Secret. Hosted discovery uses the bound Service Accounts
-token Secret server-side and requires caller and Agent ServicePrincipal Secret
-`operate`; the browser never receives the token. Other execution modes cannot
-browse this catalog. Hosted results use the draft credential, which may differ
-from the running version's; neither catalog proves installation or runtime
+requires exact active Agent `read`/`update` and a catalog-capable Plugin Driver.
+Hosted discovery uses the draft's supported Codex authentication server-side;
+for a bound Secret, the caller and Agent ServicePrincipal need Secret `operate`.
+The browser never receives a stored token. Hosted results can differ from the
+running version's account, and discovery does not prove installation or runtime
 access. Existing
 selections and **Plugin selections JSON** remain editable when browsing is
 unavailable.

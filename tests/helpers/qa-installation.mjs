@@ -808,7 +808,7 @@ export async function prepareQaConsoleTheme(f) {
 export async function prepareQaPluginCatalogs(f) {
   f.configuration.drivers.plugin = [
     { id: "occ-plugin", configuration: {} },
-    { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+    { id: "codex-plugin", configuration: {} },
   ];
   await f.saveInstallation(f.configuration);
   const { capabilities } = await f.api("GET", "/installation");
@@ -819,18 +819,22 @@ export async function prepareQaPluginCatalogs(f) {
     ]),
   );
   assert.deepEqual(catalogs, { openclaw: "occ-plugin", codex: "codex-plugin" });
-  for (const [harnessId, q, expectedId] of [
-    ["openclaw", "Google Workspace", "occ-plugin:google@1.0.0"],
-    ["codex", "Linear", "codex-plugin:linear@openai-curated-remote"],
-  ]) {
-    const { plugins } = await f.api("POST", `/namespaces/${f.namespace.id}/agents/plugins`, {
-      harnessId,
-      q,
-    });
-    assert.ok(
-      plugins.some(({ id }) => id === expectedId),
-      `missing ${expectedId} in the ${harnessId} catalog`,
+  const discoveryPath = `/namespaces/${f.namespace.id}/agents/plugins`;
+  const { plugins: openclawPlugins } = await f.api("POST", discoveryPath, {
+    harnessId: "openclaw",
+    q: "Google Workspace",
+  });
+  assert.ok(openclawPlugins.some(({ id }) => id === "occ-plugin:google@1.0.0"));
+  // OpenClaw-only matrix cells do not receive a Codex account credential. When
+  // one is provisioned, discover the catalog for that account rather than rely
+  // on a hardcoded list of plugins that its workspace might not offer.
+  if (process.env.OCC_TEST_QA_CODEX_TOKEN_FILE) {
+    const accessToken = await protectedText(
+      process.env.OCC_TEST_QA_CODEX_TOKEN_FILE,
+      "Codex account credential",
     );
+    const { plugins } = await f.api("POST", discoveryPath, { harnessId: "codex", accessToken });
+    assert.ok(Array.isArray(plugins), "authenticated Codex discovery must return a catalog page");
   }
   await f.record("plugin-catalogs", catalogs);
 }

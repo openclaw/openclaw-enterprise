@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-12
-last_updated_session: authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97
+updated: 2026-11-17
+last_updated_session: authoring-run/63dbef62-5aa6-42f7-8abe-781ee1b5e023
 ---
 
 # Agent Plugin Deployment Flow
@@ -75,26 +75,22 @@ Harness, Agent `create`, and caller `operate` on stored sources. Wrong Namespace
 
 Saved discovery requires a dedicated Agent and caller `read`/`update`. Bound sources
 require caller and Agent `operate`; explicit sources require caller `operate`.
-Missing or unready bound sources return `404`. Hosted catalogs require credentials;
-curated catalogs do not.
+Missing or unready bound sources return `404`. Codex requires authenticated hosted
+discovery; OpenClaw does not.
 
-The OpenShell Backend reads metadata and exports through operator mTLS. External
-Gateways retain optional `withSourceToken`. OCC checks source/Gateway ownership,
-then rechecks authority, attachment and catalog before dispatch. Cancellation
-discards late credentials; refresh stays with its owner.
+OpenShell exports through operator mTLS; other Gateways use `withSourceToken`.
+OCC checks source ownership and rechecks authority, attachment, and catalog before dispatch.
+Cancellation drops late credentials; refresh stays with its owner.
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 
-Managed MCP uses Secret Driver, rechecking before `tools/list`.
-`driverPolicy.toolNames` pins upstream names across runtimes.
+Managed MCP rechecks Secret access before `tools/list`; `driverPolicy.toolNames` pins upstream names.
 
-Closing cancels; account changes clear results; Harness changes clear selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-bound size/time, reject redirects and credential echoes, and return safe metadata
-with `Cache-Control: no-store`.
+Closing cancels; account changes clear results; Harness changes clear selections and approvers.
+[Hosted discovery](../reference/drivers/plugin-bundled.md#selection-and-catalogs) limits responses, rejects redirects and credential echoes, and returns safe metadata with `Cache-Control: no-store`.
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
-`requires_local_executor`; explicit `true` without skills remains unavailable.
-Details reject unmatched MCP/scheduled tasks. Optional stdio
-`NativeCodexPluginCatalogReader` rejects invalid `plugin/list` results and stops its child.
+`requires_local_executor`; `true` without skills is unavailable. Details reject
+unmatched MCP/scheduled tasks. Native installation runs later on the Harness.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -368,6 +364,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-17 18:14: Remove static Codex discovery and reader. (authoring-run/63dbef62-5aa6-42f7-8abe-781ee1b5e023 - 91d677941)
 
 - 2026-11-12 11:28: Accept omitted hosted executor metadata. (authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
 

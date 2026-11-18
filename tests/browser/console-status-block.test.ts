@@ -337,7 +337,7 @@ test("Notices and the sign-in alert", async (t) => {
   await t.test(
     "warning and info notices use their tone's token colours with readable text",
     async (t) => {
-      const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+      const driver = new CodexPluginDriver();
       fixture.controller.registerDriver(driver);
       fixture.controller.selectDriver("plugin", driver.id);
       const namespace = await fixture.createNamespace("Status notices", { ready: true });

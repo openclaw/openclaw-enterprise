@@ -10,7 +10,6 @@ import { context } from "./plugin-driver-fixtures.ts";
 import "./plugin-driver-openclaw-policy-cases.ts";
 import "./plugin-driver-openclaw-tool-denial-cases.ts";
 import "./plugin-driver-codex-catalog-cases.ts";
-import "./plugin-driver-codex-catalog-reader-cases.ts";
 import "./plugin-driver-codex-configuration-cases.ts";
 
 test("bundled Plugin Drivers enforce Harness identity", async () => {

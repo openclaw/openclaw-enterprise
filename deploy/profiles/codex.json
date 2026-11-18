@@ -9,9 +9,7 @@
       "plugin": [
         {
           "id": "codex-plugin",
-          "configuration": {
-            "catalogSource": "hosted"
-          }
+          "configuration": {}
         }
       ]
     }

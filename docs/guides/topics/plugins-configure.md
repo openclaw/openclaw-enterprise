@@ -29,10 +29,9 @@ the plugin takes effect on the next deployment. The Agent keeps its separately a
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
 The CLI example below uses Diffs.
-For dedicated Codex browsing, the curated catalog needs no Secret. Hosted
-discovery requires a bound Service Accounts token Secret under **Credentials**
-and uses it server-side; other authentication methods cannot browse the hosted
-catalog. Select **Save plugin selections**, then
+Dedicated Codex browsing uses the supported account authentication configured
+under **Credentials**, such as a Service Accounts token Secret or a saved ChatGPT login.
+OCC uses the credential server-side for hosted discovery. Select **Save plugin selections**, then
 **Deploy new version**. The prior version keeps its
 original selections. On its **Plugins** tab, you can inspect that immutable
 snapshot. See the [Plugins tab guide](../console/configuration-plugins-and-files.md#plugins-tab)

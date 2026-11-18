@@ -433,7 +433,7 @@ test("Save repository access shows busy while its request runs", async (t) => {
 test("a permanently disabled button says not allowed, not busy", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Disabled cursor", { ready: true });

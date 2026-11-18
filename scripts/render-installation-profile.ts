@@ -2512,8 +2512,7 @@ async function resolveHostedDiscoveryCidrs(
   diagnostics: Diagnostics,
 ) {
   const hostedDiscovery = profile.installation.drivers.plugin.some(
-    (entry) =>
-      entry.id === "codex-plugin" && (entry.configuration?.catalogSource ?? "hosted") === "hosted",
+    (entry) => entry.id === "codex-plugin",
   );
   if (!hostedDiscovery) {
     return;

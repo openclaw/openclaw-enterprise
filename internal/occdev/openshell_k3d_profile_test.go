@@ -751,7 +751,21 @@ func TestOpenShellImageImportKeepsTheSourceWhenTheChildPullFails(t *testing.T) {
 	}
 }
 
+func TestKubernetesOnlyControlPlaneRejectsMalformedCodexDiscoveryCIDRs(t *testing.T) {
+	for _, value := range []string{`null`, `"192.0.2.10/32"`, `["192.0.2.0/24"]`, `["::1/128"]`, `[true]`} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CODEX_DISCOVERY_CIDRS", value)
+			r := newRunner(Options{Repository: t.TempDir()})
+			err := r.installKubernetesControlPlane(context.Background(), kubernetesOnlyOpenShellState(t), "controller", "postgres", false, time.Second)
+			if err == nil || !strings.Contains(err.Error(), "CODEX_DISCOVERY_CIDRS") {
+				t.Fatalf("expected discovery CIDR refusal, got %v", err)
+			}
+		})
+	}
+}
+
 func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testing.T) {
+	t.Setenv("CODEX_DISCOVERY_CIDRS", `["192.0.2.10/32", "192.0.2.11/32"]`)
 	realHelm, helmErr := exec.LookPath("helm")
 	state := kubernetesOnlyOpenShellState(t)
 	if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0o600); err != nil {
@@ -792,6 +806,9 @@ func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testin
 	// also for the upgrade helper's startup preflight Pods, which read the
 	// candidate database and run Compute preflight as the API and worker do.
 	values := readJSONFile(t, filepath.Join(state.directory, "helm-values.json"))
+	if !reflect.DeepEqual(values["api"].(map[string]any)["modelDiscoveryCidrs"], jsonValue(t, []string{"192.0.2.10/32", "192.0.2.11/32"})) {
+		t.Fatalf("unexpected hosted discovery egress: %#v", values["api"])
+	}
 	if !reflect.DeepEqual(values["database"], jsonValue(t, map[string]any{"cidrs": []string{"10.42.0.20/32"}})) ||
 		!reflect.DeepEqual(values["cluster"], jsonValue(t, map[string]any{"cidrs": []string{"172.30.42.3/32"}, "port": 6443})) {
 		t.Fatalf("unexpected chart egress values: %#v %#v", values["database"], values["cluster"])

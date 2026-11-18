@@ -670,6 +670,18 @@ func kubernetesMetadata(name, namespace string, labels map[string]string) map[st
 }
 
 func (r *runner) installKubernetesControlPlane(ctx context.Context, state *developmentState, controllerImage, postgresImage string, routing bool, timeout time.Duration) error {
+	var discoveryCIDRs []string
+	if raw, supplied := os.LookupEnv("CODEX_DISCOVERY_CIDRS"); supplied {
+		if err := json.Unmarshal([]byte(raw), &discoveryCIDRs); err != nil || discoveryCIDRs == nil {
+			return errors.New("CODEX_DISCOVERY_CIDRS must be a JSON array of IPv4 /32 destinations")
+		}
+		for _, cidr := range discoveryCIDRs {
+			prefix, err := netip.ParsePrefix(cidr)
+			if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 32 {
+				return errors.New("CODEX_DISCOVERY_CIDRS must contain only IPv4 /32 destinations")
+			}
+		}
+	}
 	databaseName := state.DatabaseName
 	if databaseName == "" {
 		databaseName = "openclaw_enterprise"
@@ -816,6 +828,9 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		"api":            map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 		"resources":      resources,
 		"gatewayRouting": map[string]any{"enabled": routing},
+	}
+	if discoveryCIDRs != nil {
+		values["api"].(map[string]any)["modelDiscoveryCidrs"] = discoveryCIDRs
 	}
 	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}

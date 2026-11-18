@@ -324,7 +324,7 @@ test(
 );
 
 test(
-  "curated catalog Linear selection runs in a normal Codex Agent turn",
+  "hosted catalog Linear selection runs in a normal Codex Agent turn",
   {
     skip: pluginProofSkipReason("codex_linear"),
     timeout: 900_000,
@@ -343,20 +343,25 @@ test(
     const credential = await readCodexServiceAccountCredential();
     const fixture = await createPluginDriverRealFixture(context, {
       pluginDriverId: "codex-plugin",
-      pluginDriverConfiguration: { catalogSource: "openai-curated" },
+      pluginDriverConfiguration: {},
       scenario: "codex_linear",
       databaseUrl: process.env.OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL,
       codexCredential: credential,
     });
     const path = `/namespaces/${fixture.namespaceId}/agents/plugins`;
-    const catalog = await fixture.request("POST", path, { harnessId: "codex" });
+    const catalog = await fixture.request("POST", path, {
+      harnessId: "codex",
+      accessToken: credential.accessToken,
+      q: "Linear",
+    });
     assert.equal(catalog.status, 200, JSON.stringify(catalog.error));
     const linear = catalog.data.plugins.find(
       (entry) => entry.id === "codex-plugin:linear@openai-curated-remote",
     );
-    assert.ok(linear, "the configured catalog must offer Linear without a discovery token.");
+    assert.ok(linear, "the authenticated workspace catalog must offer Linear.");
     const detail = await fixture.request("POST", `${path}/details`, {
       harnessId: "codex",
+      accessToken: credential.accessToken,
       pluginId: linear.remoteId,
     });
     assert.equal(detail.status, 200, JSON.stringify(detail.error));

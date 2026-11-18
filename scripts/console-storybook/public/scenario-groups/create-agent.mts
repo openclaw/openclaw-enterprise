@@ -485,15 +485,15 @@ export const createAgentFormScenarios = {
       "A denied discovery request explains that permission is required without exposing Secret data.",
     gap: "The Secret and denial are simulated; this preview does not verify IAM enforcement.",
   },
-  createPluginsCurated: {
+  createPluginsHostedCatalogs: {
     group: "Pages/Create Agent",
-    name: "Select Linear from the curated catalog",
+    name: "Switch between Codex and OpenClaw plugin catalogs",
     path: create,
     pluginCatalogs: [
       {
         harnessId: "codex",
         pluginPolicies: pluginCapabilities,
-        pluginDiscovery: { credential: "none" },
+        pluginDiscovery: { credential: "required" },
       },
       {
         harnessId: "openclaw",
@@ -507,50 +507,21 @@ export const createAgentFormScenarios = {
         pluginDiscovery: { credential: "none" },
       },
     ],
-    pluginDiscovery: (() => {
-      const linear = {
-        id: "codex-plugin:linear@openai-curated-remote",
-        remoteId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c",
-        name: "Linear",
-        description: "Plan and build products",
-        websiteUrl: "https://linear.app/",
-        privacyPolicyUrl: "https://linear.app/privacy",
-        termsOfServiceUrl: "https://linear.app/terms",
-        selectableWithoutTools: true,
-        tools: null,
-      };
-      return {
-        pages: {
-          initial: {
-            plugins: [linear],
-            nextCursor: null,
-            setup: {
-              message:
-                "This catalog does not verify workspace access, app connections, or tool availability. Configure the Agent's credentials and app access before deployment.",
-              links: [
-                {
-                  label: "Manage workspace plugins",
-                  url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
-                },
-              ],
-            },
-          },
-        },
-        details: { [linear.remoteId]: linear },
-      };
-    })(),
+    pluginDiscovery,
+    extraSecrets: [{ id: "sec_storybook_pat", name: "Service account PAT (simulated)" }],
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
+      { selector: "#provider-credential-secret", value: "sec_storybook_pat" },
       click("Configure plugins"),
     ],
     description:
-      "Both plugin catalogs are enabled. The Codex Harness offers Linear without a discovery token.",
+      "The selected PAT Secret loads the simulated account-specific Codex catalog. The OpenClaw catalog uses its separate saved-Agent flow.",
     steps: [
-      "Choose Linear, add it, and set a default policy. Close the modal and inspect Plugin selections JSON.",
+      "Choose Calendar, add it, and set a default policy. Close the modal and inspect Plugin selections JSON.",
       "Change Harness to OpenClaw and reopen Configure plugins. The form clears the Codex selections and directs you to the saved Agent to install Google Workspace.",
     ],
-    gap: "The catalog and provider responses are simulated. This preview does not invoke Linear or verify runtime authentication.",
+    gap: "The Secret and discovery responses are simulated. This preview does not verify provider access or runtime authentication.",
   },
   createPluginsDiscovered: {
     group: "Pages/Create Agent",

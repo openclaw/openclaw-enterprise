@@ -91,13 +91,10 @@ and Secrets remain. Sign-out clears drafts; a reload asks first. A refused Creat
 reusing saved resources, except a repository-policy refusal; uncertain outcomes follow save
 recovery below.
 
-For Codex plugins, open **Configure plugins**. With the
-[OpenAI curated catalog](../drivers/plugin-bundled.md#selection-and-catalogs),
-you can browse and select supported plugins without a discovery token. Their tool
-inventory and account access are unknown. In hosted mode, select **Service Accounts** with
-**Codex** and choose a PAT Secret, or enter a token under **Plugin discovery token
-(optional)**. **Previous page** and **Next page** fetch hosted pages; **Filter this
-page** filters locally. PAT catalog search is unavailable.
+For Codex plugins, select **Service Accounts** with **Codex** and choose a PAT Secret,
+enter a token under **Plugin discovery token (optional)**, or use a supported
+**ChatGPT OAuth (Experimental)** login. Open **Configure plugins** to browse the
+authenticated hosted catalog. **Previous page** and **Next page** fetch hosted pages.
 Select a plugin to load tools, then **Add**. Use toggles and **Tool policy** for
 overrides. **Configured plugins** includes selections from other pages. **Done** closes the modal;
 **Create Agent** saves changes.

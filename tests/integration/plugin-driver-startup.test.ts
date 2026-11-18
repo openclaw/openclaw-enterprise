@@ -31,7 +31,7 @@ test("Installation startup selects one bundled Agent PluginDriver or leaves it a
 
 test("Installation startup registers each configured plugin catalog and rejects duplicate owners", async (t) => {
   const selections = [
-    { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+    { id: "codex-plugin", configuration: {} },
     { id: "occ-plugin", configuration: {} },
   ];
   const { pluginDrivers } = await load(t, selections);
@@ -47,35 +47,9 @@ test("Installation startup registers each configured plugin catalog and rejects 
   await assert.rejects(load(t, [selections[0], selections[0]]), /duplicates another Plugin Driver/);
 });
 
-test("Installation startup accepts explicit native Codex catalog reader configuration", async (t) => {
-  const loaded = await load(t, [
-    {
-      id: "codex-plugin",
-      configuration: {
-        codexExecutable: "/tmp/codex-plugin-catalog-bin/codex",
-        codexHome: "/tmp/codex-plugin-catalog-home",
-        requestTimeoutMs: 30_000,
-      },
-    },
-  ]);
-  assert.equal(loaded.pluginDrivers?.[0]?.id, "codex-plugin");
-  assert.deepEqual(loaded.installation.drivers.plugin?.[0]?.configuration, {
-    codexExecutable: "/tmp/codex-plugin-catalog-bin/codex",
-    codexHome: "/tmp/codex-plugin-catalog-home",
-    requestTimeoutMs: 30_000,
-  });
-});
-
-test("Installation selects hosted discovery by default and can select the curated catalog", async (t) => {
-  for (const [configuration, credential] of [
-    [{}, "required"],
-    [{ catalogSource: "hosted" }, "required"],
-    [{ catalogSource: "openai-curated" }, "none"],
-  ]) {
-    const loaded = await load(t, [{ id: "codex-plugin", configuration }]);
-    assert.equal(loaded.pluginDrivers?.[0]?.discoveryCredential, credential);
-    assert.deepEqual(loaded.installation.drivers.plugin?.[0]?.configuration, configuration);
-  }
+test("Installation requires authenticated Codex discovery without catalog configuration", async (t) => {
+  const loaded = await load(t, [{ id: "codex-plugin", configuration: {} }]);
+  assert.equal(loaded.pluginDrivers?.[0]?.discoveryCredential, "required");
 });
 
 test("Installation rejects untrusted PluginDriver packages, unknown selections and configuration", async (t) => {
@@ -93,36 +67,16 @@ test("Installation rejects untrusted PluginDriver packages, unknown selections a
       { id: "codex-plugin", configuration: { arbitrarySource: "https://example.test/plugin" } },
       refusal("", "UNKNOWN_FIELD", "Configuration does not satisfy additionalProperties."),
     ],
-    [
-      { id: "codex-plugin", configuration: { catalogSource: "unknown" } },
-      refusal("/catalogSource", "INVALID_VALUE", "Configuration does not satisfy enum."),
-    ],
-    ...[1, null].map((catalogSource) => [
-      { id: "codex-plugin", configuration: { catalogSource } },
-      [
-        ...refusal("/catalogSource", "INVALID_TYPE", "Configuration does not satisfy type."),
-        ...refusal("/catalogSource", "INVALID_VALUE", "Configuration does not satisfy enum."),
-      ],
+    ...[
+      { catalogSource: "openai-curated" },
+      { catalogSource: "hosted" },
+      { codexExecutable: "/tmp/codex" },
+      { codexHome: "/tmp/codex-home" },
+      { requestTimeoutMs: 10_000 },
+    ].map((configuration) => [
+      { id: "codex-plugin", configuration },
+      refusal("", "UNKNOWN_FIELD", "Configuration does not satisfy additionalProperties."),
     ]),
-    [
-      { id: "codex-plugin", configuration: { codexExecutable: "/tmp/codex" } },
-      refusal(
-        "/codexHome",
-        "REQUIRED",
-        "This field is required for a configured native catalog reader.",
-      ),
-    ],
-    [
-      {
-        id: "codex-plugin",
-        configuration: {
-          codexExecutable: "/tmp/codex",
-          codexHome: "/tmp/codex-home",
-          requestTimeoutMs: 0,
-        },
-      },
-      refusal("/requestTimeoutMs", "INVALID_VALUE", "Configuration does not satisfy minimum."),
-    ],
   ]) {
     if (expected instanceof RegExp) {
       await assert.rejects(load(t, [selection]), expected);

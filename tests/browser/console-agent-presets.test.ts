@@ -92,6 +92,7 @@ import {
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
 import { restrict } from "../helpers/iam-grants.ts";
 import { within } from "../helpers/wait-for.ts";
+import { mockHostedLinearCatalog } from "./console-hosted-plugin-fixture.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -955,16 +956,17 @@ test("Runtime-auth Presets are refused before anything is saved where Compute re
 test("Create Agent browses the Codex catalog and discards its selections when switching to OpenClaw", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  const driver = new CodexPluginDriver();
   fixture.controller.installPluginDrivers([new OCCPluginDriver(), driver]);
-  const namespace = await fixture.createNamespace("Curated plugin browsing", { ready: true });
+  mockHostedLinearCatalog(t);
+  const namespace = await fixture.createNamespace("Authenticated plugin browsing", { ready: true });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  // Codex serves curated plugins only to ChatGPT logins: the API-key default cannot browse them.
+  // An API key cannot browse the account-specific Codex catalog.
   assert.equal(await page.getByLabel("Authentication method").inputValue(), "api_key");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
@@ -977,12 +979,14 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
 
   await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await page.locator("#plugin-discovery-token summary").click();
+  await page.locator("#provider-api-key").fill("at-browser-catalog");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const linear = dialog.getByRole("button", { name: "Linear", exact: true });
   await linear.waitFor();
   assert.deepEqual(
     pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
-    [{ harnessId: "codex" }],
+    [{ accessToken: "at-browser-catalog", harnessId: "codex" }],
   );
   await linear.click();
   await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
@@ -991,7 +995,7 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   });
   assert.deepEqual(
     pathRequests(requests, "POST", `${catalogPath}/details`).map(({ body }) => body),
-    [{ harnessId: "codex", pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
+    [{ accessToken: "at-browser-catalog", harnessId: "codex", pluginId: "remote-linear" }],
   );
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
@@ -3683,9 +3687,10 @@ test("method-only codex_pat Preset requires credential entry in the create form"
 });
 
 test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Agent conflict", async (t) => {
+  mockHostedLinearCatalog(t);
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Create credential picker", { ready: true });
@@ -3697,7 +3702,7 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   await page.clock.install({ time: new Date("2026-09-27T12:00:00Z") });
   await page.clock.pauseAt(new Date("2026-09-27T12:00:01Z"));
-  const secretValue = "picker-created-model-token";
+  const secretValue = "at-picker-created-model-token";
   const modelSecret: SecretWire | null = await createModelCredentialSecret(page, secretValue);
   assert.ok(modelSecret);
   assert.equal(
