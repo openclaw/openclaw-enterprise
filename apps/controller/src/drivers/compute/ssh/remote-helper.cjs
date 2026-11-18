@@ -709,7 +709,6 @@ Environment=OPENCLAW_STATE_DIR=${agentDir}/state
 Environment=OPENCLAW_CONFIG_PATH=${agentDir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
 Environment=OPENCLAW_NO_AUTO_UPDATE=1
-Environment=OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE=${revision.id}
 ${extraEnvironment}${password ? `EnvironmentFile=${agentDir}/gateway-password.env\n` : ""}EnvironmentFile=-${agentDir}/env
 ${setup}ExecStart=${runtime.nodePath} ${runtime.openclawPath} gateway --port ${port}
 Restart=always

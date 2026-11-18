@@ -267,9 +267,8 @@ early when other Work is claimable.
 
 On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
 removal before stopping the Harness. The Gateway's graceful shutdown aborts
-active turns and records them for restart recovery under its
-`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, the continuation generation. Only a
-Gateway of the same generation resumes them; a stop or deletion never does
+active turns and records eligible work for native restart recovery. A later
+Gateway startup can continue that work, including after Stop followed by Deploy
 ([interrupted turns](../reference/agents/interrupted-turns.md)). Idle
 Gateways and pre-start wrappers exit promptly. Forced termination requires proof
 the previous owner stopped before retained state can be reused.
@@ -361,6 +360,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 20:10: Remove the recovery-generation boundary; later Gateway startup uses native eligibility (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9).
 
 - 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
 

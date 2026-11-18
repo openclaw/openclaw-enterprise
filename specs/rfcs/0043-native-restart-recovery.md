@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -8,6 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-0043
 - **Created:** 2026-11-18
+- **RFC and implementation PR:** [#6502](https://github.com/openclaw/openclaw-enterprise/pull/6502)
 - **Implementation plan:** [TASK-0053](../plans/0053-native-restart-recovery.md)
 - **Predecessor:** [RFC-0042](0042-redeployment-continuation.md), delivered by [PR #6442](https://github.com/openclaw/openclaw-enterprise/pull/6442).
 
@@ -81,6 +82,12 @@ This change does not implement issue #6500 or change production deployment polic
   ownership remain covered by real PostgreSQL worker tests.
 - Native image checks cover both images on AMD64 and ARM64. Missing runtime,
   credentials, or infrastructure remains an explicit proof gap.
+
+## Current-base adaptation
+
+The current pin includes the former scope patch upstream. Removing it requires
+an inverse source patch while retaining that pin and its unrelated updates.
+This removes the same scope fields and checks; it adds no recovery metadata.
 
 ## Delivery
 
