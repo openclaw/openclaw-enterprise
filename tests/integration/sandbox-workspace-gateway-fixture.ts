@@ -202,6 +202,12 @@ export function workspaceGatewayClient(
         config: { ...provider.config, ...structuredClone(config) },
         resourceVersion: String(Number(provider.resourceVersion) + 1),
       };
+      // OpenShell UpdateProvider uses empty patch values to delete config keys.
+      for (const [key, value] of Object.entries(config)) {
+        if (value === "") {
+          delete updated.config[key];
+        }
+      }
       providers.set(name, updated);
       return updated;
     },

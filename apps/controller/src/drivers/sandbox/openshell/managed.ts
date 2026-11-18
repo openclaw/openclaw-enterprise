@@ -341,8 +341,14 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         throw new Error("Stop the managed Sandbox before replacing runtime material.");
       }
     }
-    if (Object.keys(provider.config).some((key) => !Object.hasOwn(desired, key))) {
-      throw new Error("Managed prototype cannot remove runtime Provider config keys.");
+    // UpdateProvider treats an empty value as deletion, so it cannot create or
+    // replace a desired empty field. Existing empty fields can remain untouched.
+    if (
+      Object.entries(desired).some(([key, value]) => value === "" && provider.config[key] !== "")
+    ) {
+      throw new Error(
+        "Managed runtime Provider cannot set an empty config value during replacement.",
+      );
     }
     // Credentials are write-only. A retry installs the same exact revision material
     // while stopped, then publishes its revision in the CAS-protected config.
@@ -365,14 +371,26 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     await client.updateProviderConfig(
       workspace,
       name,
-      // UpdateProvider is a patch: an empty value deletes a key. Preserve
-      // unchanged empty fields (such as node_ca_pem without TLS) by omitting them.
-      Object.fromEntries(
-        Object.entries(desired).filter(([key, value]) => provider.config[key] !== value),
-      ),
+      // Omit unchanged empty fields (such as node_ca_pem without TLS); send
+      // deletion markers only for keys absent from the successor's config.
+      Object.fromEntries([
+        ...Object.entries(desired).filter(([key, value]) => provider.config[key] !== value),
+        ...Object.keys(provider.config)
+          .filter((key) => !Object.hasOwn(desired, key))
+          .map((key) => [key, ""]),
+      ]),
       refreshed.resourceVersion,
       context.signal,
     );
+    const updated = await client.getProvider(workspace, name, context.signal);
+    if (
+      updated === undefined ||
+      updated.type !== profileId ||
+      !isDeepStrictEqual(updated.labels, labels) ||
+      !isDeepStrictEqual(updated.config, desired)
+    ) {
+      throw new Error("OpenShell did not store the exact requested runtime Provider config.");
+    }
     return { name, created: false };
   }
 

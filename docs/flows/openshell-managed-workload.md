@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-16"
-last_updated_session: authoring-run/6162dd23-33b7-482f-be88-9b54cc477da0
+updated: "2026-11-18"
+last_updated_session: authoring-run/671a44ed-6929-4d1b-b949-8fc89154ce75
 ---
 
 # Managed OpenShell workload flow
@@ -105,24 +105,25 @@ supplies its own filesystem and runtime-class/resource configuration.
 
 ### 2. Reconcile a stopped workload
 
-`ManagedOpenShellSandbox.ensureRuntimeProvider` uses an Agent-derived Provider
-name. A new revision replaces its material only while the Sandbox is stopped.
-Same-revision retries permit the existing restricted setup-envelope renewal.
-Credential updates precede a fresh Provider read and version-checked config write.
-The config write patches only changed fields. Unchanged empty values, including
-`node_ca_pem` without a CA, remain stored: sending an empty update would request
-deletion and the Gateway client refuses it.
+`ManagedOpenShellSandbox.ensureRuntimeProvider` names Providers by Agent ID.
+Replacement requires a stopped Sandbox; same-revision retries permit restricted
+setup-envelope renewal. Credential updates precede config read and version-checked write.
+The patch updates changed fields and deletes obsolete keys with empty-string
+markers. It omits unchanged empty fields, including `node_ca_pem` without a CA.
+Setting a desired field to empty is refused because OpenShell would delete it.
+Readback must match config, profile and ownership before reconciliation continues.
+Rejected or incomplete writes prevent start; retries recognize committed config
+after a lost response.
 
 `reconcileHarness` verifies Namespace and Agent ownership, then requires stopped
 state before changing the revision. It rejects resource and runtime-class changes.
 `reconcilePolicy` reads the latest stored policy separately from the creation
 specification. Static policy and non-Git middleware bindings must remain unchanged.
-When Provider membership differs, `reconcileHarness` first uses `reconcilePolicy`
-to clear the base network rules while stopped. This removes rules that depend on
-old Providers or conflict with new credential scopes; Provider-contributed policy
-remains under OpenShell's control. A resource-version check protects each policy
-write. Readback verifies the requested policy and the same stopped Sandbox,
-workload and ownership. OCE does not wait for activation while stopped.
+When Provider membership differs, `reconcileHarness` clears base network rules
+through `reconcilePolicy` while stopped to avoid credential-scope conflicts.
+OpenShell controls Provider-contributed policy. Each policy write checks the
+resource version; readback verifies policy, stopped Sandbox identity, workload
+and ownership. OCE does not wait for activation while stopped.
 
 `reconcileProviders` ignores attachment order. It verifies the intermediate policy,
 then detaches obsolete Providers before attaching replacements to avoid credential
@@ -301,6 +302,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 16:51: Remove obsolete Provider config keys with readback in the accompanying fix. (authoring-run/671a44ed-6929-4d1b-b949-8fc89154ce75 - 434ca70f7e7d60769865b780096886acbfc0219c)
 
 - 2026-11-16 19:23: Support Git enablement and disablement after verified predecessor retirement in the accompanying implementation. (authoring-run/6162dd23-33b7-482f-be88-9b54cc477da0 - 7b9261020c74d0beb64df5cf227127cb8c9b32c7)
 

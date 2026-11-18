@@ -123,8 +123,12 @@ requires the expected policy and current execution evidence.
 Static policy and non-Git middleware bindings must remain unchanged. Provider profile
 and policy conflicts fail replacement before start.
 
-Provider config updates preserve unchanged empty fields, including an absent
-node CA. Before a native OpenClaw replacement starts, OCE restores and verifies
+Runtime Provider config replacement removes keys absent from the successor's
+configuration and preserves unchanged empty fields, including an absent node CA.
+OpenShell must accept the resulting config under the Provider profile; rejection
+or a readback mismatch prevents restart. Changing a field to an empty value is
+unsupported because OpenShell interprets that update as deletion.
+Before a native OpenClaw replacement starts, OCE restores and verifies
 its temporary startup exposure if the previous revision withdrew it. The route
 uses bearer-passthrough authorization and is withdrawn again after enrollment.
 Codex keeps its exposure as the app-server transport.
@@ -155,7 +159,7 @@ See the [provisioning flow](../../flows/openshell-managed-workload.md).
   within that root are refused. The inherited `sandboxDataMount` fields describe a logical
   workspace path; no mount using them is submitted to OpenShell.
 - Changing the Harness type, static policy, non-Git middleware bindings, resource requests
-  or runtime class through workload replacement is refused. Runtime Provider configuration keys cannot be removed.
+  or runtime class through workload replacement is refused.
 - Agents can enable or disable Git and change repository selections and resolved
   permissions between revisions. Cleanup closes the old authorization and removes
   its Provider and middleware before preparing the successor. Enabling Git requires

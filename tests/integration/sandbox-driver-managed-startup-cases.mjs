@@ -245,16 +245,36 @@ export function registerManagedOpenShellStartupCases() {
     const server = new grpc.Server();
     t.after(() => server.forceShutdown());
     const updateProviderConfig = client.updateProviderConfig.bind(client);
+    let configUpdateMode = "apply";
     server.addService(grpc.loadPackageDefinition(definition).openshell.v1.OpenShell.service, {
       async UpdateProvider(call, callback) {
         try {
           const request = call.request.provider;
-          const provider = await updateProviderConfig(
-            call.request.workspace_scope.workspace,
-            request.metadata.name,
-            request.config,
-            request.metadata.resource_version,
-          );
+          if (configUpdateMode === "reject") {
+            callback(
+              Object.assign(new Error("Provider update rejected"), {
+                code: grpc.status.FAILED_PRECONDITION,
+              }),
+            );
+            return;
+          }
+          const provider =
+            configUpdateMode === "ignore"
+              ? client.providers.get(request.metadata.name)
+              : await updateProviderConfig(
+                  call.request.workspace_scope.workspace,
+                  request.metadata.name,
+                  request.config,
+                  request.metadata.resource_version,
+                );
+          if (configUpdateMode === "lose-response") {
+            callback(
+              Object.assign(new Error("Provider update response lost"), {
+                code: grpc.status.UNAVAILABLE,
+              }),
+            );
+            return;
+          }
           callback(null, {
             provider: {
               metadata: {
@@ -335,6 +355,13 @@ export function registerManagedOpenShellStartupCases() {
     // A server with the older image-only update contract can acknowledge an update
     // while retaining command/environment/metadata. Readback must prevent StartSandbox.
     phase = "SANDBOX_PHASE_STOPPED";
+    const runtimeProvider = [...client.providers.values()].find(
+      (provider) => provider.config.oce_revision_id === revision.id,
+    );
+    // A previous runtime version may have stored fields the successor no longer
+    // uses. Both populated and empty obsolete fields must disappear on replacement.
+    runtimeProvider.config.obsolete_runtime_setting = "previous-value";
+    runtimeProvider.config.obsolete_empty_setting = "";
     let attemptedUpdate;
     client.updateSandbox = async (update) => {
       attemptedUpdate = update;
@@ -343,18 +370,48 @@ export function registerManagedOpenShellStartupCases() {
     client.startSandbox = async () => {
       assert.fail("An incomplete workload update must never start");
     };
-    await assert.rejects(
+    const replace = () =>
       driver.provisionHarness({
         ...context,
         revision: successor,
         requirements: { ...requirements, labels: { "openclaw.dev/revision": successor.id } },
-      }),
-      /did not store the exact requested workload update/,
+      });
+    // A refused patch (for example, profile validation or a version conflict)
+    // and an acknowledged but uncommitted patch must both prevent workload update.
+    configUpdateMode = "reject";
+    await assert.rejects(replace(), { code: grpc.status.FAILED_PRECONDITION });
+    configUpdateMode = "ignore";
+    await assert.rejects(replace(), /did not store the exact requested runtime Provider config/);
+    assert.equal(attemptedUpdate, undefined);
+    assert.equal(client.providers.get(runtimeProvider.name).config.oce_revision_id, revision.id);
+    assert.equal(
+      client.providers.get(runtimeProvider.name).config.obsolete_runtime_setting,
+      "previous-value",
     );
+    // A committed deletion with a lost response is recovered by reading the
+    // stored successor config on retry, without sending another deletion patch.
+    configUpdateMode = "lose-response";
+    await assert.rejects(replace(), /OpenShell UpdateProvider failed with gRPC status 14/);
+    assert.equal(attemptedUpdate, undefined);
+    assert.equal(phase, "SANDBOX_PHASE_STOPPED");
+    configUpdateMode = "apply";
+    await assert.rejects(replace(), /did not store the exact requested workload update/);
     assert.equal(attemptedUpdate.expectedResourceVersion, "7");
     assert.equal(attemptedUpdate.annotations["openclaw.dev/revision-id"], successor.id);
     const configUpdate = client.calls.find(([operation]) => operation === "updateProviderConfig");
-    assert.deepEqual(configUpdate[2], { oce_revision_id: successor.id });
+    assert.deepEqual(configUpdate[2], {
+      oce_revision_id: successor.id,
+      obsolete_runtime_setting: "",
+      obsolete_empty_setting: "",
+    });
+    assert.equal(
+      Object.hasOwn(client.providers.get(configUpdate[1]).config, "obsolete_runtime_setting"),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(client.providers.get(configUpdate[1]).config, "obsolete_empty_setting"),
+      false,
+    );
     assert.equal(client.providers.get(configUpdate[1]).config.node_ca_pem, "");
     // Retrying with a server that stores the complete update must finish the
     // replacement, without resending the already committed Provider patch.

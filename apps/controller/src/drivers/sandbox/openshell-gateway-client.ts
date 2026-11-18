@@ -2456,11 +2456,12 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   ): Promise<OpenShellProviderResponse> {
     if (
       Object.keys(config).length === 0 ||
-      Object.values(config).some((value) => !isNonEmptyString(value))
+      Object.values(config).some((value) => typeof value !== "string")
     ) {
-      // OpenShell interprets an empty value as a request to delete that field.
-      throw new OpenShellGatewayFailure("OpenShell provider config updates must be nonempty.");
+      throw new OpenShellGatewayFailure("OpenShell provider config updates require string fields.");
     }
+    // Empty string values deliberately request deletion under UpdateProvider's
+    // patch contract; an empty map would leave all config unchanged.
     if (!/^[1-9]\d*$/u.test(expectedResourceVersion)) {
       throw new OpenShellGatewayFailure(
         "OpenShell provider config updates require a positive resource version.",
