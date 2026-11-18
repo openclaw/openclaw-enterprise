@@ -311,6 +311,7 @@ test(
       assert.ok(captured.timestamps, "full dump must include the exact CLI service key");
       return {
         hash: createHash("sha256").update(normalized).digest("hex"),
+        normalized,
         timestamps: captured.timestamps,
       };
     };
@@ -319,10 +320,26 @@ test(
       name: string,
     ) => {
       const after = await databaseSnapshot(name);
+      // Report table names and ordering only; snapshot values remain private.
+      const sections = (dump: string) =>
+        new Map(
+          Array.from(dump.matchAll(/^COPY ([^\n]+) FROM stdin;\n([\s\S]*?)\n\\\.\n/gm)).map(
+            ([, header, rows]) => [header, (rows ?? "").split("\n").sort().join("\n")] as const,
+          ),
+        );
+      const previous = sections(before.normalized);
+      const current = sections(after.normalized);
+      const changed = [...new Set([...previous.keys(), ...current.keys()])].filter(
+        (header) => previous.get(header) !== current.get(header),
+      );
+      const nonCopy = (dump: string) =>
+        dump.replace(/^COPY [^\n]+ FROM stdin;\n[\s\S]*?\n\\\.\n/gm, "");
+      const orderingOnly =
+        changed.length === 0 && nonCopy(before.normalized) === nonCopy(after.normalized);
       assert.equal(
         after.hash,
         before.hash,
-        "only the CLI key's authentication timestamps may change",
+        `only the CLI key's authentication timestamps may change; COPY ordering only: ${orderingOnly}; changed COPY contents: ${changed.join("; ") || "none"}`,
       );
       after.timestamps.forEach((timestamp, index) =>
         assert.ok(timestamp >= number(before.timestamps[index])),
