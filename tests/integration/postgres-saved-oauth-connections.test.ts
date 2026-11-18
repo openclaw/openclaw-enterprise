@@ -110,7 +110,7 @@ test(
     // registration and issues actual tokens without OpenShell or a Credential Refresh Driver.
     const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
     const preparedTokens = new TokenService();
-    const serverUrl = "https://api.connections.test/mcp";
+    const serverUrl = "https://api.connections.test/team%20space/mcp";
     let discoveredResource = serverUrl;
     const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
     const { app, controller, state, principal, inject, pool, adminAccount } =
@@ -177,7 +177,7 @@ test(
     const otherId = await makeNamespace();
     const base = `/namespaces/${namespaceId}`;
     const connections = `${base}/connections`;
-    const recipient = { host: "api.connections.test", port: 443, path: "/mcp" };
+    const recipient = { host: "api.connections.test", port: 443, path: "/team%20space/mcp" };
     const manualDestinations = [
       recipient,
       { host: "files.connections.test", port: 443, path: "/exports/**" },

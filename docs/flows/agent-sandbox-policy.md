@@ -72,10 +72,10 @@ Stale and unauthorized requests retain their resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
 omitting records with Unicode control characters.
 
-The staged `deploymentPolicyAdmissionDetails` check compares each HTTP or MCP injection rule
-against both the binding's current source destinations and its reviewed consumer requests.
-Network-only discovery can use another path on the same host. The revision caller still needs
-to supply this authority and the reviewed presentation. The provider enforces OAuth scopes.
+The staged `deploymentPolicyAdmissionDetails` checks each binding's source destinations,
+reviewed requests, environment name and presentation. HTTP rules can contain narrower
+allowances. MCP paths match `%20` literally. Same-host discovery can remain credentialless.
+OCC still needs to supply binding authority at revision admission. The provider enforces OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -273,6 +273,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 15:37: Clarify projection and request matching. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - f099db22a50b4929601520d156b5b14d6bb63613)
 
 - 2026-11-18 05:50: Trace per-binding static request admission. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 913c717d12f78645b5f8d47216aaddd2dfe90c0e)
 

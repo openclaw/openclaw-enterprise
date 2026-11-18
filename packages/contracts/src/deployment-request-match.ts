@@ -72,15 +72,15 @@ export function portsCovered(ports: PortRanges, allowed: readonly Destination[])
   });
 }
 
-// Match canonical path segments directly. Encoded delimiters, dot segments and path
-// parameters can be interpreted differently by the enforcing Driver and the origin.
+// Compare paths in their wire form. A space is always %20. Other escapes can
+// change segment boundaries or acquire a different meaning after decoding.
 function validPath(path: unknown, allowSubtree: boolean): path is string {
   if (typeof path !== "string" || !path.startsWith("/") || path.includes("//")) {
     return false;
   }
   const base = allowSubtree && path.endsWith("/**") ? path.slice(0, -3) : path;
   return (
-    !/[^A-Za-z0-9._~!$&'()+,:=@/-]/.test(base) &&
+    /^(?:[A-Za-z0-9._~!$&'()+,:=@/-]|%20)*$/.test(base) &&
     !base.split("/").some((part) => part === "." || part === "..")
   );
 }
@@ -160,6 +160,24 @@ export function disjointRequests(
   );
 }
 
+function conflictingAllowances(a: DeploymentRequestMatch, b: DeploymentRequestMatch): boolean {
+  const left = a.requestPolicy;
+  const right = b.requestPolicy;
+  if (
+    a.binary !== b.binary ||
+    !destinationsOverlap(a, b) ||
+    sameRequest(left, right) ||
+    disjointRequests(left, right)
+  ) {
+    return false;
+  }
+  // A nested HTTP allowance adds no access if the wider rule also covers its host and ports.
+  if (left?.type === "http" && right?.type === "http") {
+    return !requestCovered(a, [b]) && !requestCovered(b, [a]);
+  }
+  return true;
+}
+
 export function validateMatches(
   matches: readonly DeploymentRequestMatch[],
   pointer: string,
@@ -199,17 +217,7 @@ export function validateMatches(
     return details;
   }
   matches.forEach((grant, index) => {
-    if (
-      matches
-        .slice(0, index)
-        .some(
-          (other) =>
-            grant.binary === other.binary &&
-            destinationsOverlap(grant, other) &&
-            !sameRequest(grant.requestPolicy, other.requestPolicy) &&
-            !disjointRequests(grant.requestPolicy, other.requestPolicy),
-        )
-    ) {
+    if (matches.slice(0, index).some((other) => conflictingAllowances(grant, other))) {
       details.push({
         path: `${pointer}/${index}`,
         code: "INVALID_VALUE",

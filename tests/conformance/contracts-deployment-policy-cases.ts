@@ -30,7 +30,7 @@ function credentialPolicyFixture<Policy extends DeploymentRequestPolicy>(request
   const authority = {
     destinations: [{ host: destination.host, port: 443, path: requestPolicy.path }],
     allowedRequests: [request],
-    presentation: "bearer" as const,
+    projection: { environment: "WORK_TOKEN", presentation: "bearer" } as const,
   };
   const input = {
     targetMayHoldPlaceholders: false,
@@ -159,6 +159,18 @@ export function registerDeploymentPolicyCases(): void {
     }
   });
 
+  test("MCP admission preserves encoded spaces in exact recipient paths", () => {
+    const operation = { type: "mcp", method: "tools/list" } as const;
+    const { input } = credentialPolicyFixture({ ...operation, path: "/team%20space/mcp" });
+    assert.deepEqual(policyRefusals(input), []);
+
+    // An encoded separator or a second level of encoding stays invalid even when all policies agree.
+    for (const path of ["/team%2Fspace/mcp", "/team%2520space/mcp"]) {
+      const invalid = credentialPolicyFixture({ ...operation, path });
+      assert.deepEqual(policyRefusals(invalid.input), [["/bindings/0", "INVALID_VALUE"]], path);
+    }
+  });
+
   test("a reviewed MCP connection limits the executable, method and tool despite network permission", () => {
     const { input, request, binding } = credentialPolicyFixture({
       type: "mcp",
@@ -223,6 +235,17 @@ export function registerDeploymentPolicyCases(): void {
       policyRefusals({
         ...policy,
         networkAccessPolicy: { allowed: [request, { binary, host, ports }] },
+      }),
+      [["/networkAccessPolicy/allowed/1", "INVALID_VALUE"]],
+    );
+    // The exact path also allows a second port, so the subtree does not contain the whole rule.
+    const bothPorts = [...ports, { from: 8443, to: 8443 }];
+    const subtree = { ...request, requestPolicy: { ...request.requestPolicy, path: "/**" } };
+    assert.deepEqual(
+      policyRefusals({
+        ...policy,
+        ceiling: [{ id: "api", binary, host, ports: bothPorts }],
+        networkAccessPolicy: { allowed: [subtree, { ...request, ports: bothPorts }] },
       }),
       [["/networkAccessPolicy/allowed/1", "INVALID_VALUE"]],
     );
@@ -292,13 +315,17 @@ export function registerDeploymentPolicyCases(): void {
     const { input, binding, request, authority } = credentialPolicyFixture({
       type: "http",
       method: "GET",
-      path: "/events",
+      path: "/calendar/**",
     });
     const personal = calendarAccount("personal", "PERSONAL_TOKEN");
-    const other = { ...request, requestPolicy: { ...request.requestPolicy, path: "/personal" } };
+    const other = {
+      ...request,
+      requestPolicy: { ...request.requestPolicy, path: "/calendar/events" },
+    };
     const personalAuthority = {
       ...authority,
-      destinations: [{ host: request.host, port: 443, path: "/personal" }],
+      projection: { environment: "PERSONAL_TOKEN", presentation: "bearer" } as const,
+      destinations: [{ host: request.host, port: 443, path: other.requestPolicy.path }],
       allowedRequests: [other],
     };
     const policy = {
@@ -316,7 +343,22 @@ export function registerDeploymentPolicyCases(): void {
         { bindingRef: personal.bindingRef, allowedRequests: [other] },
       ],
     } satisfies CredentialPolicyAdmission;
+    // Both accounts can reach events. Each placeholder retains its own injection policy.
     assert.deepEqual(policyRefusals(policy), []);
+    assert.deepEqual(
+      policyRefusals({ ...policy, networkAccessPolicy: { allowed: [other, request] } }),
+      [],
+    );
+    // A unique environment variable can still differ from the one reviewed for this connection.
+    assert.deepEqual(
+      policyRefusals({
+        ...input,
+        bindings: [
+          { ...binding, projection: { ...binding.projection, environment: "OTHER_TOKEN" } },
+        ],
+      }),
+      [["/bindings/0", "INVALID_VALUE"]],
+    );
     assert.deepEqual(
       policyRefusals({ ...policy, authorityForBinding: input.authorityForBinding }),
       [["/bindings/1", "INVALID_VALUE"]],
@@ -354,7 +396,10 @@ export function registerDeploymentPolicyCases(): void {
     assert.deepEqual(
       policyRefusals({
         ...input,
-        authorityForBinding: () => ({ ...authority, presentation: "repository_git" }),
+        authorityForBinding: () => ({
+          ...authority,
+          projection: { ...authority.projection, presentation: "repository_git" },
+        }),
         bindings: [
           {
             ...binding,
@@ -379,7 +424,10 @@ export function registerDeploymentPolicyCases(): void {
       projection: { environment: "MODEL_KEY", presentation: "x-api-key" },
     } as const;
     // The fixture supplies the reviewed Anthropic profile separately from the proposed projection.
-    const reviewed = { ...authority, presentation: "x-api-key" as const };
+    const reviewed = {
+      ...authority,
+      projection: { environment: "MODEL_KEY", presentation: "x-api-key" } as const,
+    };
     const authorityForBinding: NonNullable<CredentialPolicyAdmission["authorityForBinding"]> = ({
       bindingRef,
       sourceRef,
@@ -404,13 +452,13 @@ export function registerDeploymentPolicyCases(): void {
     const missingLookup = { ...policy, proxy: bothHeaders };
     Reflect.deleteProperty(missingLookup, "authorityForBinding");
     assert.deepEqual(policyRefusals(missingLookup), refused);
-    const missingPresentation = { ...reviewed };
-    Reflect.deleteProperty(missingPresentation, "presentation");
+    const missingProjection = { ...reviewed };
+    Reflect.deleteProperty(missingProjection, "projection");
     assert.deepEqual(
       policyRefusals({
         ...policy,
         proxy: bothHeaders,
-        authorityForBinding: () => missingPresentation,
+        authorityForBinding: () => missingProjection,
       }),
       refused,
     );

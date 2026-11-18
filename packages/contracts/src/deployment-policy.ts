@@ -9,6 +9,7 @@ import {
   validateMatches,
 } from "./deployment-request-match.ts";
 import { isIP } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { publicCaBundle } from "@openclaw-enterprise/utils";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
@@ -223,7 +224,7 @@ interface BindingAuthority {
   readonly destinations: readonly ConnectionEndpoint[];
   /** Reviewed requests for the named Plugin connection or admitted model/repository profile. */
   readonly allowedRequests: readonly DeploymentRequestMatch[];
-  readonly presentation: DeploymentCredentialBinding["projection"]["presentation"];
+  readonly projection: DeploymentCredentialBinding["projection"];
 }
 
 export interface CredentialPolicyAdmission {
@@ -296,7 +297,7 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
     }
     if (
       !authority ||
-      authority.presentation !== projection.presentation ||
+      !isDeepStrictEqual(authority.projection, projection, { skipPrototype: true }) ||
       !Array.isArray(authority.destinations) ||
       !authority.destinations.length ||
       !Array.isArray(authority.allowedRequests) ||
@@ -306,7 +307,7 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
       return [
         invalid(
           path,
-          "The binding needs current source destinations, reviewed requests and a matching presentation.",
+          "The binding needs current source destinations, reviewed requests and a matching credential projection.",
         ),
       ];
     }
