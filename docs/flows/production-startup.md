@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9"
+last_updated_session: "authoring-run/839744da-eafc-4b7e-81a4-91094255f4f0"
 ---
 
 # Production Startup Flow
@@ -143,9 +143,10 @@ and [refused values](../guides/deploy/production-upgrade-recovery.md#correct-val
 Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
 (generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap and
 API rollout. The migration container evaluates the chart's
-`files/migrate-selected-image.cjs` program. It validates the selected image's
-`db:migrate:production` package command, forwards the exact mode argument, and imports
-that image's migration entry point in the same Node process.
+`files/migrate-selected-image.cjs` loader. It reads the image's
+`db:migrate:production` command and forwards arguments in the same Node process.
+For a mode argument, the loader requires the `NODE_ENV=production` command
+introduced with strict option parsing. A legacy bare command permits only unflagged apply.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
 up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
 `OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
@@ -384,6 +385,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 20:56: Trace the selected image's migration mode guard before import. (authoring-run/839744da-eafc-4b7e-81a4-91094255f4f0 - 084874338baf51ad05d0b1a2b438e8bcd0120c1b)
 
 - 2026-11-18 02:53: Select the migration entry point from each controller image and retain signal handlers through cleanup. (authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9 - 4616630e8ab5edf25de29af948e80c72627af9c4)
 

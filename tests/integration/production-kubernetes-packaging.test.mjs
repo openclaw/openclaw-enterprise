@@ -1947,37 +1947,99 @@ test(
       "Job",
       "initialization",
     ).spec.template.spec.initContainers.find(({ name }) => name === "migration");
-    for (const extension of ["mjs", "ts"]) {
+    assert.equal(migration.args.at(-1), "--expect-empty");
+    const invocation = migration.args.slice(0, -1);
+    async function layout(entry, command, source) {
       const directory = await temporaryDirectory(t, "occ-migration-layout-");
       await mkdir(join(directory, "scripts"));
-      const entry = `scripts/migrate-production.${extension}`;
       await writeFile(
         join(directory, "package.json"),
         JSON.stringify({
           type: "module",
-          scripts: { "db:migrate:production": `NODE_ENV=production node ${entry}` },
+          scripts: { "db:migrate:production": command },
         }),
       );
       // Each isolated layout contains only its own generation's executable.
-      await writeFile(
-        join(directory, entry),
-        "process.stdout.write(JSON.stringify({pid: process.pid, args: process.argv.slice(2)}));",
+      await writeFile(join(directory, entry), source);
+      return directory;
+    }
+
+    // The first strict .mjs command supports --check. Newer commands also
+    // support the first-install and separate-migration guards.
+    for (const [extension, supported] of [
+      ["mjs", ["--check"]],
+      ["ts", ["--check", "--expect-empty", "--require-current"]],
+    ]) {
+      const entry = `scripts/migrate-production.${extension}`;
+      const directory = await layout(
+        entry,
+        `NODE_ENV=production node ${entry}`,
+        `const args = process.argv.slice(2);
+         if (args.length > 1 || (args.length === 1 && !${JSON.stringify(supported)}.includes(args[0]))) {
+           throw new Error("Unsupported migration argument.");
+         }
+         process.stdout.write(JSON.stringify({pid: process.pid, args}));`,
       );
-      const applying = execute(process.execPath, migration.args, { cwd: directory });
-      const applied = await applying;
-      assert.deepEqual(JSON.parse(applied.stdout), {
-        pid: applying.child.pid,
-        args: ["--expect-empty"],
-      });
-      const check = [...migration.args.slice(0, -1), "--check"];
-      const checked = await execute(process.execPath, check, { cwd: directory });
-      assert.deepEqual(JSON.parse(checked.stdout).args, ["--check"]);
-      // Omitting Node's separator must fail before an apply can start.
+      for (const args of [[], ...supported.map((option) => [option])]) {
+        const processResult = execute(process.execPath, [...invocation, ...args], {
+          cwd: directory,
+        });
+        assert.deepEqual(JSON.parse((await processResult).stdout), {
+          pid: processResult.child.pid,
+          args,
+        });
+      }
       await assert.rejects(
-        execute(process.execPath, [...check.slice(0, -2), "--check"], { cwd: directory }),
-        { code: 9, stdout: "" },
+        execute(process.execPath, [...invocation, "--unsupported-mode"], { cwd: directory }),
+        { code: 1, stdout: "", stderr: /Unsupported migration argument/ },
       );
     }
+
+    // The oldest package ignores argv. The sentinel proves import itself is
+    // refused for a guarded invocation, even if the executable would exit zero.
+    const legacyEntry = "scripts/migrate-production.mjs";
+    const unguarded =
+      'import { writeFileSync } from "node:fs";\n' +
+      'writeFileSync(new URL("../imported", import.meta.url), "entered");';
+    const legacy = await layout(legacyEntry, `node ${legacyEntry}`, unguarded);
+    const imported = join(legacy, "imported");
+    for (const args of [
+      ["--check"],
+      ["--expect-empty"],
+      ["--require-current"],
+      ["--expect-installation", "ins_fixture"],
+    ]) {
+      await assert.rejects(execute(process.execPath, [...invocation, ...args], { cwd: legacy }), {
+        code: 1,
+        stdout: "",
+        stderr: /does not declare support for production migration mode arguments/,
+      });
+      await assert.rejects(lstat(imported), { code: "ENOENT" });
+    }
+    // Omitting Node's separator must fail before a legacy apply can start.
+    await assert.rejects(
+      execute(process.execPath, [...invocation.slice(0, -1), "--check"], { cwd: legacy }),
+      { code: 9, stdout: "" },
+    );
+    await assert.rejects(lstat(imported), { code: "ENOENT" });
+    await execute(process.execPath, invocation, { cwd: legacy });
+    assert.equal(await readFile(imported, "utf8"), "entered");
+
+    // A JSON array cannot declare guarded support by coercing to a command string.
+    const malformed = await layout(
+      legacyEntry,
+      [`NODE_ENV=production node ${legacyEntry}`],
+      unguarded,
+    );
+    await assert.rejects(
+      execute(process.execPath, [...invocation, "--check"], { cwd: malformed }),
+      {
+        code: 1,
+        stdout: "",
+        stderr: /does not declare a supported production migration command/,
+      },
+    );
+    await assert.rejects(lstat(join(malformed, "imported")), { code: "ENOENT" });
   },
 );
 
