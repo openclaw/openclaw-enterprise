@@ -7,11 +7,12 @@ What an operator deploying this example must know.
 - **Symptom:** the first model request from Box fails its upstream TLS
   handshake when the controlled inference endpoint uses a private IPv4
   address, a `.svc.cluster.local` name, or a private CA's certificate.
-- **Cause:** Strands Box v0.2.2 verifies every upstream certificate against
-  public roots compiled into it, and no setting adds another CA.
+- **Cause:** released Box (v0.2.3 and earlier) verifies every upstream
+  certificate against public roots compiled into it, and no setting adds
+  another CA.
 - **Workaround:** use an operator DNS name pinned to one private IPv4 address
   with a publicly trusted certificate, or a Box build that reads `[gateway]
-upstream_ca_file` (the fork's `dogfood/main`). Box trusts that bundle for
+upstream_ca_file` (the [Box build](README.md#which-box-build)). Box trusts that bundle for
   every upstream, so every route Box dials must declare its digest. See
   [Controlled inference route](driver/README.md#controlled-inference-route).
 - **Upstream status:** reported as
@@ -31,20 +32,19 @@ upstream_ca_file` (the fork's `dogfood/main`). Box trusts that bundle for
 
 ## GitHub access needs the Box fork's request-time credential source
 
-- **Symptom:** a released Box v0.2.2 refuses the host's `box.toml` for a
-  protected execution: `[gateway.credential_source.oce]`, `source://` route
+- **Symptom:** released Box (v0.2.3 and earlier) refuses the host's
+  `box.toml` for a protected execution: `[gateway.credential_source.oce]`, `source://` route
   secrets and `[gateway] upstream_ca_file` are unknown keys.
 - **Cause:** the paired registration has Box inject GitHub credentials itself
   and ask OCE, through the host and the Worker's paired Driver, about each
   request its policy permits; `requests.authorize` decides and records it.
   Released Box has no such hook.
-- **Workaround:** build `strands-box`, `strands-box-sock-alias` and
-  `strands-box-contain-trampoline` from the fork's `dogfood/main` and install
-  them side by side, with a fresh `box_dir`. On Linux x86-64 the host sets
-  `EXPERIMENTAL_X86_SUPPORT=TRUE` for `box run`. Use only on a dogfood host
-  with a test repository.
-- **Upstream status:** the fork's credential source is drafted for
-  strands-agents/box; nothing is filed yet.
+- **Workaround:** use the [Box build](README.md#which-box-build) from the
+  public fork. On Linux x86-64 the host sets `EXPERIMENTAL_X86_SUPPORT=TRUE`
+  for `box run`. Use only on a dogfood host with a test repository.
+- **Upstream status:** the source is the fork's
+  `feature/request-credential-source`. Nothing is filed with
+  strands-agents/box yet.
 
 ## OCE applies no draft or branch rule to gh's GitHub API requests
 
@@ -289,14 +289,19 @@ code-mode host ... Permission denied (os error 13)`; the model then uses its
   installed relay. See [Connect the installation](README.md#connect-the-installation).
 - **Upstream status:** not reported upstream.
 
-## Box ships for Linux ARM64 only
+## Box releases ship for Linux ARM64 only
 
-- **Symptom:** the pinned Box v0.2.2 release has no Linux x86-64 build.
-- **Cause:** the release has Linux and macOS ARM64 builds only.
-- **Workaround:** use an ARM64 Linux host or full-system ARM64 virtual machine
-  (Box needs namespaces and Bubblewrap from its kernel) with API, Worker and the
-  workspace volume on that node, or the fork's `dogfood/main` on Linux x86-64.
-- **Upstream status:** not reported upstream.
+- **Symptom:** no Box release up to v0.2.3 has a Linux x86-64 build.
+- **Cause:** the releases have Linux and macOS ARM64 builds only. Upstream
+  builds Linux x86-64 as experimental, behind `EXPERIMENTAL_X86_SUPPORT=TRUE`.
+- **Workaround:** on Linux x86-64, use the [Box build](README.md#which-box-build);
+  the host sets the switch. The proven runs used this. On ARM64, use a Linux
+  host or a full-system ARM64 virtual machine (Box needs namespaces and
+  Bubblewrap from its kernel) with API, Worker and the workspace volume on
+  that node; no installed OCE run has been made there.
+- **Upstream status:** upstream added x86-64 release downloads
+  ([strands-agents/box#475](https://github.com/strands-agents/box/pull/475));
+  v0.2.3 ships none.
 
 ## Ubuntu 24.04 restricts unprivileged user namespaces
 

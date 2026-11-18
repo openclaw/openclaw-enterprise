@@ -1,38 +1,117 @@
 # Run one dedicated Codex Agent in Strands Box
 
-Verify native startup on a dedicated Linux ARM64 host, then deploy an Agent
-through the ordinary OpenClaw Enterprise (OCE) workflow. By default the example
-Driver refuses protected repository delivery. Configuring `protectedRepository`
-selects the [paired protected registration](driver/README.md#paired-protected-registration)
-instead: the same package then supplies the protected Sandbox Driver and its
-Credential Proxy. Box injects GitHub credentials on its own `github.com` and
-`api.github.com` routes and asks OCE for each request through the Worker, so
-the Agent uses [stock `git` and `gh`](git/README.md). This stage needs a Box
-build with the request-time credential source, and OCE applies no draft rule to
-`gh`'s API requests. See the
-[known gaps](KNOWN-GAPS.md#github-access-needs-the-box-forks-request-time-credential-source).
-The pairing has component tests against controlled origins. It has yet to be
-verified on an installed Box Agent. The GitHub steps below are acceptance
-checks for that pairing on one execution.
+## What this is
 
-The [Worker integration test](../../../tests/integration/strands-box-deployment.test.ts)
-deploys an Agent through the API and checks the original request at the Driver.
-It stops at a held host response. The [paired Driver end-to-end test](../../../tests/conformance/strands-box-protected-gh.test.ts)
-runs stock `git` and `gh` against a controlled GitHub origin through a stand-in
-for Box egress. These checks do not establish an installed Box chat or a pull
-request on GitHub.
+OpenClaw Enterprise (OCE) runs a dedicated Codex Agent in
+[Strands Box](https://github.com/strands-agents/box) as a second Sandbox, beside
+OpenShell. The example is an installable Driver package built on OCE's own
+Sandbox and Credential Proxy Driver interfaces; nothing Box-specific is in OCE's
+core. With `protectedRepository` set, the
+[paired protected registration](driver/README.md#paired-protected-registration)
+gives the Agent one GitHub repository and a model. Box injects the GitHub
+token and the model key at egress, on its own routes, and asks OCE about each
+request through the Worker; the workload holds only Box placeholders. The Agent
+uses [stock `git` and `gh`](git/README.md): no custom remote, helper or token
+in its environment.
 
-Read the [known gaps](KNOWN-GAPS.md) before deploying.
+## What was proven
+
+An Agent inside OCE and Box pushed a branch and opened a draft pull request on
+github.com with a token that OCE's Worker minted from the GitHub App key. GitHub
+recorded the App's bot as the author. Each pull request was closed afterwards:
+
+- 2026-11-17: [freeqaz/oce-cp-dogfood#4](https://github.com/freeqaz/oce-cp-dogfood/pull/4).
+  The same execution was refused a Git request to another repository and an
+  API request outside its grant, and after the repository was withdrawn it was
+  refused the next request while its chat kept answering.
+- 2026-11-18: [#5](https://github.com/freeqaz/oce-cp-dogfood/pull/5),
+  [#6](https://github.com/freeqaz/oce-cp-dogfood/pull/6) and
+  [#7](https://github.com/freeqaz/oce-cp-dogfood/pull/7), the last on this
+  branch after it was merged with OCE main.
+
+Each run used a real model whose key Box injected per request, and a search of
+the workload's environment, files, Box's runtime directory and the logs found
+neither the model key nor a GitHub token nor the App key.
+
+They ran on one Linux x86-64 virtual machine with K3s: OCE's API, Worker and
+images built from this branch, and the Box host on the Worker's node, running
+the Box build below with Box's experimental x86-64 support.
+
+Not proven:
+
+- An installed run on Linux ARM64, the only Linux platform Box releases today
+  (v0.2.3, 2026-11-17, ships Linux ARM64 and macOS only). The native checks in
+  [VALIDATION.md](VALIDATION.md) ran on ARM64 with released Box, without OCE's
+  protected path.
+- More than one execution per Box host: each host runs one execution, and one
+  host serves one Driver selection.
+- Any Agent but a dedicated Codex Agent with an OpenAI-compatible API key and at
+  most one GitHub repository.
+
+## Which Box build
+
+The protected path does not run on a released Box. The Box team has the fork
+[`freeqaz/box`](https://github.com/freeqaz/box); its `dogfood/main`
+at `956764b58f2c` is upstream `5ed679f` (the v0.2.3 release commit) with these
+branches merged:
+
+| Fork branch | What it changes in Box | Why OCE needs it | Needed |
+| --- | --- | --- | --- |
+| [`feature/request-credential-source`](https://github.com/freeqaz/box/tree/feature/request-credential-source) | After policy permits a request on a credentialed route, the gateway asks a configured source for the credential, or a refusal | OCE decides each GitHub request and releases the model key per request, so no token sits in `box run` | required |
+| [`fix/containment-init-signals`](https://github.com/freeqaz/box/tree/fix/containment-init-signals) | Seccomp permits `kill` and `rt_sigtimedwait` | OCE starts the Harness under `tini`, which otherwise dies at start | required |
+| [`feature/gateway-upstream-ca-file`](https://github.com/freeqaz/box/tree/feature/gateway-upstream-ca-file) | `[gateway] upstream_ca_file`: one extra CA bundle for upstream TLS | Only for a privately signed model route (host `upstreamCa`) | conditional |
+| [`fix/shell-stdin-passthrough`](https://github.com/freeqaz/box/tree/fix/shell-stdin-passthrough) | A program the Shell starts in its own sandbox reads the command's stdin | Only when Codex runs a native hook inside Box (host `nativeHookRelay`): the hook reads its event on stdin. The pinned OpenClaw registers no pre-tool-use hook by default | conditional |
+| [`fix/locked-mount-flags`](https://github.com/freeqaz/box/tree/fix/locked-mount-flags) (not in the build) | A remount keeps options the user namespace locked | Not needed: keep `box_dir` off a `noexec` mount, or remount `/run` with `exec` | no |
+
+On Linux x86-64, upstream Box's experimental support is enough; the host sets
+`EXPERIMENTAL_X86_SUPPORT=TRUE` for `box run`. On ARM64 it is not needed.
+
+Get the source and build the three programs:
+
+```bash
+git clone https://github.com/freeqaz/box.git && cd box
+git checkout 956764b58f2c5ccb12bb7048fd1ced3d8ca1b5d4
+cargo build --release --locked -p strands-box -p strands-box-containment
+```
+
+If that commit is not on the fork yet, the same tree
+(`dfd97bd7d136`) comes from the published branches:
+
+```bash
+git checkout -b demo origin/dogfood/main   # 5ae909afc5
+git merge --no-ff origin/fix/containment-init-signals
+git merge --no-ff origin/fix/shell-stdin-passthrough
+```
+
+Install `strands-box`, `strands-box-sock-alias` and
+`strands-box-contain-trampoline` from `target/release` side by side with a
+fresh `box_dir`, and point the host's `boxBin` at `strands-box`.
+
+## Read next
+
+- [KNOWN-GAPS.md](KNOWN-GAPS.md): what an operator must know, and what we ask
+  of Box.
+- [VALIDATION.md](VALIDATION.md): what ran where.
+- [The Driver README](driver/README.md): build, select and configure the Driver.
+
+The steps below verify a Box host, connect it to an installation, give a
+protected Agent a model, and repeat the GitHub checks.
 
 ## Prepare the host and verify Box
 
-Use a dedicated Linux ARM64 host, such as a Graviton EC2 instance, with a nonroot
+Use a dedicated Linux host, ARM64 (such as a Graviton EC2 instance) or x86-64
+with the [Box build above](#which-box-build), with a nonroot
 operator account and private connectivity to the installation. Use the
 repository's [Node.js version](../../../package.json) and Codex from the matching
 [OCE runtime build](../../runtime/README.md).
 
-From a new directory on the host, download the
-[Strands Box v0.2.2 Linux ARM64 release](https://github.com/strands-agents/box/releases/tag/v0.2.2).
+The native check and the controlled Gateway chat below run on a released Box.
+An installed Agent needs the [Box build above](#which-box-build) instead: OCE
+starts its Harness under `tini`, and the protected path asks the request-time
+source. For the
+native check on ARM64, download the
+[Strands Box v0.2.2 Linux ARM64 release](https://github.com/strands-agents/box/releases/tag/v0.2.2)
+into a new directory on the host.
 Verify the archive before extracting it. Keep Box and both helpers together.
 The Box release and the OCE Driver package have independent version numbers.
 
@@ -58,6 +137,7 @@ pnpm exec tsc -p deploy/examples/strands-box/host/tsconfig.agent.json \
 
 An installed control host can opt in by setting `harnessImageReceipt` to the
 absolute path of the original operator's root-owned, read-only JSON receipt.
+This optional profile was not part of the [proven runs](#what-was-proven).
 Use this profile only on a dedicated Linux ARM64 carrier running as UID/GID 1000. Prepare the active read-only root of that carrier from the exact approved
 OCI image. Verify its manifest, config, layers, and materialized files before
 issuing the receipt. Keep that root and its mount in place through retirement.
@@ -281,7 +361,8 @@ returns it for one request at a time. The Box host passes each value to Box
 once and keeps none. Keep the App key, the token and any host Git credentials
 out of the Agent's environment, files and prompts.
 
-The Box host starts the released `box run` once, with its credential source.
+The Box host starts `box run` from the [Box build above](#which-box-build)
+once, with its credential source.
 Start the checks once the host's `GET /v1/execution` reports
 `repositoryRecipient.source`.
 

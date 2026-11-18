@@ -65,4 +65,5 @@ Box reports a refusal to the workload as `403` with
 
 The [paired Driver end-to-end test](../../../../tests/conformance/strands-box-protected-gh.test.ts)
 runs these commands with stock `git` and `gh` against a controlled GitHub origin
-through a stand-in for Box egress. They do not qualify an installed Box run.
+through a stand-in for Box egress. The installed runs against github.com are
+listed under [What was proven](../README.md#what-was-proven).

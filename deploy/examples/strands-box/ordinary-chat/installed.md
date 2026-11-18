@@ -6,7 +6,9 @@ Use a compatible pinned chart and Controller image. The API and Worker must
 load the same selected example Driver package and configuration.
 Use a dedicated Codex Agent with the normal Gateway authentication and a scoped
 operator. Leave connectors, Git, repository access, and protected credentials
-disabled. The installed chat and file checks below are pending.
+disabled. An installed Agent needs the
+[Box build](../README.md#which-box-build); see
+[VALIDATION.md](../VALIDATION.md) for what ran.
 
 Start with a ready OCE Agent Namespace. If the control plane is new, use
 [normal Namespace provisioning](../../../../docs/guides/deploy/production-agents.md#prepare-each-namespace)

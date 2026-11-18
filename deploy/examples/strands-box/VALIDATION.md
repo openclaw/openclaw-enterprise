@@ -1,8 +1,12 @@
 # Strands Box pilot validation
 
-Standalone workspace verification passed on AWS Graviton with Box v0.2.1 and Codex 0.164.0. A separate Gateway run completed one chat with a local model fixture.
+Installed OCE runs with the protected path passed on one Linux x86-64 virtual
+machine with the [Box build](README.md#which-box-build); see
+[What was proven](README.md#what-was-proven). Standalone workspace
+verification passed on AWS Graviton with Box v0.2.1 and Codex 0.164.0. A
+separate Gateway run completed one chat with a local model fixture.
 
-The [current setup](README.md#prepare-the-host-and-verify-box) pins Box v0.2.2.
+The [native check](README.md#prepare-the-host-and-verify-box) pins Box v0.2.2.
 The records below retain the versions actually tested; updating the setup pin
 does not repeat those qualification runs.
 
@@ -22,8 +26,20 @@ The direct verifier supplies the workspace, executable and sandbox policy. The G
 1. Start with the [host preparation and two-terminal native check](README.md#prepare-the-host-and-verify-box) as a nonroot user on a dedicated ARM64 Linux host. With `jq` on `PATH`, the [automation script](verify-native-ci.sh) checks the exact checkout and pinned artifacts, runs the native verifier, and cleans up. A hosted runner may stop at mount inventory before verification.
 2. Follow the [controlled Gateway chat procedure](ordinary-chat/README.md). Keep the `codex/box_repro_fixture/gpt-5` model reference. Confirm the original reply and tool result, then verify the marker independently. A chat acceptance alone is insufficient.
 
-The [installed ordinary chat and workspace file check](ordinary-chat/installed.md)
-is pending. It covers one Agent revision and its original bound volume, with
-connector integrations and Git disabled. Live GitHub verification remains open
-as a separate exercise, including assigned repository access, denial for an
-unassigned repository, and withdrawal while the original chat continues.
+3. For an installed Agent with GitHub and a model, follow the
+   [README](README.md) from [Which Box build](README.md#which-box-build) on.
+
+## Installed runs on Linux x86-64
+
+The protected-path runs on one virtual machine with K3s, from 2026-11-17 on,
+are listed under [What was proven](README.md#what-was-proven), with their pull
+requests and what was refused.
+
+## Tests outside the hosted suites
+
+[`git/controlled-git-model.ts`](git/controlled-git-model.ts) is a test fixture:
+a scripted model for dry runs, not part of the Driver. Five test files run in
+no hosted suite (`tests/conformance/strands-box-enrollment.test.ts`,
+`-git-model`, `-model`, `-model-native` and `-native-hook`): they were run by
+hand with `node --test` on a Linux x86-64 test machine, and
+`strands-box-model-native.test.ts` with a real Box on the virtual machine above.

@@ -127,8 +127,9 @@ For the certificate, use one of:
 - **An upstream CA bundle**: host `upstreamCa` is `{ "file", "sha256" }`, CA
   certificates only, owned by the host owner or root, not group- or
   world-writable. The host names a verified copy in Box's private configuration
-  directory with the `upstream-ca-file` key of strands-agents/box#147, which
-  stock Box v0.2.2 refuses. Box trusts the bundle for every upstream it dials,
+  directory with the `[gateway] upstream_ca_file` key of the
+  [Box build](../README.md#which-box-build) (a takeover of
+  strands-agents/box#147), which released Box refuses. Box trusts the bundle for every upstream it dials,
   so every route Box dials must set `caSha256` to its digest or the host refuses
   to start. An inline workspace node must opt in; a separate file node is
   unaffected. Use a dedicated CA.
