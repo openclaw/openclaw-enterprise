@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir } from "node:fs/promises";
+import { once } from "node:events";
+import { chmod, mkdir, rmdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import { isAbsolute, join } from "node:path";
 
@@ -17,7 +18,12 @@ assert.ok(
 // A fresh directory gives this process exclusive ownership of its socket path.
 await mkdir(directory, { mode: 0o700 });
 const path = join(directory, "control.sock");
-const proxy = await commitAckProxy(database, { port, egressDispatch: true });
+const proxy = await commitAckProxy(database, { port, egressDispatch: true }).catch(
+  async (error: unknown) => {
+    await rmdir(directory);
+    throw error;
+  },
+);
 const server = createServer({ allowHalfOpen: true }, (socket) => {
   let request = "";
   // The control protocol is ASCII. Latin-1 preserves one character per byte.
@@ -33,22 +39,31 @@ const server = createServer({ allowHalfOpen: true }, (socket) => {
   socket.on("end", () => {
     try {
       if (request !== "status") {
-        const instanceId =
-          /^drop ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(
-            request,
-          )?.[1];
-        assert.ok(instanceId);
-        proxy.arm({ instanceId });
+        const selection = /^drop (.*)$/.exec(request);
+        assert.ok(selection);
+        proxy.arm({ instanceId: selection[1] });
       }
       socket.end(JSON.stringify(proxy.egress));
     } catch {
       socket.end('{"error":"invalid or consumed observer operation"}');
     }
   });
-}).listen(path, async () => {
+});
+try {
+  server.listen(path);
+  await once(server, "listening");
   await chmod(path, 0o600);
   console.log("Disposable exact dispatch COMMIT observer ready on loopback port", port);
-});
+} catch (error) {
+  if (server.listening) {
+    await new Promise<void>((resolve, reject) => {
+      server.close((closeError) => (closeError ? reject(closeError) : resolve()));
+    });
+  }
+  await proxy.close();
+  await rmdir(directory);
+  throw error;
+}
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.once(signal, async () => {
     server.close();

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { stat } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
@@ -20,7 +20,7 @@ const observerCommand = fileURLToPath(
   new URL("../fixtures/egress-custody-postgres-observer.ts", import.meta.url),
 );
 
-async function exchange(path: string, first: string, last?: string): Promise<string> {
+async function exchange(path: string, first: string, last = ""): Promise<string> {
   const socket = createConnection(path);
   socket.setTimeout(5_000, () => socket.destroy(new Error("observer socket timed out")));
   let response = "";
@@ -30,9 +30,7 @@ async function exchange(path: string, first: string, last?: string): Promise<str
   });
   socket.once("connect", () => {
     socket.write(first, () => {
-      if (last !== undefined) {
-        socket.end(last);
-      }
+      socket.end(last);
     });
   });
   try {
@@ -50,8 +48,6 @@ test(
     const parent = await socketDirectory(t, "egress-observer-", { longest: "owner/control.sock" });
     const directory = join(parent, "owner");
     const path = join(directory, "control.sock");
-    const reservation = await reservePort();
-    t.after(() => reservation.release());
 
     // This scenario exercises the command and control wire with zero upstream traffic.
     const env = {
@@ -64,6 +60,29 @@ test(
         pathname: "/openclaw_k8s_observer",
       }),
     };
+    // A failed bind must remove only the directory this attempt created, so a retry can use it.
+    const occupied = createServer();
+    occupied.listen(0, "127.0.0.1");
+    await once(occupied, "listening");
+    try {
+      const address = occupied.address();
+      assert.ok(address && typeof address !== "string");
+      await assert.rejects(
+        run(process.execPath, [observerCommand, directory, String(address.port)], {
+          env,
+          timeout: 5_000,
+        }),
+        /EADDRINUSE/,
+      );
+      await assert.rejects(stat(directory), { code: "ENOENT" });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        occupied.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+
+    const reservation = await reservePort();
+    t.after(() => reservation.release());
     const args = [observerCommand, directory, String(reservation.port)];
     const observer = spawn(process.execPath, [...reservedPortArgs(reservation), ...args], {
       env,
@@ -105,14 +124,14 @@ test(
       assert.equal(await exchange(path, "drop ", "-".repeat(36)), refusal);
       assert.deepEqual(await faultObserver(path), fresh);
       assert.equal(await exchange(path, "drop ", "10ba8f57-daed-4e73-7740-05484777695c"), refusal);
-      assert.equal(await exchange(path, "drop ", "10BA8F57-DAED-4E73-B740-05484777695C"), refusal);
-      // Close an oversized request without waiting for the caller to finish writing.
-      assert.equal(await exchange(path, "x".repeat(257)), "");
+      // Adjacent UTF-8 byte counts distinguish the size guard from idle timeout or character counting.
+      assert.equal(await exchange(path, "é".repeat(128)), refusal);
+      assert.equal(await exchange(path, "é".repeat(128) + "x"), "");
       assert.deepEqual(await faultObserver(path), fresh);
 
       const armed = { ...fresh, armed: true };
       assert.deepEqual(
-        await faultObserver(path, "drop 10ba8f57-daed-4e73-b740-05484777695c"),
+        await faultObserver(path, "drop 10BA8F57-DAED-4E73-B740-05484777695C"),
         armed,
       );
       assert.equal(await exchange(path, "drop ", "2a7f8a49-6d66-4edc-ae03-4edc2336f61d"), refusal);
@@ -124,11 +143,5 @@ test(
 
     assert.deepEqual(await exit, [0, null]);
     await assert.rejects(stat(path), { code: "ENOENT" });
-    const data = createConnection({ host: "127.0.0.1", port: reservation.port });
-    try {
-      await assert.rejects(once(data, "connect"), { code: "ECONNREFUSED" });
-    } finally {
-      data.destroy();
-    }
   },
 );
