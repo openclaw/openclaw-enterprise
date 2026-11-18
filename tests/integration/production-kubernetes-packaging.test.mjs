@@ -2,16 +2,7 @@ import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
