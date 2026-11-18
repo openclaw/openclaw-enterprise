@@ -31,7 +31,7 @@ function credentialPolicyFixture<Policy extends DeploymentRequestPolicy>(
   const request = { ...destination, requestPolicy };
   const binding = calendarAccount("work", "WORK_TOKEN");
   const authority = {
-    destinations: [{ host: destination.host, port, path: requestPolicy.path }],
+    destinations: [{ host: destination.host, port, path: requestPolicy.path, method: null }],
     allowedRequests: [request],
     projection: { environment: "WORK_TOKEN", presentation: "bearer" } as const,
   };
@@ -129,19 +129,22 @@ export function registerDeploymentPolicyCases(): void {
     }
   });
 
-  test("each injection destination needs a source endpoint covering its host, port and path together", () => {
+  test("each injection destination needs a source endpoint covering its host, port, path and method together", () => {
     const { input, binding, request, authority } = credentialPolicyFixture({
       type: "http",
       method: "GET",
       path: "/calendar/**",
     });
     const { binary, host, ports } = request;
+    const httpOnly = { binary, host: "http-only.example.org", ports };
     // Each proposed route is allowed by the consumer and the Sandbox. Only the source is narrower.
     for (const rule of [
       { binary, host, ports },
       { ...request, ports: [{ from: 443, to: 444 }] },
       { ...request, host: "other.example.org" },
-    ]) {
+      httpOnly,
+      { ...httpOnly, requestPolicy: { type: "mcp", path: "/mcp", method: "tools/list" } },
+    ] satisfies DeploymentRequestMatch[]) {
       const allowedRequests = [rule];
       const result = policyRefusals({
         ...input,
@@ -149,7 +152,9 @@ export function registerDeploymentPolicyCases(): void {
           ...authority,
           destinations: [
             ...authority.destinations,
-            { host: "other.example.org", port: 444, path: "/calendar/**" },
+            { host: "other.example.org", port: 444, path: "/calendar/**", method: null },
+            // Neither a transport allowance nor an MCP selector guarantees the HTTP verb.
+            { host: httpOnly.host, port: 443, path: "/**", method: "POST" },
           ],
           allowedRequests,
         }),
@@ -369,7 +374,9 @@ export function registerDeploymentPolicyCases(): void {
     const personalAuthority = {
       ...authority,
       projection: { environment: "PERSONAL_TOKEN", presentation: "bearer" } as const,
-      destinations: [{ host: request.host, port: 443, path: other.requestPolicy.path }],
+      destinations: [
+        { host: request.host, port: 443, path: other.requestPolicy.path, method: null },
+      ],
       allowedRequests: [other],
     };
     const policy = {
@@ -454,6 +461,40 @@ export function registerDeploymentPolicyCases(): void {
       }),
       [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]],
     );
+  });
+
+  test("a model POST requires static source approval for that method at the same destination", () => {
+    const { input, request, binding, authority } = credentialPolicyFixture({
+      type: "http",
+      method: "POST",
+      path: "/v1/responses",
+    });
+    const model = {
+      ...binding,
+      consumer: { kind: "model", providerId: "approved-responses" },
+      projection: { environment: "MODEL_KEY", presentation: "bearer" },
+    } as const;
+    const get = { host: request.host, port: 443, path: "/v1/responses", method: "GET" };
+    const post = { ...get, method: "POST" };
+    function admit(destinations: (typeof get)[]) {
+      return policyRefusals({
+        ...input,
+        bindings: [model],
+        authorityForBinding: () => ({
+          ...authority,
+          destinations,
+          projection: { environment: "MODEL_KEY", presentation: "bearer" },
+        }),
+      });
+    }
+    // The model profile and network allow POST on 443. A source may approve a different method there.
+    const refused = [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]];
+    assert.deepEqual(admit([get]), refused);
+    assert.deepEqual(admit([get, { ...post, port: 8443 }]), refused);
+    assert.deepEqual(admit([post]), []);
+    const unspecified = { ...post };
+    Reflect.deleteProperty(unspecified, "method");
+    assert.deepEqual(admit([unspecified]), refused);
   });
 
   test("model admission checks the reviewed provider presentation before proxy support", () => {

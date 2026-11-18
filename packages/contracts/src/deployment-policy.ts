@@ -190,7 +190,7 @@ function invalid(path: string, message: string): ErrorDetail {
 }
 
 function sourceCoversRequest(
-  destinations: readonly ConnectionEndpoint[],
+  destinations: BindingAuthority["destinations"],
   rule: DeploymentRequestMatch,
 ): boolean {
   // A transport-only grant can reach any path. An exact source host and all requested
@@ -198,12 +198,15 @@ function sourceCoversRequest(
   if (!validDnsHost(rule.host)) {
     return false;
   }
-  const path = rule.requestPolicy?.path ?? "/**";
+  const policy = rule.requestPolicy;
+  const path = policy?.path ?? "/**";
   const routes = destinations
     .filter(
       (endpoint) =>
         endpoint?.host === rule.host &&
         Number.isInteger(endpoint.port) &&
+        (endpoint.method === null ||
+          (policy?.type === "http" && endpoint.method === policy.method)) &&
         pathCovered(path, endpoint.path),
     )
     .map(({ host, port }) => ({ host, ports: [{ from: port, to: port }] }));
@@ -220,8 +223,8 @@ const reviewedPresentations = {
 >;
 
 interface BindingAuthority {
-  /** Permitted HTTPS endpoints from the current source or its effective connection template. */
-  readonly destinations: readonly ConnectionEndpoint[];
+  /** Preserve each static destination's HTTP method. Use null only for source endpoints without a method restriction. */
+  readonly destinations: readonly (ConnectionEndpoint & { readonly method: string | null })[];
   /** Reviewed requests for the named Plugin connection or admitted model/repository profile. */
   readonly allowedRequests: readonly DeploymentRequestMatch[];
   readonly projection: DeploymentCredentialBinding["projection"];

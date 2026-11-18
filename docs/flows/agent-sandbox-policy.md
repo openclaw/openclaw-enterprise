@@ -8,10 +8,9 @@ last_updated_session: "01a1eb01-27e9-7d91-a1e5-c673380d2fc8"
 
 ## Overview
 
-OCC persists governed network additions for one Agent, freezes them at deployment,
-and optionally applies a later version through its Sandbox Driver. Denial logs
-and provider recommendations supply independent context for a user review.
-This trace describes the implemented source; runtime proof has separate limits.
+OCC saves governed network additions per Agent, freezes them at deployment,
+and can apply a later version through its Sandbox Driver. Operators review denial
+logs and provider recommendations.
 
 ## Entry Points
 
@@ -71,11 +70,12 @@ Stale and unauthorized requests retain their resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
 omitting records with Unicode control characters.
 
-Staged `deploymentPolicyAdmissionDetails` checks each binding's source destinations,
-reviewed requests, environment name and presentation. The Sandbox qualifies HTTP rules together,
-preserving each rule's path and ports. MCP matches canonical percent-encoded UTF-8 paths literally.
-Same-host discovery can remain credentialless. Revision admission still needs OCC's binding
-authority. The provider enforces OAuth scopes.
+Staged `deploymentPolicyAdmissionDetails` checks source destinations, reviewed requests,
+environment and presentation. Static destinations bind HTTP method, host, port and path together.
+Only method-unrestricted endpoints use an explicit `null` method.
+The Sandbox qualifies complete HTTP rules together. MCP matches encoded UTF-8 paths literally.
+Discovery can remain credentialless. Revision admission still needs OCC's binding authority.
+The provider enforces OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -273,6 +273,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 21:48: Preserve source-approved HTTP methods. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 7ee6a09585aa160de6feab9c133bf5c090ff05f5)
 
 - 2026-11-18 15:56: Trace HTTP unions and UTF-8 paths. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 2fcc0a88cc29bbdc5c3a744ebdd15c6d62ad8934)
 
