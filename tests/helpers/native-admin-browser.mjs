@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 
 import { runControllerProbe } from "./envoy-workspace-gateway.mjs";
+import { observeLegacyBrowserGrant } from "./native-profile-legacy-grant.ts";
 import { createKubernetesClient, explicitK3dSelection } from "./kubernetes-real.ts";
 
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -1146,7 +1147,7 @@ async function delegationSecret(topology) {
 function boundaryProbe(
   topology,
   key,
-  { browser = true, authenticated = true, readProfile = true, deviceToken } = {},
+  { browser = true, authenticated = true, readProfile = true, native } = {},
 ) {
   const routing = topology.workspaceGateway.routing;
   const authority = routing.endpointPort
@@ -1157,7 +1158,7 @@ function boundaryProbe(
     url: `wss://${authority}${browser ? "/native-browser" : ""}/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
     ...(authenticated ? { apiKey: topology.workspaceGateway.apiKey } : {}),
     readProfile,
-    ...(deviceToken === undefined ? {} : { native: { deviceToken } }),
+    ...(native === undefined ? {} : { native }),
     extraHeaders: {
       "x-occ-identity": "oce:v1:" + "a".repeat(64),
       "x-openclaw-scopes": "operator.admin",
@@ -1951,10 +1952,14 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
   assert.equal(ownerStatus.data.mode, "admin");
 
   const ownerFrames = [];
+  const ownerConnectFrames = [];
   ownerPage.context().on("page", (page) =>
     page.on("websocket", (socket) => {
       if (new URL(socket.url()).origin === ownerStatus.data.origin.replace(/^http/, "ws")) {
         socket.on("framereceived", (frame) => ownerFrames.push({ ...frame, socket, page }));
+        if (upgrade !== undefined) {
+          socket.on("framesent", (frame) => ownerConnectFrames.push({ ...frame, socket, page }));
+        }
       }
     }),
   );
@@ -2022,16 +2027,29 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
         senderIdentity: message.__openclaw?.senderIdentity,
       });
     }
-    const hello = ownerFrames
-      .map((frame) => JSON.parse(textFromFrame(frame)))
-      .find((frame) => typeof frame.payload?.auth?.deviceToken === "string");
-    assert.ok(hello, "the legacy UI must actually receive its shared reusable credential");
     const owned = { ...topology, agent: created.data, revision: deployed.data };
     const previousPod = await waitForReadyGatewayPod(owned, deployed.data.id);
     assert.equal(
       previousPod.spec.containers.find(({ name }) => name === "gateway").image,
       upgrade.baseline.runtime,
     );
+    const grantScope = {
+      namespace: topology.gatewayPlacement,
+      name: previousPod.metadata.name,
+      uid: previousPod.metadata.uid,
+      agentId: created.data.id,
+      revisionId: deployed.data.id,
+      port: previousPod.spec.containers
+        .find(({ name }) => name === "gateway")
+        .ports.find(({ name }) => name === "http").containerPort,
+    };
+    const oldGrant = await observeLegacyBrowserGrant({
+      page: ownerNativePage,
+      sent: ownerConnectFrames,
+      received: ownerFrames,
+      origin: ownerStatus.data.origin,
+      scope: grantScope,
+    });
     const claims = previousPod.spec.volumes
       .filter((volume) => volume.persistentVolumeClaim)
       .map((volume) => volume.persistentVolumeClaim.claimName);
@@ -2050,6 +2068,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
     assert.equal(identity.rows.length, 1);
     await ownerNativePage.close();
     await legacyPage.close();
+    await oldGrant.proveBeforeCutover(grantScope, context);
     await waitFor("old controller work to settle before replacing both writers", async () => {
       const queued = await topology.observerPool.query(
         "SELECT count(*) AS pending FROM occ.controller_work WHERE state IN ('queued','claimed')",
@@ -2161,7 +2180,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       })),
       history,
       sharedProfileId: sharedOwner.response.payload.profile.id,
-      deviceToken: hello.payload.auth.deviceToken,
+      oldGrant,
     };
   }
   const ownerProfile = await nativeProfile(ownerNativePage, "operator.admin");
@@ -2200,13 +2219,11 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       );
     }
     const owned = { ...topology, agent: created.data, revision: deployed.data };
-    const denied = await boundaryProbe(owned, undefined, { deviceToken: legacy.deviceToken });
-    assert.equal(
-      denied.connected,
-      false,
-      "the actual old shared credential must not bypass the new browser delegation fence",
+    // Observe handshake refusal itself; a later profile-RPC rejection must not
+    // masquerade as rejection of the valid legacy device credential.
+    await legacy.oldGrant.assertReplayRefused((native) =>
+      boundaryProbe(owned, undefined, { native, readProfile: false }),
     );
-    assert.equal(denied.authReason, "trusted_proxy_delegation_denied");
   }
   const ownerMarker = `oidc-owner-${randomUUID()}`;
   const ownerReply = await recordNativeChatTurn(
@@ -2502,6 +2519,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
             retainedHistoryAttribution: true,
             distinctProfiles: true,
             newAttributedModelTurns: true,
+            ...legacy.oldGrant.completedChecks(),
             oldCredentialRefused: true,
             selectiveWithdrawal: true,
             regrantProfileStable: true,

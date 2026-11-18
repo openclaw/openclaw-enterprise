@@ -16,6 +16,7 @@ import { initializeNativeUpgradeInstallation } from "../helpers/native-profile-u
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { composePostgres, fixture, immutableImage } from "../helpers/ci-prepare-fixture.ts";
 import { startFakePostgres } from "../helpers/fake-postgres-server.ts";
+import { registerLegacyBrowserGrantCases } from "./native-profile-legacy-grant-cases.ts";
 
 type Inputs = {
   repositoryRoot: string;
@@ -41,6 +42,7 @@ function commandEvidence(text: string): CommandEvidence[] {
 }
 
 export function registerNativeProfileUpgradeCases({ repositoryRoot, writeState }: Inputs) {
+  registerLegacyBrowserGrantCases();
   test("native upgrade initialization uses image entrypoints and isolates the migration credential", async (t) => {
     const root = await fixture(t);
     const command = join(root, "engine");

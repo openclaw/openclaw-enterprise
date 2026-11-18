@@ -34,6 +34,21 @@ async function connectGateway({ url, apiKey, extraHeaders = {}, native = {} }) {
     scopes: [],
     deviceIdentity: null,
     ...native,
+    ...(native.deviceIdentity
+      ? {
+          hostDeps: {
+            loadOrCreateDeviceIdentity: () => undefined,
+            loadDeviceAuthToken: () => null,
+            storeDeviceAuthToken: () => {},
+            clearDeviceAuthToken: () => {},
+            logDebug: () => {},
+            logError: () => {},
+            signDevicePayload: (pem, payload) =>
+              sign(null, Buffer.from(payload), pem).toString("base64url"),
+            publicKeyRawBase64UrlFromPem: (pem) => createPublicKey(pem).export({ format: "jwk" }).x,
+          },
+        }
+      : {}),
     edgeAuthHeaders: {
       ...(apiKey === undefined ? {} : { "x-api-key": apiKey }),
       ...extraHeaders,
@@ -321,7 +336,7 @@ switch (input.action) {
     try {
       result = await requestGatewayHello({
         ...input,
-        native: { ...input.native, scopes: ["operator.admin"] },
+        native: { ...input.native, scopes: input.native?.scopes ?? ["operator.admin"] },
         onConnected: async (client, hello) => {
           const self = input.readProfile
             ? await client.request("users.self", {}, { timeoutMs: 15000 })

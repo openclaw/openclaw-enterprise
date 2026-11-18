@@ -104,7 +104,29 @@ Assertions retain Installation, account, Principal, Agent service-Principal, and
 Gateway PVC identities. Historical shared creator/sender records remain unchanged.
 Fresh owner/operator model turns require distinct profiles and exact scopes.
 Reconnect, Pod replacement, selective withdrawal/regrant, and replay of the old
-shared credential exercise the upgraded authorization boundary. The retained
+server-persisted paired-device grant exercise the upgraded authorization boundary.
+The old trusted-proxy Control UI hello must succeed as operator and omit a device
+token. The fixture binds its signed connect to its existing browser signing key
+and reads only that device’s existing autoapproved operator grant from the old
+Gateway’s database. It does not approve, rotate, or create a grant.
+
+Before cutover, the fixture uses the controller-owned public Gateway SDK on the
+test host. An existing loopback-only Kubernetes port-forward targets the exact
+old Gateway Pod and its observed listener port. The client presents the same key,
+client metadata and browser Origin, without proxy identity headers. The fixture
+checks Pod identity before and after opening the tunnel, registers cleanup on
+acquisition, and stops the clients and tunnel on success or failure. An invalid token must fail; the real grant must authenticate
+as device-token operator.admin and complete a read-only health RPC. The stored
+grant must still be active and unchanged after this normal authentication.
+After upgrade, the same key signs a fresh challenge and replays that grant
+without the new delegation key; the browser boundary must refuse it.
+
+Native Control UI pairing does not persist a browser-origin binding; that field
+is reserved for browser-copilot clients. These checks retain the observed Origin
+on both authenticated probes, not an invented origin field in the paired row.
+The key and token stay in private test memory and subprocess stdin; errors and
+receipts expose only fixed outcomes. SDK credential storage callbacks are
+configured to read and write no shared credential store. The retained
 `native-profile-upgrade-receipt.json` contains only fixed source metadata, image
 references, Pod/PVC identifiers, and completed check predicates. Screenshots and
 recordings begin after sign-in; credentials and raw transcripts are not receipts.
