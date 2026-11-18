@@ -81,6 +81,15 @@ export interface TokenServiceDriver extends Omit<Driver, "capability"> {
     update: SourceUpdate,
     signal: AbortSignal,
   ): Promise<void>;
+  /** Required for push delivery. Read the current usable version committed by this owner,
+   * independently of proxy acknowledgments. Never issue, refresh, push or return credential material.
+   * An unavailable version keeps the deployment pending. */
+  getPushVersion?(
+    source: RegisteredTokenServiceSource<CredentialSourceReference> & {
+      readonly registration: Extract<TokenServiceRegistration, { delivery: "push" }>;
+    },
+    signal: AbortSignal,
+  ): Promise<string | undefined>;
   resolveCredential(
     source: RegisteredTokenServiceSource,
     signal: AbortSignal,

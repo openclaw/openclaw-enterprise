@@ -47,7 +47,11 @@ export interface CredentialProxyDeploymentContract {
    * For native delivery, verify provider readiness for the current effective policy. Both require
    * the expected configuration. */
   getDeploymentStatus(
-    expected: CredentialDeploymentConfiguration,
+    expected: CredentialDeploymentConfiguration & {
+      /** Fresh TokenService versions keyed by bindingRef. Require exactly the configured push
+       * bindings, including when native bindings share the target. Missing evidence cannot be ready. */
+      readonly expectedPushVersions: Readonly<Record<string, string>>;
+    },
     signal: AbortSignal,
   ): Promise<CredentialDeploymentReadiness>;
 }

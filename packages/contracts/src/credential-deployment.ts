@@ -88,6 +88,12 @@ export interface BearerCredentialProjection {
 export type DeploymentCredentialBinding =
   RegisteredTokenServiceSource<CredentialSourceReference> & {
     readonly bindingRef: string;
+    /** OCC resolves this independently of the plugin and its rules for a source-scoped evaluator.
+     * Admission must check the rule against an effective endpoint and these current grants. */
+    readonly evaluatorAuthority?: {
+      readonly endpoints: readonly ConnectionEndpoint[];
+      readonly grantedScopes: readonly string[];
+    };
   } & (
       | {
           readonly consumer: {
