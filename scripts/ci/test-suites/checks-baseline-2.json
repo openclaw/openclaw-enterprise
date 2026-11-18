@@ -723,9 +723,7 @@
     },
     {
       "path": "tests/integration/repository-credentials-service-loss.test.ts",
-      "expectedTests": [
-        "a broker restart cannot accept bound admissions without durable fencing"
-      ]
+      "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
     },
     {
       "path": "tests/conformance/repository-credentials-registry.test.ts"
