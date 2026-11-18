@@ -1646,6 +1646,76 @@ async function recordPlannedReplacement(
 }
 
 revisionTest(
+  "an upgraded Worker resumes a legacy non-null predecessor replacement record",
+  async (fixture) => {
+    const owner = await fixture.agent("legacy-replacement-resume", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    await fixture.start(driver.compute);
+    const predecessor = await fixture.revision(owner, 1);
+    await fixture.work(predecessor, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+
+    // Migration 0079's original writer stored these four keys, before completion fields existed.
+    const seeded = await fixture.observerPool.query<{
+      predecessor_replacement: Record<string, unknown>;
+    }>(
+      `UPDATE occ.agents SET predecessor_replacement = jsonb_build_object(
+       'predecessorRevisionId', $3::text, 'candidateRevisionId', $4::text,
+       'phase', 'pre-stop', 'startedAt', clock_timestamp())
+     WHERE namespace_id = $1 AND id = $2 AND predecessor_replacement IS NULL
+     RETURNING predecessor_replacement`,
+      [fixture.namespace.id, owner.id, predecessor.id, candidate.id],
+    );
+    assert.equal(seeded.rowCount, 1);
+    const legacy = required(seeded.rows[0], "legacy database row").predecessor_replacement;
+    assert.deepEqual(Object.keys(legacy).sort(), [
+      "candidateRevisionId",
+      "phase",
+      "predecessorRevisionId",
+      "startedAt",
+    ]);
+    const loaded = required(
+      await fixture.state.read((view) =>
+        view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
+      ),
+      "legacy replacement read through State",
+    );
+    assert.equal(loaded.phase, "pre-stop");
+    assert.equal(loaded.startedAt, legacy.startedAt);
+    assert.equal(loaded.completionStartedAt, undefined);
+    assert.equal(loaded.executionIdentity, undefined);
+    assert.equal(loaded.stopCompleted, undefined);
+
+    let waits = 0;
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async (serving, context) => {
+      waits += 1;
+      assert.equal(serving.id, predecessor.id);
+      assert.equal(context.expectedExecutionIdentity, undefined);
+      assert.equal(await context.recordExecutionIdentity("legacy-resume-executor"), true);
+      const enriched = required(
+        await fixture.state.read((view) =>
+          view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
+        ),
+        "resumed replacement",
+      );
+      assert.equal(enriched.startedAt, loaded.startedAt);
+      assert.ok(enriched.completionStartedAt);
+      assert.equal(enriched.executionIdentity, "legacy-resume-executor");
+      await context.commitStopping("legacy-resume-executor");
+      return "ready";
+    };
+    await fixture.start(driver.compute);
+    await fixture.work(candidate, "succeeded");
+    assert.equal(waits, 1);
+    assert.equal(driver.count(predecessor), 1);
+    assert.equal(driver.preparations(candidate), 1);
+    assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, candidate.id);
+  },
+);
+
+revisionTest(
   "planned completion preserves work and maintenance while idle Agents advance, across retry and candidate replacement",
   async (fixture, t) => {
     const credentials = {
