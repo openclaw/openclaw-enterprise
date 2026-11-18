@@ -120,8 +120,9 @@ failure code. Otherwise OCC commits `ready` with audit.
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
 `deviceAuthorization.harnessId` sources register before login under current Agent
-scope and Namespace `credential_source:create`. OCC audits `source_registering`
-and `source_ready`; failed starts retain the source. It encrypts the provider
+scope and Namespace `credential_source:create`, rechecked after registration before
+the provider challenge. OCC audits `source_registering` and `source_ready`; failed
+starts retain the source. It encrypts the provider
 handle and challenge before committing `session_pending`. Events identify actor,
 request, scope and source without exposing login material.
 

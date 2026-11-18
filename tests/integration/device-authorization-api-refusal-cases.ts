@@ -8,10 +8,15 @@ import {
   CredentialSourceListResponse,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  CredentialSourceContext,
+  CredentialSourceInput,
+} from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { DEVICE_ACCESS_TOKEN } from "../helpers/device-credential-gateway.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createDenied, DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import {
@@ -98,6 +103,73 @@ export function registerDeviceAuthorizationRefusalCases() {
     );
     assert.equal(fixture.gateway.sources.size, 0);
     assertNoCredentials(fixture);
+  });
+
+  test("saved-Agent login stops before provider I/O when Agent update is revoked during source registration", async (t) => {
+    const fixture = await createFixture(t);
+    const agent = await fixture.createAgent(
+      fixture.namespace.id,
+      "Revoked device login",
+      createHarnessConfiguration("codex", "gpt-5.1"),
+      { executionMode: "dedicated", harnessAuth: null },
+    );
+    const operator = await fixture.createAccountWithPolicy(
+      "registration-revocation",
+      (principal) => {
+        grantRole(fixture.policy, principal.id, {
+          id: "registration-revocation",
+          permissions: { agent: ["read", "update"], credential_source: ["create"] },
+        });
+      },
+    );
+    const role = fixture.policy.roles.find(({ id }) => id === "registration-revocation");
+    assert.ok(role);
+    const session = await fixture.signIn(operator.credentials);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    const registerSource = fixture.gateway.registerSource.bind(fixture.gateway);
+    t.mock.method(
+      fixture.gateway,
+      "registerSource",
+      async (context: CredentialSourceContext, input: CredentialSourceInput) => {
+        entered.resolve();
+        await release.promise;
+        return registerSource(context, input);
+      },
+    );
+
+    const path = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/device-authorizations`;
+    const pending = fixture.request("POST", path, { session, body: { harnessId: "codex" } });
+    await Promise.race([
+      entered.promise,
+      pending.then(() => assert.fail("start must reach Gateway source registration")),
+    ]);
+    // IAM changes while external registration is in flight. Source creation remains authorized,
+    // so only the saved Agent's freshly revoked update permission can stop provider login.
+    role.permissions = role.permissions.filter(
+      ({ action, resourceKind }) => action !== "update" || resourceKind !== "agent",
+    );
+    release.resolve();
+    const refused = await pending;
+    const { error } = fixture.fixtureResponse(
+      refused,
+      403,
+      ErrorResponse,
+      "start after revocation",
+    );
+    assert.equal(error.code, "FORBIDDEN");
+    assert.equal(fixture.gateway.sources.size, 1, "Gateway registration completed");
+    assert.equal(
+      fixture.gateway.calls.some(({ operation }) => operation === "startDeviceAuthorization"),
+      false,
+      "revocation must precede Refresh Driver start",
+    );
+    assert.equal(
+      fixture.auditSink.events.some((event) => event.details?.phase === "session_pending"),
+      false,
+      "a denied start cannot commit a login session",
+    );
   });
 
   for (const { phase, retainedSources, eventCount } of [

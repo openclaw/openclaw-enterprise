@@ -10320,6 +10320,13 @@ export class OpenClawController {
       audit === undefined ? undefined : (source) => audit(source, "source_registering"),
     );
     const { context } = await this.credentialSourceContext(namespaceId, source.id);
+    // Registration can outlive an IAM change; check the start authority again before provider I/O.
+    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
+    await this.authorize(principalId, "create", {
+      kind: "credential_source",
+      id: namespaceId,
+      namespaceId,
+    });
     let started: CredentialSourceDeviceAuthorization;
     try {
       started = await refresh.startDeviceAuthorization(context);
