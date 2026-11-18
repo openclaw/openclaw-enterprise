@@ -131,7 +131,7 @@ alone is insufficient. Kubernetes verifies ownership labels, UID and key before 
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-Live static sources commit `ready` and audit in their admission transaction. Other
+Live static sources atomically commit `ready` and audit, then recheck the record. Other
 sources commit `registering`; Gateway registration resolves Compute's Sandbox namespace
 and calls `registerSource` (30-second deadline).
 OpenShell checks provider ownership before changing the source-owned profile,

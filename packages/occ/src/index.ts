@@ -9417,7 +9417,18 @@ export class OpenClawController {
     });
     const { namespace, gateway, refresh, deferred, source, values, issuer } = registration;
     if (registration.liveReady) {
-      return this.credentialSourceMetadata(source, { state: "ready" });
+      const current = await this.read((state) =>
+        state.credentialSources.findCredentialSource(namespace.id, source.id),
+      );
+      if (
+        current?.state !== "ready" ||
+        current.driverId !== source.driverId ||
+        current.ownerCapability !== source.ownerCapability ||
+        !isDeepStrictEqual(current.egress, source.egress)
+      ) {
+        throw new ResourceStateConflictError("The credential source changed during registration.");
+      }
+      return this.credentialSourceMetadata(current, { state: "ready" });
     }
     const config = source.config;
     const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
