@@ -284,11 +284,6 @@ Approved exception: `docs/testing/ci.md` is exempt from the length thresholds.
 The user approved keeping CI configuration and test coverage in one guide. The
 checker still reports its word count. This exception applies only to that page.
 
-Approved exception: `docs/guides/deploy/production-installation.md` is exempt
-from the length thresholds. The user approved keeping the production installation
-procedure and its embedded prerequisites in one page. The checker still reports
-its word count. This exception applies only to that page.
-
 Files named exactly `AGENTS.md`, including nested instruction documents, are
 also exempt from the length thresholds. The checker still reports their word
 counts. Exemptions follow the resolved file: an `AGENTS.md` symlink pointing to
@@ -520,7 +515,7 @@ controls:
   per declaration, and use braces for control-flow bodies. Apply these rules with
   `pnpm lint:fix`, then run `pnpm format:fix` for Prettier layout.
 - Run `pnpm lint` for JavaScript and TypeScript changes; `pnpm lint:fix` applies
-  supported automatic fixes. Follow `eslint.config.mjs` and the
+  supported automatic fixes. Follow `eslint.config.ts` and the
   [linting guide](docs/testing/local.md#linting-and-formatting). Do not expand
   `eslint-suppressions.json` to admit new findings; prune entries as they are fixed.
 

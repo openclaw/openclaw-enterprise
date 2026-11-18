@@ -175,6 +175,9 @@ function schemaConstraints(schema: unknown) {
     ["maximum", "maximum"],
     ["minItems", "min items"],
     ["maxItems", "max items"],
+    ["minProperties", "min properties"],
+    ["maxProperties", "max properties"],
+    ["uniqueItems", "unique items"],
   ] as const) {
     const value = field(schema, key);
     if (value !== undefined) {
@@ -240,6 +243,8 @@ const permissionScopeQualifiers: Record<string, string> = {
   existing_namespace: " (when selecting an existing namespace)",
   bound_secret: " (when bound)",
   bound_credential_source: " (when bound)",
+  native_chat: " (chat access)",
+  native_admin_alternative: " (full native administration, instead of `operate`)",
   read_logs_alternative: " (instead of `read_logs`)",
   provisioning_work: " (once created)",
   gateway_managed_mode_disabled: " (when `gatewayManagedMode` is `false`)",
@@ -436,6 +441,27 @@ function operationEntries(document: unknown): Entry[] {
   );
 }
 
+// Public navigation order is independent of OpenAPI path order. New tags not
+// listed here follow these sections alphabetically.
+const referenceSectionOrder = new Map(
+  [
+    "Authentication",
+    "Backends",
+    "Connections",
+    "Installation",
+    "Namespaces",
+    "Agents",
+    "Agent deployments",
+    "Agent revisions",
+    "Configurations",
+    "Credential sources",
+    "IAM",
+    "Presets",
+    "Secrets",
+    "Service accounts",
+  ].map((tag, index) => [tag, index]),
+);
+
 function referenceGroups(entries: Entry[]): Group[] {
   const groups: Group[] = [];
   const byTag = new Map<unknown, Group>();
@@ -452,7 +478,12 @@ function referenceGroups(entries: Entry[]): Group[] {
     }
     group.operations.push(entry);
   }
-  return groups;
+  return groups.sort(
+    (left, right) =>
+      (referenceSectionOrder.get(text(left.title)) ?? referenceSectionOrder.size) -
+        (referenceSectionOrder.get(text(right.title)) ?? referenceSectionOrder.size) ||
+      text(left.title).localeCompare(text(right.title)),
+  );
 }
 
 function referencePage(document: unknown, groups: Group[], operationList: Entry[]) {
@@ -463,10 +494,13 @@ function referencePage(document: unknown, groups: Group[], operationList: Entry[
     sections.push(
       "## Error responses",
       [
-        "Non-success JSON responses use the following envelope.",
+        "OCC errors use the following envelope. Agent HTTP chat also passes through",
+        "native error responses, including SSE error events after HTTP `200`.",
         "Each operation lists its supported status codes.",
         "A NUL character or an unpaired UTF-16 surrogate in any request body string,",
         "object key or path parameter is refused with `400 INVALID_REQUEST`.",
+        "Agent HTTP chat bodies bypass this persisted-text validation because OCC",
+        "does not store their content; path parameters still use it.",
         "A JSON body with a value more than 24 levels below its root is refused",
         "with `400 INVALID_REQUEST` and a `TOO_DEEP` detail before it is parsed,",
         "so that answer comes before any other body error.",

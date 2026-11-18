@@ -65,7 +65,9 @@ A hosted MCP package pins its server endpoint and declares a credential slot.
 OCE discovers available tools using the selected account. On a dedicated OpenClaw
 Agent, select an attached credential for that slot and the upstream tool names
 the Agent may call. The worker advertises those tools; the Sandbox enforces the
-selection for both worker and script calls.
+selection for both worker and script calls. See
+[Get started with managed OpenClaw plugins](openclaw-plugins.md) for a complete
+walkthrough.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
 The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway

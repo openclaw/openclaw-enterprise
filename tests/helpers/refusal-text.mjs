@@ -16,9 +16,6 @@ export const callerDenied = (grant, target) =>
 // when the caller sent it or may read both it and the Agent, otherwise "one of its bound Secrets".
 export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
   `${agent} cannot use ${target}: the Agent itself needs ${grant} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
-// A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
-// each answer's own ID is hidden: the text never says whether the resource exists.
-export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
 // A create needs the collection grant, which only Roles from the Installation configuration
 // hold: an Installation administrator creates one. `kinds` is the plural, such as "Secrets".
 export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
@@ -37,7 +34,7 @@ export const GATEWAY_MANAGED_MODE_DENIED =
   "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
-  "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
+  "Not authorized: opening this Agent's browser UI needs Agent operate or administer on it. Ask an Installation administrator to grant it.";
 // An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
 // ID gets the same answer as an ineligible one (finding D753).
 export const BINDING_SUBJECT_EMAIL =
@@ -98,7 +95,7 @@ export const AGENT_DELETING = "The requested Agent is being deleted.";
 export const PROTECTED_SOURCE_EMBEDDED_AGENT =
   "config.agent_id names an embedded Agent, and a protected credential source serves only a dedicated Agent. Name a dedicated Agent in this Namespace.";
 export const protectedSourceTypeRefused = (type, types) =>
-  `The selected Credential Proxy cannot protect ${type} sources, and a Proxy protects every new source. Ask an Installation administrator, or create a type it protects: ${types}.`;
+  `The selected Credential Proxy cannot protect ${type} sources. Ask an Installation administrator, or create a type it protects: ${types}.`;
 export const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 // Withdrawal of a source the Agent's active revision does not use (409).
@@ -953,18 +950,6 @@ export const AGENT_PAGE_READ_DENIED = notIncluded(
   "Agent read, AgentRevision read and Configuration read on them",
 );
 
-// API answers that are not permission refusals name their cause and next step (finding D762),
-// and who-to-ask text says "Installation administrator" (D763). The 401 for a missing, expired
-// or revoked credential gives header advice only to a request that sent an Authorization header.
-export const CREDENTIAL_REQUIRED =
-  "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Sign in again, or use a current service API key.";
-export const AUTHORIZATION_HEADER_REFUSED =
-  "The API does not accept an Authorization header. Send a service API key in the x-api-key header, or sign in for a session cookie.";
-export const BODY_NOT_JSON = "The request body is not valid JSON.";
-// A Namespace-scoped service key outside its Namespace: the text names only the key's own
-// Namespace, never the requested one.
-export const serviceKeyOutsideNamespace = (namespaceId) =>
-  `This service key works only in Namespace ${namespaceId}; this request is outside it. Ask an Installation administrator to run it.`;
 // `source` is the requested log source, or "such" when none is known.
 export const runtimeLogSourceUnavailable = (source) =>
   `This Agent version has no ${source} log source. Every version has gateway; only a Dedicated Agent has agent, and only a version deployed with a Sandbox Driver has sandbox.`;
@@ -994,10 +979,7 @@ export const currentHarnessAuthDenied = (grant, target) =>
 // Native admin status for a caller without Agent administer, on an Installation with native admin
 // off: the grant alone would not open it (finding D762).
 export const nativeAdminOffDenied = (target) =>
-  `${callerDenied("Agent administer", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
-// A request path no route has (finding D764): a trailing slash says so; any other names no route.
-export const ROUTE_TRAILING_SLASH = "No API route has this path: remove the trailing slash.";
-export const ROUTE_NOT_FOUND = "No API route has this path. Check it against the API reference.";
+  `${callerDenied("Agent operate", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
 // Credential Gateway refusals that name the Installation setting and who changes it (D763).
 export const CREDENTIAL_GATEWAY_NOT_CONFIGURED =
   "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/";

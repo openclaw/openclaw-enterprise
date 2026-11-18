@@ -1,4 +1,5 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { isOpenShellLane } from "./openshell-full-integration.ts";
 
 type Stamp = number | null;
 
@@ -61,12 +62,13 @@ export function phaseTiming(env: NodeJS.ProcessEnv, end: number) {
   const elapsedMs = elapsed(entry, end);
   const measuredMs = Object.values(phases).reduce((sum, phase) => sum + (phase.elapsedMs ?? 0), 0);
   const selection = env.OPENSHELL_SELECTION;
+  const lane = env.OPENSHELL_LANE;
   return {
     runId: identity(env.GITHUB_RUN_ID, /^[0-9]{1,20}$/),
     attempt: identity(env.GITHUB_RUN_ATTEMPT, /^[0-9]{1,10}$/),
     sha: identity(env.GITHUB_SHA, /^[0-9a-f]{40}$/),
     job: identity(env.GITHUB_JOB, /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/),
-    lane: "openshell",
+    lane: lane !== undefined && isOpenShellLane(lane) ? lane : null,
     selection: selection === "full" || selection === "focused" ? selection : null,
     elapsedMs,
     residualMs: elapsedMs === null ? null : elapsedMs - measuredMs,
@@ -81,11 +83,22 @@ if (import.meta.main) {
   if (now !== null && command === "mark") {
     process.stdout.write(`uptime=${uptime}\n`);
   } else if (now !== null && command === "summarize" && process.env.GITHUB_STEP_SUMMARY) {
-    const receipt = phaseTiming(process.env, now);
+    const timing = phaseTiming(process.env, now);
+    const receipt = JSON.stringify(timing, null, 2);
     appendFileSync(
       process.env.GITHUB_STEP_SUMMARY,
-      "### OpenShell phase timing\n\n```json\n" + JSON.stringify(receipt, null, 2) + "\n```\n",
+      "### OpenShell phase timing\n\n```json\n" + receipt + "\n```\n",
     );
+    const receiptPath = process.argv[3];
+    if (receiptPath) {
+      writeFileSync(receiptPath, receipt + "\n", { flag: "wx" });
+    }
+    if (timing.lane === "openshell-policy") {
+      const { elapsedMs, residualMs, phases } = timing;
+      process.stdout.write(
+        `::notice title=OpenShell policy phase timing::${JSON.stringify({ elapsedMs, residualMs, phases })}\n`,
+      );
+    }
   } else {
     process.exitCode = 1;
   }

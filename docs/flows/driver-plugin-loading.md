@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-29
-last_updated_session: 01a1891d-5b6b-7071-b482-793a9dd01044
+updated: 2026-11-12
+last_updated_session: 01a117f8-113d-7610-83db-37431b054e44
 ---
 
 # Installation Driver Package Loading Flow
@@ -58,6 +58,11 @@ graph TD
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
 `apps/controller/src/composition/driver-packages.ts:loadDriverPackage`
+
+The API, worker, and Helm Installation check load the bundled OpenShell
+implementation when validating its Credential Proxy or constructing its Sandbox.
+An Installation with Kubernetes Compute and neither OpenShell selection skips
+those imports.
 
 Each process reads the same trusted startup YAML. Configuration, IAM, Compute,
 and optional Sandbox selections may name an operator-installed package;
@@ -122,7 +127,7 @@ validation and lockfile integrity do not establish publisher trust.
 
 Local Setup also calls the shared admission path before provisioning:
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` invokes
-`scripts/validate-sandbox-network-policy.mjs`, which uses `requireConfiguration`
+`scripts/validate-sandbox-network-policy.ts`, which uses `requireConfiguration`
 for platform structural validation and Driver semantic checks. A failure stops before creating development state
 or invoking a container engine. API and worker startup log
 `DRIVER_CONFIGURATION_INVALID` with field diagnostics that identify the setting
@@ -150,12 +155,15 @@ Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
 each configured host. Startup enforces the
 [production version-stage contract](../reference/drivers/compute.md#production-revision-stages)
-before returning any production runtime; development can use a four-operation
-Driver, and the worker still fails closed if a required stage becomes unavailable.
+before returning any production runtime. Development requires the five core
+operations: `ensureNamespace`, `deleteNamespace`, `prepareRevision`,
+`stopRevision`, and `retireRevision`. It permits Drivers without
+`activateRevision` and `deactivateRevision`. The worker still fails closed if a
+required stage becomes unavailable.
 
 ### 3. Construct the API-only Backend branch
 
-[`api-startup.mjs:startApi`](../../apps/controller/src/api-startup.mjs) handles a selected
+[`api-startup.ts:startApi`](../../apps/controller/src/api-startup.ts) handles a selected
 ServiceAccount Driver after loading the common bundle. It requires PostgreSQL,
 Compute credential-storage methods, and an owning Backend definition. It reads
 that Backend's `apiKeyPath`, constructs `ChatGPTClient`, and supplies the
@@ -197,7 +205,7 @@ their existing Harness-owned runtime topology.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/driver-plugin-installation.test.mjs` for
+- Run `node --test tests/integration/driver-plugin-installation.test.ts` for
   real installed IAM, Compute, and Configuration packages; production admission;
   IAM allow/deny evidence; Configuration CRUD; and OCC provisioning of an
   evidence file in a per-run temporary directory.
@@ -219,6 +227,8 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 15:38: Document when startup loads the bundled OpenShell transport. (01a117f8-113d-7610-83db-37431b054e44 - d9233e2cde)
 
 - 2026-10-29 17:21: Capture shared schema-redacted startup values before Driver construction. (01a1891d-5b6b-7071-b482-793a9dd01044 - 8585197fae261c7e45160b9420ffba7942d28e11)
 

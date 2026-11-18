@@ -116,7 +116,7 @@ On controllers that support it, record the installation-wide deployment inventor
 ```
 
 Require this read to succeed. It requires Installation `administer` and read
-access to each Namespace and Agent. For a running Agent with a selected revision
+access to each Namespace and Agent. For an active, desired-running Agent with a selected revision
 and no deployment in progress, it also checks Agent `deploy` and revision read
 access. An authorization or connection failure does not mean the endpoint is
 unavailable on that release.
@@ -126,7 +126,7 @@ IDs, desired states and selected revisions from an independent inventory held by
 the resource or database owner. Include stopped Agents. Compare those records
 with the lists below before changing production. If an ID or state is missing
 or the expected inventory is unknown, stop. This fallback does not replace the
-deployment inventory required by the image helper for a runtime upgrade.
+deployment inventory required by the image helper for every upgrade.
 
 For either release, collect the remaining records in Bash:
 
@@ -379,8 +379,9 @@ can contain Secrets.
     --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
     --namespace openclaw-system >"$comparison/installed.yaml" 2>"$comparison/helm.err"
   test -s "$comparison/installed.yaml"
-  test -s "$UPGRADE_EVIDENCE/rendered.yaml"
-  diff -u "$comparison/installed.yaml" "$UPGRADE_EVIDENCE/rendered.yaml" \
+  attempt="$UPGRADE_EVIDENCE/helm-attempts/$(jq -er .nonce "$UPGRADE_EVIDENCE/prepared-helm-attempt.json")"
+  test -s "$attempt/rendered.yaml"
+  diff -u "$comparison/installed.yaml" "$attempt/rendered.yaml" \
     >"$comparison/manifest.diff" || test "$?" -eq 1
   printf 'Review the private comparison in %s\n' "$comparison"
 )
@@ -388,7 +389,8 @@ can contain Secrets.
 
 Stop if the comparison cannot run. Use the diff to locate changes, then check
 the required objects and fields in both files. Account for intended changes
-such as the selected image digests. Review `server-dry-run.txt` for Helm's
+such as image digests and the upgrade-attempt UUID. Review the attempt's
+`server-dry-run.txt` for Helm's
 upgrade-mode output and hooks. Helm history omits later live patches. Check
 affected objects against the [live Kubernetes records](#record-images-and-kubernetes-state)
 as well. Read the live object for any required field that the baseline does

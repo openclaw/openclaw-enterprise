@@ -7,7 +7,7 @@ import {
   pollCodexDeviceAuthorization,
   startCodexDeviceAuthorization,
 } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
-import { redirectProviderFetch, startProviderServer } from "../helpers/human-login-transport.mjs";
+import { redirectProviderFetch, startProviderServer } from "../helpers/provider-http-transport.ts";
 
 test("Codex device authorization never follows issuer redirects", async (t) => {
   const paths = [

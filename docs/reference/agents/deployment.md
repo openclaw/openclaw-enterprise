@@ -164,9 +164,10 @@ Deployment for that version reports a full Pod quota in `ReplicaFailure`,
 outstanding. Activation of a dedicated version reports
 `WORKSPACE_NODE_BINDING_PENDING` until the gateway applies the workspace node it
 was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
-the code is `REVISION_INCOMPLETE`. The version stays pending until it is ready,
-a held failure (such as `WORKSPACE_SETUP_REFUSED`) ends it, or the convergence
-deadline passes. The worker rechecks an unready
+the code is `REVISION_INCOMPLETE`. The version stays pending until ready, a
+startup failure (such as `WORKSPACE_SETUP_REFUSED` or a Kubernetes
+[crash loop](../drivers/kubernetes-compute.md#troubleshooting)) ends it, or the
+convergence deadline passes. The worker rechecks an unready
 version after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
@@ -303,14 +304,15 @@ In the console, use **Stop Agent**, and resume with **Deploy new version**; see 
 
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires
 exact-Agent `operate`. A `202` response means OCC committed `desiredRuntimeState:
-"stopped"` and queued Agent-scoped work; it does not claim Compute has already
-finished. The worker reauthorizes the original actor, invokes the selected
+"stopped"` and queued Agent-scoped work; Compute may still be stopping. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
-Agent revision nor calls destructive version retirement. Repeated stop requests
-converge safely, and one Agent's stop does not affect siblings.
+Stop terminates inbound routing and execution, including the current turn, which
+[stays stopped on Kubernetes](interrupted-turns.md). It retains the Agent revision, Agent
+credentials, gateway state, and workspace, creates no revision and calls no
+destructive version retirement. Repeated stops converge safely without
+affecting siblings.
 
 Deployment is the resume operation. It saves the next version in a new Agent revision and
 sets desired state to `running`; OCC never restarts an old version by mutating

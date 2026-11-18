@@ -144,6 +144,8 @@ export function bindPlatformUnitOfWork(
       "delete",
     ]),
     agents: bindRepository(repositories.agents, lifetime, [
+      "findPredecessorReplacement",
+      "recordPredecessorReplacement",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
       "findAgent",
@@ -197,6 +199,7 @@ export function bindPlatformUnitOfWork(
       "recordStandingExecution",
       "approveStanding",
       "revokeStanding",
+      "withdrawFinite",
 
       "findAttempt",
       "findBrokerReceipt",

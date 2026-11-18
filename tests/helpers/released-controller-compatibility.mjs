@@ -4,16 +4,29 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
-import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { settled } from "./child-processes.mjs";
-import { withTestOwnerLabel } from "./docker-test-owner.mjs";
+import { withTestOwnerLabel } from "./docker-test-owner.ts";
 
 const exec = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-const origin = "http://127.0.0.1";
+const legacyOrigin = "http://127.0.0.1";
+const sharedCookieOrigin = "https://console.oce.localhost";
+const agentDomain = "agents.oce.localhost";
+const bootstrapProgram = "/app/scripts/bootstrap-installation.mjs";
+const processProgram = "released-controller-process.mts";
+const bootstrapProbe = `
+  import { existsSync } from "node:fs";
+  const configuration = "/app/apps/controller/src/auth/configuration.ts";
+  console.log(JSON.stringify({
+    bootstrap: existsSync(${JSON.stringify(bootstrapProgram)}),
+    sharedCookies: existsSync(configuration) &&
+      typeof (await import(configuration)).deriveSharedCookieDomain === "function",
+  }));
+`;
 const authSecret = "local-compatibility-session-secret-32-bytes";
 
-export async function assertReleasedControllerCompatibility(t, images, createDatabase) {
+async function withReleasedControllerFixture(t, images, createDatabase, scenario) {
   const owner = `controller-compatibility-${randomUUID()}`;
   const label = `org.openclaw.compatibility=${owner}`;
   const children = [];
@@ -38,6 +51,39 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
     assert.equal(inspected.length, 1);
     assert.equal(inspected[0].Config.Labels["org.opencontainers.image.revision"], image.revision);
   }
+  // Select auth inputs from each image before creating the database. Never retry
+  // bootstrap after it might have written an Installation.
+  const authByImage = new Map();
+  for (const image of new Set(Object.values(images).map(({ reference }) => reference))) {
+    const probe = await command([
+      "run",
+      "--rm",
+      "--pull",
+      "never",
+      "--label",
+      label,
+      "--network",
+      "none",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      image,
+      "--input-type=module",
+      "--eval",
+      bootstrapProbe,
+    ]);
+    const { bootstrap, sharedCookies } = JSON.parse(probe.stdout);
+    assert.equal(typeof sharedCookies, "boolean");
+    authByImage.set(image, {
+      bootstrap,
+      OCC_AUTH_BASE_URL: sharedCookies ? sharedCookieOrigin : legacyOrigin,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
+    });
+  }
+  const { bootstrap, ...bootstrapAuth } = authByImage.get(images.released.reference);
+  assert.equal(bootstrap, true, "The released image must ship the Installation bootstrap command.");
   const db = await createDatabase();
   const migrationUrl = new URL(db.migrationUrl);
   migrationUrl.hostname = "127.0.0.1";
@@ -84,26 +130,31 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
         "SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id",
       )
     ).rows;
-  async function start(image, role) {
+  async function start(image, role, { configuredIAM = false } = {}) {
     const name = `${owner}-${role}-${randomUUID().slice(0, 8)}`;
     const mounts = [
-      "released-controller-process.mjs",
+      processProgram,
       "development.ts",
+      "default-users-iam.mjs",
       "secret-driver.ts",
     ].flatMap((file) => [
       "--mount",
       `type=bind,src=${fileURLToPath(new URL(file, import.meta.url))},dst=/proof/${file},readonly`,
     ]);
+    const { OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } = authByImage.get(image.reference);
     const child = spawn(
       docker,
       withTestOwnerLabel(
         docker,
         args(
           image,
-          "/proof/released-controller-process.mjs",
+          `/proof/${processProgram}`,
           {
             OCC_DATABASE_URL: applicationUrl.toString(),
+            OCC_AUTH_BASE_URL,
+            OCC_AGENT_NATIVE_ADMIN_DOMAIN,
             OCC_TEST_CONTROLLER_ROLE: role,
+            ...(configuredIAM ? { OCC_TEST_CONTROLLER_IAM: "1" } : {}),
           },
           ["-i", "--name", name, ...mounts],
         ),
@@ -196,13 +247,15 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
     const ready = await wait("ready");
     const containerId = (await command(["inspect", "--format", "{{.Id}}", name])).stdout.trim();
     assert.match(containerId, /^[a-f0-9]{64}$/);
-    const processIdentity = { containerId, pid: ready.pid };
+    const processIdentity = { containerId, pid: ready.pid, accountId: ready.accountId };
     return {
+      identity: processIdentity,
       async request(phase, op, fields = {}) {
         const id = randomUUID();
         child.stdin.write(`${JSON.stringify({ id, op, ...fields })}\n`);
         const result = await wait(id);
         observations.push({ phase, role, process: processIdentity, op, ...result });
+        t.diagnostic(JSON.stringify(observations.at(-1)));
         return result;
       },
       async stop() {
@@ -233,101 +286,27 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
     const before = await history();
     assert.ok(before.length > 0);
     await command(
-      args(images.released, "scripts/bootstrap-installation.mjs", {
+      args(images.released, bootstrapProgram, {
         NODE_ENV: "development",
         OCC_DATABASE_URL: applicationUrl.toString(),
         OCC_AUTH_SECRET: authSecret,
-        OCC_AUTH_BASE_URL: origin,
+        ...bootstrapAuth,
         OPENCLAW_DEV_EMAIL: "postgres-admin@openclaw.local",
         OPENCLAW_DEV_PASSWORD: "postgres-development-password",
         OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/service-key.json",
       }),
     );
-    let released = await start(images.released, "released");
-    const namespace = await released.request("before-migration", "work", {
-      name: "Before migration",
+    await scenario({
+      start,
+      migrate,
+      history,
+      before,
+      args,
+      command,
+      observations,
+      db,
+      migrationUrl,
     });
-    const reads = [
-      await released.request("before-migration", "read", { namespaceId: namespace.namespaceId }),
-    ];
-    // Keep the real old worker alive while the canonical candidate migrator runs.
-    // This does not assert overlap with an individual DDL statement.
-    await settled([
-      migrate(images.candidate),
-      released.request("during-migration", "work", { name: "During migration" }),
-    ]);
-    const after = await history();
-    assert.deepEqual(after.slice(0, before.length), before);
-    await released.request("after-migration", "work", { name: "After migration" });
-    await released.stop();
-    released = await start(images.released, "released");
-    await released.request("restarted-old", "work", { name: "After restart" });
-    reads.push(
-      await released.request("restarted-old", "read", { namespaceId: namespace.namespaceId }),
-    );
-    const candidate = await start(images.candidate, "candidate");
-    const saved = await candidate.request("candidate-write", "connection", {
-      namespaceId: namespace.namespaceId,
-    });
-    await candidate.stop();
-    reads.push(
-      await released.request("after-candidate-write", "read", {
-        namespaceId: namespace.namespaceId,
-      }),
-    );
-    await released.request("after-candidate-write", "work", { name: "After candidate writes" });
-    await released.stop();
-    released = await start(images.released, "released");
-    reads.push(
-      await released.request("restarted-after-candidate-write", "read", {
-        namespaceId: namespace.namespaceId,
-      }),
-    );
-    await released.request("restarted-after-candidate-write", "work", {
-      name: "Restart after candidate writes",
-    });
-    await released.stop();
-    const checked = await command([
-      ...args(images.candidate, "scripts/migrate-production.mjs", {
-        NODE_ENV: "development",
-        OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
-      }),
-      "--check",
-    ]);
-    const checkEvents = checked.stdout
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    assert.ok(
-      checkEvents.some(
-        (event) => event.event === "migration.checked" && event.history === "completed",
-      ),
-    );
-    assert.deepEqual(
-      await history(),
-      after,
-      "Read-only migration check must preserve the receipt chain.",
-    );
-    t.diagnostic(
-      JSON.stringify({
-        images,
-        beforeReceipts: before.length,
-        afterReceipts: after.length,
-        candidateHistoryCheck: "completed",
-        observations,
-      }),
-    );
-    assert.deepEqual(
-      reads.map(({ status, errorCode }) => ({ status, errorCode })),
-      reads.map(() => ({ status: 200, errorCode: null })),
-      "Released controller must still read supported candidate writes, including after restart.",
-    );
-    for (const read of reads.slice(-2)) {
-      assert.ok(
-        read.listedSourceIds.includes(saved.sourceId),
-        "Released controller must list the exact candidate-created credential source, including after restart.",
-      );
-    }
   } finally {
     // Reuse the repository owner label for interruption cleanup, and remove only
     // this case's remaining containers before its existing database owner drops it.
@@ -357,5 +336,192 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
     } finally {
       clearTimeout(timer);
     }
+  }
+}
+
+export async function assertReleasedControllerCompatibility(t, images, createDatabase) {
+  await withReleasedControllerFixture(
+    t,
+    images,
+    createDatabase,
+    async ({ start, migrate, history, before, args, command, observations, migrationUrl }) => {
+      let released = await start(images.released, "released");
+      const namespace = await released.request("before-migration", "work", {
+        name: "Before migration",
+      });
+      const reads = [
+        await released.request("before-migration", "read", { namespaceId: namespace.namespaceId }),
+      ];
+      // Keep the real old worker alive while the canonical candidate migrator runs.
+      // This does not assert overlap with an individual DDL statement.
+      await settled([
+        migrate(images.candidate),
+        released.request("during-migration", "work", { name: "During migration" }),
+      ]);
+      const after = await history();
+      assert.deepEqual(after.slice(0, before.length), before);
+      await released.request("after-migration", "work", { name: "After migration" });
+      await released.stop();
+      released = await start(images.released, "released");
+      await released.request("restarted-old", "work", { name: "After restart" });
+      reads.push(
+        await released.request("restarted-old", "read", { namespaceId: namespace.namespaceId }),
+      );
+      const candidate = await start(images.candidate, "candidate");
+      const saved = await candidate.request("candidate-write", "connection", {
+        namespaceId: namespace.namespaceId,
+      });
+      await candidate.stop();
+      reads.push(
+        await released.request("after-candidate-write", "read", {
+          namespaceId: namespace.namespaceId,
+        }),
+      );
+      await released.request("after-candidate-write", "work", { name: "After candidate writes" });
+      await released.stop();
+      released = await start(images.released, "released");
+      reads.push(
+        await released.request("restarted-after-candidate-write", "read", {
+          namespaceId: namespace.namespaceId,
+        }),
+      );
+      await released.request("restarted-after-candidate-write", "work", {
+        name: "Restart after candidate writes",
+      });
+      await released.stop();
+      const checked = await command([
+        ...args(images.candidate, "scripts/migrate-production.mjs", {
+          NODE_ENV: "development",
+          OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
+        }),
+        "--check",
+      ]);
+      const checkEvents = checked.stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.ok(
+        checkEvents.some(
+          (event) => event.event === "migration.checked" && event.history === "completed",
+        ),
+      );
+      assert.deepEqual(
+        await history(),
+        after,
+        "Read-only migration check must preserve the receipt chain.",
+      );
+      t.diagnostic(
+        JSON.stringify({
+          images,
+          beforeReceipts: before.length,
+          afterReceipts: after.length,
+          candidateHistoryCheck: "completed",
+          observations,
+        }),
+      );
+      assert.deepEqual(
+        reads.map(({ status, errorCode }) => ({ status, errorCode })),
+        reads.map(() => ({ status: 200, errorCode: null })),
+        "Released controller must still read supported candidate writes, including after restart.",
+      );
+      for (const read of reads.slice(-2)) {
+        assert.ok(
+          read.listedSourceIds.includes(saved.sourceId),
+          "Released controller must list the exact candidate-created credential source, including after restart.",
+        );
+      }
+    },
+  );
+}
+
+export async function assertReleasedControllerIAMCompatibility(t, images, createDatabase) {
+  let qualified = false;
+  try {
+    await withReleasedControllerFixture(
+      t,
+      images,
+      createDatabase,
+      async ({ start, migrate, history, before, db }) => {
+        const released = await start(images.released, "released");
+        const allowed = await released.request("before-migration", "work", {
+          name: "Compatibility allowed",
+        });
+        const outside = await released.request("before-migration", "work", {
+          name: "Compatibility outside",
+        });
+        const read = (process, phase) =>
+          process.request(phase, "namespace", {
+            namespaceId: allowed.namespaceId,
+          });
+        assert.equal((await read(released, "before-migration")).status, 200);
+
+        // SQL permits a new policy shape but does not create it. Keep the old process and
+        // session alive to distinguish migration compatibility from candidate startup writes.
+        await migrate(images.candidate);
+        const after = await history();
+        assert.deepEqual(after.slice(0, before.length), before);
+        t.diagnostic(
+          JSON.stringify({
+            phase: "after-migration",
+            beforeReceipts: before.length,
+            afterReceipts: after.length,
+          }),
+        );
+        assert.equal((await read(released, "after-sql-before-policy")).status, 200);
+        const candidate = await start(images.candidate, "candidate", { configuredIAM: true });
+        assert.equal(candidate.identity.accountId, released.identity.accountId);
+        const policy = await db.migrator.query(`
+        SELECT b.namespace_id, g.namespace_id AS group_namespace_id
+        FROM occ.iam_access_bindings b JOIN occ.iam_groups g ON g.id = b.group_subject_id
+        WHERE g.id = 'group_config_default-user' AND b.role_id = 'role_config_agent_creator'
+      `);
+        assert.deepEqual(policy.rows, [
+          { namespace_id: allowed.namespaceId, group_namespace_id: null },
+        ]);
+        t.diagnostic(JSON.stringify({ phase: "candidate-policy-active", bindings: policy.rows }));
+        const candidateRead = await read(candidate, "after-policy");
+        const oldRead = await read(released, "after-policy");
+        const member = await candidate.request("after-policy", "member-controls", {
+          namespaceId: allowed.namespaceId,
+          outsideId: outside.namespaceId,
+        });
+        await candidate.stop();
+        await released.stop();
+
+        // Also try a cold old worker. A rejected startup is failed compatibility, but retain
+        // it beside the live read so the first symptom does not hide the recovery boundary.
+        let restartError;
+        let restartedRead;
+        try {
+          const restarted = await start(images.released, "released");
+          assert.equal(restarted.identity.accountId, released.identity.accountId);
+          restartedRead = await read(restarted, "restarted-after-policy");
+          await restarted.stop();
+        } catch (error) {
+          restartError = error;
+          t.diagnostic(JSON.stringify({ phase: "restarted-after-policy", error: error.message }));
+        }
+        assert.equal(candidateRead.status, 200, "Candidate administrator must remain authorized.");
+        assert.deepEqual(
+          member.results.map(({ status }) => status),
+          [200, 403],
+          "Default user must be confined to the configured Namespace.",
+        );
+        assert.equal(
+          oldRead.status,
+          200,
+          "Released administrator must remain authorized after candidate policy activation.",
+        );
+        assert.equal(
+          restartError,
+          undefined,
+          "Released controller must restart after candidate policy activation.",
+        );
+        assert.equal(restartedRead.status, 200, "Restarted administrator must remain authorized.");
+      },
+    );
+    qualified = true;
+  } finally {
+    t.diagnostic(JSON.stringify({ scenario: "configured-iam", images, qualified }));
   }
 }

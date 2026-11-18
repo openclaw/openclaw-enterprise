@@ -179,7 +179,7 @@ them. Docker is the default development selection, not a bundled YAML selection.
 For example, with an image already loaded in the engine:
 
 ```bash
-OCC_DOCKER_RUNTIME_IMAGE=oce-runtime:local scripts/dev-up
+OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DOCKER_RUNTIME_IMAGE=oce-runtime:local scripts/dev-up
 ```
 
 ### Development configuration and persistence
@@ -270,11 +270,10 @@ prevents reaching those model and recovery scenarios. Interactive TUI execution
 remains unverified on Podman. `compose.logging.yaml` remains Docker-only because this Podman baseline
 does not provide the required Fluentd log driver.
 
-Engine requests have a 10-second deadline and observe the current Compute
-cancellation signal. If the connection closes before the response body is
-complete, the operation fails rather than staying pending. The Driver does
-not automatically retry an interrupted request; an already-sent engine
-operation may still have taken effect.
+Ordinary engine requests allow 10 seconds; container stop allows 20, including
+Docker's 10-second grace period. Both observe the current Compute cancellation
+signal. An incomplete response fails without retry: the engine operation may
+already have taken effect.
 
 Engine response bodies have a 4 MiB budget. A larger declared content length
 is rejected before the body is read, and a response without that header is
@@ -311,6 +310,10 @@ supported mount options. The non-root runtime creates its `.openclaw` and worksp
 the setup container prepares ownership and permissions on the named volumes.
 
 ## Troubleshooting
+
+In-flight request aborts identify the operation, method, elapsed time, deadline
+and whether the request timed out or its caller cancelled. Check the named
+operation, caller cancellation and engine health.
 
 - **Worker starts with the wrong Compute Driver:** unset `OCC_CONFIG_PATH` for
   default Compose development, or inspect the trusted startup YAML if selecting

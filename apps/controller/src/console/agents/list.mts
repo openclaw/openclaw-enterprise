@@ -244,7 +244,7 @@ export function message(cause: unknown, mutation = false, need?: AccessNeed): st
 // rolled back, and channel credential validation, which runs before the transaction (the API
 // throws if it runs inside one). Create Agent shows their reason. A cluster denial of runtime credentials is met
 // by the provisioning worker, deploy and the runtime credential routes, not by this request.
-// tests/conformance/http-errors.test.mjs classifies every other API error code.
+// tests/conformance/http-errors.test.ts classifies every other API error code.
 export const PROVISIONING_REFUSAL_CODES = Object.freeze([
   "DEPENDENCY_UNAVAILABLE",
   "CHANNEL_CREDENTIAL_UNAVAILABLE",

@@ -3,14 +3,15 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:https";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import { listen } from "../helpers/listen.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { inspect } from "node:util";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
+  assertProtectedEqual,
   bindLocalRehearsalCluster,
   createRehearsalCustody,
   localRehearsalEnvironment,
@@ -224,6 +225,23 @@ test("release checkout admission rejects hidden edits and ignored execution inpu
   assert.equal((await git(["status", "--porcelain"])).trim(), "");
   await assert.rejects(selectRehearsalControllers(run, env), /only unmodified committed files/u);
   assert.equal(dockerCalls, 0);
+});
+
+test("protected rehearsal comparisons retain equality without exposing mismatched operands", () => {
+  const sentinel = `private-${randomUUID()}`;
+  for (const actual of [sentinel, { data: { nested: [sentinel] } }]) {
+    assert.doesNotThrow(() =>
+      assertProtectedEqual(actual, structuredClone(actual), "receipt changed"),
+    );
+    assert.throws(
+      () => assertProtectedEqual(actual, null, "receipt changed"),
+      (error: Error) => {
+        assert.ok(!inspect(error).includes(sentinel), "assertion exposed a protected operand");
+        assert.equal(error.message, "receipt changed");
+        return true;
+      },
+    );
+  }
 });
 
 test("migration check reports protected log failures without printing fixture credentials", async (t) => {
@@ -854,6 +872,10 @@ test(
     const tls = await harnessTlsFixture(t);
     const key = `fixture-service-key-${randomUUID()}`;
     const privateBytes = `private-response-${randomUUID()}`;
+    const requestId = `req_${randomUUID()}`;
+    const protectedMarker = "facefeed";
+    const protectedId = "req_facefeed-0000-4000-8000-000000000000";
+    const otherRequestId = `req_${randomUUID()}`;
     const observedRequests: {
       method: string | undefined;
       path: string | undefined;
@@ -873,9 +895,16 @@ test(
       response.once("close", () => {
         active--;
       });
+      response.setHeader("x-request-id", requestId);
+      response.setHeader("x-private-fixture", privateBytes);
       switch (observedRequests.length) {
+        case 1:
+          response.end(
+            JSON.stringify({ data: { id: "original-installation" }, meta: { requestId } }),
+          );
+          return;
         case 2:
-          response.end(JSON.stringify({ data: { id: "other-installation" } }));
+          response.end(JSON.stringify({ data: { id: "other-installation" }, meta: { requestId } }));
           return;
         case 3:
           response.end(JSON.stringify({ data: { name: privateBytes } }));
@@ -892,7 +921,17 @@ test(
         case 6:
           incoming.socket.destroy();
           return;
-        case 7: {
+        case 7:
+          // JSON escaping hides a protected substring until the request ID is decoded.
+          response.setHeader("x-request-id", protectedId);
+          response.end(
+            JSON.stringify({
+              data: { id: "original-installation" },
+              meta: { requestId: protectedId },
+            }).replace(protectedMarker, "\\u0066acefeed"),
+          );
+          return;
+        case 8: {
           // A response that keeps arriving must still hit the total request deadline.
           response.writeHead(200);
           response.write(" ");
@@ -904,7 +943,12 @@ test(
           return;
         }
         default:
-          response.end(JSON.stringify({ data: { id: "original-installation" } }));
+          response.end(
+            JSON.stringify({
+              data: { id: "original-installation" },
+              meta: { requestId: otherRequestId },
+            }),
+          );
       }
     });
     const port = await listen(t, server);
@@ -912,7 +956,7 @@ test(
       baseURL: `https://localhost:${port}`,
       ca: tls.caBundle,
       serviceKey: () => key,
-      secrets: [key],
+      secrets: [key, protectedMarker],
     });
     let actionStarted = false;
     const actionStartedAtRequest: boolean[] = [];
@@ -926,12 +970,28 @@ test(
             phase: string;
             startedAt: string;
             finishedAt: string;
+            requestId?: string;
             elapsedMs: number;
             gapMs: number | null;
+            startGapMs: number | null;
+            scheduledSlot: number | null;
+            scheduleDelayMs: number | null;
             outcome: string;
             status: number | undefined;
           }[];
           upgradeSucceeded: boolean;
+          schemaVersion: number;
+          intervalAfterResponseMs: null;
+          nominalIntervalMs: number;
+          cadence: {
+            scheduledSlots: number;
+            probedSlots: number;
+            unprobedSlots: number;
+            complete: boolean;
+          };
+          maxStartGapMs: number;
+          tailGapMs: number;
+          complete: boolean;
         }
       | undefined;
     // Exercise the real HTTPS helper while the action succeeds despite failed
@@ -954,10 +1014,10 @@ test(
     assert.equal(result, "upgrade completed");
     assert.ok(evidence);
     assert.equal(evidence.upgradeSucceeded, true);
-    assert.deepEqual(
-      JSON.parse(await readFile(join(directory, "forward-api-availability.json"), "utf8")),
-      JSON.parse(JSON.stringify(evidence)),
-    );
+    const snapshot = await readFile(join(directory, "forward-api-availability.json"), "utf8");
+    assert.ok(!snapshot.includes(protectedMarker));
+    assert.ok(!JSON.stringify(evidence).includes(protectedMarker));
+    assert.deepEqual(JSON.parse(snapshot), JSON.parse(JSON.stringify(evidence)));
     assert.deepEqual(
       {
         observations: evidence.samples.map(({ phase, outcome, status }) => [
@@ -975,20 +1035,57 @@ test(
           ["during", "http-error", 503],
           ["during", "http-error", 502],
           ["during", "request-error", undefined],
+          ["during", "ok", 200],
           ["during", "timeout", 200],
           ["after", "ok", 200],
         ],
-        actionStartedAtRequest: [false, true, true, true, true, true, true, true],
+        actionStartedAtRequest: [false, true, true, true, true, true, true, true, true],
       },
     );
+    assert.equal(evidence.samples[0]?.requestId, requestId);
+    assert.ok(evidence.samples.slice(1).every((sample) => !("requestId" in sample)));
     assert.equal(evidence.samples[0]?.gapMs, null);
     for (const sample of evidence.samples) {
       assert.ok(Number.isFinite(Date.parse(sample.startedAt)));
       assert.ok(Date.parse(sample.finishedAt) >= Date.parse(sample.startedAt));
       assert.ok(sample.elapsedMs >= 0);
     }
-    assert.ok((evidence.samples[6]?.elapsedMs ?? 0) >= 4_900);
-    assert.ok(evidence.samples.slice(2, 7).every(({ gapMs }) => gapMs !== null && gapMs >= 900));
+    assert.ok((evidence.samples[7]?.elapsedMs ?? 0) >= 4_900);
+    assert.equal(evidence.schemaVersion, 2, "receipt must identify the nominal-cadence contract");
+    assert.equal(evidence.intervalAfterResponseMs, null);
+    assert.equal(evidence.nominalIntervalMs, 1_000);
+    assert.equal(evidence.complete, true);
+    assert.equal(evidence.cadence.complete, true);
+    assert.equal(evidence.cadence.probedSlots, 7);
+    assert.ok(
+      evidence.cadence.unprobedSlots >= 4,
+      "the five-second request leaves nominal slots unprobed",
+    );
+    assert.equal(
+      evidence.cadence.scheduledSlots,
+      evidence.cadence.probedSlots + evidence.cadence.unprobedSlots,
+    );
+    assert.equal(evidence.samples[0]?.scheduledSlot, null);
+    assert.equal(evidence.samples[8]?.scheduledSlot, null);
+    const during = evidence.samples.slice(1, 8);
+    assert.ok(
+      during.every(
+        ({ scheduledSlot, scheduleDelayMs }) =>
+          scheduledSlot !== null &&
+          scheduleDelayMs !== null &&
+          scheduleDelayMs >= 0 &&
+          scheduleDelayMs < 1_000,
+      ),
+    );
+    assert.ok(
+      during.slice(1).every(({ startGapMs }) => startGapMs !== null && startGapMs >= 1_000),
+    );
+    assert.ok(
+      (evidence.samples[8]?.startGapMs ?? 0) >= 4_900,
+      "the final in-flight request must remain visible in the start-to-start gap",
+    );
+    assert.ok(evidence.maxStartGapMs >= 4_900);
+    assert.ok(evidence.tailGapMs >= 0);
     assert.equal(peakActive, 1);
     assert.equal(active, 0);
     assert.ok(
@@ -1000,6 +1097,116 @@ test(
     assert.ok(!JSON.stringify(evidence).includes(privateBytes));
   },
 );
+
+test("upgrade availability accounts for stalled slots and final tails on a monotonic clock", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-availability-clock-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let now = 100;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["Date"], now: 30_000 });
+  const settled = Promise.withResolvers<string>();
+  let requests = 0;
+  // Synthetic time is limited to scheduler arithmetic. The adjacent TLS test
+  // owns transport deadlines and serialization. No fake replaces that proof.
+  const result = await measureUpgradeAvailability(
+    async () => {
+      requests++;
+      switch (requests) {
+        case 1:
+          now = 110;
+          break;
+        case 2:
+          // Slots 2 and 3 pass while the first during request is in flight.
+          now = 4_610;
+          t.mock.timers.setTime(1_000);
+          break;
+        case 3:
+          now = 5_610;
+          settled.resolve("complete");
+          break;
+        case 4:
+          now = 6_010;
+          break;
+        default:
+          assert.fail("missed slots must not trigger catch-up requests");
+      }
+      return { status: 200, body: { data: { id: "original-installation" } } };
+    },
+    "original-installation",
+    directory,
+    () => {
+      // Synchronous action work delays admission past slot 0.
+      now = 1_360;
+      return settled.promise;
+    },
+    async () => {},
+  );
+  assert.equal(result, "complete");
+  const controllerPath = join(directory, "forward-api-availability.json");
+  const controllerBytes = await readFile(controllerPath);
+  const evidence = JSON.parse(controllerBytes.toString("utf8"));
+  assert.deepEqual(evidence.cadence, {
+    startOffsetMs: 10,
+    endOffsetMs: 5_510,
+    complete: true,
+    scheduledSlots: 6,
+    probedSlots: 2,
+    unprobedSlots: 4,
+  });
+  assert.deepEqual(
+    evidence.samples.map((sample: { scheduledSlot: number | null }) => sample.scheduledSlot),
+    [null, 1, 4, null],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { scheduleDelayMs: number | null }) => sample.scheduleDelayMs),
+    [null, 250, 500, null],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { startGapMs: number | null }) => sample.startGapMs),
+    [null, 1_260, 3_250, 1_000],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { gapMs: number | null }) => sample.gapMs),
+    [null, 1_250, 0, 0],
+  );
+  assert.equal(evidence.maxStartGapMs, 3_250);
+  assert.equal(evidence.tailGapMs, 400);
+  assert.equal(evidence.throughOffsetMs, 5_910);
+  assert.equal(evidence.complete, true);
+  assert.ok(evidence.samples[1].finishedAt < evidence.samples[1].startedAt);
+  assert.equal(evidence.samples[1].elapsedMs, 3_250);
+
+  // Even zero elapsed time has the initial opportunity. The closed endpoint
+  // includes a slot exactly at settlement; neither may create a fake sample.
+  const failure = new Error("synchronous failure");
+  for (const duration of [0, 1_000]) {
+    await assert.rejects(
+      measureUpgradeAvailability(
+        async () => ({ status: 200, body: { data: { id: "original-installation" } } }),
+        "original-installation",
+        directory,
+        () => {
+          now += duration;
+          throw failure;
+        },
+        async () => {},
+        "runtime-api-availability.json",
+      ),
+      (error: unknown) => error === failure,
+    );
+    assert.deepEqual(await readFile(controllerPath), controllerBytes);
+    const failed = JSON.parse(
+      await readFile(join(directory, "runtime-api-availability.json"), "utf8"),
+    );
+    assert.equal(failed.cadence.scheduledSlots, duration === 0 ? 1 : 2);
+    assert.equal(failed.cadence.unprobedSlots, failed.cadence.scheduledSlots);
+    assert.equal(failed.cadence.probedSlots, 0);
+    assert.deepEqual(
+      failed.samples.map((sample: { phase: string }) => sample.phase),
+      ["before", "after"],
+    );
+  }
+});
 
 test(
   "upgrade availability retains incomplete observations when its process is killed",
@@ -1016,6 +1223,13 @@ test(
       assert.equal(incoming.url, "/installation");
       assert.equal(incoming.headers["x-api-key"], key);
       requests++;
+      if (requests === 3) {
+        // Kill with a real TLS request in flight. The saved boundary must not
+        // imply that this request completed or that its later slots were observed.
+        response.writeHead(200);
+        response.write(" ");
+        return;
+      }
       response.writeHead(requests === 1 ? 200 : 503);
       response.end(
         JSON.stringify(
@@ -1059,12 +1273,17 @@ test(
       await closed;
     });
     let persisted:
-      | { upgradeSucceeded: boolean | null; samples: { phase: string; outcome: string }[] }
+      | {
+          upgradeSucceeded: boolean | null;
+          complete: boolean;
+          throughOffsetMs: number;
+          cadence: { complete: boolean; probedSlots: number };
+          samples: { phase: string; outcome: string }[];
+        }
       | undefined;
     const deadline = Date.now() + 10_000;
-    // Kill only after a completed failed HTTPS observation has reached disk.
     // The pending action never returns; no finally block can rescue the evidence.
-    while (persisted?.samples.at(-1)?.phase !== "during") {
+    while (persisted?.samples.at(-1)?.phase !== "during" || requests < 3) {
       assert.ok(Date.now() < deadline, "no during-upgrade observation was persisted");
       try {
         persisted = JSON.parse(await readFile(snapshot, "utf8"));
@@ -1078,15 +1297,21 @@ test(
     runner.kill("SIGKILL");
     assert.deepEqual(await closed, { code: null, signal: "SIGKILL" });
     const completedPrefix = persisted.samples;
+    const completedThrough = persisted.throughOffsetMs;
     const retained = await readFile(snapshot, "utf8");
     persisted = JSON.parse(retained);
     assert.ok(persisted);
     assert.equal(persisted.upgradeSucceeded, null);
+    assert.equal(persisted.complete, false);
+    assert.equal(persisted.cadence.complete, false);
+    assert.equal(persisted.cadence.probedSlots, 1);
+    assert.equal(persisted.throughOffsetMs, completedThrough);
+    assert.equal(persisted.samples.length, 2);
     assert.deepEqual(persisted.samples.slice(0, completedPrefix.length), completedPrefix);
     assert.equal(persisted.samples[0]?.phase, "before");
     assert.equal(persisted.samples[0]?.outcome, "ok");
+    assert.ok(!("requestId" in persisted.samples[0]));
     assert.ok(persisted.samples.length >= 2);
-    // Scheduling may allow more observations before SIGKILL takes effect.
     assert.ok(
       persisted.samples
         .slice(1)
@@ -1102,8 +1327,13 @@ test(
 test("upgrade availability preserves action and evidence-write failures", async (t) => {
   const tls = await harnessTlsFixture(t);
   const key = `fixture-service-key-${randomUUID()}`;
+  // Even matching IDs must have the controller-generated UUIDv4 shape.
+  const malformedId = "req_00000000-0000-1000-8000-000000000000";
   const server = createServer(tls, (_incoming, response) => {
-    response.end(JSON.stringify({ data: { id: "original-installation" } }));
+    response.setHeader("x-request-id", malformedId);
+    response.end(
+      JSON.stringify({ data: { id: "original-installation" }, meta: { requestId: malformedId } }),
+    );
   });
   const port = await listen(t, server);
   const request = createProductionTuiRequest({
@@ -1150,7 +1380,16 @@ test("upgrade availability preserves action and evidence-write failures", async 
   const failedSnapshot = JSON.parse(
     await readFile(join(directory, "forward-api-availability.json"), "utf8"),
   );
+  assert.ok(!JSON.stringify(failedSnapshot).includes(malformedId));
   assert.equal(failedSnapshot.upgradeSucceeded, false);
+  assert.equal(failedSnapshot.complete, true);
+  assert.equal(failedSnapshot.cadence.complete, true);
+  assert.equal(failedSnapshot.cadence.probedSlots, 0);
+  assert.equal(failedSnapshot.cadence.unprobedSlots, failedSnapshot.cadence.scheduledSlots);
+  assert.deepEqual(
+    failedSnapshot.samples.map((sample: { scheduledSlot: number | null }) => sample.scheduledSlot),
+    [null, null],
+  );
   assert.equal(failedSnapshot.samples.at(-1)?.outcome, "ok");
 
   // An unusable destination fails each checkpoint while the real asynchronous
@@ -1524,3 +1763,23 @@ test(
     assert.ok(Number(await readFile(heartbeat, "utf8")) > before);
   },
 );
+
+test("fixture command reports independently signalled child as unsettled", async () => {
+  await assert.rejects(
+    runFixtureCommand(process.execPath, ["-e", 'process.kill(process.pid, "SIGTERM")']),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const failure = error as Error & { settled?: boolean; outcome?: unknown };
+      assert.equal(failure.settled, false);
+      assert.deepEqual(failure.outcome, {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        interrupted: false,
+        spawned: true,
+        terminationFailed: false,
+      });
+      return true;
+    },
+  );
+});

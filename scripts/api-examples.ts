@@ -7,6 +7,7 @@ const namespaceId = id("ns");
 const agentId = id("agt");
 const configurationId = id("cfg");
 const revisionId = id("rev");
+const nativeBrowserOrigin = "https://agent-0123456789abcdef0123456789abcdef.agents.example.com";
 const secretRef = { kind: "secret", namespaceId, id: id("sec") };
 const harnessAuth = { method: "api_key", source: secretRef };
 
@@ -256,6 +257,8 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  "x-occ-session-key": "s".repeat(43),
+  origin: "https://console.example.com",
   oauthClientId,
   connectionTemplateId,
   key: "review-1",
@@ -301,6 +304,12 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  chatWithAgent: {
+    messages: [{ role: "user", content: "Reply with a short greeting." }],
+    stream: false,
+  },
+  launchAgentNativeAdmin: {},
+  confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
   createConnectionTemplate: {
     ...connectionTemplateInput,
@@ -397,7 +406,6 @@ export const requestExamples = {
   disableAuthAccount: { expectedVersion: 1 },
   enableAuthAccount: { expectedVersion: 2 },
   detachAuthMethod: { expectedVersion: 1 },
-  attachGitHubIdentity: { expectedVersion: 1, subject: "12345678" },
   attachGoogleIdentity: { expectedVersion: 1, subject: "123456789012345678901" },
   attachOidcIdentity: { expectedVersion: 1, subject: "provider-subject-docs-admin" },
   revokeAuthAccountSessions: { expectedVersion: 1 },
@@ -412,13 +420,21 @@ export const requestExamples = {
     namespaceId,
     expiresIn: 86400,
   },
-  confirmGitHubSignIn: { attemptId: "example".padEnd(43, "0") },
   confirmGoogleSignIn: { attemptId: "example".padEnd(43, "0") },
   confirmOidcSignIn: { attemptId: "example".padEnd(43, "0") },
 };
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  chatWithAgent: {
+    id: "chatcmpl-example",
+    object: "chat.completion",
+    created: 1792411200,
+    model: "openclaw:main",
+    choices: [
+      { index: 0, message: { role: "assistant", content: "Hello." }, finish_reason: "stop" },
+    ],
+  },
   listUsableConnectionTemplates: [connectionTemplate],
   listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {
@@ -487,6 +503,22 @@ export const responseExamples = {
   },
   deployAgent: revision,
   getAgentRevision: revision,
+  listAgentAuditEvents: {
+    projectionVersion: 1,
+    window: { start: "2026-09-30T12:00:00.000Z", end: time },
+    events: [
+      {
+        id: id("aud"),
+        occurredAt: "2026-10-01T11:30:00.000000Z",
+        event: "api_request",
+        outcome: "success",
+        actorId: id("prn"),
+        requestId: id("req"),
+        operationId: "getAgent",
+      },
+    ],
+    nextCursor: null,
+  },
   listAgentRevisions: [
     {
       id: revisionId,
@@ -547,6 +579,16 @@ export const responseExamples = {
   },
   getAgentHarnessStatus: { status: "unobserved" },
   getAgentNativeAdmin: { status: "stopped" },
+  launchAgentNativeAdmin: {
+    intentId: uuid,
+    origin: nativeBrowserOrigin,
+    landingUrl: `${nativeBrowserOrigin}/__occ/native-admin/launch?intent=${uuid}`,
+  },
+  confirmAgentNativeAdmin: {
+    intentId: uuid,
+    exchange: "e".repeat(43),
+    redeemUrl: `${nativeBrowserOrigin}/__occ/native-admin/redeem`,
+  },
   getAgentRuntimeImages: { status: "undeployed", images: [] },
   getAgentRuntimeCredentials: { transportConfigured: true },
   provisionAgentRuntimeCredentials: { transportConfigured: true },
@@ -695,13 +737,11 @@ export const responseExamples = {
   disableAuthAccount: { userId },
   enableAuthAccount: { userId },
   detachAuthMethod: { userId },
-  attachGitHubIdentity: { userId },
   attachGoogleIdentity: { userId },
   attachOidcIdentity: { userId },
   revokeAuthAccountSessions: { userId },
   enrolAuthAccount: { userId, principalId: authAccount.principalId, version: 1, created: true },
   getAuthProviders: {
-    github: false,
     google: false,
     oidc: false,
     password: true,
@@ -726,10 +766,6 @@ export const responseExamples = {
     expiresAt: "2026-10-02T12:00:00.000Z",
   },
   revokeServiceKey: { id: "key-docs-automation", revoked: true },
-  startGitHubSignIn: {
-    attemptId: "example".padEnd(43, "0"),
-    url: "https://github.com/login/oauth/authorize?client_id=example&state=example-browser-bound-state",
-  },
   startGoogleSignIn: {
     attemptId: "example".padEnd(43, "0"),
     url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=example&state=example-browser-bound-state",
@@ -738,7 +774,6 @@ export const responseExamples = {
     attemptId: "example".padEnd(43, "0"),
     url: "https://identity.example.com/authorize?client_id=example&state=example-browser-bound-state",
   },
-  confirmGitHubSignIn: { sessionKey },
   confirmGoogleSignIn: { sessionKey },
   confirmOidcSignIn: { sessionKey },
   resolveAgentNativeAdminReturn: { agentId, namespaceId },
@@ -749,12 +784,14 @@ export const errorExamples = {
   401: ["UNAUTHENTICATED", "The caller did not provide valid credentials."],
   403: ["FORBIDDEN", "The caller is not allowed to perform this operation."],
   404: ["NOT_FOUND", "The requested platform resource was not found."],
+  408: ["REQUEST_TIMEOUT", "The request body deadline expired."],
   409: ["RESOURCE_CONFLICT", "The requested operation conflicts with the current resource state."],
   413: ["PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size."],
   415: ["UNSUPPORTED_MEDIA_TYPE", "The request content type is not supported."],
   429: ["RATE_LIMITED", "Too many requests. Retry later."],
   500: ["INTERNAL_ERROR", "The platform request could not be completed."],
   501: ["NOT_IMPLEMENTED", "The selected Driver does not support this operation."],
+  502: ["BAD_GATEWAY", "The Agent request was interrupted."],
   503: ["DEPENDENCY_UNAVAILABLE", "A required dependency is unavailable."],
   504: ["GATEWAY_TIMEOUT", "The runtime request timed out."],
 } satisfies Record<number, readonly [string, string]>;

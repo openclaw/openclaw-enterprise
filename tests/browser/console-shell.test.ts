@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   accessibleDescription,
   fileBrowser,

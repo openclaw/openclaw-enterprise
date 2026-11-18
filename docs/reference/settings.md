@@ -5,7 +5,7 @@ private-listener boundary, see [OCC metrics](metrics.md).
 
 Use this reference to configure the OpenClaw Enterprise controller and worker,
 local Compose stack, PostgreSQL and its migrations, and Drivers. Development
-uses local admission. The default Compose profile uses PostgreSQL and the
+uses local admission. The Docker Compute preview profile uses PostgreSQL and the
 bundled Docker Compute and filesystem
 Configuration Drivers; choose the Kubernetes profile in [Local Setup](../guides/quickstart.md)
 to deploy an Agent.
