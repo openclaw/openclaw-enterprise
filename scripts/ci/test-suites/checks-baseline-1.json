@@ -57,6 +57,7 @@
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.ts",
     "tests/integration/production-keycloak-profile.test.ts",
+    "tests/integration/database-snapshot-ordering.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.ts",
@@ -433,6 +434,13 @@
       "path": "tests/integration/production-keycloak-profile.test.ts",
       "expectedTests": [
         "production Keycloak example renders an attached-only pilot through the chart"
+      ]
+    },
+    {
+      "path": "tests/integration/database-snapshot-ordering.test.ts",
+      "expectedTests": [
+        "database snapshots ignore only COPY row ordering",
+        "database snapshots retain values, duplicates, headers and non-COPY bytes"
       ]
     },
     {

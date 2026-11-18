@@ -12,6 +12,7 @@ import { NamespaceId } from "../../packages/contracts/src/index.ts";
 import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
+import { canonicalizeDumpRows } from "../helpers/postgres-dump.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
@@ -256,8 +257,9 @@ test(
         },
       );
     // Keep full dumps private. Authenticating the real CLI updates exactly this
-    // key's last_request and updated_at; compare every other byte, including all
-    // other keys, and verify the two expected timestamps independently.
+    // key's last_request and updated_at. Ignore COPY row order, but retain every
+    // value, duplicate and non-COPY byte, including all other keys' timestamps.
+    // Verify the two expected timestamps independently.
     const databaseSnapshot = async (name: string) => {
       // Decode only after complete byte capture: pipe chunks can split UTF-8 characters.
       // Keep command failures generic because both streams may contain private data.
@@ -282,7 +284,7 @@ test(
       await writeFile(join(f.directory, `${name}.sql`), bytes, { mode: 0o600 });
       const dump = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
       const captured: { timestamps?: number[] } = {};
-      const normalized = dump.replace(
+      const timestampNormalized = dump.replace(
         /^COPY occ\.apikey \(([^\n]+)\) FROM stdin;\n([\s\S]*?)\n\\\.\n/m,
         (_section: string, header: string, data: string) => {
           const columns = header.split(", ");
@@ -309,6 +311,7 @@ test(
         },
       );
       assert.ok(captured.timestamps, "full dump must include the exact CLI service key");
+      const normalized = canonicalizeDumpRows(timestampNormalized);
       return {
         hash: createHash("sha256").update(normalized).digest("hex"),
         normalized,
