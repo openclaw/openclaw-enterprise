@@ -3177,8 +3177,7 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
     RUNTIME_STARTUP_FAILED:
       "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
-    RUNTIME_STATE_LOCK_UNVERIFIED:
-      "Runtime failed startup check gateway-state-lock: it cannot verify that the earlier holder of its state lock stopped. To see the holder, run 'occ agent logs AGENT_ID --source gateway' (Harness: '--source agent'). Recover it per the troubleshooting guide.",
+    RUNTIME_STATE_LOCK_UNVERIFIED: `Startup check gateway-state-lock failed: the runtime cannot verify that its state lock holder stopped. See it with 'occ agent logs ${agent.id} --source gateway' (Harness: --source agent), then follow the troubleshooting guide.`,
     // Finding 2537: these fell through to "Deployment reconciliation failed.", which named no
     // step. A version stored inconsistently sends the reader to an administrator, not to
     // runtime logs that do not exist.
