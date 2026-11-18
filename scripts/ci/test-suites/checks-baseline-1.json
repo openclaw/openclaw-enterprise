@@ -54,6 +54,7 @@
     "tests/integration/dependency-unavailable-log.test.ts",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.ts",
+    "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.ts",
@@ -68,6 +69,7 @@
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
+    "tests/integration/production-upgrade-command.test.ts",
     "tests/conformance/test-files.test.ts",
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
@@ -424,6 +426,12 @@
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
+      "path": "tests/integration/production-keycloak-profile.test.ts",
+      "expectedTests": [
+        "production Keycloak example renders an attached-only pilot through the chart"
+      ]
+    },
+    {
       "path": "tests/integration/profile-public-github-read.test.mjs",
       "expectedTests": [
         "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer"
@@ -531,6 +539,9 @@
     },
     {
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
+    },
+    {
+      "path": "tests/integration/production-upgrade-command.test.ts"
     },
     {
       "path": "tests/integration/secret-api.test.ts"

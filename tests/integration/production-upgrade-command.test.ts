@@ -4,13 +4,13 @@ import { randomBytes } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const command = join(repository, "scripts/upgrade-production");
 
-async function fixture(t) {
+async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "oce-upgrade-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const profile = join(directory, "operator.json");
@@ -27,7 +27,14 @@ async function fixture(t) {
   return { directory, profile, input, evidence: join(directory, "evidence") };
 }
 
-function run(action, f, extra = [], options = {}) {
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+function run(
+  action: string,
+  f: Fixture,
+  extra: string[] = [],
+  options: { command?: string; cwd?: string; env?: NodeJS.ProcessEnv } = {},
+) {
   return spawnSync(
     "python3",
     [

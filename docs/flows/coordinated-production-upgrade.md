@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-18"
-last_updated_session: "authoring-run/ed0576f4-2e75-4480-ac10-b6d1d3f48336"
+last_updated_session: "authoring-run/f93ed972-08b6-4310-8194-a6c8c9aeef37"
 ---
 
 # Production image upgrade flow
@@ -13,6 +13,7 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 ## Entry Points
 
 - Run `scripts/upgrade-production-images` with reviewed inputs, or use `scripts/upgrade-production` with a private operator profile.
+- Stderr phases are advisory; `--verbose` shows native output.
 - Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
@@ -25,16 +26,16 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 graph TD
     OP["Private operator profile"] --> AD["Translate operation and options"]
     AD --> A
-    A["Validate inputs and inventory"] --> RR{"Repository assessment<br/>permits retention?"}
+    A["Validate inputs/inventory"] --> RR{"Repository retention permitted?"}
     RR -->|"No or unknown"| X["Retain recovery evidence"]
-    RR -->|"Yes or replacement"| HS{"Harness settings saved<br/>or runtime replacement?"}
+    RR -->|"Yes or replacement"| HS{"Saved Harness settings<br/>or replacement?"}
     HS -->|No| X
     HS -->|Yes| DB["Validate compatibility receipt"]
     DB --> Q{"Repository broker enabled?"}
     Q -->|Yes| P["Check image protocol and node architectures"]
     Q -->|No| B["Run startup/migration Jobs"]
     P --> B
-    B --> V{"Startup, history and cleanup confirmed?"}
+    B --> V{"Startup/history/cleanup confirmed?"}
     V -->|No| X
     V -->|Yes| R{"Preflight only?"}
     R -->|Yes| S["Exit unprepared"]
@@ -49,7 +50,7 @@ graph TD
     VQ -->|No| X
     VQ -->|Yes| RI{"Worker stopped or<br/>fresh inventory unchanged?"}
     RI -->|No| X
-    RI -->|Yes| E["Stop remaining writer Pods"]
+    RI -->|Yes| E["Stop writer Pods"]
     E --> DBP{"Separate database deployment?"}
     DBP -->|Yes| PAUSE["Pause for migration/history check"]
     PAUSE -->|Resume with checked history| F["Select Installation and run Helm hook"]
@@ -84,48 +85,53 @@ rejects overrides and checkout mismatches, then execs `scripts/upgrade-productio
 `scripts/upgrade-production-images:prepare_upgrade`
 
 Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.md),
-mismatched `HEAD`/`--source-revision`, chart edits/symlinks and internal evidence/baseline
-aliases before access. Other edits/image provenance are unchecked.
+mismatched `HEAD`/`--source-revision`, chart edits/symlinks and evidence/baseline aliases before access.
+Other edits/image provenance are unchecked.
 
-`yq -r` requires one `false` for `preprovisionedNamespace`; otherwise refuse before access (`preprovisioned-namespace.err`).
+`preprovisionedNamespace` must yield one `false` before access
+(`preprovisioned-namespace.err`).
 
-Resume locks evidence paths/devices/inodes/aliases and runtime dispatch journals.
+Resume locks evidence paths/devices/inodes/aliases and dispatch journals.
 
-`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings and validates candidates.
-Invalid inputs/unwritable evidence cause `Cannot compare upgrade YAML`.
-Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
-and array-wrapping one registration.
-Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
-live comparison stays exact. Immutable reference switches require string keys.
-Startup validates controllers; broker checks only references.
+`matches_yaml` validates candidates and compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings.
+Invalid inputs or unwritable evidence yield `Cannot compare upgrade YAML`.
+Projections/`cmp` allow Slack directory proxy, curated Codex PluginDriver selection
+and wrapping one registration. `agentNativeAdmin.sharedCookieDomain` is removed only
+from baseline projection; live comparison stays exact. Immutable switches require string keys.
+Startup validates controllers; broker checks references only.
 
-`read_restart_inventory` validates authorized inventory ownership, IDs and selections. Retained running revisions require accepted
+`read_restart_inventory` validates complete authorized inventory ownership, IDs and selections. Retained running revisions require accepted
 [restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only `occ agent revision AGENT_ID REVISION_ID` requires one owned revision with object-valued Harness settings;
-retain IDs and validation outcome. Drafts cannot substitute. Runtime upgrades record replacements;
-draft validation requires image support/size compliance. Quiescence is nonatomic; repository continuity is unverified.
+Controller-only `occ agent revision AGENT_ID REVISION_ID` requires one owned
+revision with object-valued Harness settings; retain IDs and outcome. Drafts cannot substitute.
+Runtime upgrades record replacements; draft validation requires image/size support.
+Quiescence is nonatomic; repository continuity is unverified.
 
-`OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`: unreadable snapshots yield `unknown`;
-database/identity errors propagate. `getInstallationDeploymentInventory` calls Compute outside State transactions under a
-ten-second budget, then rechecks fleet/Driver selections. Changes refuse; owner failures yield `unknown`.
+`OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`:
+unreadable snapshots yield `unknown`; database/identity errors propagate.
+`getInstallationDeploymentInventory` invokes Compute outside State transactions within ten seconds,
+then rechecks authorized fleet/Driver selections. Drift refuses; owner failures yield `unknown`.
 
 Refuse nonterminal deployments. Runtime upgrades require baseline versions/ready Namespaces. Exclude stopped/deleting
 Agents; allow pending repository cleanup.
 
-`prepare_upgrade` copies PostgreSQL's `run` result. `validate_controller_compatibility` calls
-`scripts/upgrade-evidence.py:validate_compatibility` before preflight to check runner/file consistency,
-data/IAM success, cleanup and image digests. Hashes bind resume, not authenticity or image source.
-Neither online migration nor rollback is qualified; see [limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
+`prepare_upgrade` copies PostgreSQL's `run` result.
+`validate_controller_compatibility` calls `scripts/upgrade-evidence.py:validate_compatibility`
+before preflight: check runner/file consistency, data/IAM success, cleanup and both image digests.
+Hashes bind resume, not authenticity or image source. Online migration and rollback remain
+unqualified; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
 
 `verify_agent_continuity` requires Agent read/operate, active AgentRevision read
 and runtime inspection. Agent reads bracket explicit-revision runtime reads,
 freezing identity and Driver-declared roles in `agent-continuity.json`, not editable topology.
 
-Repository credentials require immutable images and one architecture across matching control-plane nodes.
-`scripts/upgrade-image-identity.py:read_platform` verifies platform/OCI metadata hashes (2 MiB/blob, 32 MiB total).
-`scripts/upgrade-repository-image-probe.ts:main` probes synthetic admission before preparation and on resume.
-It reports a nonzero broker exit only when the socket stayed absent and Docker confirms the owned container
-exited without OOM or daemon error. See [broker recovery](../guides/repository-credentials/installation.md#install-and-verify).
+Repository credentials require immutable images and one architecture across all
+matching control-plane nodes. `scripts/upgrade-image-identity.py:read_platform`
+verifies the platform and OCI metadata hashes (2 MiB per blob, 32 MiB total).
+`scripts/upgrade-repository-image-probe.ts:main` qualifies admission with synthetic
+requests before preparation and again on resume. It reports a nonzero broker exit
+only if the socket stayed absent and Docker confirms the owned container exited
+without an OOM kill or daemon error. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
 
 For immutable switches, `prepare_upgrade` validates identities, unrelated data and
 candidate YAML, then hashes staged bytes; `upgrade-evidence.py` binds both snapshots.
@@ -361,15 +367,18 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Debugging and Verification
 
-- Native preparation failures: `helm-attempts/<UUID>/{render-error.log,server-dry-run-error.log}`;
-  success: `server-dry-run.txt`. Candidate refusals: `preflight-<api|worker|migration>.log`,
-  `-logs.err`, `-status.json` (resume: current `upgrade-preflight-resume.*` directory).
-- Scale, Helm upgrade, or rollout failures: `native-command-failures.tsv`; see [recovery](../guides/deploy/production-upgrade-recovery.md).
-- Check `dispatch/*.error`, `dispatch/*.rejected`, version history, and `status/`:
-  last successful deployment poll, `*.doctor.json`, `*.doctor.error`.
-- Compare `before-workloads.json`/`after-workloads.json`: controller-only releases roll affected
-  same-image Agent Pod templates once. Check broker-affected repository versions separately.
-- Credentialed production Kubernetes with distinct images proves end-to-end behavior; fixtures prove control flow.
+- Read `helm-attempts/<UUID>/{render-error.log,server-dry-run-error.log}` for native
+  preparation failures; `server-dry-run.txt` retains successful output. Inspect
+  `preflight-<api|worker|migration>.log`, `-logs.err` and `-status.json` for rejected candidates;
+  use the current `upgrade-preflight-resume.*` directory on resume.
+- Inspect `native-command-failures.tsv` for scale, Helm upgrade or rollout failures; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
+- Inspect `dispatch/*.error`, `dispatch/*.rejected` and version history. Deployment status files in
+  `status/` retain the last successful poll. Doctor writes `*.doctor.json` and `*.doctor.error` there.
+- Compare `before-workloads.json` and `after-workloads.json`: controller-only releases
+  roll affected Agents' same-image Pod templates once. Separately check broker-affected
+  repository versions.
+- End-to-end proof requires credentialed production Kubernetes with distinct images;
+  command fixtures prove control flow.
 
 ## Related docs
 
@@ -387,7 +396,9 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
-- 2026-11-18 08:00: Trace the private operator profile command handoff. (authoring-run/ed0576f4-2e75-4480-ac10-b6d1d3f48336 - 36b1f37856267537d6fdfc4164f184374e7ea4e2)
+- 2026-11-18 10:15: Trace the private operator profile command handoff alongside progress output. (authoring-run/f93ed972-08b6-4310-8194-a6c8c9aeef37 - 1c25039d84024c830b7ec4b9235a87bba15657dd)
+
+- 2026-11-18 05:39: Trace progress output. (authoring-run/19a81e0c-0cb0-48eb-828d-e65e72b6c576 - 8cbb31a6893016f3aa74be9471fce69d3dbc60e7)
 
 - 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
 
