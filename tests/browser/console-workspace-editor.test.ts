@@ -15,7 +15,6 @@ import {
   type AgentRevision,
   type Permission,
 } from "../../packages/contracts/src/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -52,6 +51,7 @@ import {
   WORKSPACE_UNREACHABLE,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 declare global {
   var workspaceBlurs: number;
@@ -216,6 +216,7 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
 // rebuild the editors: the old remount dropped focus and caret and flashed the editors disabled
 // (finding 1836). Files without unsaved edits are still reread from the new current version.
 test("a deployment finishing on the poll keeps a typing reader's Workspace editor and rereads unchanged files", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t, {
     publicOrigin: true,
     workspaceFilesAccess: {
@@ -377,6 +378,7 @@ async function openWorkspaceVersions(
   workspaceFilesAccess: ControllerWorkspaceFilesAccess,
   count = 2,
 ) {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t, { publicOrigin: true, workspaceFilesAccess });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(name, { ready: true });

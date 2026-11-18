@@ -6,14 +6,16 @@ import type {
   OpenClawConfigurationValue,
   SecretBinding,
 } from "../../packages/contracts/src/index.ts";
-import { isRecord } from "../../apps/controller/src/console/channels/shared-ui.mts";
-import { slack } from "../../apps/controller/src/console/channels/slack.mts";
-import { missingChannelCredentialGroups } from "../../apps/controller/src/console/agents/credentials.mjs";
 import {
   enabledChannelEntries,
   requireChannelSecretBindings,
 } from "../../packages/occ/src/channel-secret-bindings.ts";
 import { admitGatewaySecurityDefaults } from "../../packages/occ/src/gateway-security-defaults.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { isRecord } = await importConsoleModule("channels/shared-ui.mjs");
+const { slack } = await importConsoleModule("channels/slack.mjs");
+const { missingChannelCredentialGroups } = await importConsoleModule("agents/credentials.mjs");
 
 // These are form inputs, not a replacement for configuration or threading logic.
 const fields = {

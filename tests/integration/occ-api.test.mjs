@@ -412,6 +412,18 @@ function stateWithDeploymentWork(state, deploymentWorks) {
         const work = deploymentWorks.get(requestedKey);
         return work === undefined ? undefined : Object.freeze({ ...work });
       },
+      async findWorkByKeys(keys) {
+        const result = await view.operations.findWorkByKeys(keys);
+        return {
+          get(key) {
+            if (!deploymentWorks.has(key)) {
+              return result.get(key);
+            }
+            const work = deploymentWorks.get(key);
+            return work === undefined ? undefined : Object.freeze({ ...work });
+          },
+        };
+      },
     },
   });
   return {
@@ -3413,6 +3425,38 @@ test("Installation deployment inventory fails closed on incomplete authorization
   const incomplete = await controller.request("GET", inventoryPath);
   assertApiError(incomplete, 503, "DEPENDENCY_UNAVAILABLE", "missing deployment work");
   assert.deepEqual(Object.keys(incomplete.body).sort(), ["error", "meta"]);
+});
+
+test("Installation deployment inventory refuses a revision owned by a different Namespace tuple", async () => {
+  const { controller, fixture, namespace, agent, admitted } = await admittedDeploymentFixture(
+    "deployment-inventory-tuple",
+    "inventory-tuple-agent",
+    { recordOperations: true },
+  );
+  const revision = await fixture.platformState.read((view) =>
+    view.revisions.findRevision(namespace.id, agent.id, admitted.data.id),
+  );
+  assert.ok(revision);
+
+  // Corrupt in-memory history must not let an orphan operation borrow another
+  // Namespace's Agent through an ambiguous serialized owner key.
+  await fixture.platformState.transact(async ({ revisions, operations }) => {
+    await revisions.createRevision({
+      ...revision,
+      id: "b\u0000r",
+      revision: revision.revision + 1,
+    });
+    await operations.append({
+      kind: "agent_revision",
+      action: "reconcile",
+      namespaceId: `${namespace.id}\u0000b`,
+      resourceId: "r",
+      actorId: fixture.principal.id,
+    });
+  });
+
+  const inventory = await controller.request("GET", "/installation/deployment-inventory");
+  assertApiError(inventory, 503, "DEPENDENCY_UNAVAILABLE", "orphan deployment operation");
 });
 
 test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {

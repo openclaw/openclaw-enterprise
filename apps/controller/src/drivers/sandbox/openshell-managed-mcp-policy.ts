@@ -6,6 +6,7 @@ import {
   type ManagedMcpInstall,
   managedMcpCredentialBinding,
   managedMcpInstalls,
+  managedMcpRequests,
 } from "../plugin/managed-catalog.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
 import { sameOpenShellPolicy } from "./openshell-policy.ts";
@@ -30,9 +31,6 @@ function unsupported(message: string): never {
 }
 
 export function managedMcpNetwork(install: ManagedMcpInstall, toolNames: readonly string[]) {
-  const methods = toolNames.length
-    ? ["ping", "initialize", "notifications/initialized", "tools/list"]
-    : ["ping"];
   const { port, ...endpoint } = openShellProfileEndpoint(managedMcpProviderEndpoint(install));
   return {
     name: managedMcpNetworkName(install),
@@ -41,12 +39,12 @@ export function managedMcpNetwork(install: ManagedMcpInstall, toolNames: readonl
       {
         ...endpoint,
         ports: [port],
-        rules: [
-          ...methods.map((method) => ({ allow: { method } })),
-          ...toolNames.map((name) => ({
-            allow: { method: "tools/call", params: { name: { glob: name } } },
-          })),
-        ],
+        rules: managedMcpRequests(toolNames).map(({ method, toolName }) => ({
+          allow: {
+            method,
+            ...(toolName !== undefined && { params: { name: { glob: toolName } } }),
+          },
+        })),
       },
     ],
   };
