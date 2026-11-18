@@ -2,15 +2,12 @@ import assert from "node:assert/strict";
 import { createServer } from "node:https";
 import test from "node:test";
 import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/access/origin.ts";
-import type {
-  GitHubPreparationAdmission,
-  GitHubPreparationStore,
-} from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
+import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
 import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/access/provider-diagnostics.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
-import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
+import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 
 function assertCredentialMatches(actual: Uint8Array | undefined, expected: string | undefined) {
@@ -74,8 +71,7 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
       issuerAuthority,
       grant: scope,
     };
-    // The JavaScript fixture's transaction callbacks are generic; it returns their actual results.
-    const store = createPreparedStore(admission).connect() as GitHubPreparationStore;
+    const store = createPreparedStore(admission).connect();
     let signingKeyCurrent = true;
     const diagnostics: GitHubPreparationDiagnostic[] = [];
     const logged: Record<string, unknown>[] = [];
@@ -327,7 +323,7 @@ test("background issuer records definite non-issuance only for unambiguous token
       const { reply } = scenario;
       status = scenario.status;
       body = reply.body;
-      const store = createPreparedStore(admission).connect() as GitHubPreparationStore;
+      const store = createPreparedStore(admission).connect();
       const diagnostics: GitHubPreparationDiagnostic[] = [];
       const owner = createGitHubPreparationOwner({
         admission,
