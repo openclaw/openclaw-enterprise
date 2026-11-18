@@ -793,6 +793,39 @@ export function registerStartupPreflightCases({
     );
   });
 
+  // A Pod that cannot reach the database is not refused by the Installation: its next step
+  // names the database, the chart's database values and the egress policies. Other
+  // refusals keep pointing at the Installation.
+  test("a database connection refusal names its own inputs, not the Installation", async (t) => {
+    const connection =
+      "Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database. Check that PostgreSQL is running and that the chart's database egress (database.cidrs) admits its current address; a refused sign-in or a failed TLS handshake also stops here.";
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightResults: {
+        api: {
+          phase: "Failed",
+          log: `kubernetes-compute-preflight-passed\nagent-drafts-accepted\n${connection}\n`,
+        },
+        worker: { phase: "Failed", log: "loading drivers\nworker cannot load the Installation\n" },
+      },
+    });
+    await assert.rejects(f.run(), (error) => {
+      const lines = commandStderr(error).split("\n");
+      const api = lines.find((line) => line.includes("cannot start the api"));
+      const worker = lines.find((line) => line.includes("cannot start the worker"));
+      assert.ok(api !== undefined && worker !== undefined, commandStderr(error));
+      assert.ok(api.includes(connection), api);
+      assert.match(
+        api,
+        /No OCC writer was stopped; correct the database, the chart's database values \(database\.cidrs\) or the network policies that admit this Pod's database egress, then start again with a new evidence directory\.$/,
+      );
+      assert.doesNotMatch(api, /correct the Installation/);
+      assert.match(worker, /No OCC writer was stopped; correct the Installation and start again/);
+      return true;
+    });
+    await assertStoppedBeforeWriters(f);
+  });
+
   test("startup preflight retains the failed API CA assembler's guidance", async (t) => {
     if (skipWithoutHelm(t, realHelm)) {
       return;

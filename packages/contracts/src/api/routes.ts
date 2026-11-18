@@ -187,7 +187,56 @@ const runtimeReadErrors = {
   504: ErrorResponseRef,
 } as const;
 
+const nativeChatError = Type.Object({ error: Type.Unknown() }, { additionalProperties: true });
+const chatErrors = Object.fromEntries(
+  Object.entries({
+    ...createErrors,
+    408: ErrorResponseRef,
+    501: ErrorResponseRef,
+    502: ErrorResponseRef,
+    504: ErrorResponseRef,
+  }).map(([status, schema]) => [status, Type.Union([schema, nativeChatError])]),
+);
+
 export const occApiRoutes = [
+  {
+    operationId: "chatWithAgent",
+    method: "POST",
+    path: "/agents/:agentId/chat",
+    action: "openclaw.agents.chat",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Submit an Agent turn and receive native JSON or SSE",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object({ agentId: AgentId }, { additionalProperties: false }),
+      body: Type.Object(
+        {
+          messages: Type.Array(Type.Unknown()),
+          stream: Type.Optional(Type.Boolean()),
+          model: Type.Optional(Type.Literal("openclaw")),
+          user: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+        },
+        { additionalProperties: true },
+      ),
+      response: {
+        ...chatErrors,
+        200: {
+          description: "Native Chat Completions JSON or SSE, without an OCC envelope.",
+          content: {
+            "application/json": { schema: Type.Unknown() },
+            "text/event-stream": { schema: Type.String() },
+          },
+        },
+        default: {
+          description: "Native application error; status and body pass through unchanged.",
+          content: { "application/json": { schema: nativeChatError } },
+        },
+      },
+    },
+  },
   {
     operationId: "startAgentDeviceAuthorization",
     method: "POST",
@@ -1251,11 +1300,20 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_and_credential_source_candidates",
-    summary: "List readable credential sources without revealing credential values",
+    summary:
+      "List credential-source metadata, optionally filtered to ready, approved model credentials",
     tags: ["Credential sources"],
     schema: {
       querystring: Type.Object(
-        { modelProviderId: Type.Optional(ModelProviderId) },
+        {
+          modelProviderId: Type.Optional(
+            Type.String({
+              ...ModelProviderId,
+              description:
+                "Return ready credential sources with a matching approved template that the caller can operate.",
+            }),
+          ),
+        },
         { additionalProperties: false },
       ),
       params: NamespaceParams,
@@ -1642,7 +1700,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ProvisionAgentBody,
-      response: { 202: AgentProvisioningResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 202: AgentProvisioningResponse, ...createErrors },
     },
   },
   {
@@ -1704,7 +1762,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateAgentBody,
-      response: { 201: AgentResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 201: AgentResponse, ...createErrors },
     },
   },
   {
@@ -1722,7 +1780,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
-      response: { 204: Type.Null(), ...createErrors, 501: ErrorResponseRef },
+      response: { 204: Type.Null(), ...createErrors },
     },
   },
   {
@@ -1831,7 +1889,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       body: UpdateAgentBody,
-      response: { 200: AgentResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 200: AgentResponse, ...createErrors },
     },
   },
   {

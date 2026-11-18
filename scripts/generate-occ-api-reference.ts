@@ -199,6 +199,30 @@ function schemaConstraints(schema: unknown) {
   return constraints.join("; ") || "—";
 }
 
+function objectVariants(schema: unknown, document: unknown): unknown[] | undefined {
+  const variants = optionalField(resolveSchema(schema, document), "anyOf");
+  if (
+    !Array.isArray(variants) ||
+    !variants.every((variant) => optionalField(resolveSchema(variant, document), "properties")) ||
+    !variants.some((variant) => schemaVariantLabel(variant, document))
+  ) {
+    return undefined;
+  }
+  return variants;
+}
+
+function schemaAnchor(schema: unknown) {
+  return `schema-${slugifySegment(field(schema, "title"))}`;
+}
+
+function linkedSchemaType(schema: unknown, document: unknown): string {
+  const resolved = resolveSchema(schema, document);
+  if (optionalField(schema, "$ref") && objectVariants(resolved, document)) {
+    return `[\`${field(resolved, "title")}\`](#${schemaAnchor(resolved)})`;
+  }
+  return `\`${schemaType(schema, document)}\``;
+}
+
 function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
   const resolvedSchema = resolveSchema(schema, document);
   const rows: string[] = [];
@@ -213,8 +237,18 @@ function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
           ? required.includes(name)
           : array(required).includes(name);
     rows.push(
-      `| \`${fieldName}\` | \`${schemaType(property, document)}\` | ${isRequired ? "Yes" : "No"} | ${schemaConstraints(resolvedProperty)} |`,
+      `| \`${fieldName}\` | ${linkedSchemaType(property, document)} | ${isRequired ? "Yes" : "No"} | ${schemaConstraints(resolvedProperty)} |`,
     );
+    const variants = objectVariants(resolvedProperty, document);
+    if (variants?.every((variant) => optionalField(variant, "$ref"))) {
+      for (const variant of variants) {
+        rows.push(
+          `| **\`${fieldName}\`: ${schemaType(variant, document)}** | — | — | Fields below apply to this variant. |`,
+        );
+        rows.push(...schemaRows(variant, document, fieldName));
+      }
+      continue;
+    }
     const type = field(resolvedProperty, "type");
     if (type === "object" && field(resolvedProperty, "properties")) {
       rows.push(...schemaRows(resolvedProperty, document, fieldName));
@@ -228,9 +262,36 @@ function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
   return rows;
 }
 
-function schemaTable(schema: unknown, document: unknown) {
-  const rows = schemaRows(resolveSchema(schema, document), document);
+function schemaVariantLabel(schema: unknown, document: unknown): string | undefined {
+  const resolved = resolveSchema(schema, document);
+  for (const [name, property] of entries(optionalField(resolved, "properties") ?? {})) {
+    const value = resolveSchema(property, document);
+    if (Object.hasOwn(fields(value), "const")) {
+      return `\`${name}: ${JSON.stringify(field(value, "const"))}\``;
+    }
+  }
+  return undefined;
+}
+
+function schemaTable(schema: unknown, document: unknown): string {
+  const resolved = resolveSchema(schema, document);
+  const rows = schemaRows(resolved, document);
   if (!rows.length) {
+    const variants = optionalField(resolved, "anyOf");
+    if (
+      Array.isArray(variants) &&
+      variants.some((variant) => schemaVariantLabel(variant, document))
+    ) {
+      return variants
+        .map((variant) => {
+          const required = array(optionalField(resolveSchema(variant, document), "required") ?? []);
+          const label =
+            schemaVariantLabel(variant, document) ??
+            `Required fields: ${required.map((name) => `\`${text(name)}\``).join(", ")}`;
+          return `**${label}**\n\n${schemaTable(variant, document)}`;
+        })
+        .join("\n\n");
+    }
     return `Schema: \`${schemaType(schema, document)}\`.`;
   }
   return ["| Field | Type | Required | Constraints |", "| --- | --- | --- | --- |", ...rows].join(
@@ -239,6 +300,7 @@ function schemaTable(schema: unknown, document: unknown) {
 }
 
 const permissionScopeQualifiers: Record<string, string> = {
+  model_provider_filter: " (when filtering by `modelProviderId`)",
   associated_service_account: " (when associated)",
   existing_namespace: " (when selecting an existing namespace)",
   bound_secret: " (when bound)",
@@ -441,6 +503,27 @@ function operationEntries(document: unknown): Entry[] {
   );
 }
 
+// Public navigation order is independent of OpenAPI path order. New tags not
+// listed here follow these sections alphabetically.
+const referenceSectionOrder = new Map(
+  [
+    "Authentication",
+    "Backends",
+    "Connections",
+    "Installation",
+    "Namespaces",
+    "Agents",
+    "Agent deployments",
+    "Agent revisions",
+    "Configurations",
+    "Credential sources",
+    "IAM",
+    "Presets",
+    "Secrets",
+    "Service accounts",
+  ].map((tag, index) => [tag, index]),
+);
+
 function referenceGroups(entries: Entry[]): Group[] {
   const groups: Group[] = [];
   const byTag = new Map<unknown, Group>();
@@ -457,7 +540,12 @@ function referenceGroups(entries: Entry[]): Group[] {
     }
     group.operations.push(entry);
   }
-  return groups;
+  return groups.sort(
+    (left, right) =>
+      (referenceSectionOrder.get(text(left.title)) ?? referenceSectionOrder.size) -
+        (referenceSectionOrder.get(text(right.title)) ?? referenceSectionOrder.size) ||
+      text(left.title).localeCompare(text(right.title)),
+  );
 }
 
 function referencePage(document: unknown, groups: Group[], operationList: Entry[]) {
@@ -468,10 +556,13 @@ function referencePage(document: unknown, groups: Group[], operationList: Entry[
     sections.push(
       "## Error responses",
       [
-        "Non-success JSON responses use the following envelope.",
+        "OCC errors use the following envelope. Agent HTTP chat also passes through",
+        "native error responses, including SSE error events after HTTP `200`.",
         "Each operation lists its supported status codes.",
         "A NUL character or an unpaired UTF-16 surrogate in any request body string,",
         "object key or path parameter is refused with `400 INVALID_REQUEST`.",
+        "Agent HTTP chat bodies bypass this persisted-text validation because OCC",
+        "does not store their content; path parameters still use it.",
         "A JSON body with a value more than 24 levels below its root is refused",
         "with `400 INVALID_REQUEST` and a `TOO_DEEP` detail before it is parsed,",
         "so that answer comes before any other body error.",
@@ -526,17 +617,28 @@ function referencePage(document: unknown, groups: Group[], operationList: Entry[
 
   const schemas = entries(optionalField(optionalField(document, "components"), "schemas") ?? {});
   if (schemas.length) {
+    const detailed = schemas.filter(([, schema]) => objectVariants(schema, document));
+    const detailedNames = new Set(detailed.map(([name]) => name));
     sections.push(
       "## Shared schemas",
       "Reusable schema names are referenced by operation request and response tables.",
       [
         "| Schema | Type |",
         "| --- | --- |",
-        ...schemas.map(
-          ([name, schema]) =>
-            `| \`${field(schema, "title") ?? name}\` | \`${schemaType(schema, document)}\` |`,
-        ),
+        ...schemas.map(([name, schema]) => {
+          const title = field(schema, "title") ?? name;
+          const label = detailedNames.has(name)
+            ? `[\`${title}\`](#${schemaAnchor(schema)})`
+            : `\`${title}\``;
+          const variants = objectVariants(schema, document);
+          return `| ${label} | \`${variants ? `${variants.length} object variants` : schemaType(schema, document)}\` |`;
+        }),
       ].join("\n"),
+      ...detailed.flatMap(([, schema]) => [
+        `### ${field(schema, "title")}`,
+        `<span id="${schemaAnchor(schema)}"></span>`,
+        schemaTable(schema, document),
+      ]),
     );
   }
 

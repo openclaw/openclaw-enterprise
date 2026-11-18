@@ -4,7 +4,7 @@ implementation_status: Partially implemented
 author: stevenlee-oai
 ---
 
-# RFC-0040 · Select several models for an Agent
+# RFC-0042 · Select several models for an Agent
 
 An Agent creator can choose a default model and additional models from the same provider. For example, a team can deploy an Agent with a small model as its default and choose a larger model for one chat session. Both models use the same Harness, inference endpoint and credential. [RFC-0034](0034-reusable-model-providers/index.md) describes how an administrator publishes the models a provider offers.
 

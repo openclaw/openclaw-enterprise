@@ -192,18 +192,82 @@ const authAccount = {
 const sessionKey = "example-session-binding-not-a-credential";
 
 const connectionTemplateId = id("ctp");
-const modelProviderSettings = {
-  displayName: "Research inference",
+const inferenceConnectionTemplateId = "ctp_223e4567-e89b-42d3-a456-426614174000";
+const inferenceConnectionTemplateValues = {
+  mode: "static_bearer",
   baseUrl: "https://inference.example.com/v1",
   protocol: "openai-responses",
+};
+const inferenceConnectionTemplate = {
+  id: inferenceConnectionTemplateId,
+  displayName: "Research inference",
+  createdAt: time,
+  current: {
+    ...inferenceConnectionTemplateValues,
+    templateId: inferenceConnectionTemplateId,
+    version: 1,
+    createdAt: time,
+    destinations: [
+      { host: "inference.example.com", port: 443, path: "/v1/responses", method: "POST" },
+    ],
+  },
+};
+const modelProviderSettings = {
+  displayName: "Research inference",
+  baseUrl: inferenceConnectionTemplateValues.baseUrl,
+  protocol: inferenceConnectionTemplateValues.protocol,
   models: [{ id: "research-model" }],
   defaultModelId: "research-model",
-  connectionTemplateId,
+  connectionTemplateId: inferenceConnectionTemplateId,
 };
 const modelProvider = {
   ...modelProviderSettings,
   id: id("mpr"),
   settingsFingerprint: "a".repeat(64),
+};
+const inferenceCredentialSourceId = "cs_223e4567-e89b-42d3-a456-426614174000";
+const inferenceCredentialSource = {
+  ...source,
+  id: inferenceCredentialSourceId,
+  name: "Research inference key",
+  config: { authorized_base_url: inferenceConnectionTemplateValues.baseUrl },
+  staticKeyGrant: {
+    connectionTemplateId: inferenceConnectionTemplateId,
+    connectionTemplateVersion: inferenceConnectionTemplate.current.version,
+    baseUrl: inferenceConnectionTemplateValues.baseUrl,
+    protocol: inferenceConnectionTemplateValues.protocol,
+  },
+  ref: { ...source.ref, id: inferenceCredentialSourceId },
+};
+const inferenceConfigurationId = "cfg_223e4567-e89b-42d3-a456-426614174000";
+const inferenceModelReference = "codex/research-model";
+const inferenceConfiguration = {
+  ...configuration,
+  agents: {
+    defaults: {
+      model: inferenceModelReference,
+      models: { [inferenceModelReference]: { agentRuntime: { id: "codex" } } },
+    },
+  },
+  models: {
+    providers: {
+      codex: {
+        ...configuration.models.providers.codex,
+        models: [{ id: "research-model", name: "research-model" }],
+      },
+    },
+  },
+};
+const inferenceHarnessAuth = { method: "credential_source", sourceId: inferenceCredentialSourceId };
+const inferenceAgent = {
+  ...agent,
+  id: "agt_223e4567-e89b-42d3-a456-426614174000",
+  name: "Research assistant",
+  configurationId: inferenceConfigurationId,
+  servicePrincipalId: "principal-research-agent",
+  modelProviderId: modelProvider.id,
+  harnessAuth: inferenceHarnessAuth,
+  credentialSources: [{ sourceId: inferenceCredentialSourceId }],
 };
 const oauthClientId = id("ccr");
 const oauthClientInput = {
@@ -318,6 +382,10 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  chatWithAgent: {
+    messages: [{ role: "user", content: "Reply with a short greeting." }],
+    stream: false,
+  },
   launchAgentNativeAdmin: {},
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
@@ -327,9 +395,8 @@ export const requestExamples = {
     expectedSettingsFingerprint: modelProvider.settingsFingerprint,
   },
   createConnectionTemplate: {
-    ...connectionTemplateInput,
-    namespaceId,
-    displayName: connectionTemplate.displayName,
+    ...inferenceConnectionTemplateValues,
+    displayName: inferenceConnectionTemplate.displayName,
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
   discoverConnectionTemplate: { serverUrl: mcpServerUrl },
@@ -348,9 +415,16 @@ export const requestExamples = {
   },
   bootstrapInstallation: { name: "Engineering" },
   createNamespace: { name: namespace.name },
-  createConfiguration: { kind: "agent", values: configuration },
+  createConfiguration: { kind: "agent", values: inferenceConfiguration },
   updateConfiguration: { expectedGeneration: 1, values: configuration },
-  createAgent: { name: agent.name, configurationId, executionMode: "dedicated", harnessAuth },
+  createAgent: {
+    name: inferenceAgent.name,
+    configurationId: inferenceConfigurationId,
+    modelProviderId: modelProvider.id,
+    executionMode: "dedicated",
+    harnessAuth: inferenceHarnessAuth,
+    credentialSources: inferenceAgent.credentialSources,
+  },
   updateAgent: { configurationId, executionMode: "dedicated", harnessAuth },
   provisionAgent: {
     name: agent.name,
@@ -368,10 +442,11 @@ export const requestExamples = {
   createSecret: { name: secret.name, value: "replace-with-your-authorized-model-key" },
   updateSecret: { value: "replace-with-your-rotated-model-key" },
   createCredentialSource: {
-    name: source.name,
-    type: source.type,
-    config: {},
-    secrets: source.secrets,
+    name: inferenceCredentialSource.name,
+    type: inferenceCredentialSource.type,
+    connectionTemplateId: inferenceConnectionTemplateId,
+    connectionTemplateVersion: inferenceConnectionTemplate.current.version,
+    secrets: inferenceCredentialSource.secrets,
   },
   updateCredentialSource: { adoption: "live", secrets: source.secrets },
   createServiceAccount: { name: account.name },
@@ -446,6 +521,15 @@ export const responseExamples = {
   getModelProvider: modelProvider,
   listModelProviders: [modelProvider],
   listUsableModelProviders: [modelProvider],
+  chatWithAgent: {
+    id: "chatcmpl-example",
+    object: "chat.completion",
+    created: 1792411200,
+    model: "openclaw:main",
+    choices: [
+      { index: 0, message: { role: "assistant", content: "Hello." }, finish_reason: "stop" },
+    ],
+  },
   listUsableConnectionTemplates: [connectionTemplate],
   listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {
@@ -455,7 +539,7 @@ export const responseExamples = {
   },
   listConnectionTemplates: [connectionTemplate],
   getConnectionTemplate: connectionTemplate,
-  createConnectionTemplate: connectionTemplate,
+  createConnectionTemplate: inferenceConnectionTemplate,
   updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
   discoverConnectionTemplate: discovered,
   listOAuthClients: [oauthClient],
@@ -489,11 +573,11 @@ export const responseExamples = {
   deleteNamespace: { ...namespace, status: "deleting" },
   listAgents: [agent],
   getAgent: agent,
-  createAgent: agent,
+  createAgent: inferenceAgent,
   updateAgent: agent,
   deleteAgent: { ...agent, status: "deleting" },
   stopAgent: agent,
-  createConfiguration: config,
+  createConfiguration: { ...config, id: inferenceConfigurationId, values: inferenceConfiguration },
   getConfiguration: config,
   updateConfiguration: { ...config, generation: 2 },
   deployAgentFirst: {
@@ -712,8 +796,8 @@ export const responseExamples = {
     },
     callerPermissions: { update: true, delete: true },
   },
-  listCredentialSources: [source],
-  createCredentialSource: source,
+  listCredentialSources: [inferenceCredentialSource],
+  createCredentialSource: inferenceCredentialSource,
   getCredentialSource: source,
   updateCredentialSource: source,
   rotateCredentialSource: source,
@@ -795,12 +879,14 @@ export const errorExamples = {
   401: ["UNAUTHENTICATED", "The caller did not provide valid credentials."],
   403: ["FORBIDDEN", "The caller is not allowed to perform this operation."],
   404: ["NOT_FOUND", "The requested platform resource was not found."],
+  408: ["REQUEST_TIMEOUT", "The request body deadline expired."],
   409: ["RESOURCE_CONFLICT", "The requested operation conflicts with the current resource state."],
   413: ["PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size."],
   415: ["UNSUPPORTED_MEDIA_TYPE", "The request content type is not supported."],
   429: ["RATE_LIMITED", "Too many requests. Retry later."],
   500: ["INTERNAL_ERROR", "The platform request could not be completed."],
   501: ["NOT_IMPLEMENTED", "The selected Driver does not support this operation."],
+  502: ["BAD_GATEWAY", "The Agent request was interrupted."],
   503: ["DEPENDENCY_UNAVAILABLE", "A required dependency is unavailable."],
   504: ["GATEWAY_TIMEOUT", "The runtime request timed out."],
 } satisfies Record<number, readonly [string, string]>;

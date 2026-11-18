@@ -26,6 +26,10 @@ operator-performed upgrade; it does not execute scripts named in input files.
 In the private connected input, `oceCommit` and `images.controller` identify B.
 `harnessCommit` identifies the exact test checkout, which must contain B. A reviewed
 test-only successor can run the proof without relabeling B's image or build receipt.
+This class-free harness rejects A or B if its committed OpenShell Driver source
+contains the removed `runtimeClassName` setting, before accessing the stack. Use
+a matching historical harness for such pairs. A controller-only upgrade that
+preserves the Installation file cannot cross this configuration removal.
 Add:
 
 ```json

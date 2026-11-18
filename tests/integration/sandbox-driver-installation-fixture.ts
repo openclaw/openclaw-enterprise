@@ -17,7 +17,6 @@ export function openShellWorkspaceHarnessConfiguration() {
   const configuration = {
     gateway,
     kubernetes: {
-      runtimeClassName: "openshell-sandbox",
       userNamespaces: false,
       serviceAccount: {
         mode: "gatewayConfigured",

@@ -109,7 +109,7 @@ func jsonValue(t *testing.T, value any) any {
 
 func TestKubernetesOnlyClusterPinsItsNodeAndKeepsVerifiedImages(t *testing.T) {
 	state := kubernetesOnlyOpenShellState(t)
-	args := kubernetesOnlyClusterArgs(state, 41, 6443, 5, "/state/openshell-admission.yaml")
+	args := kubernetesOnlyClusterArgs(state, 41, 6443, 5)
 
 	value := func(flag string) string {
 		index := slices.Index(args, flag)
@@ -131,7 +131,6 @@ func TestKubernetesOnlyClusterPinsItsNodeAndKeepsVerifiedImages(t *testing.T) {
 		"--kubelet-arg=image-gc-low-threshold=99@server:*",
 		"127.0.0.1:3000:30080@loadbalancer",
 		"127.0.0.1:8443:30081@loadbalancer",
-		"/state/openshell-admission.yaml:" + openShellAdmissionContainerPath + ":ro@server:0",
 	} {
 		if !slices.Contains(args, required) {
 			t.Fatalf("missing %q in %v", required, args)

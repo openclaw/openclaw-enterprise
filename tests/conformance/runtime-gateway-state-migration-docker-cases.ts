@@ -26,8 +26,11 @@ import {
 const nodeRequire = createRequire(import.meta.url);
 
 test("Kubernetes and Docker Gateway programs share the migration step and stay down after a failure", () => {
+  // Kubernetes also releases a Doctor that did not complete (finding 3345).
   assert.ok(
-    GATEWAY_RUNTIME_ENTRYPOINT.includes(openClawStateMigrationHelper("Gateway", "restart the Pod")),
+    GATEWAY_RUNTIME_ENTRYPOINT.includes(
+      openClawStateMigrationHelper("Gateway", "restart the Pod", { releaseExitedState: true }),
+    ),
   );
   assert.ok(
     DOCKER_GATEWAY_RUNTIME_ENTRYPOINT.includes(

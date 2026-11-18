@@ -42,7 +42,7 @@ export function registerAdmissionCases(): void {
     { keepCase: true },
   ).root;
 
-  test("OpenShell client reports a refused CreateSandbox request_id from its ErrorInfo reason", async () => {
+  test("OpenShell client classifies CreateSandbox refusals and UpdateConfig conflicts from ErrorInfo", async () => {
     const detail = (type: "RetryInfo" | "ErrorInfo", message: object) => ({
       type_url: `type.googleapis.com/google.rpc.${type}`,
       value: rpcStatus.lookupType(`google.rpc.${type}`).encode(message).finish(),
@@ -96,6 +96,20 @@ export function registerAdmissionCases(): void {
             ? { code: grpc.status.FAILED_PRECONDITION, details }
             : failure(reason, domain || undefined, code === undefined ? undefined : Number(code)),
         );
+      },
+      UpdateConfig(call, callback) {
+        const requestId = call.request.request_id;
+        assert.ok(typeof requestId === "string");
+        const [reason, domain] = requestId.split("|");
+        assert.ok(reason !== undefined);
+        if (reason === "PLAIN") {
+          callback({ code: grpc.status.ABORTED, details: "private provider error" });
+          return;
+        }
+        callback({
+          ...failure(reason, domain || undefined, grpc.status.ABORTED),
+          code: grpc.status.ABORTED,
+        });
       },
     });
     const port = await bindWireServer(server);
@@ -160,6 +174,35 @@ export function registerAdmissionCases(): void {
         });
         return true;
       });
+      const update = (requestId: string) =>
+        client.updatePolicy(
+          {
+            workspace: "tenant-workspace",
+            sandbox: "sandbox",
+            policy: {},
+            expectedResourceVersion: "1",
+            requestId,
+          },
+          AbortSignal.timeout(2_000),
+        );
+      await assert.rejects(update("RESOURCE_VERSION_CONFLICT"), (error) => {
+        assert.ok(error instanceof DependencyUnavailableError);
+        assert.equal(
+          error.message,
+          "OpenShell UpdateConfig failed with gRPC status 10 (reason RESOURCE_VERSION_CONFLICT).",
+        );
+        return true;
+      });
+      for (const requestId of ["RESOURCE_VERSION_CONFLICT|example.com", "OTHER", "PLAIN"]) {
+        await assert.rejects(update(requestId), (error) => {
+          assert.ok(error instanceof DependencyUnavailableError);
+          assert.equal(
+            error.message,
+            "OpenShell UpdateConfig failed with gRPC status 10 (reason UNKNOWN).",
+          );
+          return true;
+        });
+      }
     } finally {
       client.close();
       await shutdownWireServer(server);

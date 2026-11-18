@@ -399,7 +399,6 @@
           ]
         },
         "kubernetes": {
-          "runtimeClassName": "openshell-sandbox",
           "userNamespaces": false,
           "agentResources": {
             "requests": {

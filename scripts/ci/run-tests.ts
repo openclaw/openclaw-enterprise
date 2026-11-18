@@ -357,6 +357,7 @@ async function runFile(
           absolutePath,
           relativePath,
           laneName: lane.name,
+          expectedTests: file.expectedTests,
           env,
           focused: testName !== undefined,
         },
@@ -423,6 +424,7 @@ async function runFile(
     details,
     measurements,
     unfinishedStage,
+    openShellReplacement,
     testRunExercised,
   } = evidence;
   if (
@@ -543,6 +545,7 @@ async function runFile(
         firstTest.name === file.expectedTests[0]))
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
+    ...(openShellReplacement ? { openShellReplacement } : {}),
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,

@@ -20,7 +20,7 @@ import {
   HarnessExecutionModeSchema,
   RevisionHarnessSchema,
   ModelProviderId,
-  InferencePrivatePeerSchema,
+  ConnectionTemplateId,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -47,6 +47,7 @@ import {
   PluginApprovalModeSchema,
   PluginReviewerSchema,
 } from "./common.ts";
+import { InferenceProtocolSchema } from "./model-providers.ts";
 
 const RuntimeFailureIdentifier = Type.String({
   minLength: 1,
@@ -297,7 +298,12 @@ const CredentialSourceCatalogSchema = Type.Object(
     type: CredentialSourceType,
     config: Type.Array(CredentialSourceFieldSchema),
     secrets: Type.Array(CredentialSourceFieldSchema),
-    staticKeyBaseUrlConfig: Type.Optional(Type.String()),
+    staticKeyBaseUrlConfig: Type.Optional(
+      Type.String({
+        description:
+          "When present, this source type supports static-key template approval; the value names its immutable destination URL config field.",
+      }),
+    ),
     rotation: Type.Union([Type.Literal("none"), Type.Literal("external"), Type.Literal("refresh")]),
     deviceAuthorization: Type.Optional(
       Type.Object({ harnessId: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
@@ -683,9 +689,6 @@ export const CredentialSourceStatusSchema = Type.Object(
   },
 );
 
-import { ConnectionTemplateId } from "./common.ts";
-import { InferenceProtocolSchema } from "./model-providers.ts";
-
 export const CredentialSourceSchema = Type.Object(
   {
     id: CredentialSourceId,
@@ -710,7 +713,7 @@ export const CredentialSourceSchema = Type.Object(
           connectionTemplateVersion: Type.Integer({ minimum: 1 }),
           baseUrl: Type.String(),
           protocol: InferenceProtocolSchema,
-          privatePeer: Type.Optional(InferencePrivatePeerSchema),
+          privatePeer: Type.Optional(Type.Ref("InferencePrivatePeer")),
         },
         { additionalProperties: false },
       ),
