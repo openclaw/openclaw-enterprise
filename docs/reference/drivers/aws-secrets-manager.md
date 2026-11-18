@@ -16,7 +16,7 @@ kind: reference/driver/impl
 
 This Driver is a draft proposal. Its selector and configuration require an RFC
 and human review before landing. Installed discovery against live AWS has not
-been verified.
+been verified. See the [draft AWS storage flow](../../flows/aws-secret-storage.md) for the source path.
 
 Select this [Secret Driver](secret.md) to store Namespace Secrets in AWS and read them in trusted controller operations. For example, saved-Agent hosted plugin discovery uses the Agent's bound Secret after OCC checks the caller's and Agent's grants. Protected static sources can read the AWS version with the value.
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-18"
-last_updated_session: "authoring-run/1c41665a-15f0-4ee5-a222-01c2d2d74c32"
+updated: "2026-11-16"
+last_updated_session: "authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -15,8 +15,6 @@ references and Kubernetes supplies values only to each selected gateway.
 Harness model authentication uses the
 [shared Agent binding flow](native-service-account-credential-delivery.md).
 The local installer also grants a new Agent access and verifies a model response.
-The draft AWS Secret Driver also supports trusted server-side reads for saved-Agent
-plugin discovery. AWS references cannot be projected into Kubernetes workloads.
 Credential issuance and provider internals are outside this flow.
 
 ## Entry Points
@@ -43,17 +41,11 @@ Credential issuance and provider internals are outside this flow.
 graph TD
   subgraph Storage["Protected storage request"]
     A["Owner supplies value"] --> B["OCC authorizes Namespace Secret create"]
-    B --> C{"Selected Secret Driver"}
-    C -->|Kubernetes| C1["Store tenant Secret"]
-    C -. AWS proposal .-> C2["Verify STS account; create and verify tagged Secret"]
-    C1 --> D["OCC stores metadata and returns stable ref"]
-    C2 -.-> D
-    C2 -. uncertain submitted write .-> C3["Require operator reconciliation"]
-    D -. saved Agent discovery proposal .-> C4["Authorize caller and Agent; read exact current version"]
-    C4 -. allowed .-> C5["Pass value to Plugin Driver"]
+    B --> C["KubernetesSecretDriver stores mutable Secret"]
+    C --> D["OCC stores metadata and returns stable ref"]
   end
   subgraph Admission["Configuration and deployment"]
-    D -->|Kubernetes backend| E["Bind source ref to gateway env destination"]
+    D --> E["Bind source ref to gateway env destination"]
     E --> P["Bind Agent identity to exact Secret"]
     P --> F["Authorize caller and Agent SP; verify backend"]
     F -->|allowed| G["Freeze references in AgentRevision"]
@@ -119,20 +111,6 @@ Secret mutations share the 12-second Kubernetes budget of
 A write needs at least 2 seconds remaining; otherwise it returns `503` without
 being sent. Cleanup for a sent create runs outside that budget. A create refused
 before sending needs no cleanup read.
-
-The draft AWS path starts at
-`apps/controller/src/drivers/secret/aws-secrets-manager/index.ts:AwsSecretsManagerSecretDriver.create`.
-It captures one signing identity, verifies the configured account with STS, creates
-the Secret with ownership tags, and verifies its complete ARN and current version
-before returning the backend reference. Requests observe the API mutation deadline.
-An uncertain submitted write requires reconciliation; the Driver does not adopt a
-resource by name.
-
-For saved-Agent discovery, OCC checks caller and Agent grants before calling
-`AwsSecretsManagerSecretDriver.withValue`. The Driver verifies ownership, reads
-the exact `AWSCURRENT` version, and verifies ownership and version again before
-OCC passes the value to the Plugin Driver. The path stops before workload projection.
-See [AWS Secret Driver limits](../reference/drivers/aws-secrets-manager.md#limits).
 
 ### 3. Bind a source, then admit references
 
@@ -354,15 +332,12 @@ credential at its issuer.
 - [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md)
 - [Configuration](../reference/configuration.md)
 - [Kubernetes Secret Driver](../reference/drivers/kubernetes-secret.md)
-- [AWS Secret Driver proposal](../reference/drivers/aws-secrets-manager.md)
 
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-11-18 22:38: Trace the draft AWS storage and saved-Agent discovery path. (authoring-run/1c41665a-15f0-4ee5-a222-01c2d2d74c32 - dab60078fb4d32cdc8f7bc763bc2109c0b5a7ac7)
 
 - 2026-11-16 14:46: Bind the first-Agent helper to confirmed Installation state and use authenticated IAM operations for exact model credential grants. (authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822 - 6255bbe8fe564e52941b311a7ce8ce8699d1f236)
 

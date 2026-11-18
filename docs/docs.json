@@ -1296,6 +1296,7 @@
               "flows/namespace-iam-policy",
               "flows/native-service-account-credential-delivery",
               "flows/secret-storage-and-delivery",
+              "flows/aws-secret-storage",
               "flows/service-account-driver-credential-delivery",
               "flows/service-api-keys",
               "flows/harness-execution-topology",
