@@ -100,8 +100,8 @@ For OpenShell, changed Harness commands require fresh Agent revisions. Existing
 Sandboxes require the original launch specification. Plan an authorized
 redeployment from reviewed drafts, even with an unchanged runtime image.
 
-Changed Pod specs in controller-only releases restart affected Agent Pods once on
-the same image. A broker restart recreates dedicated Codex Pods and can leave
+Running Agents keep their start-up scripts and images until redeployed; other
+changed Pod spec fields restart them once. A broker restart recreates dedicated Codex Pods and can leave
 sessions the worker cannot replace. Plan the interruption and authorized
 replacements. Review affected drafts and deploy grants. Stop if recovery is
 unsafe. Follow the

@@ -52,7 +52,7 @@ command; use this page as its migration inventory.
       the runtime image. Other controller source ships only in the controller
       image. This includes the Agent Pod specs that the controller renders, such
       as `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`:
-      existing Agents get that change when the controller renders their Pods again.
+      existing Agents get that change at their next deployment.
 - [ ] Check controller/runtime compatibility. Upgrade the controller first when
       it supports the deployed runtime. Use a release-specific sequence when the
       versions cannot run together.
