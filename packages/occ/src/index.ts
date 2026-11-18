@@ -8306,7 +8306,7 @@ export class OpenClawController {
           ) {
             return refuse("approval_refused");
           }
-          if (!step.accept()) {
+          if (step.accept() !== true) {
             throw new DependencyUnavailableError("Request credential authorization expired.");
           }
           return selected;

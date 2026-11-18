@@ -1397,6 +1397,20 @@ test(
       ).rows,
       [{ approved: false, consumed: false }],
     );
+    const readsBeforeRefusedAcceptance = f.secretReads;
+    for (const refuse of [
+      () => false,
+      (() => Promise.resolve(false)) as unknown as () => boolean,
+    ]) {
+      const refused = request();
+      assert.equal(await exchange.authorizeRequestCredential(refused, signal, refuse), undefined);
+      assert.equal(await afterRestart.resolveRequestCredential(grant(refused), signal), undefined);
+      assert.equal(
+        await afterRestart.authorizeRequestCredential(refused, signal, () => true),
+        undefined,
+      );
+    }
+    assert.equal(f.secretReads, readsBeforeRefusedAcceptance);
     const beforeWithdrawal = request();
     const reservedBeforeWithdrawal = fixture.pauseNextApprovalCommit("after");
     const withdrawnDecision = exchange.authorizeRequestCredential(

@@ -15,7 +15,7 @@ export interface StoredRequestCredentialApproval extends RequestCredentialApprov
 
 export function memoryRequestCredentialApprovals(
   records: Map<string, StoredRequestCredentialApproval>,
-  hasRevision: (execution: RequestCredentialApproval["execution"]) => Promise<boolean>,
+  hasRevision: (execution: RequestCredentialApproval["execution"]) => boolean,
 ): RequestCredentialApprovalRepository {
   return {
     async insert(approval, now, limits) {
@@ -28,7 +28,7 @@ export function memoryRequestCredentialApprovals(
       if (
         records.has(key) ||
         approval.deadlineAt <= now ||
-        !(await hasRevision(approval.execution)) ||
+        !hasRevision(approval.execution) ||
         records.size >= limits.requestIds ||
         [...records.values()].filter((record) => record.recipientId === approval.recipientId)
           .length >= limits.sandboxRequestIds
@@ -56,7 +56,7 @@ export function memoryRequestCredentialApprovals(
         !isDeepStrictEqual(approval.execution, request.execution) ||
         !isDeepStrictEqual(approval.driver, driver) ||
         approval.deadlineAt <= now ||
-        !(await hasRevision(approval.execution))
+        !hasRevision(approval.execution)
       ) {
         return false;
       }
@@ -73,7 +73,7 @@ export function memoryRequestCredentialApprovals(
         approval.bindingId !== grant.bindingId ||
         !isDeepStrictEqual(approval.driver, driver) ||
         approval.deadlineAt <= now ||
-        !(await hasRevision(approval.execution))
+        !hasRevision(approval.execution)
       ) {
         return undefined;
       }

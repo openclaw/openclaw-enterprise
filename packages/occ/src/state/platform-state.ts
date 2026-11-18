@@ -3756,6 +3756,17 @@ function repositories(
     },
   };
 
+  const findMemoryRevision = (namespaceId: string, agentId: string, revisionId: string) => {
+    if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+      return undefined;
+    }
+    const candidate = snapshot.revisions
+      .get(agentKey(namespaceId, agentId))
+      ?.find((revision) => revision.id === revisionId);
+    return candidate?.namespaceId === namespaceId && candidate.agentId === agentId
+      ? candidate
+      : undefined;
+  };
   const revisions: AgentRevisionRepository = {
     findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
       if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
@@ -3780,15 +3791,8 @@ function repositories(
     listRevisionsForBrowsing: async (namespaceId, agentId) =>
       revisions.listRevisions(namespaceId, agentId),
     findRevision: async (namespaceId, agentId, revisionId) => {
-      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
-        return undefined;
-      }
-      const candidate = snapshot.revisions
-        .get(agentKey(namespaceId, agentId))
-        ?.find((revision) => revision.id === revisionId);
-      return candidate?.namespaceId === namespaceId && candidate.agentId === agentId
-        ? immutableCopy(candidate)
-        : undefined;
+      const candidate = findMemoryRevision(namespaceId, agentId, revisionId);
+      return candidate && immutableCopy(candidate);
     },
     listRevisions: async (namespaceId, agentId) =>
       Object.freeze(
@@ -4309,8 +4313,8 @@ function repositories(
     preparedTokenProof,
     requestCredentialApprovals: memoryRequestCredentialApprovals(
       snapshot.requestCredentialApprovals,
-      async ({ namespaceId, agentId, revisionId }) =>
-        (await revisions.findRevision(namespaceId, agentId, revisionId)) !== undefined,
+      ({ namespaceId, agentId, revisionId }) =>
+        findMemoryRevision(namespaceId, agentId, revisionId) !== undefined,
     ),
     egressSendReceipts: memoryEgressSendReceipts(snapshot.egressSendReceipts),
     provisioning: {

@@ -2538,14 +2538,17 @@ test(
         });
         await source.app.query(
           `INSERT INTO occ.request_credential_approvals
-             (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at)
-           VALUES ('recipient','request','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes')`,
+             (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at,consumed)
+           VALUES
+             ('recipient','request','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes',false),
+             ('recipient','consumed','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes',true)`,
           [namespace, agent, revision],
         );
         const db = restored
           ? await restoreHistoryArchive(child, fixture, await dumpHistoryArchive(fixture, source))
           : source;
-        const approvalRows = () => db.app.query("SELECT * FROM occ.request_credential_approvals");
+        const approvalRows = () =>
+          db.app.query("SELECT * FROM occ.request_credential_approvals ORDER BY request_id");
         const populated = (await approvalRows()).rows;
         const before = await historySnapshot(db);
         assert.equal(before.receipts.length, 77);
@@ -2629,7 +2632,7 @@ test(
         assert.deepEqual(await historySnapshot(db), completed);
         assert.deepEqual(
           (await approvalRows()).rows,
-          populated.map((approval) => ({ ...approval, approved: false })),
+          populated.map((approval) => ({ ...approval, approved: approval.consumed })),
         );
         await assertUpgradedRevisionReadable(db);
         await assert.rejects(
@@ -2638,10 +2641,15 @@ test(
           ),
           { code: "23514", constraint: "request_credential_approval_requires_decision" },
         );
-        await db.app.query("UPDATE occ.request_credential_approvals SET approved=true");
+        await db.app.query(
+          "UPDATE occ.request_credential_approvals SET approved=true WHERE NOT consumed",
+        );
         assert.equal(
-          (await db.app.query("UPDATE occ.request_credential_approvals SET consumed=true"))
-            .rowCount,
+          (
+            await db.app.query(
+              "UPDATE occ.request_credential_approvals SET consumed=true WHERE NOT consumed",
+            )
+          ).rowCount,
           1,
         );
         await assert.rejects(
@@ -2661,7 +2669,12 @@ test(
             consumed,
             replay_until_at,
           ]),
-          [["recipient", "request", true, populated[0].replay_until_at]],
+          populated.map(({ recipient_id, request_id, replay_until_at }) => [
+            recipient_id,
+            request_id,
+            true,
+            replay_until_at,
+          ]),
         );
         const nextNamespace = `ns_${randomUUID()}`;
         const next = await seedCanonicalAgent(db, nextNamespace, {
