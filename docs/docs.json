@@ -628,8 +628,12 @@
                         "label": "Overview"
                       },
                       {
+                        "page": "guides/deploy/kubernetes",
+                        "label": "Prepare the Cluster"
+                      },
+                      {
                         "page": "guides/deploy/production-installation",
-                        "label": "Kubernetes"
+                        "label": "Install the Control Plane"
                       },
                       {
                         "page": "guides/deploy/openshift",
@@ -848,8 +852,7 @@
               "guides/deploy/published-images",
               "guides/deploy/prerequisite-diagnosis",
               "guides/deploy/production-tui",
-              "reference/settings/oidc",
-              "guides/deploy/kubernetes"
+              "reference/settings/oidc"
             ]
           },
           {
