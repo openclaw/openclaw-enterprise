@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -22,7 +23,7 @@ import {
   kubectl,
   modelEvents,
   podList,
-  signInLocalAdministrator,
+  signInConsole,
   wireField,
   type LocalSetup,
   type SmokeStack,
@@ -238,11 +239,16 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
 }
 
 export async function allowCodexAuditRead(stack: SmokeStack, agent: SmokeAgent) {
-  const api = await signInLocalAdministrator(stack);
-  const session = await api("GET", "/api/auth/session");
-  const userId = wireField(wireField(session, "user"), "id");
-  assert.ok(typeof userId === "string" && userId.length > 0, "missing signed-in account ID");
-  const account = await api("GET", `/api/auth/accounts/${encodeURIComponent(userId)}`);
+  const administrator = await signInConsole(stack, {
+    email: "admin@development.openclaw.invalid",
+    password: await readFile(join(stack.directory, "initial-admin-password"), "utf8"),
+  });
+  const reader = {
+    email: `smoke-audit-${randomUUID()}@development.openclaw.invalid`,
+    password: randomUUID(),
+  };
+  // Provision the reader without an initial role. The response identifies its IAM Principal.
+  const account = await administrator("POST", "/api/auth/accounts", reader);
   const principalId = wireField(account, "principalId");
   assert.ok(
     typeof principalId === "string" && principalId.startsWith("prn_"),
@@ -250,17 +256,18 @@ export async function allowCodexAuditRead(stack: SmokeStack, agent: SmokeAgent) 
   );
   const base = `/namespaces/${stack.namespaceId}`;
   // The audit route requires a human session and a direct binding to this Agent.
-  const role = await api("POST", `${base}/iam/roles`, {
+  const role = await administrator("POST", `${base}/iam/roles`, {
     name: "Smoke Codex audit reader",
     permissions: [{ action: "read_audit", resourceKind: "agent" }],
   });
-  await api("POST", `${base}/iam/access-bindings`, {
+  await administrator("POST", `${base}/iam/access-bindings`, {
     subjectKind: "identity",
     subjectId: principalId,
     roleId: wireField(role, "id"),
     resourceKind: "agent",
     resourceId: agent.id,
   });
+  const api = await signInConsole(stack, reader);
   return async () =>
     (await api("GET", `${base}/agents/${agent.id}/audit-events?limit=100`)) as AgentAuditPage;
 }

@@ -294,7 +294,10 @@ export function kubectl(
   });
 }
 
-export async function signInLocalAdministrator(stack: LocalSetup): Promise<Api> {
+export async function signInConsole(
+  stack: LocalSetup,
+  credentials: { email: string; password: string },
+): Promise<Api> {
   const { cookieHeaderFromSetCookie } = await import("../../../packages/utils/src/index.ts");
   assert.ok(stack.state.browserOrigin, "Local Setup did not record the Console origin");
   const origin = new URL(stack.state.browserOrigin);
@@ -359,10 +362,7 @@ export async function signInLocalAdministrator(stack: LocalSetup): Promise<Api> 
       request.end(content);
     });
   };
-  await api("POST", signIn, {
-    email: "admin@development.openclaw.invalid",
-    password: await readFile(join(stack.directory, "initial-admin-password"), "utf8"),
-  });
+  await api("POST", signIn, credentials);
   assert.ok(cookie.length > 0, "Console sign-in returned no session cookie");
   return api;
 }
