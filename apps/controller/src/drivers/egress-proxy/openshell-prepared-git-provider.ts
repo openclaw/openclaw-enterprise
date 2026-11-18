@@ -8,10 +8,15 @@ import {
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
 import { openShellInstallationGitProviderPrefix } from "./openshell-repository-git-evidence.ts";
+import {
+  maxSelectedGitHubRepositories,
+  type GitHubRepositoryGrant,
+} from "../repo/github/access/repository-grant.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 import {
   matchesOpenShellGatewayAssertionGrant,
   OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
+  OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE,
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
@@ -39,6 +44,10 @@ export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
     readonly endpoint: string;
     readonly audience: string;
     readonly repository: string;
+    readonly selectedRepositories?: GitHubRepositoryGrant["repositories"];
+    readonly allowPush?: true;
+    readonly pullApi?: true;
+    readonly workloadGrant?: { readonly resource: string; readonly scopes: readonly string[] };
   };
 };
 
@@ -90,6 +99,12 @@ export interface OpenShellPreparedGitInstalled extends RepositoryGitRecipient {
   readonly configRevision: string;
   readonly policyHash: string;
   readonly supervisorSessionId: string;
+  readonly pullApi?: Readonly<{
+    provider: string;
+    providerId: string;
+    profileVersion: string;
+    providerResourceVersion: string;
+  }>;
 }
 
 /** The class of a failed gateway read behind a refusal: a fixed token, never the gateway's
@@ -113,6 +128,7 @@ export class OpenShellPreparedGitProviderError extends Error {
 const KEY = "GITHUB_TOKEN";
 const CREDENTIAL = "installation_token";
 const GRANT_BINARIES = ["/usr/lib/git-core/git-remote-http", "/usr/bin/curl"] as const;
+const PULL_API_BINARIES = ["/usr/local/bin/gh", "/usr/bin/curl"] as const;
 const OWNER = "openclaw.dev/prepared-git-binding";
 const REPOSITORY_PROVIDER_PREFIX = "oce-git-";
 
@@ -172,6 +188,31 @@ function origin(value: string): URL {
   return url;
 }
 
+function matchesWorkloadGrant(
+  value: unknown,
+  endpoint: string,
+  expected: { readonly resource: string; readonly scopes: readonly string[] },
+): boolean {
+  const grant = asRecord(value);
+  const ttl = asRecord(grant?.cache_ttl);
+  return (
+    grant?.grant_type === OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE &&
+    grant.token_endpoint === endpoint &&
+    grant.resource === expected.resource &&
+    isDeepStrictEqual(grant.scopes, expected.scopes) &&
+    ttl !== undefined &&
+    Number(ttl.seconds ?? 0) === 0 &&
+    Number(ttl.nanos ?? 0) === 0 &&
+    !grant.audience &&
+    !grant.jwt_svid_audience &&
+    !grant.client_assertion_type &&
+    grant.subject_token == null &&
+    !grant.requested_token_type &&
+    (grant.audience_overrides === undefined ||
+      (Array.isArray(grant.audience_overrides) && grant.audience_overrides.length === 0))
+  );
+}
+
 /**
  * Private operator-plane provisioning, prior to Sandbox attachment/admission. The supplied
  * client must use the installation's authenticated gateway connection; never expose it to
@@ -215,15 +256,25 @@ export class OpenShellPreparedGitProvider {
     const git = origin(scope.gitOrigin);
     const api = origin(scope.apiOrigin);
     const grant = scope.tokenGrant;
+    const selected = grant?.selectedRepositories;
+    const repositories =
+      selected?.map(({ repository }) => repository) ?? (grant ? [grant.repository] : []);
     const endpoint = grant && URL.canParse(grant.endpoint) ? new URL(grant.endpoint) : undefined;
     if (
       grant &&
       (!scope.installationId ||
         !scope.observedHookPreview ||
         !grant.audience.trim() ||
-        !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(grant.repository) ||
-        grant.repository.endsWith("/.") ||
-        grant.repository.endsWith("/..") ||
+        repositories[0] !== grant.repository ||
+        repositories.length > maxSelectedGitHubRepositories ||
+        (grant.pullApi && (repositories.length !== 1 || grant.allowPush)) ||
+        new Set(repositories.map((repo) => repo.toLowerCase())).size !== repositories.length ||
+        repositories.some(
+          (repo) =>
+            !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
+            repo.endsWith("/.") ||
+            repo.endsWith("/.."),
+        ) ||
         endpoint?.href !== grant.endpoint ||
         endpoint.protocol !== "https:" ||
         endpoint.username ||
@@ -236,7 +287,9 @@ export class OpenShellPreparedGitProvider {
     this.client = client;
     this.scope = Object.freeze({
       ...scope,
-      binaries: Object.freeze([...(grant ? GRANT_BINARIES : scope.binaries)]),
+      binaries: Object.freeze([
+        ...(grant?.pullApi ? PULL_API_BINARIES : grant ? GRANT_BINARIES : scope.binaries),
+      ]),
       ...(grant && { tokenGrant: Object.freeze({ ...grant }) }),
     });
     this.fingerprint = createHash("sha256")
@@ -250,7 +303,18 @@ export class OpenShellPreparedGitProvider {
           git.origin,
           api.origin,
           this.scope.binaries,
-          ...(grant ? [[grant.endpoint, grant.audience, grant.repository]] : []),
+          ...(grant
+            ? [
+                [
+                  grant.endpoint,
+                  grant.audience,
+                  selected ?? grant.repository,
+                  ...(grant.allowPush ? ["write"] : []),
+                  ...(grant.pullApi ? ["pull-api"] : []),
+                  ...(grant.workloadGrant ? [grant.workloadGrant] : []),
+                ],
+              ]
+            : []),
         ]),
       )
       .digest("hex")
@@ -262,20 +326,30 @@ export class OpenShellPreparedGitProvider {
     const grantPath = grant ? "/" + grant.repository + ".git" : undefined;
     this.profile = {
       id: this.provider,
-      displayName: "Prepared Git installation token",
+      displayName: grant?.pullApi
+        ? "Prepared GitHub pull request token"
+        : "Prepared Git installation token",
       category: "PROVIDER_PROFILE_CATEGORY_OTHER",
       credentials: grant
         ? [
             {
               name: CREDENTIAL,
-              envVars: [],
+              envVars: grant.workloadGrant && !grant.pullApi ? [KEY] : [],
               required: false,
-              authStyle: "basic",
+              authStyle: grant.pullApi ? "bearer" : grant.workloadGrant ? "placeholder" : "basic",
               headerName: "Authorization",
               tokenGrant: {
                 token_endpoint: grant.endpoint,
-                audience: grant.audience,
-                grant_type: OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
+                ...(grant.workloadGrant
+                  ? {
+                      grant_type: OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE,
+                      resource: grant.workloadGrant.resource,
+                      scopes: grant.workloadGrant.scopes,
+                    }
+                  : {
+                      audience: grant.audience,
+                      grant_type: OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
+                    }),
                 cache_ttl: { seconds: 0, nanos: 0 },
               },
             },
@@ -292,67 +366,88 @@ export class OpenShellPreparedGitProvider {
           ],
       // This profile bounds transport, not credential placement or GitHub permissions. Release
       // must independently verify the mandatory request phase, verified TLS and sole recipient.
-      endpoints: grantPath
+      endpoints: grant?.pullApi
         ? [
             {
-              host: git.hostname,
+              host: api.hostname,
               port: 443,
               protocol: "rest",
-              path: grantPath + "/**",
-              rules: [
-                { allow: { method: "GET", path: grantPath + "/info/refs" } },
-                { allow: { method: "POST", path: grantPath + "/git-upload-pack" } },
-                // The held launcher proves that the mandatory middleware denies this
-                // path before OpenShell obtains a token or dispatches the request.
-                {
-                  allow: {
-                    method: "GET",
-                    path: grantPath + "/oce-observe-request/*/info/refs",
-                  },
-                },
-              ],
+              path: "/graphql",
+              rules: [{ allow: { method: "POST", path: "/graphql" } }],
             },
           ]
-        : scope.installationId
+        : grantPath
           ? [
               {
                 host: git.hostname,
                 port: 443,
                 protocol: "rest",
+                ...(repositories.length === 1 && { path: grantPath + "/**" }),
                 rules: [
-                  { allow: { method: "GET", path: "/**/info/refs" } },
-                  { allow: { method: "POST", path: "/**/git-upload-pack" } },
-                  { allow: { method: "POST", path: "/**/git-receive-pack" } },
+                  ...repositories.flatMap((repository) => {
+                    const path = "/" + repository + ".git";
+                    return [
+                      { allow: { method: "GET", path: path + "/info/refs" } },
+                      { allow: { method: "POST", path: path + "/git-upload-pack" } },
+                      ...(grant?.allowPush
+                        ? [{ allow: { method: "POST", path: path + "/git-receive-pack" } }]
+                        : []),
+                    ];
+                  }),
+                  // Only legacy profiles have mandatory middleware to refuse this launcher probe.
+                  ...(grant?.workloadGrant
+                    ? []
+                    : [
+                        {
+                          allow: {
+                            method: "GET",
+                            path: grantPath + "/oce-observe-request/*/info/refs",
+                          },
+                        },
+                      ]),
                 ],
               },
-              {
-                host: api.hostname,
-                port: 443,
-                protocol: "rest",
-                access: "NETWORK_ACCESS_PRESET_FULL",
-              },
-              {
-                host: api.hostname,
-                port: 443,
-                protocol: "graphql",
-                path: "/graphql",
-                access: "NETWORK_ACCESS_PRESET_FULL",
-              },
             ]
-          : [
-              {
-                host: git.hostname,
-                port: Number(git.port || 443),
-                protocol: "rest",
-                path: "/" + scope.repository + ".git/**",
-              },
-              {
-                host: api.hostname,
-                port: Number(api.port || 443),
-                protocol: "rest",
-                path: "/repos/" + scope.repository + "/pulls",
-              },
-            ],
+          : scope.installationId
+            ? [
+                {
+                  host: git.hostname,
+                  port: 443,
+                  protocol: "rest",
+                  rules: [
+                    { allow: { method: "GET", path: "/**/info/refs" } },
+                    { allow: { method: "POST", path: "/**/git-upload-pack" } },
+                    { allow: { method: "POST", path: "/**/git-receive-pack" } },
+                  ],
+                },
+                {
+                  host: api.hostname,
+                  port: 443,
+                  protocol: "rest",
+                  access: "NETWORK_ACCESS_PRESET_FULL",
+                },
+                {
+                  host: api.hostname,
+                  port: 443,
+                  protocol: "graphql",
+                  path: "/graphql",
+                  access: "NETWORK_ACCESS_PRESET_FULL",
+                },
+              ]
+            : [
+                {
+                  host: git.hostname,
+                  port: Number(git.port || 443),
+                  protocol: "rest",
+                  path: "/" + scope.repository + ".git/**",
+                },
+                {
+                  host: api.hostname,
+                  port: Number(api.port || 443),
+                  protocol: "rest",
+                  path: "/repos/" + scope.repository + "/pulls",
+                },
+              ],
       binaries: this.scope.binaries,
       inferenceCapable: false,
       annotations: { [OWNER]: this.fingerprint },
@@ -415,19 +510,25 @@ export class OpenShellPreparedGitProvider {
       credential?.name !== CREDENTIAL ||
       (grant
         ? definition.scope !== "workspace" ||
-          (credential.env_vars !== undefined && !isDeepStrictEqual(credential.env_vars, [])) ||
+          !isDeepStrictEqual(
+            credential.env_vars ?? [],
+            grant.workloadGrant && !grant.pullApi ? [KEY] : [],
+          ) ||
           credential.required === true ||
           credential.stable_placeholder === true ||
-          !matchesOpenShellGatewayAssertionGrant(
-            credential.token_grant,
-            grant.endpoint,
-            grant.audience,
-          )
+          !(grant.workloadGrant
+            ? matchesWorkloadGrant(credential.token_grant, grant.endpoint, grant.workloadGrant)
+            : matchesOpenShellGatewayAssertionGrant(
+                credential.token_grant,
+                grant.endpoint,
+                grant.audience,
+              ))
         : !isDeepStrictEqual(credential.env_vars, [KEY]) ||
           credential.required !== true ||
           credential.stable_placeholder !== true ||
           credential.token_grant !== undefined) ||
-      credential.auth_style !== (grant ? "basic" : "bearer") ||
+      credential.auth_style !==
+        (grant && !grant.pullApi ? (grant.workloadGrant ? "placeholder" : "basic") : "bearer") ||
       credential.header_name !== (grant ? "Authorization" : "authorization") ||
       credential.refresh !== undefined ||
       !isDeepStrictEqual(

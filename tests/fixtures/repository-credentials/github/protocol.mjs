@@ -27,6 +27,7 @@ export function createGitHubProtocol({
   beforeIssue,
   beforeIssueResponse,
   beforeMetadataResponse,
+  pullPreview = false,
   issueResponse = (response) => response,
   issueResponseGate,
   /** Awaited after GitHub revokes a token, before its answer is sent. */
@@ -49,7 +50,12 @@ export function createGitHubProtocol({
     additionalPermissions,
     installationAccess,
   });
-  const resources = createRepositoryResources({ repository, repositoryId, description });
+  const resources = createRepositoryResources({
+    repository,
+    repositoryId,
+    description,
+    pullPreview,
+  });
   const repositoryResources = [
     resources,
     ...additionalRepositories.map((entry) => createRepositoryResources(entry)),
@@ -57,6 +63,7 @@ export function createGitHubProtocol({
   const trace = [];
   const errors = [];
   let disconnectMutation;
+  let beforePullWriteTarget;
   function disconnect(request, response, url) {
     if (disconnectMutation !== `${request.method} ${url.pathname}`) {
       return false;
@@ -163,7 +170,11 @@ export function createGitHubProtocol({
         entry.variables = body.variables;
         entry.operation = (body.query ?? "").includes("createPullRequest")
           ? "createPullRequest"
-          : "query";
+          : (body.query ?? "").includes("updatePullRequest")
+            ? "updatePullRequest"
+            : /^query (Repository|PullRequest)WriteTarget/.test(body.query ?? "")
+              ? "pullWriteTarget"
+              : "query";
       }
       // Commit provider mutations before injecting a lost response, including DELETE.
       const selectedResources =
@@ -183,6 +194,9 @@ export function createGitHubProtocol({
       ) {
         json(404, { message: "Not Found" });
         return;
+      }
+      if (entry.operation === "pullWriteTarget") {
+        await beforePullWriteTarget?.();
       }
       const result = selectedResources.dispatch({
         method: request.method,
@@ -237,6 +251,10 @@ export function createGitHubProtocol({
     authenticationAttempts: authority.authenticationAttempts,
     issues: resources.issues,
     pulls: resources.pulls,
+    seedPull: resources.seedPull,
+    holdPullWriteTarget(gate) {
+      beforePullWriteTarget = gate;
+    },
     comments: resources.comments,
     errors,
     authorize: authority.authorize,

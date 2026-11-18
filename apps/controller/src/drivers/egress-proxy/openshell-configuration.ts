@@ -41,18 +41,32 @@ export const openShellGitGrantChartListener = {
 export function openShellRepositoryConfiguration(
   input: unknown,
   mode: "development" | "production",
-) {
+): OpenShellGitRuntimeConfiguration | undefined {
   if (input === undefined) {
     return undefined;
   }
   const value = object(input, "repository.openShell");
-  closed(value, ["registrationName", "authority", "grantRedemption"], "repository.openShell");
+  closed(
+    value,
+    ["registrationName", "authority", "grantRedemption", "grantRedemptionProfile"],
+    "repository.openShell",
+  );
   const authority = egressAuthorityConfiguration(
     value.authority,
     mode,
     "repository.openShell.authority",
   );
   const grant = value.grantRedemption;
+  const profile = value.grantRedemptionProfile;
+  if (
+    profile !== undefined &&
+    ((profile !== "selected-repository-write" &&
+      profile !== "selected-repository-set" &&
+      profile !== "selected-repository-pull-preview") ||
+      grant === undefined)
+  ) {
+    throw new Error("OpenShell Git grant profile requires explicit Git grant redemption.");
+  }
   if (
     grant !== undefined &&
     (!validTokenGrantConfiguration(grant) ||
@@ -70,6 +84,7 @@ export function openShellRepositoryConfiguration(
     registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
     authority,
     ...(grant === undefined ? {} : { grantRedemption: grant }),
+    ...(profile === undefined ? {} : { grantRedemptionProfile: profile }),
   };
 }
 

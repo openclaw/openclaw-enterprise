@@ -509,8 +509,17 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       observed &&
       (fields.some((field) => !(field in observed)) ||
         Object.keys(observed).some(
-          (field) => !fields.includes(field) && field !== "observedHook",
+          (field) => !fields.includes(field) && field !== "observedHook" && field !== "pullApi",
         ) ||
+        ("pullApi" in observed &&
+          (!observed.pullApi ||
+            Object.keys(observed.pullApi).length !== 4 ||
+            observed.pullApi.provider === observed.provider ||
+            observed.pullApi.providerId === observed.providerId ||
+            !/^oce-github-installation-[a-f0-9]{32}$/.test(observed.pullApi.provider) ||
+            !observed.pullApi.providerId ||
+            !/^[1-9][0-9]*$/.test(observed.pullApi.profileVersion) ||
+            !/^[1-9][0-9]*$/.test(observed.pullApi.providerResourceVersion))) ||
         ("observedHook" in observed &&
           (!hook ||
             Object.keys(hook).length !== 2 ||

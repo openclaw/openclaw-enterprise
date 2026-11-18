@@ -10,6 +10,10 @@ import { planDraftPull } from "../prepared-draft-pull.ts";
 import { classifyRoute } from "./classification.ts";
 import { allowsGraphqlInput } from "../graphql-input.ts";
 import { allowsReceivePackInput } from "./receive-pack.ts";
+import {
+  selectStockGitHubPullRequest,
+  type StockGitHubPullAction,
+} from "./stock-gh-pull-request.ts";
 
 /** A validated HTTPS request view; transport validation remains with the caller. */
 type GitHubRequest = {
@@ -41,6 +45,7 @@ type GitHubScope =
   | {
       readonly scope: "github-repository";
       readonly repositories: readonly Readonly<{ repository: string }>[];
+      readonly allowStockPullRequestApi?: true;
     };
 
 type Use =
@@ -283,6 +288,7 @@ type Selection =
       readonly selected: {
         readonly operation: Use["operation"];
         readonly pull?: PreparedGitHubPullScope;
+        readonly stockPullRequest?: StockGitHubPullAction;
       };
     }
   | { readonly denied: ClassificationDenialReason };
@@ -295,6 +301,16 @@ function operation(
 ): Selection {
   if (binding.scope !== undefined) {
     if (matchesOrigin("https://api.github.com", request)) {
+      if (binding.scope === "github-repository" && binding.allowStockPullRequestApi) {
+        const [selectedRepository] = binding.repositories;
+        const stockPullRequest =
+          binding.repositories.length === 1 &&
+          selectedRepository &&
+          selectStockGitHubPullRequest(head, request.body, selectedRepository.repository);
+        return stockPullRequest
+          ? { selected: { operation: "github-graphql", stockPullRequest } }
+          : { denied: "route_unsupported" };
+      }
       if (binding.scope === "github-repository" && request.target.path.startsWith("/repos/")) {
         const repo = /^\/repos\/([^/]+\/[^/]+)(?:\/|$)/.exec(request.target.path)?.[1];
         if (

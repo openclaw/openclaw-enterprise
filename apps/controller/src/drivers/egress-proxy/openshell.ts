@@ -235,6 +235,7 @@ export function openShellEgressConfiguration(
   plan: ProxyPlan,
   options: OpenShellProxyOptions,
   revision?: Readonly<AgentRevision>,
+  repositoryCredentialPull = false,
 ): Readonly<Record<string, unknown>> {
   const artifacts = openShellProtectedCodexArtifacts(revision);
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
@@ -255,7 +256,10 @@ export function openShellEgressConfiguration(
       throw new Error("Request authorization requires its admitted revision.");
     }
     const model = openShellModelRequestPolicy(plan, options, revision);
-    if (!model || (plan.repositoryGit && !options.repositoryMiddlewareName)) {
+    if (
+      !model ||
+      (plan.repositoryGit && !repositoryCredentialPull && !options.repositoryMiddlewareName)
+    ) {
       throw new DependencyUnavailableError("Request-authorized model delivery is unavailable.");
     }
     return immutableCopy({
@@ -263,12 +267,13 @@ export function openShellEgressConfiguration(
       network_middlewares: {
         ...model.middlewares,
         ...(plan.repositoryGit &&
+          !repositoryCredentialPull &&
           openShellGitMiddleware(options.repositoryMiddlewareName!, plan.execution.executionId)),
       },
     });
   }
   if (plan.repositoryGit) {
-    if (plan.routes.length || !options.repositoryMiddlewareName) {
+    if (plan.routes.length || (!repositoryCredentialPull && !options.repositoryMiddlewareName)) {
       throw new DependencyUnavailableError(
         "This Credential Proxy cannot install the admitted repository plan.",
       );
@@ -277,10 +282,12 @@ export function openShellEgressConfiguration(
     // authority, broad Git network rule or second credential-bearing sender accompanies it.
     return immutableCopy({
       network_policies: artifacts,
-      network_middlewares: openShellGitMiddleware(
-        options.repositoryMiddlewareName,
-        plan.execution.executionId,
-      ),
+      ...(!repositoryCredentialPull && {
+        network_middlewares: openShellGitMiddleware(
+          options.repositoryMiddlewareName!,
+          plan.execution.executionId,
+        ),
+      }),
     });
   }
   return immutableCopy({
@@ -327,6 +334,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
+  private readonly repositoryPullPreview: boolean;
   private readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
   private readonly backend: Backend<OpenShellGateway>;
   private readonly sandbox: SandboxDriver;
@@ -397,6 +405,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly tokenGrant?: OpenShellTokenGrantConfiguration;
       readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
+      readonly repositoryPullPreview?: true;
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
     },
@@ -440,6 +449,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.id = selection.id;
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
+    this.repositoryPullPreview = selection.repositoryPullPreview === true;
     this.options = immutableCopy(options);
     if (options.requestCredentials) {
       this.requestTimeCredentials = Object.freeze({
@@ -467,6 +477,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           );
         }
         const info = await client.getGatewayInfo(signal);
+        if (this.repositoryPullPreview && profile === "github_repository") {
+          // The Provider profile import checks the Gateway's distinct JWT bearer capability.
+          return { profile, authorization: "online-request" as const };
+        }
         const extensions = info.extensions;
         const git =
           profile === "repository_git" ||
@@ -610,7 +624,19 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       provider.type !== expected.provider.profile.id ||
       provider.profileWorkspace !== workspace ||
       !Array.isArray(sandbox.spec?.providers) ||
-      sandbox.spec.providers.length !== (plan.repositoryGit ? 3 : 2) ||
+      (sandbox.spec.providers.length !== (plan.repositoryGit ? 3 : 2) &&
+        !(
+          this.repositoryPullPreview &&
+          plan.repositoryGit &&
+          sandbox.spec.providers.length === 4 &&
+          sandbox.spec.providers[2] !== sandbox.spec.providers[3] &&
+          sandbox.spec.providers
+            .slice(2)
+            .every(
+              (name) =>
+                typeof name === "string" && /^oce-github-installation-[a-f0-9]{32}$/.test(name),
+            )
+        )) ||
       sandbox.spec.providers[0] !== provider.name ||
       sandbox.spec.providers[1] !== `oce-runtime-${sha256Hex(revision.id, 16)}`
     ) {
@@ -707,6 +733,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       context.plan,
       this.options,
       context.revision,
+      this.repositoryPullPreview,
     );
     const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
     if (context.plan.repositoryGit !== undefined && profile === undefined) {
@@ -738,6 +765,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       context.plan,
       this.options,
       context.revision,
+      this.repositoryPullPreview,
     );
     const expected = prepared.configuration;
     const expectedPolicies = asRecord(expected.network_policies);

@@ -165,11 +165,25 @@ that the workload passed installation checks or can answer a model turn.
 
 ## Redeem a prepared Git token with a Gateway assertion
 
-An installation can enable `repository.openShell.grantRedemption` for one
-selected read-only `github-repository` grant. Use matching Gateway and
+By default, `repository.openShell.grantRedemption` serves one selected
+read-only `github-repository` grant. Use matching Gateway and
 supervisor builds that support provider assertions and dynamic Git HTTP Basic
-injection. The held Agent still requires a current prepared token before release.
-The Gateway provider stores no copy of that token.
+injection. The Worker obtains the token on first authorized redemption. The
+Gateway provider stores no copy of that token.
+
+Set `repository.openShell.grantRedemptionProfile: selected-repository-write` to
+enable ordinary Git push for one separately approved selected repository.
+That grant needs exactly `contents: write` and `metadata: read`. Read grants stay
+read-only. GitHub enforces branch protection. GitHub API requests remain outside
+this profile.
+
+For a finite set, choose `repository.openShell.grantRedemptionProfile: selected-repository-set`
+and give the Agent one explicit `github-repository` binding per repository. The
+bindings must share the same Git permission level, read or write. The Worker
+checks every binding before each redemption and requests one token for the
+exact set. Removing A from A+B invalidates the current execution's Git
+approvals for both repositories. B can resume once a new execution admits
+the B-only set. Other executions keep their own grants.
 
 Configure the Worker’s HTTPS `/token` listener on a port separate from its
 middleware authority. Set `assertionSource: openshell_gateway`, the exact
@@ -182,8 +196,49 @@ the Gateway. Use the existing [supervisor TLS requirements](../../reference/repo
 The middleware first approves the inspected operation. The proxy presents a
 separate signed assertion to redeem that approval. The Worker rechecks the
 same recipient, grant and material before release, then OpenShell injects the
-token into the authorized Git HTTPS request. This profile disables token
-caching. Installed candidate qualification remains pending.
+token into the authorized Git HTTPS request. OpenShell does not cache the
+redeemed token. Installed candidate qualification remains pending.
+
+## Preview stock GitHub CLI pull requests
+
+Set `repository.openShell.grantRedemptionProfile: selected-repository-pull-preview`
+on a compatible installation to test one selected repository. The admitted
+GitHub App scope must be exactly Metadata read, Contents write, and Pull
+requests write. One entitlement controls both attachments. The Worker asks for
+a Contents write token for Git and a separate Pull requests write token for
+the GitHub API. Both carry Metadata read and the same selected repository ID.
+The API attachment uses Bearer injection at `api.github.com/graphql`. Stock
+`gh` receives a nonsecret startup value.
+
+Leave the shared GitHub issuance generation unset for this preview. The
+Worker accepts shared issuance only with the default read-only, one-repository
+profile. Preview tokens keep separate per-admission custody.
+
+Use an OpenShell Gateway and supervisor that support Gateway-signed JWT bearer
+grants. Set `repository.openShell.grantRedemption.issuer` to the Gateway's
+canonical HTTPS workload grant issuer ending in `/workload`. Mount its public
+verification keys in the Worker's configured `bundlePath`. The supervisor uses
+the exact HTTPS token endpoint as the assertion audience and requests a token
+for each protected use. The Worker reuses usable issuer material for the same
+repository and permission scope. The Gateway must authorize the immutable
+Provider ID, credential key, and token endpoint. Gateways with a startup-only
+authorization list need a supported registration step after Provider creation
+before the installed preview can serve Git requests.
+
+The GitHub App's permissions and repository rules determine the operations GitHub
+accepts. OCC selects the API token for the repository and permissions in the
+signed grant. GitHub interprets the GraphQL operation. This preview uses the
+provider route for Git requests and leaves the push body with the supervisor's
+streaming path. Verify ordinary and draft pull requests and a large
+streamed push on the installed build before rollout.
+
+OCC denies new Git and API requests after expiry or committed removal. The
+original issuer retires each token family. Current grant-mode cleanup can
+retire the execution before detaching a provider. Keeping the model running
+requires a durable withdrawal path that verifies both original GitHub
+attachments, the original execution fence, and current model authorization.
+Verify that path on an installed mixed online execution.
+[Repository credential flow](../../flows/credential-source-egress/model-requests.md#selected-repository-credential-pull-preview)
 
 ## Verify the installed path
 

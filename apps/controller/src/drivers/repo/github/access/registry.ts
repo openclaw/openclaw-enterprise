@@ -1,4 +1,8 @@
-import { isGitHubRepositoryPermissions, type GitHubRepositoryGrant } from "./repository-grant.ts";
+import {
+  maxSelectedGitHubRepositories,
+  isGitHubRepositoryPermissions,
+  type GitHubRepositoryGrant,
+} from "./repository-grant.ts";
 import type { RepositoryGitDeliveryResolver } from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
@@ -623,7 +627,7 @@ export function resolveSelectedRepositoryScope(
 ): Pick<GitHubRepositoryGrant, "repositories" | "permissions"> {
   if (
     !bindings.length ||
-    bindings.length > 16 ||
+    bindings.length > maxSelectedGitHubRepositories ||
     new Set(bindings.map((b) => b.repositoryRef)).size !== bindings.length
   ) {
     throw new Error("invalid-selected-repository-set");

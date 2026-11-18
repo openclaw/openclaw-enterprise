@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-10
-last_updated_session: authoring-run/18b830fb-bbb7-4b75-b14c-a01437b51c41
+updated: 2026-11-18
+last_updated_session: authoring-run/ca7dd0a2-dd7d-4dda-937b-b03993a2544b
 ---
 
 # Authorize model credentials per request
@@ -193,6 +193,45 @@ approval for the next operation. Rotation or withdrawal after the final release
 cannot recall material already released. Such a request may finish, including
 its streamed response.
 
+## Selected repository credential pull preview
+
+The Worker attaches separate OpenShell providers for Git Basic and GitHub API
+Bearer access. Each profile requests one repository resource. The Git profile
+can request Contents and Metadata permissions. The API profile requests Pull
+Requests and Metadata permissions. The Worker verifies both profiles and their
+shared Sandbox, supervisor, and policy before it releases the held launcher.
+The provider rules select the signed token grants without attaching the Git
+request middleware. The workload Git profile permits discovery, fetch, and
+authorized push paths. It omits the synthetic launcher probe because the Git
+middleware is absent. Legacy profiles retain that probe for their mandatory
+middleware refusal check. The model request policy still applies to inference.
+[Provider observation](../../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+· [Token scopes](../../../apps/controller/src/drivers/repo/github/access/prepared-git-redemption.ts)
+
+1. The OpenShell Gateway signs a workload assertion for the current supervisor
+   and the attached Provider and credential key. The supervisor posts the
+   assertion, resource, and scope to the Worker's token endpoint.
+2. The Worker checks the signature against the operator-selected public key
+   bundle. It verifies the issuer, the exact token endpoint as audience, and the
+   same resource and scope in the assertion and form. It resolves the live
+   Sandbox and original Worker fence. In PostgreSQL it checks the current Agent
+   revision and repository grant, then claims the assertion ID once.
+3. The issuer reuses usable material for that exact scope or starts or joins
+   one preparation for it. The Worker checks the installed recipient and current
+   repository grant again before opening material. Withdrawal during issuance
+   prevents token release, and the original owner settles the issuer result.
+4. The supervisor injects the token into the permitted GitHub request. GitHub
+   evaluates the selected token permissions and repository rules. The Agent
+   receives placeholders, and the supervisor does a new pull for each applicable
+   request with its cache TTL set to zero.
+   [Token endpoint](../../../apps/controller/src/drivers/egress-proxy/openshell-token-grant.ts)
+   · [Issuer authority](../../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts)
+
+The Worker retires the two token families independently. It quarantines an
+unconfirmed issuance. The route can have no issued token, so expiry and removal
+can retire the execution before provider detach. Continued model access after a
+Git removal needs a separate installed continuity check.
+
 ## Debugging and Verification
 
 Inspect the selected source's provider ID/generation and the saved revision's
@@ -226,6 +265,10 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-18 09:23: Restrict the launcher probe to legacy Git profiles with mandatory middleware. (authoring-run/ca7dd0a2-dd7d-4dda-937b-b03993a2544b - 04ac009f65577cbf1f137877518c7ead540e8234)
+
+- 2026-11-18 08:58: Trace the Gateway-signed selected repository credential pull and the issuer withdrawal recheck. (authoring-run/b4aeee44-0b0d-4ac6-868d-fd747352d449 - 8c884587e3f2270b6ed8d41f575e9098fb26020d)
 
 - 2026-11-10 05:07: Align initial policy versions, carry the database release budget through monotonic timing and order authorization against configured-role changes. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - cf0f7b52125917f76d3ff93c4e99e6b1a6c5dcd9)
 

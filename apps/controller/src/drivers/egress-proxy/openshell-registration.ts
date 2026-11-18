@@ -76,6 +76,9 @@ export function createOpenShellCapabilities(input: {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),
         previewEnforcement: git.previewEnforcement.bind(git),
         mandatoryEnforcement: git.mandatoryEnforcement.bind(git),
+        ...(configuration?.grantRedemptionProfile === "selected-repository-pull-preview" && {
+          repositoryPullPreview: true as const,
+        }),
       }),
     });
   const repositoryTransport: RepositoryTransportBinding | undefined = git && {
@@ -83,7 +86,9 @@ export function createOpenShellCapabilities(input: {
       const store = new PostgresOpenShellGitRouteStore(pool);
       git.connectRestartObservation(store.restartEvidence.bind(store));
     },
-    ...(configuration?.grantRedemption && { prepareGitOnDemand: true as const }),
+    ...(configuration?.grantRedemption && {
+      prepareGitOnDemand: configuration.grantRedemptionProfile ?? (true as const),
+    }),
     async bind(authority, pool, emit) {
       if (!authority || !proxy?.bindRepositoryGit) {
         throw new Error("Missing the selected Driver's protected repository Git authority.");

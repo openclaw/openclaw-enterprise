@@ -107,10 +107,11 @@ type NarrowPreparation = Pick<
   "runtime" | "revision" | "client" | "workspace" | "sandbox" | "pool" | "peer" | "writes"
 >;
 
-type SelectedReadJourney = Pick<
+type SelectedGrantJourney = Pick<
   NarrowJourney,
-  "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision" | "removeBinding"
+  "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision"
 > & {
+  removeBinding(repositoryRef?: string): Promise<unknown>;
   readonly grant: {
     readonly endpoint: string;
     readonly port: number;
@@ -126,21 +127,24 @@ type SelectedReadJourney = Pick<
 export async function selectedReadGitJourney(
   t: TestContext,
   testUrl: string,
-  exercise: (journey: SelectedReadJourney) => Promise<void>,
+  exercise: (journey: SelectedGrantJourney) => Promise<void>,
   sharedGitIssuance?: true,
 ) {
-  await repositoryGitJourney(
-    t,
-    testUrl,
-    undefined,
-    {},
-    undefined,
-    false,
-    undefined,
-    undefined,
+  await selectedGrantGitJourney(t, testUrl, exercise, undefined, sharedGitIssuance);
+}
+
+export async function selectedGrantGitJourney(
+  t: TestContext,
+  testUrl: string,
+  exercise: (journey: SelectedGrantJourney) => Promise<void>,
+  scope?: { readonly contents: "read" | "write"; readonly set?: true; readonly pullPreview?: true },
+  sharedGitIssuance?: true,
+) {
+  await repositoryGitJourney(t, testUrl, undefined, {}, undefined, false, undefined, undefined, {
     exercise,
-    sharedGitIssuance,
-  );
+    ...(scope === undefined ? {} : { scope }),
+    ...(sharedGitIssuance && { sharedGitIssuance }),
+  });
 }
 
 export async function beforeNarrowGitPreparation(
@@ -233,16 +237,35 @@ async function repositoryGitJourney(
     | "expired-original-pods"
     | "expired-replaced-supervisor",
   startupOptions?: NarrowStartupOptions,
-  selectedRead?: (journey: SelectedReadJourney) => Promise<void>,
-  sharedGitIssuance?: true,
+  selectedGrant?: {
+    exercise: (journey: SelectedGrantJourney) => Promise<void>;
+    sharedGitIssuance?: true;
+    scope?: {
+      readonly contents: "read" | "write";
+      readonly set?: true;
+      readonly pullPreview?: true;
+    };
+  },
 ) {
+  const selectedRead = selectedGrant?.exercise;
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
   const podContinuity = pendingSuccessor?.startsWith("expired-") === true;
   const coldWorker = pendingSuccessor === "cold-worker" || podContinuity;
-  const selectedRepositories = repositorySet.slice(0, standing || selectedRead ? 1 : 2);
+  const set = selectedGrant?.scope?.set;
+  const pullPreview = selectedGrant?.scope?.pullPreview;
+  const grantProfile = pullPreview
+    ? "selected-repository-pull-preview"
+    : set
+      ? "selected-repository-set"
+      : selectedGrant?.scope && "selected-repository-write";
+  const selectedRepositories = repositorySet.slice(0, standing || (selectedRead && !set) ? 1 : 2);
   const selectedPermissions = selectedRead
-    ? ({ metadata: "read", contents: "read" } as const)
+    ? ({
+        metadata: "read",
+        contents: selectedGrant?.scope?.contents ?? "read",
+        ...(pullPreview && { pull_requests: "write" as const }),
+      } as const)
     : repositorySetPermissions;
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
@@ -261,6 +284,7 @@ async function repositoryGitJourney(
     sandbox: "selected",
     policy: {} as object,
     gitRule: {} as { name: string },
+    pullApiRule: undefined as { name: string } | undefined,
     installed: undefined as string | undefined,
     started: { seconds: Math.floor(Date.now() / 1000) },
     runtimeProvider: "oce-runtime-" + "a".repeat(16),
@@ -280,7 +304,9 @@ async function repositoryGitJourney(
   await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
   const grantPort = selectedRead ? await reservePort() : undefined;
   const grantKeys = selectedRead ? generateKeyPairSync("ed25519") : undefined;
-  const grantIssuer = "openshell-gateway:git-fixture";
+  const grantIssuer = pullPreview
+    ? "https://gateway.fixture.test/workload"
+    : "openshell-gateway:git-fixture";
   const grantBundlePath = join(tls.directory, "gateway-jwks.json");
   const grantEndpoint = grantPort && `https://localhost:${grantPort.port}/token`;
   if (grantPort && grantKeys) {
@@ -359,6 +385,7 @@ async function repositoryGitJourney(
           privateKeyPath: tls.keyPath,
           issuerPublicKeyPath,
         },
+        ...(grantProfile && { grantRedemptionProfile: grantProfile }),
         ...(grantEndpoint &&
           grantPort && {
             grantRedemption: {
@@ -409,6 +436,7 @@ async function repositoryGitJourney(
       sandbox,
       backend: backend as never,
       bindRepositoryGit: (authority) => runtime.bindRepositoryGit(authority),
+      ...(pullPreview && { repositoryPullPreview: true as const }),
       ...{
         mandatoryEnforcement: (ctx: ProxyRevisionContext, box: string) => {
           const observe = Reflect.get(runtime, "mandatoryEnforcement");
@@ -456,8 +484,9 @@ async function repositoryGitJourney(
   let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
-    prepareGitOnDemand: !!selectedRead,
-    ...(sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
+    prepareGitOnDemand: grantProfile ?? !!selectedRead,
+    ...(selectedGrant?.sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
+    ...(pullPreview && { pullPreview }),
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrowProfile
@@ -593,7 +622,55 @@ async function repositoryGitJourney(
     gatewayVersion: "0.1.6",
     gatewayTls: { ...tls, tokenPath },
     ...{ supervisor: state },
-    configure: startupOptions?.configure,
+    configure: pullPreview
+      ? (methods) => {
+          type Metadata = { get(name: string): string[] };
+          type Credential = {
+            token_grant: {
+              grant_type?: number;
+              token_endpoint?: string;
+              resource?: string;
+              scopes?: string[];
+              cache_ttl?: { seconds?: string; nanos?: number };
+            };
+            auth_style: string;
+            env_vars?: string[];
+          };
+          type ImportCall = { profiles: { profile: { credentials: Credential[] } }[] };
+          const gateway = methods as unknown as {
+            LintProviderProfiles(input: unknown, metadata: Metadata): { valid: boolean };
+            ImportProviderProfiles(input: ImportCall, metadata: Metadata): unknown;
+          };
+          const lint = gateway.LintProviderProfiles;
+          const importProfile = gateway.ImportProviderProfiles;
+          const header = "openshell-profile-gateway-jwt-bearer-grant";
+          gateway.LintProviderProfiles = (request, metadata) => {
+            assert.deepEqual(metadata.get(header), ["1"]);
+            return { ...lint(request, metadata), supports_gateway_jwt_bearer_grant: true };
+          };
+          gateway.ImportProviderProfiles = (input, metadata) => {
+            assert.deepEqual(metadata.get(header), ["1"]);
+            const credential = input.profiles[0]?.profile.credentials[0];
+            assert.ok(credential);
+            const api = credential.auth_style === "bearer";
+            assert.equal(credential.auth_style, api ? "bearer" : "placeholder");
+            assert.deepEqual(credential.env_vars ?? [], api ? [] : ["GITHUB_TOKEN"]);
+            const { cache_ttl: ttl, ...grant } = credential.token_grant;
+            assert.ok(ttl);
+            assert.equal(Number(ttl.seconds ?? 0), 0);
+            assert.equal(ttl.nanos ?? 0, 0);
+            assert.deepEqual(grant, {
+              grant_type: 4,
+              token_endpoint: grantEndpoint,
+              resource: "https://github.com/" + selectedRepositories[0]!.repository,
+              scopes: api
+                ? ["metadata:read", "pull_requests:write"]
+                : ["contents:write", "metadata:read"],
+            });
+            return importProfile(input, metadata);
+          };
+        }
+      : startupOptions?.configure,
     onGitInstall(value: string) {
       state.installed = value;
     },
@@ -640,7 +717,7 @@ async function repositoryGitJourney(
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
   assert.equal(
     revision.repositoryCredentials!.bindings.length,
-    narrowProfile || standing || selectedRead ? 1 : 2,
+    narrowProfile ? 1 : selectedRepositories.length,
   );
   assert.equal(revision.executionAdmission.version, 5);
   assert.equal(revision.executionAdmission.mode, "protected");
@@ -661,6 +738,12 @@ async function repositoryGitJourney(
   const release = new ProtectedExecutionDriver(owner);
   const wiring = await release.configure(context);
   state.policy = wiring.configuration;
+  const gitMiddleware = (wiring.configuration.network_middlewares ?? {}) as Record<string, unknown>;
+  assert.equal(
+    Object.hasOwn(gitMiddleware, "oce-prepared-git"),
+    !pullPreview,
+    "JWT bearer protects the credential path without selecting a body-buffering middleware",
+  );
   if (beforePrepare) {
     await beforePrepare({
       runtime,
@@ -933,6 +1016,7 @@ async function repositoryGitJourney(
         }
         const entry = runtime["states"].get(revision.id)!.entry!;
         state.gitRule = entry.provider.previewNetworkRule()!;
+        state.pullApiRule = entry.pullApi?.provider.previewNetworkRule();
         stage = "recipient-bind";
         await runtime.bind(
           r.id,
@@ -954,12 +1038,27 @@ async function repositoryGitJourney(
               await reconcile();
             }
             retry = true;
-            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => ({
-              startupId,
-              probePath: path,
-              reasonCode: (await evaluate({ ...probe, target: { ...probe.target, path } }))
-                .reason_code,
-            }));
+            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => {
+              assert.equal(
+                pullPreview,
+                undefined,
+                "JWT bearer proves the held recipient without a probe",
+              );
+              const target = path.startsWith("/graphql?")
+                ? {
+                    ...probe.target,
+                    host: "api.github.com",
+                    method: "POST",
+                    path: "/graphql",
+                    query: path.slice("/graphql?".length),
+                  }
+                : { ...probe.target, path };
+              return {
+                startupId,
+                probePath: path,
+                reasonCode: (await evaluate({ ...probe, target })).reason_code,
+              };
+            });
           },
           { timeoutMs: 20_000 },
         );
@@ -988,11 +1087,13 @@ async function repositoryGitJourney(
           writesBeforeActivation,
           "no credential update before activation",
         );
-        assert.equal(
-          (await evaluate(probe)).decision,
-          2,
-          "recorded recipient cannot send before activation",
-        );
+        if (!pullPreview) {
+          assert.equal(
+            (await evaluate(probe)).decision,
+            2,
+            "recorded recipient cannot send before activation",
+          );
+        }
         assert.equal(peer.originCalls(), originBeforeActivation);
         assert.ok(p.provider);
         return f.compute.prepareRevision(r);
@@ -1108,8 +1209,28 @@ async function repositoryGitJourney(
     }
     assert.equal(acked, false);
     assert.equal(runtime.previewReleased(revision.id), false);
-    const blocked = await evaluate(probe);
-    assert.equal(blocked.decision, 2, "no request can use installed material before launcher ACK");
+    if (pullPreview) {
+      assert.equal(
+        await runtime.lookup(
+          {
+            sandboxId: wire.world.id!,
+            bindingId: revision.egressPlan!.execution.executionId,
+            workspace,
+            requestId: randomUUID(),
+          },
+          t.signal,
+        ),
+        undefined,
+        "the owner refuses a pull before launcher ACK",
+      );
+    } else {
+      const blocked = await evaluate(probe);
+      assert.equal(
+        blocked.decision,
+        2,
+        "no request can use installed material before launcher ACK",
+      );
+    }
     await runtime.releasePreview(revision.id, startupId, async () => {
       assert.ok(lastCustody);
       const installed = await release.current(context, lastCustody, async () => true);
@@ -1273,12 +1394,16 @@ async function repositoryGitJourney(
           waitForIssuance: () =>
             waitFor("the controlled provider entered issuance", () => issuanceStarted || undefined),
           finishIssuance: () => issuanceRelease.resolve(),
-          removeBinding: () =>
+          removeBinding: (repositoryRef) =>
             f.controller.updateAgent(f.actor.id, {
               namespaceId: f.namespace.id,
               agentId: agent.id,
               configurationId: configuration.id,
-              repositoryBindings: [],
+              repositoryBindings: repositoryRef
+                ? selectedRepositories
+                    .filter((member) => member.repositoryRef !== repositoryRef)
+                    .map((member) => ({ repositoryRef: member.repositoryRef }))
+                : [],
             }),
         });
       } finally {

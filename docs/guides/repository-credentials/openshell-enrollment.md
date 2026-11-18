@@ -108,6 +108,9 @@ release and run normal Installation startup validation before admitting Agents.
 The OpenShell request-grant profile can share a token for one selected read-only repository
 within the same Namespace and enrollment. Each Git operation requires a fresh authorization
 and matching redemption.
+Use the default read-only profile. The Worker rejects an explicit
+`grantRedemptionProfile` when shared issuance is enabled, including the
+write, repository-set, and pull-request preview profiles.
 
 Apply the database migrations and stop Workers using per-admission issuance before enabling
 this feature. Set `worker.githubSharedIssuanceGeneration: 1` in Helm, or set

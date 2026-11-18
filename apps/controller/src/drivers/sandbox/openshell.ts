@@ -3464,6 +3464,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     if (git) {
       create.spec.providers.push(git.provider);
+      if (git.pullApiProvider) {
+        create.spec.providers.push(git.pullApiProvider);
+      }
       Object.assign(
         create.spec.environment,
         Object.fromEntries(git.environment.map(({ name, value }) => [name, value])),

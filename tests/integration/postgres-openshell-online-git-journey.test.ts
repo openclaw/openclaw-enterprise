@@ -1,18 +1,47 @@
 import assert from "node:assert/strict";
-import { randomUUID, sign } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { join } from "node:path";
 import { buffer } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import {
   narrowOnlineGitJourney,
+  selectedGrantGitJourney,
   selectedReadGitJourney,
 } from "../helpers/postgres-repository-set-journey.ts";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import {
+  cleanEnvironment,
+  listen,
+  run as runProcess,
+  temporaryDirectory,
+} from "../fixtures/repository-credentials/process.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
+import { stockGhPullPreview } from "../helpers/stock-gh-preview.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
+import {
+  resolveGitHubRepositoryBinding,
+  resolveSelectedRepositoryScope,
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import type { OpenShellProviderProfile } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
+
+const run: (
+  command: string,
+  args: string[],
+  options?: {
+    cwd?: string;
+    env?: ReturnType<typeof cleanEnvironment>;
+    allowFailure?: boolean;
+    signal?: AbortSignal;
+  },
+) => ReturnType<typeof runProcess> = runProcess;
 
 type GitUseReceipt = {
   exchange_id: string;
@@ -28,6 +57,130 @@ type DraftClaim = Pick<
   GitUseReceipt,
   "request_digest_sha256" | "admission_id" | "attempt_id" | "material_version"
 > & { receipt_id: string; outcome: string };
+
+type GrantJourney = Parameters<Parameters<typeof selectedGrantGitJourney>[2]>[0];
+
+function signedGitRedemption(
+  authority: GrantJourney["grant"],
+  sandboxId: string,
+  bindingId: string,
+  providerId: string,
+  workload?: { readonly resource: string; readonly scope: string },
+) {
+  const credentialKey = "installation_token";
+  const assertion = (
+    recipient = sandboxId,
+    provider = providerId,
+    key = credentialKey,
+    overrides: Readonly<Record<string, unknown>> = {},
+    signingKey = authority.keys.privateKey,
+  ) => {
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(
+      JSON.stringify({
+        alg: "EdDSA",
+        kid: "git-grant",
+        typ: workload ? "openshell-workload-grant+jwt" : "openshell-provider-assertion+jwt",
+      }),
+    ).toString("base64url");
+    const claims = Buffer.from(
+      JSON.stringify({
+        iss: authority.issuer,
+        aud: authority.endpoint,
+        sub: `openshell-sandbox:${recipient}`,
+        sandbox_id: recipient,
+        caller_kind: "supervisor",
+        provider_id: provider,
+        credential_key: key,
+        iat: now,
+        exp: now + 60,
+        jti: randomUUID(),
+        ...workload,
+        ...overrides,
+      }),
+    ).toString("base64url");
+    const input = `${header}.${claims}`;
+    return `${input}.${sign(null, Buffer.from(input), signingKey).toString("base64url")}`;
+  };
+  const grant = (
+    requestId: string | undefined,
+    clientAssertion: string,
+    resource = workload?.resource ?? bindingId,
+    scope = workload?.scope ?? "",
+  ) =>
+    new Promise<{ status: number; value: string | undefined }>((resolve, reject) => {
+      const form = new URLSearchParams(
+        workload
+          ? {
+              grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+              assertion: clientAssertion,
+              resource,
+              scope,
+            }
+          : {
+              grant_type: "client_credentials",
+              client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+              client_assertion: clientAssertion,
+              audience: resource,
+            },
+      ).toString();
+      const req = httpsRequest(
+        {
+          hostname: "127.0.0.1",
+          servername: "localhost",
+          port: authority.port,
+          path: "/token",
+          method: "POST",
+          ca: authority.ca,
+          agent: false,
+          signal: AbortSignal.timeout(5000),
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "content-length": Buffer.byteLength(form),
+            ...(requestId !== undefined && { "x-openshell-request-id": requestId }),
+          },
+        },
+        async (response) => {
+          try {
+            const result = JSON.parse((await buffer(response)).toString()) as {
+              access_token?: string;
+            };
+            resolve({ status: response.statusCode!, value: result.access_token });
+          } catch (error) {
+            reject(error);
+          }
+        },
+      );
+      req.on("error", reject);
+      req.end(form);
+    });
+  return { assertion, grant };
+}
+
+async function workloadGrantClients(journey: GrantJourney, signal: AbortSignal) {
+  const { runtime, revision, workspace, sandboxId, grant: authority } = journey;
+  const bindingId = revision.egressPlan!.execution.executionId;
+  const route = await runtime.lookup(
+    { sandboxId, bindingId, requestId: randomUUID(), workspace },
+    signal,
+  );
+  const observed = route?.installed.route?.observed as
+    { providerId: string; pullApi?: { providerId: string } } | undefined;
+  assert.ok(observed?.pullApi?.providerId);
+  assert.notEqual(observed.providerId, observed.pullApi.providerId);
+  const resource = "https://github.com/" + fixtureRepository;
+  const gitScope = "contents:write metadata:read";
+  const apiScope = "metadata:read pull_requests:write";
+  const git = signedGitRedemption(authority, sandboxId, bindingId, observed.providerId, {
+    resource,
+    scope: gitScope,
+  });
+  const api = signedGitRedemption(authority, sandboxId, bindingId, observed.pullApi.providerId, {
+    resource,
+    scope: apiScope,
+  });
+  return { git, api, observed, resource, gitScope, apiScope };
+}
 
 function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
   return async (t: TestContext) => {
@@ -63,76 +216,13 @@ function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
           ).rows,
           [{ state: "active", preparation_attempt_id: null, material_version: null }],
         );
-        const observed = original.installed.route.observed as { providerId: string };
-        const credentialKey = "installation_token";
-        const assertion = (
-          recipient = sandboxId,
-          provider = observed.providerId,
-          key = credentialKey,
-        ) => {
-          const now = Math.floor(Date.now() / 1000);
-          const header = Buffer.from(
-            JSON.stringify({
-              alg: "EdDSA",
-              kid: "git-grant",
-              typ: "openshell-provider-assertion+jwt",
-            }),
-          ).toString("base64url");
-          const claims = Buffer.from(
-            JSON.stringify({
-              iss: authority.issuer,
-              aud: authority.endpoint,
-              sub: `openshell-sandbox:${recipient}`,
-              sandbox_id: recipient,
-              caller_kind: "supervisor",
-              provider_id: provider,
-              credential_key: key,
-              iat: now,
-              exp: now + 60,
-              jti: randomUUID(),
-            }),
-          ).toString("base64url");
-          const input = `${header}.${claims}`;
-          return `${input}.${sign(null, Buffer.from(input), authority.keys.privateKey).toString("base64url")}`;
-        };
-        const grant = (requestId: string, clientAssertion: string, resource = bindingId) =>
-          new Promise<{ status: number; value: string | undefined }>((resolve, reject) => {
-            const form = new URLSearchParams({
-              grant_type: "client_credentials",
-              client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-              client_assertion: clientAssertion,
-              audience: resource,
-            }).toString();
-            const req = httpsRequest(
-              {
-                hostname: "127.0.0.1",
-                servername: "localhost",
-                port: authority.port,
-                path: "/token",
-                method: "POST",
-                ca: authority.ca,
-                agent: false,
-                signal: AbortSignal.timeout(5000),
-                headers: {
-                  "content-type": "application/x-www-form-urlencoded",
-                  "content-length": Buffer.byteLength(form),
-                  "x-openshell-request-id": requestId,
-                },
-              },
-              async (response) => {
-                try {
-                  const result = JSON.parse((await buffer(response)).toString()) as {
-                    access_token?: string;
-                  };
-                  resolve({ status: response.statusCode!, value: result.access_token });
-                } catch (error) {
-                  reject(error);
-                }
-              },
-            );
-            req.on("error", reject);
-            req.end(form);
-          });
+        const { providerId } = original.installed.route.observed as { providerId: string };
+        const { assertion, grant } = signedGitRedemption(
+          authority,
+          sandboxId,
+          bindingId,
+          providerId,
+        );
         const approve = async (upload: boolean, requestedRepository = fixtureRepository) => {
           const request = peer.input(bindingId, sandboxId, upload, workspace);
           request.target.path = request.target.path.replace(fixtureRepository, requestedRepository);
@@ -166,8 +256,7 @@ function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
           403,
         );
         assert.equal(
-          (await grant(discovery.requestId, assertion(sandboxId, observed.providerId, "wrong-key")))
-            .status,
+          (await grant(discovery.requestId, assertion(sandboxId, providerId, "wrong-key"))).status,
           403,
         );
         assert.equal((await grant(discovery.requestId, assertion(), "wrong-binding")).status, 403);
@@ -628,6 +717,798 @@ test(
         );
       },
       { draftPull: false, pushRef: "refs/heads/review/*" },
+    );
+  },
+);
+
+// Native Git drives discovery and receive-pack. The controlled sender relays protected
+// requests only after the HTTPS listener authorizes a token. Legacy grants also need middleware.
+const startOrigin: (
+  t: Parameters<typeof startGitSmartHttpFixture>[0],
+  options: object,
+) => ReturnType<typeof startGitSmartHttpFixture> = startGitSmartHttpFixture;
+
+for (const [contents, set, pullPreview] of [
+  ["read", false, false],
+  ["write", false, false],
+  ["read", true, false],
+  ["write", true, false],
+  ["write", false, true],
+] as const) {
+  test(
+    pullPreview
+      ? "workload credential pull sends a large stock Git push through the controlled origin"
+      : set
+        ? `selected repository set authorizes native Git ${contents}`
+        : `selected ${contents} grant bounds ordinary Git push`,
+    { ...requiresPostgres, timeout: 90_000 },
+    async (t) => {
+      await selectedGrantGitJourney(
+        t,
+        import.meta.url,
+        async ({
+          runtime,
+          revision,
+          workspace,
+          sandboxId,
+          peer,
+          grant: authority,
+          evaluateRequest,
+          finishIssuance,
+          removeBinding,
+        }) => {
+          const bindingId = revision.egressPlan!.execution.executionId;
+          const route = await runtime.lookup(
+            { sandboxId, bindingId, requestId: randomUUID(), workspace },
+            t.signal,
+          );
+          assert.ok(route?.installed.route);
+          const { providerId } = route.installed.route.observed as { providerId: string };
+          const scope = "contents:write metadata:read";
+          const resource = "https://github.com/" + fixtureRepository;
+          const { assertion, grant } = signedGitRedemption(
+            authority,
+            sandboxId,
+            bindingId,
+            providerId,
+            pullPreview ? { resource, scope } : undefined,
+          );
+          const placeholder = "controlled-grant-placeholder";
+          let streamedPushBytes = 0;
+          let workloadPullRequests = 0;
+          const outside = "fixture/unselected";
+          const secondRepository = "fixture/second";
+          const origins = new Map([[fixtureRepository, peer.origin]]);
+          const installed: OpenShellProviderProfile | undefined = runtime["states"].get(revision.id)
+            ?.entry?.provider["profile"];
+          assert.ok(installed);
+          if (set) {
+            for (const repository of [secondRepository, outside]) {
+              origins.set(
+                repository,
+                await startOrigin(t, {
+                  repository,
+                  tls: peer.origin.tls,
+                  authorize: peer.gh.authorize,
+                }),
+              );
+            }
+            assert.equal(installed.endpoints.length, 1);
+            const [endpoint] = installed.endpoints;
+            assert.equal(endpoint?.host, "github.com");
+            const expectedPaths = [fixtureRepository, secondRepository].flatMap((repository) => [
+              `/${repository}.git/info/refs`,
+              `/${repository}.git/git-upload-pack`,
+              ...(contents === "write" ? [`/${repository}.git/git-receive-pack`] : []),
+            ]);
+            assert.deepEqual(
+              endpoint?.rules?.map(({ allow }) => allow.path),
+              [...expectedPaths, `/${fixtureRepository}.git/oce-observe-request/*/info/refs`],
+            );
+          }
+          const calls = () =>
+            [...origins.values()].reduce((total, origin) => total + origin.traffic().requests, 0);
+          const refusals: string[] = [];
+          const errors: unknown[] = [];
+          const peerUrl = (
+            await listen(
+              t,
+              createServer((incoming, outgoing) => {
+                void (async () => {
+                  if (pullPreview && incoming.headers.authorization === undefined) {
+                    // The stock client gets an authentication challenge before sending its placeholder.
+                    outgoing.writeHead(401, { "www-authenticate": 'Basic realm="fixture"' }).end();
+                    return;
+                  }
+                  assert.equal(
+                    incoming.headers.authorization,
+                    pullPreview
+                      ? "Basic " + Buffer.from("x-access-token:" + placeholder).toString("base64")
+                      : undefined,
+                    "Git never receives the provider token",
+                  );
+                  const target = new URL(incoming.url!, "https://github.com");
+                  if (pullPreview) {
+                    // This controlled relay applies the generated provider rule before acquisition.
+                    const allowed = installed.endpoints.some(
+                      (endpoint) =>
+                        endpoint.host === target.hostname &&
+                        endpoint.rules?.some(({ allow }) => {
+                          if (allow.method !== incoming.method || allow.path === undefined) {
+                            return false;
+                          }
+                          const [prefix, suffix, extra] = allow.path.split("*");
+                          if (suffix === undefined) {
+                            return allow.path === target.pathname;
+                          }
+                          const middle = target.pathname.slice(
+                            prefix!.length,
+                            target.pathname.length - suffix.length,
+                          );
+                          return (
+                            extra === undefined &&
+                            target.pathname.startsWith(prefix!) &&
+                            target.pathname.endsWith(suffix) &&
+                            !middle.includes("/")
+                          );
+                        }),
+                    );
+                    if (!allowed) {
+                      refusals.push(target.pathname);
+                      outgoing.writeHead(403).end();
+                      return;
+                    }
+                    workloadPullRequests++;
+                  }
+                  const body = pullPreview ? undefined : await buffer(incoming);
+                  const request = peer.input(bindingId, sandboxId, false, workspace);
+                  const hidden = new Set([
+                    "authorization",
+                    "connection",
+                    "host",
+                    "content-length",
+                    "transfer-encoding",
+                  ]);
+                  const headers = Object.entries(incoming.headers).flatMap(([name, value]) =>
+                    hidden.has(name) || value === undefined
+                      ? []
+                      : (Array.isArray(value) ? value : [value]).map((entry) => ({
+                          name,
+                          value: entry,
+                        })),
+                  );
+                  const repoPath = target.pathname.split(".git/", 1)[0];
+                  const askedResource = "https://github.com" + repoPath;
+                  const verdict = pullPreview
+                    ? undefined
+                    : await evaluateRequest({
+                        ...request,
+                        target: {
+                          ...request.target,
+                          method: incoming.method,
+                          path: target.pathname,
+                          query: target.search.slice(1),
+                        },
+                        body,
+                        headers,
+                      });
+                  const { status, value } = pullPreview
+                    ? await grant(
+                        undefined,
+                        assertion(undefined, undefined, undefined, { resource: askedResource }),
+                        askedResource,
+                      )
+                    : await grant(request.context.request_id, assertion());
+                  if (pullPreview ? status !== 200 : verdict?.decision !== 1) {
+                    assert.equal(status, 403, "a denied request cannot redeem");
+                    assert.equal(value, undefined);
+                    refusals.push(target.pathname);
+                    outgoing.writeHead(403).end();
+                    return;
+                  }
+                  assert.equal(status, 200);
+                  assert.ok(value);
+                  const origin = [...origins].find(([repository]) =>
+                    target.pathname.startsWith(`/${repository}.git/`),
+                  )?.[1];
+                  assert.ok(origin, "a permitted request must match a selected origin");
+                  await new Promise<void>((resolve, reject) => {
+                    const upstream = peer.installationTransport.httpsRequest(
+                      origin.origin,
+                      {
+                        path: target.pathname + target.search,
+                        method: incoming.method,
+                        ca: origin.tls.ca,
+                        headers: {
+                          ...Object.fromEntries(
+                            headers.map(({ name, value: entry }) => [name, entry]),
+                          ),
+                          authorization:
+                            "Basic " + Buffer.from("x-access-token:" + value).toString("base64"),
+                          ...(body
+                            ? { "content-length": body.length }
+                            : incoming.headers["content-length"] !== undefined && {
+                                "content-length": incoming.headers["content-length"],
+                              }),
+                        },
+                      },
+                      (response) => {
+                        outgoing.writeHead(response.statusCode!, response.headers);
+                        response.pipe(outgoing);
+                        response.once("end", resolve);
+                        response.once("error", reject);
+                      },
+                    );
+                    upstream.once("error", reject);
+                    if (body) {
+                      upstream.end(body);
+                    } else {
+                      if (
+                        target.pathname.endsWith("/git-receive-pack") &&
+                        incoming.headers["transfer-encoding"] === "chunked"
+                      ) {
+                        incoming.on("data", (chunk: Buffer) => {
+                          streamedPushBytes += chunk.length;
+                        });
+                      }
+                      incoming.pipe(upstream);
+                    }
+                  });
+                })().catch((error: unknown) => {
+                  errors.push(error);
+                  outgoing.destroy();
+                });
+              }),
+            )
+          ).replace("https:", "http:");
+          const cwd = await temporaryDirectory(t, "selected-grant-native-push-");
+          const env = cleanEnvironment({
+            HOME: cwd,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            ...(pullPreview && { GITHUB_TOKEN: placeholder }),
+          });
+          const git = (args: string[], allowFailure = false) =>
+            run(
+              "git",
+              [
+                "-c",
+                `url.${peerUrl}/.insteadOf=https://github.com/`,
+                "-c",
+                "credential.helper=",
+                ...(pullPreview
+                  ? [
+                      "-c",
+                      "credential.helper=!f() { printf '%s\\n' 'username=x-access-token' \"password=$GITHUB_TOKEN\"; }; f",
+                      "-c",
+                      "http.postBuffer=1048576",
+                    ]
+                  : []),
+                "-c",
+                "http.followRedirects=false",
+                ...args,
+              ],
+              { cwd, env, allowFailure, signal: t.signal },
+            );
+          await git(["init", "--initial-branch=main"]);
+          await git(["config", "user.name", "Repository fixture"]);
+          await git(["config", "user.email", "fixture@example.test"]);
+          const commit = async (value: string) => {
+            await writeFile(
+              join(cwd, "result.txt"),
+              pullPreview && value === "first" ? randomBytes(5 * 1024 * 1024) : value,
+            );
+            await git(["add", "result.txt"]);
+            await git(["commit", "-m", value]);
+            return (await git(["rev-parse", "HEAD"])).stdout.trim();
+          };
+          const first = await commit("first");
+          const ref = "refs/heads/selected-grant-push";
+          const push = (repository: string, allowFailure = false) =>
+            git(["push", `https://github.com/${repository}.git`, `HEAD:${ref}`], allowFailure);
+          finishIssuance();
+          const before = calls();
+          const read = (repository: string, allowFailure = false) =>
+            git(
+              ["ls-remote", `https://github.com/${repository}.git`, "refs/heads/main"],
+              allowFailure,
+            );
+          assert.equal(peer.gh.issuesOfTokens.length, 0, "the installed route starts cold");
+          if (pullPreview) {
+            const probe = `/${fixtureRepository}.git/oce-observe-request/probe/info/refs`;
+            const result = await git(
+              [
+                "ls-remote",
+                `https://github.com/${fixtureRepository}.git/oce-observe-request/probe`,
+              ],
+              true,
+            );
+            assert.notEqual(result.code, 0);
+            assert.equal(refusals.pop(), probe);
+            assert.equal(
+              workloadPullRequests,
+              0,
+              "the denied path never reaches the token endpoint",
+            );
+            assert.equal(peer.gh.issuesOfTokens.length, 0, "the denied path never mints a token");
+            assert.equal(calls(), before, "the denied path never reaches the origin");
+          }
+          if (set) {
+            assert.notEqual((await read(outside, true)).code, 0);
+            assert.equal(refusals.pop(), `/${outside}.git/info/refs`);
+            assert.equal(calls(), before);
+            assert.equal(peer.gh.issuesOfTokens.length, 0);
+          }
+          if (contents === "read") {
+            assert.notEqual((await push(fixtureRepository, true)).code, 0);
+            assert.deepEqual(refusals, [`/${fixtureRepository}.git/info/refs`]);
+            assert.equal(calls(), before);
+            assert.equal(peer.gh.issuesOfTokens.length, 0);
+            if (set) {
+              assert.notEqual((await push(secondRepository, true)).code, 0);
+              assert.equal(calls(), before);
+              assert.equal(peer.gh.issuesOfTokens.length, 0);
+              for (const repository of [fixtureRepository, secondRepository]) {
+                const sha = await origins.get(repository)!.ref("main");
+                assert.equal((await read(repository)).stdout.trim(), `${sha}	refs/heads/main`);
+              }
+              assert.equal(peer.gh.issuesOfTokens.length, 1);
+              assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73, 74]);
+              assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+                contents: "read",
+                metadata: "read",
+              });
+            }
+          } else {
+            assert.notEqual((await push(outside, true)).code, 0);
+            assert.deepEqual(refusals, [`/${outside}.git/info/refs`]);
+            assert.equal(calls(), before);
+            assert.equal(peer.gh.issuesOfTokens.length, 0);
+            await push(fixtureRepository);
+            assert.equal(
+              await peer.origin.ref(ref),
+              first,
+              "read back the actual ref at the provider",
+            );
+            assert.equal(peer.gh.issuesOfTokens.length, 1);
+            assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, set ? [73, 74] : [73]);
+            assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+              metadata: "read",
+              contents: "write",
+            });
+            assert.ok(
+              peer.origin.trace.some(
+                ({ path, method }) =>
+                  method === "POST" && path === `/${fixtureRepository}.git/git-receive-pack`,
+              ),
+            );
+            if (pullPreview) {
+              await git(["fetch", `https://github.com/${fixtureRepository}.git`, ref]);
+              assert.equal((await git(["rev-parse", "FETCH_HEAD"])).stdout.trim(), first);
+              assert.ok(
+                peer.origin.trace.some(
+                  ({ path, method }) =>
+                    method === "POST" && path === `/${fixtureRepository}.git/git-upload-pack`,
+                ),
+                "ordinary fetch reaches the upload-pack endpoint",
+              );
+              assert.ok(streamedPushBytes > 4 * 1024 * 1024, "stock Git used a large chunked push");
+              t.diagnostic(
+                `Controlled sender streamed ${streamedPushBytes} native Git pack body bytes.`,
+              );
+            }
+            const second = await commit("second");
+            await push(fixtureRepository);
+            assert.equal(await peer.origin.ref(ref), second);
+            assert.equal(peer.gh.issuesOfTokens.length, 1, "a second push reuses the issued token");
+            let pendingRequestId: string | undefined;
+            if (set) {
+              await push(secondRepository);
+              assert.equal(await origins.get(secondRepository)!.ref(ref), second);
+              const afterSelected = calls();
+              assert.notEqual((await push(outside, true)).code, 0);
+              assert.equal(calls(), afterSelected);
+              assert.equal(peer.gh.issuesOfTokens.length, 1);
+              const pending = peer.input(bindingId, sandboxId, false, workspace);
+              pending.target.path = `/${secondRepository}.git/info/refs`;
+              assert.equal((await evaluateRequest(pending)).decision, 1);
+              pendingRequestId = pending.context.request_id;
+            }
+            await commit("after withdrawal");
+            await removeBinding(set ? "A" : undefined);
+            const afterWrite = calls();
+            if (pendingRequestId) {
+              assert.equal((await grant(pendingRequestId, assertion())).status, 403);
+              assert.notEqual((await push(secondRepository, true)).code, 0);
+              assert.equal(await origins.get(secondRepository)!.ref(ref), second);
+            }
+            assert.notEqual((await push(fixtureRepository, true)).code, 0);
+            assert.equal(refusals.at(-1), `/${fixtureRepository}.git/info/refs`);
+            assert.equal(
+              await peer.origin.ref(ref),
+              second,
+              "withdrawal leaves the last authorized push unchanged",
+            );
+            assert.equal(calls(), afterWrite);
+            assert.equal(peer.gh.issuesOfTokens.length, 1);
+          }
+          if (set) {
+            assert.equal(origins.get(outside)!.traffic().requests, 0);
+            const mixedRegistry = {
+              ...peer.registry,
+              repositories: peer.registry.repositories.map((repository) =>
+                repository.repositoryRef === "B"
+                  ? {
+                      ...repository,
+                      namespaces: repository.namespaces.map((policy) => ({
+                        ...policy,
+                        permissions: {
+                          metadata: "read",
+                          contents: contents === "read" ? "write" : "read",
+                        },
+                      })),
+                    }
+                  : repository,
+              ),
+            };
+            const members = ["A", "B"].map((repositoryRef) =>
+              resolveGitHubRepositoryBinding(mixedRegistry, {
+                namespaceId: revision.namespaceId,
+                repositoryRef,
+              }),
+            );
+            assert.throws(
+              () => resolveSelectedRepositoryScope(mixedRegistry, revision.namespaceId, members),
+              { message: "selected-repository-permissions-differ" },
+            );
+          }
+          assert.deepEqual(errors, []);
+        },
+        { contents, ...(set && { set: true }), ...(pullPreview && { pullPreview: true }) },
+      );
+    },
+  );
+}
+
+test(
+  process.env.OCC_TEST_STOCK_GH
+    ? "stock gh executable creates ordinary and draft pull requests and edits titles through the scoped API grant"
+    : "captured stock gh requests create ordinary and draft pull requests and edit titles through the scoped API grant",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    await selectedGrantGitJourney(
+      t,
+      import.meta.url,
+      async (journey) => {
+        const {
+          revision,
+          sandboxId,
+          peer,
+          pool,
+          grant: authority,
+          finishIssuance,
+          waitForIssuance,
+          removeBinding,
+        } = journey;
+        const { git, api, observed, resource, gitScope, apiScope } = await workloadGrantClients(
+          journey,
+          t.signal,
+        );
+        const pull = (assertion = git.assertion(), target = resource, scope = gitScope) =>
+          git.grant(undefined, assertion, target, scope);
+        const invalidSignature = generateKeyPairSync("ed25519").privateKey;
+        const foreign = "https://github.com/foreign/repository";
+        const negatives = [
+          [401, () => pull(git.assertion(undefined, undefined, undefined, {}, invalidSignature))],
+          [
+            401,
+            () =>
+              pull(
+                git.assertion(undefined, undefined, undefined, {
+                  iss: authority.issuer + "/other",
+                }),
+              ),
+          ],
+          [
+            401,
+            () =>
+              pull(
+                git.assertion(undefined, undefined, undefined, {
+                  aud: authority.endpoint + "/other",
+                }),
+              ),
+          ],
+          [401, () => pull(git.assertion(), foreign)],
+          [401, () => pull(git.assertion(), resource, apiScope)],
+          [
+            403,
+            () =>
+              pull(git.assertion(undefined, undefined, undefined, { resource: foreign }), foreign),
+          ],
+          [
+            403,
+            () =>
+              pull(
+                git.assertion(undefined, undefined, undefined, { scope: apiScope }),
+                resource,
+                apiScope,
+              ),
+          ],
+          [403, () => pull(git.assertion("foreign-sandbox"))],
+          [403, () => pull(git.assertion(sandboxId, "foreign-provider"))],
+          [403, () => pull(git.assertion(sandboxId, observed.pullApi!.providerId))],
+          [403, () => pull(git.assertion(sandboxId, undefined, "foreign-key"))],
+        ] as const;
+        for (const [status, request] of negatives) {
+          assert.deepEqual(await request(), { status, value: undefined });
+        }
+        assert.equal(peer.gh.issuesOfTokens.length, 0, "invalid pulls issue nothing");
+        const signed = git.assertion();
+        // The HTTPS listener accepts fresh assertions without a business-request callback.
+        const cold = pull(signed);
+        let joined: Promise<Awaited<typeof cold>> | undefined;
+        try {
+          await Promise.race([
+            waitForIssuance(),
+            cold.then(() => {
+              throw new Error("The cold pull settled before the held issuer request.");
+            }),
+          ]);
+          joined = pull();
+          // The second assertion reaches the durable claim while the first issuer request is held.
+          await waitFor(
+            "both assertions to be durably consumed",
+            async () => {
+              const result = await pool.query<{ count: string }>(
+                "SELECT count(*) FROM occ.request_credential_approvals WHERE recipient_id=$1 AND consumed",
+                [sandboxId],
+              );
+              return Number(result.rows[0]?.count) === 2 ? true : undefined;
+            },
+            { timeoutMs: 2_000 },
+          );
+          assert.equal(peer.gh.issuesOfTokens.length, 0);
+        } finally {
+          finishIssuance();
+        }
+        const gitToken = await cold;
+        assert.equal(gitToken.status, 200);
+        assert.ok(gitToken.value);
+        assert.deepEqual(await joined, gitToken);
+        assert.deepEqual(await pull(signed), { status: 403, value: undefined });
+        assert.deepEqual(await pull(), gitToken);
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        let apiToken: string | undefined;
+        const cli = await stockGhPullPreview(t, {
+          executable: process.env.OCC_TEST_STOCK_GH,
+          provider: peer.gh,
+          authorize: async () => {
+            const response = await api.grant(undefined, api.assertion());
+            apiToken = response.value;
+            return { decision: response.status === 200 ? 1 : 2, value: apiToken };
+          },
+        });
+        const command = [
+          "pr",
+          "create",
+          "--repo",
+          fixtureRepository,
+          "--head",
+          "fixture/branch",
+          "--base",
+          "main",
+          "--draft",
+          "--title",
+          "Original title",
+          "--body",
+          "Draft body",
+        ];
+        const create = await cli.invoke(command);
+        assert.equal(create.stdout.trim(), "https://github.com/" + fixtureRepository + "/pull/1");
+        assert.equal(peer.gh.pulls.get(1).draft, true);
+        const ordinary = await cli.invoke([
+          "pr",
+          "create",
+          "--repo",
+          fixtureRepository,
+          "--head",
+          "fixture/ordinary",
+          "--base",
+          "main",
+          "--title",
+          "Ordinary title",
+          "--body",
+          "Ordinary body",
+        ]);
+        assert.equal(ordinary.stdout.trim(), "https://github.com/" + fixtureRepository + "/pull/2");
+        const providerPull = peer.gh.pulls.get(2);
+        assert.equal(providerPull.title, "Ordinary title");
+        assert.equal(providerPull.draft ?? false, false);
+        assert.ok(apiToken);
+        assert.notEqual(apiToken, gitToken.value);
+        assert.deepEqual(
+          peer.gh.issuesOfTokens.map(({ permissions, repositoryIds }) => ({
+            permissions,
+            repositoryIds,
+          })),
+          [
+            { permissions: { metadata: "read", contents: "write" }, repositoryIds: [73] },
+            { permissions: { metadata: "read", pull_requests: "write" }, repositoryIds: [73] },
+          ],
+        );
+        const other = peer.gh.seedPull("Other original title", "another-contributor");
+        await cli.invoke([
+          "pr",
+          "edit",
+          "1",
+          "--repo",
+          fixtureRepository,
+          "--title",
+          "Updated original title",
+        ]);
+        await cli.invoke([
+          "pr",
+          "edit",
+          String(other.number),
+          "--repo",
+          fixtureRepository,
+          "--title",
+          "Updated collaborator title",
+        ]);
+        assert.equal(peer.gh.pulls.get(1).title, "Updated original title");
+        assert.equal(peer.gh.pulls.get(other.number).title, "Updated collaborator title");
+        const count = (operation: string) =>
+          peer.gh.trace.filter((row) => row.operation === operation).length;
+        assert.equal(count("createPullRequest"), 2);
+        assert.equal(count("updatePullRequest"), 2);
+        assert.equal(count("pullWriteTarget"), 0);
+        await removeBinding();
+        const after = await cli.invoke(
+          ["pr", "edit", "1", "--repo", fixtureRepository, "--title", "Refused"],
+          true,
+        );
+        assert.notEqual(after.code, 0);
+        assert.deepEqual(await pull(), { status: 403, value: undefined });
+        assert.deepEqual(await api.grant(undefined, api.assertion()), {
+          status: 403,
+          value: undefined,
+        });
+        assert.equal(count("updatePullRequest"), 2);
+        assert.equal(peer.gh.pulls.get(1).title, "Updated original title");
+        const custody = async () =>
+          (
+            await journey.pool.query(
+              `SELECT (a.source_id LIKE '%:pull-api') AS api, a.custody, a.sealed IS NULL AS erased
+           FROM occ.prepared_github_attempts a
+           JOIN occ.prepared_github_families f USING (source_id)
+           WHERE f.source #>> '{session,revisionId}'=$1 ORDER BY api`,
+              [revision.id],
+            )
+          ).rows;
+        await peer.prepared.maintain();
+        await peer.prepared.maintain();
+        assert.deepEqual(await custody(), [
+          { api: false, custody: "revoked", erased: true },
+          { api: true, custody: "revoked", erased: true },
+        ]);
+        assert.equal(peer.gh.issuesOfTokens.length, 2);
+      },
+      { contents: "write", pullPreview: true },
+    );
+  },
+);
+
+test(
+  "an uncertain API mint stays quarantined across issuer rotation and does not take Git custody",
+  {
+    ...requiresPostgres,
+    timeout: 90_000,
+  },
+  async (t) => {
+    await selectedGrantGitJourney(
+      t,
+      import.meta.url,
+      async (journey) => {
+        const { revision, peer, finishIssuance, pool } = journey;
+        const { git: native, api } = await workloadGrantClients(journey, t.signal);
+        finishIssuance();
+        assert.equal((await native.grant(undefined, native.assertion())).status, 200);
+
+        const issuerRequest = peer.gh.trace.find(({ target }) => target.endsWith("/access_tokens"));
+        assert.ok(issuerRequest);
+        peer.gh.disconnectAfterMutation("POST", issuerRequest.target);
+        assert.equal((await api.grant(undefined, api.assertion())).status, 403);
+        assert.equal(
+          peer.gh.issuesOfTokens.length,
+          2,
+          "GitHub minted before the response was lost",
+        );
+
+        const read = async () =>
+          (
+            await pool.query(
+              `SELECT (f.source_id LIKE '%:pull-api') AS api, a.state, a.custody,
+          (f.admission->>'ownerEpoch')::integer AS epoch
+         FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+         WHERE f.source #>> '{session,revisionId}'=$1 ORDER BY api`,
+              [revision.id],
+            )
+          ).rows;
+        const before = await read();
+        assert.deepEqual(
+          before.map(({ api, state, epoch }) => ({ api, state, epoch })),
+          [
+            { api: false, state: "committed", epoch: 1 },
+            { api: true, state: "quarantined", epoch: 1 },
+          ],
+        );
+        assert.equal((await native.grant(undefined, native.assertion())).status, 200);
+
+        await peer.rotateAppKey();
+        await peer.prepared.maintain();
+        const after = await read();
+        assert.deepEqual(
+          after.map(({ api, state, epoch }) => ({ api, state, epoch })),
+          [
+            { api: false, state: "committed", epoch: 2 },
+            { api: true, state: "quarantined", epoch: 2 },
+          ],
+        );
+        assert.notEqual(after[0].custody, "current");
+        assert.equal((await api.grant(undefined, api.assertion())).status, 403);
+        assert.equal(peer.gh.issuesOfTokens.length, 2, "unknown API issuance does not retry");
+      },
+      { contents: "write", pullPreview: true },
+    );
+  },
+);
+
+test(
+  "workload credential pull withholds a token when access is withdrawn during first issuance",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    await selectedGrantGitJourney(
+      t,
+      import.meta.url,
+      async (journey) => {
+        const { peer, waitForIssuance, finishIssuance, removeBinding } = journey;
+        const { git } = await workloadGrantClients(journey, t.signal);
+        const reply = git.grant(undefined, git.assertion());
+        await Promise.race([
+          waitForIssuance(),
+          reply.then(() => {
+            throw new Error("The token exchange settled before the held issuer request.");
+          }),
+        ]);
+        try {
+          await removeBinding();
+        } finally {
+          finishIssuance();
+        }
+        assert.deepEqual(await reply, { status: 403, value: undefined });
+        assert.deepEqual(await git.grant(undefined, git.assertion()), {
+          status: 403,
+          value: undefined,
+        });
+        assert.equal(peer.gh.issuesOfTokens.length, 1, "withdrawal prevents another mint");
+      },
+      { contents: "write", pullPreview: true },
+    );
+  },
+);
+
+test(
+  "shared GitHub issuance refuses the pull request preview at Worker startup",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    await assert.rejects(
+      selectedGrantGitJourney(
+        t,
+        import.meta.url,
+        async () => assert.fail("the incompatible Worker must not start"),
+        { contents: "write", pullPreview: true },
+        true,
+      ),
+      { message: "SHARED_REPOSITORY_GIT_REQUIRES_READ_ONLY_PROFILE" },
     );
   },
 );

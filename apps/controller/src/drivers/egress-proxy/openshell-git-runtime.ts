@@ -29,8 +29,12 @@ import type {
   RepositoryGitDeliveryBinding,
 } from "../repo/access/delivery.ts";
 import {
-  allowsPreparedGitGrantRead,
+  allowsStockGitHubPullGrant,
+  preparedGitGrantContents,
   preparedGitRedemption,
+  preparedGitPullScope,
+  preparedGitCredentialKey,
+  type PreparedGitGrantProfile,
   type PreparedGitRedemption,
 } from "../repo/github/access/prepared-git-redemption.ts";
 import {
@@ -52,6 +56,7 @@ import {
 import {
   deleteOpenShellPreparedGitProvider,
   OpenShellPreparedGitProvider,
+  type OpenShellPreparedGitScope,
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitBinding,
   type OpenShellPreparedGitDelivery,
@@ -71,6 +76,7 @@ import {
   openShellGrantCredentialIdentity,
   validTokenGrantConfiguration,
   type OpenShellGatewayTokenGrantConfiguration,
+  type AuthenticatedOpenShellWorkloadGrant,
 } from "./openshell-token-grant.ts";
 import {
   ObservedHookPreview,
@@ -105,8 +111,9 @@ export interface OpenShellGitRuntimeConfiguration {
   /** Dedicated supported stock gateway, only operator-controlled writers, no other workspace member. */
   readonly observedHookPreviewWorkspace?: string;
   readonly authority: EgressAuthorityConfiguration;
-  /** Opt-in redemption for one repository with contents read. */
+  /** Opt-in redemption for one selected repository. Existing configurations allow reads. */
   readonly grantRedemption?: OpenShellGatewayTokenGrantConfiguration;
+  readonly grantRedemptionProfile?: PreparedGitGrantProfile;
 }
 /** Only the worker that witnessed a held launch can authorize its next Git session. */
 function requiresOriginalLauncher(revision: Readonly<AgentRevision>, profile: string): boolean {
@@ -381,11 +388,7 @@ function gitProvider(
   executionId: string,
   delivery: OpenShellPreparedGitDelivery,
   observedHookPreview?: true,
-  tokenGrant?: {
-    readonly endpoint: string;
-    readonly audience: string;
-    readonly repository: string;
-  },
+  tokenGrant?: OpenShellPreparedGitScope["tokenGrant"],
 ) {
   return new OpenShellPreparedGitProvider(client, {
     workspace,
@@ -459,7 +462,7 @@ export class OpenShellGitRuntime {
   private stopped = new AbortController();
   private running: Promise<void> = Promise.resolve();
   private timer?: ReturnType<typeof setTimeout>;
-  private server?: ReturnType<typeof createOpenShellOnlineGitAuthority>;
+  private server: ReturnType<typeof createOpenShellOnlineGitAuthority> | undefined;
   private grantBinding: CredentialProxyBinding | undefined;
   readonly configuration: OpenShellGitRuntimeConfiguration;
   private readonly resolveDelivery: RepositoryGitDeliveryResolver;
@@ -469,16 +472,21 @@ export class OpenShellGitRuntime {
   ) {
     const grant = configuration.grantRedemption;
     if (
-      grant &&
-      (configuration.observedHookPreviewWorkspace ||
-        !validTokenGrantConfiguration(grant) ||
-        grant.assertionSource !== "openshell_gateway" ||
-        grant.port === configuration.authority.port)
+      (configuration.grantRedemptionProfile && !grant) ||
+      (grant &&
+        (configuration.observedHookPreviewWorkspace ||
+          !validTokenGrantConfiguration(grant) ||
+          grant.assertionSource !== "openshell_gateway" ||
+          grant.port === configuration.authority.port))
     ) {
       throw new Error("Invalid OpenShell Git grant redemption configuration.");
     }
     this.configuration = configuration;
     this.resolveDelivery = resolveDelivery;
+  }
+
+  private get usesWorkloadGrant(): boolean {
+    return this.configuration.grantRedemptionProfile === "selected-repository-pull-preview";
   }
 
   private scope(revision: Readonly<AgentRevision>) {
@@ -516,11 +524,16 @@ export class OpenShellGitRuntime {
     }
     if (
       this.configuration.grantRedemption &&
-      (state.bindings.length !== 1 ||
-        !("scope" in scope.delivery) ||
-        !allowsPreparedGitGrantRead(scope.delivery))
+      (!("scope" in scope.delivery) ||
+        state.bindings.length !== scope.delivery.repositories.length ||
+        !preparedGitGrantContents(
+          scope.delivery,
+          this.configuration.grantRedemptionProfile ?? true,
+        ))
     ) {
-      throw new Error("OpenShell Git grant redemption requires one selected read-only repository.");
+      throw new Error(
+        "OpenShell Git grant redemption requires explicitly selected repositories at the configured permission level.",
+      );
     }
     return scope;
   }
@@ -564,10 +577,36 @@ export class OpenShellGitRuntime {
     }
   }
 
-  private grantProfile(delivery: RepositoryGitDeliveryBinding["delivery"], audience: string) {
+  private grantProfile(
+    delivery: RepositoryGitDeliveryBinding["delivery"],
+    audience: string,
+    pullApi?: true,
+  ): OpenShellPreparedGitScope["tokenGrant"] {
     const endpoint = this.configuration.grantRedemption?.endpoint;
-    const repository = "scope" in delivery ? delivery.repositories[0]?.repository : undefined;
-    return endpoint && repository ? { endpoint, audience, repository } : undefined;
+    if (!endpoint || !("scope" in delivery)) {
+      return;
+    }
+    const mode = this.configuration.grantRedemptionProfile ?? true;
+    const contents = preparedGitGrantContents(delivery, mode);
+    const repository = delivery.repositories[0]?.repository;
+    if (
+      !contents ||
+      !repository ||
+      (pullApi &&
+        (mode !== "selected-repository-pull-preview" || !allowsStockGitHubPullGrant(delivery)))
+    ) {
+      return;
+    }
+    return {
+      endpoint,
+      audience,
+      repository,
+      ...(mode === "selected-repository-pull-preview" && {
+        workloadGrant: preparedGitPullScope(delivery, pullApi === true)!,
+      }),
+      ...(mode === "selected-repository-set" && { selectedRepositories: delivery.repositories }),
+      ...(pullApi ? { pullApi } : contents === "write" ? { allowPush: true as const } : {}),
+    };
   }
 
   /** A warm owner can verify its launch. A cold owner can only prove replacement. */
@@ -738,16 +777,30 @@ export class OpenShellGitRuntime {
           });
           throw new Error("OpenShell Git requires a new revision after worker restart.");
         }
+        const workspaceId = await read(() => this.gateway(client, workspace, signal), signal);
         const provider = gitProvider(
           client,
           workspace,
-          await read(() => this.gateway(client, workspace, signal), signal),
+          workspaceId,
           sandbox,
           revision.id,
           scope.delivery,
           true,
           this.grantProfile(scope.delivery, admittedExecutionId),
         );
+        const pullApiGrant = this.grantProfile(scope.delivery, admittedExecutionId, true);
+        const pullApiProvider =
+          pullApiGrant &&
+          gitProvider(
+            client,
+            workspace,
+            workspaceId,
+            sandbox,
+            revision.id,
+            scope.delivery,
+            true,
+            pullApiGrant,
+          );
         const bindingId = admittedExecutionId;
         const route = {
           revisionId: revision.id,
@@ -767,11 +820,23 @@ export class OpenShellGitRuntime {
           await this.routes?.block(revision.id, fence, "repository_expired").catch(() => {});
           throw new OpenShellGitRouteBlockedError("repository_expired");
         }
-        let binding: OpenShellPreparedGitBinding;
+        let binding: OpenShellPreparedGitBinding | undefined;
+        let pullApi: Entry["pullApi"];
         try {
           binding = await provider.bootstrap(signal);
+          if (pullApiProvider) {
+            pullApi = {
+              provider: pullApiProvider,
+              binding: await pullApiProvider.bootstrap(signal),
+              preview: new ObservedHookPreview(workspace, bindingId, true),
+            };
+          }
         } catch (error) {
-          if (error instanceof OpenShellPreparedGitProviderError && error.outcome === "refused") {
+          if (
+            !binding &&
+            error instanceof OpenShellPreparedGitProviderError &&
+            error.outcome === "refused"
+          ) {
             // Nothing was written: the row says so, instead of outliving this attempt as a
             // pending write (which a later worker would have to read as write_unknown).
             await this.routes?.block(revision.id, fence, "bootstrap_failed").catch(() => {});
@@ -783,6 +848,7 @@ export class OpenShellGitRuntime {
           client,
           provider,
           binding,
+          ...(pullApi && { pullApi }),
           authorization: structuredClone(scope),
           otherProviders: [...otherProviders],
           bindingId,
@@ -841,9 +907,13 @@ export class OpenShellGitRuntime {
     ) {
       throw new OpenShellGitRouteBlockedError("repository_expired");
     }
+    const middlewares: Partial<ReturnType<typeof openShellGitMiddleware>> = this.usesWorkloadGrant
+      ? {}
+      : openShellGitMiddleware(this.configuration.registrationName, entry.bindingId);
     return {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
+      ...(entry.pullApi && { pullApiProvider: entry.pullApi.binding.provider }),
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
       environment: [
         ...(draft ? [{ name: "PATH", value: OPENSHELL_GIT_DRAFT_PATH }] : []),
@@ -858,9 +928,15 @@ export class OpenShellGitRuntime {
             ]
           : []),
         { name: "GIT_TERMINAL_PROMPT", value: "0" },
+        ...(entry.pullApi
+          ? [{ name: "GH_TOKEN", value: "openclaw-github-cli-workload-placeholder" }]
+          : []),
         ...(this.configuration.grantRedemption
           ? [
-              { name: "GIT_CONFIG_COUNT", value: "4" },
+              {
+                name: "GIT_CONFIG_COUNT",
+                value: this.usesWorkloadGrant ? "6" : "4",
+              },
               { name: "GIT_CONFIG_KEY_0", value: "credential.helper" },
               { name: "GIT_CONFIG_VALUE_0", value: "" },
               { name: "GIT_CONFIG_KEY_1", value: "http.followRedirects" },
@@ -869,6 +945,21 @@ export class OpenShellGitRuntime {
               { name: "GIT_CONFIG_VALUE_2", value: "true" },
               { name: "GIT_CONFIG_KEY_3", value: "safe.directory" },
               { name: "GIT_CONFIG_VALUE_3", value: workspaceRoot },
+              ...(this.usesWorkloadGrant
+                ? [
+                    {
+                      name: "GIT_CONFIG_KEY_4",
+                      value: `credential.https://github.com/${this.grantProfile(entry.authorization.delivery, entry.bindingId)?.repository}.git.helper`,
+                    },
+                    {
+                      name: "GIT_CONFIG_VALUE_4",
+                      value:
+                        "!f() { printf '%s\\n' 'username=x-access-token' \"password=$GITHUB_TOKEN\"; }; f",
+                    },
+                    { name: "GIT_CONFIG_KEY_5", value: "credential.useHttpPath" },
+                    { name: "GIT_CONFIG_VALUE_5", value: "true" },
+                  ]
+                : []),
             ]
           : [
               { name: "GIT_CONFIG_COUNT", value: "7" },
@@ -898,7 +989,7 @@ export class OpenShellGitRuntime {
               { name: "GIT_CONFIG_VALUE_6", value: "true" },
             ]),
       ],
-      middlewares: openShellGitMiddleware(this.configuration.registrationName, entry.bindingId),
+      middlewares,
     };
   }
 
@@ -909,17 +1000,20 @@ export class OpenShellGitRuntime {
     workspace: string,
     signal: AbortSignal,
   ): Promise<string> {
-    const info = await client.getGatewayInfo?.(signal);
+    const info = this.usesWorkloadGrant ? undefined : await client.getGatewayInfo?.(signal);
     if (
-      !Array.isArray(info?.extensions) ||
-      !info.extensions.some((value) => {
-        const extension = value as Record<string, unknown>;
-        return (
-          extension.configured_name === this.configuration.registrationName &&
-          [4, "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE"].includes(extension.kind as string | number) &&
-          extension.protocol_major === 1
-        );
-      })
+      !this.usesWorkloadGrant &&
+      (!Array.isArray(info?.extensions) ||
+        !info.extensions.some((value) => {
+          const extension = value as Record<string, unknown>;
+          return (
+            extension.configured_name === this.configuration.registrationName &&
+            [4, "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE"].includes(
+              extension.kind as string | number,
+            ) &&
+            extension.protocol_major === 1
+          );
+        }))
     ) {
       throw new Error("OpenShell Git middleware is not registered with the selected gateway.");
     }
@@ -1062,12 +1156,13 @@ export class OpenShellGitRuntime {
     if (!preview || !entry || entry.blocked || !preview.recipient || !entry.supervisor) {
       return;
     }
-    if (preview.hook && preview.hook.startupId !== startupId) {
+    const heldStartupId = entry.heldStartupId ?? preview.hook?.startupId;
+    if (heldStartupId && heldStartupId !== startupId) {
       try {
         this.reportContinuity(entry, [
           {
             check: "held-startup-recorded",
-            keyHash: createHash("sha256").update(preview.hook.startupId).digest("hex"),
+            keyHash: createHash("sha256").update(heldStartupId).digest("hex"),
           },
           {
             check: "held-startup-observed",
@@ -1080,7 +1175,7 @@ export class OpenShellGitRuntime {
       this.block(entry, "execution_replaced");
       return;
     }
-    if (!preview.hook) {
+    if (!heldStartupId) {
       if (entry.material || entry.binding.credentialState !== "bootstrap" || entry.fence !== 1) {
         return;
       }
@@ -1089,47 +1184,64 @@ export class OpenShellGitRuntime {
       if (!before || !isDeepStrictEqual(before, entry.supervisor)) {
         return;
       }
-      try {
-        const path = preview.arm(
-          startupId,
-          this.grantProfile(entry.authorization.delivery, entry.bindingId)?.repository ??
-            entry.authorization.delivery.repository,
-        );
-        const result = await probe(path);
-        const failure = asRecord(asRecord(result)?.probeFailure);
+      if (this.usesWorkloadGrant) {
+        // The held launch and live installed provider are already verified above.
+        // A Git unary probe would bind all requests on the host, including streamed push.
         if (
-          failure?.error === "probe_process_failed" ||
-          failure?.error === "probe_response_invalid"
+          entry.blocked ||
+          signal.aborted ||
+          (entry.heldStartupId && entry.heldStartupId !== startupId)
         ) {
-          try {
-            const code = failure.code;
-            this.emit?.({
-              event: "worker.openshell-git-probe-failed",
-              reason: failure.error,
-              ...(failure.error === "probe_process_failed" &&
-              typeof code === "number" &&
-              Number.isInteger(code) &&
-              code > 0 &&
-              code <= 99
-                ? { code }
-                : {}),
-              ...this.identity(entry),
-            });
-          } catch {
-            // Diagnostics must not change the original one-shot refusal.
-          }
+          return;
         }
-        preview.confirm(result);
-        await this.fenced(entry, signal);
-      } catch (error) {
-        this.block(entry, "bootstrap_failed");
-        throw error;
+        entry.heldStartupId = startupId;
+      } else {
+        try {
+          const path = preview.arm(
+            startupId,
+            this.grantProfile(entry.authorization.delivery, entry.bindingId)?.repository ??
+              entry.authorization.delivery.repository,
+          );
+          const result = await probe(path);
+          const failure = asRecord(asRecord(result)?.probeFailure);
+          if (
+            failure?.error === "probe_process_failed" ||
+            failure?.error === "probe_response_invalid"
+          ) {
+            try {
+              const code = failure.code;
+              this.emit?.({
+                event: "worker.openshell-git-probe-failed",
+                reason: failure.error,
+                ...(failure.error === "probe_process_failed" &&
+                typeof code === "number" &&
+                Number.isInteger(code) &&
+                code > 0 &&
+                code <= 99
+                  ? { code }
+                  : {}),
+                ...this.identity(entry),
+              });
+            } catch {
+              // Diagnostics must not change the original one-shot refusal.
+            }
+          }
+          preview.confirm(result);
+          if (entry.pullApi) {
+            const api = entry.pullApi.preview;
+            api.confirm(await probe(api.arm(startupId, undefined, true)));
+          }
+          await this.fenced(entry, signal);
+        } catch (error) {
+          this.block(entry, "bootstrap_failed");
+          throw error;
+        }
       }
     }
     const observed = await this.observation(entry, signal);
     if (
       !observed ||
-      !preview.hook ||
+      !(entry.heldStartupId || preview.hook) ||
       (!preview.mandatory && !observed.observedHook) ||
       entry.blocked
     ) {
@@ -1155,12 +1267,15 @@ export class OpenShellGitRuntime {
     const entry = this.states.get(revisionId)?.entry;
     const preview = entry?.preview;
     if (
-      !preview?.hook ||
+      !preview ||
       !entry ||
+      (this.usesWorkloadGrant
+        ? entry.heldStartupId !== startupId
+        : preview.hook?.startupId !== startupId ||
+          (entry.pullApi && !entry.pullApi.preview.hook)) ||
       entry.blocked ||
       !entry.installed ||
       preview.release ||
-      preview.hook.startupId !== startupId ||
       (!preview.mandatory && !isDeepStrictEqual(entry.installed.observedHook, preview.hook))
     ) {
       throw new Error("Cannot release this preview startup.");
@@ -1188,7 +1303,7 @@ export class OpenShellGitRuntime {
     const entry = this.states.get(context.revision.id)?.entry;
     if (
       !entry?.preview.mandatory ||
-      !entry.preview.hook ||
+      !(entry.heldStartupId || entry.preview.hook) ||
       entry.blocked ||
       entry.sandboxId !== sandboxId ||
       context.plan.repositoryGitAuthorization !== "online-request"
@@ -1210,12 +1325,14 @@ export class OpenShellGitRuntime {
     const recipient = await previewPolicyAndRecipient({
       mandatory: true,
       usesTokenGrant: !!this.configuration.grantRedemption,
+      usesWorkloadGrant: this.usesWorkloadGrant,
       client: entry.client,
       sandbox: box,
       observed: current,
       registration: this.configuration.registrationName,
       audience: this.configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
+      ...(entry.pullApi && { pullApiRule: entry.pullApi.provider.previewNetworkRule() }),
       modelProvider: entry.continuity.model,
       workload: entry.continuity.workload,
       signal: context.signal,
@@ -1345,6 +1462,10 @@ export class OpenShellGitRuntime {
     if (delivery !== undefined) {
       const current = await client.getWorkspace(workspace, signal);
       if (current?.id) {
+        const gitGrant = this.grantProfile(
+          delivery,
+          revision.egressPlan?.execution.executionId ?? "",
+        );
         await gitProvider(
           client,
           workspace,
@@ -1352,12 +1473,29 @@ export class OpenShellGitRuntime {
           sandbox,
           revision.id,
           delivery,
-          undefined,
-          this.grantProfile(delivery, revision.egressPlan?.execution.executionId ?? ""),
+          gitGrant ? true : undefined,
+          gitGrant,
         ).remove(signal);
+        const pullApiGrant = this.grantProfile(
+          delivery,
+          revision.egressPlan?.execution.executionId ?? "",
+          true,
+        );
+        if (pullApiGrant) {
+          await gitProvider(
+            client,
+            workspace,
+            current.id,
+            sandbox,
+            revision.id,
+            delivery,
+            true,
+            pullApiGrant,
+          ).remove(signal);
+        }
       }
     }
-    // The derived provider is gone by now, so this finds only another prepared Git provider the
+    // The derived providers are gone by now, so this finds only another prepared Git provider the
     // Sandbox attached; deleteOpenShellPreparedGitProvider skips every provider that is not one.
     for (const name of attached) {
       const provider = await client.getProvider(workspace, name, signal);
@@ -1758,7 +1896,11 @@ export class OpenShellGitRuntime {
       }
       // Commit the observed generation before the credential owner selects exactly that row.
       await this.persist(entry, signal);
-      if (!entry.preview.hook) {
+      if (
+        this.usesWorkloadGrant
+          ? !entry.heldStartupId
+          : !entry.preview.hook || (entry.pullApi && !entry.pullApi.preview.hook)
+      ) {
         return;
       }
       const owner = this.owner;
@@ -1776,10 +1918,17 @@ export class OpenShellGitRuntime {
         // The attached pull profile and mandatory hook are the startup dependency.
         // An admitted sandbox never receives a provider token during activation.
         if (entry.binding.credentialState === "bootstrap") {
-          entry.binding = entry.provider.activateGrant(
-            entry.binding,
-            new Date(entry.revision.repositoryCredentials!.deadlineWallMs).toISOString(),
-          );
+          const expiry = new Date(
+            entry.revision.repositoryCredentials!.deadlineWallMs,
+          ).toISOString();
+          const binding = entry.provider.activateGrant(entry.binding, expiry);
+          if (entry.pullApi) {
+            entry.pullApi.binding = entry.pullApi.provider.activateGrant(
+              entry.pullApi.binding,
+              expiry,
+            );
+          }
+          entry.binding = binding;
         }
         const installed = await this.observation(entry, signal, { adopt: true });
         if (installed?.credentialState !== "active" || entry.blocked || signal.aborted) {
@@ -2148,6 +2297,15 @@ export class OpenShellGitRuntime {
               observed.providerId,
               "installation_token",
             ),
+            ...(observed.pullApi && {
+              pullApiCredentialIdentity: openShellGrantCredentialIdentity(
+                observed.pullApi.providerId,
+                "installation_token",
+              ),
+            }),
+            ...(this.grantProfile(entry.authorization.delivery, entry.bindingId)?.allowPush && {
+              grantAllowPush: true as const,
+            }),
           }),
           installed:
             route && grant
@@ -2187,6 +2345,51 @@ export class OpenShellGitRuntime {
     return undefined;
   }
 
+  private async pullCredential(grant: AuthenticatedOpenShellWorkloadGrant, signal: AbortSignal) {
+    const owner = this.owner?.grant;
+    if (!owner?.pull || grant.credentialKey !== preparedGitCredentialKey || signal.aborted) {
+      return;
+    }
+    const entries = [...this.states.values()].flatMap(({ entry }) =>
+      entry?.sandboxId === grant.recipientId &&
+      !entry.blocked &&
+      (entry.installed?.providerId === grant.providerId ||
+        entry.installed?.pullApi?.providerId === grant.providerId)
+        ? [entry]
+        : [],
+    );
+    const entry = entries.length === 1 ? entries[0] : undefined;
+    if (!entry) {
+      return;
+    }
+    const identity = {
+      sandboxId: grant.recipientId,
+      bindingId: entry.bindingId,
+      requestId: grant.clientAssertion.replayKey,
+      workspace: entry.binding.workspace,
+    };
+    const binding = await this.lookup(identity, signal);
+    const route = binding?.installed.route;
+    if (!route || binding.scope !== "github-repository") {
+      return;
+    }
+    const material = await owner.pull(
+      { ...grant, bindingId: entry.bindingId },
+      route,
+      async () => isDeepStrictEqual(await this.lookup(identity, signal), binding),
+      signal,
+    );
+    if (material) {
+      this.emit?.({
+        event: "worker.openshell-git-grant-redeemed",
+        sandboxId: grant.recipientId,
+        bindingId: entry.bindingId,
+        materialVersion: material.version,
+      });
+    }
+    return material;
+  }
+
   /** Composition supplies this Driver's store. Neither the pool nor this store is a sender port. */
   connectRouteStore(pool: PostgresPool, emit?: RepositoryTransportEmit): OpenShellGitRouteStore {
     const store = new PostgresOpenShellGitRouteStore(pool);
@@ -2223,7 +2426,8 @@ export class OpenShellGitRuntime {
     }
     const config = this.configuration.authority;
     const grantConfig = this.configuration.grantRedemption;
-    if (grantConfig && !owner.grant) {
+    const workloadGrant = this.usesWorkloadGrant;
+    if (grantConfig && (!owner.grant || (workloadGrant && !owner.grant.pull))) {
       throw new Error("OpenShell Git requires the selected worker's grant redemption owner.");
     }
     const [certificate, privateKey, publicKey] = await Promise.all([
@@ -2240,45 +2444,49 @@ export class OpenShellGitRuntime {
             this.lookup(identity, signal),
           )
         : undefined;
-    this.server = createOpenShellOnlineGitAuthority({
-      registrationName: this.configuration.registrationName,
-      budgetMs: grantConfig ? 5000 : 3000,
-      identity: {
-        issuer: config.issuer,
-        audience: config.audience,
-        keyId: config.keyId,
-        publicKey,
-      },
-      ...{
-        previewDenial: (
-          q: import("./openshell-online-authority.ts").OpenShellOnlineHttpRequest,
-        ) => {
-          for (const { entry } of this.states.values()) {
-            if (
-              entry &&
-              entry.sandboxId === q.sandboxId &&
-              !entry.blocked &&
-              !entry.material &&
-              entry.binding.credentialState === "bootstrap"
-            ) {
-              return entry.preview.deny(q, entry.sandboxId);
-            }
-          }
-        },
-      },
-      lookupBinding: async (identity, signal) => {
-        let refused: OpenShellOnlineGitReasonCode | undefined;
-        const binding = await this.lookup(identity, signal, (code) => {
-          refused = code;
-        });
-        return binding ?? (refused === undefined ? undefined : { refused });
-      },
-      authorizeOnlineRequest: owner.authorizeOnlineRequest,
-      ...(grants && { approveGrantRequest: grants.approve.bind(grants) }),
-      onDeny: (denial) => {
-        this.emit?.({ event: "worker.openshell-git-denied", ...denial });
-      },
-    });
+    this.server = !workloadGrant
+      ? createOpenShellOnlineGitAuthority({
+          registrationName: this.configuration.registrationName,
+          budgetMs: grantConfig ? 5000 : 3000,
+          identity: {
+            issuer: config.issuer,
+            audience: config.audience,
+            keyId: config.keyId,
+            publicKey,
+          },
+          ...{
+            previewDenial: (
+              q: import("./openshell-online-authority.ts").OpenShellOnlineHttpRequest,
+            ) => {
+              for (const { entry } of this.states.values()) {
+                if (
+                  entry &&
+                  entry.sandboxId === q.sandboxId &&
+                  !entry.blocked &&
+                  !entry.material &&
+                  entry.binding.credentialState === "bootstrap"
+                ) {
+                  return q.target.host === "api.github.com"
+                    ? entry.pullApi?.preview.deny(q, entry.sandboxId)
+                    : entry.preview.deny(q, entry.sandboxId);
+                }
+              }
+            },
+          },
+          lookupBinding: async (identity, signal) => {
+            let refused: OpenShellOnlineGitReasonCode | undefined;
+            const binding = await this.lookup(identity, signal, (code) => {
+              refused = code;
+            });
+            return binding ?? (refused === undefined ? undefined : { refused });
+          },
+          authorizeOnlineRequest: owner.authorizeOnlineRequest,
+          ...(grants && { approveGrantRequest: grants.approve.bind(grants) }),
+          onDeny: (denial) => {
+            this.emit?.({ event: "worker.openshell-git-denied", ...denial });
+          },
+        })
+      : undefined;
     try {
       if (grantConfig && grants) {
         this.grantBinding = await bindOpenShellTokenGrant(
@@ -2299,16 +2507,19 @@ export class OpenShellGitRuntime {
             return material;
           },
           grants.acquireAuthentication,
+          workloadGrant ? (grant, signal) => this.pullCredential(grant, signal) : undefined,
         );
       }
-      await bindOpenShellEgressAuthority(
-        this.server,
-        `${config.host.includes(":") ? `[${config.host}]` : config.host}:${config.port}`,
-        certificate,
-        privateKey,
-      );
+      if (this.server) {
+        await bindOpenShellEgressAuthority(
+          this.server,
+          `${config.host.includes(":") ? `[${config.host}]` : config.host}:${config.port}`,
+          certificate,
+          privateKey,
+        );
+      }
     } catch (error) {
-      this.server.forceShutdown();
+      this.server?.forceShutdown();
       await this.grantBinding?.close();
       this.grantBinding = undefined;
       this.owner = undefined;
