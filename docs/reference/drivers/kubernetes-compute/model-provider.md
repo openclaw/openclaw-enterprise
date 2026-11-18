@@ -71,9 +71,11 @@ admissions. Existing revisions keep their saved values.
 
 Set the inference base URL to the endpoint's HTTPS hostname or canonical private IPv4 address. For an in-cluster Kubernetes Service, use its full `<service>.<namespace>.svc.cluster.local` DNS name, such as `https://inference.research.svc.cluster.local/v1`. The Connection Template authorizes the host, port, method and path; it does not store a separate private network target or Service identity.
 
-At deployment, Kubernetes Compute resolves the approved host and permits the required private addresses and port. For a Service DNS name, Compute reads the named Service and permits both its ClusterIP and its selected backend Pods, with their respective ports. The Service owner must grant Compute permission to read that Service. The endpoint owner controls ingress, DNS and TLS trust. A hostname must present a certificate valid for that hostname; an IPv4 endpoint needs a certificate valid for its IP address.
+At deployment, Kubernetes Compute resolves the approved host and permits the required private addresses and port. For a Service DNS name, Compute reads the named IPv4 ClusterIP Service and permits both its ClusterIP and its selected backend Pods, with their respective ports. The Service must have a Pod selector and a numeric TCP target port. Its owner must grant Compute permission to read it. The endpoint owner controls ingress, DNS and TLS trust. A hostname must present a certificate valid for that hostname; an IPv4 endpoint needs a certificate valid for its IP address.
 
 Aliases for a Service and custom cluster DNS suffixes are not supported. A NetworkPolicy that permits only the resolved ClusterIP can block traffic after Kubernetes translates the address to a backend Pod.
+
+Kubernetes combines the allowances of all NetworkPolicies that select a Pod. Stock OpenShell 0.1.8 also selects supervisor Pods with an allow-all egress policy. The generated destination policy therefore does not independently restrict supervisor egress. Credential injection still checks the approved HTTP destination.
 
 A changed DNS answer or Service backend does not change the credential's approved HTTP destination. Redeploy the Agent to refresh network reachability after an address or Service backend changes. Changing the destination URL or protocol requires a new Connection Template version and credential approval.
 
