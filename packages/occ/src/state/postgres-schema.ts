@@ -2101,7 +2101,19 @@ export const preparedGitHubFamilies = occSchema.table(
        AND source #>> '{grant,installationId}' ~ '^[1-9][0-9]*$'
        AND source #>> '{session,grant,repositoryId}' = 'github-installation:' || (source #>> '{grant,installationId}'))
    )
-   AND source_id = 'repository-git:' || (source #>> '{session,admissionId}')
+   AND (
+     source_id = 'repository-git:' || (source #>> '{session,admissionId}')
+     OR (source_id = 'repository-git:' || (source #>> '{session,admissionId}') || ':pull-api'
+         AND source->>'adoption' = 'credential_proxy_github_repository'
+         AND jsonb_array_length(source #> '{grant,repositories}') = 1
+         AND source #> '{grant,permissions}' = '{"metadata":"read","pull_requests":"write"}'::jsonb
+         AND source #> '{session,binding}' = source #> '{session,bindings,0}'
+         AND source #> '{session,grant}' = source #> '{session,binding,grant}'
+         AND jsonb_typeof(source #> '{grant,repositories,0,repositoryId}') = 'string'
+         AND source #>> '{grant,repositories,0,repositoryId}' ~ '^[1-9][0-9]{0,15}$'
+         AND jsonb_typeof(source #> '{grant,repositories,0,repository}') = 'string'
+         AND source #>> '{grant,repositories,0,repository}' ~ '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$')
+   )
    AND admission->>'familyId' = source_id AND admission->'grant' = source->'grant'
    AND source #>> '{grant,id}' = source #>> '{session,grant,grantId}'
    AND source #>> '{grant,isolationId}' = source #>> '{session,revisionId}'

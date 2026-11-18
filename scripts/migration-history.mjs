@@ -190,6 +190,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 78 && completedCount > 78) {
     return "preSharedGitHubIssuance";
   }
+  if (count === 79 && completedCount > 79) {
+    return "preGitHubPullApiCustody";
+  }
   if (count === completedCount) {
     return "completed";
   }
