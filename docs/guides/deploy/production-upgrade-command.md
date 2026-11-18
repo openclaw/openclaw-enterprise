@@ -32,7 +32,7 @@ JSON
 ```
 
 Select one or more `controller`, `broker`, or `runtime` images. Keep credentials
-out of the profile. Set `OCC_URL`, `OCC_SERVICE_KEY_FILE`, and, if needed,
+out of the profile. For an image upgrade, set `OCC_URL`, `OCC_SERVICE_KEY_FILE`, and, if needed,
 `OCC_CA_BUNDLE` as described in the [upgrade guide](production-upgrade.md#prepare-the-release).
 The optional `occ` field names the matching CLI file; omit it to use `occ` on
 `PATH`.
@@ -42,6 +42,39 @@ Review the offline plan. It validates the private profile, requires an image sel
 ```bash
 occ installation upgrade plan --profile /secure/occ/upgrade.json
 ```
+
+## Check database migration compatibility
+
+Use the controller digest in the profile to check the installed database
+against reviewed Helm values, including configuration changes that use the
+chart-owned upgrade procedure. Run from the reviewed release checkout.
+
+```bash
+occ installation upgrade migration check \
+  --profile /secure/occ/upgrade.json \
+  --evidence-dir /secure/occ/migration-check-1 \
+  -- --candidate-values /secure/occ/candidate-values.yaml
+```
+
+Omit `--candidate-values` to render the profile's `values.yaml`. The command
+uses Kubernetes access to read the deployed Helm revision, create and delete
+one Job, and read its Pod and logs. It needs no OCC service key or
+`installation.yaml`. The candidate must preserve the deployed initializer's
+migrator Secret reference, mounted CA, and connection settings.
+
+Keep Helm and database credential changes on hold while the check runs.
+`Migration check passed` reports the recognized history after the Job and Pod
+are gone. This check reads migration history through the migrator. Use the
+[upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window)
+for application startup and the [separate migration procedure](separate-database-upgrade.md)
+to apply SQL during maintenance.
+
+If the Job create outcome is unknown, preserve the original evidence and
+reconcile that create before another check. Use the
+[preflight cleanup procedure](production-preflight-cleanup.md) for recorded
+resources. Use fresh upgrade evidence for a later deployment.
+
+## Run the image upgrade
 
 Before the first preflight, [bind the Installation Secret](production-upgrade.md#bind-the-installation-once)
 so it carries the required Installation ID annotation.

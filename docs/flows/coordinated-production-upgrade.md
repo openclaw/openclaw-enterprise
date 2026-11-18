@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-18"
-last_updated_session: "authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd"
+last_updated_session: "authoring-run/7ae70bae-f8ac-425d-abbf-7039b71997b7"
 ---
 
 # Production image upgrade flow
@@ -27,6 +27,10 @@ graph TD
     OP["Private operator profile"] --> CLI["Installation upgrade CLI"]
     CLI --> AD["Translate operation and options"]
     AD --> A
+    AD -->|Migration check| MC["Match deployed migrator inputs"]
+    MC -->|Match| MJ["Check history and confirm cleanup"]
+    MC -->|Refusal| X
+    MJ -->|Incomplete| X
     A["Validate inputs/inventory"] --> RR{"Repository retention permitted?"}
     RR -->|"No or unknown"| X["Retain recovery evidence"]
     RR -->|"Yes or replacement"| HS{"Saved Harness settings<br/>or replacement?"}
@@ -85,6 +89,12 @@ graph TD
 `scripts/upgrade-production-images:prepare_upgrade`
 
 Before access, reject [Helm overrides](../guides/deploy/production-upgrade.md), source mismatch, chart edits/symlinks and evidence/baseline aliases. Other edits/image provenance are unchecked.
+
+`check_migration` renders the candidate and matches migrator inputs to the
+deployed revision's Helm hook. It rechecks the revision around one read-only
+migration Job. Success requires nonempty history and UID-bound cleanup.
+An unknown create retains the lock and journal. The check exits without
+prepared upgrade evidence.
 
 `preprovisionedNamespace` must yield one `false` before access
 (`preprovisioned-namespace.err`).
@@ -364,6 +374,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 19:27: Trace migration-only compatibility checks through the Helm hook and Job journal. (authoring-run/7ae70bae-f8ac-425d-abbf-7039b71997b7 - 71334bb9b104662870798a29814e7171e8905baf)
 
 - 2026-11-18 10:52: Trace Installation CLI planning, status and handoff. (authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd - aeb385b97974a6bd729f58dd73a44d518aec1edc)
 

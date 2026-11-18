@@ -2,7 +2,7 @@ import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-mi
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -13,7 +13,7 @@ import type {
   RecoveryFixture,
   RecoveryFixtureFactory,
 } from "../helpers/production-upgrade-recovery-fixture.ts";
-import { yamlFile } from "../helpers/production-upgrade-recovery-render.ts";
+import { renderedDocuments, yamlFile } from "../helpers/production-upgrade-recovery-render.ts";
 import {
   field,
   list,
@@ -21,6 +21,7 @@ import {
 } from "../helpers/production-upgrade-recovery-state.ts";
 import {
   controller,
+  execute,
   newController,
   skipWithoutHelm,
 } from "../helpers/production-upgrade-recovery-tools.ts";
@@ -121,6 +122,146 @@ export function registerStartupPreflightCases({
   realHelm,
   repository,
 }: StartupPreflightCases): void {
+  test("migration check uses the reviewed candidate without changing the deployed release", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    assert.ok(realHelm);
+    for (const scenario of [
+      "configuration change",
+      "different CA key",
+      "empty history",
+      "lost create",
+    ] as const) {
+      await t.test(scenario, async (t) => {
+        const f = await fixture(t, {
+          controllerOnly: true,
+          chart: {
+            values: (values) => ({
+              ...values,
+              database: { ...values.database, caSecretName: "database-ca", caKey: "ca.crt" },
+            }),
+            installation: (installation) => installation,
+          },
+          environment: { OCC_URL: "", OCC_SERVICE_KEY_FILE: "", OCC_CA_BUNDLE: "/missing-occ-ca" },
+          preflightResults:
+            scenario === "empty history"
+              ? {
+                  migration: {
+                    phase: "Succeeded",
+                    log: '{"event":"migration.checked","history":"empty"}\n',
+                  },
+                }
+              : null,
+          preflightFault: scenario === "lost create" ? { target: "migration", mode: "lost" } : null,
+        });
+        const valuesPath = join(f.directory, "values.json");
+        const installed = await execute(
+          realHelm,
+          [
+            "template",
+            "oce",
+            "deploy/helm/openclaw-enterprise",
+            "--namespace",
+            "system",
+            "--values",
+            valuesPath,
+          ],
+          { cwd: repository },
+        );
+        const initializer = renderedDocuments(installed.stdout).find(
+          (resource) =>
+            asRecord(resource)?.kind === "Job" &&
+            asRecord(asRecord(resource)?.metadata)?.name === "oce-initialization",
+        );
+        assert.ok(initializer, "expected the installed chart's initializer");
+        const statePath = join(f.directory, "state.json");
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            ...(await f.state()),
+            installationRelease: { hooks: [{ manifest: JSON.stringify(initializer) }] },
+          }),
+        );
+        const baseline = await readFile(valuesPath, "utf8");
+        const values = evidenceObject(await yamlFile(valuesPath), "installed values");
+        const api = evidenceObject(values.api, "installed API values");
+        const candidatePath = join(f.directory, "migration-candidate.json");
+        await writeFile(
+          candidatePath,
+          JSON.stringify({
+            ...values,
+            api: { ...api, consoleTheme: { configMapName: "reviewed-theme" } },
+            ...(scenario === "different CA key"
+              ? {
+                  database: {
+                    ...evidenceObject(values.database, "installed database values"),
+                    caKey: "other.crt",
+                  },
+                }
+              : {}),
+          }),
+          { mode: 0o600 },
+        );
+
+        const check = f.run("--migration-check-only", "--candidate-values", candidatePath);
+        if (scenario === "different CA key") {
+          await assert.rejects(
+            check,
+            /candidate changes the deployed release's migrator database connection inputs/,
+          );
+          assert.equal(
+            f.commands.includes("kubectl"),
+            false,
+            "the refusal must precede Job creation",
+          );
+        } else if (scenario === "empty history") {
+          await assert.rejects(check, /did not report one nonempty, recognized migration history/);
+          await assertStoppedBeforeWriters(f);
+        } else if (scenario === "lost create") {
+          await assert.rejects(
+            check,
+            /reconcile the original Job create before starting another check/,
+          );
+          assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+          await assert.rejects(
+            f.cleanup("--previous-process-settled", "--evidence-unrestored"),
+            /preflight cleanup is incomplete/,
+          );
+          const preflight = requireRecoveryPreflight(await f.state());
+          assert.equal(Object.keys(evidenceObject(preflight.jobs, "retained Jobs")).length, 1);
+          assert.deepEqual(preflight.deleted ?? [], []);
+        } else {
+          const { stdout } = await check;
+          assert.match(stdout, /Migration check passed \(history: providerCompleted\)/);
+          assert.equal(await f.readEvidence("migration-check-passed"), "providerCompleted\n");
+          const [attempt] = (await readdir(f.evidence)).filter((name) =>
+            name.startsWith("migration-preflight."),
+          );
+          assert.ok(attempt, "expected the migration check evidence directory");
+          const job = await readEvidenceObject(f, join(attempt, "preflight-migration-job.json"));
+          const pod = jobTemplate(evidenceObject(job.spec, "migration Job spec"));
+          assert.equal(podContainers(pod.spec).length, 1);
+          assert.equal(pod.spec.initContainers, undefined);
+          const [migrator] = podContainers(pod.spec);
+          assert.deepEqual(migrator?.args, [...selectedImageMigrationEntry, "--check"]);
+          assert.equal(migrator?.image, newController);
+          const preflight = requireRecoveryPreflight(await assertStoppedBeforeWriters(f));
+          assert.equal(evidenceArray(preflight.created, "preflight creations").length, 1);
+          assert.equal(await readFile(valuesPath, "utf8"), baseline);
+        }
+        assert.equal(f.commands.includes("occ"), false);
+        assert.equal(existsSync(join(f.evidence, "prepared")), false);
+        assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+        assert.equal(
+          existsSync(join(f.evidence, "migration-check-passed")),
+          scenario === "configuration change",
+        );
+        assert.deepEqual(await f.events(), []);
+      });
+    }
+  });
+
   test(
     "the image-upgrade startup preflight validates the API's mounted theme before stopping writers",
     { concurrency: true },

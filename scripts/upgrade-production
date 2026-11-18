@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-OPERATIONS = ("plan", "preflight", "upgrade", "status", "resume", "cleanup-preflight")
+OPERATIONS = ("plan", "preflight", "migration-check", "upgrade", "status", "resume", "cleanup-preflight")
 REQUIRED = (
     "kubeconfig",
     "context",
@@ -37,6 +37,7 @@ PROTECTED = {
     "--occ",
     *IMAGE_FLAGS.values(),
     "--preflight-only",
+    "--migration-check-only",
     "--resume",
     "--cleanup-preflight",
     "--help",
@@ -114,6 +115,7 @@ def report_status(parser, directory):
             for name, is_directory in (
                 ("prepared", False),
                 ("database-migration-handoff.json", False),
+                ("migration-check-passed", False),
                 ("helm-started", False),
                 ("completed", False),
                 (".upgrade-lock", True),
@@ -142,6 +144,8 @@ def report_status(parser, directory):
         print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
     elif observed["database-migration-handoff.json"]:
         print("A migration pause was recorded; confirm migration history before an authorized resume.")
+    elif observed["migration-check-passed"]:
+        print("The migration compatibility check and Job cleanup were recorded. This evidence cannot resume an upgrade.")
     else:
         print("No completion was recorded; inspect the original attempt before any further write.")
     if observed[".upgrade-lock"]:
@@ -259,23 +263,30 @@ def main():
         command = ["--cleanup-preflight", *target, "--evidence-dir", args.evidence_dir]
     else:
         directory = Path(path(profile["installationDirectory"]))
+        installation = (
+            []
+            if args.operation == "migration-check"
+            else ["--installation", str(directory / "installation.yaml")]
+        )
         command = [
             *target,
             "--values",
             str(directory / "values.yaml"),
-            "--installation",
-            str(directory / "installation.yaml"),
+            *installation,
             "--source-revision",
             profile["sourceRevision"],
             "--evidence-dir",
             args.evidence_dir,
         ]
-        if "occ" in profile:
+        if "occ" in profile and args.operation != "migration-check":
             command.extend(("--occ", path(profile["occ"])))
         for name, image in profile.get("images", {}).items():
-            command.extend((IMAGE_FLAGS[name], image))
+            if args.operation != "migration-check" or name == "controller":
+                command.extend((IMAGE_FLAGS[name], image))
         if args.operation == "preflight":
             command.append("--preflight-only")
+        elif args.operation == "migration-check":
+            command.append("--migration-check-only")
         elif args.operation == "resume":
             command.append("--resume")
 

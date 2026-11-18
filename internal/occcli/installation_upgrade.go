@@ -93,6 +93,12 @@ func installationUpgradeCommand() *cobra.Command {
 		}
 		upgrade.AddCommand(child)
 	}
+	migration := commandGroup("migration", "Check the selected controller image against installed database history")
+	migration.AddCommand(&cobra.Command{
+		Use: "check", Short: "Check migration history before a production change",
+		Args: args(true), RunE: run("migration-check"),
+	})
+	upgrade.AddCommand(migration)
 	config := commandGroup("config", "Find the chart-owned operation for protected Installation settings")
 	for _, action := range []string{"apply", "rollback"} {
 		config.AddCommand(&cobra.Command{

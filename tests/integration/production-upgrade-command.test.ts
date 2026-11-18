@@ -106,6 +106,24 @@ test("operations hand off the selected profile and mode without changing the can
     ]);
   }
   assert.equal(
+    run("migration-check", f, ["--", "--candidate-values", "candidate.yaml"], options).status,
+    0,
+  );
+  assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
+    ...target,
+    "--values",
+    join(f.directory, "rendered/values.yaml"),
+    "--source-revision",
+    f.input.sourceRevision,
+    "--evidence-dir",
+    f.evidence,
+    "--controller-image",
+    f.input.images.controller,
+    "--migration-check-only",
+    "--candidate-values",
+    "candidate.yaml",
+  ]);
+  assert.equal(
     run(
       "cleanup-preflight",
       f,
@@ -210,6 +228,9 @@ test("private profiles reject credentials and target overrides without disclosur
   const override = run("upgrade", f, ["--", "--context", "another-context"]);
   assert.equal(override.status, 2);
   assert.match(override.stderr, /cannot override profile or operation arguments/);
+  const checkInstead = run("upgrade", f, ["--", "--migration-check-only"]);
+  assert.equal(checkInstead.status, 2);
+  assert.match(checkInstead.stderr, /cannot override profile or operation arguments/);
 
   const secret = randomBytes(24).toString("hex");
   await writeFile(f.profile, JSON.stringify({ ...f.input, serviceKey: secret }));

@@ -15,7 +15,7 @@ Usage: scripts/upgrade-production-images \
   [--occ PATH] [--timeout-seconds SECONDS] [--doctor-heap-mib MIB] [--resume] \
   [--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID] \
   [--migration-history-checked] [--recover-helm --recovery-reviewed] \
-  [--collector-config-reviewed] [--preflight-only] [--verbose]
+  [--collector-config-reviewed] [--preflight-only | --migration-check-only] [--verbose]
 
 Select at least one image. Candidate files contain reviewed settings changes;
 image fields are selected only by the image flags. A controller-only upgrade
@@ -28,6 +28,10 @@ with the operator. Preserve it separately from backups of the evidence directory
 Use --preflight-only to check the candidate before the maintenance window. It
 creates temporary Jobs and requires confirmed cleanup before quiescence;
 its evidence cannot be resumed. To deploy, omit the flag and use a fresh evidence directory.
+Use --migration-check-only with a controller image to check migration history
+for reviewed candidate Helm values. It uses the deployed revision's migrator
+connection inputs and confirms cleanup of one temporary Job before reporting
+success. This check requires Kubernetes access and does not use OCC credentials.
 After interruption, settle the original helper, children and remote operations.
 Then, from the original checkout, clean up only its recorded preflight resources:
   scripts/upgrade-production-images --cleanup-preflight \
@@ -447,6 +451,7 @@ timeout_seconds=900
 doctor_heap_mib=384
 resume=0
 preflight_only=0
+migration_check_only=0
 verbose=0
 migration_history_checked=0
 recover_helm=0
@@ -499,6 +504,10 @@ while (($#)); do
       ;;
     --preflight-only)
       preflight_only=1
+      shift
+      ;;
+    --migration-check-only)
+      migration_check_only=1
       shift
       ;;
     --verbose)
@@ -609,7 +618,20 @@ done
   die "--recover-helm requires --resume --migration-history-checked --recovery-reviewed."
 ((recovery_reviewed == 0 || recover_helm)) || die "--recovery-reviewed requires --recover-helm."
 
-for input in kubeconfig context namespace release values installation source_revision evidence_dir; do
+if ((migration_check_only)); then
+  [[ -n "$controller_image" && -z "$broker_image" && -z "$runtime_image" &&
+     -z "$requested_installation" && -z "$verify_agent" && -z "$controller_compatibility_results" ]] &&
+    ((resume == 0 && preflight_only == 0 && collector_config_reviewed == 0)) ||
+    die "--migration-check-only requires a controller image and accepts candidate Helm values only. Use the normal upgrade for startup, continuity, or recovery options."
+fi
+
+required_inputs=(kubeconfig context namespace release values source_revision evidence_dir)
+if ((migration_check_only)); then
+  installation=
+else
+  required_inputs+=(installation)
+fi
+for input in "${required_inputs[@]}"; do
   [[ -n "${!input}" ]] || die "--${input//_/-} is required."
 done
 [[ -n "$controller_image" || -n "$broker_image" || -n "$runtime_image" ]] ||
@@ -722,7 +744,7 @@ def existing_output(path):
 
 # A mount can expose a verified directory under a different physical path.
 chart_root = os.path.abspath(chart_path)
-for path in (evidence, values, installation):
+for path in filter(None, (evidence, values, installation)):
     try:
         if os.path.commonpath((chart_root, os.path.realpath(path))) == chart_root:
             sys.exit(2)
@@ -768,7 +790,7 @@ fi
 
 require_private_file "$kubeconfig"
 require_private_file "$values"
-require_private_file "$installation"
+((migration_check_only)) || require_private_file "$installation"
 [[ -z "$requested_values" ]] || require_private_file "$requested_values"
 [[ -z "$requested_installation" ]] || require_private_file "$requested_installation"
 # The protected baselines are replaced during execution; candidate inputs must
@@ -781,17 +803,23 @@ for index, path in enumerate(paths):
         if os.path.samefile(path, other):
             sys.exit("Baseline and candidate inputs must be distinct files.")
 PYTHON
-: "${OCC_URL:?Set OCC_URL to the trusted HTTPS OCC origin.}"
-[[ "$OCC_URL" == https://* ]] || die "OCC_URL must use HTTPS."
-: "${OCC_SERVICE_KEY_FILE:?Set OCC_SERVICE_KEY_FILE to a protected service-key response.}"
-require_private_file "$OCC_SERVICE_KEY_FILE"
-if [[ -n "${OCC_CA_BUNDLE:-}" ]]; then
-  require_regular_file "$OCC_CA_BUNDLE"
+occ_url=
+occ_ca=
+if ((migration_check_only == 0)); then
+  : "${OCC_URL:?Set OCC_URL to the trusted HTTPS OCC origin.}"
+  [[ "$OCC_URL" == https://* ]] || die "OCC_URL must use HTTPS."
+  : "${OCC_SERVICE_KEY_FILE:?Set OCC_SERVICE_KEY_FILE to a protected service-key response.}"
+  require_private_file "$OCC_SERVICE_KEY_FILE"
+  if [[ -n "${OCC_CA_BUNDLE:-}" ]]; then
+    require_regular_file "$OCC_CA_BUNDLE"
+  fi
+  occ_url=$OCC_URL
+  occ_ca=${OCC_CA_BUNDLE:-}
+  [[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
 fi
 for command in cmp helm jq kubectl mktemp node yq; do
   require_command "$command"
 done
-[[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
 
 umask 077
 if ((resume == 0)); then
@@ -818,7 +846,7 @@ trap 'interrupted_upgrade 143' TERM
 # Bind resume to the original physical directory, inputs and chart. The
 # separate dispatch journal protects against restoring stale evidence in place.
 # Kubeconfig bytes bind the context to the same cluster if the file is replaced.
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" <<'PYTHON'
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
@@ -896,6 +924,10 @@ unconfirmed_preflight() {
     reason="The create returned no usable UID; kubectl's error output, if any, is in $errors in the evidence directory."
   else
     reason="kubectl reported an error for the create; see $errors in the evidence directory."
+  fi
+  if ((migration_check_only && status != 3)); then
+    trap - EXIT
+    die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted. $reason Preserve $upgrade_evidence_dir and reconcile the original Job create before starting another check. The evidence lock is retained."
   fi
   if ((resume)); then
     # The remote create may still be running; keep the original recovery lock.
@@ -1439,6 +1471,65 @@ record_deployed_helm_status() {
     die "$refusal"
 }
 
+recheck_migration_release() {
+  local phase=$1
+  record_deployed_helm_status "$phase" "cannot confirm the deployed Helm release for the migration check."
+  jq -e --slurpfile original "$evidence_dir/before-helm-status.json" '
+    .version == $original[0].version and .hooks == $original[0].hooks
+  ' "$evidence_dir/$phase-helm-status.json" >/dev/null ||
+    die "the deployed Helm revision or hooks changed during the migration check; reconcile the release before starting another check."
+}
+
+check_migration() {
+  local evidence_dir suffix history selected_controller=$controller_image
+  # The shared Job runner also builds startup Jobs. The migration branch
+  # uses only the rendered initializer, image, target and timeout.
+  local installation_secret='' secret='' drafts_flag=none
+  evidence_dir=$(mktemp -d "$upgrade_evidence_dir/migration-preflight.XXXXXXXX")
+  record_deployed_helm_status before "the migration check requires a deployed Helm release with matching identity."
+  jq -ers '
+    select(length == 1) | .[0].hooks |
+    select(type == "array" and length > 0 and all(.[]; (.manifest | type == "string" and length > 0))) |
+    .[].manifest + "\n---"
+  ' "$evidence_dir/before-helm-status.json" |
+    yq -p=yaml -o=json -I=0 '.' - >"$evidence_dir/installed-hooks.jsonl" ||
+    die "cannot read the deployed Helm revision's initialization hook."
+
+  # Use reviewed values for the candidate and the explicitly selected image.
+  # Helm template renders the chart without submitting a release or hook.
+  local input_values=${requested_values:-$values}
+  matches_yaml "$input_values" "$input_values" || die "candidate values must be a YAML object."
+  CONTROLLER_IMAGE="$controller_image" yq '.images.controller = strenv(CONTROLLER_IMAGE)' \
+    "$input_values" >"$evidence_dir/candidate-values.yaml"
+  helm template "$release" "$chart" "${helm_args[@]}" --is-upgrade \
+    --values "$evidence_dir/candidate-values.yaml" >"$evidence_dir/rendered.yaml" \
+    2>"$evidence_dir/render-error.log" ||
+    die "cannot render the candidate chart for the migration check. See render-error.log in $evidence_dir."
+  yq -p=yaml -o=json -I=0 '.' "$evidence_dir/rendered.yaml" >"$evidence_dir/preflight-rendered.jsonl" ||
+    die "cannot read the rendered chart for the migration check."
+  node scripts/upgrade-startup-preflight.ts migration-database "$evidence_dir/installed-hooks.jsonl" \
+    "$evidence_dir/preflight-rendered.jsonl" "$release" "$namespace" >/dev/null ||
+    die "migration check refused before creating a Job."
+
+  suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+  python3 scripts/upgrade-preflight-state.py register "$upgrade_evidence_dir" "${evidence_dir##*/}" "$suffix" false ||
+    die "cannot record the migration check creation plan; no Job was created."
+  recheck_migration_release pre-create
+  run_preflight_jobs migration
+  cleanup_preflight || die "migration check Job cleanup is incomplete; inspect $evidence_dir."
+  recheck_migration_release after
+  # The image's check validates history. Refuse empty history for an installed
+  # release and keep only its single safe history identifier in the summary.
+  history=$(jq -Rser '
+    split("\n") | [.[] | try (fromjson | select(.event == "migration.checked") | .history | strings) catch empty] |
+    select(length == 1) | .[0] | select(. != "empty" and test("^[A-Za-z][A-Za-z0-9]{0,79}$"))
+  ' "$evidence_dir/preflight-migration.log") ||
+    die "the installed database check did not report one nonempty, recognized migration history. See preflight-migration.log in $evidence_dir."
+  printf '%s\n' "$history" >"$upgrade_evidence_dir/migration-check-passed"
+  printf 'Migration check passed (history: %s). The temporary Job and its Pod are gone. Evidence: %s\n' \
+    "$history" "$evidence_dir"
+}
+
 prepare_upgrade() {
 mkdir -m 700 "$evidence_dir/inventory"
 if [[ -n "$runtime_image" ]]; then
@@ -1875,6 +1966,12 @@ if [[ -n "$dispatch_journal" ]]; then
 fi
 touch "$evidence_dir/prepared"
 }
+
+if ((migration_check_only)); then
+  progress "Checking the selected controller image against installed migration history."
+  check_migration
+  exit 0
+fi
 
 if ((resume == 0)); then
   progress "Preparing the upgrade."

@@ -7,6 +7,10 @@ database separately, set `database.upgradeMigration: separate` in the reviewed
 candidate values. Use a candidate controller image that supports `--require-current`.
 The helper exits **3** after both writers stop and before submitting Helm.
 
+Before maintenance, use the
+[migration compatibility check](production-upgrade-command.md#check-database-migration-compatibility)
+to check the selected image against the deployed release's migration history.
+
 ## Run a selected-image migration
 
 Read the migration program from the reviewed chart. From the reviewed release checkout root:

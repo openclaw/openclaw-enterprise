@@ -77,6 +77,10 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "checkout commit does not match") {
 		t.Fatalf("canonical diagnostic = %q, error = %v", diagnostic, err)
 	}
+	_, diagnostic, err = executeUpgrade("migration", "check", "--profile", profile, "--evidence-dir", filepath.Join(directory, "new-evidence"))
+	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "checkout commit does not match") {
+		t.Fatalf("migration check diagnostic = %q, error = %v", diagnostic, err)
+	}
 	_, diagnostic, err = executeUpgrade("--profile", profile, "--evidence-dir", filepath.Join(directory, "new-evidence"), "--", "--candidate-values", "private-candidate", "--preflight-only")
 	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "retain every other original expert option") || strings.Contains(diagnostic, "private-candidate") {
 		t.Fatalf("expert option diagnostic = %q, error = %v", diagnostic, err)

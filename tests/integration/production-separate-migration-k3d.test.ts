@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createServer } from "node:tls";
@@ -334,23 +334,7 @@ test(
         assert.ok(actual.spec.replicas > 0);
       }
     };
-    const interior = record(array(JSON.parse(before))[14]);
-    const interiorHash = string(interior.hash);
-    const interiorId = number(interior.id);
-    assert.match(interiorHash, /^[a-f0-9]{64}$/);
-    assert.ok(Number.isSafeInteger(interiorId));
-    await sql(`UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=${interiorId}`);
-    const corruptSnapshot = await databaseSnapshot("corrupt-before");
-    for (const preflightOnly of [true, false]) {
-      const name = preflightOnly ? "incompatible-preflight" : "incompatible-upgrade";
-      await assert.rejects(
-        preflight(name, preflightOnly),
-        /migration.*preflight|migration history/i,
-      );
-      const log = await readFile(join(f.directory, name, "preflight-migration.log"), "utf8");
-      assert.match(log, /MIGRATION_HISTORY_UNSUPPORTED/);
-      await assertDatabase(corruptSnapshot, `${name}-after`);
-      await assertIncumbent();
+    const assertPreflightClean = async () => {
       const remaining = record(
         JSON.parse(
           await f.kubectl(
@@ -372,6 +356,126 @@ test(
         [],
         "preflight resources must be removed before return",
       );
+    };
+
+    // The production CLI checks the same retained database while both writers
+    // serve. The reviewed configuration change never becomes the Helm release.
+    const profileDirectory = join(f.directory, "migration-profile");
+    await mkdir(profileDirectory, { mode: 0o700 });
+    await writeFile(join(profileDirectory, "values.yaml"), JSON.stringify(f.values), {
+      mode: 0o600,
+    });
+    const profile = join(profileDirectory, "upgrade.json");
+    await writeFile(
+      profile,
+      JSON.stringify({
+        kubeconfig: kubeconfigPath,
+        context: kubernetesContext,
+        namespace: f.system,
+        release: f.release,
+        installationDirectory: profileDirectory,
+        sourceRevision: source,
+        images: { controller: f.images.controller },
+      }),
+      { mode: 0o600 },
+    );
+    const helmRevision = async () =>
+      number(
+        record(
+          JSON.parse(
+            await f.run("helm", [
+              "status",
+              f.release,
+              "--kubeconfig",
+              kubeconfigPath,
+              "--kube-context",
+              kubernetesContext,
+              "--namespace",
+              f.system,
+              "--output",
+              "json",
+            ]),
+          ),
+        ).version,
+      );
+    const revision = await helmRevision();
+    const candidate = {
+      ...f.values,
+      api: { ...record(f.values.api), consoleTheme: { configMapName: "reviewed-theme" } },
+    };
+    const migrationCheck = async (directory: string, values: object) => {
+      const candidatePath = join(profileDirectory, `${directory}.json`);
+      await writeFile(candidatePath, JSON.stringify(values), { mode: 0o600 });
+      return f.run(
+        occ,
+        [
+          "installation",
+          "upgrade",
+          "migration",
+          "check",
+          "--profile",
+          profile,
+          "--evidence-dir",
+          join(f.directory, directory),
+          "--",
+          "--candidate-values",
+          candidatePath,
+          "--timeout-seconds",
+          "120",
+        ],
+        {
+          timeout: 240_000,
+          env: { ...process.env, OCC_URL: "", OCC_CA_BUNDLE: "", OCC_SERVICE_KEY_FILE: "" },
+        },
+      );
+    };
+    const migrationResult = await migrationCheck("migration-check", candidate);
+    assert.match(migrationResult, /Migration check passed \(history: completed\)/);
+    assert.equal(
+      await readFile(join(f.directory, "migration-check", "migration-check-passed"), "utf8"),
+      "completed\n",
+    );
+    assert.equal(await receipts(), before);
+    await assertIncumbent();
+    await assertPreflightClean();
+    await assert.rejects(
+      migrationCheck("wrong-migrator", {
+        ...candidate,
+        database: { ...record(f.values.database), migrationUrlKey: "other-migrator-url" },
+      }),
+      /candidate changes the deployed release's migrator database connection inputs/,
+    );
+    const refusedEvidence = join(f.directory, "wrong-migrator");
+    const [refusedAttempt] = (await readdir(refusedEvidence)).filter((name) =>
+      name.startsWith("migration-preflight."),
+    );
+    assert.ok(refusedAttempt, "the refusal must come from the rendered candidate check");
+    assert.ok(
+      !(await readdir(join(refusedEvidence, refusedAttempt))).includes("preflight-plan.json"),
+    );
+    assert.equal(await helmRevision(), revision);
+    assert.equal(await receipts(), before);
+    await assertIncumbent();
+    await assertPreflightClean();
+
+    const interior = record(array(JSON.parse(before))[14]);
+    const interiorHash = string(interior.hash);
+    const interiorId = number(interior.id);
+    assert.match(interiorHash, /^[a-f0-9]{64}$/);
+    assert.ok(Number.isSafeInteger(interiorId));
+    await sql(`UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=${interiorId}`);
+    const corruptSnapshot = await databaseSnapshot("corrupt-before");
+    for (const preflightOnly of [true, false]) {
+      const name = preflightOnly ? "incompatible-preflight" : "incompatible-upgrade";
+      await assert.rejects(
+        preflight(name, preflightOnly),
+        /migration.*preflight|migration history/i,
+      );
+      const log = await readFile(join(f.directory, name, "preflight-migration.log"), "utf8");
+      assert.match(log, /MIGRATION_HISTORY_UNSUPPORTED/);
+      await assertDatabase(corruptSnapshot, `${name}-after`);
+      await assertIncumbent();
+      await assertPreflightClean();
     }
     // Restore only the exact injected fault. A successful read-only check must
     // leave the full database and the serving Deployments untouched as well.
