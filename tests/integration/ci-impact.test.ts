@@ -3071,6 +3071,77 @@ async function suiteFixture(
   return [f, await shallowBootstrap(f)] as const;
 }
 
+test("test graph advisory reports a missing owner alongside a transitive owner hint", async (t) => {
+  const owned = "tests/helpers/owned.ts";
+  const unowned = "tests/helpers/unowned.ts";
+  const intermediate = "tests/helpers/intermediate.ts";
+  const root = "tests/integration/typed.test.ts";
+  const f = await fixture(
+    t,
+    ({ put }) => {
+      put(owned, "export const value = 2;\n");
+      put(unowned, "export const value = 2;\n");
+    },
+    {
+      ...suiteFiles(),
+      "tests/tsconfig.json": JSON.stringify({
+        compilerOptions: { incremental: true, noEmit: true },
+      }),
+      [owned]: "export const value = 1;\n",
+      [unowned]: "export const value = 1;\n",
+      [intermediate]: 'export { value } from "./owned.ts";\n',
+      [root]: 'import "../helpers/intermediate.ts";\n',
+    },
+  );
+  const { put } = repository(f.repo);
+  put(
+    ".build/tests/tsconfig.tsbuildinfo",
+    JSON.stringify({
+      version: "7.0.2",
+      options: { composite: false },
+      fileNames: [owned, unowned, intermediate, root].map((file) => `../../${file}`),
+      fileInfos: Array.from({ length: 4 }, () => "0".repeat(32)),
+      fileIdsList: [[1], [3]],
+      referencedMap: [
+        [3, 1],
+        [4, 2],
+      ],
+    }),
+  );
+  const result = await run(
+    process.execPath,
+    [join(repositoryRoot, "scripts/ci/test-graph-advisory.ts")],
+    {
+      cwd: f.repo,
+      env: {
+        ...process.env,
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_PATH: f.eventPath,
+        GITHUB_SHA: f.tested,
+        GITHUB_RUN_ID: "17",
+        GITHUB_RUN_ATTEMPT: "2",
+        GITHUB_WORKFLOW_SHA: f.tested,
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  const advisory = jsonRecord(result.stdout);
+  assert.deepEqual(advisory.run, { id: "17", attempt: "2", workflow: f.tested });
+  assert.equal(record(advisory.source).tested, f.tested);
+  assert.deepEqual(advisory.hints, {
+    direct: [],
+    compiler: ["checks-baseline-1"],
+    staticFixture: [],
+  });
+  assert.deepEqual(advisory.fallback, [
+    "no_registered_owner",
+    "runtime_edges_unclassified",
+    "unindexed_mjs_roots",
+  ]);
+  assert.equal(advisory.omissions, 0);
+});
+
 test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
   const path = "tests/integration/postgres-a.test.mjs";
   const broad: string[] = [];

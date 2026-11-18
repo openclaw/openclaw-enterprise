@@ -5,6 +5,7 @@
     "composite": false,
     "declaration": false,
     "noEmit": true,
+    "incremental": true,
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": false,
     "erasableSyntaxOnly": true,
