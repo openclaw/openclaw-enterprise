@@ -165,12 +165,24 @@ test("canonical operation flags direct operators to usable profiled commands", a
   const f = await fixture(t);
 
   // Follow the canonical migration handoff through the profiled entry point.
-  const rawResume = run("upgrade", f, ["--", "--resume", "--migration-history-checked"]);
+  const privateCandidate = join(f.directory, "candidate-values.yaml");
+  const rawResume = run("upgrade", f, [
+    "--",
+    "--candidate-values",
+    privateCandidate,
+    "--resume",
+    "--migration-history-checked",
+    "--recover-helm",
+    "--recovery-reviewed",
+  ]);
   assert.equal(rawResume.status, 2);
+  assert.match(rawResume.stderr, /remove only --resume; retain every other original expert option/);
+  assert.match(rawResume.stderr, /--migration-history-checked when required/);
   assert.match(
     rawResume.stderr,
-    /scripts\/upgrade-production resume --profile PROFILE --evidence-dir ORIGINAL -- --migration-history-checked/,
+    /scripts\/upgrade-production resume --profile PROFILE --evidence-dir ORIGINAL -- ORIGINAL_EXPERT_OPTIONS/,
   );
+  assert.ok(!rawResume.stderr.includes(privateCandidate));
   const resume = run("resume", f, ["--", "--migration-history-checked"]);
   assert.equal(resume.status, 1);
   assert.match(resume.stderr, /checkout commit does not match --source-revision/);

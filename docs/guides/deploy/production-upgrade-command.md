@@ -64,8 +64,12 @@ before using the same profile, checkout, and upgrade evidence directory:
 scripts/upgrade-production resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
 ```
 
-If the canonical command requests `--resume --migration-history-checked`, finish
-its migration-history check before resuming with the original evidence directory:
+If the original upgrade used expert options after `--`, repeat all of them unchanged
+on resume. When translating a canonical `--resume` instruction, change the operation
+to `resume`, remove only `--resume`, and retain every other option and applicable
+recovery attestation. If the command requests `--migration-history-checked`, finish
+its migration-history check first. The example below assumes the original upgrade
+had no expert options; otherwise include them after `--` before the attestation:
 
 ```bash
 scripts/upgrade-production resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1 -- --migration-history-checked

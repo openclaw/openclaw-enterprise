@@ -130,10 +130,12 @@ def main():
     extra = argv[split + 1 :] if split < len(argv) else []
     extra_flags = {item.split("=", 1)[0] for item in extra}
     if "--resume" in extra_flags:
-        continuation = "scripts/upgrade-production resume --profile PROFILE --evidence-dir ORIGINAL"
-        if "--migration-history-checked" in extra_flags:
-            continuation += " -- --migration-history-checked"
-        parser.error(f"use the resume operation instead of --resume: {continuation}")
+        parser.error(
+            "use the resume operation and remove only --resume; retain every other original "
+            "expert option and applicable recovery attestation after --, including "
+            "--migration-history-checked when required: scripts/upgrade-production resume "
+            "--profile PROFILE --evidence-dir ORIGINAL -- ORIGINAL_EXPERT_OPTIONS"
+        )
     if "--preflight-only" in extra_flags:
         parser.error(
             "use the preflight operation instead of --preflight-only: "
