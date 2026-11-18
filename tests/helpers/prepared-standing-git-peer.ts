@@ -8,7 +8,10 @@ import https from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { postgresRequestCredentialApprovals } from "../../packages/occ/src/index.ts";
+import {
+  postgresRequestCredentialApprovals,
+  type PostgresPool,
+} from "../../packages/occ/src/index.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
@@ -219,11 +222,11 @@ export async function preparedStandingGitPeer(
     code: string;
     context: Readonly<Record<string, string | number | boolean | undefined>>;
   }[] = [];
-  const startOwner = (selectedRegistry = registry) =>
+  const startOwner = (selectedRegistry = registry, ownerPool: PostgresPool = pool) =>
     startPreparedGitHubGitOwner(
       {
         registry: selectedRegistry,
-        pool,
+        pool: ownerPool,
         driverId: backendId,
         implementation: "github",
         backendId,
