@@ -24,7 +24,7 @@ An operator installs a Sandbox Driver package that runs each dedicated Codex Har
 Compute's Pods. The sandbox's own trusted process confines the workload and injects credentials; OCE's control plane
 keeps the keys and decides each use. This RFC defines that **external Sandbox profile**.
 
-Statements are marked **main** (on main at `f9bb6cfacb`, cited by path and line), **prototype** (only on the
+Statements are marked **main** (on main at `7de293ea47`, cited by path and line), **prototype** (only on the
 [prototype branch][prototype] at `d582b192e0`: evidence, not a commitment) or **proposed** (normative here).
 
 ## Motivation
@@ -114,7 +114,7 @@ Driver picks, then one that relays the stock protected Harness program's own cha
 **Proposed.** Credential use begins at release. A model request is answered only for the installation OCE committed,
 re-observed on that request. GitHub material does not exist before activation, so the repository binding is ready when
 its route is configured and the Worker is reachable. Main already treats a verified route that waits for material as
-ready (`apps/controller/src/drivers/compute/kubernetes/index.ts:7743-7746`).
+ready (`apps/controller/src/drivers/compute/kubernetes/index.ts:7740-7743`).
 
 [#6396] renames these steps (`prepareHarnessProcess` for the host gate, `getHarnessProcessStatus` and
 `releaseHarnessProcess` for the callback) and reuses the name `provisionHarness` with another signature. This RFC
@@ -145,7 +145,7 @@ delivered at start does not meet this profile.
   placeholder. Where the key rests is question 1.
 
 Until question 2 is answered, main's rule holds: OCE allows uses only after the recipient confirms each material
-version (`packages/contracts/src/protected-repository-git.ts:119-124`), which a request-time recipient does without
+version (`packages/contracts/src/protected-repository-git.ts:121-124`), which a request-time recipient does without
 holding a value. [#6350] answers one `authorization` header value; the prototype, a typed credential with an
 exchange ID.
 
