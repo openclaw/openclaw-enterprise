@@ -506,9 +506,91 @@ test(
       "retention",
     ]);
 
+    // The request-time profile is available for new sources, not a silent conversion
+    // of an ordinary Gateway source through the legacy strict-adoption operation.
+    const legacyPath = `${path}/${f.legacySource.id}`;
+    const legacyBefore = (await f.request("GET", legacyPath)).data;
+    const retainedBefore = await f.controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
+    );
+    assert.equal(
+      await f.controller.transact((unit) =>
+        unit.credentialSources.hasReferences(f.namespace.id, f.legacySource.id),
+      ),
+      false,
+    );
+    const gatewayBefore = [...f.gatewayEffects];
+    const adoptionReads = f.countSecretReads();
+    const adoption = await f.request("PATCH", legacyPath, {
+      body: { adoption: "live", authorityScope: "execution" },
+    });
+    assert.equal(adoption.status, 409, JSON.stringify(adoption.body));
+    assert.equal(adoption.body.error.code, "RESOURCE_CONFLICT");
+    assert.match(adoption.body.error.message, /retired new uses/);
+    assert.equal(f.countSecretReads(), adoptionReads);
+    assert.deepEqual((await f.request("GET", legacyPath)).data, legacyBefore);
+    assert.deepEqual(
+      await f.controller.transact((unit) =>
+        unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
+      ),
+      retainedBefore,
+    );
+    assert.deepEqual(f.gatewayEffects, gatewayBefore);
+
     // Missing or duplicate exact registrations cannot silently become strict, and reads remain usable.
     const providers = owner.require("credential_proxy").sourceControl
       .providers as CredentialProviderDefinition[];
+    const chosen = providers[0]!;
+    const collision = {
+      ...chosen,
+      sourceType: { ...chosen.sourceType, type: "different-source-type" },
+    };
+    const refuseCollision = async (name: string) => {
+      const reads = f.countSecretReads();
+      const response = await f.request("POST", path, {
+        body: {
+          name,
+          type: "openai",
+          config: { authorized_base_url: f.modelProvider.baseUrl },
+          secrets: { api_key: f.secret.ref },
+        },
+      });
+      assert.equal(response.status, 409, JSON.stringify(response.body));
+      assert.equal(f.countSecretReads(), reads);
+      const rows = await f.pool.query(
+        "SELECT id FROM occ.credential_sources WHERE namespace_id=$1 AND name=$2",
+        [f.namespace.id, name],
+      );
+      assert.equal(rows.rowCount, 0);
+    };
+    providers.push(collision);
+    try {
+      await refuseCollision("duplicate-provider-identity");
+      const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+      assert.equal(
+        catalog.data.capabilities.credentialSources.types.some(
+          (type: { type: string }) => type.type === "openai",
+        ),
+        false,
+      );
+    } finally {
+      providers.pop();
+    }
+    const control = owner.require("credential_proxy").requestTimeCredentials!;
+    const assertAvailable = control.assertAvailable;
+    let collisionInserted = false;
+    control.assertAvailable = async (signal) => {
+      await assertAvailable.call(control, signal);
+      providers.push(collision);
+      collisionInserted = true;
+    };
+    try {
+      await refuseCollision("raced-provider-identity");
+      assert.equal(collisionInserted, true);
+    } finally {
+      control.assertAvailable = assertAvailable;
+      if (providers.at(-1) === collision) providers.pop();
+    }
     const requestProvider = providers.shift()!;
     try {
       const missing = await f.request("GET", `${path}/${f.source.id}`);

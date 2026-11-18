@@ -8861,14 +8861,20 @@ export class OpenClawController {
     });
   }
 
-  private staticEgressProvider(type: string, previous?: EgressRef) {
+  private staticEgressProvider(type: string, selection?: EgressRef | "strict-adoption") {
     const driver = this.selectedDriver("credential_proxy");
     const owner = this.selections.get("credential_proxy")?.owner;
     const control = driver.sourceControl;
-    // Retained sources resolve their exact registration. New uses require one eligible match.
+    // Legacy adoption keeps its original strict profile; retained sources keep their exact ref.
     const resolve = () => {
-      if (previous) {
-        return registeredCredentialProvider(control.providers, previous);
+      if (selection === "strict-adoption") {
+        const strict = control.providers.find(
+          (entry) => entry.sourceType.type === type && entry.authorization === undefined,
+        );
+        return strict ? registeredCredentialProvider(control.providers, strict.ref) : undefined;
+      }
+      if (selection) {
+        return registeredCredentialProvider(control.providers, selection);
       }
       const matching = control.providers.filter((entry) => entry.sourceType.type === type);
       const retired = matching.find(
@@ -8888,7 +8894,8 @@ export class OpenClawController {
       if (eligible.length === 0 && retired) {
         owner.assertNewStaticProviderUse(retired.ref);
       }
-      return eligible[0];
+      const candidate = eligible[0];
+      return candidate ? registeredCredentialProvider(control.providers, candidate.ref) : undefined;
     };
     const provider = resolve();
     if (provider === "ambiguous") {
@@ -9663,7 +9670,7 @@ export class OpenClawController {
         // change an existing source's provider identity or authorization profile.
         const replacement =
           !admitted && this.selections.has("credential_proxy")
-            ? this.staticEgressProvider(source.type)
+            ? this.staticEgressProvider(source.type, "strict-adoption")
             : undefined;
         const egress = await this.admitStaticEgressSource(
           state,
