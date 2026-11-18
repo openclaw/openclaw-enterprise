@@ -16,7 +16,7 @@ Each case copies the migrated template and runs as the limited application role.
 Clearing stale overrides ensures it uses this run's prepared database:
 
 ```sh
-node scripts/ci/prepare.mjs --lane postgres-application \
+node scripts/ci/prepare.ts --lane postgres-application \
   --file tests/integration/postgres-external-protected-git.test.ts \
   --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/test.env"
 env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \

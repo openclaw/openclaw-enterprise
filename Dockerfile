@@ -83,7 +83,7 @@ COPY --from=console-build --chown=node:node /app/apps/controller/src/console/ind
 COPY --chown=node:node migrations/[0-9]*.sql migrations/
 COPY --chown=node:node migrations/meta/_journal.json migrations/meta/_journal.json
 COPY --chown=node:node migrations/meta/_canonical-history.json migrations/meta/_canonical-history.json
-COPY --chown=node:node scripts/migrate-production.mjs scripts/migrate-production.mjs
+COPY --chown=node:node scripts/migrate-production.ts scripts/migrate-production.ts
 COPY --chown=node:node scripts/migration-history.mjs scripts/migration-history.mjs
 COPY --chown=node:node scripts/migration-catalog.ts scripts/migration-catalog.ts
 COPY --chown=node:node scripts/migration-history-preflight.ts scripts/migration-history-preflight.ts

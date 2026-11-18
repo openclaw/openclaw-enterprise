@@ -216,7 +216,7 @@ test("Full Integration partitions OpenShell without changing the default focused
 
   const state = join(temporaryDirectorySync(t, "openshell-view-state-"), "policy.json");
   const refused = command(
-    "scripts/ci/prepare.mjs",
+    "scripts/ci/prepare.ts",
     ["--lane", "openshell-policy", "--selected-file", installerFile, "--state", state],
     fullView,
   );
@@ -459,7 +459,7 @@ test("the runner retains an unknown gateway readiness outcome after the test chi
   mkdirSync(join(directory, dirname(file)), { recursive: true });
   mkdirSync(join(directory, "scripts/ci"), { recursive: true });
   writeFileSync(
-    join(directory, "scripts/ci/prepare.mjs"),
+    join(directory, "scripts/ci/prepare.ts"),
     `import { writeFileSync } from "node:fs";
 export function prepareFile({ statePath }) {
   return { cleanup: () => writeFileSync(statePath + ".cleaned", "completed") };

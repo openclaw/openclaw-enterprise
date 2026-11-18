@@ -320,6 +320,7 @@
     "fixtures/openshell-codex-command.ts",
     "fixtures/openshell-gateway-proxy-child.ts",
     "fixtures/staging-qualification-seccomp-child.ts",
+    "helpers/staging-online-migration.ts",
     "fixtures/codex-local-plugins/probe.ts",
     "fixtures/codex-local-plugins/enrollment.ts",
     "fixtures/runtime-gateway-peer-respawn.ts",
