@@ -1,3 +1,4 @@
+/// <reference lib="es2023.array" />
 import assert from "node:assert/strict";
 import { rm, writeFile } from "node:fs/promises";
 import {
