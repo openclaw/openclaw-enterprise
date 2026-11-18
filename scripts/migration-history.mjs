@@ -113,6 +113,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preRevisionRuntimeInputs";
   }
   if (count === 80 && completedCount > 80) {
+    return "preRestartContinuation";
+  }
+  if (count === 81 && completedCount > 81) {
+    return "preAuthenticationStates";
+  }
+  if (count === 82 && completedCount > 82) {
     return "prePackagedCredentialGatewayOwner";
   }
   if (count === completedCount) {

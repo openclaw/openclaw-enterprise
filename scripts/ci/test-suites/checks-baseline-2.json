@@ -36,11 +36,11 @@
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
     "tests/integration/console-storybook-workflow.test.ts",
-    "tests/integration/workspace-setup-api.test.mjs",
+    "tests/integration/workspace-setup-api.test.ts",
     "tests/integration/agent-create-validate-api.test.ts",
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
-    "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner.test.ts",
     "tests/integration/ci-runner-native-child.test.ts",
     "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
@@ -110,7 +110,7 @@
     "tests/conformance/postgres-transaction-commit.test.ts",
     "tests/conformance/plugin-runtime-policy.test.ts",
     "tests/integration/password-sign-in-policy.test.ts",
-    "tests/integration/compute-singleton-worker.test.mjs",
+    "tests/integration/compute-singleton-worker.test.ts",
     "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.ts",
     "tests/integration/oidc-id-token.test.ts",
@@ -269,7 +269,7 @@
       ]
     },
     {
-      "path": "tests/integration/compute-singleton-worker.test.mjs",
+      "path": "tests/integration/compute-singleton-worker.test.ts",
       "expectedTests": [
         "before-commit Compute Drivers must expose an activation operation",
         "Compute Driver maintenance intervals must be positive safe integers"
@@ -282,7 +282,7 @@
       "path": "tests/integration/local-first-agent-session-identity.test.ts"
     },
     {
-      "path": "tests/integration/ci-runner.test.mjs",
+      "path": "tests/integration/ci-runner.test.ts",
       "expectedTests": [
         "complete lifecycle preserves phase failures and performs owned cleanup",
         "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
@@ -584,7 +584,23 @@
       "path": "tests/integration/console-storybook-workflow.test.ts"
     },
     {
-      "path": "tests/integration/workspace-setup-api.test.mjs"
+      "path": "tests/integration/workspace-setup-api.test.ts",
+      "expectedTests": [
+        "Agent create stages exact partial workspace bytes privately and rejects replay without changing them",
+        "omitted and empty workspace maps retain native setup while an explicit empty file is staged",
+        "invalid workspace content and stale defaults reject the complete create without an Agent",
+        "Agent create accepts four maximum UTF-8 files even when JSON escape expansion exceeds the ordinary body limit",
+        "workspace setup creation requires exact Namespace permission, Configuration ownership, and same-site session writes",
+        "Agent save and deployment refuse initial workspace files the Configuration's main Agent cannot read",
+        "Agent save accepts initial workspace files for a main roster entry in any letter case",
+        "Agent save refuses initial workspace files in a Sandbox with a 409 that names the Sandbox",
+        "Agent create admits private workspace files through the OpenShell initializer contract",
+        "Agent admission refuses projected identity only for OpenShell-owned Harnesses",
+        "Credential-source deployment refuses OpenShell projected identity before creating a revision",
+        "Agent create refuses dedicated OpenClaw on OpenShell settings its workspace preparation refuses",
+        "Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place",
+        "Create Agent's preflight refuses a planned Harness authentication that Agent save refuses"
+      ]
     },
     {
       "path": "tests/integration/agent-create-validate-api.test.ts"

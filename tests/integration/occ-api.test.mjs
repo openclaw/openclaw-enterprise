@@ -63,7 +63,6 @@ import {
 import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   AgentDeletingError,
   AuthorizationDeniedError,
@@ -72,7 +71,7 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
@@ -95,7 +94,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
@@ -411,6 +410,18 @@ function stateWithDeploymentWork(state, deploymentWorks) {
         }
         const work = deploymentWorks.get(requestedKey);
         return work === undefined ? undefined : Object.freeze({ ...work });
+      },
+      async findWorkByKeys(keys) {
+        const result = await view.operations.findWorkByKeys(keys);
+        return {
+          get(key) {
+            if (!deploymentWorks.has(key)) {
+              return result.get(key);
+            }
+            const work = deploymentWorks.get(key);
+            return work === undefined ? undefined : Object.freeze({ ...work });
+          },
+        };
       },
     },
   });
@@ -3415,255 +3426,36 @@ test("Installation deployment inventory fails closed on incomplete authorization
   assert.deepEqual(Object.keys(incomplete.body).sort(), ["error", "meta"]);
 });
 
-test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
-  const { controller, fixture, namespace } = await readyNamespaceFixture("slack-terminal-cursor", {
-    secretDriver: createTestSecretDriver(),
-  });
-  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "directory-bot", value: "xoxb-directory-fixture" },
-  });
-  assert.equal(secret.status, 201);
-  let terminalCursor = null;
-  const driver = new SlackChannelDriver(async (url) => {
-    const request = new URL(url);
-    if (request.pathname === "/api/auth.test") {
-      return Response.json({ ok: true, bot_id: "BFIXTURE", team_id: "TWORKSPACE" });
-    }
-    assert.equal(request.pathname, "/api/conversations.list");
-    const secondPage = request.searchParams.has("cursor");
-    if (secondPage) {
-      assert.equal(request.searchParams.get("cursor"), "page-two");
-    }
-    return Response.json({
-      ok: true,
-      channels: [
-        secondPage ? { id: "CSECOND", name: "ann-second" } : { id: "CFIRST", name: "ann-first" },
-      ],
-      response_metadata: { next_cursor: secondPage ? terminalCursor : "page-two" },
+test("Installation deployment inventory refuses a revision owned by a different Namespace tuple", async () => {
+  const { controller, fixture, namespace, agent, admitted } = await admittedDeploymentFixture(
+    "deployment-inventory-tuple",
+    "inventory-tuple-agent",
+    { recordOperations: true },
+  );
+  const revision = await fixture.platformState.read((view) =>
+    view.revisions.findRevision(namespace.id, agent.id, admitted.data.id),
+  );
+  assert.ok(revision);
+
+  // Corrupt in-memory history must not let an orphan operation borrow another
+  // Namespace's Agent through an ambiguous serialized owner key.
+  await fixture.platformState.transact(async ({ revisions, operations }) => {
+    await revisions.createRevision({
+      ...revision,
+      id: "b\u0000r",
+      revision: revision.revision + 1,
+    });
+    await operations.append({
+      kind: "agent_revision",
+      action: "reconcile",
+      namespaceId: `${namespace.id}\u0000b`,
+      resourceId: "r",
+      actorId: fixture.principal.id,
     });
   });
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("channel", driver.id);
-  const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
-  const body = { secretId: secret.data.id, kind: "channels", query: "ann" };
-  const found = await controller.request("POST", path, { body });
-  assert.equal(found.status, 200, JSON.stringify(found.body));
-  assert.deepEqual(found.data, {
-    workspaceId: "TWORKSPACE",
-    candidates: [
-      { id: "CFIRST", name: "ann-first" },
-      { id: "CSECOND", name: "ann-second" },
-    ],
-    complete: true,
-  });
-  // Accepting the documented null sentinel must not accept arbitrary cursor types.
-  terminalCursor = 7;
-  const invalid = await controller.request("POST", path, { body });
-  assert.equal(invalid.status, 503);
-  assert.equal(invalid.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
-});
 
-test("Channel directory lookup checks the exact edit target and Secret before and after reading", async () => {
-  const token = "synthetic-channel-directory-token";
-  const secretDriver = createTestSecretDriver({ id: "secret-directory-integration" });
-  const originalWithValue = secretDriver.withValue.bind(secretDriver);
-  let revokeOnRead;
-  let fixture;
-  secretDriver.withValue = (secret, use) =>
-    originalWithValue(secret, (value) => {
-      if (revokeOnRead !== undefined) {
-        fixture.state.restrictions.push(revokeOnRead);
-        revokeOnRead = undefined;
-      }
-      return use(value);
-    });
-  const controller = await configuredController({ secretDriver });
-  fixture = controller.fixture;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "channel-directory-api");
-  const configuration = await createConfiguration(controller, namespace.id);
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "channel-bot", value: token },
-  });
-  assert.equal(secret.status, 201);
-  const agent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "directory-agent", configurationId: configuration.id },
-  });
-  assert.equal(agent.status, 201);
-
-  const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
-  const body = { secretId: secret.data.id, kind: "users", query: "mem" };
-  const unavailable = await controller.request("POST", path, { body });
-  assert.equal(unavailable.status, 501);
-  assert.equal(unavailable.body.error.code, "NOT_IMPLEMENTED");
-
-  let providerCalls = 0;
-  let lastProviderInput;
-  let providerResult = {
-    workspaceId: "T123",
-    workspaceName: "Example workspace",
-    candidates: [{ id: "U123", name: "member", displayName: "Member", token }],
-    complete: true,
-    token,
-  };
-  const channelDriver = {
-    id: "channel-directory-integration",
-    capability: "channel",
-    implementation: "test-directory",
-    async lookupDirectory(input) {
-      providerCalls += 1;
-      lastProviderInput = input;
-      assert.equal(input.token, token);
-      return providerResult;
-    },
-  };
-  fixture.controller.registerDriver(channelDriver);
-  fixture.controller.selectDriver("channel", channelDriver.id);
-  const expected = {
-    workspaceId: "T123",
-    workspaceName: "Example workspace",
-    candidates: [{ id: "U123", name: "member", displayName: "Member" }],
-    complete: true,
-  };
-  const created = await controller.request("POST", path, { body });
-  assert.equal(created.status, 200, JSON.stringify(created.body));
-  assert.deepEqual(created.data, expected);
-  assert.equal(JSON.stringify(created.body).includes(token), false);
-  assert.equal(providerCalls, 1);
-  const hydrated = await controller.request("POST", path, {
-    body: { secretId: secret.data.id, kind: "users", ids: ["U123", "U999"] },
-  });
-  assert.equal(hydrated.status, 200, JSON.stringify(hydrated.body));
-  assert.deepEqual(hydrated.data, expected);
-  assert.deepEqual(lastProviderInput.ids, ["U123", "U999"]);
-  const mixed = await controller.request("POST", path, {
-    body: { ...body, ids: ["U123"] },
-  });
-  assert.equal(mixed.status, 400);
-  // The body is a union of lookup and hydration shapes. A lookup whose query is too long
-  // names only that field, not the fields other shapes require, and only the lookup shape
-  // fits, so the message names its bound.
-  const longQuery = await controller.request("POST", path, {
-    body: { ...body, query: "q".repeat(201) },
-  });
-  assert.equal(longQuery.status, 400);
-  assert.equal(
-    longQuery.body.error.message,
-    "The request does not match the operation contract: body /query is too long (expected at most 200 characters).",
-  );
-  assert.deepEqual(longQuery.body.error.details, [{ path: "/query", code: "TOO_LONG" }]);
-  // A string array declared uniqueItems names the rule, not just an unsupported value.
-  const repeatedIds = await controller.request("POST", path, {
-    body: { secretId: secret.data.id, kind: "users", ids: ["U123", "U123"] },
-  });
-  assert.equal(repeatedIds.status, 400, JSON.stringify(repeatedIds.body));
-  assert.equal(
-    repeatedIds.body.error.message,
-    "The request does not match the operation contract: body /ids has an unsupported value (expected no duplicate items).",
-  );
-  assert.deepEqual(repeatedIds.body.error.details, [{ path: "/ids", code: "INVALID_VALUE" }]);
-  // At most 20 IDs are hydrated in one request.
-  const tooManyIds = await controller.request("POST", path, {
-    body: {
-      secretId: secret.data.id,
-      kind: "users",
-      ids: Array.from({ length: 21 }, (_, index) => `U${index}`),
-    },
-  });
-  assert.equal(tooManyIds.status, 400, JSON.stringify(tooManyIds.body));
-  assert.equal(
-    tooManyIds.body.error.message,
-    "The request does not match the operation contract: body /ids has an unsupported value (expected at most 20 items).",
-  );
-  assert.deepEqual(tooManyIds.body.error.details, [{ path: "/ids", code: "INVALID_VALUE" }]);
-  // An unknown kind fits no shape, so every shape's problem stays, but the three hydration
-  // shapes' identical missing /ids is listed once.
-  const unknownKind = await controller.request("POST", path, {
-    body: { ...body, kind: "groups" },
-  });
-  assert.equal(unknownKind.status, 400);
-  assert.deepEqual(unknownKind.body.error.details, [
-    { path: "/kind", code: "INVALID_VALUE" },
-    { path: "/agentId", code: "REQUIRED" },
-    { path: "/configurationId", code: "REQUIRED" },
-    { path: "/ids", code: "REQUIRED" },
-    { path: "", code: "INVALID_VALUE" },
-  ]);
-  assert.deepEqual(
-    (
-      await controller.request("POST", path, {
-        body: { ...body, agentId: agent.data.id },
-      })
-    ).data,
-    expected,
-  );
-  assert.deepEqual(
-    (
-      await controller.request("POST", path, {
-        body: { ...body, configurationId: configuration.id },
-      })
-    ).data,
-    expected,
-  );
-
-  for (const [resourceKind, resourceId, action, editTarget] of [
-    ["agent", namespace.id, "create", {}],
-    ["agent", agent.data.id, "update", { agentId: agent.data.id }],
-    ["configuration", configuration.id, "update", { configurationId: configuration.id }],
-    ["secret", secret.data.id, "operate", {}],
-  ]) {
-    const restriction = {
-      id: `deny-directory-${resourceKind}-${action}`,
-      namespaceId: namespace.id,
-      resourceKind,
-      resourceId,
-      action,
-      effect: "deny",
-    };
-    fixture.state.restrictions.push(restriction);
-    const denied = await controller.request("POST", path, { body: { ...body, ...editTarget } });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    fixture.state.restrictions.pop();
-  }
-
-  for (const [resourceKind, resourceId, action, editTarget] of [
-    ["agent", agent.data.id, "update", { agentId: agent.data.id }],
-    ["secret", secret.data.id, "operate", {}],
-  ]) {
-    revokeOnRead = {
-      id: `revoke-directory-after-read-${resourceKind}`,
-      namespaceId: namespace.id,
-      resourceKind,
-      resourceId,
-      action,
-      effect: "deny",
-    };
-    const callsBefore = providerCalls;
-    const denied = await controller.request("POST", path, { body: { ...body, ...editTarget } });
-    assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(providerCalls, callsBefore);
-    fixture.state.restrictions.pop();
-  }
-
-  providerResult = { workspaceId: "T123", candidates: [], complete: false, nextCursor: "more" };
-  const incompleteHydration = await controller.request("POST", path, {
-    body: { secretId: secret.data.id, kind: "users", ids: ["U123"] },
-  });
-  assert.equal(incompleteHydration.status, 503);
-  assert.equal(incompleteHydration.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
-
-  providerResult = { workspaceId: "T123", workspaceName: token, candidates: [], complete: true };
-  const echoed = await controller.request("POST", path, { body });
-  assert.equal(echoed.status, 503);
-  assert.equal(echoed.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
-  assert.equal(JSON.stringify(echoed.body).includes(token), false);
-
-  providerResult = { candidates: [], complete: true, token };
-  const invalid = await controller.request("POST", path, { body });
-  assert.equal(invalid.status, 503);
-  assert.equal(invalid.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
-  assert.equal(JSON.stringify(invalid.body).includes(token), false);
+  const inventory = await controller.request("GET", "/installation/deployment-inventory");
+  assertApiError(inventory, 503, "DEPENDENCY_UNAVAILABLE", "orphan deployment operation");
 });
 
 test("Agent create and update replace policy-only plugin maps and revisions freeze the requested snapshot", async () => {
@@ -4419,327 +4211,6 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   }
   const afterStoredRefusal = await controller.request("GET", agentPath);
   assert.deepEqual(afterStoredRefusal.data, beforeDriverSwitch.data);
-});
-
-test("session inspection stays optional and never exposes session or credential secrets", async () => {
-  const fixture = await createInjectedFixture();
-
-  const anonymous = await injectedRequest(fixture.app, "GET", "/api/auth/session", {
-    identity: false,
-  });
-  assert.equal(anonymous.status, 200);
-  assert.equal(anonymous.data, null);
-
-  const authenticated = await injectedRequest(fixture.app, "GET", "/api/auth/session");
-  assert.equal(authenticated.status, 200);
-  assert.notEqual(authenticated.data, null);
-  // Match secret-bearing field names at every depth, not serialized values: the
-  // generated user ID and random sessionKey can spell "token" by chance (finding 725).
-  const fieldNames = [];
-  const collectFieldNames = (value) => {
-    if (value === null || typeof value !== "object") {
-      return;
-    }
-    for (const [key, child] of Object.entries(value)) {
-      fieldNames.push(key);
-      collectFieldNames(child);
-    }
-  };
-  collectFieldNames(authenticated.data);
-  assert.deepEqual(
-    fieldNames.filter((name) => /token|password|credential/i.test(name)),
-    [],
-  );
-  // Known secret values must not appear anywhere, under any field name.
-  const exposed = JSON.stringify(authenticated.data);
-  assert.equal(exposed.includes(fixture.app.defaultSession.cookie), false);
-  for (const pair of fixture.app.defaultSession.cookie.split(";")) {
-    const value = pair.slice(pair.indexOf("=") + 1).trim();
-    assert.ok(value.length > 0);
-    assert.equal(exposed.includes(value), false);
-    const decoded = decodeURIComponent(value);
-    assert.equal(exposed.includes(decoded), false);
-    // A signed cookie value is "<token>.<signature>"; the bare token is a secret too.
-    const signature = decoded.lastIndexOf(".");
-    if (signature > 0) {
-      assert.equal(exposed.includes(decoded.slice(0, signature)), false);
-    }
-  }
-  assert.equal(exposed.includes(fixture.authFixture.password), false);
-  assert.match(authenticated.data.sessionKey, /^[A-Za-z0-9_-]+$/);
-
-  const repeated = await injectedRequest(fixture.app, "GET", "/api/auth/session");
-  assert.equal(repeated.status, 200);
-  assert.equal(repeated.data.sessionKey, authenticated.data.sessionKey);
-  assert.deepEqual(repeated.data.user, authenticated.data.user);
-
-  const nextSession = await signInWithEmailPassword({
-    fetch: fixture.app.fetch.bind(fixture.app),
-    email: fixture.authFixture.email,
-    password: fixture.authFixture.password,
-  });
-  const nextAuthenticated = await injectedRequest(fixture.app, "GET", "/api/auth/session", {
-    session: nextSession,
-  });
-  assert.equal(nextAuthenticated.status, 200);
-  assert.notEqual(nextAuthenticated.data.sessionKey, authenticated.data.sessionKey);
-  assert.deepEqual(nextAuthenticated.data.user, authenticated.data.user);
-});
-
-test("administrator-created auth accounts sign in and receive only provisioned IAM access", async () => {
-  let provisionedSeed;
-  const controller = await configuredController({
-    provisionAuthAccount(seed, { installAuthSeed, state, auditEvent }) {
-      provisionedSeed = seed;
-      // Use the production validator so Role errors map exactly as they do on PostgreSQL.
-      validateAuthAccountPrincipalSeed(seed, state, fixture.installationId);
-      return installAuthSeed(seed, { auditEvent });
-    },
-  });
-  const { fixture } = controller;
-  const selectedIAMDriver = fixture.iamDriver;
-  await bootstrap(controller, "Provisioned account installation");
-  const readOnlyRole = {
-    id: "role-read-only-auth-account",
-    name: "Read-only auth account",
-    permissions: [{ action: "read", resourceKind: "installation" }],
-  };
-  fixture.state.roles.push(readOnlyRole);
-  const { id: namespaceId } = await defaultNamespace(controller);
-
-  const noGrantEmail = `no-grant-${randomUUID()}@example.com`;
-  const noGrantPassword = `generated-password-${randomUUID()}`;
-  const noGrantAuditCount = fixture.auditSink.events.length;
-  const noGrant = await injectedRequest(fixture.app, "POST", "/api/auth/accounts", {
-    body: {
-      email: noGrantEmail,
-      password: noGrantPassword,
-      name: "No Grant Operator",
-    },
-  });
-  assert.equal(noGrant.status, 201, JSON.stringify(noGrant.body));
-  assert.deepEqual(provisionedSeed.roles, []);
-  assert.deepEqual(provisionedSeed.bindings, []);
-  const noGrantEvents = fixture.auditSink.events.slice(noGrantAuditCount);
-  assert.equal(noGrantEvents.length, 1);
-  assert.equal(noGrantEvents[0].kind, "mutation");
-  assert.equal(noGrantEvents[0].action, "openclaw.auth.accounts.create");
-  assert.equal(noGrantEvents[0].outcome, "success");
-  assert.equal(noGrantEvents[0].details?.principalId, noGrant.data.principalId);
-  assert.equal(noGrantEvents[0].details?.grant, "none");
-  assert.equal(noGrantEvents[0].details?.roleId, undefined);
-  assert.ok(!JSON.stringify(noGrantEvents[0]).includes(noGrantEmail));
-  assert.ok(!JSON.stringify(noGrantEvents[0]).includes(noGrantPassword));
-  assert.deepEqual(noGrantEvents[0].resource, {
-    kind: "installation",
-    id: fixture.installationId,
-  });
-  const noGrantSession = await signInWithEmailPassword({
-    fetch: fixture.app.fetch.bind(fixture.app),
-    email: noGrantEmail,
-    password: noGrantPassword,
-  });
-  const noGrantInstallation = await injectedRequest(fixture.app, "GET", "/installation", {
-    session: noGrantSession,
-  });
-  assert.equal(noGrantInstallation.status, 403);
-  // A zero-grant human is authenticated but sees nothing and can change nothing until an
-  // administrator binds a Role; list reads filter to an empty set, everything else is denied.
-  const noGrantNamespaces = await injectedRequest(fixture.app, "GET", "/namespaces", {
-    session: noGrantSession,
-  });
-  assert.equal(noGrantNamespaces.status, 200);
-  assert.deepEqual(noGrantNamespaces.data, []);
-  for (const [method, pathname, body] of [
-    ["POST", "/namespaces", { name: "zero-grant-namespace" }],
-    ["GET", `/namespaces/${namespaceId}`],
-    ["DELETE", `/namespaces/${namespaceId}`],
-    ["GET", `/namespaces/${namespaceId}/agents`],
-    ["GET", `/namespaces/${namespaceId}/iam/roles`],
-    [
-      "POST",
-      `/namespaces/${namespaceId}/iam/roles`,
-      { permissions: [{ action: "read", resourceKind: "namespace" }] },
-    ],
-    [
-      "POST",
-      "/api/auth/accounts",
-      {
-        email: `zero-grant-escalation-${randomUUID()}@example.com`,
-        password: `generated-password-${randomUUID()}`,
-        name: "Zero Grant Escalation",
-      },
-    ],
-  ]) {
-    const denied = await injectedRequest(fixture.app, method, pathname, {
-      session: noGrantSession,
-      ...(body === undefined ? {} : { body }),
-    });
-    assertApiError(denied, 403, "FORBIDDEN", `${method} ${pathname}`);
-  }
-
-  const unknownRole = await injectedRequest(fixture.app, "POST", "/api/auth/accounts", {
-    body: {
-      email: `unknown-role-${randomUUID()}@example.com`,
-      password: `generated-password-${randomUUID()}`,
-      name: "Unknown Role Operator",
-      roleId: "role-does-not-exist",
-    },
-  });
-  assert.equal(unknownRole.status, 400);
-
-  // A Namespace-scoped Role exists but cannot back an Installation account binding.
-  fixture.state.roles.push({
-    id: "role-namespace-auth-account",
-    name: "Namespace reader",
-    namespaceId,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
-  });
-  const beforeNamespaceRole = {
-    identities: fixture.state.identities.length,
-    bindings: fixture.state.bindings.length,
-    auditEvents: fixture.auditSink.events.length,
-  };
-  const namespaceRoleEmail = `namespace-role-${randomUUID()}@example.com`;
-  const namespaceRolePassword = `generated-password-${randomUUID()}`;
-  const namespaceRole = await injectedRequest(fixture.app, "POST", "/api/auth/accounts", {
-    body: {
-      email: namespaceRoleEmail,
-      password: namespaceRolePassword,
-      name: "Namespace Role Operator",
-      roleId: "role-namespace-auth-account",
-    },
-  });
-  assertApiError(namespaceRole, 400, "INVALID_REQUEST");
-  assert.deepEqual(
-    {
-      identities: fixture.state.identities.length,
-      bindings: fixture.state.bindings.length,
-      auditEvents: fixture.auditSink.events.length,
-    },
-    beforeNamespaceRole,
-  );
-  await assert.rejects(
-    signInWithEmailPassword({
-      fetch: fixture.app.fetch.bind(fixture.app),
-      email: namespaceRoleEmail,
-      password: namespaceRolePassword,
-    }),
-    /sign-in failed with HTTP 401: .*"code":\s*"UNAUTHENTICATED"/s,
-  );
-
-  // An explicit but blank or null roleId is a malformed request, never the zero-grant path.
-  for (const roleId of ["", null]) {
-    const before = {
-      identities: fixture.state.identities.length,
-      auditEvents: fixture.auditSink.events.length,
-    };
-    const blankRole = await injectedRequest(fixture.app, "POST", "/api/auth/accounts", {
-      body: {
-        email: `blank-role-${randomUUID()}@example.com`,
-        password: `generated-password-${randomUUID()}`,
-        name: "Blank Role Operator",
-        roleId,
-      },
-    });
-    assertApiError(blankRole, 400, "INVALID_REQUEST", `roleId ${JSON.stringify(roleId)}`);
-    assert.equal(fixture.state.identities.length, before.identities);
-    assert.equal(fixture.auditSink.events.length, before.auditEvents);
-  }
-
-  const invalidEmail = "invalid-auth-account-email";
-  const invalidEmailPassword = `generated-password-${randomUUID()}`;
-  const stateCounts = {
-    identities: fixture.state.identities.length,
-    roles: fixture.state.roles.length,
-    bindings: fixture.state.bindings.length,
-    auditEvents: fixture.auditSink.events.length,
-  };
-  const invalidEmailResult = await injectedRequest(fixture.app, "POST", "/api/auth/accounts", {
-    body: {
-      email: invalidEmail,
-      password: invalidEmailPassword,
-      name: "Invalid Email Operator",
-      roleId: readOnlyRole.id,
-    },
-  });
-  assertApiError(invalidEmailResult, 400, "INVALID_REQUEST");
-  assert.deepEqual(
-    {
-      identities: fixture.state.identities.length,
-      roles: fixture.state.roles.length,
-      bindings: fixture.state.bindings.length,
-      auditEvents: fixture.auditSink.events.length,
-    },
-    stateCounts,
-  );
-  await assert.rejects(
-    signInWithEmailPassword({
-      fetch: fixture.app.fetch.bind(fixture.app),
-      email: invalidEmail,
-      password: invalidEmailPassword,
-    }),
-    /HTTP 400/,
-  );
-
-  const email = `operator-${randomUUID()}@example.com`;
-  const password = `generated-password-${randomUUID()}`;
-  const originalAuthorize = selectedIAMDriver.authorize;
-  selectedIAMDriver.authorize = async (...args) => {
-    const decision = await originalAuthorize.apply(selectedIAMDriver, args);
-    if (args[0].action !== "administer") {
-      return decision;
-    }
-    const groupIds = ["original-admin-evidence"];
-    groupIds[Symbol.iterator] = () => {
-      throw new Error("the audit event must not use the supplied iterator");
-    };
-    return { ...decision, evidence: { ...decision.evidence, groupIds } };
-  };
-  const auditCount = fixture.auditSink.events.length;
-  const created = await injectedRequest(fixture.app, "POST", "/api/auth/accounts", {
-    body: { email, password, name: "Read Only Operator", roleId: readOnlyRole.id },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.equal(fixture.iamDriver, selectedIAMDriver);
-  assert.equal(created.data.email, email);
-  assert.equal(created.data.name, "Read Only Operator");
-  assert.equal(created.data.principalId, provisionedSeed.principal.id);
-  assert.deepEqual(provisionedSeed.roles, []);
-  assert.deepEqual(
-    provisionedSeed.bindings.map(({ roleId }) => roleId),
-    [readOnlyRole.id],
-  );
-  const accountEvents = fixture.auditSink.events.slice(auditCount);
-  assert.equal(accountEvents.length, 1);
-  assert.equal(accountEvents[0].kind, "mutation");
-  assert.equal(accountEvents[0].action, "openclaw.auth.accounts.create");
-  assert.deepEqual(accountEvents[0].details?.iamEvidence?.groupIds, ["original-admin-evidence"]);
-  assert.equal(accountEvents[0].details?.principalId, created.data.principalId);
-  assert.equal(accountEvents[0].details?.roleId, readOnlyRole.id);
-  assert.equal(accountEvents[0].details?.grant, undefined);
-  assert.ok(!JSON.stringify(accountEvents[0]).includes(email));
-  assert.ok(!JSON.stringify(accountEvents[0]).includes(password));
-  assert.deepEqual(accountEvents[0].resource, {
-    kind: "installation",
-    id: fixture.installationId,
-  });
-
-  const secondSession = await signInWithEmailPassword({
-    fetch: fixture.app.fetch.bind(fixture.app),
-    email,
-    password,
-  });
-  const installation = await injectedRequest(fixture.app, "GET", "/installation", {
-    session: secondSession,
-  });
-  assert.equal(installation.status, 200);
-
-  const denied = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    session: secondSession,
-    body: { name: "denied-account-namespace" },
-  });
-  assertApiError(denied, 403, "FORBIDDEN");
 });
 
 test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB limit", async () => {

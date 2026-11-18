@@ -9,8 +9,10 @@
     "tests/integration/postgres-password-sign-in-limit.test.ts",
     "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.ts",
+    "tests/integration/postgres-device-authorization.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
+    "tests/integration/postgres-deployment-inventory.test.ts",
     "tests/integration/postgres-oidc-recovery-replacement.test.ts",
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
@@ -115,9 +117,21 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-device-authorization.test.ts",
+      "expectedTests": [
+        "shared authentication state isolates browser consent from device login across API replicas"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-plugin-discovery.test.ts",
       "expectedTests": [
         "saved Agent catalog discovery releases the database connection while reading Configuration"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-deployment-inventory.test.ts",
+      "expectedTests": [
+        "deployment inventory bounds PostgreSQL queries across retained revision history"
       ]
     },
     {

@@ -9,7 +9,7 @@ last_updated_session: "authoring-run/f7f6f818-89bc-4764-bccc-441fe67e2a3b"
 ## Overview
 
 A replacement Gateway uses retained OpenClaw session and boot records to continue
-eligible interrupted work within the same Agent revision. Native recovery submits
+eligible interrupted work within the admitted recovery generation. Native recovery submits
 a new input to the same session.
 This flow ends when the continuation can start a fresh Harness turn or recovery
 reports failure. Normal Harness execution owns the resulting model output.
@@ -68,12 +68,23 @@ The recovery owner captures the exact session target, retains current source
 authority, and admits its native continuation through session-event handoff.
 It keeps the restart marker until acceptance or a terminal admission failure.
 
-`deploy/runtime/openclaw-restart-resume-scope.patch` clears graceful-shutdown
-markers from another revision instead of resuming them. Kubernetes sets the
-scope to the Agent revision ID. Agent redeployment creates a new revision;
-replacing Pods within one revision preserves the scope. The
-[interrupted-turn reference](../reference/agents/interrupted-turns.md) owns this
-boundary and the forced-termination limits.
+Deployment admission in `packages/occ/src/index.ts:admitAgentDeployment` asks
+`ComputeDriver.restartContinuationDomain` for compatible retained execution.
+Under the Agent lock it retains a matching generation or allocates a new one,
+snapshots it into the revision, and saves it with the running lifecycle.
+`transitionAgentDesiredRuntimeState` clears it on explicit stop in PostgreSQL.
+The worker checks the current generation before preparation, pointer commit,
+and activation, including retries after stop followed by another deployment.
+
+Kubernetes Compute projects the immutable generation into
+`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`. Unsupported topologies use the revision ID.
+Native OpenClaw (#201060, #201186) records the scope at `chat.send` admission and
+lifecycle start, and checks both graceful markers and crash evidence before
+continuation. It also refuses child completion custody from an ended scope. Public
+session projections omit the private scope and preserve it only within the same
+session incarnation.
+The [interrupted-turn reference](../reference/agents/interrupted-turns.md) owns the
+compatibility and stop contract.
 
 ### 2. Wait for a disconnected workspace before execution
 
@@ -92,7 +103,7 @@ Cancelled staged input can be reclaimed only by the same occurrence.
 
 ### 3. Transfer to the regular turn owner
 
-`deploy/runtime/Dockerfile:268` applies the bridge and leaves native
+`deploy/runtime/Dockerfile:262` applies the bridge and leaves native
 `acceptRestartResumeReceipt` ownership unchanged. Acceptance transfers the
 continuation to the normal reply lifecycle; the admission owner no longer retries it. Codex
 preflight can still wait as described below.

@@ -8,6 +8,8 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-channel-directory.test.ts",
+    "tests/integration/occ-api-auth-accounts.test.ts",
     "tests/integration/occ-api-namespace-iam-policy.test.ts",
     "tests/integration/occ-api-joint-plugin-deployment.test.ts",
     "tests/integration/occ-service-account-lifecycle.test.ts",
@@ -54,6 +56,7 @@
     "tests/integration/dependency-unavailable-log.test.ts",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.ts",
+    "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.ts",
@@ -68,6 +71,7 @@
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
+    "tests/integration/production-upgrade-command.test.ts",
     "tests/conformance/test-files.test.ts",
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
@@ -423,6 +427,12 @@
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
+      "path": "tests/integration/production-keycloak-profile.test.ts",
+      "expectedTests": [
+        "production Keycloak example renders an attached-only pilot through the chart"
+      ]
+    },
+    {
       "path": "tests/integration/profile-public-github-read.test.mjs",
       "expectedTests": [
         "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer"
@@ -481,6 +491,20 @@
       "path": "tests/integration/occ-api.test.mjs"
     },
     {
+      "path": "tests/integration/occ-api-channel-directory.test.ts",
+      "expectedTests": [
+        "Channel directory accepts Slack's null terminal cursor without losing prior matches",
+        "Channel directory lookup checks the exact edit target and Secret before and after reading"
+      ]
+    },
+    {
+      "path": "tests/integration/occ-api-auth-accounts.test.ts",
+      "expectedTests": [
+        "session inspection stays optional and never exposes session or credential secrets",
+        "administrator-created auth accounts sign in and receive only provisioned IAM access"
+      ]
+    },
+    {
       "path": "tests/integration/occ-api-namespace-iam-policy.test.ts",
       "expectedTests": [
         "Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver",
@@ -530,6 +554,9 @@
     },
     {
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
+    },
+    {
+      "path": "tests/integration/production-upgrade-command.test.ts"
     },
     {
       "path": "tests/integration/secret-api.test.ts"

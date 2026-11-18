@@ -12,13 +12,14 @@ export const DEVICE_ACCOUNT_ID = "workspace-fixture";
  * Simulates only the external Credential Gateway and Refresh contracts. OCC still owns source
  * registration, IAM, login-session fencing, and Agent bindings in the callers.
  * This fixture does not prove provider exchange, refresh, or runtime injection.
- * @param {{ now?: () => number, approve?: () => Promise<boolean>, beforePoll?: () => Promise<void>, startError?: unknown }} [options]
+ * @param {{ now?: () => number, approve?: () => Promise<boolean>, beforePoll?: () => Promise<void>, startError?: unknown, formatExpiresAt?: (at: number) => string }} [options]
  */
 export function createDeviceCredentialDrivers({
   now = () => Date.now(),
   approve = async () => true,
   beforePoll = async () => {},
   startError,
+  formatExpiresAt = (at) => new Date(at).toISOString(),
 } = {}) {
   /** @type {DeviceCredentialCall[]} */
   const calls = [];
@@ -114,7 +115,7 @@ export function createDeviceCredentialDrivers({
       return {
         verificationUrl: "https://auth.openai.com/codex/device",
         userCode: "CODE-12345",
-        expiresAt: new Date(now() + 15 * 60 * 1000).toISOString(),
+        expiresAt: formatExpiresAt(now() + 15 * 60 * 1000),
         intervalSeconds: 5,
         privateState,
       };
