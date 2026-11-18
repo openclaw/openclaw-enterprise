@@ -113,7 +113,7 @@ export async function probePackagedCodex(
           "openclaw-node-setup-renewal.patch":
             "de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8",
           "openclaw-restart-harness-readiness.patch":
-            "4f42f10f78f9be6c1ba0e2de83d795527b648f3629a9eb1764818bb7233245a3",
+            "fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);

@@ -258,7 +258,7 @@ RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp
 
 # TODO: Remove when the pinned OpenClaw retries safe restart admission and passive Codex recovery.
 COPY deploy/runtime/openclaw-restart-harness-readiness.patch /tmp/openclaw-restart-harness-readiness.patch
-RUN echo '4f42f10f78f9be6c1ba0e2de83d795527b648f3629a9eb1764818bb7233245a3  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
+RUN echo 'fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-restart-harness-readiness.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
