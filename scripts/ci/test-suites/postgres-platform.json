@@ -117,7 +117,7 @@
     {
       "path": "tests/integration/postgres-device-authorization.test.ts",
       "expectedTests": [
-        "device login survives an API replica change, accepts an exact Secret grant and fences a cancelled exchange in PostgreSQL"
+        "device login survives an API replica change and fences a cancelled exchange in PostgreSQL"
       ]
     },
     {
