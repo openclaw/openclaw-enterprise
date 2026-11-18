@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-16"
-last_updated_session: "authoring-run/04994f45-a986-442f-8747-1595e124325f"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/d1d2f3b0-6dbf-4fce-b8d6-94df71d391b8"
 ---
 
 # Production Startup Flow
@@ -145,18 +145,17 @@ Database/API ports accept 1–65535 without leading zeros; worker metrics/reposi
 ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
 numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
-On install and upgrade, Helm runs the generated
-`deploy/helm/openclaw-enterprise/files/check-installation.mjs` from
-`deploy/helm/src/check-installation.ts` before `db:migrate:production`, bootstrap and API rollout.
-`formatStartupConfigurationFailure` uses the API and worker's
-`configurationLogDetails` to report up to 32 fields without submitted values.
-`requireChartListener` reports refused ports, hosts or paths as
-`CHART_LISTENER_MISMATCH` when `OCC_EGRESS_AUTHORITY_PORT` or
-`OCC_OPENSHELL_GIT_PORT` is set.
+Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
+(generated from `deploy/helm/src/check-installation.ts`) before
+`db:migrate:production`, bootstrap and API rollout.
+`formatStartupConfigurationFailure` and `configurationLogDetails` report
+up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
+`OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
+ports, hosts or paths as `CHART_LISTENER_MISMATCH`.
 
-With chart-managed routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
+For chart routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
 to the hook, API and worker. `requireChartGatewayRouting` checks the Gateway name, Gateway and Envoy
-namespaces, and hostname. It reports a mismatched field without its value.
+namespaces, and hostname. It reports mismatched fields without values.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
@@ -390,6 +389,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 01:53: Reconcile the generated Installation check with the production migration command. (authoring-run/d1d2f3b0-6dbf-4fce-b8d6-94df71d391b8 - 0bd8061ff988a0847541fa3d890f676f1a57a676)
 
 - 2026-11-16 09:47: Document the request helper’s scoped path validation. (authoring-run/04994f45-a986-442f-8747-1595e124325f - b4a03d909a2815bbf6c44eb6e195d4503a59fe70)
 
