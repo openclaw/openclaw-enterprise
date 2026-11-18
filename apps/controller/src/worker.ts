@@ -1321,7 +1321,7 @@ export class ControllerWorker {
   private stopYieldedThisPass = false;
   /** Each claim's work creation instant on this process's monotonic clock; see `workAgeMs`. */
   private readonly workOrigins = new WeakMap<ClaimedWork, number>();
-  private currentClaim: ClaimedWork | undefined;
+  private candidateClaim: ClaimedWork | undefined;
   private enablingCandidate: Promise<void> | undefined;
 
   constructor(options: ControllerWorkerOptions) {
@@ -1609,11 +1609,11 @@ export class ControllerWorker {
     if (!this.stopping) {
       this.stopping = true;
       this.abort.abort();
-      const claim = this.currentClaim;
-      if (claim !== undefined && isCandidateDeployment(claim)) {
+      const claim = this.candidateClaim;
+      if (claim !== undefined) {
         // An enable already in flight must settle before shutdown revokes the same claim.
         await this.enablingCandidate?.catch(() => {});
-        await this.queue.setCandidateAuthorization(claim, false);
+        await this.revokeCandidate(claim);
       }
     }
     // Let an in-flight OAuth exchange persist a rotated grant before closing its dependencies.
@@ -1670,7 +1670,6 @@ export class ControllerWorker {
           this.claimedPassesSinceSweep += 1;
           this.workOrigins.set(claim, performance.now() - claim.ageMs);
           claimed = claim;
-          this.currentClaim = claim;
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
           this.preparedThisPass = undefined;
@@ -1682,10 +1681,7 @@ export class ControllerWorker {
             this.passOutcome = error instanceof WorkClaimLostError ? "claim_lost" : "error";
             throw error;
           } finally {
-            if (isCandidateDeployment(claim)) {
-              await this.queue.setCandidateAuthorization(claim, false);
-            }
-            this.currentClaim = undefined;
+            await this.revokeCandidate(claim);
             if (!this.stopYieldedThisPass) {
               this.stopYields.settled(claim.idempotencyKey);
             }
@@ -2193,7 +2189,7 @@ export class ControllerWorker {
     } catch (failure) {
       const error = primaryComputeFailure(failure);
       if (candidate) {
-        await this.queue.setCandidateAuthorization(claim, false);
+        await this.revokeCandidate(claim);
       }
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
@@ -6071,6 +6067,7 @@ export class ControllerWorker {
     if (this.stopping) {
       throw new ClaimLeaseLostError("WORKER_STOPPING");
     }
+    this.candidateClaim = claim;
     const enabling = this.queue.setCandidateAuthorization(claim, true);
     this.enablingCandidate = enabling;
     try {
@@ -6081,6 +6078,14 @@ export class ControllerWorker {
     if (this.stopping) {
       throw new ClaimLeaseLostError("WORKER_STOPPING");
     }
+  }
+
+  private async revokeCandidate(claim: ClaimedWork): Promise<void> {
+    if (this.candidateClaim !== claim) {
+      return;
+    }
+    await this.queue.setCandidateAuthorization(claim, false);
+    this.candidateClaim = undefined;
   }
 
   private async withClaimHeartbeat<T>(
@@ -6371,7 +6376,7 @@ export class ControllerWorker {
         resolved.code === "REVISION_INCOMPLETE" &&
         resolved.refusedCandidate === undefined);
     if (isCandidateDeployment(claim) && !candidateContinues) {
-      await this.queue.setCandidateAuthorization(claim, false);
+      await this.revokeCandidate(claim);
     }
     if (
       resolved.outcome === "retry" &&
@@ -6769,7 +6774,7 @@ export class ControllerWorker {
     ) {
       return;
     }
-    await this.queue.setCandidateAuthorization(claim, false);
+    await this.revokeCandidate(claim);
     const { namespace, agent, revision } = await this.state.read(async (view) => ({
       namespace: await view.namespaces.findNamespace(claim.namespaceId),
       agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),
