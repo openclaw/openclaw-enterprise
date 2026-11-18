@@ -302,23 +302,7 @@ export async function createApi(
     nativeAdmin: {
       enabled: options.nativeAdminEnabled ?? true,
       domain: nativeDomain,
-      ...(options.exchange
-        ? { sessionMode: "host-only-exchange" }
-        : {
-            // Shared native sessions retain main's guarded OIDC account path. Provider redirects
-            // are exercised separately; these cases sign in with the recovery password.
-            oidc: {
-              issuer: "https://idp.example.test",
-              authorizationUrl: "https://idp.example.test/authorize",
-              tokenUrl: "https://idp.example.test/token",
-              jwksUrl: "https://idp.example.test/jwks",
-              clientId: "native-session-proof",
-              clientSecret: "native-session-proof-secret",
-              tokenAuth: "client_secret_post",
-              displayName: "Test SSO",
-              recoveryUserId,
-            },
-          }),
+      ...(options.exchange ? { sessionMode: "host-only-exchange" } : {}),
     },
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
     nativeAdminWebSocketLeaseIntervalMs: leaseIntervalMs,

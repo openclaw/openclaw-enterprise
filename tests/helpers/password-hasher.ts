@@ -43,7 +43,7 @@ export const testPasswordHasher = Object.freeze<PasswordHasher>({
   async verify({ hash, password }) {
     const [label, salt, key, ...rest] = hash.split(":");
     if (label !== TEST_HASH_LABEL) {
-      const cacheKey = `${hash}\0${password}`;
+      const cacheKey = JSON.stringify([hash, password]);
       const cached = scryptVerifications.get(cacheKey);
       if (cached !== undefined) {
         return cached;
@@ -52,14 +52,18 @@ export const testPasswordHasher = Object.freeze<PasswordHasher>({
       scryptVerifications.set(cacheKey, verification);
       return verification;
     }
-    if (!salt || !key || rest.length > 0 || !/^[0-9a-f]{64}$/.test(key)) {
+    if (
+      !salt ||
+      !/^[0-9a-f]{32}$/.test(salt) ||
+      !key ||
+      rest.length > 0 ||
+      !/^[0-9a-f]{64}$/.test(key)
+    ) {
       return false;
     }
     return timingSafeEqual(testDigest(salt, password), Buffer.from(key, "hex"));
   },
 });
-
-// Default the fixture constructors to the test hasher and allow an explicit caller override.
 
 export function createControllerAuth(options: Parameters<typeof createControllerAuthWith>[0]) {
   return createControllerAuthWith({ passwordHasher: testPasswordHasher, ...options });
