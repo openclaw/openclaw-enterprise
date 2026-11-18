@@ -2179,7 +2179,7 @@ export class ControllerWorker {
       return prepared;
     } catch (failure) {
       const error = primaryComputeFailure(failure);
-      if (candidate && !(error instanceof WorkClaimLostError)) {
+      if (candidate) {
         await this.queue.setCandidateAuthorization(claim, false);
       }
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's

@@ -2044,6 +2044,83 @@ test(
 );
 
 test(
+  "Candidate model credentials end when Worker preparation is interrupted (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const { f, owner, revision, exchange, request, grant } = await requestCredentialFixture(t, {
+      activateRevision: false,
+    });
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const prepared = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const codes: string[] = [];
+    const worker = createControllerWorker({
+      pool: new pg.Pool({ connectionString: databaseUrl, max: 5 }),
+      mode: "development",
+      computeDriver: {
+        ...f.controller.selectedDriver("compute"),
+        async prepareRevision(selected) {
+          assert.equal(selected.id, revision.id);
+          prepared.resolve();
+          await release.promise;
+          throw new Error("controlled preparation interruption");
+        },
+      },
+      sandboxDriver: owner.require("sandbox"),
+      proxyDriver: owner.require("credential_proxy"),
+      credentialGatewayDriver: f.controller.selectedDriver("credential_gateway"),
+      pollIntervalMs: 10,
+      leaseDurationMs: 5_000,
+      emit(event) {
+        if (typeof event.code === "string") {
+          codes.push(event.code);
+        }
+      },
+    });
+    const guard = await f.pool.connect();
+    try {
+      await guard.query("BEGIN");
+      await guard.query(
+        "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key <> $1 FOR UPDATE SKIP LOCKED",
+        [key],
+      );
+      await worker.start();
+      await within(prepared.promise, () => `candidate preparation (${codes.join(", ")})`, 8_000);
+
+      const first = request();
+      assert.equal(
+        await exchange.authorizeRequestCredential(first, t.signal, () => true),
+        "credential",
+      );
+      assert.ok(await exchange.resolveRequestCredential(grant(first), t.signal));
+      const pending = request();
+      assert.equal(
+        await exchange.authorizeRequestCredential(pending, t.signal, () => true),
+        "credential",
+      );
+      const reads = f.secretReads;
+      const stopping = worker.stopLoop();
+      release.resolve();
+      await stopping;
+      const work = await new PostgresWorkQueue(f.pool).findWork(key);
+      assert.equal(work?.state, "claimed");
+      assert.ok(work?.leaseExpiresAt && work.leaseExpiresAt.getTime() > Date.now());
+      assert.equal(
+        await exchange.authorizeRequestCredential(request(), t.signal, () => true),
+        undefined,
+      );
+      assert.equal(await exchange.resolveRequestCredential(grant(pending), t.signal), undefined);
+      assert.equal(f.secretReads, reads, "interruption refuses before Secret reads");
+    } finally {
+      release.resolve();
+      await worker.stop();
+      await guard.query("ROLLBACK");
+      guard.release();
+    }
+  },
+);
+
+test(
   "A refused candidate cannot mint or redeem while its Worker retries stopping it (PostgreSQL)",
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {

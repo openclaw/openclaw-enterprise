@@ -1938,6 +1938,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "enqueueRepositoryCleanup",
       "claim",
       "heartbeat",
+      "setCandidateAuthorization",
       "pending",
       "claimableWorkWaiting",
       "complete",
