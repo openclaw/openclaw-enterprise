@@ -171,17 +171,33 @@ Verification of implementation `8da0b518c` and the following test/doc cleanup:
   The source archive checksum matched; all unchanged patches and the removal
   patch apply in recipe order.
 
-[Native image qualification](https://github.com/openclaw/openclaw-enterprise/actions/runs/44388831231)
-runs against `8da0b518c`; both controller architectures passed and both runtimes
-are pending. Final-head image checks remain required before merge. Local
-`k3d-model` preparation created an isolated cluster and is building runtime images.
-No real-model continuation, configuration-change, Stop→Deploy, or prior-image
-upgrade result is claimed yet.
+Required PR CI passed at `7f7b643fd` in
+[run 44394192551](https://github.com/openclaw/openclaw-enterprise/actions/runs/44394192551).
+[Native image qualification](https://github.com/openclaw/openclaw-enterprise/actions/runs/44394184541)
+continues on that revision. Both controller architectures passed; the runtime
+jobs remain separate proof. Do not cancel useful native verification solely for
+a documentation or test follow-up.
+
+Local native preparation built the candidate controller and runtime images after
+using the supported build-CA secret and rebuilding two damaged Docker cache
+stages. It then failed the real Codex sandbox probe:
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
+No model-recovery test ran. The sandbox was not relaxed, and the owned cluster,
+PostgreSQL fixture, and image tags were cleaned up. Real-model continuation,
+configuration-change, Stop→Deploy, and prior-scoped-image upgrade remain unproved
+on this host. They require an environment where the reviewed native sandbox probe
+passes.
+
+Main advanced to `d2710fed4d1c33521acc3c832792d31db82eb983`. The authorized normal
+merge preserves published history and its readiness-wait message change. Conflict
+resolution retains the new readiness checksum, the removal patch's checksum,
+the deleted scope guard, and the unscoped recovery contract. Required CI must pass
+again on the published merged head. Issue #6500 remains separate.
 
 PR CI at `8da0b518c` found one stale packaging assertion: the packaged-Codex
 fixture omitted the new removal patch from its expected provenance inventory.
-The fixture now checks that patch's exact reviewed SHA-256. Runtime smoke and CI
-must rerun with the corrected fixture; the equality check remains strict.
+Commit `7f7b643fd` corrected the exact SHA-256 expectation; the equality check
+remains strict, and the next required CI run passed.
 
 Independent implementation review remains unavailable: the shared autoreview
 helper's isolated Codex process failed initialization on a read-only filesystem.

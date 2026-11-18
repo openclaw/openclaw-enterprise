@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
@@ -123,7 +125,7 @@ export function registerHelmCases(): void {
   );
 
   test(
-    "profile preset files reach startup YAML and roll both controllers",
+    "profile preset selection reaches startup and rolls both controllers",
     { skip: helmSkip },
     async () => {
       const original = await render("codex", codexInput());
@@ -136,12 +138,37 @@ export function registerHelmCases(): void {
         /presets:\n {2}includeDefaults: true\n {2}files:\n {4}- \/app\/deploy\/presets\/swe-preset.json/,
       );
       const originalManifests = helmTemplate(original);
-      const changedManifests = helmTemplate(changed);
-      for (const component of ["api", "worker"]) {
-        assert.notEqual(
-          deploymentChecksum(originalManifests, component),
-          deploymentChecksum(changedManifests, component),
+      const customPresetPath = fileURLToPath(
+        new URL("../../deploy/presets/swe-preset.json", import.meta.url),
+      );
+      for (const [presets, expectedNames] of [
+        [
+          { files: [customPresetPath] },
+          ["SWE Agent", "Standard Codex", "Standard OpenClaw", "default-codex"],
+        ],
+        [{ includeDefaults: false, files: [customPresetPath] }, ["SWE Agent"]],
+        [{ includeDefaults: false }, []],
+      ] as const) {
+        // The production startup loader must seed exactly the Presets the renderer selected.
+        const changed = await render(
+          "codex",
+          codexInput({
+            presets: { ...presets, ...("files" in presets ? { files: [...presets.files] } : {}) },
+          }),
         );
+        const runtime = await loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: join(changed.directory, "installation.yaml") },
+        });
+        assert.ok(runtime?.defaultPresets);
+        assert.deepEqual(runtime.defaultPresets.map((preset) => preset.name).sort(), expectedNames);
+        const changedManifests = helmTemplate(changed);
+        for (const component of ["api", "worker"]) {
+          assert.notEqual(
+            deploymentChecksum(originalManifests, component),
+            deploymentChecksum(changedManifests, component),
+          );
+        }
       }
     },
   );

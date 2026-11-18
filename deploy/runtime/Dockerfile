@@ -258,7 +258,7 @@ RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp
 
 # TODO: Remove when the pinned OpenClaw retries safe restart admission and passive Codex recovery.
 COPY deploy/runtime/openclaw-restart-harness-readiness.patch /tmp/openclaw-restart-harness-readiness.patch
-RUN echo 'a7f1cf323cb34affbcbf8e059949660f292215680f91c2e45b3d80322808f35f  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
+RUN echo 'fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-restart-harness-readiness.patch
 # TODO: Remove this patch when pinned OpenClaw drops supervisor recovery scopes.
 # Remove scope enforcement without changing native authority.

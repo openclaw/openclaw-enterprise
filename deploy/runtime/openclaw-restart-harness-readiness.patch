@@ -1,3 +1,18 @@
+diff --git a/extensions/codex/src/app-server/thread-lifecycle-errors.ts b/extensions/codex/src/app-server/thread-lifecycle-errors.ts
+index 3d6ace3619d..65a0183de0e 100644
+--- a/extensions/codex/src/app-server/thread-lifecycle-errors.ts
++++ b/extensions/codex/src/app-server/thread-lifecycle-errors.ts
+@@ -28,8 +28,9 @@ export class CodexThreadBindingConflictError extends Error {
+ export class CodexAdoptedThreadActiveError extends AgentHarnessPreflightError {
+   constructor(
+     message = "Codex session became active in another runner; wait for it to finish before continuing",
++    options?: { userMessage?: string },
+   ) {
+-    super(message);
++    super(message, options);
+     this.name = "CodexAdoptedThreadActiveError";
+   }
+ }
 diff --git a/extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts b/extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts
 index ba1b9bdd4d1..1afccd9c07c 100644
 --- a/extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts
@@ -155,7 +170,7 @@ index ba1b9bdd4d1..1afccd9c07c 100644
 +
  });
 diff --git a/extensions/codex/src/app-server/thread-policy.test.ts b/extensions/codex/src/app-server/thread-policy.test.ts
-index fa4997205c4..24d67a260fd 100644
+index fa4997205c4..78f65117045 100644
 --- a/extensions/codex/src/app-server/thread-policy.test.ts
 +++ b/extensions/codex/src/app-server/thread-policy.test.ts
 @@ -1,10 +1,11 @@
@@ -172,7 +187,7 @@ index fa4997205c4..24d67a260fd 100644
  import { buildThreadResumeParams, buildThreadStartParams } from "./thread-requests.js";
  
  describe("native thread policy refresh", () => {
-@@ -87,3 +88,40 @@ describe("native thread policy refresh", () => {
+@@ -87,3 +88,45 @@ describe("native thread policy refresh", () => {
      },
    );
  });
@@ -208,13 +223,18 @@ index fa4997205c4..24d67a260fd 100644
 +        },
 +      },
 +    });
-+    await expect(waiting).rejects.toThrow("active in another runner");
++    await expect(waiting).rejects.toThrow("still active after the restart wait");
++    // The refusal stays; its copy says the work still runs and how to continue.
++    await expect(waiting).rejects.toHaveProperty(
++      "userMessage",
++      "The Gateway restarted while the Agent was working on this request. The work is still running in the Agent's workspace, and its result will not appear in this reply. After it finishes, send a new message to continue.",
++    );
 +  } finally {
 +    await h.client.closeAndWait();
 +  }
 +});
 diff --git a/extensions/codex/src/app-server/thread-policy.ts b/extensions/codex/src/app-server/thread-policy.ts
-index d1a82cf4a1b..8c0e1de7029 100644
+index d1a82cf4a1b..1f6816bce30 100644
 --- a/extensions/codex/src/app-server/thread-policy.ts
 +++ b/extensions/codex/src/app-server/thread-policy.ts
 @@ -1,3 +1,4 @@
@@ -231,7 +251,7 @@ index d1a82cf4a1b..8c0e1de7029 100644
    threadId: string,
    context: {
      lifecycleTiming: Pick<CodexThreadLifecycleTimingTracker, "measure">;
-@@ -186,20 +187,37 @@ export async function assertAdoptedCodexThreadResumeAllowed(
+@@ -186,20 +187,46 @@ export async function assertAdoptedCodexThreadResumeAllowed(
    },
    assertCurrent: () => void,
  ): Promise<CodexThread> {
@@ -277,8 +297,17 @@ index d1a82cf4a1b..8c0e1de7029 100644
 +    // A remote app-server can outlive its Gateway. A restart input may wait for
 +    // the old turn, but must never interrupt it or adopt a still-active thread.
 +    const remaining = deadline - Date.now();
-+    if (!waitForRestart || remaining <= 0) {
++    if (!waitForRestart) {
 +      throw new CodexAdoptedThreadActiveError();
++    }
++    if (remaining <= 0) {
++      throw new CodexAdoptedThreadActiveError(
++        "Codex turn from before the Gateway restart is still active after the restart wait; recovery does not interrupt or adopt it",
++        {
++          userMessage:
++            "The Gateway restarted while the Agent was working on this request. The work is still running in the Agent's workspace, and its result will not appear in this reply. After it finishes, send a new message to continue.",
++        },
++      );
 +    }
 +    await delay(Math.min(1_000, remaining), undefined, { signal: params.signal });
    }
