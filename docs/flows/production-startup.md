@@ -132,7 +132,7 @@ DNS peers UDP/TCP `53` and `5353`
 
 `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` refuses existing or unreadable
 Jobs during connected installs. Offline rendering cannot check this; lookup
-neither locks names nor verifies database/volume freshness.
+neither locks names nor validates database state or bootstrap credentials.
 
 `openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
 checks routing, ports and peer labels. See [routing opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
@@ -360,8 +360,8 @@ The shell initializes the missing annotation, patches with UID and
   `apps/controller/src/api-startup.ts:startupFailureFields` passes the API
   diagnostics to `apps/controller/src/server.mjs`.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
-  first check for unsafe output storage, existing outputs, database-role
-  failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
+  first check for invalid projected credentials, database-role failures,
+  auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
   administrator/IAM mismatch.
 - After changing an external startup Secret, roll out the API and worker. Repeat
   readiness and authenticated checks.
