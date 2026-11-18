@@ -155,7 +155,18 @@ export function registerDeviceAuthorizationSessionCases() {
   });
 
   test("expiry closes the login handle without removing the ready source or its discovery", async (t) => {
-    const fixture = await createFixture(t);
+    const fixture = await createFixture(t, {
+      formatExpiresAt: (at) =>
+        new Date(at + 9 * 60 * 60 * 1000).toISOString().replace("Z", "+09:00"),
+    });
+    const pending = await fixture.start();
+    await fixture.clock.advance(15 * 60 * 1000 + 1);
+    // Expiry compares instants even when a selected Refresh Driver uses a timezone offset.
+    await fixture.controller.expireAuthenticationStates(32);
+    const expired = await fixture.stored(pending);
+    assert.equal(expired.phase, "cancelled");
+    assert.equal(expired.privateState, undefined);
+    assert.equal(expired.encryptedChallenge, undefined);
     const login = await readyLogin(fixture);
     await fixture.clock.advance(24 * 60 * 60 * 1000);
     assert.equal((await fixture.poll(login)).status, 409);

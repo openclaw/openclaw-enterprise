@@ -30,7 +30,7 @@ releases that client. Accepted operations finish before release, and escaped
 queue or query handles cannot access it afterward. An uncertain commit outcome
 continues to suppress unsafe controller compensation.
 
-The `authenticationStates` repository stores [browser OAuth connection attempts](../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../flows/credential-source-refresh.md#device-authorization-and-configuration) in one PostgreSQL table. Its methods preserve each lifecycle: browser callbacks consume a matching attempt once, while device polls use version-checked updates. Human sign-in attempts remain under the separate human-authentication owner.
+The `authenticationStates` repository stores [browser OAuth connection attempts](../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../flows/credential-source-refresh.md#device-authorization-and-configuration) in one PostgreSQL table. It creates typed states, consumes a matching browser attempt once, updates device progress by version, and settles expired attempts. Human sign-in attempts remain under the separate human-authentication owner.
 
 These are persistence boundaries; they do not authorize a resource operation.
 The controller and worker still enforce the caller's exact resource authority.

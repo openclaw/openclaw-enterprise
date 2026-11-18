@@ -526,46 +526,44 @@ export interface SecretReferencePage {
   readonly truncated: boolean;
 }
 
-interface StoredDeviceAuthorization {
+export type OAuthAuthenticationState = Omit<ConnectionSession, "stateHash"> & {
+  readonly kind: "oauth_connection";
+  readonly id: string;
+};
+
+export type DeviceAuthenticationState = DeviceAuthorizationSession & {
+  readonly kind: "device_authorization";
+  readonly id: string;
   readonly version: number;
-  readonly session: DeviceAuthorizationSession;
-}
+};
+
+export type AuthenticationState = OAuthAuthenticationState | DeviceAuthenticationState;
+export type DeviceAuthenticationChanges = Pick<
+  DeviceAuthorizationSession,
+  "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge"
+>;
+export type OAuthSourceRef = Pick<OAuthAuthenticationState, "namespaceId" | "credentialSourceId">;
 
 export interface AuthenticationStateReadRepository {
-  findDeviceAuthorization(
-    namespaceId: string,
-    id: string,
-  ): Promise<StoredDeviceAuthorization | undefined>;
+  findDevice(namespaceId: string, id: string): Promise<DeviceAuthenticationState | undefined>;
 }
 
 export interface AuthenticationStateRepository extends AuthenticationStateReadRepository {
-  createDeviceAuthorization(id: string, session: DeviceAuthorizationSession): Promise<void>;
-  replaceDeviceAuthorization(
+  create(state: AuthenticationState): Promise<void>;
+  replaceDevice(
     namespaceId: string,
     id: string,
     version: number,
-    session: Pick<
-      DeviceAuthorizationSession,
-      "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge"
-    >,
+    changes: DeviceAuthenticationChanges,
   ): Promise<boolean>;
-  expireDeviceAuthorizations(at: string, limit: number): Promise<void>;
-  createConnectionSession(session: ConnectionSession): Promise<Readonly<ConnectionSession>>;
-  consumeConnectionSession(
-    stateHash: string,
+  consumeOAuth(
+    id: string,
     actorId: string,
     sessionId: string,
     at: string,
-  ): Promise<Readonly<ConnectionSession> | undefined>;
-  takeExpiredConnectionSessions(
-    at: string,
-    limit: number,
-  ): Promise<readonly Pick<ConnectionSession, "namespaceId" | "credentialSourceId">[]>;
+  ): Promise<OAuthAuthenticationState | undefined>;
+  expire(at: string, limit: number): Promise<readonly OAuthSourceRef[]>;
 }
-
-type StoredAuthenticationState =
-  | { readonly kind: "oauth_connection"; readonly session: Readonly<ConnectionSession> }
-  | { readonly kind: "device_authorization"; readonly record: StoredDeviceAuthorization };
 
 export interface SecretReadRepository {
   findSecret(namespaceId: string, secretId: string): Promise<Readonly<Secret> | undefined>;
@@ -1324,7 +1322,7 @@ interface PlatformSnapshot {
   readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
   readonly presets: Map<string, Readonly<Preset>>;
-  readonly authenticationStates: Map<string, StoredAuthenticationState>;
+  readonly authenticationStates: Map<string, AuthenticationState>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
@@ -2010,11 +2008,7 @@ function repositories(
         throw new ScopeViolationError("The Namespace tombstone timestamp is invalid.");
       }
       for (const [id, state] of snapshot.authenticationStates) {
-        const stateNamespace =
-          state.kind === "oauth_connection"
-            ? state.session.namespaceId
-            : state.record.session.namespaceId;
-        if (stateNamespace === namespaceId) {
+        if (state.namespaceId === namespaceId) {
           snapshot.authenticationStates.delete(id);
         }
       }
@@ -2235,8 +2229,7 @@ function repositories(
           (connection) => connection.connectionTemplateId === templateId,
         ) ||
         [...snapshot.authenticationStates.values()].some(
-          (state) =>
-            state.kind === "oauth_connection" && state.session.connectionTemplateId === templateId,
+          (state) => state.kind === "oauth_connection" && state.connectionTemplateId === templateId,
         )
       ) {
         throw new ResourceStateConflictError("The connection template is in use.");
@@ -2251,7 +2244,7 @@ function repositories(
     },
   };
 
-  const assertConnectionScope = (record: SavedConnection | ConnectionSession): void => {
+  const assertConnectionScope = (record: SavedConnection | OAuthAuthenticationState): void => {
     const { namespaceId, credentialSourceId, connectionTemplateId, connectionTemplateVersion } =
       record;
     const template = snapshot.connectionTemplates.get(connectionTemplateId);
@@ -2585,26 +2578,25 @@ function repositories(
   };
 
   const authenticationStates: AuthenticationStateRepository = {
-    findDeviceAuthorization: async (namespaceId, id) => {
-      const state = snapshot.authenticationStates.get(id);
-      return state?.kind === "device_authorization" &&
-        state.record.session.namespaceId === namespaceId
-        ? state.record
-        : undefined;
-    },
-    createDeviceAuthorization: async (id, session) => {
-      if (!snapshot.namespaces.has(session.namespaceId)) {
+    create: async (state) => {
+      if (state.kind === "oauth_connection") {
+        assertInitialized(snapshot);
+        assertConnectionScope(state);
+      } else if (!snapshot.namespaces.has(state.namespaceId)) {
         throw new ScopeViolationError("The login belongs to an unavailable Namespace.");
       }
-      if (snapshot.authenticationStates.has(id)) {
-        throw new ResourceConflictError("The login session already exists.");
+      if (snapshot.authenticationStates.has(state.id)) {
+        throw new ResourceConflictError("The authentication state already exists.");
       }
-      snapshot.authenticationStates.set(id, {
-        kind: "device_authorization",
-        record: storedCopy({ version: 1, session }),
-      });
+      snapshot.authenticationStates.set(state.id, storedCopy(state));
     },
-    replaceDeviceAuthorization: async (
+    findDevice: async (namespaceId, id) => {
+      const state = snapshot.authenticationStates.get(id);
+      return state?.kind === "device_authorization" && state.namespaceId === namespaceId
+        ? state
+        : undefined;
+    },
+    replaceDevice: async (
       namespaceId,
       id,
       version,
@@ -2613,96 +2605,76 @@ function repositories(
       const state = snapshot.authenticationStates.get(id);
       if (
         state?.kind !== "device_authorization" ||
-        state.record.session.namespaceId !== namespaceId ||
-        state.record.version !== version
+        state.namespaceId !== namespaceId ||
+        state.version !== version
       ) {
         return false;
       }
-      const {
-        privateState: _handle,
-        encryptedChallenge: _challenge,
-        ...metadata
-      } = state.record.session;
-      snapshot.authenticationStates.set(id, {
-        kind: "device_authorization",
-        record: storedCopy({
+      const { privateState: _handle, encryptedChallenge: _challenge, ...metadata } = state;
+      snapshot.authenticationStates.set(
+        id,
+        storedCopy({
+          ...metadata,
+          phase,
+          expiresAt,
+          nextPollAt,
+          ...(privateState === undefined ? {} : { privateState }),
+          ...(encryptedChallenge === undefined ? {} : { encryptedChallenge }),
           version: version + 1,
-          session: {
-            ...metadata,
-            phase,
-            expiresAt,
-            nextPollAt,
-            ...(encryptedChallenge === undefined ? {} : { encryptedChallenge }),
-            ...(privateState === undefined ? {} : { privateState }),
-          },
         }),
-      });
+      );
       return true;
     },
-    expireDeviceAuthorizations: async (at, limit) => {
-      let expired = 0;
-      for (const [id, state] of snapshot.authenticationStates) {
-        if (expired >= limit) {
-          break;
-        }
-        if (state.kind !== "device_authorization") {
-          continue;
-        }
-        const { version, session } = state.record;
-        if (session.phase !== "cancelled" && Date.parse(session.expiresAt) <= Date.parse(at)) {
-          snapshot.authenticationStates.set(id, {
-            kind: "device_authorization",
-            record: storedCopy({
-              version: version + 1,
-              session: cancelledDeviceAuthorization(session),
-            }),
-          });
-          expired++;
-        }
-      }
-    },
-    createConnectionSession: async (session) => {
-      assertInitialized(snapshot);
-      assertConnectionScope(session);
-      if (snapshot.authenticationStates.has(session.stateHash)) {
-        throw new ResourceConflictError("The connection session already exists.");
-      }
-      const saved = immutableCopy(session);
-      snapshot.authenticationStates.set(saved.stateHash, {
-        kind: "oauth_connection",
-        session: saved,
-      });
-      return immutableCopy(saved);
-    },
-    consumeConnectionSession: async (stateHash, actorId, sessionId, at) => {
-      const state = snapshot.authenticationStates.get(stateHash);
+    consumeOAuth: async (id, actorId, sessionId, at) => {
+      const state = snapshot.authenticationStates.get(id);
       if (
         state?.kind !== "oauth_connection" ||
-        state.session.actorId !== actorId ||
-        state.session.sessionId !== sessionId ||
-        state.session.expiresAt <= at
+        state.actorId !== actorId ||
+        state.sessionId !== sessionId ||
+        state.expiresAt <= at
       ) {
         return undefined;
       }
-      snapshot.authenticationStates.delete(stateHash);
-      return immutableCopy(state.session);
+      snapshot.authenticationStates.delete(id);
+      return state;
     },
-    takeExpiredConnectionSessions: async (at, limit) => {
-      const expired = [...snapshot.authenticationStates.values()]
-        .filter(
-          (state): state is Extract<StoredAuthenticationState, { kind: "oauth_connection" }> =>
-            state.kind === "oauth_connection" && state.session.expiresAt <= at,
-        )
-        .map((state) => state.session)
-        .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt))
-        .slice(0, limit);
-      for (const session of expired) {
-        snapshot.authenticationStates.delete(session.stateHash);
+    expire: async (at, limit) => {
+      const abandoned: OAuthSourceRef[] = [];
+      let deviceCount = 0;
+      const deadline = Date.parse(at);
+      const states = [...snapshot.authenticationStates.values()].sort(
+        (left, right) =>
+          Date.parse(left.expiresAt) - Date.parse(right.expiresAt) ||
+          left.id.localeCompare(right.id),
+      );
+      for (const state of states) {
+        if (Date.parse(state.expiresAt) > deadline) {
+          break;
+        }
+        if (state.kind === "oauth_connection" && abandoned.length < limit) {
+          snapshot.authenticationStates.delete(state.id);
+          abandoned.push({
+            namespaceId: state.namespaceId,
+            credentialSourceId: state.credentialSourceId,
+          });
+        } else if (
+          state.kind === "device_authorization" &&
+          state.phase !== "cancelled" &&
+          deviceCount < limit
+        ) {
+          snapshot.authenticationStates.set(
+            state.id,
+            storedCopy({
+              ...cancelledDeviceAuthorization(state),
+              kind: "device_authorization",
+              id: state.id,
+              version: state.version + 1,
+            }),
+          );
+          deviceCount++;
+        }
       }
-      return expired.map(({ namespaceId, credentialSourceId }) => ({
-        namespaceId,
-        credentialSourceId,
-      }));
+      return abandoned;
     },
   };
 
@@ -3232,8 +3204,8 @@ function repositories(
       for (const [id, state] of snapshot.authenticationStates) {
         if (
           state.kind === "oauth_connection" &&
-          state.session.namespaceId === namespaceId &&
-          state.session.credentialSourceId === credentialSourceId
+          state.namespaceId === namespaceId &&
+          state.credentialSourceId === credentialSourceId
         ) {
           snapshot.authenticationStates.delete(id);
         }

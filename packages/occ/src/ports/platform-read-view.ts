@@ -49,7 +49,7 @@ export function createPlatformReadView(
       "listRevokingConnections",
     ]),
     authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
-      "findDeviceAuthorization",
+      "findDevice",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",

@@ -36,6 +36,7 @@ interface FixtureOptions {
   approve?: () => Promise<boolean>;
   beforePoll?: () => Promise<void>;
   startError?: unknown;
+  formatExpiresAt?: (at: number) => string;
 }
 
 type DeviceGateway = CredentialGatewayDriver & {
@@ -183,10 +184,10 @@ export async function createFixture(
     },
     async stored(login: Pick<DeviceLogin, "session">) {
       const record = await controller.transact((unit) =>
-        unit.authenticationStates.findDeviceAuthorization(namespace.id, login.session.id),
+        unit.authenticationStates.findDevice(namespace.id, login.session.id),
       );
       assert.ok(record, "the login session must exist");
-      return record.session;
+      return record;
     },
   };
 }

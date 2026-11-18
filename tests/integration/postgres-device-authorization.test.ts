@@ -110,7 +110,7 @@ test(
     }
     async function row(id: string) {
       const result = await first.pool.query(
-        "SELECT phase, device_source_id, private_state, encrypted_challenge, to_jsonb(s)::text AS contents FROM occ.authentication_states s WHERE kind = 'device_authorization' AND namespace_id = $1 AND id = $2",
+        "SELECT phase, binding->>'sourceId' AS device_source_id, private_state, encrypted_challenge, to_jsonb(s)::text AS contents FROM occ.authentication_states s WHERE kind = 'device_authorization' AND namespace_id = $1 AND id = $2",
         [namespaceId, id],
       );
       assert.equal(result.rowCount, 1);
@@ -121,7 +121,7 @@ test(
     const consent = await startOAuth();
     // Both supported entry points write to the same physical store without sharing private fields.
     const coexisting = await first.pool.query(
-      `SELECT kind, credential_source_id, device_source_id FROM occ.authentication_states
+      `SELECT kind, credential_source_id, binding->>'sourceId' AS device_source_id FROM occ.authentication_states
        WHERE namespace_id = $1 AND (id = $2 OR credential_source_id = $3) ORDER BY kind`,
       [namespaceId, id, consent.sourceId],
     );
@@ -133,6 +133,32 @@ test(
       },
       { kind: "oauth_connection", credential_source_id: consent.sourceId, device_source_id: null },
     ]);
+    // The application role can update device progress but cannot rewrite an immutable binding,
+    // alter an OAuth attempt, or introduce fields belonging to another workflow.
+    await assert.rejects(
+      first.pool.query("UPDATE occ.authentication_states SET binding = binding WHERE id = $1", [
+        id,
+      ]),
+      { code: "42501" },
+    );
+    await assert.rejects(
+      first.pool.query(
+        "UPDATE occ.authentication_states SET expires_at = expires_at WHERE credential_source_id = $1",
+        [consent.sourceId],
+      ),
+      { code: "55000" },
+    );
+    await assert.rejects(
+      first.pool.query(
+        `INSERT INTO occ.authentication_states
+         (id,kind,namespace_id,actor_id,expires_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
+         SELECT $2,kind,namespace_id,actor_id,expires_at,binding || '{"redirectUri":"invalid"}'::jsonb,
+                phase,next_poll_at,encrypted_challenge,private_state,version
+         FROM occ.authentication_states WHERE id = $1`,
+        [id, `sec_${randomUUID()}`],
+      ),
+      { code: "23514" },
+    );
     // A different browser session cannot consume the owner's attempt. Concurrent owner callbacks
     // then race on the same database row: exactly one consumes it before classifying the refusal.
     const stolen = await second.inject("GET", consent.callback);

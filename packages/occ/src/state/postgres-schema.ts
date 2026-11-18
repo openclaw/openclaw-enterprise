@@ -2659,40 +2659,22 @@ export const authenticationStates = occSchema.table(
   "authentication_states",
   {
     id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
     namespaceId: text("namespace_id").notNull(),
-    credentialSourceId: text("credential_source_id"),
-    pkceVerifier: text("pkce_verifier"),
-    selectedScopes: text("selected_scopes").array(),
-    issuerRequired: boolean("issuer_required"),
-    sessionId: text("session_id"),
-    redirectUri: text("redirect_uri"),
     actorId: text("actor_id").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    credentialSourceId: text("credential_source_id"),
     connectionTemplateId: text("connection_template_id"),
     connectionTemplateVersion: integer("connection_template_version"),
     createdAt: timestamp("created_at", { withTimezone: true }),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    kind: text("kind").notNull(),
-    agentId: text("agent_id"),
-    harnessId: text("harness_id"),
-    credentialGatewayId: text("credential_gateway_id"),
-    credentialRefreshId: text("credential_refresh_id"),
-    deviceSourceId: text("device_source_id"),
-    encryptedChallenge: text("encrypted_challenge"),
-    intervalSeconds: integer("interval_seconds"),
+    binding: jsonb("binding").notNull(),
     phase: text("phase"),
     nextPollAt: timestamp("next_poll_at", { withTimezone: true }),
+    encryptedChallenge: text("encrypted_challenge"),
     privateState: text("private_state"),
     version: integer("version"),
   },
   (table) => [
-    check(
-      "authentication_states_selected_scopes_valid",
-      sql`array_position(${table.selectedScopes},NULL) IS NULL`,
-    ),
-    check(
-      "authentication_states_expiry_after_creation",
-      sql`${table.expiresAt} > ${table.createdAt}`,
-    ),
     foreignKey({
       name: "authentication_states_source_owner",
       columns: [table.namespaceId, table.credentialSourceId],
@@ -2721,31 +2703,41 @@ export const authenticationStates = occSchema.table(
     ),
     check(
       "authentication_states_oauth_shape",
-      sql`${table.kind} <> 'oauth_connection' OR (
-      ${table.id} ~ '^[0-9a-f]{64}$' AND ${table.credentialSourceId} IS NOT NULL AND ${table.pkceVerifier} IS NOT NULL
-      AND ${table.selectedScopes} IS NOT NULL AND ${table.issuerRequired} IS NOT NULL AND ${table.sessionId} IS NOT NULL
-      AND ${table.redirectUri} IS NOT NULL AND ${table.connectionTemplateId} IS NOT NULL
-      AND ${table.connectionTemplateVersion} IS NOT NULL AND ${table.createdAt} IS NOT NULL
-      AND ${table.agentId} IS NULL AND ${table.harnessId} IS NULL AND ${table.credentialGatewayId} IS NULL
-      AND ${table.credentialRefreshId} IS NULL AND ${table.deviceSourceId} IS NULL AND ${table.encryptedChallenge} IS NULL
-      AND ${table.intervalSeconds} IS NULL AND ${table.phase} IS NULL AND ${table.nextPollAt} IS NULL
+      sql`${table.kind} <> 'oauth_connection' OR ((
+      ${table.id} ~ '^[0-9a-f]{64}$' AND ${table.credentialSourceId} IS NOT NULL
+      AND ${table.connectionTemplateId} IS NOT NULL AND ${table.connectionTemplateVersion} IS NOT NULL
+      AND ${table.createdAt} IS NOT NULL AND ${table.expiresAt} > ${table.createdAt}
+      AND ${table.phase} IS NULL AND ${table.nextPollAt} IS NULL AND ${table.encryptedChallenge} IS NULL
       AND ${table.privateState} IS NULL AND ${table.version} IS NULL
-    )`,
+      AND jsonb_typeof(${table.binding}) = 'object'
+      AND ${table.binding} ?& ARRAY['pkceVerifier','selectedScopes','issuerRequired','sessionId','redirectUri']
+      AND ${table.binding} - ARRAY['pkceVerifier','selectedScopes','issuerRequired','sessionId','redirectUri'] = '{}'::jsonb
+      AND jsonb_typeof(${table.binding}->'pkceVerifier') = 'string' AND jsonb_typeof(${table.binding}->'sessionId') = 'string'
+      AND jsonb_typeof(${table.binding}->'redirectUri') = 'string' AND jsonb_typeof(${table.binding}->'issuerRequired') = 'boolean'
+      AND jsonb_typeof(${table.binding}->'selectedScopes') = 'array'
+      AND NOT jsonb_path_exists(${table.binding}, '$.selectedScopes[*] ? (@.type() != "string")')
+    ) IS TRUE)`,
     ),
     check(
       "authentication_states_device_shape",
-      sql`${table.kind} <> 'device_authorization' OR (
-      ${table.id} ~ ${identifierPatterns.secret} AND ${table.credentialSourceId} IS NULL AND ${table.pkceVerifier} IS NULL
-      AND ${table.selectedScopes} IS NULL AND ${table.issuerRequired} IS NULL AND ${table.sessionId} IS NULL
-      AND ${table.redirectUri} IS NULL AND ${table.connectionTemplateId} IS NULL
-      AND ${table.connectionTemplateVersion} IS NULL AND ${table.createdAt} IS NULL
-      AND ${table.harnessId} IS NOT NULL AND ${table.credentialGatewayId} IS NOT NULL AND ${table.credentialRefreshId} IS NOT NULL
-      AND ${table.deviceSourceId} IS NOT NULL AND ${table.intervalSeconds} IS NOT NULL AND ${table.intervalSeconds} > 0
+      sql`${table.kind} <> 'device_authorization' OR ((
+      ${table.id} ~ ${identifierPatterns.secret}
+      AND ${table.credentialSourceId} IS NULL AND ${table.connectionTemplateId} IS NULL
+      AND ${table.connectionTemplateVersion} IS NULL AND ${table.createdAt} IS NULL AND ${table.version} > 0
+      AND jsonb_typeof(${table.binding}) = 'object'
+      AND ${table.binding} ?& ARRAY['harnessId','credentialGatewayId','credentialRefreshId','sourceId','intervalSeconds']
+      AND ${table.binding} - ARRAY['agentId','harnessId','credentialGatewayId','credentialRefreshId','sourceId','intervalSeconds'] = '{}'::jsonb
+      AND (NOT (${table.binding} ? 'agentId') OR jsonb_typeof(${table.binding}->'agentId') = 'string')
+      AND jsonb_typeof(${table.binding}->'harnessId') = 'string' AND jsonb_typeof(${table.binding}->'credentialGatewayId') = 'string'
+      AND jsonb_typeof(${table.binding}->'credentialRefreshId') = 'string' AND jsonb_typeof(${table.binding}->'sourceId') = 'string'
+      AND CASE WHEN jsonb_typeof(${table.binding}->'intervalSeconds') = 'number' THEN
+        (${table.binding}->>'intervalSeconds')::numeric BETWEEN 1 AND 2147483647
+        AND trunc((${table.binding}->>'intervalSeconds')::numeric) = (${table.binding}->>'intervalSeconds')::numeric ELSE false END
       AND ${table.phase} IS NOT NULL AND ${table.phase} IN ('pending','polling','cancelled','ready')
-      AND ${table.nextPollAt} IS NOT NULL AND ${table.version} IS NOT NULL AND ${table.version} > 0
+      AND ${table.nextPollAt} IS NOT NULL
       AND ((${table.phase} IN ('pending','polling')) = (${table.privateState} IS NOT NULL))
       AND ((${table.phase} <> 'cancelled') = (${table.encryptedChallenge} IS NOT NULL))
-    )`,
+    ) IS TRUE)`,
     ),
     index("authentication_states_oauth_expiry")
       .on(table.expiresAt, table.id)

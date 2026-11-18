@@ -5172,8 +5172,9 @@ export class OpenClawController {
       const started = startBrowserAuthorization(
         browserAuthorizationRequest(version, client, input.redirectUri, selectedScopes),
       );
-      await state.authenticationStates.createConnectionSession({
-        stateHash: createHash("sha256").update(started.state).digest("hex"),
+      await state.authenticationStates.create({
+        kind: "oauth_connection",
+        id: createHash("sha256").update(started.state).digest("hex"),
         namespaceId,
         credentialSourceId: source.id,
         sessionId: input.sessionId,
@@ -5201,11 +5202,7 @@ export class OpenClawController {
   async expireAuthenticationStates(limit: number): Promise<void> {
     await this.mutate(async (state) => {
       const now = this.timestamp();
-      await state.authenticationStates.expireDeviceAuthorizations(now, limit);
-      for (const attempt of await state.authenticationStates.takeExpiredConnectionSessions(
-        now,
-        limit,
-      )) {
+      for (const attempt of await state.authenticationStates.expire(now, limit)) {
         await state.credentialSources.deleteCredentialSource(
           attempt.namespaceId,
           attempt.credentialSourceId,
@@ -5225,7 +5222,7 @@ export class OpenClawController {
     }
     const stateHash = createHash("sha256").update(input.state).digest("hex");
     const session = await this.mutate((state) =>
-      state.authenticationStates.consumeConnectionSession(
+      state.authenticationStates.consumeOAuth(
         stateHash,
         principalId,
         input.sessionId,
@@ -10339,7 +10336,8 @@ export class OpenClawController {
         : new DeviceAuthorizationStartError("unavailable");
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    const { privateState, expiresAt, intervalSeconds, userCode, verificationUrl } = started;
+    const { privateState, intervalSeconds, userCode, verificationUrl } = started;
+    const expiresAt = new Date(started.expiresAt).toISOString();
     const sessionId = this.nextIdentifier("secret");
     const handle = { id: sessionId, namespaceId };
     const session: DeviceAuthorizationSession = {
@@ -10374,8 +10372,11 @@ export class OpenClawController {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      await state.authenticationStates.createDeviceAuthorization(sessionId, {
+      await state.authenticationStates.create({
         ...session,
+        kind: "device_authorization",
+        id: sessionId,
+        version: 1,
         encryptedChallenge,
         privateState: encrypted,
       });
@@ -10399,12 +10400,7 @@ export class OpenClawController {
     session: DeviceAuthorizationSession,
   ) {
     return this.mutate((state) =>
-      state.authenticationStates.replaceDeviceAuthorization(
-        session.namespaceId,
-        id,
-        version,
-        session,
-      ),
+      state.authenticationStates.replaceDevice(session.namespaceId, id, version, session),
     );
   }
 
@@ -10416,17 +10412,12 @@ export class OpenClawController {
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     const stored = await this.read((state) =>
-      state.authenticationStates.findDeviceAuthorization(namespaceId, sessionId),
+      state.authenticationStates.findDevice(namespaceId, sessionId),
     );
     if (stored === undefined) {
       throw new ScopeViolationError("The login does not belong to the exact Namespace.");
     }
-    const { session } = stored;
-    if (
-      session.actorId !== principalId ||
-      session.namespaceId !== namespaceId ||
-      session.agentId !== agentId
-    ) {
+    if (stored.actorId !== principalId || stored.agentId !== agentId) {
       throw new DeviceAuthorizationScopeMismatchError();
     }
     return stored;
@@ -10438,12 +10429,13 @@ export class OpenClawController {
     sessionId: string,
     agentId?: string,
   ) {
-    const { version, session } = await this.readAgentDeviceAuthorization(
+    const session = await this.readAgentDeviceAuthorization(
       principalId,
       namespaceId,
       sessionId,
       agentId,
     );
+    const { version } = session;
     await this.authorize(principalId, "operate", {
       kind: "credential_source",
       namespaceId,
@@ -10584,12 +10576,13 @@ export class OpenClawController {
     sessionId: string,
     agentId?: string,
   ): Promise<void> {
-    const { version, session } = await this.readAgentDeviceAuthorization(
+    const session = await this.readAgentDeviceAuthorization(
       principalId,
       namespaceId,
       sessionId,
       agentId,
     );
+    const { version } = session;
     // Local discard must never revoke a shared upstream login session.
     if (
       !(await this.replaceDeviceAuthorization(

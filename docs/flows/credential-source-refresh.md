@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: "2026-11-18"
-last_updated_session: "authoring-run/0e501248-a309-4913-b4df-122e4c3783c2"
+last_updated_session: "authoring-run/038990d2-f182-4b8e-8b66-afc5c706ca11"
 ---
 
 # Credential source refresh Flow
@@ -119,13 +119,12 @@ failure code. Otherwise OCC commits `ready` with audit.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-OCC registers the source under current Agent scope and Namespace
-`credential_source:create`, rechecks authority before the challenge, and audits
-`source_registering` and `source_ready`. Failed starts retain the source. OCC
-seals the provider handle and challenge with its authentication-state encryption
-key and commits `session_pending` as kind `device_authorization` in
-`occ.authentication_states`. Browser OAuth attempts share that store; human
-sign-in attempts remain separate. Audit excludes login material.
+OCC registers the source under Agent scope and Namespace `credential_source:create`,
+rechecks authority before the challenge, and audits `source_registering`, `source_ready`,
+and `session_pending` without login material. Failed starts retain the source. OCC seals
+the challenge and provider handle in a `device_authorization` row with immutable binding
+and versioned progress in `occ.authentication_states`, shared with browser OAuth. Human
+sign-in uses separate storage.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` retains
 `start_unconfirmed` across navigation. Agent detail keeps Credentials open for
@@ -314,6 +313,8 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 21:15: Simplify authentication state. (authoring-run/038990d2-f182-4b8e-8b66-afc5c706ca11 - fb3be388136a143306686807d06e415f93c1f5e4)
 
 - 2026-11-18 16:20: Trace device login through shared OCC authentication state in the accompanying change. (authoring-run/0e501248-a309-4913-b4df-122e4c3783c2 - 5dfbd6c1db67024917c79790ee7b6155e6f753e1)
 

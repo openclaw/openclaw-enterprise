@@ -929,7 +929,7 @@ test(
     try {
       await lock.query("BEGIN");
       const held = await lock.query(
-        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1 RETURNING pg_backend_pid() AS pid, pkce_verifier",
+        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1 RETURNING pg_backend_pid() AS pid, binding->>'pkceVerifier' AS pkce_verifier",
         [waiting.id],
       );
       verifier = held.rows[0].pkce_verifier;
