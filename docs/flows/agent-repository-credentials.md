@@ -203,11 +203,10 @@ validates `new | retained` bindings against the version and hashes sorted
 reference/session pairs.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-store.ts:RepositoryMaterialStore.prepare`
 validates ownership, contents and deadlines before creating immutable Agent/version-owned
-Secrets. It rechecks deadlines after requests and before creation or return; expiry
-leaves Secrets for owned cleanup. For missing retained bindings,
-`RepositoryCredentialLifecycle.repair` closes that subset, requires disposal and
-retries Compute once. Missing inventory fails; pending closure blocks replacement
-until disposal is confirmed.
+Secrets, rechecking deadlines after requests and before creation or return. Expiry
+leaves Secrets for cleanup. For missing retained bindings, `RepositoryCredentialLifecycle.repair`
+closes that subset, requires disposal and retries Compute once. Missing inventory fails;
+pending closure blocks replacement until confirmed disposal.
 
 `apps/controller/src/drivers/compute/kubernetes/repository-material.ts:repositoryMaterialDeployment`
 mounts Secrets only in the first initializer. Sorted projections prevent key-order rollouts;
@@ -236,14 +235,13 @@ Compute grants consumer egress; Helm admits consumers through
 For [prepared native Git](../reference/repository-credentials/prepared-native-git.md),
 `apps/controller/src/drivers/compute/kubernetes/repository-compute-ingress.ts:reconcilePreparedRepositoryIngress`
 requires the peer’s hostname, TLS port and worker selector to match the broker
-Service recorded by Helm. Native preparation writes `gitconfig` without reading
-bearers. System Git includes `/run/oce/repository-credentials/gitconfig` and
-preserves global settings.
-Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
+Service recorded by Helm. Native preparation writes `gitconfig` without bearers; system Git includes
+`/run/oce/repository-credentials/gitconfig` and preserves global settings.
+Embedded `repositoryNativeConfiguration` puts the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
-`allow_login_shell=false` and `shell_environment_policy.set.PATH`, and keeps the Pod's
-`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication persists.
-App keys, JWTs, installation tokens and the control socket never enter consumer material.
+`allow_login_shell=false` and `shell_environment_policy.set.PATH`, retaining
+`NODE_EXTRA_CA_CERTS` and model authentication. Consumer material excludes App keys,
+JWTs, installation tokens and the control socket.
 The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines Codex plugin and repository-bound filesystem and proxy access, explicit denies,
 and dedicated/embedded eligibility. Unbound policy, broker authorization and TLS
@@ -251,11 +249,15 @@ verification stay in force. Codex verifies the named network profile on thread s
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-Stock Git retains commands, remotes, settings and hooks. Configuration rewrites
-canonical HTTPS hosts to their gateway origin. The helper checks host/path,
-generation and deadline before supplying a bearer. `OCE_REPOSITORY_REF` selects
-bindings, not destinations. There is no whole-command preflight or egress confinement.
-See the [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
+`apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts:OpenShellPreparedGitProvider`
+refuses contradictory native push authority before Gateway calls, versions service-specific
+Git rules, and verifies endpoint readback before Provider creation.
+
+Git preserves commands, remotes, settings and hooks; configuration rewrites
+canonical HTTPS hosts to the gateway. Helpers check host/path, generation and
+deadline before supplying bearers. `OCE_REPOSITORY_REF` selects bindings, not
+destinations. [Routing limits](../reference/repository-credentials.md#client-routing-and-limits)
+exclude whole-command preflight and egress confinement.
 `pushRefAllowlist` selects image-owned hooks.
 `scripts/build-repository-credentials.ts:stage` emits Node launchers that resolve the
 dispatcher from their module URL, supporting symlink chains and package relocation.

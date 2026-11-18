@@ -1,13 +1,16 @@
 # Protected repository access with OpenShell
 
-Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md)
-for authenticated pre-credential checks and signed startup release. OCE verifies
-selected repositories' returned GitHub scope against canonical IDs and explicit
-permissions. GitHub governs refs and REST/GraphQL; grant changes block use.
+[Enroll OpenShell](../../guides/repository-credentials/openshell-enrollment.md) for
+authenticated pre-credential checks and signed startup release. OCE checks GitHub
+scope against canonical repository IDs and permissions. GitHub governs refs and
+REST/GraphQL; grant changes block use.
 
-`git-write` retains exact ref policy; `git-read` and `git-full` retain existing
-semantics. Installation preview requires opt-in. Exact-dispatch and v7 reduction
-guarantees remain unqualified.
+`git-write` retains exact ref policy; `git-read` and `git-full` keep
+semantics. Installation preview requires opt-in. Native workload Git permits
+upload discovery (`service=git-upload-pack`) and upload RPC. Contents write with
+push authority also permits receive discovery (`service=git-receive-pack`) and
+receive RPC; read mode refuses both. Rules do not constrain refs or bodies.
+Installed enforcement, exact dispatch, and v7 reduction remain unqualified.
 
 Keep Credential Gateway selected. The Git-only Proxy profile uses a Gateway
 model source. For combined model/Git v9, follow [per-request model setup](../../guides/credential-proxy/model-requests.md):
@@ -18,9 +21,8 @@ acceptance remains pending. For upgrades, see [compatibility](../../guides/deplo
 
 - **Kernel.** The Driver requires Landlock (`hard_requirement`). Sandboxes need ABI
   v3 or later and Linux 6.2 or newer. Ubuntu 22.04's 5.15 kernel cannot start them.
-- **Supervisor trust.** The supervisor uses its image's CA bundle for GitHub and
-  model TLS. Include any private or intercepting CA in that image; otherwise model
-  probes time out and Git requests fail.
+- **Supervisor trust.** Include private or intercepting CAs in the supervisor image's
+  GitHub/model TLS bundle; otherwise model probes time out and Git requests fail.
 - **Unattended commands.** With
   `plugins.entries.codex.config.appServer.approvalPolicy: on-request` and no
   approver, Codex declines the shell commands it asks about, so Git never runs. For
@@ -338,17 +340,15 @@ Correlate revision and request IDs with `worker.openshell-git-denied`.
 
 ### Qualification history
 
-OpenShell 0.1.4 (`5a7728c3`) reported supervisor process and network identities
-without Gateway attestation; the Gateway authenticated only the Sandbox
-principal. Reconnect continuity therefore relied on the supervisor's claims.
-This observation does not qualify a newer candidate's identity.
+OpenShell 0.1.4 (`5a7728c3`) lacked Gateway attestation of supervisor process
+and network identities; the Gateway authenticated only the Sandbox principal.
+Reconnect continuity relied on supervisor claims and does not qualify newer releases.
 
-That version also reset all Sandbox connections on provider material changes,
-including the workspace WebSocket and model streams. Activation passed through
-`REPOSITORY_GIT_MATERIAL_PENDING`, `WORKSPACE_NODE_RECONNECT_PENDING`, and
-`WORKSPACE_NODE_PENDING`. Later renewals repeated the reset (observed chat outages
-of about 1–7 s). Qualify connection continuity on the selected release; inspect
-uncertain request outcomes before retrying.
+Provider material changes reset all Sandbox connections, including workspace WebSocket
+and model streams. Activation passed through `REPOSITORY_GIT_MATERIAL_PENDING`,
+`WORKSPACE_NODE_RECONNECT_PENDING`, and `WORKSPACE_NODE_PENDING`; renewals repeated
+the reset (observed chat outages about 1–7 s). Qualify continuity on the selected
+release and inspect uncertain outcomes before retrying.
 
 ## GitHub App key rotated or revoked
 

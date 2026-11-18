@@ -657,3 +657,91 @@ test("Git grant provider creates an empty attachment for a single repository rea
   );
   assert.deepEqual(calls, ["profile", "create"]);
 });
+
+test("native Git query matcher survives the wire and altered readback blocks Provider creation", async (t) => {
+  const workspace = "native-git-wire";
+  let imported: Record<string, unknown> | undefined;
+  let tamper = false;
+  let creates = 0;
+  const { client }: { client: GrpcOpenShellGatewayClient } = await gitExpiryGateway(t, {
+    model: "model",
+    workspace,
+    sandbox: "sandbox",
+    revisionId: "revision",
+    deadline: "2030-01-01T00:00:00Z",
+    platformProfile: false,
+    configure(methods: Record<string, (request: Record<string, unknown>) => unknown>) {
+      methods.GetWorkspace = () => ({
+        workspace: { metadata: { name: workspace, id: "workspace-id" } },
+      });
+      methods.GetProvider = () => undefined;
+      methods.GetProviderProfile = () => {
+        if (!imported) {
+          return undefined;
+        }
+        const profile = structuredClone(imported);
+        if (tamper) {
+          const endpoint = (
+            profile.endpoints as { rules: { allow: Record<string, unknown> }[] }[]
+          )[0]!;
+          delete endpoint.rules[0]!.allow.query;
+        }
+        return { profile };
+      };
+      methods.LintProviderProfiles = () => ({
+        valid: true,
+        supports_gateway_jwt_bearer_grant: true,
+      });
+      methods.ImportProviderProfiles = (request) => {
+        const item = (request.profiles as { profile: Record<string, unknown> }[])[0]!;
+        imported = { ...item.profile, scope: "workspace", resource_version: "1" };
+        return { imported: true };
+      };
+      methods.CreateProvider = (request) => {
+        creates++;
+        const provider = request.provider as Record<string, unknown>;
+        return {
+          provider: {
+            ...provider,
+            profile_workspace: workspace,
+            metadata: {
+              ...(provider.metadata as Record<string, unknown>),
+              id: "provider-id",
+              workspace,
+              resource_version: "2",
+            },
+          },
+        };
+      };
+    },
+  });
+  const make = () =>
+    new OpenShellPreparedGitProvider(client, {
+      workspace,
+      workspaceId: "workspace-id",
+      sandbox: "sandbox",
+      executionId: "revision",
+      installationId: "41",
+      gitOrigin: "https://github.com",
+      apiOrigin: "https://api.github.com",
+      binaries: ["/usr/bin/git"],
+      observedHookPreview: true,
+      tokenGrant: {
+        endpoint: "https://authority.example.test/token",
+        audience: "revision",
+        repository: "example/repo",
+        workloadGrant: {
+          resource: "https://github.com/example/repo",
+          scopes: ["contents:read", "metadata:read"],
+        },
+      },
+    });
+  await make().bootstrap(t.signal);
+  assert.equal(creates, 1);
+  const endpoint = (imported!.endpoints as { rules: { allow: Record<string, unknown> }[] }[])[0]!;
+  assert.deepEqual(endpoint.rules[0]!.allow.query, { service: { glob: "git-upload-pack" } });
+  imported = undefined;
+  tamper = true;
+  await assert.rejects(make().bootstrap(t.signal), { outcome: "unknown" });
+  assert.equal(creates, 1, "a downgraded immutable definition cannot create a Provider");
+});

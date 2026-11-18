@@ -849,14 +849,13 @@ test("the selected credential pull removes Git middleware and preserves mandator
   assert.deepEqual(pull.network_middlewares, other);
 });
 
-test("workload Git policy excludes the legacy middleware probe and retains Git transport", async (t) => {
+test("native workload Git policy scopes discovery and refuses contradictory push authority", async (t) => {
   const { f } = await selectedV5(t);
   const repository = "example/repo";
   const grant = {
     endpoint: "https://authority.fixture.test/token",
     audience: "execution",
     repository,
-    allowPush: true as const,
   };
   const scope = {
     workspace: "workspace",
@@ -869,38 +868,76 @@ test("workload Git policy excludes the legacy middleware probe and retains Git t
     binaries: ["/usr/bin/git"],
     observedHookPreview: true as const,
   };
-  const policy = (workload: boolean) =>
+  const provider = (contents: "read" | "write", allowPush = contents === "write") =>
     new OpenShellPreparedGitProvider(fixtureClient(f), {
       ...scope,
       tokenGrant: {
         ...grant,
-        ...(workload && {
-          workloadGrant: {
-            resource: `https://github.com/${repository}`,
-            scopes: ["contents:write", "metadata:read"],
-          },
-        }),
+        ...(allowPush && { allowPush: true as const }),
+        workloadGrant: {
+          resource: `https://github.com/${repository}`,
+          scopes: [`contents:${contents}`, "metadata:read"],
+        },
       },
-    }).previewNetworkRule();
-  const ordinaryRules = [
-    { allow: { method: "GET", path: `/${repository}.git/info/refs` } },
+    });
+  const upload = [
+    {
+      allow: {
+        method: "GET",
+        path: `/${repository}.git/info/refs`,
+        query: { service: { glob: "git-upload-pack" } },
+      },
+    },
     { allow: { method: "POST", path: `/${repository}.git/git-upload-pack` } },
+  ];
+  const receive = [
+    {
+      allow: {
+        method: "GET",
+        path: `/${repository}.git/info/refs`,
+        query: { service: { glob: "git-receive-pack" } },
+      },
+    },
     { allow: { method: "POST", path: `/${repository}.git/git-receive-pack` } },
   ];
-  const legacy = policy(false);
-  const workload = policy(true);
-  assert.equal(legacy.endpoints.length, 1);
-  assert.equal(workload.endpoints.length, 1);
+  const read = provider("read").previewNetworkRule();
+  const write = provider("write").previewNetworkRule();
+  const readEndpoint = read.endpoints[0];
+  const writeEndpoint = write.endpoints[0];
+  assert.ok(readEndpoint && "rules" in readEndpoint);
+  assert.ok(writeEndpoint && "rules" in writeEndpoint);
+  assert.deepEqual(readEndpoint.rules, upload);
+  assert.deepEqual(writeEndpoint.rules, [...upload, ...receive]);
+  assert.equal(writeEndpoint.provider_credentialed, true);
+  assert.notEqual(
+    write.name,
+    "_provider_oce_github_installation_0e8665fd8520177326ce1adfc83073e9",
+    "native immutable identity changes with the policy",
+  );
+  const staticPolicy = new OpenShellPreparedGitProvider(
+    fixtureClient(f),
+    scope,
+  ).previewNetworkRule();
+  assert.equal(
+    staticPolicy.name,
+    "_provider_oce_github_installation_62a9a8490fad72bef36a3c9591b6544b",
+  );
+  const legacy = new OpenShellPreparedGitProvider(fixtureClient(f), {
+    ...scope,
+    tokenGrant: { ...grant, allowPush: true },
+  }).previewNetworkRule();
+  assert.equal(legacy.name, "_provider_oce_github_installation_909bd86c178586a4bc5465ef07424c5f");
   const legacyEndpoint = legacy.endpoints[0];
-  const workloadEndpoint = workload.endpoints[0];
   assert.ok(legacyEndpoint && "rules" in legacyEndpoint);
-  assert.ok(workloadEndpoint && "rules" in workloadEndpoint);
-  assert.equal(workloadEndpoint.provider_credentialed, true);
-  assert.deepEqual(workloadEndpoint.rules, ordinaryRules);
   assert.deepEqual(legacyEndpoint.rules, [
-    ...ordinaryRules,
+    { allow: { method: "GET", path: `/${repository}.git/info/refs` } },
+    upload[1],
+    receive[1],
     { allow: { method: "GET", path: `/${repository}.git/oce-observe-request/*/info/refs` } },
   ]);
+  const calls = structuredClone(f.calls);
+  assert.throws(() => provider("read", true), { outcome: "refused" });
+  assert.deepEqual(f.calls, calls, "contradictory authority is refused before Gateway import");
 });
 
 // Preserve the admission checks on the supported selected-repository workflow.
