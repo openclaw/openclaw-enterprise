@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -1093,7 +1094,7 @@ export function registerStartupPreflightCases({
     assert.deepEqual(migrationContainers[0], {
       ...migration,
       command: ["node"],
-      args: ["scripts/migrate-production.mjs", "--check"],
+      args: [...selectedImageMigrationEntry, "--check"],
     });
     assert.ok(
       containerEnvironment(migration).some(

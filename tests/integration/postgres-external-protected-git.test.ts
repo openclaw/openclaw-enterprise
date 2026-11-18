@@ -37,7 +37,7 @@ import {
 } from "../fixtures/repository-credentials/process.ts";
 import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { injectJson } from "../helpers/inject-json.mjs";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";

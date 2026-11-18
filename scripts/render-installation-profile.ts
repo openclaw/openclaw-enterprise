@@ -1171,11 +1171,10 @@ function renderOidc(source: InputRecord, diagnostics: Errors) {
       "an https URL on port 443 with a DNS host name and no query or fragment, written without a port",
   });
   rendered.issuer = issuer;
-  const host = oidcEndpointHost(issuer, { issuer: true });
   for (const key of ["authorizationUrl", "tokenUrl", "jwksUrl"] as const) {
     rendered[key] = asString(source, [...path, key], diagnostics, {
-      validate: (value) => host === undefined || oidcEndpointHost(value) === host,
-      description: "an https URL on port 443 on the issuer's host, with no query or fragment",
+      validate: (value) => oidcEndpointHost(value) !== undefined,
+      description: "an https URL on port 443 with a DNS host name and no query or fragment",
     });
   }
   const tokenAuth = optionalString(source, [...path, "tokenAuth"], diagnostics, {
@@ -1381,6 +1380,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
       "apiClients",
       "databaseCidrs",
       "clusterCidrs",
+      "clusterPort",
       "dns",
       "gatewayClassName",
       "gatewayApiKeySecretName",
@@ -1841,6 +1841,13 @@ function buildRendered(
     );
   }
 
+  const clusterPort = optionalPositiveInteger(
+    controlPlane,
+    ["controlPlane", "clusterPort"],
+    diagnostics,
+    { max: 65535 },
+  );
+
   // Same rule the controller applies to Installation observability.url at startup, including
   // its refusal of any @ before the host (http://@host).
   // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
@@ -1987,6 +1994,7 @@ function buildRendered(
         validate: (value) => isIpv4Cidr(value, 32),
         description: "an IPv4 /32 CIDR",
       }),
+      ...(clusterPort === undefined ? {} : { port: clusterPort }),
     },
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined

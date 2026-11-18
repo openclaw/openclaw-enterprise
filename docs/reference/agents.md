@@ -101,7 +101,8 @@ codes that a new deployment can clear, such as `DEPENDENCY_UNAVAILABLE` or
 unspecified. Held failures end deployment early:
 `RUNTIME_AUTHENTICATION_FAILED` (rejected credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
-or `WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
+`RUNTIME_STATE_LOCK_UNVERIFIED` (check `gateway-state-lock`), or
+`WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with
 [`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
@@ -276,7 +277,9 @@ An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then
 clears `activeRevisionId`; version history, credentials, and persistent state
 remain. Cleanup includes failed candidate resources and interrupted predecessor
-retirement owned by the current Compute. Repeating stop is safe. To resume,
+retirement owned by the current Compute. Repeating stop is safe. On Kubernetes
+Compute, a turn cut by stop [does not resume](agents/interrupted-turns.md); SSH and
+Docker Compute have limits. To resume the Agent,
 deploy a new version; old versions cannot be restarted. See
 [stop and resume](agents/deployment.md#stop-and-resume).
 
@@ -391,6 +394,8 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18: On Kubernetes, a turn cut by stop, replacement or deletion does not resume; see [interrupted turns](agents/interrupted-turns.md). (finding 3347)
 
 - 2026-10-25: Moved workspace file request details to [Agent workspace files](agents/workspace-files.md).
 

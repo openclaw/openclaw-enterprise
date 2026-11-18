@@ -1,3 +1,7 @@
+import {
+  assertInvalidInlinePlan,
+  invalidInlinePlans,
+} from "./occ-api-inline-provisioning-cases.ts";
 import { runBackendAssociations, runBackendIdCharacterRule } from "./occ-api-backend-cases.ts";
 import {
   registerAuthorizationDecisionCases,
@@ -3173,6 +3177,7 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
     RUNTIME_STARTUP_FAILED:
       "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
+    RUNTIME_STATE_LOCK_UNVERIFIED: `Startup check gateway-state-lock failed: the runtime cannot verify that its state lock holder stopped. See it with 'occ agent logs ${agent.id} --source gateway' (Harness: --source agent), then follow the troubleshooting guide.`,
     // Finding 2537: these fell through to "Deployment reconciliation failed.", which named no
     // step. A version stored inconsistently sends the reader to an administrator, not to
     // runtime logs that do not exist.
@@ -5054,6 +5059,17 @@ test("Agent provisioning API validates inline configuration with existing Secret
   await bootstrap(controller, "Provisioning validation installation");
   const namespace = await createNamespace(controller, "provisioning-validation");
 
+  // Observe successful Configuration writes: unlike Agents, Configurations have no list route.
+  const configurationsCreated = [];
+  const createConfigurationRecord = configurationDriver.create.bind(configurationDriver);
+  configurationDriver.create = async (configuration) => {
+    const created = await createConfigurationRecord(configuration);
+    if (created.namespaceId === namespace.id) {
+      configurationsCreated.push(created.id);
+    }
+    return created;
+  };
+
   const provisionPath = `/namespaces/${namespace.id}/agents/provision`;
   const provision = (body) => controller.request("POST", provisionPath, { body });
 
@@ -5070,155 +5086,14 @@ test("Agent provisioning API validates inline configuration with existing Secret
   const requestBody = (overrides) => provisioningRequestBody(namespace.id, secrets, overrides);
 
   const foreignNamespaceId = `ns_${randomUUID()}`;
-  const foreignSecretId = `sec_${randomUUID()}`;
-  const oversizedBindings = Object.fromEntries(
-    Array.from({ length: 65 }, (_, index) => [`TOOL_${index}`, { source: toolApiKey.data.ref }]),
+  const invalidPlans = invalidInlinePlans(
+    requestBody,
+    modelApiKey.data.ref,
+    toolApiKey.data.ref,
+    foreignNamespaceId,
   );
-  const invalidBodies = [
-    {
-      description: "submitted Secret values",
-      body: {
-        ...requestBody(),
-        secrets: [{ name: "tool-api-key", value: `tool-key-${randomUUID()}` }],
-      },
-      message:
-        "The request does not match the operation contract: body /secrets is not an accepted field.",
-    },
-    {
-      description: "request-local Secret binding sources",
-      body: requestBody({
-        configuration: {
-          secretBindings: {
-            TOOL_API_KEY: {
-              source: { kind: "provisioning-secret", name: "tool-api-key" },
-            },
-          },
-        },
-      }),
-      message:
-        "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required.",
-    },
-    {
-      description: "request-local Harness Secret source",
-      body: requestBody({
-        harnessAuth: {
-          method: "api_key",
-          source: { kind: "provisioning-secret", name: "model-api-key" },
-        },
-      }),
-      message:
-        "The request does not match the operation contract: body /harnessAuth/source/namespaceId is required.",
-    },
-    {
-      // Only the source kind is wrong, so the api_key shape fits and the other Harness
-      // authentication shapes' fields are not listed.
-      description: "Harness Secret source of another kind",
-      body: requestBody({
-        harnessAuth: {
-          method: "api_key",
-          source: {
-            ...exactSecretRef(namespace.id, secrets.modelApiKey.id),
-            kind: "provisioning-secret",
-          },
-        },
-      }),
-      message:
-        'The request does not match the operation contract: body /harnessAuth/source/kind has an unsupported value (expected "secret").',
-    },
-    {
-      // A string fits neither a Harness authentication shape nor null: one wrong-type problem
-      // names both, not one per union level.
-      description: "Harness authentication of the wrong type",
-      body: requestBody({ harnessAuth: "api_key" }),
-      message:
-        "The request does not match the operation contract: body /harnessAuth has the wrong type (expected one of object, null).",
-      details: [{ path: "/harnessAuth", code: "INVALID_TYPE" }],
-    },
-    {
-      // The method selects the api_key shape, so only its missing source is reported, not
-      // the fields of the other methods' shapes or the runtime method's literal.
-      description: "Harness authentication method without its source",
-      body: requestBody({ harnessAuth: { method: "api_key" } }),
-      message:
-        "The request does not match the operation contract: body /harnessAuth/source is required.",
-      details: [{ path: "/harnessAuth/source", code: "REQUIRED" }],
-    },
-    {
-      description: "too many binding destinations",
-      body: requestBody({
-        configuration: { secretBindings: oversizedBindings },
-      }),
-      message:
-        "The request does not match the operation contract: body /configuration/secretBindings has an unsupported value (expected at most 64 fields).",
-    },
-    {
-      description: "non-env delivery",
-      body: requestBody({
-        configuration: {
-          secretBindings: {
-            TOOL_API_KEY: {
-              source: toolApiKey.data.ref,
-              delivery: { type: "file" },
-            },
-          },
-        },
-      }),
-      message:
-        'The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/delivery/type has an unsupported value (expected "env").',
-    },
-    {
-      description: "cross-Namespace Secret references",
-      body: requestBody({
-        configuration: {
-          secretBindings: {
-            TOOL_API_KEY: {
-              source: { kind: "secret", namespaceId: foreignNamespaceId, id: foreignSecretId },
-            },
-          },
-        },
-      }),
-      message: "Secret references cannot cross Namespaces.",
-    },
-    {
-      // executionMode is optional and defaults to embedded; the Compute Driver provisions only
-      // dedicated Agents, so the request is refused naming the field to set.
-      description: "omitted execution mode",
-      body: requestBody({ executionMode: undefined }),
-      message:
-        "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
-    },
-    {
-      description: "embedded execution mode",
-      body: requestBody({ executionMode: "embedded" }),
-      message:
-        "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
-    },
-    {
-      description: "reserved environment destinations",
-      body: requestBody({
-        configuration: {
-          secretBindings: {
-            OPENCLAW_TOKEN: {
-              source: toolApiKey.data.ref,
-            },
-          },
-        },
-      }),
-      message: "A secret binding destination uses the reserved prefix OPENCLAW_*: OPENCLAW_TOKEN.",
-      // The reserved destination is named by its pointer under the inline Configuration.
-      details: [{ path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" }],
-    },
-  ];
-
-  // Each case must fail on its own rule (the exact message), not on an unrelated one.
-  for (const { description, body, message } of invalidBodies) {
-    const result = await provision(body);
-    assertApiError(result, 400, "INVALID_REQUEST", description);
-    if (message instanceof RegExp) {
-      assert.match(result.body.error.message, message, description);
-    } else {
-      assert.equal(result.body.error.message, message, description);
-    }
+  for (const plan of invalidPlans) {
+    await assertInvalidInlinePlan(provision, plan);
   }
   // A plan the Kubernetes Compute Driver refuses is a conflict (its error classes are private,
   // so it used to be a 500). A gateway setting in the caller's own Configuration is named,
@@ -5270,11 +5145,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
         'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
     },
   );
-  // Topology-independent Kubernetes rules refuse at provisioning with the Configuration save
-  // message (finding 1116), before any Agent or Configuration is stored.
+  // Topology-independent Kubernetes rules give the same refusal as Configuration save.
   computeDriver.validateConfiguration = (...args) => kubernetes.validateConfiguration(...args);
-  // Finding 1207: a Preset header name that waits on a variable without a default saves on
-  // Kubernetes Compute, as on every other Compute; the filled name is checked at provisioning.
+  // Saving a Preset accepts a header name that waits on a variable without a default.
   configurationDriver.validateValues = async () => {};
   const placeholder = "{{ vars.header }}";
   const preset = await controller.request("POST", `/namespaces/${namespace.id}/presets`, {
@@ -5301,8 +5174,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   delete configurationDriver.validateValues;
-  const agentsBefore = (await fixture.controller.listAgents(fixture.principal.id, namespace.id))
-    .length;
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   for (const [values, message] of [
     [
       { ...model, channels: { discord: { enabled: true } } },
@@ -5339,8 +5211,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       { code: "INVALID_REQUEST", message },
     );
   }
-  // The filled Preset is checked at provisioning. Finding 1208: the refusal names the header,
-  // never its value, whatever word the rule matched.
+  // Provisioning with an inline header names the forbidden header but never echoes its value.
   const sentinel = `synthetic-filled-header-${randomUUID()}`;
   for (const name of ["X-Upstream-Pwd", "X-Signature-Sha256"]) {
     const filled = await provision(
@@ -5363,10 +5234,8 @@ test("Agent provisioning API validates inline configuration with existing Secret
     );
     assert.equal(JSON.stringify(filled.body).includes(sentinel), false);
   }
-  assert.equal(
-    (await fixture.controller.listAgents(fixture.principal.id, namespace.id)).length,
-    agentsBefore,
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
+  assert.deepEqual(configurationsCreated, [], "Kubernetes refusals must not store Configurations");
   delete computeDriver.validateConfiguration;
   // A refusal the caller cannot fix (here the Installation enables dedicated runtime storage
   // without gateway routing) keeps fixed text, since its reason names Installation settings.
@@ -5483,11 +5352,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
   computeDriver.validateAgentProvisioning = () => {};
   assert.equal(computeUnavailable.status, 503, JSON.stringify(computeUnavailable.body));
   assert.equal(computeUnavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  for (const { body, details } of invalidBodies) {
-    if (details) {
-      const refused = await provision(body);
-      assert.deepEqual(refused.body.error.details, details);
-    }
+  // Restoring a healthy Compute Driver must not change which field the API rejects.
+  for (const plan of invalidPlans.filter((plan) => plan.details !== undefined)) {
+    await assertInvalidInlinePlan(provision, plan);
   }
 
   // A model provider baseUrl the runtime cannot use is refused at admission with the field
@@ -5578,9 +5445,22 @@ test("Agent provisioning API validates inline configuration with existing Secret
   await assertNoAgentsInNamespace(fixture, namespace.id);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
 
-  const durableOnly = await provision(requestBody());
-  assert.equal(durableOnly.status, 503, JSON.stringify(durableOnly.body));
-  assert.equal(durableOnly.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  const assertNeedsDurableStorage = (response) => {
+    assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(response.body.error.message, "A required platform dependency is unavailable.");
+    // Only the operator log says which dependency failed. Match this request to exclude earlier 503s.
+    assert.deepEqual(
+      logLines
+        .filter(
+          (line) =>
+            line.event === "http.dependency_unavailable" &&
+            line.requestId === response.body.meta.requestId,
+        )
+        .map((line) => line.message),
+      ["Agent provisioning requires durable PostgreSQL state for checkpoints."],
+    );
+  };
+  assertNeedsDurableStorage(await provision(requestBody()));
   await assertNoAgentsInNamespace(
     fixture,
     namespace.id,
@@ -5625,9 +5505,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   assert.equal(foreignAccount.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
   const missingAccount = await provisionWithAccount({ ...managedSource, id: `sa_${randomUUID()}` });
   assertApiError(missingAccount, 404, "NOT_FOUND", "a missing account");
-  const acceptedAccount = await provisionWithAccount(managedSource);
-  assert.equal(acceptedAccount.status, 503, JSON.stringify(acceptedAccount.body));
-  assert.equal(acceptedAccount.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertNeedsDurableStorage(await provisionWithAccount(managedSource));
 
   const rawBody = JSON.stringify(
     requestBody({
@@ -5636,6 +5514,12 @@ test("Agent provisioning API validates inline configuration with existing Secret
   );
   const oversized = await controller.request("POST", provisionPath, { rawBody });
   assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
+  await assertNoAgentsInNamespace(fixture, namespace.id);
+  assert.deepEqual(
+    configurationsCreated,
+    [],
+    "no provisioning request should store a Configuration",
+  );
 });
 
 registerBootstrapAuthorizationEvidenceCase(createInjectedFixture);

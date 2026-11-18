@@ -15,6 +15,7 @@ import {
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
+  assertInterruptedGatewayTurnResumes,
   assertGatewayPrivateResources,
   assertNativeReferenceNegativeControl,
   assertPrivateStateInitContainer,
@@ -283,6 +284,8 @@ test(
     );
     process.stderr.write("k3d dedicated: topology ready; running a real model turn.\n");
     await assertActualModelTurn(topology);
+    process.stderr.write("k3d dedicated: testing automatic interrupted-turn recovery.\n");
+    await assertInterruptedGatewayTurnResumes(context, topology);
     process.stderr.write("k3d dedicated: model turn passed; testing normal workspace flows.\n");
     await assertDedicatedAgentsInstructionsInFreshSession(topology);
     await context.test("native child returns its own exact answer", async () => {
