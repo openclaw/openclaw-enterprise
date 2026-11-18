@@ -211,9 +211,9 @@ same guarded sign-in profile and recovery user and Google.
 Compose runs `node scripts/bootstrap-installation.ts` in development. After the
 Installation check and migration, the Helm Job directly executes the supported bootstrap
 program declared by the selected controller image's `db:bootstrap:production` task.
-The task must be a string that selects `scripts/bootstrap-installation.mjs` or
+The task must select `scripts/bootstrap-installation.mjs` or
 `scripts/bootstrap-installation.ts` with the supported production Node command.
-The Job rejects other values or a missing regular file. For direct runs, set
+The Job rejects non-string commands and non-regular files. For direct runs, set
 `NODE_ENV` to `development` or `production`. Development uses the
 [`OPENCLAW_DEV_*` defaults](development.md#required-development-controller-environment)
 and writes only the service-key file.
