@@ -112,10 +112,11 @@ are required.
 
 ## Kubernetes model turns and Secrets
 
-The real-runtime suite needs an authorized model credential, real gateway and
-Codex images, a disposable cluster with enforcing NetworkPolicies, and a
-migrated `openclaw_k8s_*` database. A fixture pass is not a model turn. Follow
-[Codex sandbox setup](../guides/deploy/codex-sandbox.md) for seccomp prerequisites.
+Use authorized model credentials, real Gateway/Codex images, enforcing
+NetworkPolicies, and a migrated `openclaw_k8s_*` database in a disposable cluster.
+A fixture pass is not a model turn. See
+[Codex seccomp setup](../guides/deploy/codex-sandbox.md) and
+[restart qualification](harness-restart-recovery.md).
 
 ### Develop with local containers and k3d
 

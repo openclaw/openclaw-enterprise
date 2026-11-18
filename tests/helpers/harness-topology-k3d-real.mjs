@@ -3387,23 +3387,29 @@ function assertNativeToolSucceeded(history, marker, expectedText) {
   }
 }
 
+async function readAvailableGatewayHistory(topology, sessionKey, limit = 30) {
+  try {
+    return await gatewayCall(topology, "chat.history", { sessionKey, limit });
+  } catch (error) {
+    const failure = error.cause;
+    if (
+      failure?.type === "gateway_request_error" &&
+      failure.code === "UNAVAILABLE" &&
+      failure.retryable === true &&
+      failure.details?.method === "chat.history"
+    ) {
+      // Startup can still be preparing history after the Pod becomes ready.
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 async function waitForGatewayHistory(topology, sessionKey, description, select) {
   return waitFor(description, async () => {
-    let history;
-    try {
-      history = await gatewayCall(topology, "chat.history", { sessionKey, limit: 30 });
-    } catch (error) {
-      const failure = error.cause;
-      if (
-        failure?.type === "gateway_request_error" &&
-        failure.code === "UNAVAILABLE" &&
-        failure.retryable === true &&
-        failure.details?.method === "chat.history"
-      ) {
-        // Pinned runtime requests 250 ms; waitFor polls every 750 ms within its deadline.
-        return undefined;
-      }
-      throw error;
+    const history = await readAvailableGatewayHistory(topology, sessionKey);
+    if (history === undefined) {
+      return undefined;
     }
     assert.equal(
       history.messages.some(
@@ -3624,6 +3630,231 @@ async function assertRetainedArtifact(
 
 function hasReadyCondition(pod) {
   return pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True");
+}
+
+async function assertInterruptedGatewayTurnResumes(context, topology) {
+  assert.ok(topology.harnessPod, "restart continuation requires the dedicated Codex topology");
+  const completedKey = `agent:main:completed-${randomUUID()}`;
+  const completedNonce = `COMPLETED-${randomUUID()}`;
+  await gatewayCall(topology, "chat.send", {
+    sessionKey: completedKey,
+    idempotencyKey: randomUUID(),
+    message: `Reply with exactly ${completedNonce}. Do not use tools.`,
+  });
+  const completed = await assertConversation(topology, completedKey, completedNonce);
+
+  async function startInterruptedWork(label) {
+    // A Gateway crash leaves the remote executor alive. Its finite command must
+    // finish before native recovery can adopt the thread without taking it over.
+    const sleepSeconds = label === "gateway-process" ? 90 : 600;
+    const sessionKey = `agent:main:${label}-${randomUUID()}`;
+    const nonce = `RECOVERED-${randomUUID()}`;
+    const ledger = `/home/node/workspace/${nonce}.txt`;
+    // The real model records an effect before blocking. Recovery must inspect that
+    // retained effect instead of blindly replaying the original command.
+    const prompt = [
+      `Use your native shell tool to inspect ${ledger}.`,
+      `If it does not exist, run: printf 'started\\n' >> ${ledger}; sleep ${sleepSeconds}`,
+      "Wait for that command to finish before replying. Do not start background work.",
+      "If execution is interrupted, inspect the file before continuing:",
+      "if it already contains started, do not append again or repeat the sleep.",
+      `After the command finishes or after recovering the existing file, reply with exactly ${nonce}.`,
+    ].join("\n");
+    const admitted = await gatewayCall(topology, "chat.send", {
+      sessionKey,
+      idempotencyKey: randomUUID(),
+      message: prompt,
+    });
+    await waitFor(`the native Harness effect for ${label}`, async () => {
+      const value = await execNode(
+        topology.placement,
+        topology.harnessPod.metadata.name,
+        `const fs = require("node:fs"); process.stdout.write(fs.existsSync(${JSON.stringify(ledger)}) ? fs.readFileSync(${JSON.stringify(ledger)}, "utf8") : "");`,
+      );
+      return value === "started\n";
+    });
+    const history = await gatewayCall(topology, "chat.history", { sessionKey, limit: 100 });
+    const { session } = await gatewayCall(topology, "sessions.describe", { key: sessionKey });
+    assert.equal(session.hasActiveRun, true, "the original turn must still own active work");
+    assert.ok(session.activeRunIds.includes(admitted.runId), "the submitted run must be active");
+    assert.equal(
+      history.messages.some(
+        (message) => message.role === "assistant" && messageText(message).trim() === nonce,
+      ),
+      false,
+      "the original turn must still be unfinished when interrupted",
+    );
+    return { sessionKey, nonce, ledger, prompt, sessionId: history.sessionId };
+  }
+
+  // Explicit cancellation is intentional, so a subsequent restart must leave it stopped.
+  const cancelled = await startInterruptedWork("cancelled");
+  const stopped = await gatewayCall(topology, "chat.abort", {
+    sessionKey: cancelled.sessionKey,
+    userInitiated: true,
+  });
+  assert.equal(stopped.aborted, true, "the negative control must explicitly cancel active work");
+  await waitFor("explicit cancellation to finish", async () => {
+    const { session } = await gatewayCall(topology, "sessions.describe", {
+      key: cancelled.sessionKey,
+    });
+    return session.hasActiveRun === false;
+  });
+  const cancelledHistory = await gatewayCall(topology, "chat.history", {
+    sessionKey: cancelled.sessionKey,
+    limit: 100,
+  });
+  const finished = [
+    [completedKey, completed],
+    [cancelled.sessionKey, cancelledHistory],
+  ];
+  for (const replacement of ["gateway-pod", "deployment", "gateway-process"]) {
+    const interrupted = await startInterruptedWork(replacement);
+    const previousUid = topology.gatewayPod.metadata.uid;
+    if (replacement === "gateway-process") {
+      const container = topology.gatewayPod.status.containerStatuses.find(
+        ({ name }) => name === "gateway",
+      );
+      assert.ok(container, "the native Gateway container must be identifiable");
+      // Kill only the native lock holder. Its live wrapper must reap it before
+      // releasing locks; this does not simulate loss of the whole PID namespace.
+      await execNode(
+        topology.gatewayPlacement,
+        topology.gatewayPod.metadata.name,
+        `
+      const fs = require("node:fs");
+      const assert = require("node:assert/strict");
+      const { spawn } = require("node:child_process");
+      const { pid } = JSON.parse(fs.readFileSync("/home/node/.openclaw/tmp/openclaw-1000/gateway.state.lock", "utf8"));
+      assert.ok(Number.isSafeInteger(pid) && pid > 1);
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => process.kill(" + pid + ", 'SIGKILL'), 500)"], { detached: true, stdio: "ignore" });
+      child.unref();
+    `,
+      );
+      topology.gatewayPod = await waitFor("native Gateway crash recovery", async () => {
+        const pod = await resource(
+          "pod",
+          topology.gatewayPod.metadata.name,
+          topology.gatewayPlacement,
+        );
+        return pod.status.containerStatuses?.some(
+          ({ name, restartCount }) => name === "gateway" && restartCount > container.restartCount,
+        ) && hasReadyCondition(pod)
+          ? pod
+          : undefined;
+      });
+      assert.equal(topology.gatewayPod.metadata.uid, previousUid);
+    } else if (replacement === "deployment") {
+      const previousHarnessUid = topology.harnessPod.metadata.uid;
+      // Use the supported Agent deployment path to replace both workloads. Direct
+      // Pod deletion cannot prove the controller's stop/start ordering.
+      const deployed = await topology.request(
+        "POST",
+        `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
+      );
+      assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+      await waitFor("replacement Agent deployment", () =>
+        topology.events.find(
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === deployed.data.id &&
+            event.outcome === "success",
+        ),
+      );
+      topology.revision = deployed.data;
+      topology.harnessPod = await waitForReadyAgentPod(
+        topology,
+        topology.revision.id,
+        previousHarnessUid,
+      );
+      topology.gatewayPod = await waitForReadyGatewayPod(
+        topology,
+        topology.revision.id,
+        previousUid,
+      );
+    } else {
+      await kubectl(
+        "delete",
+        "pod",
+        topology.gatewayPod.metadata.name,
+        "--namespace",
+        topology.gatewayPlacement,
+        "--wait=true",
+        "--timeout=120s",
+      );
+      topology.gatewayPod = await waitForReadyGatewayPod(
+        topology,
+        topology.revision.id,
+        previousUid,
+      );
+    }
+    // There is deliberately no second chat.send: only native startup recovery can
+    // admit the continuation whose final answer this observer waits for.
+    const recovered = await waitFor(
+      `automatic interrupted-turn completion after ${replacement}`,
+      async () => {
+        const history = await readAvailableGatewayHistory(topology, interrupted.sessionKey, 100);
+        if (history === undefined) {
+          return undefined;
+        }
+        const { session } = await gatewayCall(topology, "sessions.describe", {
+          key: interrupted.sessionKey,
+        });
+        return !session.hasActiveRun &&
+          history.messages.some(
+            (message) =>
+              message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
+          )
+          ? history
+          : undefined;
+      },
+    );
+    assert.equal(
+      recovered.sessionId,
+      interrupted.sessionId,
+      "recovery must retain session identity",
+    );
+    assert.equal(
+      recovered.messages.filter(
+        (message) => message.role === "user" && messageText(message).trim() === interrupted.prompt,
+      ).length,
+      1,
+      "recovery must not resubmit the original user input",
+    );
+    assert.equal(
+      recovered.messages.filter((message) => message.__openclaw?.continuation?.source === "restart")
+        .length,
+      1,
+      "native startup must admit one restart continuation",
+    );
+    assert.equal(
+      recovered.messages.filter(
+        (message) =>
+          message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
+      ).length,
+      1,
+      "the interrupted task must deliver one final result",
+    );
+    assert.equal(
+      await readFileInPod(
+        topology.placement,
+        topology.harnessPod.metadata.name,
+        interrupted.ledger,
+      ),
+      "started\n",
+      "continuation must inspect the retained effect without repeating it",
+    );
+    finished.push([interrupted.sessionKey, recovered]);
+    context.diagnostic(`automatic interrupted-turn recovery passed: ${replacement}`);
+  }
+  for (const [sessionKey, before] of finished) {
+    const after = await gatewayCall(topology, "chat.history", { sessionKey, limit: 100 });
+    assert.equal(after.sessionId, before.sessionId);
+    assert.deepEqual(after.messages, before.messages, "restart must leave finished work unchanged");
+  }
+  context.diagnostic("dedicated interrupted turn completed automatically in its retained session");
+  // Later HTTP checks use a local tunnel, which kubectl pins to the old Pod.
+  topology.gatewayUrl = await topology.refreshGatewayUrl();
 }
 
 async function assertGatewayPodContinuity(context, topology, privateClaim) {
@@ -6249,6 +6480,7 @@ export {
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
+  assertInterruptedGatewayTurnResumes,
   assertGatewayWorkspaceReconnect,
   assertGatewayPrivateResources,
   assertKubernetesOtelLogs,
