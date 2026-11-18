@@ -176,6 +176,7 @@
       "path": "tests/conformance/strands-box-transport.test.mjs",
       "expectedTests": [
         "Strands rejected half-open clients release listener capacity without Harness I/O",
+        "the worker port allows readiness but refuses native upgrades with the same valid bearer",
         "Strands shutdown closes clients still reading headers and refuses queued Gateway opens",
         "Strands supervisor refuses a racing channel without disconnecting admitted clients",
         "Strands contained receiver refuses capacity overflow and retains native connections",

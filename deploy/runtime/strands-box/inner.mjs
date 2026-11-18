@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, mkdirSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { spawn } from "node:child_process";
@@ -18,6 +19,7 @@ const boxProxy = new URL(process.env.HTTPS_PROXY);
 if (boxProxy.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(boxProxy.hostname)) {
   throw new Error("Missing Box-owned proxy");
 }
+const nativeToken = randomBytes(32).toString("hex");
 const channels = new Map();
 const proxySockets = new Set();
 const probes = new Set();
@@ -50,6 +52,12 @@ const send = framed(
         return;
       }
       const socket = connect({ host: "127.0.0.1", port: manifest.port });
+      const path = message.path ?? "/";
+      if (path !== "/" && !(probe && path === "/openclaw/runtime/status")) {
+        socket.destroy();
+        throw new Error("Invalid native relay path");
+      }
+      socket.write(`GET ${path} HTTP/1.1\r\nAuthorization: Bearer ${nativeToken}\r\n`);
       channels.set(message.id, socket);
       if (probe) {
         probes.add(message.id);
@@ -185,6 +193,7 @@ for (const [name, file] of Object.entries(manifest.secretEnvironment ?? {})) {
 for (const directory of manifest.privateDirectories ?? []) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
 }
+environment.APP_TOKEN_SHA = createHash("sha256").update(nativeToken).digest("hex");
 const proxyUrl = `http://127.0.0.1:${proxy.address().port}`;
 for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) {
   environment[name] = proxyUrl;
