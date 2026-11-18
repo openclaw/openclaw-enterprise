@@ -547,6 +547,14 @@ test(
               "DEPENDENCY_UNAVAILABLE",
             );
             await f.due(input.clientId);
+            const dueRow = await f.row(input.clientId);
+            assert.ok(dueRow?.hidden && dueRow.due);
+            // The observer uses a single autocommit statement, so the probe's
+            // lock is released before recovery begins.
+            const probeCleanupLock = () =>
+              f.pool.query("SELECT id FROM occ.oauth_clients WHERE id=$1 FOR UPDATE NOWAIT", [
+                dueRow.id,
+              ]);
             s.mock.method(
               f.core,
               "deleteNamespacedSecret",
@@ -564,6 +572,7 @@ test(
             );
             if (mode === "not-forwarded") {
               await waitFor("cleanup COMMIT is held", async () => proxy.commitPaused || undefined);
+              await assert.rejects(probeCleanupLock(), { code: "55P03" });
               await close();
             }
             assert.equal(await settled, true, "unknown cleanup COMMIT must propagate");
@@ -580,6 +589,20 @@ test(
               deletes: f.core.calls.deleteNamespacedSecret,
             });
             if (row) {
+              assert.equal(row.id, dueRow.id);
+              // Closing the proxy can return before PostgreSQL rolls back.
+              // Wait for the original lock to clear so SKIP LOCKED cannot skip this row.
+              await waitFor("cleanup transaction releases the OAuth client row", async () => {
+                try {
+                  assert.equal((await probeCleanupLock()).rowCount, 1);
+                  return true;
+                } catch (error) {
+                  if (error instanceof Error && "code" in error && error.code === "55P03") {
+                    return undefined;
+                  }
+                  throw error;
+                }
+              });
               await f.recovered.cleanupOAuthClients();
               assert.equal(await f.row(input.clientId), undefined);
             }
