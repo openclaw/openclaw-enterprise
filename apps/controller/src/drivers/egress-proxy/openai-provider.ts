@@ -152,6 +152,12 @@ export const openAiStaticProviderRef = Object.freeze({
   generation: 3,
 });
 
+/** Exact identity selected by bundled full request-time model composition. */
+export const openAiRequestProviderRef = Object.freeze({
+  id: "openai-online-request",
+  generation: 1,
+});
+
 function openAiSourceType(): CredentialProviderDefinition["sourceType"] {
   return {
     type: "openai",
@@ -310,7 +316,7 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
 /** The same bounded request policy, with online release instead of dispatch/response custody. */
 export function createOpenAiRequestProvider(): CredentialProviderDefinition {
   return Object.freeze<CredentialProviderDefinition>({
-    ref: { id: "openai-online-request", generation: 1 },
+    ref: openAiRequestProviderRef,
     authorization: "online-request",
     schemaVersion: 1,
     sourceType: openAiSourceType(),

@@ -923,6 +923,7 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     const fixture = await requestCredentialFixture(t, {
+      installedModelDefault: true,
       credentialProxyCapacity: {
         operations: 2,
         authenticatingOperations: 2,

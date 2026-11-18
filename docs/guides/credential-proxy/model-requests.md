@@ -11,7 +11,8 @@ A request whose credential was already released may finish after withdrawal.
 It does not provide exact dispatch or full-response inspection. Read the
 [contract](../../reference/drivers/credential-proxy.md#online-model-requests)
 before choosing this guarantee. Existing strict sources keep their original
-profile; a failed strict admission does not select this path automatically.
+profile. Full request-time model configuration explicitly selects the online OpenAI
+provider for new sources; a failed admission never falls back to another profile.
 
 ## Prepare the trusted request path
 
@@ -141,7 +142,9 @@ Use the built CLI, a ready Namespace, `OCC_URL`, `OCC_NAMESPACE` and a protected
 `OCC_SERVICE_KEY_FILE`. The operator needs source creation and Secret `operate`
 permissions. Store the authorized API key as a Namespace Secret using
 [Register the key](../deploy/openshell-credential-sources.md#register-the-key),
-then use its `SECRET_REF` to create this source instead of that page's default.
+then use its `SECRET_REF` to create this source. With the full request-time model
+configuration, omitting `authorization` selects the installed online default. The
+example keeps the profile explicit so the saved request records the operator's choice.
 Choose the HTTPS `/v1` destination first: use `https://api.openai.com/v1` for
 OpenAI, or the controlled origin for the acceptance checks below. The key must
 be authorized for that destination. Create the acceptance source with its

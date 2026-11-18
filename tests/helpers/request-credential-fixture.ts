@@ -42,6 +42,7 @@ export async function requestCredentialFixture(
     credentialProxyCapacity?: Partial<CredentialProxyCapacity>;
     poolOptions?: { options: string };
     bindExchange?: CredentialProxyDriver["bindExchange"];
+    installedModelDefault?: boolean;
   } = {},
 ) {
   let owner!: InstalledDriver;
@@ -51,7 +52,8 @@ export async function requestCredentialFixture(
   let live: EgressInstallation | undefined;
   let nextVerification: { reached: () => void; release: Promise<void> } | undefined;
   const sandboxId = randomUUID();
-  const { activateRevision, credentialProxyCapacity, ...fixtureOptions } = configuration;
+  const { activateRevision, credentialProxyCapacity, installedModelDefault, ...fixtureOptions } =
+    configuration;
   const { capacity } = resolveCredentialProxyCapacity(
     credentialProxyCapacity ?? {},
     "requestCapacity",
@@ -107,6 +109,7 @@ export async function requestCredentialFixture(
       });
       // This fixture supplies only the external installation/recipient observation.
       // Production provider classification, IAM, approval persistence and Secret reads run below.
+      const providers = [createOpenAiRequestProvider(), ...original.sourceControl.providers];
       const proxy: CredentialProxyDriver = {
         id: "request-policy-fixture",
         implementation: "request-policy-fixture",
@@ -114,7 +117,7 @@ export async function requestCredentialFixture(
         ...(configuration.bindExchange && { bindExchange: configuration.bindExchange }),
         sourceControl: {
           ...original.sourceControl,
-          providers: [createOpenAiRequestProvider(), ...original.sourceControl.providers],
+          providers,
         },
         requestTimeCredentials: {
           async assertAvailable(signal) {
@@ -154,17 +157,89 @@ export async function requestCredentialFixture(
           return false;
         },
       };
+      const registration = {
+        capabilities: { sandbox, credential_proxy: proxy },
+        namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+          app.controller.selectedDriver("compute"),
+          sandbox,
+        ).hooks,
+      };
       owner = new InstalledDriver(
-        { id: proxy.id, implementation: proxy.implementation, configuration: {} },
         {
-          capabilities: { sandbox, credential_proxy: proxy },
-          namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
-            app.controller.selectedDriver("compute"),
-            sandbox,
-          ).hooks,
+          id: proxy.id,
+          implementation: proxy.implementation,
+          configuration: {},
+          ...(installedModelDefault && {
+            retiredStaticProviderRefs: [createOpenAiStaticProvider().ref],
+            newSourceDefaults: [{ type: "openai", provider: createOpenAiRequestProvider().ref }],
+          }),
         },
+        registration,
       );
+      if (installedModelDefault) {
+        const beforeDefault = new InstalledDriver(
+          { id: proxy.id, implementation: proxy.implementation, configuration: {} },
+          registration,
+        );
+        assert.deepEqual(
+          owner.ref,
+          beforeDefault.ref,
+          "new-source policy preserves retained Driver references",
+        );
+      }
       app.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+      if (installedModelDefault) {
+        const catalog = () => app.request("GET", `/namespaces/${namespace.id}/agent-capabilities`);
+        const offered = (response: Awaited<ReturnType<typeof catalog>>) =>
+          response.data?.capabilities?.credentialSources?.types?.some(
+            (entry: { type: string }) => entry.type === "openai",
+          );
+        const initial = await catalog();
+        assert.equal(initial.status, 200, JSON.stringify(initial.body));
+        assert.equal(
+          offered(initial),
+          true,
+          "the regular capability catalog offers the selected model type",
+        );
+
+        // A stale or ambiguous installed default must fail before reading material or creating a row.
+        const secretDriver = app.controller.selectedDriver("secret");
+        const read = secretDriver.readCredentialInput!;
+        let reads = 0;
+        secretDriver.readCredentialInput = async (input) => {
+          reads++;
+          return Reflect.apply(read, secretDriver, [input]);
+        };
+        const refused = async (name: string) => {
+          assert.equal(offered(await catalog()), false);
+          const response = await app.request("POST", path, {
+            body: {
+              name,
+              type: "openai",
+              config: { authorized_base_url: `${origin}/v1` },
+              secrets: { api_key: secret.ref },
+            },
+          });
+          assert.ok(
+            response.status === 409 || response.status === 503,
+            JSON.stringify(response.body),
+          );
+          assert.equal(reads, 0);
+          const rows = await pool.query(
+            "SELECT id FROM occ.credential_sources WHERE namespace_id=$1 AND name=$2",
+            [namespace.id, name],
+          );
+          assert.equal(rows.rowCount, 0);
+        };
+        const requestTime = proxy.requestTimeCredentials;
+        Reflect.set(proxy, "requestTimeCredentials", undefined);
+        await refused("unavailable-default");
+        Reflect.set(proxy, "requestTimeCredentials", requestTime);
+        providers.push(createOpenAiRequestProvider());
+        await refused("ambiguous-default");
+        providers.pop();
+        secretDriver.readCredentialInput = read;
+      }
       const createSource = async (name: string, authorization?: "online-request") => {
         const response = await app.request("POST", path, {
           body: {
@@ -178,19 +253,25 @@ export async function requestCredentialFixture(
         assert.equal(response.status, 201, JSON.stringify(response.body));
         return response.data;
       };
-      const strict = await createSource("default-remains-strict");
-      const strictSource = await state.read((unit) =>
-        unit.credentialSources.findCredentialSource(namespace.id, strict.id),
-      );
-      assert.deepEqual(
-        strictSource?.egress?.key.provider,
-        createOpenAiStaticProvider().ref,
-        "putting the online provider first must not change default admission",
-      );
-      const source = await createSource("explicit-online-model", "online-request");
+      const strict = installedModelDefault
+        ? undefined
+        : await createSource("default-remains-strict");
+      if (strict) {
+        const strictSource = await state.read((unit) =>
+          unit.credentialSources.findCredentialSource(namespace.id, strict.id),
+        );
+        assert.deepEqual(
+          strictSource?.egress?.key.provider,
+          createOpenAiStaticProvider().ref,
+          "catalog order alone must not change default admission",
+        );
+      }
+      const source = installedModelDefault
+        ? await createSource("installed-default-model")
+        : await createSource("explicit-online-model", "online-request");
       // Updates retain the admitted provider even when the catalog presents a different profile first.
       for (const [selected, expected] of [
-        [strict, createOpenAiStaticProvider().ref],
+        ...(strict ? [[strict, createOpenAiStaticProvider().ref] as const] : []),
         [source, createOpenAiRequestProvider().ref],
       ] as const) {
         const updated = await app.request("PATCH", `${path}/${selected.id}`, {
@@ -245,6 +326,7 @@ export async function requestCredentialFixture(
   assert.ok(revision?.egressPlan);
   assert.deepEqual(revision.executionAdmission, { mode: "protected", version: 8 });
   assert.equal(revision.egressPlan.authorization, "online-request");
+  assert.deepEqual(revision.egressPlan.driver, owner.ref);
   assert.equal(revision.egressPlan.routes.length, 1);
   const route = revision.egressPlan.routes[0]!;
   live = {

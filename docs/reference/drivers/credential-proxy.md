@@ -85,8 +85,10 @@ this support; they do not qualify stock OpenShell or any installed deployment.
 
 ### Online model requests
 
-Eligible static sources default to strict admission. Explicit `authorization: "online-request"`
-selects an offered provider; updates retain its ID and generation. Bundled
+Omitted `authorization` uses the Installation's exact default for an eligible new model
+source, if configured; otherwise ordinary Gateway or strict admission applies. Explicit
+`authorization: "online-request"` selects an offered online provider. Retained sources and
+revisions keep their provider ID, generation and profile. Driver execution admission remains explicit. Bundled
 `openai-online-request` generation 1 requires same-state native IAM and one dedicated
 Codex HTTPS Responses route, an explicit model and no provider-hosted tools.
 

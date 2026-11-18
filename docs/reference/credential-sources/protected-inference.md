@@ -26,13 +26,16 @@ shared exchange but does not establish static inference or Git transport support
 
 ## Bundled OpenShell admission
 
-The bundled OpenShell Credential Proxy Driver refuses new protected static
-OpenAI sources, live adoption or re-admission of a saved source, and new
-protected revisions using one. OCC returns `409 RESOURCE_CONFLICT`. Source
+The bundled OpenShell Credential Proxy Driver refuses new strict protected
+OpenAI sources, strict live adoption or re-admission of a saved source, and new
+protected revisions using the strict provider. OCC returns `409 RESOURCE_CONFLICT`. Source
 admission is refused before reading its Secret material. Deployment retirement
 is checked before contacting the counterpart, so an unavailable Gateway cannot
 turn the refusal into a retryable error. Ask an Installation administrator to
-configure a supported model access path.
+configure a supported model access path. When the full request-time model configuration
+is enabled, bundled composition selects the exact online OpenAI provider as the default
+for new sources. An omitted authorization profile then selects that provider; missing or
+ambiguous registration or unavailable enforcement refuses creation without fallback.
 
 Existing revisions keep the recorded provider for request authorization and recovery
 under the current Sandbox contract. Adoption still requires the exact current spec,
@@ -99,8 +102,10 @@ retry follows. Retain that uncertain receipt.
 
 ## Static source and response policy
 
-Fresh sources without an authorization selection use the first strict provider
-for their type in catalog order. Explicit `authorization: "online-request"`
+Fresh model sources without an authorization selection use an exact default selected by
+Installation composition when one is configured. Otherwise they use ordinary Gateway
+delivery where permitted, or the first strict provider for their type in catalog order.
+Explicit `authorization: "online-request"`
 selects the separate [online model profile](../drivers/credential-proxy.md#online-model-requests).
 The selected provider ID and generation must identify one registration; duplicates
 return `409` before credential material is read. Multiple distinct providers for

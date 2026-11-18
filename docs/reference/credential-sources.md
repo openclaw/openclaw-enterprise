@@ -1,21 +1,18 @@
 # Credential sources
 
-A Secret holds a value, such as a GitHub App private key. A credential source
-records its Driver, configuration and Secret references in the Namespace. A
-`github-app-metadata` source names the key and repository for the read of
-`acme/widgets`.
+A credential source records its Driver, configuration and Namespace Secret references.
+For example, `github-app-metadata` names a GitHub App key and repository.
 
 The Agent draft **binds** the source by ID. On deploy, OpenClaw Control Plane
-(OCC) saves the binding in an **Agent revision**. How the sender gets
-a credential depends on the source.
+(OCC) saves the binding in an **Agent revision**.
 
-| Delivery mode            | Who holds or reads the credential                                                                                                                                                                                                   |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway copy             | The selected OpenShell Credential Gateway stores a copy of a static Secret. The workload receives a placeholder. Its supervisor injects the real value on eligible traffic. Editing the Secret alone leaves the copy unchanged.     |
-| Gateway-managed OAuth    | The Credential Refresh Driver holds issuer material and manages access tokens for the Gateway. The workload keeps its placeholder across token renewal.                                                                             |
-| Protected live Secret    | After OCC authorizes an individual request, the trusted resolver reads the current Secret version. The authenticated sender receives the credential header for that request. An existing Gateway source requires explicit adoption. |
-| Worker-prepared token    | For `github-app-metadata`, the Token Service renews installation tokens in the background. An authorized Credential Proxy request can also start or join issuance for its exact registered grant.                                   |
-| Credential-free metadata | The source admits a specific repository identity read. Its resolver reads no Secret and its sender adds no credential header. Request and response controls still apply.                                                            |
+| Delivery mode            | Who holds or reads the credential                                                                                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gateway copy             | OpenShell Credential Gateway copies the static Secret. The workload receives a placeholder; its supervisor injects the value on eligible traffic. Secret edits do not update the copy. |
+| Gateway-managed OAuth    | Credential Refresh holds issuer material and renews Gateway tokens. The workload keeps its placeholder.                                                                                |
+| Protected live Secret    | OCC authorizes each request; the resolver reads the current Secret version and releases its header to the authenticated sender. Gateway sources require explicit adoption.             |
+| Worker-prepared token    | Token Service renews `github-app-metadata` installation tokens. An authorized Proxy request may start or join issuance for its exact grant.                                            |
+| Credential-free metadata | The source admits a repository identity read without a Secret or credential header. Request and response controls apply.                                                               |
 
 Gateway delivery supports `openai` API keys for dedicated Codex and native
 OpenClaw models, `codex-pat` for dedicated Codex and `bearer-token` for a
@@ -69,6 +66,11 @@ The `201` response includes the `cs_` source ID, binding `ref` and status. Bind 
   a static Harness model type and the bundled Proxy handling only Git. Refresh, device
   authorization and ChatGPT OAuth are ineligible. Other registrations require protected
   admission. Explicit live adoption preserves ownership.
+- For a new eligible model source, omitted `authorization` uses the exact default
+  selected by Installation composition, if present. Full request-time OpenShell model
+  configuration selects the online OpenAI provider. Otherwise ordinary Gateway or strict
+  admission applies. Missing or ambiguous defaults and unavailable enforcement refuse
+  creation before Secret reads; existing sources retain their selected provider.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`. Custom authorization must match the

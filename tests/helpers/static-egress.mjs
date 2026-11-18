@@ -766,7 +766,6 @@ async function buildStaticEgressFixture(
     : await post("credential-sources", {
         name: "inference",
         type: "openai",
-        ...(requestCredentials && { authorization: "online-request" }),
         config: { authorized_base_url: `https://provider.example.test:${providerPort}/v1` },
         secrets: { api_key: secret.ref },
       });
@@ -1108,7 +1107,7 @@ export async function staticEgressWireFixture(t, options) {
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {Pick<StaticFixtureOptions, "gatewayOnly" | "includeLegacy" | "now">} [options]
+ * @param {Pick<StaticFixtureOptions, "gatewayOnly" | "includeLegacy" | "now" | "appFactory">} [options]
  */
 export async function staticEgressAdmissionFixture(t, options) {
   const fixture = await buildStaticEgressFixture(t, { ...options, admissionOnly: true });

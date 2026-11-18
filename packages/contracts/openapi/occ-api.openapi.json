@@ -36534,7 +36534,7 @@
                 "properties": {
                   "authorization": {
                     "const": "online-request",
-                    "description": "Explicitly select an offered request-authorization profile. With a Credential Proxy selected, omission retains exact-dispatch admission for eligible static sources. Existing sources retain their original profile.",
+                    "description": "Explicitly select an offered request-authorization profile. When omitted, a new source uses the Installation's exact default for its eligible model type, if configured; otherwise normal Gateway or exact-dispatch admission applies. Existing sources retain their original profile.",
                     "type": "string"
                   },
                   "config": {

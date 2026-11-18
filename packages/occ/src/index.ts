@@ -2665,8 +2665,7 @@ export class OpenClawController {
       ...protectedTypes,
       ...(gatewayTypes ?? []).filter(
         (type) =>
-          !protectedTypes.some((p) => p.type === type.type) &&
-          (this.ordinaryCredentialGatewayAllowed(type) || this.staticSourceTypeAvailable(type)),
+          !protectedTypes.some((p) => p.type === type.type) && this.newSourceTypeAvailable(type),
       ),
     ];
     const capabilities = {
@@ -8871,7 +8870,7 @@ export class OpenClawController {
     const driver = this.selectedDriver("credential_proxy");
     const owner = this.selections.get("credential_proxy")?.owner;
     const control = driver.sourceControl;
-    // Omission always selects the strict profile. Updates preserve their exact registration.
+    // Updates preserve their exact registration; absent an installed choice, new sources use strict.
     const resolve = () => {
       const ref =
         previous ??
@@ -8910,6 +8909,31 @@ export class OpenClawController {
       owner?.assertNewStaticProviderUse(ref);
     };
     return { provider, ref, inject, normalizeConfig, assertCurrent };
+  }
+
+  private newSourceAdmission(type: CredentialSourceType, authorization?: "online-request") {
+    const owner = this.selections.has("credential_proxy") ? this.selectedProxyOwner() : undefined;
+    const installedDefault =
+      authorization === undefined ? owner?.newSourceDefault(type.type) : undefined;
+    if (installedDefault) {
+      const selected = this.staticEgressProvider(type.type, installedDefault);
+      if (
+        !selected ||
+        selected.provider.sourceType.type !== type.type ||
+        selected.provider.authorization !== "online-request" ||
+        type.harnessAuth === undefined ||
+        !this.staticSourceLifecycleMatches(type, selected.provider.sourceType)
+      ) {
+        throw new ResourceStateConflictError(
+          "The Installation's selected credential source default is unavailable or ineligible.",
+        );
+      }
+      selected.assertCurrent();
+      return selected;
+    }
+    return authorization !== undefined || !this.ordinaryCredentialGatewayAllowed(type)
+      ? this.staticEgressProvider(type.type, undefined, authorization)
+      : undefined;
   }
 
   private async admitStaticEgressSource(
@@ -9321,12 +9345,14 @@ export class OpenClawController {
           "This prepared issuer does not support on-demand rotation. Use a Credential Gateway-owned refresh source instead.",
         );
       }
+      const staticSelection = protectedType
+        ? undefined
+        : this.newSourceAdmission(type, authorization);
       const requiresStaticAdmission =
         !protectedType &&
-        (authorization !== undefined || !this.ordinaryCredentialGatewayAllowed(type));
-      const staticSelection = requiresStaticAdmission
-        ? this.staticEgressProvider(type.type, undefined, authorization)
-        : undefined;
+        (staticSelection !== undefined ||
+          authorization !== undefined ||
+          !this.ordinaryCredentialGatewayAllowed(type));
       if (
         requiresStaticAdmission &&
         !this.staticSourceLifecycleMatches(type, staticSelection?.provider.sourceType)
@@ -18086,9 +18112,12 @@ export class OpenClawController {
     );
   }
 
-  private staticSourceTypeAvailable(type: CredentialSourceType): boolean {
+  private newSourceTypeAvailable(type: CredentialSourceType): boolean {
     try {
-      const selection = this.staticEgressProvider(type.type);
+      const selection = this.newSourceAdmission(type);
+      if (!selection && this.ordinaryCredentialGatewayAllowed(type)) {
+        return true;
+      }
       if (
         !selection ||
         !this.staticSourceLifecycleMatches(type, selection.provider.sourceType) ||
@@ -18097,6 +18126,13 @@ export class OpenClawController {
         return false;
       }
       selection.assertCurrent();
+      if (
+        selection.provider.authorization === "online-request" &&
+        (!this.requestCredentialAuthority() ||
+          !this.selectedDriver("credential_proxy").requestTimeCredentials)
+      ) {
+        return false;
+      }
       return true;
     } catch (error) {
       if (error instanceof ResourceStateConflictError) {

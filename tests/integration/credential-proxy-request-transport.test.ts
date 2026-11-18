@@ -1,6 +1,6 @@
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { staticEgressAdmissionFixture, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { openShellModelRequestPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
 import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
@@ -479,6 +479,21 @@ test(
       appFactory: postgresApp,
     });
     const controller: OpenClawController = f.controller;
+    const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+    assert.equal(catalog.status, 200);
+    assert.equal(
+      catalog.data.capabilities.credentialSources.types.some(
+        (entry: { type: string }) => entry.type === "openai",
+      ),
+      true,
+    );
+    const storedSource = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, f.source.id),
+    );
+    assert.deepEqual(storedSource?.egress?.key.provider, {
+      id: "openai-online-request",
+      generation: 1,
+    });
     const path = `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`;
     const admitted = await f.request("POST", path);
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
@@ -490,22 +505,50 @@ test(
     assert.equal(revision.egressPlan.authorization, "online-request");
     assert.equal(revision.egressPlan.repositoryGit, undefined);
 
-    // The bundled owner retires new strict sources even while explicit online admission works.
-    const reads = f.countSecretReads();
-    const strict = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
-      body: {
-        name: "strict-still-refused",
-        type: "openai",
-        config: { authorized_base_url: f.modelProvider.baseUrl },
-        secrets: { api_key: f.secret.ref },
+    // Without full request-time model configuration, the bundled strict provider remains retired.
+    const strictFixture = await staticEgressAdmissionFixture(t, { appFactory: postgresApp });
+    const reads = strictFixture.countSecretReads();
+    const strict = await strictFixture.request(
+      "POST",
+      `/namespaces/${strictFixture.namespace.id}/credential-sources`,
+      {
+        body: {
+          name: "strict-still-refused",
+          type: "openai",
+          config: { authorized_base_url: strictFixture.modelProvider.baseUrl },
+          secrets: { api_key: strictFixture.secret.ref },
+        },
       },
-    });
+    );
     assert.equal(strict.status, 409, JSON.stringify(strict.body));
     assert.equal(strict.body.error.code, "RESOURCE_CONFLICT");
-    assert.equal(f.countSecretReads(), reads);
+    assert.equal(strictFixture.countSecretReads(), reads);
 
     // Request admission still requires the live registered middleware.
     f.observed.available = false;
+    const staleCatalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+    assert.equal(
+      staleCatalog.data.capabilities.credentialSources.types.some(
+        (entry: { type: string }) => entry.type === "openai",
+      ),
+      true,
+      "catalog discovery does not contact the live enforcement transport",
+    );
+    const beforeUnavailable = f.countSecretReads();
+    const unavailableSource = await f.request(
+      "POST",
+      `/namespaces/${f.namespace.id}/credential-sources`,
+      {
+        body: {
+          name: "unavailable-default",
+          type: "openai",
+          config: { authorized_base_url: f.modelProvider.baseUrl },
+          secrets: { api_key: f.secret.ref },
+        },
+      },
+    );
+    assert.equal(unavailableSource.status, 503, JSON.stringify(unavailableSource.body));
+    assert.equal(f.countSecretReads(), beforeUnavailable);
     const unavailable = await f.request("POST", path);
     assert.equal(unavailable.status, 503, JSON.stringify(unavailable.body));
   },
