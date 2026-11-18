@@ -1,8 +1,9 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import type { ErrorDetail } from "./api/common.ts";
+import { OAuthScope } from "./api/connection-templates.ts";
 import type { DeploymentRequestMatch, DeploymentRequestPolicy } from "./credential-deployment.ts";
-import { networkMatchDetails, SandboxNetworkGrantSchema } from "./sandbox-policy.ts";
+import { networkMatchDetails, SandboxNetworkGrantSchema, validDnsHost } from "./sandbox-policy.ts";
 
 type Destination = Pick<DeploymentRequestMatch, "host" | "ports">;
 type PortRanges = DeploymentRequestMatch["ports"];
@@ -28,7 +29,24 @@ const requestSchema = Type.Union([
     },
     strict,
   ),
-  Type.Object({ type: Type.Literal("evaluator"), id: literal, digest: literal }, strict),
+  Type.Object(
+    {
+      type: Type.Literal("evaluator"),
+      id: literal,
+      digest: literal,
+      admittedSource: Type.Object(
+        {
+          bindingRef: Type.String({ minLength: 1 }),
+          host: Type.String(),
+          port: Type.Integer({ minimum: 1, maximum: 65535 }),
+          path: Type.String({ maxLength: 512, pattern: "^/[^\\s\\x00-\\x1f\\x7f?#\\\\]*$" }),
+          scopes: Type.Array(OAuthScope, { uniqueItems: true }),
+        },
+        strict,
+      ),
+    },
+    strict,
+  ),
 ]);
 
 const { binary, host, ports } = SandboxNetworkGrantSchema.properties;
@@ -85,8 +103,21 @@ function sameRequest(a?: DeploymentRequestPolicy, b?: DeploymentRequestPolicy): 
       return (
         b.type === "mcp" && a.path === b.path && a.method === b.method && a.toolName === b.toolName
       );
-    case "evaluator":
-      return b.type === "evaluator" && a.id === b.id && a.digest === b.digest;
+    case "evaluator": {
+      if (b.type !== "evaluator" || a.id !== b.id || a.digest !== b.digest) {
+        return false;
+      }
+      const left = a.admittedSource;
+      const right = b.admittedSource;
+      return (
+        left.bindingRef === right.bindingRef &&
+        left.host === right.host &&
+        left.port === right.port &&
+        left.path === right.path &&
+        left.scopes.length === right.scopes.length &&
+        left.scopes.every((scope) => right.scopes.includes(scope))
+      );
+    }
   }
 }
 
@@ -139,15 +170,19 @@ export function validateMatches(
     }
     details.push(...networkMatchDetails(rule, path));
     const policy = rule.requestPolicy;
-    if (
-      policy &&
-      policy.type !== "evaluator" &&
-      policy.path.split("/").some((part) => part === "." || part === "..")
-    ) {
+    if (policy?.type === "evaluator" && !validDnsHost(policy.admittedSource.host)) {
       details.push({
         path,
         code: "INVALID_VALUE",
-        message: "Use an exact request path without dot segments.",
+        message: "Use an exact DNS hostname for the admitted credential source.",
+      });
+    }
+    const requestPath = policy?.type === "evaluator" ? policy.admittedSource.path : policy?.path;
+    if (requestPath?.split("/").some((part) => part === "." || part === "..")) {
+      details.push({
+        path,
+        code: "INVALID_VALUE",
+        message: "Use a request path without dot segments.",
       });
     }
     if (

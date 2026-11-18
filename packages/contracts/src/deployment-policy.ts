@@ -148,8 +148,8 @@ export interface CredentialInjectionCapabilities extends RequestPolicyCapabiliti
   readonly distinguishesExecutable: boolean;
   readonly distinguishesPort: boolean;
   readonly rejectsStaleAndMisplacedPlaceholders: boolean;
-  /** Checks the exact presentation and request in the combined deployment, including other bindings
-   * and the source-specific inputs to any pinned evaluator. */
+  /** Qualifies the presentation and request across bindings. An evaluator requires the proxy
+   * to intersect approval with the admitted source endpoint, including its actual request path. */
   readonly supportsBindingRequest: (
     binding: DeploymentCredentialBinding,
     match: DeploymentRequestMatch,
@@ -285,6 +285,17 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
     bindings.set(binding.bindingRef, binding);
     environments.add(projection.environment);
   }
+  for (const [index, rule] of networkAccessPolicy.allowed.entries()) {
+    const policy = rule.requestPolicy;
+    if (policy?.type === "evaluator" && !bindings.has(policy.admittedSource.bindingRef)) {
+      return [
+        invalid(
+          `/networkAccessPolicy/allowed/${index}`,
+          "The evaluator must name an admitted source binding.",
+        ),
+      ];
+    }
+  }
   for (const [index, policy] of input.injectionPolicies.entries()) {
     const path = `/injectionPolicies/${index}`;
     const binding = bindings.get(policy?.bindingRef);
@@ -305,12 +316,25 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
         ),
       ];
     }
-    const issues = validateMatches(policy.allowedRequests, path + "/allowedRequests");
+    const allowedRequests: readonly DeploymentRequestMatch[] = policy.allowedRequests;
+    const issues = validateMatches(allowedRequests, path + "/allowedRequests");
     if (issues.length) {
       return issues;
     }
-    for (const [i, rule] of policy.allowedRequests.entries()) {
+    for (const [i, rule] of allowedRequests.entries()) {
       const pointer = `${path}/allowedRequests/${i}`;
+      if (rule.requestPolicy?.type === "evaluator") {
+        const source = rule.requestPolicy.admittedSource;
+        if (
+          source.bindingRef !== binding.bindingRef ||
+          rule.host !== source.host ||
+          rule.ports.some(({ from, to }) => from !== source.port || to !== source.port)
+        ) {
+          return [
+            invalid(pointer, "The injection rule must use its own binding's source host and port."),
+          ];
+        }
+      }
       if (!requestCovered(rule, networkAccessPolicy.allowed)) {
         return [
           invalid(
@@ -322,7 +346,7 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
       if (
         !evaluatorAvailable(rule.requestPolicy, proxy) ||
         !supported(() => proxy.supportsBindingRequest(binding, rule, input)) ||
-        !safelyComposed(rule, policy.allowedRequests, networkAccessPolicy, proxy)
+        !safelyComposed(rule, allowedRequests, networkAccessPolicy, proxy)
       ) {
         return [
           invalid(

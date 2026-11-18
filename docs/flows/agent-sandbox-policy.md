@@ -72,9 +72,10 @@ Stale and unauthorized requests retain their resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
 omitting records with Unicode control characters.
 
-Network admission grants no credential authority. The staged
-`deploymentPolicyAdmissionDetails` contract also requires each binding's reviewed
-presentation and request allowlist. Agent revision admission still needs to supply these inputs.
+Network admission grants no credential authority. The staged `deploymentPolicyAdmissionDetails`
+check requires each evaluator's pin, binding, endpoint and scopes. Discovery can use another
+path on the same host. Injection requires a proxy that checks the actual path against the
+binding's endpoint and enforces its presentation. Agent revision admission must supply these inputs.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -273,7 +274,7 @@ the policy read, only the network policy card states it; the suggestions card is
 
 ## Changelog
 
-- 2026-11-18 03:52: Trace the shared network admission check used by the Agent policy and revision paths. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 23b54e2855d0a8d60b2168588fe8c7d7f06e9b36)
+- 2026-11-18 01:17: Trace network admission and source-scoped credential policy. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - c8035cceeaa18b4b54545f56a4ce1d8a5e02dee0)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
