@@ -10,7 +10,7 @@ The existing `k3d-model` CI lane includes this case.
 The model writes a marker in its Harness workspace and waits in a tool call.
 The test observes the write and active run, then exercises Gateway Pod replacement,
 replacement of both Pods within the same Agent revision, and native Gateway
-process loss with its wrapper alive. In the process-loss case, the finite remote
+process loss with its wrapper alive, and compatible Agent API redeployment. In the process-loss case, the finite remote
 command remains active; recovery waits for it to finish before adopting its thread. It sends no additional user message for each
 interrupted session. Native OpenClaw startup must admit a
 continuation that inspects the retained work and produces a visible final answer.
@@ -20,18 +20,36 @@ marker, one final result, and one workspace write. Completed and explicitly
 cancelled sessions must remain unchanged. A healthy replacement Pod or a
 successful new user turn alone does not satisfy these checks.
 
-Agent redeployment is a negative control. It creates a new revision and must
-leave the predecessor's interrupted work stopped. The test completes a fresh
-turn on the replacement before checking that the interrupted session has no
-continuation or final result and that its workspace effect was not repeated.
-See the [revision boundary](../reference/agents/interrupted-turns.md).
+Explicit stop is a negative control. The case denies workload deletion to the
+fixture's scoped worker, commits stop through the Agent API, and observes failed
+teardown with a cleared recovery generation. It restores the original role and
+deploys a replacement. A fresh turn must complete while the stopped session has
+no continuation or final result and its workspace effect was not repeated.
+See the [generation boundary](../reference/agents/interrupted-turns.md).
+
+The native-profile control creates a session through the authenticated native-admin
+WebSocket over a pinned local TLS ingress. It first proves compatible recovery,
+then assigns the profile a read-only role before another replacement. OCC's proxy
+uses the shared `occ-workspace-files` profile, so this revocation also blocks OCC
+readiness requests. The test proves refusal and a fresh shared-secret-owner turn
+before restoring the profile's prior role and waiting for deployment to finish.
+Later replacements must leave that refused session unchanged. This proves native
+profile authority, not distinct identity propagation or revocation for each OCC user.
+
+An incompatible configuration is a separate refusal control. Neither refusal is
+proved by an unready runtime: each replacement must complete a fresh model turn.
+
+The PostgreSQL replacement suite separately checks concurrent deployments, stop
+followed by two admissions before activation, changed and unsupported domains,
+and the database pair constraint. It uses the real controller and worker with a
+Compute fixture; it does not prove native runtime behavior.
 
 The [native recovery flow](../flows/harness-restart-recovery.md) describes the
 workspace reconnect and remote-turn waits, including their refusal conditions.
 
-Run the case against the current runtime containing both the revision-scope and
-Harness-readiness bridges. Results from before revision scoping do not qualify
-the current redeployment behavior. Real-model proof does not replace the required
+Run the case against the current runtime containing generation scoping for
+graceful, crash, and child-completion recovery and the Harness-readiness bridge.
+Earlier results without this lifecycle contract do not qualify redeployment. Real-model proof does not replace the required
 native container checks on both architectures before merge.
 
 ## Recovery boundaries
