@@ -656,7 +656,7 @@
         "online request replay horizons and shared quotas survive API restart (PostgreSQL)",
         "Only owned readiness deferral preserves pending model credentials (PostgreSQL)",
         "A refused candidate cannot mint or redeem while its Worker retries stopping it (PostgreSQL)",
-        "Candidate model credentials end when Worker preparation is interrupted (PostgreSQL)",
+        "Candidate model credentials end when its Worker is interrupted (PostgreSQL)",
         "Pending model authorization and redemption retry an exact busy work row (PostgreSQL)",
         "Model approval rolls back when the candidate lease expires during activation (PostgreSQL)",
         "online approval expiry is bounded by database time despite issuer clock skew (PostgreSQL)",

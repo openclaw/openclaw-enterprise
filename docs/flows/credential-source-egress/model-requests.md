@@ -141,7 +141,8 @@ repository checks, the Worker records candidate authorization immediately before
 Compute preparation. That permission requires a live claim or an owned
 `REVISION_INCOMPLETE` deferral without a refusal or yielded stop. Reclaim,
 retry, recovery and completion clear it; the Worker clears it before stopping a
-refused candidate. A claim alone never grants credential access.
+refused candidate or ending an interrupted pass. A claim alone never grants
+credential access.
 OCC checks the row under a nonblocking lock before approving or releasing
 material, and retries contention within the original deadline. A nonblocking
 transaction advisory lock serializes durable global and per-recipient quotas.

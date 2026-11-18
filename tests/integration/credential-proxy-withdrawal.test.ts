@@ -2047,112 +2047,135 @@ test(
 );
 
 test(
-  "Candidate model credentials end when Worker preparation is interrupted (PostgreSQL)",
+  "Candidate model credentials end when its Worker is interrupted (PostgreSQL)",
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
-    const { f, owner, revision, exchange, request, grant } = await requestCredentialFixture(t, {
-      activateRevision: false,
-    });
-    const key = `agent_revision:${revision.id}:reconcile`;
-    const prepared = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const codes: string[] = [];
-    const compute = {
-      ...f.controller.selectedDriver("compute"),
-      async prepareRevision(selected: Readonly<AgentRevision>) {
-        assert.equal(selected.id, revision.id);
-        prepared.resolve();
-        await release.promise;
-        throw new Error("controlled preparation interruption");
-      },
-    };
-    const sandbox = owner.require("sandbox");
-    const proxy = owner.require("credential_proxy");
-    const gateway = f.controller.selectedDriver("credential_gateway");
-    const configured = createBackendWorkerDrivers(compute, [], {
-      secretDriver: f.controller.selectedDriver("secret"),
-    });
-    const worker = createControllerWorker({
-      pool: new pg.Pool({ connectionString: databaseUrl, max: 5 }),
-      mode: "development",
-      drivers: {
-        ...configured,
-        installation: {
-          ...configured.installation,
-          drivers: {
-            ...configured.installation.drivers,
-            sandbox: {
-              id: sandbox.id,
-              implementation: sandbox.implementation,
-              configuration: {},
-              definition: OpenShellSandboxDriver,
-            },
-            credential_proxy: {
-              id: proxy.id,
-              implementation: proxy.implementation,
-              configuration: {},
-              definition: OpenShellCredentialProxyDriver,
-            },
-            credential_gateway: {
-              id: gateway.id,
-              implementation: gateway.implementation,
-              configuration: {},
-              definition: OpenShellCredentialGatewayDriver,
+    for (const phase of ["preparation", "activation"] as const) {
+      const { f, owner, revision, exchange, request, grant } = await requestCredentialFixture(t, {
+        activateRevision: false,
+      });
+      const key = `agent_revision:${revision.id}:reconcile`;
+      const prepared = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const codes: string[] = [];
+      const compute = {
+        ...f.controller.selectedDriver("compute"),
+        activationOrder: "beforeCommit" as const,
+        async prepareRevision(selected: Readonly<AgentRevision>) {
+          assert.equal(selected.id, revision.id);
+          if (phase === "preparation") {
+            prepared.resolve();
+            await release.promise;
+            throw new Error("controlled preparation interruption");
+          }
+          return {
+            namespaceId: selected.namespaceId,
+            agentId: selected.agentId,
+            revisionId: selected.id,
+            ready: true,
+          };
+        },
+        async activateRevision(selected: Readonly<AgentRevision>) {
+          assert.equal(selected.id, revision.id);
+          prepared.resolve();
+          await release.promise;
+          throw new Error("controlled activation interruption");
+        },
+      };
+      const sandbox = owner.require("sandbox");
+      const proxy = owner.require("credential_proxy");
+      const gateway = f.controller.selectedDriver("credential_gateway");
+      const configured = createBackendWorkerDrivers(compute, [], {
+        secretDriver: f.controller.selectedDriver("secret"),
+      });
+      const worker = createControllerWorker({
+        pool: new pg.Pool({ connectionString: databaseUrl, max: 5 }),
+        mode: "development",
+        drivers: {
+          ...configured,
+          installation: {
+            ...configured.installation,
+            drivers: {
+              ...configured.installation.drivers,
+              sandbox: {
+                id: sandbox.id,
+                implementation: sandbox.implementation,
+                configuration: {},
+                definition: OpenShellSandboxDriver,
+              },
+              credential_proxy: {
+                id: proxy.id,
+                implementation: proxy.implementation,
+                configuration: {},
+                definition: OpenShellCredentialProxyDriver,
+              },
+              credential_gateway: {
+                id: gateway.id,
+                implementation: gateway.implementation,
+                configuration: {},
+                definition: OpenShellCredentialGatewayDriver,
+              },
             },
           },
+          protectedDriver: owner,
+          sandboxDriver: sandbox,
+          proxyDriver: proxy,
+          credentialGatewayDriver: gateway,
         },
-        protectedDriver: owner,
-        sandboxDriver: sandbox,
-        proxyDriver: proxy,
-        credentialGatewayDriver: gateway,
-      },
-      pollIntervalMs: 10,
-      leaseDurationMs: 5_000,
-      emit(event) {
-        if (typeof event.code === "string") {
-          codes.push(event.code);
-        }
-      },
-    });
-    const guard = await f.pool.connect();
-    try {
-      await guard.query("BEGIN");
-      await guard.query(
-        "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key <> $1 FOR UPDATE SKIP LOCKED",
-        [key],
-      );
-      await worker.start();
-      await within(prepared.promise, () => `candidate preparation (${codes.join(", ")})`, 8_000);
+        pollIntervalMs: 10,
+        leaseDurationMs: 5_000,
+        emit(event) {
+          if (typeof event.code === "string") {
+            codes.push(event.code);
+          }
+        },
+      });
+      const guard = await f.pool.connect();
+      try {
+        await guard.query("BEGIN");
+        await guard.query(
+          "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key <> $1 FOR UPDATE SKIP LOCKED",
+          [key],
+        );
+        await worker.start();
+        await within(prepared.promise, () => `candidate ${phase} (${codes.join(", ")})`, 8_000);
 
-      const first = request();
-      assert.equal(
-        await exchange.authorizeRequestCredential(first, t.signal, () => true),
-        "credential",
-      );
-      assert.ok(await exchange.resolveRequestCredential(grant(first), t.signal));
-      const pending = request();
-      assert.equal(
-        await exchange.authorizeRequestCredential(pending, t.signal, () => true),
-        "credential",
-      );
-      const reads = f.secretReads;
-      const stopping = worker.stopLoop();
-      release.resolve();
-      await stopping;
-      const work = await new PostgresWorkQueue(f.pool).findWork(key);
-      assert.equal(work?.state, "claimed");
-      assert.ok(work?.leaseExpiresAt && work.leaseExpiresAt.getTime() > Date.now());
-      assert.equal(
-        await exchange.authorizeRequestCredential(request(), t.signal, () => true),
-        undefined,
-      );
-      assert.equal(await exchange.resolveRequestCredential(grant(pending), t.signal), undefined);
-      assert.equal(f.secretReads, reads, "interruption refuses before Secret reads");
-    } finally {
-      release.resolve();
-      await worker.stop();
-      await guard.query("ROLLBACK");
-      guard.release();
+        const first = request();
+        assert.equal(
+          await exchange.authorizeRequestCredential(first, t.signal, () => true),
+          "credential",
+        );
+        assert.ok(await exchange.resolveRequestCredential(grant(first), t.signal));
+        const pending = request();
+        assert.equal(
+          await exchange.authorizeRequestCredential(pending, t.signal, () => true),
+          "credential",
+        );
+        const reads = f.secretReads;
+        const stopping = worker.stopLoop();
+        release.resolve();
+        await stopping;
+        const work = await new PostgresWorkQueue(f.pool).findWork(key);
+        assert.equal(work?.state, "claimed");
+        assert.ok(work?.leaseExpiresAt && work.leaseExpiresAt.getTime() > Date.now());
+        const minted = await exchange.authorizeRequestCredential(request(), t.signal, () => true);
+        const redeemed = await exchange.resolveRequestCredential(grant(pending), t.signal);
+        assert.deepEqual(
+          {
+            phase,
+            minted: minted !== undefined,
+            redeemed: redeemed !== undefined,
+            secretReads: f.secretReads - reads,
+          },
+          { phase, minted: false, redeemed: false, secretReads: 0 },
+          "interruption refuses before Secret reads",
+        );
+      } finally {
+        release.resolve();
+        await worker.stop();
+        await guard.query("ROLLBACK");
+        guard.release();
+      }
     }
   },
 );

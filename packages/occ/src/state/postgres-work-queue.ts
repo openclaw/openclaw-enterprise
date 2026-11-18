@@ -1174,14 +1174,15 @@ export class PostgresWorkQueue {
       `UPDATE occ.controller_work
        SET candidate_authorized = $3
        WHERE idempotency_key = $1 AND claim_token = $2::uuid
-         AND state = 'claimed' AND lease_expires_at > clock_timestamp()
+         AND state = 'claimed' AND (NOT $3::boolean OR lease_expires_at > clock_timestamp())
+         AND ($3::boolean OR candidate_authorized)
          AND work_kind = 'lifecycle' AND agent_id IS NOT NULL AND revision_id IS NOT NULL
          AND namespace_target IS NULL AND agent_target IS NULL
          AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
        RETURNING idempotency_key`,
       [claim.idempotencyKey, claim.claimToken, authorized],
     );
-    if (updated.rows.length !== 1) {
+    if (authorized && updated.rows.length !== 1) {
       throw new WorkClaimLostError();
     }
   }

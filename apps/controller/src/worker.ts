@@ -1673,6 +1673,9 @@ export class ControllerWorker {
             this.passOutcome = error instanceof WorkClaimLostError ? "claim_lost" : "error";
             throw error;
           } finally {
+            if (isCandidateDeployment(claim)) {
+              await this.queue.setCandidateAuthorization(claim, false);
+            }
             if (!this.stopYieldedThisPass) {
               this.stopYields.settled(claim.idempotencyKey);
             }
@@ -2179,9 +2182,6 @@ export class ControllerWorker {
       return prepared;
     } catch (failure) {
       const error = primaryComputeFailure(failure);
-      if (candidate) {
-        await this.queue.setCandidateAuthorization(claim, false);
-      }
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
