@@ -1,0 +1,56 @@
+---
+title: "Proposed request lifecycle"
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "15px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#68788A"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 34
+    width: 120
+    height: 52
+    diagramMarginX: 16
+    diagramMarginY: 16
+    boxMargin: 12
+    boxTextMargin: 12
+    messageMargin: 24
+    noteMargin: 10
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  participant A as Codex Agent
+  participant M as Model sender
+  participant G as Protected Git path
+  participant O as Repository authority
+
+  Note over A,O: 1. Enroll the ordinary model source, then enable the repository Proxy
+  A->>M: Model request with placeholder
+  Note over M: Use the saved model route
+  M-->>A: Model reply
+  A->>G: Assigned repository write
+  G->>O: Check the current grant
+  O-->>G: Allow this request
+  Note over G: Trusted send to GitHub
+  G-->>A: GitHub response
+
+  Note over G,O: 2. Check withdrawal on the original recipient
+  alt Git-only withdrawal verified
+    A->>G: Fresh Git write
+    G-->>A: Denied before origin
+    A->>M: Chat in the same conversation
+    Note over M: Model access still authorized
+    M-->>A: Reply from the same revision
+  else Recipient changed or withdrawal uncertain
+    Note over G,O: Worker reconciles or retires under existing rules
+  end

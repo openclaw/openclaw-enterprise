@@ -117,6 +117,8 @@ backend:
 Startup rejects a selected `credential_gateway` unless both Backend members and
 Kubernetes Compute are selected.
 
+[Amendment](packaged-credential-gateway.md).
+
 ### Driver interface
 
 The method set matches main's [interface](../../../docs/reference/drivers/credential-gateway.md).
