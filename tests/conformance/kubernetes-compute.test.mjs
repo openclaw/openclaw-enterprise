@@ -6394,6 +6394,19 @@ async function exerciseEmbeddedReplacement(scenario) {
   const replaced = objects.get(key("Deployment", gatewayName));
   assert.equal(replaced.metadata.annotations["openclaw.dev/agent-revision-id"], replacement.id);
   assert.equal(replaced.spec.strategy.type, "Recreate");
+  // The shared Gateway keeps its state across the replacement, but a turn the predecessor
+  // was cut in resumes only under its own revision's scope (finding 3347).
+  for (const [deployment, revision] of [
+    [predecessor, oldRevision],
+    [replaced, replacement],
+  ]) {
+    assert.equal(
+      deployment.spec.template.spec.containers[0].env.find(
+        ({ name }) => name === "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE",
+      )?.value,
+      revision.id,
+    );
+  }
   for (const [deployment, managed] of [
     [predecessor, predecessorManagedMode],
     [replaced, true],
