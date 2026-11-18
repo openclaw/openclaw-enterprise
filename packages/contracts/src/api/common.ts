@@ -22,6 +22,12 @@ const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
 export const InstallationId = Type.String({ pattern: `^ins_${UUID_V4}$` });
 export const NamespaceId = Type.String({ pattern: `^ns_${UUID_V4}$` });
 export const PresetId = Type.String({ pattern: `^pre_${UUID_V4}$` });
+export const ConnectionTemplateId = Type.String({
+  pattern: `^ctp_${UUID_V4}$`,
+});
+export const ModelProviderId = Type.String({
+  pattern: `^mpr_${UUID_V4}$`,
+});
 export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
@@ -47,11 +53,30 @@ export const AgentProvisioningWorkId = Type.String({
   maxLength: 200,
   pattern: "^[A-Za-z0-9._~:@/-]{1,200}$",
 });
+export const HarnessSettings = Type.Record(Type.String(), Type.Unknown(), {
+  description: "Nonsecret settings owned and validated by the selected Compute Driver.",
+});
+export const RevisionHarnessSchema = Type.Object(
+  {
+    id: Type.String({ minLength: 1 }),
+    version: Type.String({ minLength: 1 }),
+    mode: HarnessExecutionModeSchema,
+    modelProviderId: Type.Optional(ModelProviderId),
+    overrides: HarnessSettings,
+    configuration: HarnessSettings,
+  },
+  { additionalProperties: false },
+);
+export const AgentDeploymentBody = Type.Object(
+  { harnessOverrides: Type.Optional(HarnessSettings) },
+  { additionalProperties: false },
+);
 export const FirstDeploymentIntent = Type.Object(
   {
     key: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" }),
     expectedConfigurationId: ConfigurationId,
     expectedGeneration: ConfigurationGeneration,
+    ...AgentDeploymentBody.properties,
   },
   { additionalProperties: false },
 );
@@ -74,7 +99,8 @@ const generationPattern = `^(?:[1-9][0-9]{0,${maximumGeneration.length - 2}}|${g
 /** Path values stay text until the handler converts the validated decimal generation. */
 export const FirstDeploymentRecoveryTuple = Type.Object(
   {
-    ...FirstDeploymentIntent.properties,
+    key: FirstDeploymentIntent.properties.key,
+    expectedConfigurationId: ConfigurationId,
     expectedGeneration: Type.String({
       pattern: generationPattern,
       maxLength: maximumGeneration.length,
@@ -360,10 +386,12 @@ export const HarnessAuthBindingSchema = Type.Union([
   ),
 ]);
 
+export const MAX_AGENT_CREDENTIAL_SOURCES = 64;
+
 export const AgentCredentialSourcesSchema = Type.Array(
   Type.Object({ sourceId: CredentialSourceId }, { additionalProperties: false }),
   {
-    maxItems: 8,
+    maxItems: MAX_AGENT_CREDENTIAL_SOURCES,
     uniqueItems: true,
     description:
       "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
@@ -507,62 +535,47 @@ const PluginDiscoveryAccessToken = Type.String({
   writeOnly: true,
 });
 
+export const PluginCatalogHarnessId = Type.Union([Type.Literal("openclaw"), Type.Literal("codex")]);
+
+const PluginCatalogPageFields = {
+  harnessId: PluginCatalogHarnessId,
+  cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  q: Type.Optional(Type.String({ maxLength: 1024 })),
+};
+const PluginCatalogDetailsFields = {
+  harnessId: PluginCatalogHarnessId,
+  pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+};
+
 // At most one credential source is accepted; the selected Driver determines whether it is required.
 export const DiscoverAgentPluginsBody = Type.Union([
   Type.Object(
-    {
-      credentialSource: CredentialSourceReference,
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
-      q: Type.Optional(Type.String({ maxLength: 1024 })),
-    },
+    { ...PluginCatalogPageFields, credentialSource: CredentialSourceReference },
+    { additionalProperties: false },
+  ),
+  Type.Object(PluginCatalogPageFields, { additionalProperties: false }),
+  Type.Object(
+    { ...PluginCatalogPageFields, accessToken: PluginDiscoveryAccessToken },
     { additionalProperties: false },
   ),
   Type.Object(
-    {
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
-      q: Type.Optional(Type.String({ maxLength: 1024 })),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      accessToken: PluginDiscoveryAccessToken,
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
-      q: Type.Optional(Type.String({ maxLength: 1024 })),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      secretRef: SecretReference,
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
-      q: Type.Optional(Type.String({ maxLength: 1024 })),
-    },
+    { ...PluginCatalogPageFields, secretRef: SecretReference },
     { additionalProperties: false },
   ),
 ]);
 
 export const DiscoverAgentPluginDetailsBody = Type.Union([
   Type.Object(
-    {
-      credentialSource: CredentialSourceReference,
-      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    },
+    { ...PluginCatalogDetailsFields, credentialSource: CredentialSourceReference },
+    { additionalProperties: false },
+  ),
+  Type.Object(PluginCatalogDetailsFields, { additionalProperties: false }),
+  Type.Object(
+    { ...PluginCatalogDetailsFields, accessToken: PluginDiscoveryAccessToken },
     { additionalProperties: false },
   ),
   Type.Object(
-    { pluginId: Type.String({ minLength: 1, maxLength: 256 }) },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      accessToken: PluginDiscoveryAccessToken,
-      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    { secretRef: SecretReference, pluginId: Type.String({ minLength: 1, maxLength: 256 }) },
+    { ...PluginCatalogDetailsFields, secretRef: SecretReference },
     { additionalProperties: false },
   ),
 ]);
@@ -609,6 +622,7 @@ export const PermissionActionSchema = Type.Union([
   Type.Literal("administer"),
   Type.Literal("read_logs"),
   Type.Literal("manage_policy"),
+  Type.Literal("read_audit"),
 ]);
 
 export const ResourceKindSchema = Type.Union([
@@ -785,7 +799,15 @@ export const CreateAgentBody = Type.Object(
     ),
     workspaceDefaultsId: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
     name: Name,
+    modelProviderId: Type.Optional(ModelProviderId),
     configurationId: ConfigurationId,
+    nativeAdmin: Type.Optional(
+      Type.Boolean({
+        description:
+          "Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer.",
+      }),
+    ),
+    expectedConfigurationGeneration: Type.Optional(ConfigurationGeneration),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
@@ -821,6 +843,7 @@ export const ProvisionAgentBody = Type.Object(
     workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
     name: Name,
     configuration: ProvisionAgentConfigurationBody,
+    modelProviderId: Type.Optional(ModelProviderId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
@@ -840,6 +863,7 @@ export const ProvisionAgentBody = Type.Object(
 
 export const ValidateAgentCreateBody = Type.Object(
   {
+    modelProviderId: Type.Optional(ModelProviderId),
     name: Type.Optional(
       Type.String({
         minLength: 1,
@@ -911,6 +935,7 @@ export const UpdateAgentBody = Type.Object(
         ),
       ]),
     ),
+    modelProviderId: Type.Optional(Type.Union([ModelProviderId, Type.Null()])),
     configurationId: Type.Optional(ConfigurationId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
@@ -924,7 +949,11 @@ export const UpdateAgentBody = Type.Object(
   },
   {
     additionalProperties: false,
-    anyOf: [{ required: ["configurationId"] }, { required: ["gatewayManagedMode"] }],
+    anyOf: [
+      { required: ["configurationId"] },
+      { required: ["gatewayManagedMode"] },
+      { required: ["modelProviderId"] },
+    ],
   },
 );
 
@@ -1158,6 +1187,12 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_CREDENTIALS_CLUSTER_RBAC"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
+        reason: Type.Optional(
+          Type.Literal("credential_registration_pending", {
+            description:
+              "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+          }),
+        ),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
         remainingResources: Type.Optional(
           Type.Array(

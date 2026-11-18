@@ -598,6 +598,7 @@ export function createDeploymentStatusPanel(
         { className: "deployment-outcome" },
         `Recorded status: ${outcomeLabel(deploymentOutcome(record))}`,
       ),
+      repositoryAccessNotice(record),
       record.error ? deploymentResult(record, context) : null,
       record.warnings?.length
         ? statusBlock(
@@ -626,12 +627,13 @@ export function createDeploymentStatusPanel(
       return;
     }
     const outcome = record ? deploymentOutcome(record) : null;
-    const { cleanup, warnings } = record ?? {};
+    const { cleanup, warnings, repositoryAccess } = record ?? {};
     const readState = error ? (transientReadError(error) ? "transient" : "refused") : "read";
     const evidence = [
       outcome,
       cleanup?.status,
       warnings?.length,
+      repositoryAccess?.message,
       overviewUnavailable,
       readState,
     ].join("/");
@@ -641,6 +643,7 @@ export function createDeploymentStatusPanel(
           deploymentPending(outcome) ? "pending" : outcome,
           deploymentPending(cleanup?.status) ? "pending" : cleanup?.status,
           warnings?.length,
+          repositoryAccess?.message,
         ].join("/");
     const readerRefresh = !polling;
     if (evidence !== previousEvidence || (readerRefresh && error)) {
@@ -667,7 +670,8 @@ export function createDeploymentStatusPanel(
           (outcome !== "succeeded" && !late) ||
           overviewUnavailable ||
           cleanup ||
-          warnings?.length,
+          warnings?.length ||
+          repositoryAccess,
         );
       }
       previousEvidence = evidence;
@@ -972,6 +976,7 @@ export function createVersionDeploymentEvidence(
                     {},
                     `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}${error ? " · update delayed" : ""}`,
                   ),
+                  repositoryAccessNotice(status),
                   failureShownAbove && deploymentOutcome(status) === "failed"
                     ? element(
                         "p",
@@ -1056,4 +1061,10 @@ function readDeployment(context: DeploymentContext, path: string, revisionId: st
   return context.request(
     `${path}/deployments/${encodeURIComponent(revisionId)}`,
   ) as Promise<Deployment>;
+}
+
+function repositoryAccessNotice(record: Deployment): HTMLElement | null {
+  return record.repositoryAccess
+    ? statusBlock("warning", null, record.repositoryAccess.message, [], { role: null })
+    : null;
 }

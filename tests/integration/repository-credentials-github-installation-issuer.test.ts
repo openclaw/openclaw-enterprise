@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:https";
 import test from "node:test";
-import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/origin.ts";
-import type {
-  GitHubPreparationAdmission,
-  GitHubPreparationStore,
-} from "../../apps/controller/src/drivers/repo/github/credentials/prepared-contracts.ts";
-import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
-import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/credentials/provider-diagnostics.ts";
+import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/access/origin.ts";
+import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
+import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
+import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/access/provider-diagnostics.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.ts";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 
 function assertCredentialMatches(actual: Uint8Array | undefined, expected: string | undefined) {
   assert.equal(
@@ -74,8 +71,7 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
       issuerAuthority,
       grant: scope,
     };
-    // The JavaScript fixture's transaction callbacks are generic; it returns their actual results.
-    const store = createPreparedStore(admission).connect() as GitHubPreparationStore;
+    const store = createPreparedStore(admission).connect();
     let signingKeyCurrent = true;
     const diagnostics: GitHubPreparationDiagnostic[] = [];
     const logged: Record<string, unknown>[] = [];
@@ -213,8 +209,26 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
   } as const;
   const narrowed = { ...selected, repositories: [repository], permissions: draft };
   const narrowBody =
-    '{"repository_ids":[5321],"permissions":{"metadata":"read","contents":"write","pull_requests":"write"}}';
+    '{"repository_ids":[5321],"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}';
   await issue(narrow, narrowed, narrowBody, true);
+  // App IDs sign as strings. The legacy issuer accepts a decimal ID beyond JavaScript's safe
+  // integer range because only the repository ID is numeric in the selected issuance body.
+  await issue({ ...narrow, appId: "12345678901234567890" }, narrowed, narrowBody, true);
+  // Both grants use the real issuer path and mint exactly the same effective provider scope.
+  await issue(
+    {
+      id: "independent-grant",
+      isolationId: "another-agent",
+      appId: grant.appId,
+      installationId: grant.installationId,
+      profile: "github-repository",
+      repositories: [{ repositoryId: "5321", repository: repository.full_name }],
+      permissions: { pull_requests: "write", metadata: "read", contents: "write" },
+    },
+    narrowed,
+    narrowBody,
+    true,
+  );
   await issue(narrow, {}, narrowBody, false);
   await issue(narrow, { ...narrowed, repository_selection: "all" }, narrowBody, false);
   await issue(narrow, { ...narrowed, permissions: installed }, narrowBody, false);
@@ -309,7 +323,7 @@ test("background issuer records definite non-issuance only for unambiguous token
       const { reply } = scenario;
       status = scenario.status;
       body = reply.body;
-      const store = createPreparedStore(admission).connect() as GitHubPreparationStore;
+      const store = createPreparedStore(admission).connect();
       const diagnostics: GitHubPreparationDiagnostic[] = [];
       const owner = createGitHubPreparationOwner({
         admission,

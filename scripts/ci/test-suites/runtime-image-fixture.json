@@ -5,7 +5,7 @@
   },
   "files": [
     {
-      "path": "tests/integration/runtime-images.test.mjs",
+      "path": "tests/integration/runtime-images.test.ts",
       "expectedTests": [
         "Docker runtime image inspection follows attached images and rejects foreign revisions",
         "runtime image metadata endpoint validates Enterprise and OpenClaw provenance independently"

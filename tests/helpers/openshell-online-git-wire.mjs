@@ -10,3 +10,15 @@ export function openShellOnlineGitWire(t, options) {
     createOpenShellOnlineGitAuthority,
   );
 }
+
+// Model the trusted owner's recorded allow for this inspected request and installed material.
+export function onlineGitAllow(request, installed) {
+  return {
+    kind: "allow",
+    exchangeId: request.exchangeId,
+    requestDigestSha256: request.requestDigestSha256,
+    preparationAttemptId: installed.preparationAttemptId,
+    materialVersion: installed.materialVersion,
+    replyBy: request.deadlineAt,
+  };
+}

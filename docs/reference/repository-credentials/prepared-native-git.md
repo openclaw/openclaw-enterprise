@@ -41,9 +41,9 @@ fetches in groups no larger than the configured
 [service limits](../repository-credentials.md#client-routing-and-limits).
 
 A separately selected protected Credential Proxy can authorize a bounded
-`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
+`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/access/metadata-response.ts)
 requires HTTP 200 and the exact repository ID and full name. After stream end, the
-[transport](../../../apps/controller/src/drivers/repo/credentials/transport/upstream.ts)
+[transport](../../../apps/controller/src/drivers/repo/access/transport/upstream.ts)
 rejects actual trailers (a declaration alone is not one), enforces byte limits before and
 after rewriting, then releases the configured `{ id, full_name }` as fixed JSON with
 no-store headers. Streamed responses cannot make that guarantee.
@@ -117,8 +117,11 @@ independently known commit, and push a new commit to the allowed review ref. Rea
 the exact commit back independently. In a disposable test repository, also show
 that the broker refuses another writable ref, rather than relying on a client hook.
 
-To withdraw access, remove the repository binding on the running Agent. Confirm a
-new authenticated fetch is denied and chat still works. Withdrawal cannot erase
+To withdraw access, remove the repository binding on the Agent. Finite removal
+remains effective while Stop is pending; re-adding the binding cannot restore the
+original revision’s grant, even if a later deployment supersedes Stop. A denied Stop
+does not prevent Git detachment or authorize shutting down the Agent, including through a due maintenance pass. An earlier unacknowledged policy reduction is observed before Git detachment; it is never reapplied. For an Agent
+that remains running, confirm a new authenticated fetch is denied and chat still works. Withdrawal cannot erase
 an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 
@@ -141,6 +144,13 @@ the Agent received, and `reason` says where the broker refused the request:
 | `service_error`       | An internal broker failure                                                                             |
 
 The line also carries `status`, and `operation` (such as `git-push`) once the route is known.
+A `not_dispatched` line carries `upstreamConnect` when the worker could not open the GitHub
+connection: `host`, the `addresses` it resolved to when known (each one a dual-stack host
+tried, or the one it reached before TLS failed), `port`, and the socket or TLS `error` code,
+such as `ECONNREFUSED` or `connect-timeout`. Worker egress allows only
+`repositoryCredentials.upstreamCidrs`. A refused or timed-out connect to an address outside
+that list usually means the list is older than GitHub's published ranges: refresh it from
+GitHub's [meta API](https://api.github.com/meta) and apply it with a Helm upgrade.
 A draft create that GitHub did not receive, for example because the connection failed, gets a
 `409` receipt with `not-submitted` and logs `not_dispatched`. An uncertain push or draft
 (`exchange-uncertain`, `outcome_unknown`) is not a refusal and is not logged.

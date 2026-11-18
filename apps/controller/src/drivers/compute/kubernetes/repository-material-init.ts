@@ -1,3 +1,9 @@
+import {
+  clientGitconfig,
+  clientGhConfiguration,
+  repositoryCredentialClientStringKeys,
+} from "../../repo/access/client-contracts.ts";
+
 /** Runs in the runtime image before the read-only credential mount is exposed. */
 export const REPOSITORY_MATERIAL_INIT_ENTRYPOINT = String.raw`
 "use strict";
@@ -5,7 +11,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const clientKeys = ["gatewayOrigin", "gitRemote", "gitUsername", "canonicalApiHost", "apiHost", "repository"];
+const clientKeys = [${repositoryCredentialClientStringKeys.map((key) => JSON.stringify(key)).join(", ")}];
 const limits = { bearer: 256, "client.json": 16384, gitconfig: 16384, "gh/hosts.yml": 16384, "gh/config.yml": 16384, "ca.pem": 65536 };
 const systemCaBundleCandidates = ["/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem", "/etc/pki/tls/certs/ca-bundle.crt"];
 const runtimeRoot = "/run/oce/repository-credentials/sessions/";
@@ -154,8 +160,8 @@ function validateProjection(sourceRoot, binding) {
   requireValid(client.sessionId === binding.sessionId && client.deadlineWallMs === binding.deadlineWallMs &&
     client.hasPublicCa === hasPublicCa && clientKeys.every((key) => client.client[key] === binding.client[key]) &&
     JSON.stringify(client.client.pushRefAllowlist) === JSON.stringify(binding.client.pushRefAllowlist));
-  requireValid(files.gitconfig.text === "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n");
-  requireValid(files["gh/config.yml"].text === "version: 1\nprompt: disabled\ngit_protocol: https\n");
+  requireValid(files.gitconfig.text === ${JSON.stringify(clientGitconfig)});
+  requireValid(files["gh/config.yml"].text === ${JSON.stringify(clientGhConfiguration)});
   requireValid(files["gh/hosts.yml"].text === JSON.stringify(binding.client.canonicalApiHost) + ":\n  api_host: " +
     JSON.stringify(binding.client.apiHost) + "\n  git_protocol: https\n  oauth_token: " + JSON.stringify(files.bearer.text) + "\n");
   requireValid(!hasPublicCa || files["ca.pem"].contents.length > 0);
@@ -228,7 +234,7 @@ function writePrivate(filename, contents) {
 
 async function materialize(descriptor) {
   ({ normalizePushRefAllowlist } = await import(
-    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js"
+    "/opt/oce/repository-credentials/dist/drivers/repo/access/client-contracts.js"
   ));
   validateDescriptor(descriptor);
   const { sourceRoot, targetRoot, manifest } = descriptor;
@@ -290,10 +296,10 @@ Promise.resolve().then(async () => {
   process.umask(0o077);
   const root = process.argv[1];
   const { readPrivateFile } = await import(
-    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/private-files.js"
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/private-files.js"
   );
   const { prepareNativeGitConfiguration } = await import(
-    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js"
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/native-git.js"
   );
   const config = path.join(root, "gitconfig");
   // An interrupted init may have left a partial file. Only this init can write

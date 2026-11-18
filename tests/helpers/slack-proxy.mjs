@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import net from "node:net";
 import { join } from "node:path";
-import { reservedPortArgs, reservePort } from "./available-port.mjs";
+import { reservedPortArgs, reservePort } from "./available-port.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 /**

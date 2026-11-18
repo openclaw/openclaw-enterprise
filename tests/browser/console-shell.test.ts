@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   accessibleDescription,
   fileBrowser,
@@ -12,7 +12,7 @@ import {
   login,
   newPage,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();

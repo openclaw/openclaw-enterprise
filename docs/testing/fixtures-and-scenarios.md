@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Compose fixtures and readable scenarios
 
 ## Overview
@@ -49,7 +55,7 @@ and [credential testing guide](repository-credentials.md) for examples.
 ## Hash fixture passwords cheaply
 
 Build controllers in tests through the constructors in
-[`tests/helpers/password-hasher.mjs`](../../tests/helpers/password-hasher.mjs). They inject a
+[`tests/helpers/password-hasher.ts`](../../tests/helpers/password-hasher.ts). They inject a
 salted SHA-256 hasher in place of the controller's scrypt, which costs about 0.1 CPU-second
 per hash or sign-in. It still verifies scrypt hashes that production entry points wrote, such
 as the bootstrap administrator's. Pass `scryptPasswordHasher` where hashing cost, timing or the

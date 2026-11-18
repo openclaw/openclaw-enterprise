@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
-  assertNoSecretMaterial,
   createPluginDriverRealFixture,
-  pluginProofSkipReason,
   readCodexServiceAccountCredential,
-} from "../helpers/plugin-driver-real.mjs";
+} from "../helpers/plugin-driver-real.ts";
+import { assertNoSecretMaterial } from "../helpers/native-plugin-assertions.ts";
+import { pluginProofSkipReason } from "../helpers/plugin-driver-proof-inputs.ts";
 
 test(
   "a real official OpenClaw plugin installs, runs in a normal Agent turn, and stays scoped to one Agent",
@@ -349,13 +349,16 @@ test(
       codexCredential: credential,
     });
     const path = `/namespaces/${fixture.namespaceId}/agents/plugins`;
-    const catalog = await fixture.request("POST", path, {});
+    const catalog = await fixture.request("POST", path, { harnessId: "codex" });
     assert.equal(catalog.status, 200, JSON.stringify(catalog.error));
     const linear = catalog.data.plugins.find(
       (entry) => entry.id === "codex-plugin:linear@openai-curated-remote",
     );
     assert.ok(linear, "the configured catalog must offer Linear without a discovery token.");
-    const detail = await fixture.request("POST", `${path}/details`, { pluginId: linear.remoteId });
+    const detail = await fixture.request("POST", `${path}/details`, {
+      harnessId: "codex",
+      pluginId: linear.remoteId,
+    });
     assert.equal(detail.status, 200, JSON.stringify(detail.error));
     assert.equal(detail.data.id, linear.id);
 

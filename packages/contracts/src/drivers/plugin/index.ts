@@ -1,4 +1,5 @@
 import type { Driver } from "../index.ts";
+import type { PluginDeploymentContract } from "./deployment.ts";
 import type {
   Agent,
   AgentPluginCredentialSlot,
@@ -29,7 +30,10 @@ export interface PluginDiscoveryAuthentication {
 
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
+  /** Harness family authorized to use this catalog. */
+  readonly harnessId: "openclaw" | "codex";
   readonly policyCapabilities: PluginPolicyCapabilities;
+  readonly describeDeployment?: PluginDeploymentContract["describeDeployment"];
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
     choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
@@ -43,7 +47,7 @@ export interface PluginDriver extends Driver {
       selections: PluginDesiredState,
       sources: readonly CredentialSource[],
       modelSourceId?: string,
-    ): void;
+    ): void | Promise<void>;
   };
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;

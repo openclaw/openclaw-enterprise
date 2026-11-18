@@ -1,4 +1,3 @@
-import type { ModelProviderConfiguration } from "../compute/model-provider.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
@@ -234,6 +233,8 @@ export function openShellEgressConfiguration(
           `oce-egress-${index}`,
           {
             name: `oce-egress-${index}`,
+            // Managed OpenShell requires a binary match even for whole-execution inference.
+            ...(route.binding.grant.kind === "inference" ? { binaries: [{ path: "/**" }] } : {}),
             endpoints: [
               {
                 host: origin.hostname,
@@ -328,7 +329,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
-      readonly modelProvider?: ModelProviderConfiguration;
     },
   ) {
     requireConfiguration(OpenShellCredentialProxyDriver, options);
@@ -358,7 +358,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
       resolver: { id: `${selection.id}/resolver`, generation: 1 },
       providers: [
-        createOpenAiStaticProvider(selection.modelProvider),
+        createOpenAiStaticProvider(),
         credentialFreeMetadataProvider,
         ...(selection.preparedProviders ?? []),
       ],

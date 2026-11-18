@@ -7,7 +7,11 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { json } from "node:stream/consumers";
 import test from "node:test";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { asRecord } from "../../packages/utils/src/objects.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  codexLaunchEntrypoint,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_PATH,
   COMPUTE_RELEASE_PUBLIC_KEY,
@@ -24,10 +28,10 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
-import { waitFor } from "../helpers/qa-utils.mjs";
-import { listen } from "../helpers/listen.mjs";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
+import { waitFor } from "../helpers/qa-wait.ts";
+import { listen } from "../helpers/listen.ts";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const token = "synthetic-harness-transport";
@@ -81,7 +85,9 @@ test(
     const { port } = reservation;
     const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
     t.after(() => transport.close());
-    const compute = createTestKubernetesComputeDriver("launch-compute", { channelRuntime: true });
+    const admissionCompute = createTestKubernetesComputeDriver("launch-compute", {
+      channelRuntime: true,
+    });
     const f = await staticEgressFixture(t, {
       // Keep local lifecycle observations, but run the actual Compute admission at
       // the normal deploy route and read its immutable result back from State.
@@ -90,14 +96,19 @@ test(
           ...options,
           computeDriver: {
             ...options.computeDriver,
-            id: compute.id,
-            implementation: compute.implementation,
-            admitRevision: compute.admitRevision.bind(compute),
+            id: admissionCompute.id,
+            implementation: admissionCompute.implementation,
+            admitRevision: admissionCompute.admitRevision.bind(admissionCompute),
           },
         }),
       recordInstallation: false,
       physicalPlacement: true,
       serviceTransport: transport,
+    });
+    // Render with the provider the fixture selected for this admitted revision.
+    const compute = createTestKubernetesComputeDriver(admissionCompute.id, {
+      channelRuntime: true,
+      sandboxDriver: f.sandboxDriver,
     });
     f.observed.service = {
       url: serviceUrl,
@@ -133,23 +144,28 @@ test(
     const modelPort = model.address().port;
     const callsPath = join(directory, "calls.jsonl");
     const script = join(directory, "entrypoint.cjs");
-    assert.equal(f.revision.compute.admission, "protected-codex-no-connection-retry:v1");
+    assert.match(
+      f.revision.compute.admission,
+      /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+    );
     const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
-    assert.equal(compute.pluginRuntimeSnapshot(legacy).entrypoint, AGENT_RUNTIME_ENTRYPOINT);
+    const program = (revision) =>
+      codexLaunchEntrypoint(compute.codexLaunch(revision, f.sandboxDriver));
+    assert.equal(program(legacy), AGENT_RUNTIME_ENTRYPOINT);
     const ordinary = {
       ...legacy,
       executionAdmission: { version: 2, mode: "unprotected" },
       egressPlan: undefined,
       sandboxDriverId: undefined,
     };
-    assert.equal(compute.admitRevision(ordinary), undefined);
+    assert.match(compute.admitRevision(ordinary), /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:$/);
     for (const revision of [
       { ...ordinary, compute: f.revision.compute },
       { ...legacy, compute: { ...legacy.compute, admission: "unknown:v1" } },
     ]) {
       assert.throws(() => compute.pluginRuntimeSnapshot(revision), /Compute admission is invalid/);
     }
-    await writeFile(script, compute.pluginRuntimeSnapshot(f.revision).entrypoint);
+    await writeFile(script, program(f.revision));
     await writeFile(callsPath, "");
     await writeCommand(
       directory,
@@ -199,30 +215,42 @@ test(
       t.after(stop);
       return { stop, diagnostics: () => diagnostics };
     };
-    const getChallenge = async () =>
-      waitFor(
-        "authenticated enrollment challenge",
-        async () => {
-          assert.equal(
-            businessRequests,
-            0,
-            "startup must not send a business request before enrollment",
-          );
-          try {
-            const document = await transport.getServiceDocument(
-              serviceUrl,
-              path,
-              token,
-              AbortSignal.timeout(1000),
+    const getChallenge = async () => {
+      const challenge = asRecord(
+        await waitFor(
+          "authenticated enrollment challenge",
+          async () => {
+            assert.equal(
+              businessRequests,
+              0,
+              "startup must not send a business request before enrollment",
             );
-            return document.status === 200 && document.json;
-          } catch {
-            return undefined;
-          }
-        },
-        10000,
-        { interval: 20 },
+            try {
+              const document = await transport.getServiceDocument(
+                serviceUrl,
+                path,
+                token,
+                AbortSignal.timeout(1000),
+              );
+              return document.status === 200 && document.json;
+            } catch {
+              return undefined;
+            }
+          },
+          10000,
+          { interval: 20 },
+        ),
       );
+      assert.ok(challenge, "expected an enrollment challenge");
+      const { startupId } = challenge;
+      const execution = asRecord(challenge.execution);
+      const plan = asRecord(challenge.plan);
+      assert.ok(
+        typeof startupId === "string" && execution && plan,
+        "expected enrollment challenge fields",
+      );
+      return { ...challenge, startupId, execution, plan };
+    };
     const calls = async () =>
       (await readFile(callsPath, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
     const first = start();
@@ -265,9 +293,9 @@ test(
     assert.notEqual(currentChallenge.startupId, oldChallenge.startupId);
     // The real generated listeners report correlatable startup hashes, never the signed
     // challenge identity itself. A restart remains a new release owner.
-    for (const [runtime, challenge] of [
-      [first, oldChallenge],
-      [second, currentChallenge],
+    for (const { runtime, challenge } of [
+      { runtime: first, challenge: oldChallenge },
+      { runtime: second, challenge: currentChallenge },
     ]) {
       const observed = await waitFor(
         "hashed startup diagnostic",

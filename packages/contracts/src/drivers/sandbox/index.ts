@@ -1,5 +1,6 @@
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
+import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
@@ -113,6 +114,8 @@ export interface SandboxNamespaceContext {
 export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly revision: Readonly<AgentRevision>;
   readonly requirements: HarnessWorkloadRequirements;
+  /** Refuse a missing workload before creating resources or reading enrollment credentials. */
+  readonly existingHarnessOnly?: true;
   /**
    * True once the revision's workspace node has enrolled with its Agent Gateway. A dedicated
    * OpenClaw worker's Harness exposure serves Compute's status read only before that: a Driver
@@ -167,6 +170,13 @@ export type SandboxHarnessObservation =
 
 /** The selected Sandbox owns the repository recipient, including proof after a worker restart. */
 export interface SandboxRepositoryAccess {
+  /** Read-only prospective assessment, including when called from a separate API process. */
+  repositoryWorkerRestartDisposition?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<RepositoryWorkerRestartDisposition>;
+
+  /** Throws OCC's RepositoryExecutionRequiresRedeployError only when durable evidence
+   * proves repository access cannot resume on this execution. Missing evidence remains undefined. */
   verifyExecution(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<RepositoryExecutionIdentity | undefined>;
@@ -236,6 +246,8 @@ export interface SandboxDriver extends Driver {
   ): Promise<SandboxPolicyRecommendations>;
 
   readonly capability: "sandbox";
+  /** Request periodic maintenance of active revisions bound to this Sandbox. */
+  readonly maintenanceIntervalMs?: number;
   /** One or more distinct containment facets implemented by this driver. */
   readonly facets: readonly SandboxFacet[];
   /**
@@ -318,6 +330,10 @@ export interface SandboxDriver extends Driver {
    * revision's Sandbox alone, never another Sandbox in the namespace.
    */
   workspaceNodePeerLabels?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined>;
+  /** Exact labels of this prepared revision's Harness, used for Gateway egress. */
+  harnessPeerLabels?(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<Readonly<Record<string, string>> | undefined>;
   /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */

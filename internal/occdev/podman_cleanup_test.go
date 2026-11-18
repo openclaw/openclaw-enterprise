@@ -51,7 +51,9 @@ func TestPodmanDownConfirmsOwnedResourceRemoval(t *testing.T) {
 			// The engine refuses prerequisite removal until its dependent is gone,
 			// or lies about volume removal; neither condition may lose recovery state.
 			commands := fakeProfileCommands(t, map[string]string{
-				"k3d": `"cluster list -o json") echo '[]' ;;`,
+				// Down discovers a provider by name but cleanup uses only the engine.
+				"podman-compose": "",
+				"k3d":            `"cluster list -o json") echo '[]' ;;`,
 				"podman": `
 "ps --all --quiet --filter label=com.docker.compose.project=occ-dev-cleanup --filter label=com.docker.compose.service=controller"|\
 "ps --all --quiet --filter label=com.docker.compose.project=occ-dev-cleanup --filter label=com.docker.compose.service=worker-kubernetes") ;;

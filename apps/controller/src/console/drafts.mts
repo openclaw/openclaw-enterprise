@@ -1,6 +1,14 @@
 // Drafts live only in this document. Editors explicitly select non-credential state.
 const captured = (value: unknown): boolean => value !== undefined;
 
+function decodeKey(key: string): readonly unknown[] {
+  const value: unknown = JSON.parse(key);
+  if (!Array.isArray(value)) {
+    throw new Error("Draft key invariant: expected an array");
+  }
+  return value;
+}
+
 export function createDraftStore() {
   const snapshots = new Map<string, unknown>();
   const captures = new Map<string, () => unknown>();
@@ -42,11 +50,11 @@ export function createDraftStore() {
     // Forgets the drafts of every Namespace a successful read no longer lists. Each key's first
     // part names its Namespace (see scope).
     retainNamespaces(namespaceIds: Iterable<string>) {
-      const kept = new Set<string | null>(namespaceIds);
+      const kept = new Set(namespaceIds);
       for (const entries of [captures, snapshots, unsavedChecks, owners]) {
         for (const key of entries.keys()) {
-          const [namespaceId]: [string | null, ...string[]] = JSON.parse(key);
-          if (!kept.has(namespaceId)) {
+          const [namespaceId] = decodeKey(key);
+          if (typeof namespaceId !== "string" || !kept.has(namespaceId)) {
             entries.delete(key);
           }
         }
@@ -67,14 +75,18 @@ export function createDraftStore() {
       return false;
     },
     scope(namespaceId: string | null, ...parts: string[]) {
-      const keyFor = (name: string) => JSON.stringify([namespaceId, ...parts, name]);
+      const prefix = [namespaceId, ...parts];
+      const keyFor = (name: string) => JSON.stringify([...prefix, name]);
       return {
         // A confirmed read denial retires this Agent's drafts, including parked tabs.
         clear() {
           for (const entries of [captures, snapshots, unsavedChecks, owners]) {
             for (const key of entries.keys()) {
-              const scope = JSON.parse(key).slice(0, -1);
-              if (JSON.stringify(scope) === JSON.stringify([namespaceId, ...parts])) {
+              const decoded = decodeKey(key);
+              if (
+                decoded.length === prefix.length + 1 &&
+                prefix.every((part, index) => decoded[index] === part)
+              ) {
                 entries.delete(key);
               }
             }

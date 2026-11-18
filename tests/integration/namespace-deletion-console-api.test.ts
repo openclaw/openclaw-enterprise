@@ -4,7 +4,7 @@ import type { AuditEvent, Namespace } from "../../packages/contracts/src/index.t
 
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 type RemainingResource = { kind: string; count: number; ids: string[] };
 

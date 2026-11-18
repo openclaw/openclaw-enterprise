@@ -1,11 +1,19 @@
 # Manage Secrets in the console
 
-Open **Secrets** in the sidebar and select a Namespace. Search by name or ID,
+Open **Credentials** in the sidebar. The **Secrets** tab opens first. Select a Namespace. Search by name or ID,
 or select **Refresh** to reload metadata. The list contains only Secrets you may
 read. Values are never returned. A ready Namespace is required to create or
 replace a value; ask an administrator for the exact operation permissions.
 Without Secret `create` in the Namespace, **Create Secret** is disabled and a
 note under it says so.
+
+## Register a Google OAuth client
+
+As an Installation administrator, open **Credentials → OAuth clients → Register OAuth client** and select the Installation-wide **Google OAuth** template. Register the displayed redirect URI with Google, then enter the client ID and secret that Google issued.
+
+To change where the account can send requests, open **Connection templates → Edit Google OAuth** and expand **API destinations**. The Namespace selector on either tab shows Installation-wide entries alongside those available in the selected Namespace. [Connection templates](../../reference/connection-templates.md)
+
+When you edit a saved manual template, add only hosts you trust to receive existing accounts’ access tokens.
 
 ## Create and use a Secret
 

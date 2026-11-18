@@ -169,7 +169,9 @@ export function createApiClient({
       if (
         responseType === "text" &&
         response.status === 200 &&
-        response.headers.get("content-type")?.startsWith("text/plain")
+        (expectedStatus === undefined || expectedStatus === 200) &&
+        response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ===
+          "text/plain"
       ) {
         return await response.text();
       }
@@ -184,6 +186,7 @@ export function createApiClient({
       payload = {};
     }
     if (
+      responseType === "text" ||
       !response.ok ||
       (expectedStatus !== undefined && response.status !== expectedStatus) ||
       !Object.hasOwn(payload, "data")

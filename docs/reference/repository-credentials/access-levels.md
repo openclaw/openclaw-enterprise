@@ -24,6 +24,12 @@ policy must include `permissions`. For example, `contents: write` and
 GitHub App permissions and repository rules still apply. This profile does not
 accept an OCE branch allowlist; GitHub governs branch restrictions.
 
+For one `github-repository` binding, the Installation and Namespace can opt into
+[standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
+The approved scope includes the exact repository identity and permission map.
+Multiple selected repositories remain finite; standing approval does not extend
+the lifetime of individual sessions or tokens.
+
 The other profiles do not accept a custom registry `permissions` map. Their
 effective permissions and supported operations depend on the selected delivery,
 as described below. `git-full` does not mean unrestricted GitHub administration.

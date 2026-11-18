@@ -7,7 +7,7 @@
     "noCheck": true
   },
   "include": [
-    "../../../apps/controller/src/drivers/repo/github/credentials/client/**/*.ts",
-    "../../../apps/controller/src/drivers/repo/credentials/client-contracts.ts"
+    "../../../apps/controller/src/drivers/repo/github/access/client/**/*.ts",
+    "../../../apps/controller/src/drivers/repo/access/client-contracts.ts"
   ]
 }

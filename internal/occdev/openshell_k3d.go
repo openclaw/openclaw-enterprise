@@ -28,7 +28,7 @@ const (
 )
 
 // developmentCodexProfile matches the localhost seccomp profile name
-// `scripts/lib/codex-seccomp-k3d.mjs` builds for the dedicated Codex sandbox.
+// `scripts/lib/codex-seccomp-k3d.ts` builds for the dedicated Codex sandbox.
 //
 // The reviewed Codex version is deliberately not pinned here. That script owns
 // the list of reviewed versions and refuses to prepare a profile for any other,
@@ -54,6 +54,12 @@ func validDevelopmentCodexSeccompResult(mode, profileName string) bool {
 
 func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolicies []any, ceiling []any) (result error) {
 	r := newRunner(opts)
+	defer func() {
+		if result != nil {
+			stage, cleanupFailed := startupFailureDetails(result)
+			fmt.Fprintf(r.opts.Out, "\n[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t%s\n", stage, cleanupFailed, ctx.Err() != nil, routingFailureSuffix(result))
+		}
+	}()
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
@@ -133,7 +139,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
 	}
-	if sandboxDriver == "openshell" {
+	{
 		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
@@ -167,6 +173,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	if err := r.pinEndpoint(ctx); err != nil {
+		return err
+	}
+	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{cluster: state.Cluster}, []developmentHostPort{
+		{apiPort, "OPENCLAW_DEV_PORT"},
+		{browserPort, "OCC_DEVELOPMENT_BROWSER_PORT"},
+		{kubernetesPort, "OCC_DEVELOPMENT_KUBERNETES_API_PORT"},
+	}); err != nil {
 		return err
 	}
 	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
@@ -232,7 +245,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			}
 		}
 		if cleanupErr != nil {
-			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr))
+			result = joinStartupCleanup(result, startupError("rollback", fmt.Errorf("rollback incomplete; preserving %s for occ dev down; clean up with %s: %w", directory, kubernetesDownCommand(directory, sandboxDriver, opts.Repository), cleanupErr)))
 		}
 	}()
 	if err := exclusiveWrite(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
@@ -246,14 +259,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	fmt.Fprintf(r.opts.Out, "Creating Kubernetes-only k3d cluster %s...\n", state.Cluster)
-	admissionPath := ""
-	if sandboxDriver == "openshell" {
-		admissionPath, err = prepareOpenShellAdmission(directory)
-		if err != nil {
-			return err
-		}
-	}
-	clusterArgs := kubernetesOnlyClusterArgs(state, timeoutSeconds, kubernetesPort, threshold, admissionPath)
+	clusterArgs := kubernetesOnlyClusterArgs(state, timeoutSeconds, kubernetesPort, threshold)
 	resolverArgs, err := r.prepareDevelopmentResolver(state)
 	if err != nil {
 		return err
@@ -264,7 +270,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	clusterAttempted = true
 	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-		clusterCreationFailed = true
+		// A create that k3d fully rolled back leaves nothing to clean up.
+		clusterCreationFailed = !r.k3dRolledBackCleanly(ctx, err, state.Cluster)
 		return err
 	}
 	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
@@ -280,11 +287,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	// deferred detach (which runs before the rollback deletes the network)
 	// cover images that were never pulled.
 	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
-		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+		return joinStartupCleanup(err, startupError("registry-detach", r.detachDevelopmentImageRegistry(ctx)))
 	}
 	defer func() {
 		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-			result = errors.Join(result, err)
+			result = joinStartupCleanup(result, startupError("registry-detach", err))
 		}
 	}()
 
@@ -298,12 +305,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 
 	// Nothing below needs the controller, PostgreSQL or repository images until
 	// the network check, so import them while the Codex sandbox check and the
-	// routing controller rollouts wait on the cluster. The runtime image is
-	// imported outside this overlap, so no two image builds run at once. The
+	// routing controller rollouts wait on the cluster. OpenShell's runtime follows
+	// PostgreSQL/repository imports in the same sibling, so builds stay serial. The
 	// network check needs only the controller image and runs in this overlap
 	// too; the platform install below still waits for it.
 	var codexSeccompProfile, routingPodCIDR string
 	var controllerImage, postgresImage, repositoryImage string
+	var assets *openShellDevelopmentAssets
 	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
 		var err error
 		if sandboxDriver == "none" {
@@ -317,7 +325,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
 		routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, timeout)
 		if err != nil {
-			return fmt.Errorf("install the private routing controllers: %w", err)
+			return startupError("routing", fmt.Errorf("install the private routing controllers: %w", err))
 		}
 		return nil
 	}, func(ctx context.Context, r *runner) error {
@@ -325,7 +333,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		fmt.Fprintln(r.opts.Out, "Importing the controller and PostgreSQL images alongside the cluster checks...")
 		controllerImage, err = r.importDevelopmentController(ctx, state)
 		if err != nil {
-			return fmt.Errorf("import the development controller image: %w", err)
+			return startupError("controller-image-import", fmt.Errorf("import the development controller image: %w", err))
 		}
 		// The probe Pods run the controller image. The check creates its own
 		// Namespaces and policy and no routing resources, and its probes wait on
@@ -346,30 +354,29 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 					return fmt.Errorf("import the development repository service image: %w", err)
 				}
 			}
+			if sandboxDriver == "openshell" {
+				runtimeImage, err = r.importRuntime(ctx, state)
+				if err != nil {
+					return err
+				}
+				// Large image imports finish before the smaller OpenShell assets, so
+				// image GC cannot evict them. Prepare the controller/CRDs and images
+				// while probes finish; platform trust and credentials still wait below
+				// for successful network verification and every preparation branch.
+				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+				assets, err = r.prepareOpenShell(ctx, state, timeout)
+				if err != nil {
+					return startupError("openshell-preparation", err)
+				}
+			}
 			return nil
 		})
 	})
 	if err != nil {
 		return err
 	}
-	if sandboxDriver == "openshell" {
-		runtimeImage, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
-		}
-	}
 	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-		return err
-	}
-	var assets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		// Import the larger platform images first so image garbage collection cannot
-		// evict idle OpenShell images before their workloads are installed.
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		assets, err = r.prepareOpenShell(ctx, state, timeout)
-		if err != nil {
-			return err
-		}
+		return startupError("registry-detach", err)
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
@@ -455,7 +462,7 @@ type developmentPlatformInputs struct {
 
 func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developmentState, inputs developmentPlatformInputs, timeout time.Duration) error {
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
-		return err
+		return startupError("platform-namespace", err)
 	}
 	if state.SandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
@@ -488,9 +495,8 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 }
 
 // kubernetesOnlyClusterArgs pins the k3d node and keeps verified local images
-// for the Kubernetes-only profile. A nonempty admission path mounts the
-// OpenShell Pod Security admission configuration.
-func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernetesPort, threshold int, admissionPath string) []string {
+// for the Kubernetes-only profile.
+func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernetesPort, threshold int) []string {
 	args := []string{
 		"cluster", "create", state.Cluster,
 		"--timeout", (time.Duration(timeoutSeconds) * time.Second).String(),
@@ -506,9 +512,6 @@ func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernet
 	args = append(args, developmentImageGCArgs()...)
 	if state.BrowserPort != 0 {
 		args = append(args, "--port", fmt.Sprintf("127.0.0.1:%d:30081@loadbalancer", state.BrowserPort))
-	}
-	if admissionPath != "" {
-		args = append(args, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
 	}
 	return args
 }
@@ -539,6 +542,10 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if controller == "" {
 		return nil
 	}
+	return r.validateSelectedDevelopmentImageRevisions(ctx, controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"])
+}
+
+func (r *runner) validateSelectedDevelopmentImageRevisions(ctx context.Context, images ...string) error {
 	checkout, err := r.output(ctx, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve the checkout revision for selected images: %w", err)
@@ -547,7 +554,7 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if len(revision) != 40 || strings.Trim(revision, "0123456789abcdef") != "" {
 		return fmt.Errorf("the checkout must have a full Git commit revision")
 	}
-	for _, image := range []string{controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"]} {
+	for _, image := range images {
 		label, err := r.developmentImageRevision(ctx, image)
 		if err != nil {
 			return err
@@ -599,8 +606,18 @@ func (r *runner) importDevelopmentController(ctx context.Context, state *develop
 			return "", err
 		}
 	} else {
+		checkout, err := r.output(ctx, "git", "rev-parse", "--verify", "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("resolve the checkout revision for the controller build: %w", err)
+		}
+		revision := string(checkout)
+		if len(revision) != 40 || strings.Trim(revision, "0123456789abcdef") != "" {
+			return "", fmt.Errorf("the checkout must have a full Git commit revision")
+		}
 		base := r.setting("OCC_DEVELOPMENT_NODE_BASE_IMAGE", developmentNodeBase)
-		if err := r.run(ctx, r.engine, "build", "--target", "runtime", "--build-arg", "NODE_BASE_IMAGE="+base, "--tag", image, "."); err != nil {
+		// Keep the engine as the runner's direct child for cancellation and timing.
+		if err := r.run(ctx, r.engine, "build", "--target", "runtime", "--build-arg", "NODE_BASE_IMAGE="+base,
+			"--build-arg", "OCC_BUILD_REVISION="+revision, "--label", "org.opencontainers.image.revision="+revision, "--tag", image, "."); err != nil {
 			return "", err
 		}
 	}
@@ -686,7 +703,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := r.writeAndApply(ctx, state, "postgres-bootstrap", secret); err != nil {
 		return err
 	}
-	for _, name := range []string{"postgres-data", "bootstrap-password"} {
+	for _, name := range []string{"postgres-data"} {
 		claim := map[string]any{
 			"apiVersion": "v1", "kind": "PersistentVolumeClaim",
 			"metadata": kubernetesMetadata(name, namespace, labels),
@@ -696,25 +713,25 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 			return err
 		}
 	}
-	prepare := map[string]any{
-		"apiVersion": "v1", "kind": "Pod", "metadata": kubernetesMetadata("bootstrap-password-prepare", namespace, labels),
-		"spec": map[string]any{
-			"restartPolicy": "Never", "automountServiceAccountToken": false,
-			"securityContext": map[string]any{"runAsUser": 0, "runAsGroup": 0, "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
-			"containers": []any{map[string]any{
-				"name": "prepare", "image": controllerImage, "imagePullPolicy": "Never",
-				"command":         []string{"node", "-e", "const fs=require('node:fs');const p='/var/lib/openclaw/bootstrap';fs.chownSync(p,1000,1000);fs.chmodSync(p,0o700)"},
-				"securityContext": map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []string{"ALL"}, "add": []string{"CHOWN", "FOWNER"}}},
-				"resources":       resources, "volumeMounts": []any{map[string]any{"name": "bootstrap", "mountPath": "/var/lib/openclaw/bootstrap"}},
-			}},
-			"volumes": []any{map[string]any{"name": "bootstrap", "persistentVolumeClaim": map[string]string{"claimName": "bootstrap-password"}}},
-		},
-	}
-	if err := r.writeAndApply(ctx, state, "bootstrap-password-prepare", prepare); err != nil {
+	if err := r.prepareBootstrapCredentials(state); err != nil {
 		return err
 	}
-	// PostgreSQL does not mount the bootstrap volume, so it starts while the
-	// prepare Pod runs.
+	password, err := os.ReadFile(r.env["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"])
+	if err != nil {
+		return err
+	}
+	key, err := os.ReadFile(r.env["OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"])
+	if err != nil {
+		return err
+	}
+	credentials := map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata":   kubernetesMetadata("bootstrap-credentials", namespace, labels),
+		"stringData": map[string]string{"admin-password": string(password), "admin-service-key": string(key)},
+	}
+	if err := r.writeAndApply(ctx, state, "bootstrap-credentials", credentials); err != nil {
+		return err
+	}
 	// A StatefulSet, not a bare Pod: k3d cluster stop/start and host reboots
 	// delete bare Pods, and the controller recreates PostgreSQL on its claim.
 	postgresLabels := map[string]string{"app": "postgres", "app.kubernetes.io/managed-by": "openclaw-development"}
@@ -747,10 +764,6 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "statefulset/postgres", "--timeout", timeout.String()); err != nil {
-		return err
-	}
-	// The chart's bootstrap writes to the prepared volume.
-	if err := r.waitPodSucceeded(ctx, namespace, "bootstrap-password-prepare", timeout); err != nil {
 		return err
 	}
 	postgresIP, err := r.output(ctx, "kubectl", "-n", namespace, "get", "pod", "postgres-0", "-o", "jsonpath={.status.podIP}")
@@ -789,8 +802,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	values := map[string]any{
 		"images":         map[string]string{"controller": controllerImage},
 		"installation":   map[string]string{"name": "Kubernetes development"},
-		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
-		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
+		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "credentials": map[string]string{"secretName": "bootstrap-credentials"}},
 		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
 		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
 		"api":            map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
@@ -799,6 +811,26 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	}
 	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
+	}
+	if state.BrowserPort != 0 {
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
+			return err
+		}
+		cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
+		if err != nil {
+			return err
+		}
+		key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
+		if err != nil {
+			return err
+		}
+		browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
+		if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
+			return err
+		}
+		values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
+		values["agentNativeAdmin"] = map[string]any{"enabled": routing, "domain": agentDomain}
 	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
@@ -809,26 +841,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		if state.BrowserPort != 0 {
-			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
-			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
-				return err
-			}
-			cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
-			if err != nil {
-				return err
-			}
-			key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
-			if err != nil {
-				return err
-			}
-			browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
-			if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
-				return err
-			}
-			values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
-			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
-		}
+
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {
 			values["gatewayRouting"].(map[string]any)["hostname"] = hostname
@@ -859,7 +872,10 @@ func (r *runner) helmUpgrade(ctx context.Context, state *developmentState, value
 // `k3d cluster stop` and `start` or a host reboot. The chart admits PostgreSQL
 // and the Kubernetes API only as explicit /32 hosts, and both addresses can
 // change on restart. This launcher-owned policy adds the same egress by
-// PostgreSQL Pod label and by the owned k3d network subnet.
+// PostgreSQL Pod label and by the owned k3d network subnet. The image upgrade
+// helper's startup preflight Pods (component upgrade-preflight) check the
+// candidate database and Compute as the API and worker do, so they get the
+// same egress; without it a moved PostgreSQL Pod refuses every upgrade.
 func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *developmentState, clusterIP string, clusterPort int) error {
 	subnet, err := r.developmentNodeSubnet(ctx, state, clusterIP)
 	if err != nil {
@@ -878,7 +894,7 @@ func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *devel
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-postgres-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": components("api", "worker", "initialization"), "policyTypes": []string{"Egress"},
+					"podSelector": components("api", "worker", "initialization", "upgrade-preflight"), "policyTypes": []string{"Egress"},
 					"egress": []any{map[string]any{
 						"to":    []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]string{"app": "postgres"}}}},
 						"ports": []any{map[string]any{"protocol": "TCP", "port": 5432}},
@@ -888,7 +904,7 @@ func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *devel
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-kubernetes-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": components("api", "worker", "initialization", "collector"), "policyTypes": []string{"Egress"},
+					"podSelector": components("api", "worker", "initialization", "upgrade-preflight", "collector"), "policyTypes": []string{"Egress"},
 					"egress": []any{map[string]any{
 						"to":    []any{map[string]any{"ipBlock": map[string]string{"cidr": subnet}}},
 						"ports": []any{map[string]any{"protocol": "TCP", "port": clusterPort}},
@@ -1145,76 +1161,5 @@ func (r *runner) waitKubernetesAPI(ctx context.Context, url string, timeout time
 }
 
 func (r *runner) copyAndVerifyKubernetesKey(ctx context.Context, state *developmentState, controllerImage, url string, timeout time.Duration) (string, *occclient.Client, error) {
-	labels := map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"}
-	reader := map[string]any{
-		"apiVersion": "v1", "kind": "Pod", "metadata": kubernetesMetadata("bootstrap-key-reader", state.PlatformNamespace, labels),
-		"spec": map[string]any{
-			// Node runs as PID 1 and ignores SIGTERM, so the deferred delete below
-			// would otherwise wait out the default 30-second grace period.
-			"restartPolicy": "Never", "automountServiceAccountToken": false, "terminationGracePeriodSeconds": 1,
-			"securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000, "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
-			"containers": []any{map[string]any{
-				"name": "reader", "image": controllerImage, "imagePullPolicy": "Never", "command": []string{"node", "-e", "setInterval(()=>{},1<<30)"},
-				"securityContext": map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []string{"ALL"}}},
-				"resources":       map[string]any{"requests": map[string]string{"cpu": "10m", "memory": "32Mi"}, "limits": map[string]string{"cpu": "100m", "memory": "64Mi"}},
-				"volumeMounts":    []any{map[string]any{"name": "bootstrap", "mountPath": "/var/lib/openclaw/bootstrap", "readOnly": true}},
-			}},
-			"volumes": []any{map[string]any{"name": "bootstrap", "persistentVolumeClaim": map[string]string{"claimName": "bootstrap-password"}}},
-		},
-	}
-	if err := r.writeAndApply(ctx, state, "bootstrap-key-reader", reader); err != nil {
-		return "", nil, err
-	}
-	defer r.output(context.WithoutCancel(ctx), "kubectl", "-n", state.PlatformNamespace, "delete", "pod", "bootstrap-key-reader", "--ignore-not-found=true")
-	if err := r.run(ctx, "kubectl", "-n", state.PlatformNamespace, "wait", "--for=condition=Ready", "pod/bootstrap-key-reader", "--timeout", timeout.String()); err != nil {
-		return "", nil, err
-	}
-	data, err := r.output(ctx, "kubectl", "-n", state.PlatformNamespace, "exec", "bootstrap-key-reader", "--", "node", "-e", "process.stdout.write(require('node:fs').readFileSync('/var/lib/openclaw/bootstrap/initial-admin-service-key.json'))")
-	if err != nil {
-		return "", nil, err
-	}
-	password, err := r.output(ctx, "kubectl", "-n", state.PlatformNamespace, "exec", "bootstrap-key-reader", "--", "node", "-e", "process.stdout.write(require('node:fs').readFileSync('/var/lib/openclaw/bootstrap/initial-admin-password'))")
-	if err != nil {
-		return "", nil, err
-	}
-	if len(password) == 0 {
-		return "", nil, fmt.Errorf("bootstrap administrator password is empty")
-	}
-	if err := exclusiveWrite(filepath.Join(state.directory, "initial-admin-password"), password, 0600); err != nil {
-		return "", nil, err
-	}
-	var key struct {
-		Meta struct {
-			InstallationID string `json:"installationId"`
-		} `json:"meta"`
-		Data struct {
-			Key string `json:"key"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &key); err != nil || key.Meta.InstallationID == "" || strings.TrimSpace(key.Data.Key) == "" {
-		return "", nil, fmt.Errorf("bootstrap service key is missing its key or Installation ID")
-	}
-	temporary := filepath.Join(state.directory, "bootstrap-key-copy.json")
-	if err := exclusiveWrite(temporary, data, 0600); err != nil {
-		return "", nil, err
-	}
-	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second, Context: ctx})
-	if err != nil {
-		return "", nil, err
-	}
-	installation, err := client.GetInstallation()
-	if err != nil {
-		return "", nil, fmt.Errorf("Installation authorization failed: %w", err)
-	}
-	record, ok := installation.(map[string]any)
-	if !ok || record["id"] != key.Meta.InstallationID {
-		return "", nil, fmt.Errorf("Installation ID does not match the bootstrap service key")
-	}
-	if err := exclusiveWrite(state.KeyPath, data, 0600); err != nil {
-		return "", nil, err
-	}
-	if err := os.Remove(temporary); err != nil {
-		return "", nil, err
-	}
-	return key.Meta.InstallationID, client, nil
+	return r.verifyBootstrapKey(ctx, state, url)
 }

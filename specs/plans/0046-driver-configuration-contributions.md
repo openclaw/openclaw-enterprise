@@ -114,7 +114,7 @@ or wire-result change is intended.
 
 Required proof through existing real callers:
 
-- `tests/integration/driver-plugin-installation.test.mjs` and startup coverage:
+- `tests/integration/driver-plugin-installation.test.ts` and startup coverage:
   package and bundled definitions, multiple nested structural errors, semantic
   refusals, malformed error arrays, mutation attempts, rejected data envelopes, and throws; invalid input never constructs a Driver.
   Reject duplicate keys, unknown scopes, missing owner bindings, and invalid

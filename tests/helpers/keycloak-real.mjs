@@ -1,172 +1,23 @@
-import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
-import { promisify } from "node:util";
-import { readKeycloakImage } from "../../scripts/ci/keycloak.mjs";
+import { readKeycloakImage } from "../../scripts/ci/keycloak.ts";
+import {
+  issueServingCertificate,
+  keycloakRealm,
+  keycloakUser,
+  keycloakUserClient,
+  realmDocument,
+} from "./keycloak-issuer-material.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
-
-const executeFile = promisify(execFile);
 
 /**
  * Keycloak's own release, pinned by digest in tests/fixtures/keycloak/image.json and shared
- * with the Keycloak sign-in lane. CI imports it into k3d before the test runs (prepare.mjs
+ * with the Keycloak sign-in lane. CI imports it into k3d before the test runs (prepare.ts
  * sets OCC_TEST_KEYCLOAK_IMAGE), so the cluster never pulls it.
  */
 export const defaultKeycloakImage = await readKeycloakImage();
-
-export const keycloakRealm = "oce";
-export const keycloakServiceClient = "occ-tools";
-export const keycloakUserClient = "occ-tools-user";
-const keycloakUser = "tools-user";
-
-/**
- * Issues a private CA and a serving certificate for the issuer's in-cluster DNS name. The CA
- * is the only trust anchor for the issuer, so a client that reaches it has been configured to
- * trust a private CA rather than falling back to public roots.
- */
-export async function issueServingCertificate(
-  directory,
-  host,
-  { alternateHosts = [], caName = "OCE disposable issuer CA" } = {},
-) {
-  const path = (name) => join(directory, name);
-  await writeFile(
-    path("server.ext"),
-    [
-      "basicConstraints=critical,CA:FALSE",
-      "keyUsage=critical,digitalSignature,keyEncipherment",
-      "extendedKeyUsage=serverAuth",
-      `subjectAltName=${[host, ...alternateHosts].map((name) => `DNS:${name}`).join(",")}`,
-      "",
-    ].join("\n"),
-  );
-  await executeFile("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-keyout",
-    path("ca.key"),
-    "-out",
-    path("ca.crt"),
-    "-days",
-    "2",
-    "-subj",
-    `/CN=${caName}`,
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign,cRLSign",
-  ]);
-  await executeFile("openssl", [
-    "req",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-keyout",
-    path("tls.key"),
-    "-out",
-    path("tls.csr"),
-    "-subj",
-    `/CN=${host}`,
-  ]);
-  await executeFile("openssl", [
-    "x509",
-    "-req",
-    "-in",
-    path("tls.csr"),
-    "-CA",
-    path("ca.crt"),
-    "-CAkey",
-    path("ca.key"),
-    "-CAcreateserial",
-    "-out",
-    path("tls.crt"),
-    "-days",
-    "2",
-    "-extfile",
-    path("server.ext"),
-  ]);
-  return { caPem: await readFile(path("ca.crt"), "utf8") };
-}
-
-export function realmDocument({ clientSecret, password, accessTokenLifespan, scopedClients = {} }) {
-  return {
-    realm: keycloakRealm,
-    enabled: true,
-    accessTokenLifespan,
-    ssoSessionIdleTimeout: 3600,
-    clients: [
-      ...Object.entries(scopedClients).map(([clientId, scopes]) => ({
-        clientId,
-        enabled: true,
-        protocol: "openid-connect",
-        publicClient: false,
-        secret: clientSecret,
-        serviceAccountsEnabled: true,
-        standardFlowEnabled: false,
-        directAccessGrantsEnabled: false,
-        protocolMappers: [
-          {
-            name: "OpenShell audience",
-            protocol: "openid-connect",
-            protocolMapper: "oidc-audience-mapper",
-            config: {
-              "included.custom.audience": "openshell-cli",
-              "access.token.claim": "true",
-            },
-          },
-          {
-            name: "OpenShell scopes",
-            protocol: "openid-connect",
-            protocolMapper: "oidc-hardcoded-claim-mapper",
-            config: {
-              "claim.name": "oce_scopes",
-              "claim.value": JSON.stringify(scopes),
-              "jsonType.label": "JSON",
-              "access.token.claim": "true",
-            },
-          },
-        ],
-      })),
-      {
-        // A confidential service client for the client-credentials source.
-        clientId: keycloakServiceClient,
-        enabled: true,
-        protocol: "openid-connect",
-        publicClient: false,
-        secret: clientSecret,
-        serviceAccountsEnabled: true,
-        standardFlowEnabled: false,
-        directAccessGrantsEnabled: false,
-      },
-      {
-        // A public client whose user sign-in stands in for the completed authorization that
-        // supplies a refresh-token source.
-        clientId: keycloakUserClient,
-        enabled: true,
-        protocol: "openid-connect",
-        publicClient: true,
-        standardFlowEnabled: false,
-        directAccessGrantsEnabled: true,
-      },
-    ],
-    users: [
-      {
-        username: keycloakUser,
-        enabled: true,
-        email: "tools-user@example.test",
-        emailVerified: true,
-        firstName: "Tools",
-        lastName: "User",
-        credentials: [{ type: "password", value: password, temporary: false }],
-      },
-    ],
-  };
-}
 
 /**
  * Starts a disposable Keycloak that serves HTTPS with a private CA on its cluster DNS name.
