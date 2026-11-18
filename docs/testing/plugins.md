@@ -27,7 +27,7 @@ The discovery fixture uses simulated provider responses. These checks do not pro
 Prepare a [disposable Kubernetes fixture](kubernetes.md), a worker node, and a migrated `openclaw_k8s_*` database. Set `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`, `OCC_TEST_KUBERNETES_IMAGE`, `OCC_TEST_DATABASE_URL`, and `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` to the comma-separated API-server proxy source CIDRs from the [networking reference](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
 
 ```sh
-node --test tests/integration/kubernetes-plugin-status-real.test.mjs
+node --test tests/integration/kubernetes-plugin-status-real.test.ts
 ```
 
 This checks status transport and restart behavior with controlled producers. It does not prove native plugin compatibility.

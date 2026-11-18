@@ -1429,6 +1429,25 @@ revisionTest(
           },
         },
       },
+      // An unverifiable state lock holder keeps the same UNAVAILABLE code as other held
+      // checks, but the record keeps no check, so the deployment code itself must name it
+      // and point to the log that quotes the holder (finding 3348).
+      ...["gateway", "agent"].map((component, index) => ({
+        label: `held-runtime-${5 + index}`,
+        runtimeFailure: {
+          component,
+          check: "gateway-state-lock",
+          checkedAt: "2026-10-01T08:00:00.000Z",
+          code: "UNAVAILABLE",
+        },
+        expected: {
+          error: {
+            code: "RUNTIME_STATE_LOCK_UNVERIFIED",
+            message:
+              "Startup check gateway-state-lock failed: the runtime cannot verify that its state lock holder stopped. See it with 'occ agent logs AGENT_ID --source gateway' (Harness: --source agent), then follow the troubleshooting guide.",
+          },
+        },
+      })),
     ];
     const scenarios = await runRuntimeFailureCases(fixture, cases, 10_000);
 

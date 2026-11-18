@@ -133,8 +133,8 @@ import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts"
 import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
-  captureNamespaceEnsureHint,
-  type NamespaceEnsureHintCode,
+  captureNamespaceHint,
+  type NamespaceHintCode,
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
@@ -491,6 +491,10 @@ class ClaimLeaseLostError extends WorkClaimLostError {
   }
 }
 
+class RestartContinuationEndedError extends Error {
+  readonly code = "RESTART_CONTINUATION_ENDED";
+}
+
 /**
  * Stopping a refused candidate failed or yielded to other Work. The pass waits as
  * `REFUSED_CANDIDATE_STOP_PENDING`, whose evidence and log keep the refusal code the stop was
@@ -573,7 +577,7 @@ interface DispatchResult {
   readonly outcome: Outcome;
   readonly code: string;
   readonly observation?: Observation;
-  readonly hintCode?: NamespaceEnsureHintCode;
+  readonly hintCode?: NamespaceHintCode;
   readonly decision?: AuthorizationDecision;
   readonly authorization?: AuthorizationRequest;
 }
@@ -1154,18 +1158,28 @@ const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.free
   REPOSITORY_ROUTE_BLOCKED: "REPOSITORY_GIT_ROUTE_BLOCKED",
 });
 
+// A dedicated Gateway or a Kubernetes Harness held on a state lock whose holder it cannot verify
+// stopped (check `gateway-state-lock`). The deployment record keeps only its code, and the
+// recovery differs from every other startup check, so the code names it (finding 3348).
+const STATE_LOCK_DEPLOYMENT_CODE = "RUNTIME_STATE_LOCK_UNVERIFIED";
+
 // The deployment failure codes of held runtime failures. `finalizeRevision` does not stop their
 // runtime, but the failure of a version with repository credentials also queues its retirement
 // (`agent_revision:<id>:repository_cleanup:retire:<hash>`), which stops it: see
 // `heldRuntimeSuccessor`.
-const HELD_RUNTIME_DEPLOYMENT_CODES: ReadonlySet<string> = new Set(
-  Object.values(HELD_RUNTIME_FAILURE_CODES),
-);
+const HELD_RUNTIME_DEPLOYMENT_CODES: ReadonlySet<string> = new Set([
+  ...Object.values(HELD_RUNTIME_FAILURE_CODES),
+  STATE_LOCK_DEPLOYMENT_CODE,
+]);
 
-function heldRuntimeFailureCode(code: string): string | undefined {
-  return Object.hasOwn(HELD_RUNTIME_FAILURE_CODES, code)
-    ? HELD_RUNTIME_FAILURE_CODES[code]
-    : undefined;
+function heldRuntimeFailureCode(evidence: RuntimeFailureEvidence): string | undefined {
+  if (!Object.hasOwn(HELD_RUNTIME_FAILURE_CODES, evidence.code)) {
+    return undefined;
+  }
+  const code = HELD_RUNTIME_FAILURE_CODES[evidence.code];
+  return code === "RUNTIME_STARTUP_FAILED" && evidence.check === "gateway-state-lock"
+    ? STATE_LOCK_DEPLOYMENT_CODE
+    : code;
 }
 
 function convergenceDeadlineResultData(
@@ -1949,6 +1963,17 @@ export class ControllerWorker {
     return decision;
   }
 
+  private async assertRestartContinuation(revision: Readonly<AgentRevision>): Promise<void> {
+    const current = await this.state.read((view) =>
+      view.agents.findRestartContinuation(revision.namespaceId, revision.agentId),
+    );
+    if (!isDeepStrictEqual(current, revision.restartContinuation)) {
+      throw new RestartContinuationEndedError(
+        "The Agent ended this revision's recovery generation.",
+      );
+    }
+  }
+
   private async stagedRevision(
     operation: "activateRevision" | "deactivateRevision",
     revision: Readonly<AgentRevision>,
@@ -1959,6 +1984,7 @@ export class ControllerWorker {
       throw new Error(`The selected production Compute Driver requires ${operation}.`);
     }
     if (operation === "activateRevision") {
+      await this.assertRestartContinuation(revision);
       if (!this.revisionPluginDriverAvailable(revision)) {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
@@ -2317,6 +2343,7 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
+    await this.assertRestartContinuation(revision);
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
@@ -2354,6 +2381,7 @@ export class ControllerWorker {
       prepared = { ...prepared, repositoryCredentials };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
+      await this.assertRestartContinuation(revision);
       observation = await this.withClaimHeartbeat(claim, () =>
         this.compute.prepareRevision(revision, prepared),
       );
@@ -4934,6 +4962,7 @@ export class ControllerWorker {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
           if (
             error instanceof WorkClaimLostError ||
+            error instanceof RestartContinuationEndedError ||
             error instanceof RepositoryCredentialAuthorityError ||
             error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
@@ -5080,6 +5109,7 @@ export class ControllerWorker {
           // could not authenticate retries within the attempt budget first (finding 1694).
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
+          error instanceof RestartContinuationEndedError ||
           error instanceof RepositoryCredentialAuthorityError ||
           // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
           // can never enroll, so it fails now instead of at the convergence deadline.
@@ -6129,10 +6159,7 @@ export class ControllerWorker {
             });
           },
         );
-      const observed =
-        claim.namespaceTarget === "ready"
-          ? await captureNamespaceEnsureHint(async () => (await observe()) as NamespaceEnsureResult)
-          : { observation: await observe() };
+      const observed = await captureNamespaceHint(observe);
       const { observation } = observed;
       if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
@@ -6218,7 +6245,7 @@ export class ControllerWorker {
     // with a code naming its cause. The kubelet does restart a refused workspace
     // setup, but it refuses the same way each time.
     const heldFailureCode =
-      runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure.code);
+      runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure);
     let resolved: RevisionDispatchResult;
     if (heldFailureCode !== undefined) {
       resolved = {
@@ -6373,7 +6400,14 @@ export class ControllerWorker {
           activeRevisionChanged = true;
           return;
         }
-        if (current.desiredRuntimeState !== "running") {
+        const continuation = await unit.agents.findRestartContinuation(
+          claim.namespaceId,
+          current.id,
+        );
+        if (
+          current.desiredRuntimeState !== "running" ||
+          !isDeepStrictEqual(continuation, resolved.revision.restartContinuation)
+        ) {
           stoppedCandidate = resolved.revision;
           return;
         }
@@ -6521,7 +6555,10 @@ export class ControllerWorker {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        if (error instanceof RepositoryCredentialAuthorityError) {
+        if (
+          error instanceof RestartContinuationEndedError ||
+          error instanceof RepositoryCredentialAuthorityError
+        ) {
           await this.finalizeRevision(
             claim,
             { outcome: "permanent", code: error.code },

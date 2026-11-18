@@ -23,6 +23,8 @@ KINDS = {"networkpolicy": "networkpolicy.networking.k8s.io", "secret": "secret",
 HASHES = {
     "scriptSha256": "upgrade-production-images",
     "startupPreflightSha256": "upgrade-startup-preflight.ts",
+    "selectedImageMigrationSha256": "lib/selected-image-migration.ts",
+    "selectedImageMigrationProgramSha256": "../deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs",
     "preflightStateSha256": "upgrade-preflight-state.py",
     "preflightCleanupSha256": "lib/upgrade-preflight-cleanup.sh",
 }

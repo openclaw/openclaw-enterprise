@@ -279,7 +279,7 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 
 ## Debugging and Verification
 
-- `node --test tests/integration/repository-credentials-github-prepared.test.mjs`
+- `node --test tests/integration/repository-credentials-github-prepared.test.ts`
   exercises producer → transaction commit → warm consumer over loopback HTTPS,
   with a generated App key and actual JWT signature verification. It covers
   renewal overlap, duplicate attempts, latest-admission fences, rejected provider

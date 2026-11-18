@@ -743,9 +743,9 @@ export NODE_RUNTIME_BASE_IMAGE
 # the selected destination; they do not use the CI runner's file env projection.
 prepare_resources() {
   if [ "$harness" = openclaw ]; then
-    OCC_TEST_OPENSHELL_MODEL_BASE_URL= node scripts/ci/prepare.mjs "$@"
+    OCC_TEST_OPENSHELL_MODEL_BASE_URL= node scripts/ci/prepare.ts "$@"
   else
-    node scripts/ci/prepare.mjs "$@"
+    node scripts/ci/prepare.ts "$@"
   fi
 }
 

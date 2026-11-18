@@ -1553,16 +1553,17 @@ test("provider Harness protected execution is released only on current signed in
               (error) => error === released,
             );
           }
-          // SHA-256 of prepare and activate argv at 61c73c99 with Node 24.22.1.
+          // SHA-256 of prepare and activate argv with Node 24.22.1; the prepare
+          // argv embeds the startup schema thresholds, so it moves with the pin.
           assert.deepEqual(
             hashes,
             disabled
               ? [
-                  "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d",
+                  "ae8967fa5105be4f6c222600d9f83f4c3d608259fd79a2fa2092d4da1d6cdb76",
                   "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
                 ]
               : [
-                  "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf",
+                  "8602532f0647c0882e4a52a3277bda1c5074ec97122765b06d31ae01a72c713c",
                   "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
                 ],
           );

@@ -3,7 +3,10 @@ import {
   type DeviceAuthorizationSession,
 } from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
-import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
+import type {
+  RestartContinuation,
+  PreparedTokenCurrentProof,
+} from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
@@ -120,6 +123,7 @@ import {
   credentialWithdrawalWorkKey,
   type ControllerWork,
   type ControllerWorkAttempt,
+  type ControllerWorkLookup,
 } from "./controller-work.ts";
 import type {
   AgentProvisioningReadRepository,
@@ -210,6 +214,10 @@ export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
 }
 
 export interface AgentReadRepository {
+  findRestartContinuation(
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<RestartContinuation> | undefined>;
   findPredecessorReplacement(
     namespaceId: string,
     agentId: string,
@@ -234,6 +242,12 @@ export interface AgentReadRepository {
 }
 
 export interface AgentRepository extends AgentReadRepository {
+  /** Caller holds the Agent lock. The running lifecycle and revision admission share this transaction. */
+  setRestartContinuation(
+    namespaceId: string,
+    agentId: string,
+    continuation: Readonly<RestartContinuation> | undefined,
+  ): Promise<void>;
   /** Caller holds the Namespace and Agent locks. Never reopens a committed stop. */
   recordPredecessorReplacement(
     namespaceId: string,
@@ -1085,6 +1099,23 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
   });
 }
 
+function validRestartContinuation(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  const entry = asRecord(value);
+  return (
+    entry !== undefined &&
+    Object.keys(entry).sort().join(",") === "domain,generation" &&
+    typeof entry.generation === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      entry.generation,
+    ) &&
+    typeof entry.domain === "string" &&
+    /^[\x20-\x7e]{1,1024}$/.test(entry.domain)
+  );
+}
+
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   assertExecutionAdmission(revision);
   if (
@@ -1120,6 +1151,7 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     !Object.hasOwn(revision.compute, "implementation") ||
     !isNonEmptyString(revision.compute.id) ||
     !isNonEmptyString(revision.compute.implementation) ||
+    !validRestartContinuation(revision.restartContinuation) ||
     (revision.compute.admission !== undefined &&
       (typeof revision.compute.admission !== "string" ||
         !/^[\x20-\x7e]{1,1024}$/.test(revision.compute.admission))) ||
@@ -1187,6 +1219,7 @@ export type PlatformOperation =
 export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
   findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
+  findWorkByKeys(idempotencyKeys: readonly string[]): Promise<ControllerWorkLookup>;
   findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
   /** Whether this revision completed maintenance requiring fresh repository execution. */
   hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
@@ -1331,6 +1364,7 @@ interface PlatformSnapshot {
   readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
+  readonly restartContinuations: Map<string, Readonly<RestartContinuation>>;
   readonly predecessorReplacements: Map<string, Readonly<PredecessorReplacement>>;
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
@@ -1384,6 +1418,37 @@ function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string
   return `${operation.kind}:${operation.resourceId}:${operation.action}${
     operation.kind === "namespace" ? `:${operation.target}` : ""
   }`;
+}
+
+function memoryLifecycleWork(
+  idempotencyKey: string,
+  operation: Readonly<PlatformOperation>,
+  revisionOwner: string | undefined,
+): Readonly<ControllerWork> {
+  const now = new Date(0);
+  return immutableCopy({
+    kind: "lifecycle",
+    idempotencyKey,
+    namespaceId: operation.namespaceId,
+    ...(operation.kind === "agent" ? { agentId: operation.resourceId } : {}),
+    ...(operation.kind === "agent_revision"
+      ? {
+          ...(revisionOwner === undefined ? {} : { agentId: revisionOwner }),
+          revisionId: operation.resourceId,
+        }
+      : {}),
+    actorId: operation.actorId,
+    ...(operation.kind === "namespace" ? { namespaceTarget: operation.target } : {}),
+    ...(operation.kind === "agent" ? { agentTarget: operation.target } : {}),
+    ...(operation.kind === "agent_revision" && operation.target !== undefined
+      ? { agentTarget: operation.target }
+      : {}),
+    state: "queued",
+    availableAt: now,
+    attemptCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 // Records that are plain data (objects, arrays, primitives) and frozen all the way down, so
@@ -1463,6 +1528,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     credentialSources: copyStoredMap(snapshot.credentialSources),
     serviceAccounts: copyStoredMap(snapshot.serviceAccounts),
     agents: copyStoredMap(snapshot.agents),
+    restartContinuations: copyStoredMap(snapshot.restartContinuations),
     predecessorReplacements: copyStoredMap(snapshot.predecessorReplacements),
     sandboxPolicies: copyStoredMap(snapshot.sandboxPolicies),
     workspaceSetups: copyStoredMap(snapshot.workspaceSetups),
@@ -3490,6 +3556,30 @@ function repositories(
   };
 
   const agents: AgentRepository = {
+    findRestartContinuation: async (namespaceId, agentId) =>
+      (await agents.findAgent(namespaceId, agentId)) === undefined
+        ? undefined
+        : snapshot.restartContinuations.get(agentKey(namespaceId, agentId)),
+    setRestartContinuation: async (namespaceId, agentId, continuation) => {
+      const agent = await agents.findAgent(namespaceId, agentId);
+      if (!agent || agent.desiredRuntimeState !== "running" || agent.status !== "active") {
+        throw new ResourceStateConflictError(
+          "Restart continuation requires a running Agent lifecycle.",
+        );
+      }
+      const key = agentKey(namespaceId, agentId);
+      if (continuation === undefined) {
+        snapshot.restartContinuations.delete(key);
+      } else {
+        // Mirrors the persisted generation/domain constraint.
+        if (!validRestartContinuation(continuation)) {
+          throw new ScopeViolationError(
+            "Restart continuation requires a valid generation and domain.",
+          );
+        }
+        snapshot.restartContinuations.set(key, immutableCopy(continuation));
+      }
+    },
     findPredecessorReplacement: async (namespaceId, agentId) =>
       (await agents.findAgent(namespaceId, agentId)) === undefined
         ? undefined
@@ -3679,6 +3769,9 @@ function repositories(
             closed: true,
           });
         }
+      }
+      if (next === "stopped") {
+        snapshot.restartContinuations.delete(key);
       }
       const saved = immutableCopy({ ...agent, desiredRuntimeState: next });
       snapshot.agents.set(key, saved);
@@ -4539,7 +4632,6 @@ function repositories(
         if (operation === undefined) {
           return undefined;
         }
-        const now = new Date(0);
         const revisionOwner =
           operation.kind === "agent_revision"
             ? Array.from(snapshot.revisions.values())
@@ -4550,29 +4642,60 @@ function repositories(
                     revision.id === operation.resourceId,
                 )?.agentId
             : undefined;
-        return immutableCopy({
-          kind: "lifecycle",
-          idempotencyKey,
-          namespaceId: operation.namespaceId,
-          ...(operation.kind === "agent" ? { agentId: operation.resourceId } : {}),
-          ...(operation.kind === "agent_revision"
-            ? {
-                ...(revisionOwner === undefined ? {} : { agentId: revisionOwner }),
-                revisionId: operation.resourceId,
-              }
-            : {}),
-          actorId: operation.actorId,
-          ...(operation.kind === "namespace" ? { namespaceTarget: operation.target } : {}),
-          ...(operation.kind === "agent" ? { agentTarget: operation.target } : {}),
-          ...(operation.kind === "agent_revision" && operation.target !== undefined
-            ? { agentTarget: operation.target }
-            : {}),
-          state: "queued",
-          availableAt: now,
-          attemptCount: 0,
-          createdAt: now,
-          updatedAt: now,
-        });
+        return memoryLifecycleWork(idempotencyKey, operation, revisionOwner);
+      },
+      findWorkByKeys: async (idempotencyKeys) => {
+        const pending = new Set(idempotencyKeys);
+        const works = new Map<string, Readonly<ControllerWork>>();
+        for (const key of pending) {
+          const withdrawal = snapshot.repositoryWithdrawals.get(key);
+          if (withdrawal !== undefined) {
+            works.set(key, immutableCopy(withdrawal));
+            pending.delete(key);
+          }
+        }
+        if (pending.size === 0) {
+          return works;
+        }
+        const revisionOwners = new Map<string, Map<string, string>>();
+        for (const history of snapshot.revisions.values()) {
+          for (const revision of history) {
+            let namespaceOwners = revisionOwners.get(revision.namespaceId);
+            if (namespaceOwners === undefined) {
+              namespaceOwners = new Map();
+              revisionOwners.set(revision.namespaceId, namespaceOwners);
+            }
+            if (!namespaceOwners.has(revision.id)) {
+              namespaceOwners.set(revision.id, revision.agentId);
+            }
+          }
+        }
+        for (const operation of snapshot.operations) {
+          let key: string;
+          try {
+            key = operationIdempotencyKey(operation);
+          } catch (error) {
+            return {
+              get(idempotencyKey: string) {
+                if (pending.has(idempotencyKey)) {
+                  throw error;
+                }
+                return works.get(idempotencyKey);
+              },
+            };
+          }
+          if (!pending.delete(key)) {
+            continue;
+          }
+          const revisionOwner = revisionOwners
+            .get(operation.namespaceId)
+            ?.get(operation.resourceId);
+          works.set(key, memoryLifecycleWork(key, operation, revisionOwner));
+          if (pending.size === 0) {
+            break;
+          }
+        }
+        return works;
       },
     },
   };
@@ -4653,6 +4776,7 @@ function finalizeAgentDeletion(
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
+  snapshot.restartContinuations.delete(key);
   snapshot.predecessorReplacements.delete(key);
 
   snapshot.audit.push(
@@ -4707,6 +4831,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
+    restartContinuations: new Map(),
     predecessorReplacements: new Map(),
     sandboxPolicies: new Map(),
     workspaceSetups: new Map(),

@@ -41,7 +41,7 @@ provider and cluster credentials are unnecessary:
   printf 'PostgreSQL run directory: %s\n' "$PG_PLATFORM_RUN_DIR"
   trap 'pg_run_status=$?; node scripts/ci/cleanup.ts --state "$PG_PLATFORM_RUN_DIR/state.json" || pg_run_status=1; exit "$pg_run_status"' EXIT
 
-  node scripts/ci/prepare.mjs --lane postgres-platform \
+  node scripts/ci/prepare.ts --lane postgres-platform \
     --state "$PG_PLATFORM_RUN_DIR/state.json" \
     --github-env "$PG_PLATFORM_RUN_DIR/owner.env"
   node scripts/ci/run-tests.ts run postgres-platform \
@@ -242,7 +242,7 @@ mapping, loaded-enforcement readiness, finite Responses protection and zero
 automatic retries, including the startup probe. Missing contracts and legacy
 gateway-copy setups cannot qualify.
 
-Bind supplier source implementing [custody events](../../tests/helpers/egress-supplier-custody-transitions.mjs)
+Bind supplier source implementing [custody events](../../tests/helpers/egress-supplier-custody-transitions.ts)
 to its image receipt. Reject missing producer code; source presence,
 enforcement capabilities and native replies cannot prove installed delivery.
 
@@ -253,7 +253,7 @@ The [validator](../../tests/helpers/egress-connected-inputs.mjs) rejects missing
 | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `version`, `namespaceId`, `model`                                                                    | Version `2`, the existing `ns_*` tenant ID and explicit Codex model name.                                                                                                                                                                    |
 | `apiOrigin`                                                                                          | The controller's literal `127.0.0.1` origin with an explicit port above 1024.                                                                                                                                                                |
-| `kubeconfigPath`, `kubernetesContext`, `runtimeClass`                                                | Explicit kubeconfig, disposable `k3d-*` context and approved OpenShell RuntimeClass.                                                                                                                                                         |
+| `kubeconfigPath`, `kubernetesContext`                                                                | Explicit kubeconfig and disposable `k3d-*` context.                                                                                                                                                                                          |
 | `controllerNamespace`, `controllerSelector`, `openShellGatewayNamespace`, `openShellGatewaySelector` | Exact namespaces and selectors for the prepared controller (both API and worker) and supplier gateway Pods.                                                                                                                                  |
 | `oceCommit`, `harnessCommit`, `supplierCommit`                                                       | Full product, test-checkout and supplier commits. Retain independent image build receipts.                                                                                                                                                   |
 | `images`                                                                                             | Digest-pinned references under `agent`, `controller`, `gateway`, `openShellGateway`, `sandbox`, and `supervisor`, imported and registered in k3s. Use the exact references rendered in Pod specs.                                            |
