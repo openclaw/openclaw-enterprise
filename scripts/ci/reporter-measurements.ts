@@ -422,7 +422,6 @@ function safeMeasurement(value: unknown): object | undefined {
         "openshell-charts",
         "openshell-agent-sandbox-manifest",
         "openshell-agent-sandbox-image",
-        "openshell-runtime-class",
         "openshell-agent-sandbox-apply",
         "openshell-agent-sandbox-rollout",
         "openshell-workspace-render",

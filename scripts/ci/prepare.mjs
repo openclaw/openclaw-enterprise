@@ -2135,12 +2135,6 @@ async function prepareK3dModelLane(statePath, state, env, options) {
   if (cluster.kubectl) {
     env.OCC_KUBECTL_BIN = cluster.kubectl;
   }
-  if (cluster.runtimeClass) {
-    env.OCC_TEST_OPENSHELL_RUNTIME_CLASS = cluster.runtimeClass;
-  }
-  if (cluster.runtimeHandler) {
-    env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER = cluster.runtimeHandler;
-  }
   await timedK3dModelPreparation(state.lane, "runtime-image-preparation", () =>
     prepareK3dRuntimeImages(statePath, state, cluster, env, options),
   );
