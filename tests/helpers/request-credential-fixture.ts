@@ -1,3 +1,4 @@
+import { RequestCredentialWorkBusyError } from "../../packages/occ/src/errors.ts";
 import assert from "node:assert/strict";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { randomUUID } from "node:crypto";
@@ -19,6 +20,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   PostgresPlatformState,
   type PlatformStateStore,
+  type PlatformUnitOfWork,
   type ControllerOptions,
   type CredentialProxyCapacity,
 } from "../../packages/occ/src/index.ts";
@@ -36,6 +38,7 @@ import { postgresApp } from "./postgres-egress-app.mjs";
 export async function requestCredentialFixture(
   t: TestContext,
   configuration: {
+    activateRevision?: boolean;
     credentialProxyCapacity?: Partial<CredentialProxyCapacity>;
     poolOptions?: { options: string };
     bindExchange?: CredentialProxyDriver["bindExchange"];
@@ -48,7 +51,7 @@ export async function requestCredentialFixture(
   let live: EgressInstallation | undefined;
   let nextVerification: { reached: () => void; release: Promise<void> } | undefined;
   const sandboxId = randomUUID();
-  const { credentialProxyCapacity, ...fixtureOptions } = configuration;
+  const { activateRevision, credentialProxyCapacity, ...fixtureOptions } = configuration;
   const { capacity } = resolveCredentialProxyCapacity(
     credentialProxyCapacity ?? {},
     "requestCapacity",
@@ -257,7 +260,9 @@ export async function requestCredentialFixture(
     },
   };
   await state.transact((unit) => unit.credentialSources.recordEgressInstallation(live!));
-  await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+  if (activateRevision !== false) {
+    await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+  }
   const transport = {
     async verify() {
       return undefined;
@@ -269,7 +274,8 @@ export async function requestCredentialFixture(
       return false;
     },
   };
-  const exchange = f.controller.createCredentialProxy(transport);
+  const controller: OpenClawController = f.controller;
+  const exchange = controller.createCredentialProxy(transport);
   const request = (): RequestCredentialInput => ({
     requestId: randomUUID(),
     bindingId: route.binding.binding.id,
@@ -352,6 +358,34 @@ export async function requestCredentialFixture(
     grant,
     restartController,
     principalId,
+    pauseCandidateWorkRetry() {
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const policyState = state;
+      assert.ok(policyState instanceof PostgresPlatformState);
+      const original = policyState.transactReadCommitted.bind(policyState);
+      policyState.transactReadCommitted = async <T>(
+        work: (unit: PlatformUnitOfWork) => Promise<T>,
+      ) => {
+        try {
+          return await original(work);
+        } catch (error) {
+          if (error instanceof RequestCredentialWorkBusyError) {
+            policyState.transactReadCommitted = original;
+            reached.resolve();
+            await release.promise;
+          }
+          throw error;
+        }
+      };
+      return {
+        reached: reached.promise,
+        release() {
+          policyState.transactReadCommitted = original;
+          release.resolve();
+        },
+      };
+    },
     pauseNextApprovalCommit(stage: "before" | "after" | "busy" | "activation-unknown" = "before") {
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();

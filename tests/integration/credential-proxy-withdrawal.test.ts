@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
@@ -2036,5 +2038,157 @@ test(
       "the next request must observe the configured Role's revoked operate permission",
     );
     assert.equal(f.secretReads, reads);
+  },
+);
+
+test(
+  "Only owned readiness deferral preserves pending model credentials (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const { f, revision, exchange, request, grant } = await requestCredentialFixture(t, {
+      activateRevision: false,
+    });
+    const queue = new PostgresWorkQueue(f.pool);
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const claim = async () => {
+      const work = await queue.findWork(key);
+      assert.ok(work);
+      await delay(Math.max(0, work.availableAt.getTime() - Date.now()) + 5, undefined, {
+        signal: t.signal,
+      });
+      const next = await claimIsolatedWork(f.pool, { workId: key });
+      assert.equal(next?.idempotencyKey, key);
+      assert.ok(next);
+      return next;
+    };
+    const approve = (input = request()) =>
+      exchange.authorizeRequestCredential(input, t.signal, () => true);
+    const defer = async (code: string, refusal?: string) =>
+      queue.defer(
+        await claim(),
+        { code, ...(refusal !== undefined && { refusal }) },
+        { delayMs: 1 },
+      );
+    const approveAndRedeem = async () => {
+      const input = request();
+      assert.equal(await approve(input), "credential");
+      const output = await exchange.resolveRequestCredential(grant(input), t.signal);
+      assert.equal(output?.value, "synthetic-key-initial");
+      assert.equal(await exchange.resolveRequestCredential(grant(input), t.signal), undefined);
+    };
+
+    assert.equal(await approve(), undefined, "an unclaimed deployment cannot mint");
+    const first = await claim();
+    await approveAndRedeem();
+    await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    const deferred = await queue.findWork(key);
+    assert.equal(deferred?.state, "queued");
+    assert.equal(deferred?.claimToken, undefined);
+    await approveAndRedeem();
+    const firstAttempt = await queue.findWorkAttempt(key);
+    await defer("REVISION_INCOMPLETE");
+    assert.deepEqual(
+      await queue.findWorkAttempt(key),
+      firstAttempt,
+      "repeated deferral may omit evidence",
+    );
+    const pending = request();
+    assert.equal(await approve(pending), "credential");
+
+    // Operational evidence can normalize this spelling. It must not authorize a mint or release.
+    await defer("revision-incomplete");
+    assert.equal((await queue.findWorkAttempt(key))?.code, "REVISION_INCOMPLETE");
+    const reads = f.secretReads;
+    assert.equal(await approve(), undefined);
+    assert.equal(await exchange.resolveRequestCredential(grant(pending), t.signal), undefined);
+    assert.equal(f.secretReads, reads);
+    await defer("REVISION_INCOMPLETE");
+    await approveAndRedeem();
+    await defer("REVISION_INCOMPLETE", "CREDENTIAL_WITHDRAWN");
+    assert.equal(await approve(), undefined);
+
+    await defer("REVISION_INCOMPLETE");
+    await queue.retry(await claim(), { code: "REVISION_INCOMPLETE" });
+    assert.equal(await approve(), undefined, "a retry never establishes readiness");
+    await queue.fail(await claim(), { code: "CONVERGENCE_DEADLINE_EXCEEDED" });
+    assert.equal(await approve(), undefined, "terminal work never establishes readiness");
+    const agent = await f.request("GET", `/namespaces/${f.namespace.id}/agents/${f.agent.id}`);
+    assert.equal(agent.status, 200);
+    assert.equal(agent.data.activeRevisionId ?? null, null);
+  },
+);
+
+test(
+  "Pending model authorization and redemption retry an exact busy work row (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const { f, revision, exchange, request, grant, pauseCandidateWorkRetry } =
+      await requestCredentialFixture(t, { activateRevision: false });
+    const queue = new PostgresWorkQueue(f.pool);
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const claim = await claimIsolatedWork(f.pool, { workId: key });
+    assert.ok(claim);
+    assert.equal(claim.idempotencyKey, key);
+    await queue.defer(claim, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+
+    const whileBusy = async <T>(action: () => Promise<T>): Promise<T> => {
+      const holder = await f.pool.connect();
+      const fence = pauseCandidateWorkRetry();
+      let pending: Promise<T> | undefined;
+      try {
+        await holder.query("BEGIN");
+        await holder.query(
+          "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key=$1 FOR UPDATE",
+          [key],
+        );
+        pending = action();
+        await Promise.race([
+          fence.reached,
+          pending.then(() =>
+            assert.fail("a busy eligible revision must retry the policy transaction"),
+          ),
+          delay(3_000, undefined, { signal: t.signal }).then(() =>
+            assert.fail("work lock did not unwind"),
+          ),
+        ]);
+        // The actual busy error must unwind the policy transaction before the retry.
+        await holder.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE NOWAIT", [
+          f.namespace.id,
+        ]);
+        await holder.query("ROLLBACK");
+      } finally {
+        holder.release(true);
+        fence.release();
+        await pending?.catch(() => {});
+      }
+      assert.ok(pending);
+      return pending;
+    };
+
+    const input = request();
+    assert.equal(
+      await whileBusy(() => exchange.authorizeRequestCredential(input, t.signal, () => true)),
+      "credential",
+    );
+    const approval = async () =>
+      (
+        await f.pool.query(
+          "SELECT expires_at, consumed FROM occ.request_credential_approvals WHERE request_id=$1",
+          [input.requestId],
+        )
+      ).rows[0];
+    const before = await approval();
+    assert.equal(before.consumed, false);
+    const later = {
+      ...grant(input),
+      deadlineAt: new Date(Date.parse(input.deadlineAt) + 10_000).toISOString(),
+    };
+    const material = await whileBusy(() => exchange.resolveRequestCredential(later, t.signal));
+    assert.equal(material?.value, "synthetic-key-initial");
+    assert.ok(material && Date.parse(material.usableUntil) <= before.expires_at.getTime());
+    const after = await approval();
+    assert.equal(after.consumed, true);
+    assert.deepEqual(after.expires_at, before.expires_at);
+    assert.equal(await exchange.resolveRequestCredential(later, t.signal), undefined);
   },
 );

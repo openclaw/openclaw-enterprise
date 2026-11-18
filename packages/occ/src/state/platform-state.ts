@@ -1168,6 +1168,13 @@ export interface PlatformOperationReadRepository {
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
+  /** Hold exact candidate work without waiting; busy work throws before credential effects. */
+  lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean>;
+  /**
+   * Read the current exact work row for a live database-clock lease or queued readiness marker.
+   * The caller must hold its work lock through authorization or credential release.
+   */
+  requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean>;
   append(operation: PlatformOperation, requestId?: string): Promise<void>;
   /**
    * Requeue the exact deleting Agent's terminal teardown initiated by
@@ -4427,6 +4434,9 @@ function repositories(
       retryFailedAgentDeletion: async () => false,
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
+      // This adapter never executes queued work, so it cannot establish startup authority.
+      lockRequestCredentialWork: async () => false,
+      requestCredentialCandidateEligible: async () => false,
       findWorkAttempt: async () => undefined,
       hasRepositoryExecutionRedeployRequired: async () => false,
       // Recorded work never executes here, so every recorded withdrawal stays outstanding.

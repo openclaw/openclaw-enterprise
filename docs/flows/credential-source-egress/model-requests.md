@@ -126,7 +126,13 @@ permit release after withdrawal. The verified adapter supplies a separate
 admission. OpenShell uses the authenticated extension identity's expiry.
 `packages/occ/src/state/request-credential-approvals.ts` retains the correlation
 until that horizon, including after cancellation, consumption or revision
-deletion. Only a live revision may obtain or redeem an approval. A nonblocking
+deletion. The active revision may obtain or redeem an approval while its
+authority remains current. Before activation, only the newest revision's exact
+reconcile work can qualify. It must hold a live lease or be queued by an owned
+`REVISION_INCOMPLETE` deferral without a refusal or yielded stop. The current
+work row records that deferral. Claim, retry, completion, and recovery clear it.
+OCC checks the row under a nonblocking lock before approving or releasing
+material, and retries contention within the original deadline. A nonblocking
 transaction advisory lock serializes durable global and per-recipient quotas.
 On known lock contention, OCC releases the transaction and rechecks policy
 within the original deadline. Exhaustion and replay still refuse.

@@ -232,6 +232,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 81 && completedCount > 81) {
     return "preRequestModelDriverIdentity";
   }
+  if (count === 82 && completedCount > 82) {
+    return "preControllerWorkReadiness";
+  }
   if (count === completedCount) {
     return "completed";
   }

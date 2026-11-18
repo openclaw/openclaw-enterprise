@@ -657,6 +657,14 @@
       "tag": "0082_request_model_driver_identity",
       "breakpoints": true,
       "sha256": "46d0d17edb2c3391223e861938a1870c2a670e0b061ef3dbae7a7764c328750c"
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1787000000083,
+      "tag": "0083_controller_work_readiness",
+      "breakpoints": true,
+      "sha256": "68c6fa1218e05a5aad67199658078027a4c9092e54ce6f13ff982d4f65489b7f"
     }
   ],
   "initialSchemaStates": {
@@ -781,10 +789,17 @@
       "9e1988ff72fa1bfcd66800c41b3fd04ed505f18fe1ebdd7f64c7c0398897d5b8",
       "e8f5b25329f4faebfc823b983a3e2d13e8c71ccef06df47cdeb2bf3e97c2166b",
       "3eea1cb6ba6b67c24c6c383fd6efc02ad41e4804785a199081590aae2753159a"
+    ],
+    "82f65e97ebe35335968425510aac882a0b228d99e9c6627174a34ed1de9cb66d": [
+      "01ea2713fda427fb497046cfb5c41553fe1faa20d44e355206402302dc066181",
+      "7107799e76faa44b8f37b1a01f81191d14d682af4db2489429a7d4d8aa09b0cc",
+      "b829f2f424b4b43725d6041ece648727fd0c06210a6976bb9361431d82685a22",
+      "c51b2fc1446db5cca5780f46ef5fda164709cff8a42c94f62293a547366a92c3",
+      "e415fd2f07d178723a947cd5f7ab11082622c3b598c0a34b0c7c73f5be61c419"
     ]
   },
   "catalogs": {
-    "completed": "d9e7a6c514853d0c69a4ce4e2a0b9db553a763cb7a608d17b57c3d39bcd187b2",
+    "completed": "82f65e97ebe35335968425510aac882a0b228d99e9c6627174a34ed1de9cb66d",
     "legacyRequestCredentialApprovalsCompleted": "9448d4cb7989e878c7c4a1cbb4f39ecb90dc05ab22a509f260a4b6a358548bca",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
@@ -843,7 +858,8 @@
     "preRevisionRuntimeInputs": "a78f05679e8ef8432c94d3bdffeb21681297793829c78efef7278f1b29337128",
     "preRequestCredentialApprovals": "c8639ab415c7d833c777d79a526357de1021552a731b873b32ba79a9b4e81f1b",
     "legacyRequestCredentialApprovals": "b4d1785a88e2b6e6306dd9540ccf3dc53c50dd1ca20a5541e57df6d11927b648",
-    "preRequestModelDriverIdentity": "9448d4cb7989e878c7c4a1cbb4f39ecb90dc05ab22a509f260a4b6a358548bca"
+    "preRequestModelDriverIdentity": "9448d4cb7989e878c7c4a1cbb4f39ecb90dc05ab22a509f260a4b6a358548bca",
+    "preControllerWorkReadiness": "d9e7a6c514853d0c69a4ce4e2a0b9db553a763cb7a608d17b57c3d39bcd187b2"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -852,7 +868,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle after the unchanged public 0077. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, and 77 upgraded to 0078. The 0079 catalogs were measured with stock Drizzle on PostgreSQL 18.6 for canonical and Provider histories, including pg_dump and pg_restore of prefixes 51, 74 through 79. The same procedure qualified 0080, including archives through 0080. The native catalog through 0081 was independently measured on PostgreSQL 18.6 for the stock-first and preserved historical approval-first migration orders. The 0081 logical restore alias was measured using PostgreSQL 18.6 pg_dump and pg_restore of the canonical, historical approval-first, and supported Provider approval-first histories. The original approval-first 0077 catalog and four existing aliases were reproduced on PostgreSQL 18.6 from native, completed logical archives and earlier restored prefixes. Their preserved approval-first upgrades qualified the 0081 intermediate catalogs and 0082 completed catalogs. The stock-first 0082 catalog and restore alias were measured through both an 0081 archive upgraded to 0082 and an archive of the completed 0082 catalog."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle after the unchanged public 0077. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, and 77 upgraded to 0078. The 0079 catalogs were measured with stock Drizzle on PostgreSQL 18.6 for canonical and Provider histories, including pg_dump and pg_restore of prefixes 51, 74 through 79. The same procedure qualified 0080, including archives through 0080. The native catalog through 0081 was independently measured on PostgreSQL 18.6 for the stock-first and preserved historical approval-first migration orders. The 0081 logical restore alias was measured using PostgreSQL 18.6 pg_dump and pg_restore of the canonical, historical approval-first, and supported Provider approval-first histories. The original approval-first 0077 catalog and four existing aliases were reproduced on PostgreSQL 18.6 from native, completed logical archives and earlier restored prefixes. Their preserved approval-first upgrades qualified the 0081 intermediate catalogs and 0082 completed catalogs. The stock-first 0082 catalog and restore alias were measured through both an 0081 archive upgraded to 0082 and an archive of the completed 0082 catalog. The 0083 readiness catalog was measured on PostgreSQL 18.6 with stock Drizzle after the canonical, Provider, and supported approval-first lineages. Its restore aliases were measured after applying the pending suffix to logical archives and restoring the completed schema."
   },
   "compatibleLineages": {
     "requestCredentialApprovals": {

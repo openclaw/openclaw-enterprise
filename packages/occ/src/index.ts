@@ -330,6 +330,7 @@ import {
   DeletionRetryOwnedError,
   AuditAppendUnavailableError,
   DependencyUnavailableError,
+  RequestCredentialWorkBusyError,
   RuntimeDiagnosticsTransportError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
@@ -8035,12 +8036,19 @@ export class OpenClawController {
     step?: RequestCredentialRelease | { readonly accept: () => boolean },
   ): Promise<StaticEgressSource | undefined> {
     for (;;) {
-      const result = await this.checkRequestCredentialOnce(owner, request, signal, step);
-      if (result !== "quota-busy") {
-        return result;
+      try {
+        const result = await this.checkRequestCredentialOnce(owner, request, signal, step);
+        if (result !== "quota-busy") {
+          return result;
+        }
+      } catch (error) {
+        if (!(error instanceof RequestCredentialWorkBusyError)) {
+          throw error;
+        }
       }
-      // Retry the known no-effect contention after the policy transaction releases its
-      // locks. Each attempt re-verifies installation and policy on the original deadline.
+      // Retry known no-effect quota or work contention after releasing transaction locks.
+      // Recheck installation and policy on the original deadline. Approval consumption
+      // and the resolver's original material observations remain outside this loop.
       const remaining = Date.parse(request.deadlineAt) - this.clock().getTime();
       if (signal.aborted || remaining <= 0) {
         return undefined;
@@ -8130,9 +8138,10 @@ export class OpenClawController {
       await state.installations.holdIAMConfiguration("shared");
       const currentNamespace = await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (signal.aborted || Date.parse(request.deadlineAt) <= this.clock().getTime()) {
+        return undefined;
+      }
       if (
-        signal.aborted ||
-        Date.parse(request.deadlineAt) <= this.clock().getTime() ||
         !isDeepStrictEqual(currentNamespace, namespace) ||
         agent?.status !== "active" ||
         agent.executionMode !== "dedicated" ||
@@ -8142,13 +8151,16 @@ export class OpenClawController {
       ) {
         return refuse("withdrawn");
       }
+      const candidateOwner = { namespaceId, agentId, revisionId };
+      const candidateCurrent = () =>
+        agent.activeRevisionId === revisionId ||
+        state.operations.requestCredentialCandidateEligible(candidateOwner);
       if (agent.activeRevisionId !== revisionId) {
         const latest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
-        const work = await state.operations.findWork(`agent_revision:${revisionId}:reconcile`);
         if (
           latest?.id !== revisionId ||
-          !work ||
-          controllerWorkDeploymentStatus(work, this.clock()) !== "running"
+          !(await state.operations.lockRequestCredentialWork(candidateOwner)) ||
+          !(await candidateCurrent())
         ) {
           return refuse("withdrawn");
         }
@@ -8258,6 +8270,9 @@ export class OpenClawController {
       if (!decision.allowed) {
         return refuse("unauthorized");
       }
+      if (!(await candidateCurrent())) {
+        return refuse("withdrawn");
+      }
       if (release) {
         // updateSecret holds this Namespace lock through the backend write. Reuse the
         // current unit for metadata so concurrent releases cannot exhaust the pool.
@@ -8293,6 +8308,9 @@ export class OpenClawController {
         provider.normalizeGrant !== normalizeGrant
       ) {
         return refuse("stale_configuration");
+      }
+      if (!(await candidateCurrent())) {
+        return refuse("withdrawn");
       }
       if ("http" in request) {
         if (typeof step === "object") {
