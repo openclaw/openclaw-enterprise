@@ -97,9 +97,11 @@ test("ordinary deployment admits concurrent source-authorized destinations and i
   await exerciseHarnessOverrides(t);
 });
 
-test("Agents share a named provider while their revisions pin the route, model metadata, and allowed operation", async (t) => {
-  await exerciseNamedProvider(
-    await staticEgressFixture(t, { admitRevision: false }),
-    "kubernetes_service",
-  );
-});
+for (const destination of ["private_ipv4", "kubernetes_service"] as const) {
+  test(`Agents reuse a ${destination} provider and preserve approved routes and model metadata`, async (t) => {
+    await exerciseNamedProvider(
+      await staticEgressFixture(t, { admitRevision: false }),
+      destination,
+    );
+  });
+}

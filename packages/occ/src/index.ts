@@ -196,8 +196,6 @@ import type {
   ModelProvider,
   ModelProviderSettings,
   ModelProviderView,
-  InferencePrivatePeer,
-  InferencePrivatePeerInput,
   InferenceProtocol,
   StaticKeyGrant,
   CredentialRefreshDriver,
@@ -1134,7 +1132,6 @@ type TemplateInput =
       readonly mode: "static_bearer";
       readonly baseUrl: string;
       readonly protocol: InferenceProtocol;
-      readonly privatePeer?: InferencePrivatePeerInput;
     }
   | (ApprovedTemplateSettings &
       (
@@ -1944,7 +1941,7 @@ function modelProviderGrantMatches(
     grant.connectionTemplateId === provider.connectionTemplateId &&
     grant.baseUrl === provider.baseUrl &&
     grant.protocol === provider.protocol &&
-    isDeepStrictEqual(grant.privatePeer, template.current.privatePeer)
+    grant.connectionTemplateVersion === template.current.version
   );
 }
 
@@ -5900,22 +5897,7 @@ export class OpenClawController {
   ): Promise<ConnectionTemplateSettings> {
     if (input.mode === "static_bearer") {
       const baseUrl = normalizeInferenceBaseUrl(input.baseUrl);
-      let privatePeer: InferencePrivatePeer | undefined;
-      if (input.privatePeer) {
-        const compute = this.selectedDriver("compute");
-        if (!compute.resolveInferencePrivatePeer) {
-          throw new ResourceStateConflictError(
-            "The selected Compute Driver does not support private inference destinations.",
-          );
-        }
-        privatePeer = await compute.resolveInferencePrivatePeer(input.privatePeer, baseUrl);
-      } else if (new URL(baseUrl).hostname.endsWith(".svc.cluster.local")) {
-        throw new ResourceStateConflictError(
-          "Select the Kubernetes Service for this inference endpoint.",
-        );
-      }
       return {
-        ...(privatePeer && { privatePeer }),
         mode: input.mode,
         baseUrl,
         protocol: input.protocol,
@@ -9028,9 +9010,8 @@ export class OpenClawController {
             "Choose the current static-key template version available to this Namespace.",
           );
         }
-        const { baseUrl, protocol, version, privatePeer } = template.current;
+        const { baseUrl, protocol, version } = template.current;
         staticKeyGrant = {
-          ...(privatePeer && { privatePeer }),
           connectionTemplateId: template.id,
           connectionTemplateVersion: version,
           baseUrl,
@@ -13916,7 +13897,7 @@ export class OpenClawController {
         lockedAgent,
         this.bindings(metadata.secretBindings),
       );
-      const [harnessAuth, credentialSourceType, sourceGrant] = await this.admitHarnessAuth(
+      const [harnessAuth, credentialSourceType] = await this.admitHarnessAuth(
         state,
         principalId,
         lockedAgent,
@@ -13928,25 +13909,8 @@ export class OpenClawController {
         configuration.values,
       );
       const runtimeValues = named?.values ?? configuration.values;
-      // Recheck the receiver from the same locked source that authorized this Harness.
-      const privateInferencePeer = sourceGrant?.privatePeer;
-      if (sourceGrant && privateInferencePeer) {
-        if (
-          !provider ||
-          !compute.resolveInferencePrivatePeer ||
-          !isDeepStrictEqual(
-            privateInferencePeer,
-            await compute.resolveInferencePrivatePeer(privateInferencePeer, sourceGrant.baseUrl),
-          )
-        ) {
-          throw new ResourceStateConflictError(
-            "The private inference credential must match the current Model Provider and template receiver.",
-          );
-        }
-      }
       const revisionHarness = immutableCopy({
         ...requestedHarness,
-        ...(privateInferencePeer && { privateInferencePeer }),
         configuration:
           named?.settings ??
           compute.resolveHarnessConfiguration?.(
@@ -14143,24 +14107,6 @@ export class OpenClawController {
         harnessAuth,
         revisionHarness.configuration,
       );
-      if (
-        privateInferencePeer &&
-        egressPlan &&
-        (harnessAuth.method !== "credential_source" ||
-          egressPlan.harnessCredentialSource ||
-          egressPlan.routes.filter((route) => route.binding.grant.kind === "inference").length !==
-            1 ||
-          !egressPlan.routes.some(
-            (route) =>
-              route.binding.grant.kind === "inference" &&
-              route.binding.source.source.id === harnessAuth.sourceId &&
-              route.privateInferenceAddress === privateInferencePeer.address,
-          ))
-      ) {
-        throw new ResourceStateConflictError(
-          "A private inference credential requires its own verified sender. A separate protected Git plan cannot release an ordinary model credential.",
-        );
-      }
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };
@@ -17484,13 +17430,7 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
-  ): Promise<
-    readonly [
-      auth: HarnessAuthSnapshot,
-      sourceType?: CredentialSourceType,
-      grant?: StaticKeyGrant | undefined,
-    ]
-  > {
+  ): Promise<readonly [auth: HarnessAuthSnapshot, sourceType?: CredentialSourceType]> {
     const binding = this.harnessAuthBinding(agent.harnessAuth);
     if (binding === null) {
       throw new ResourceStateConflictError(
@@ -17559,13 +17499,7 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     namespaceId: string,
     binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
-  ): Promise<
-    readonly [
-      auth: HarnessAuthSnapshot,
-      sourceType: CredentialSourceType,
-      grant: StaticKeyGrant | undefined,
-    ]
-  > {
+  ): Promise<readonly [auth: HarnessAuthSnapshot, sourceType: CredentialSourceType]> {
     const source = await state.credentialSources.lockCredentialSource(
       namespaceId,
       binding.sourceId,
@@ -17589,7 +17523,6 @@ export class OpenClawController {
         loginMode: type.harnessAuth.loginMode,
       },
       type,
-      source.staticKeyGrant,
     ] as const);
   }
 

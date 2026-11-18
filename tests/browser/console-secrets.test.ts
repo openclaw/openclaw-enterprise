@@ -82,8 +82,6 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   await editor.getByLabel("Model ID", { exact: true }).fill("research-model");
   await editor.getByLabel("Default model").selectOption("research-model");
   await editor.getByLabel("New static-key template name").fill("Research key");
-  await editor.getByLabel("Network destination").selectOption("private_ipv4");
-  await editor.getByLabel("Private IPv4 address").fill("10.20.30.40");
   const saved = responseTo(page, "POST", fixture.origin + "/model-providers");
   await editor.getByRole("button", { name: "Save provider" }).click();
   const created = await saved;
@@ -102,14 +100,9 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     .selectOption(provider.connectionTemplateId);
   await page.getByLabel("API key Secret", { exact: true }).selectOption({ label: "provider-key" });
   await page
-    .getByText(
-      "Approve POST " +
-        modelProvider.baseUrl +
-        "/responses (template version 1). Private server at 10.20.30.40.",
-      {
-        exact: true,
-      },
-    )
+    .getByText("Approve POST " + modelProvider.baseUrl + "/responses (template version 1).", {
+      exact: true,
+    })
     .waitFor();
   await page.getByRole("button", { name: "Approve and register key" }).click();
   await page
@@ -125,7 +118,6 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   );
   assert.equal(key?.state, "ready");
   assert.deepEqual(key.staticKeyGrant, {
-    privatePeer: { kind: "private_ipv4", address: "10.20.30.40" },
     baseUrl: modelProvider.baseUrl,
     protocol: "openai-responses",
     connectionTemplateId: provider.connectionTemplateId,
@@ -169,7 +161,7 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     await page.getByLabel("Models offered by this provider").inputValue(),
     "research-model",
   );
-  const updateReceiver = async (address: string) => {
+  const updateDestination = async (baseUrl: string) => {
     const edited = await fixture.request(
       "PATCH",
       "/connection-templates/" + provider.connectionTemplateId,
@@ -177,19 +169,18 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
         body: {
           displayName: "Research key",
           mode: "static_bearer",
-          baseUrl: modelProvider.baseUrl,
+          baseUrl,
           protocol: "openai-responses",
-          privatePeer: { kind: "private_ipv4", address },
         },
       },
     );
     assert.equal(edited.status, 200, JSON.stringify(edited.body));
     return edited.data.current.version;
   };
-  // A creator can leave this form open while an administrator changes the receiver.
+  // A creator can leave this form open while an administrator changes the destination.
   // Recheck before the first write, remove the stale selection and explain reapproval.
   const credentialPicker = page.getByLabel("Inference credential", { exact: true });
-  assert.equal(await updateReceiver("10.20.30.41"), 2);
+  assert.equal(await updateDestination(modelProvider.baseUrl.replace("/v1", "/next/v1")), 2);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page
     .getByText("The selected credential is no longer available for this provider.", {
@@ -198,11 +189,25 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     .waitFor();
   assert.equal(await credentialPicker.inputValue(), "");
   assert.equal(await credentialPicker.locator("option").filter({ hasText: key.name }).count(), 0);
-  // Reinstating the receiver approved in v1 makes that same credential eligible in v3.
-  assert.equal(await updateReceiver("10.20.30.40"), 3);
+  // Restoring the same URL still creates a new template version requiring fresh approval.
+  assert.equal(await updateDestination(modelProvider.baseUrl), 3);
+  const replacement = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/credential-sources`,
+    {
+      body: {
+        name: "research-key-reapproved",
+        type: "openai",
+        secrets: fixture.source.secrets,
+        connectionTemplateId: provider.connectionTemplateId,
+        connectionTemplateVersion: 3,
+      },
+    },
+  );
+  assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
   await providerPicker.selectOption("openai");
   await providerPicker.selectOption({ label: "Research inference" });
-  await credentialPicker.selectOption({ label: key.name });
+  await credentialPicker.selectOption({ label: replacement.data.name });
   const savedAgent = responseTo(
     page,
     "POST",
@@ -213,7 +218,10 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   assert.equal(agentResponse.status(), 201, await agentResponse.text());
   const { data: agent } = await agentResponse.json();
   assert.equal(agent.modelProviderId, provider.id);
-  assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId: key.id });
+  assert.deepEqual(agent.harnessAuth, {
+    method: "credential_source",
+    sourceId: replacement.data.id,
+  });
 });
 
 async function createFromConsole(page: Page, name: string, value: string) {

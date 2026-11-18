@@ -131,7 +131,6 @@ export function createConnectionTemplateFixture(
         createdAt,
         baseUrl,
         protocol,
-        privatePeer: { kind: "private_ipv4", address: "10.20.30.40" },
         destinations: [
           { method: "POST", host: "inference.example.com", port: 443, path: "/v1/responses" },
         ],
@@ -171,7 +170,6 @@ export function createConnectionTemplateFixture(
                   connectionTemplateVersion: 1,
                   baseUrl,
                   protocol,
-                  privatePeer: { kind: "private_ipv4", address: "10.20.30.40" },
                 },
               },
             ],
@@ -315,17 +313,6 @@ export function createConnectionTemplateFixture(
           templateId: id,
           version: 1,
           createdAt,
-          ...(config.mode === "static_bearer" &&
-            isRecord(config.privatePeer) &&
-            config.privatePeer.kind === "kubernetes_service" && {
-              privatePeer: {
-                ...config.privatePeer,
-                uid: "storybook-model-service",
-                address: "10.43.12.34",
-                podSelector: { app: "inference" },
-                targetPort: 8443,
-              },
-            }),
           ...(config.mode === "mcp_discovery"
             ? {
                 issuer: observed.issuer,

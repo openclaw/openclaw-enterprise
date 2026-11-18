@@ -115,9 +115,6 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 80 && completedCount > 80) {
     return "preModelProviders";
   }
-  if (count === 81 && completedCount > 81) {
-    return "prePrivateInferencePeers";
-  }
   if (count === completedCount) {
     return "completed";
   }

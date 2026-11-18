@@ -8,7 +8,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
-import type { InferencePrivatePeer, SandboxPolicy } from "@openclaw-enterprise/contracts";
+import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   SandboxPolicyRepository,
   StoredCredentialWithdrawal,
@@ -617,8 +617,6 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
   cs.static_template_id, cs.static_template_version, cs.static_base_url, cs.static_protocol,
-  (SELECT tv.private_peer FROM occ.static_key_template_versions tv
-   WHERE tv.template_id = cs.static_template_id AND tv.version = cs.static_template_version) AS static_private_peer,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -697,9 +695,6 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
           staticKeyGrant: {
             connectionTemplateId: text(row, "static_template_id"),
             connectionTemplateVersion: Number(row.static_template_version),
-            ...(row.static_private_peer != null && {
-              privatePeer: row.static_private_peer as InferencePrivatePeer,
-            }),
             baseUrl: text(row, "static_base_url"),
             protocol,
           },
@@ -762,13 +757,6 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
       id: harness.id,
       version: harness.version,
       mode: harness.mode,
-      ...(harness.privateInferencePeer === undefined
-        ? {}
-        : {
-            privateInferencePeer: harness.privateInferencePeer as NonNullable<
-              AgentRevision["harness"]["privateInferencePeer"]
-            >,
-          }),
       ...(typeof harness.modelProviderId === "string"
         ? { modelProviderId: harness.modelProviderId }
         : {}),

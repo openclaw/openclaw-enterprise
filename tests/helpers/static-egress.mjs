@@ -116,17 +116,6 @@ async function buildStaticEgressFixture(
   const [key, cert] = [Buffer.from(generated.key), Buffer.from(generated.cert)];
   const certPath = generated.certPath;
   const objects = new Map();
-  const modelService = {
-    apiVersion: "v1",
-    kind: "Service",
-    metadata: { name: "model", namespace: "inference", uid: randomUUID() },
-    spec: {
-      type: "ClusterIP",
-      clusterIP: "10.43.17.8",
-      selector: { app: "model" },
-      ports: [{ port: 443, targetPort: 9443, protocol: "TCP" }],
-    },
-  };
   /** @type {import("../../packages/contracts/src/index.ts").Namespace} */
   let namespace;
   const namespaceResource = () => ({
@@ -150,13 +139,6 @@ async function buildStaticEgressFixture(
   const kube = createHttpsServer({ key, cert }, async (request, response) => {
     response.setHeader("content-type", "application/json");
     const url = new URL(request.url, "http://localhost");
-    if (
-      request.method === "GET" &&
-      url.pathname === "/api/v1/namespaces/inference/services/model"
-    ) {
-      response.end(JSON.stringify(modelService));
-      return;
-    }
     if (url.pathname === "/api/v1/namespaces") {
       await beforeNamespaceResponse?.();
       const nsId = namespace.id;
@@ -614,7 +596,6 @@ async function buildStaticEgressFixture(
   const computeDriver = {
     ...createDevelopmentComputeDriver(),
     resolveModelProvider: placement.resolveModelProvider,
-    resolveInferencePrivatePeer: placement.resolveInferencePrivatePeer.bind(placement),
     normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
     resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
     validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
@@ -789,7 +770,6 @@ async function buildStaticEgressFixture(
       ...app,
       namespace,
       modelProvider,
-      modelService,
       ...admissionControls,
       fixtureKind: /** @type {const} */ ("undeployed"),
       agent,
