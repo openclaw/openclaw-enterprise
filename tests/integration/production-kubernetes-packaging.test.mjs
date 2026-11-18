@@ -5957,6 +5957,30 @@ test("Helm rejects worker timings the worker process rejects", tooling, async ()
   assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
 });
 
+test("Helm opts only the Worker into a selected GitHub issuance generation", tooling, async () => {
+  const setting = "OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION";
+  assert.doesNotMatch((await render()).stdout, new RegExp(setting));
+  await assert.rejects(
+    render({ "worker.githubSharedIssuanceGeneration": "0" }),
+    /worker\.githubSharedIssuanceGeneration must be a positive safe integer/,
+  );
+  const { stdout } = await render({ "worker.githubSharedIssuanceGeneration": "2" });
+  const objects = await resources(stdout);
+  for (const component of ["api", "worker"]) {
+    const deployment = objects.find(
+      (item) =>
+        item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
+    );
+    const container = deployment.spec.template.spec.containers.find(
+      (item) => item.name === component,
+    );
+    assert.equal(
+      container.env.find((item) => item.name === setting)?.value,
+      component === "worker" ? "2" : undefined,
+    );
+  }
+});
+
 test("Helm refuses worker timer settings a Node.js timer cannot wait for", tooling, async (t) => {
   // Node fires a longer timer after 1 ms; the chart shares the worker's bound (finding 2303).
   const over = String(MAX_TIMER_DELAY_MS + 1);

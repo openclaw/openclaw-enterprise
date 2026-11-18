@@ -500,6 +500,10 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.maxAttempts" "value" $.Values.worker.maxAttempts) | quote }}
             - name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
+            {{- if ne $.Values.worker.githubSharedIssuanceGeneration nil }}
+            - name: OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.githubSharedIssuanceGeneration" "value" $.Values.worker.githubSharedIssuanceGeneration) | quote }}
+            {{- end }}
             {{- end }}
           volumeMounts:
             {{- if $.Values.backend.openshell.clientSecretName }}

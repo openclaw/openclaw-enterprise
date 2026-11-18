@@ -103,6 +103,24 @@ with `binding_policy: allowlist` and `bindings: [http_request_pre_credentials]`.
 Missing or response-only bindings are not sufficient. Render the normal Helm
 release and run normal Installation startup validation before admitting Agents.
 
+### Enable shared GitHub issuance
+
+The OpenShell request-grant profile can share a token for one selected read-only repository
+within the same Namespace and enrollment. Each Git operation requires a fresh authorization
+and matching redemption.
+
+Apply the database migrations and stop Workers using per-admission issuance before enabling
+this feature. Set `worker.githubSharedIssuanceGeneration: 1` in Helm, or set
+`OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION=1` on every Worker. Keep recipient token
+caching disabled.
+
+To rotate the App key, mount the replacement and increase the generation for every Worker.
+The first Worker to record the higher generation fences older material. Redemptions resume
+after retirement or the existing custody settlement bound. The next eligible redemption
+mints on demand. A Worker with a different key for the current generation refuses to start.
+A live session also needs a valid
+[Worker binding](../../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
+
 ### Allow the worker to reach GitHub
 
 `repositoryCredentials.upstreamCidrs` is an OCE Helm value: a nonempty list of

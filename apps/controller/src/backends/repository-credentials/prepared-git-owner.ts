@@ -1,3 +1,5 @@
+import type { InstalledTokenVersion } from "../token-service/material.ts";
+import type { GitHubPreparationDiagnostic } from "../../drivers/repo/github/access/provider-diagnostics.ts";
 import type { RepositoryGitCustody } from "../../composition/repository-credentials/custody-selection.ts";
 import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
 import { createHash, createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
@@ -79,6 +81,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   gitGrantApprovals?: PreparedGitGrantApprovals;
   /** Only the opt-in grant-delivery profile prepares its selected read token at redemption. */
   prepareGitOnDemand?: boolean;
+  /** Opt-in generation for all Workers serving this shared issuer enrollment. */
+  sharedGitIssuanceGeneration?: number;
 }
 
 function useRequest(input: unknown): PreparedGitHubUseRequest;
@@ -201,6 +205,12 @@ async function appSigningKey(path: string, appId: string, clock: Clock) {
   }
 }
 
+function signingKeyVersion(key: KeyObject): string {
+  return createHash("sha256")
+    .update(createPublicKey(key).export({ type: "spki", format: "der" }))
+    .digest("hex");
+}
+
 /** A single owner of App issuance, renewal, durable uncertainty and retirement.
  * The broker can request its approved family, while neither the broker nor API holds the keys.
  * The worker passes no clock; `clock` is a separate argument so that parsed configuration,
@@ -214,6 +224,16 @@ export async function startPreparedGitHubGitOwner(
     throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
   }
   const selected = custodySelection.kind === "selected";
+  const sharedGeneration = options.sharedGitIssuanceGeneration;
+  if (
+    sharedGeneration !== undefined &&
+    (!options.prepareGitOnDemand ||
+      !selected ||
+      !Number.isSafeInteger(sharedGeneration) ||
+      sharedGeneration < 1)
+  ) {
+    throw new Error("SHARED_REPOSITORY_GIT_REQUIRES_SELECTED_GRANT_DELIVERY");
+  }
   const registry = validateGitHubRepositoryRegistry(options.registry, options.backendId);
   for (const repo of registry.repositories) {
     if (
@@ -232,7 +252,8 @@ export async function startPreparedGitHubGitOwner(
   const authority = preparationIssuerAuthority(apiOrigin, ca);
   // Refuse a key that cannot sign before the worker reports ready, not at the first
   // preparation (finding 2217). Maintenance reads it again, so a rotated Secret applies.
-  (await appSigningKey(options.privateKeyPath, registry.appId, clock)).owner.close();
+  const startupKey = await appSigningKey(options.privateKeyPath, registry.appId, clock);
+  startupKey.owner.close();
   const custody = await privateInput(options.custodyKeyPath);
   if (custody.length !== 32) {
     custody.fill(0);
@@ -339,7 +360,26 @@ export async function startPreparedGitHubGitOwner(
     },
     custodySelection,
     options.gitGrantApprovals,
+    sharedGeneration === undefined
+      ? undefined
+      : {
+          apiOrigin,
+          repositoryBackendId: options.backendId,
+          providerInstanceId: registry.providerInstanceId,
+          issuerGeneration: sharedGeneration,
+        },
   );
+  try {
+    if (
+      store.shared &&
+      !(await store.shared.observeIssuer(signingKeyVersion(startupKey.keyObject)))
+    ) {
+      throw new Error("SHARED_REPOSITORY_GIT_ISSUER_GENERATION_REFUSED");
+    }
+  } catch (error) {
+    custody.fill(0);
+    throw error;
+  }
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>
     store.use(useRequest(input), AbortSignal.any([signal, stop.signal]));
@@ -361,24 +401,54 @@ export async function startPreparedGitHubGitOwner(
     options.prepareGitOnDemand &&
     source.grant.profile === "github-repository" &&
     allowsPreparedGitGrantRead(source.grant);
-  async function withAppKey(
-    use: (
-      key: Awaited<ReturnType<typeof appSigningKey>>["owner"],
-      version: string,
-    ) => Promise<void>,
+  async function withAppKey<T>(
+    use: (key: Awaited<ReturnType<typeof appSigningKey>>["owner"], version: string) => Promise<T>,
+    keyUnavailable?: () => T,
   ) {
-    const { keyObject, owner: key } = await appSigningKey(
-      options.privateKeyPath,
-      registry.appId,
-      clock,
-    );
+    let signing: Awaited<ReturnType<typeof appSigningKey>>;
     try {
-      const version = createHash("sha256")
-        .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
-        .digest("hex");
-      await use(key, version);
+      signing = await appSigningKey(options.privateKeyPath, registry.appId, clock);
+    } catch (error) {
+      // Only acquisition failed: no attachment, provider dispatch or publication occurred.
+      if (error instanceof PreparedGitHubAppKeyError && keyUnavailable) {
+        return keyUnavailable();
+      }
+      throw error;
+    }
+    const { keyObject, owner: key } = signing;
+    try {
+      return await use(key, signingKeyVersion(keyObject));
     } finally {
       key.close();
+    }
+  }
+  const issuanceObserver =
+    (source: PreparedRepositoryGitSource) =>
+    ({ error, ...diagnostic }: GitHubPreparationDiagnostic) =>
+      options.report?.(
+        "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+        {
+          ...diagnostic,
+          ...(error ? { errorClass: error } : {}),
+          namespaceId: source.session.namespaceId,
+          revisionId: source.session.revisionId,
+          repositoryRef: source.session.binding.repositoryRef,
+        },
+        "info",
+      );
+  function recoveryRequired(
+    source: PreparedRepositoryGitSource,
+    reason: "quarantined" | "blocked",
+  ) {
+    try {
+      options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
+        reason,
+        namespaceId: source.session.namespaceId,
+        revisionId: source.session.revisionId,
+        repositoryRef: source.session.binding.repositoryRef,
+      });
+    } catch {
+      // Reporting cannot change custody or skip readback after unknown publication.
     }
   }
   async function prepare(
@@ -401,32 +471,54 @@ export async function startPreparedGitHubGitOwner(
         ...(ca ? { ca } : {}),
         renewBeforeMs: 600_000,
         minimumValidityMs: 60_000,
-        observe: ({ error, ...diagnostic }) =>
-          options.report?.(
-            "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
-            {
-              ...diagnostic,
-              ...(error ? { errorClass: error } : {}),
-              revisionId: source.session.revisionId,
-            },
-            "info",
-          ),
+        observe: issuanceObserver(source),
       }),
     );
     if (outcome === "quarantined" || outcome === "blocked") {
-      options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
-        reason: outcome,
-        namespaceId: source.session.namespaceId,
-        revisionId: source.session.revisionId,
-        repositoryRef: source.session.binding.repositoryRef,
-      });
+      recoveryRequired(source, outcome);
     }
   }
   const preparing = new Map<string, Promise<void>>();
-  function prepareApproved(source: PreparedRepositoryGitSource) {
+  const sharedPreparations = new Set<Promise<unknown>>();
+  function prepareApproved(
+    source: PreparedRepositoryGitSource,
+    deadline: number,
+    signal: AbortSignal,
+    warmVersion?: InstalledTokenVersion,
+  ) {
     stop.signal.throwIfAborted();
     if (!onDemand(source)) {
       throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
+    }
+    const shared = store.shared;
+    if (shared) {
+      const work = withAppKey(
+        async (key, version) => {
+          signal.throwIfAborted();
+          const family = await store.attachSharedGit(source, version);
+          if (!family) {
+            return undefined;
+          }
+          const owner = createGitHubPreparationOwner({
+            ...family,
+            clock,
+            apiOrigin,
+            getKey: async () => key,
+            ...(ca ? { ca } : {}),
+            renewBeforeMs: 60_000,
+            minimumValidityMs: 60_000,
+            observe: issuanceObserver(source),
+          });
+          const outcome = await runPreparation(owner, stop.signal);
+          if (outcome === "quarantined") {
+            recoveryRequired(source, outcome);
+          }
+          return shared.waitForVersion(family.admission, deadline, signal);
+        },
+        warmVersion ? () => warmVersion : undefined,
+      ).finally(() => sharedPreparations.delete(work));
+      sharedPreparations.add(work);
+      return work;
     }
     const family = source.key.source.id;
     const pending = preparing.get(family);
@@ -444,6 +536,7 @@ export async function startPreparedGitHubGitOwner(
   let sources: Awaited<ReturnType<typeof store.discover>> = [];
   const maintenance = (options.tokenService ?? new TokenService()).ownFamilies({
     async discover() {
+      await store.shared?.retireUnused();
       sources = await store.discover(({ providerExpiresAt, ...context }) =>
         options.report?.("PREPARED_GITHUB_RETIRED_UNREVOKED", {
           reason: "issuer_authority_changed",
@@ -452,7 +545,21 @@ export async function startPreparedGitHubGitOwner(
         }),
       );
     },
-    retire: (signal) => retirePreparedGitHubToken(store, null, signal, apiOrigin, ca, clock),
+    async retire(signal) {
+      const retired = await retirePreparedGitHubToken(store, null, signal, apiOrigin, ca, clock);
+      if (!store.shared) {
+        return retired;
+      }
+      const shared = await retirePreparedGitHubToken(
+        store.shared,
+        null,
+        signal,
+        apiOrigin,
+        ca,
+        clock,
+      );
+      return shared === "idle" ? retired : shared;
+    },
     async prepare(_signal, run) {
       if (!sources.length) {
         return;
@@ -499,7 +606,7 @@ export async function startPreparedGitHubGitOwner(
         await server?.close();
       } finally {
         await maintenance.close();
-        await Promise.allSettled(preparing.values());
+        await Promise.allSettled([...preparing.values(), ...sharedPreparations]);
         custody.fill(0);
       }
     },

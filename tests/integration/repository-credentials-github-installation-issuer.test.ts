@@ -155,28 +155,37 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
       onTcpConnect = () => {};
       return;
     }
-    assert.deepEqual(requests.slice(count), [body]);
+    assert(
+      requests.length === count + 1 && requests[count] === body,
+      "unexpected issuer request count or body",
+    );
     assert.equal(diagnostic.httpStatus, 201);
     assert.equal(diagnostic.responseComplete, true);
     assert.equal(diagnostic.candidateIdentified, true);
     assert.equal(diagnostic.firstFailureStage, usable ? undefined : "validation");
-    await store.readCurrent("family", (row) => {
-      assert(row);
-      if (usable) {
-        assert(row.committed);
-        assertCredentialMatches(row.committed.bytes, token);
-        assert.deepEqual(row.committed.admission.grant, scope);
-      } else {
-        assert(row.committed === undefined);
-        const [attempt] = row.attempts;
-        assert(attempt);
-        assert.equal(attempt.state, "quarantined");
-        assertCredentialMatches(attempt.candidate, token);
-      }
-    });
     // A contradictory response can still represent a real issue. Do not mint a replacement.
     assert.equal(await owner.run(usable ? "attempt" : "another-attempt", bounds), "blocked");
     assert.equal(requests.length, count + 1);
+    await store.readCurrent("family", (row) => {
+      assert(!!row);
+      if (usable) {
+        assert(!!row.committed);
+        assertCredentialMatches(row.committed.bytes, token);
+        assert.deepEqual(row.committed.admission.grant, scope);
+      } else {
+        // A fresh family must retain only the candidate, with no committed material/version.
+        assert(row.committed === undefined);
+        assert.equal(row.attempts.length, 1);
+        const [attempt] = row.attempts;
+        assert(!!attempt);
+        assert.equal(attempt.id, "attempt");
+        assert.deepEqual(attempt.admission, admission);
+        assert.equal(attempt.state, "quarantined");
+        assert(attempt.notIssued !== true);
+        assertCredentialMatches(attempt.candidate, token);
+      }
+    });
+    return diagnostic;
   }
 
   const installation = { ...grant, profile: "github-installation" } as const;
@@ -213,8 +222,40 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
   } as const;
   const narrowed = { ...selected, repositories: [repository], permissions: draft };
   const narrowBody =
-    '{"repository_ids":[5321],"permissions":{"metadata":"read","contents":"write","pull_requests":"write"}}';
+    '{"repository_ids":[5321],"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}';
   await issue(narrow, narrowed, narrowBody, true);
+  // App IDs sign as strings. The legacy issuer accepts a decimal ID beyond JavaScript's safe
+  // integer range because only the repository ID is numeric in the selected issuance body.
+  await issue({ ...narrow, appId: "12345678901234567890" }, narrowed, narrowBody, true);
+  // Both grants use the real issuer path and mint exactly the same effective provider scope.
+  const explicit = {
+    id: "independent-grant",
+    isolationId: "another-agent",
+    appId: grant.appId,
+    installationId: grant.installationId,
+    profile: "github-repository",
+    repositories: [{ repositoryId: "5321", repository: repository.full_name }],
+    permissions: { pull_requests: "write", metadata: "read", contents: "write" },
+  } as const;
+  await issue(explicit, narrowed, narrowBody, true);
+  const readOnly = { ...explicit, permissions: { contents: "read", metadata: "read" } } as const;
+  const readBody = '{"repository_ids":[5321],"permissions":{"contents":"read","metadata":"read"}}';
+  const readReply = {
+    ...narrowed,
+    permissions: readOnly.permissions,
+    expires_at: new Date(clock.wallNow() + 3_600_000).toISOString(),
+  };
+  const accepted = await issue(readOnly, readReply, readBody, true);
+  assert.equal(accepted?.validationKind, "validated");
+  // Identical repository, permission keys and expiry: only contents escalates to write.
+  const rejected = await issue(
+    readOnly,
+    { ...readReply, permissions: { ...readReply.permissions, contents: "write" } },
+    readBody,
+    false,
+  );
+  assert.equal(rejected?.validationKind, "rejected");
+  assert.equal(rejected?.validationCode, "scope-mismatch");
   await issue(narrow, {}, narrowBody, false);
   await issue(narrow, { ...narrowed, repository_selection: "all" }, narrowBody, false);
   await issue(narrow, { ...narrowed, permissions: installed }, narrowBody, false);

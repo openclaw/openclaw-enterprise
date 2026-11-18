@@ -187,6 +187,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 77 && completedCount > 77) {
     return "preRequestCredentialAssertions";
   }
+  if (count === 78 && completedCount > 78) {
+    return "preSharedGitHubIssuance";
+  }
   if (count === completedCount) {
     return "completed";
   }

@@ -85,6 +85,7 @@ test("worker timer settings must fit a Node.js timer", async () => {
       ...Object.fromEntries(timers.map((name) => [name, String(MAX_TIMER_DELAY_MS)])),
       // Only compared with work age, never a timer delay: the safe-integer bound still applies.
       OCC_WORKER_CONVERGENCE_TIMEOUT_MS: String(Number.MAX_SAFE_INTEGER),
+      OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION: "01",
     }),
     {
       pollIntervalMs: MAX_TIMER_DELAY_MS,
@@ -92,6 +93,7 @@ test("worker timer settings must fit a Node.js timer", async () => {
       maxAttempts: 5,
       convergenceTimeoutMs: Number.MAX_SAFE_INTEGER,
       databaseTimeoutMs: MAX_TIMER_DELAY_MS,
+      sharedGitIssuanceGeneration: 1,
     },
   );
   assert.deepEqual(workerEnvironmentSettings({}), {
@@ -100,7 +102,14 @@ test("worker timer settings must fit a Node.js timer", async () => {
     maxAttempts: 5,
     convergenceTimeoutMs: 900_000,
     databaseTimeoutMs: 60_000,
+    sharedGitIssuanceGeneration: undefined,
   });
+  for (const generation of ["0", "-1", "1.5", "9007199254740992"]) {
+    assert.throws(
+      () => workerEnvironmentSettings({ OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION: generation }),
+      /OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION must be a positive safe integer/,
+    );
+  }
   assert.throws(() => workerDatabasePoolOptions(over), /Worker database timeout must be at most/);
   const pool = new Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
   try {

@@ -203,6 +203,13 @@ const reviewedImports = {
     "node:crypto": ["randomUUID"],
     "node:util": ["isDeepStrictEqual"],
   },
+  // Hash only admitted enrollment/scope, compare the persisted grant, and bound polling
+  // of an existing intent. The shared store adds no signing, transport or file access.
+  "drivers/repo/github/access/shared-prepared-git.ts": {
+    "node:crypto": ["createHash"],
+    "node:timers/promises": ["setTimeout"],
+    "node:util": ["isDeepStrictEqual"],
+  },
   // Worker only: the Installation's read-only App and custody mounts, public key
   // fingerprint, and preparation attempt ID. The broker has neither key mount.
   "backends/repository-credentials/prepared-git-owner.ts": {

@@ -76,6 +76,7 @@ type FamilyRow = {
   observed_at?: string;
 };
 type AttemptRow = {
+  settlement_only?: boolean;
   id: string;
   admission: Admission;
   state: Attempt["state"];
@@ -97,6 +98,9 @@ type FamilyOwner = Readonly<{
   owns?: string;
   /** Lock the authority that can move to a different family before checking active to record an intent. */
   lockIssuance?: string;
+  // A shared family can be live across many Agent lifetimes. Settled historical refusals
+  // remain in PostgreSQL but cannot permanently prevent a later independent mint.
+  omitSettledAttempts?: true;
   driver?: import("@openclaw-enterprise/contracts").DriverRegistrationRef;
 }>;
 
@@ -363,43 +367,46 @@ export class PreparedGitHubPostgres {
   /** Repo holds the live execution and grant locks in this transaction. Its use record and
    * draft allowance must commit under these same material locks, not after a separate check. */
   protected readonly tokens: TokenMaterialReader<PostgresClient, TokenSource> = {
-    readWarm: (c, source) => this.lockMaterial(c, source, null),
+    readWarm: (c, source) => this.lockMaterial(c, source, null, true),
     current: async (c, source, installed) =>
       installed?.preparationAttemptId && installed.materialVersion
-        ? this.lockMaterial(c, source, installed)
+        ? this.lockMaterial(c, source, installed, false)
         : undefined,
   };
 
-  private lockMaterial(
-    c: PostgresClient,
-    source: TokenSource,
-    installed: null,
-  ): Promise<(CurrentTokenVersion & { open(): Buffer }) | undefined>;
-  private lockMaterial(
-    c: PostgresClient,
-    source: TokenSource,
-    installed: InstalledTokenVersion,
-  ): Promise<CurrentTokenVersion | undefined>;
-  private async lockMaterial(
+  protected lockMaterial(
     c: PostgresClient,
     source: TokenSource,
     installed: InstalledTokenVersion | null,
+    includeBytes: true,
+  ): Promise<(CurrentTokenVersion & { open(): Buffer }) | undefined>;
+  protected lockMaterial(
+    c: PostgresClient,
+    source: TokenSource,
+    installed: InstalledTokenVersion | null,
+    includeBytes: false,
+  ): Promise<CurrentTokenVersion | undefined>;
+  protected async lockMaterial(
+    c: PostgresClient,
+    source: TokenSource,
+    installed: InstalledTokenVersion | null,
+    includeBytes: boolean,
   ) {
-    const warm = installed === null;
     const values = [
       source.key.source.id,
       source,
       this.issuerAuthority,
-      ...(warm ? [] : [installed.preparationAttemptId, installed.materialVersion]),
+      installed?.preparationAttemptId ?? null,
+      installed?.materialVersion ?? null,
     ];
     const { rows } = await c.query(
-      `SELECT a.id,a.admission,a.material_version,a.usable_until${warm ? ",a.sealed" : ""}
+      `SELECT a.id,a.admission,a.material_version,a.usable_until${includeBytes ? ",a.sealed" : ""}
        FROM ${families} f JOIN ${attempts} a USING (source_id)
        WHERE ${matching} AND f.enabled AND f.admission->>'issuerAuthority'=$3
          AND a.custody='current' AND a.state='committed' AND a.admission=f.admission
          AND a.usable_until BETWEEN clock_timestamp() AND clock_timestamp() + interval '61 minutes'
          AND a.provider_expires_at >= a.usable_until
-         ${warm ? "" : "AND a.id=$4 AND a.material_version=$5"} FOR SHARE OF f,a`,
+         AND ($4::uuid IS NULL OR (a.id=$4 AND a.material_version=$5)) FOR SHARE OF f,a`,
       values,
     );
     if (rows.length !== 1) {
@@ -419,7 +426,7 @@ export class PreparedGitHubPostgres {
       materialVersion: row.material_version,
       usableUntil,
     };
-    if (!warm) {
+    if (!includeBytes) {
       return version;
     }
     let opened = false;
@@ -445,6 +452,8 @@ export class PreparedGitHubPostgres {
       materialVersion: string;
       active: () => boolean;
     }> | null,
+    exactAttemptId?: string,
+    exactAdmission?: Admission,
   ): GitHubPreparationStore {
     const key = source.key.source.id;
     const locked = <T>(
@@ -463,8 +472,9 @@ export class PreparedGitHubPostgres {
           `SELECT admission, enabled, ${this.owner.active} AS live,
           extract(epoch FROM clock_timestamp()) * 1000 AS observed_at
           FROM ${families} f WHERE ${matching}
-          AND admission->>'issuerAuthority'=$3 FOR ${change ? "UPDATE" : "SHARE"} OF f`,
-          [key, source, this.issuerAuthority],
+          AND admission->>'issuerAuthority'=$3 AND ($4::jsonb IS NULL OR admission=$4::jsonb)
+          FOR ${change ? "UPDATE" : "SHARE"} OF f`,
+          [key, source, this.issuerAuthority, exactAdmission ?? null],
         );
         const f = rows[0] as FamilyRow | undefined;
         if (!f || (access && (!f.enabled || !f.live || !access.active()))) {
@@ -475,6 +485,7 @@ export class PreparedGitHubPostgres {
         const list = (
           await c.query(
             `SELECT id,admission,state,custody,material_version,provider_expires_at,usable_until,
+          ${this.owner.omitSettledAttempts ? `${preparedAttemptSettled("a")} AS settlement_only,` : ""}
           started_at <= clock_timestamp() - ${issueAttemptDispatchWindowMs} * interval '1 millisecond'
             AS stale,CASE WHEN custody='current' AND admission->>'issuerAuthority'=$2
             AND clock_timestamp() < $3::timestamptz
@@ -488,7 +499,8 @@ export class PreparedGitHubPostgres {
               AND admission=$6::jsonb AND usable_until > clock_timestamp()
               AND usable_until < clock_timestamp() + interval '61 minutes'))
             THEN sealed END AS sealed FROM ${attempts} a
-          WHERE source_id=$1`,
+          WHERE source_id=$1
+          ${this.owner.omitSettledAttempts ? `AND (NOT ${preparedAttemptSettled("a")} OR id=$7::uuid)` : ""}`,
             [
               key,
               this.issuerAuthority,
@@ -496,6 +508,7 @@ export class PreparedGitHubPostgres {
               access?.attemptId ?? null,
               access?.materialVersion ?? null,
               f.admission,
+              ...(this.owner.omitSettledAttempts ? [exactAttemptId ?? null] : []),
             ],
           )
         ).rows as AttemptRow[];
@@ -515,6 +528,7 @@ export class PreparedGitHubPostgres {
             ...(a.material_version ? { materialVersion: a.material_version } : {}),
             // Settlement assumes no dispatch after this window; the issuer rechecks it.
             ...(a.stale ? { stale: true as const } : {}),
+            ...(a.settlement_only ? { settlementOnly: true as const } : {}),
           })),
         };
         if (
@@ -538,6 +552,13 @@ export class PreparedGitHubPostgres {
             for (const a of family.attempts) {
               const old = before.get(a.id);
               if (!old) {
+                if (this.owner.omitSettledAttempts) {
+                  await this.fenceSupersededAttempts(
+                    c,
+                    key,
+                    list.map((row) => row.id),
+                  );
+                }
                 await c.query(
                   `INSERT INTO ${attempts} (id,source_id,admission,state) VALUES ($1,$2,$3,$4)`,
                   [a.id, key, a.admission, a.state],
@@ -553,6 +574,7 @@ export class PreparedGitHubPostgres {
                   throw new Error("Publication fenced.");
                 }
                 const bytes = m?.bytes ?? a.candidate;
+                const expiresAt = m?.providerExpiresAt ?? a.candidateExpiresAt;
                 if (m) {
                   await c.query(
                     `UPDATE ${attempts} SET custody='retire' WHERE source_id=$1 AND custody='current'`,
@@ -569,7 +591,7 @@ export class PreparedGitHubPostgres {
                     m ? "current" : bytes ? "retire" : a.notIssued ? "not_issued" : "intent",
                     bytes && this.seal(bytes, a.admission, a.id),
                     m?.materialVersion,
-                    m && new Date(m.providerExpiresAt),
+                    expiresAt === undefined ? null : new Date(expiresAt),
                     m && new Date(m.usableUntil),
                     key,
                   ],
@@ -592,9 +614,68 @@ export class PreparedGitHubPostgres {
         }
       });
     return {
+      ...(this.owner.omitSettledAttempts && {
+        forAttempt: (attemptId: string, admission: Admission) =>
+          this.store(source, access, attemptId, admission),
+        retainCaptured: async (
+          admission: Admission,
+          attemptId: string,
+          candidate: Uint8Array,
+          providerExpiresAt?: number,
+        ) => {
+          if (
+            access ||
+            attemptId !== exactAttemptId ||
+            admission.familyId !== key ||
+            admission.issuerAuthority !== this.issuerAuthority ||
+            !isDeepStrictEqual(admission, exactAdmission)
+          ) {
+            throw new Error("Captured attempt mismatch.");
+          }
+          await this.transaction(async (c) => {
+            const locked = await c.query(
+              `SELECT FROM ${families} f WHERE ${matching}
+               AND ${this.owner.owns ?? "true"} FOR UPDATE OF f`,
+              [key, source],
+            );
+            if (locked.rowCount !== 1) {
+              throw new Error("Captured source unavailable.");
+            }
+            await c.query(
+              `UPDATE ${attempts} SET state='quarantined',custody='retire',sealed=$4,provider_expires_at=$5
+               WHERE source_id=$1 AND id=$2 AND admission=$3::jsonb
+                 AND state IN ('issuing','quarantined') AND custody='intent'
+                 AND sealed IS NULL AND material_version IS NULL AND provider_expires_at IS NULL`,
+              [
+                key,
+                attemptId,
+                admission,
+                this.seal(candidate, admission, attemptId),
+                providerExpiresAt !== undefined && Number.isFinite(providerExpiresAt)
+                  ? new Date(providerExpiresAt)
+                  : null,
+              ],
+            );
+          });
+        },
+      }),
       readCurrent: (id, select) => locked(id, false, select),
       transact: (id, update) => locked(id, true, update),
     };
+  }
+
+  /** Fence intents excluded by the admission snapshot, under the same family lock.
+   * Do not re-evaluate time here: a rollback must not undo the successor's admission proof. */
+  protected async fenceSupersededAttempts(
+    c: PostgresClient,
+    familyId: string,
+    retained: readonly string[] = [],
+  ) {
+    await c.query(
+      `UPDATE ${attempts} SET state='quarantined'
+       WHERE source_id=$1 AND state='issuing' AND NOT (id=ANY($2::uuid[]))`,
+      [familyId, retained],
+    );
   }
 
   /** The same custody boundary when scheduling, claiming and recording a retirement. */

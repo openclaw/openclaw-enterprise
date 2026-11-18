@@ -127,6 +127,7 @@ export async function selectedReadGitJourney(
   t: TestContext,
   testUrl: string,
   exercise: (journey: SelectedReadJourney) => Promise<void>,
+  sharedGitIssuance?: true,
 ) {
   await repositoryGitJourney(
     t,
@@ -138,6 +139,7 @@ export async function selectedReadGitJourney(
     undefined,
     undefined,
     exercise,
+    sharedGitIssuance,
   );
 }
 
@@ -232,6 +234,7 @@ async function repositoryGitJourney(
     | "expired-replaced-supervisor",
   startupOptions?: NarrowStartupOptions,
   selectedRead?: (journey: SelectedReadJourney) => Promise<void>,
+  sharedGitIssuance?: true,
 ) {
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
@@ -454,6 +457,7 @@ async function repositoryGitJourney(
   const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
     prepareGitOnDemand: !!selectedRead,
+    ...(sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrowProfile

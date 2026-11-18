@@ -96,6 +96,7 @@ the API. It does not use API listener or session-authentication settings. See
 
 - `OCC_WORKER_POLL_INTERVAL_MS` — Idle polling delay; default: `250` ms; at most `2147483647`.
 - `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms; at most `2147483647`.
+- `OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION` — Optional positive safe integer that enables shared GitHub issuance for selected request-grant delivery. Set the same generation on every Worker and increase it when rotating the App key. See [shared GitHub issuance](../../guides/repository-credentials/openshell-enrollment.md#enable-shared-github-issuance).
 - `OCC_WORKER_MAX_ATTEMPTS` — Maximum work attempts; default: `5`.
 - `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Pending Namespace convergence, Agent deployment and live SandboxPolicy application timeout, including queue time; default: `900000` ms.
 - `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms; at most `2147483647`.

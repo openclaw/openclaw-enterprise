@@ -274,6 +274,18 @@ An unknown outcome settles after GitHub's maximum token lifetime from `started_a
 - `id`, `source_id`, `admission`, `state`, `custody`, `started_at`
 - `material_version`, `provider_expires_at`, `usable_until`, `sealed`
 
+### `prepared_github_shared_members`
+
+Links each independently admitted repository session to its shared GitHub token family.
+
+- `admission_id`, `family_id`, `source`
+
+### `prepared_github_shared_issuers`
+
+Records the current generation, authority and signing-key version for each shared issuer enrollment.
+
+- `issuer_id`, `generation`, `authority`, `input_version`
+
 ### `prepared_repository_git_uses`
 
 Append-only records of possible disclosure, bound to the exact attempt and material version.
