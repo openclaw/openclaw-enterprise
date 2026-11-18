@@ -890,9 +890,11 @@ test(
     assert.ok(oldFamily && sameFamily && newFamily);
     assert.equal(sameFamily.admission.familyId, oldFamily.admission.familyId);
     assert.notEqual(newFamily.admission.familyId, oldFamily.admission.familyId);
+    assert.equal(oldFamily.admission.grant.profile, "github-repository");
     assert.deepEqual(oldFamily.admission.grant.repositories, [
       { repositoryId: fixtureRepositoryId, repository: fixtureRepository },
     ]);
+    assert.equal(newFamily.admission.grant.profile, "github-repository");
     assert.deepEqual(newFamily.admission.grant.repositories, [
       { repositoryId: fixtureRepositoryId, repository: "example/renamed" },
     ]);
