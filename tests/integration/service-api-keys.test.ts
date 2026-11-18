@@ -82,13 +82,10 @@ function commandError(
 }
 
 const run = promisify(execFile);
-const occCli = join(process.cwd(), "bin", "occ");
 
 // Real Fastify HTTP, Better Auth plugin/storage, OCC, and native IAM. This test
 // does not claim PostgreSQL or Agent runtime coverage.
 test("service API keys authenticate scoped automation without replacing sessions or IAM", async (t) => {
-  // Build the real CLI once, then exercise it through a live Fastify socket below.
-  await run("go", ["build", "-trimpath", "-o", occCli, "./cmd/occ"]);
   const installationId = `ins_${randomUUID()}`;
   const memoryDatabase = { user: [], account: [], session: [], verification: [], apikey: [] };
   const authOptions = {
@@ -399,6 +396,9 @@ test("service API keys authenticate scoped automation without replacing sessions
 
   await t.test("occ CLI exercises Configuration CRUD and Agent stop/delete", async (t) => {
     const directory = await temporaryDirectory(t, "openclaw-occ-cli-");
+    const occCli = join(directory, "occ");
+    // Build the real CLI once, then exercise it through a live Fastify socket below.
+    await run("go", ["build", "-trimpath", "-o", occCli, "./cmd/occ"]);
     const keyFile = join(directory, "service-key.json");
     const adminKeyFile = join(directory, "admin-service-key.json");
     const bodyFile = join(directory, "configuration.json");

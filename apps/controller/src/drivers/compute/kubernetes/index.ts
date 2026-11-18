@@ -7494,6 +7494,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ...sandboxContext,
           revision,
           requirements,
+          ...(context?.existingHarnessOnly ? { existingHarnessOnly: true as const } : {}),
           workspaceNodeEnrolled: nodeEnrolled,
         };
         let sandbox: SandboxResourceRef;

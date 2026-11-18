@@ -167,7 +167,12 @@ test("provider Harness endpoint preparation re-observes the same revision across
     { name: "starting Pod is not ready", pods: [starting], ready: false },
     { name: "ambiguous Pods are not ready", pods: [ready, starting], ready: false },
     { name: "unique ready Pod becomes ready", pods: [ready], ready: true },
-    { name: "Ready back to Starting clears readiness", pods: [starting], ready: false },
+    {
+      name: "maintenance observes a Ready Pod returning to Starting",
+      pods: [starting],
+      ready: false,
+      existingHarnessOnly: true,
+    },
   ];
   // Keep the same Driver and revision: reconciliation must neither cache a false
   // result forever nor retain true after the workload becomes unready again.
@@ -177,10 +182,16 @@ test("provider Harness endpoint preparation re-observes the same revision across
       const endpointsBefore = fixture.endpoints.length;
       const hooksBefore = fixture.hooks.length;
       fixture.observePods(stage.pods);
-      assert.deepEqual(await fixture.prepare(), {
+      const dispatch = stage.existingHarnessOnly
+        ? { ...authContext(fixture.revision), existingHarnessOnly: true }
+        : undefined;
+      assert.deepEqual(await fixture.prepare(undefined, dispatch), {
         ...expectedRevision(fixture),
         ready: stage.ready,
       });
+      const provision = fixture.provisions.at(-1);
+      assert.equal(provision.existingHarnessOnly, stage.existingHarnessOnly);
+      assert.equal(Object.hasOwn(provision.requirements, "existingHarnessOnly"), false);
       assert.deepEqual(fixture.hooks.slice(hooksBefore), ["start"]);
       assert.equal(fixture.provisions.length, provisionsBefore + 1);
       assert.equal(fixture.endpoints.length, endpointsBefore + 1);
@@ -1559,11 +1570,11 @@ test("provider Harness protected execution is released only on current signed in
             hashes,
             disabled
               ? [
-                  "ae8967fa5105be4f6c222600d9f83f4c3d608259fd79a2fa2092d4da1d6cdb76",
+                  "e38d4be7e9e75516db4873af61295dca90bd2f2ea4d7ef00e6704a662ec92ad7",
                   "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
                 ]
               : [
-                  "8602532f0647c0882e4a52a3277bda1c5074ec97122765b06d31ae01a72c713c",
+                  "a7412cefc1b7f4cfa68243b92e3f9ea789376c9182e4291e1af2872c2bb216a0",
                   "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
                 ],
           );
