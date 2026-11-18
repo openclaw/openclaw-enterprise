@@ -71,19 +71,16 @@ Box dials the upstream at `CONNECT`, before it asks, so on an installed run a
 refused request may still open a TCP connection that carries no request bytes;
 see [known gaps](../../deploy/examples/strands-box/KNOWN-GAPS.md).
 
-## Reuse the controlled services
+## Reuse the controlled repository origin
 
-- [`strandsRehearsalModel(t)`](../../tests/helpers/strands-rehearsal-model.ts)
-  returns the Responses `baseUrl`, model name, synthetic credential, CA path and
-  bytes, and request and connection counters.
-- [`strandsRepositoryOriginFixture(t)`](../../tests/helpers/strands-rehearsal-repository.ts)
-  returns the GitHub HTTPS listener, a TLS-verifying `upstreamAgent`, the real
-  repository, `publishCommit()`, request records in `writes`, refusals,
-  created `pulls` and `revoke()`. It answers Git smart HTTP for one repository
-  and the GraphQL operations `gh pr create` sends.
+[`strandsRepositoryOriginFixture(t)`](../../tests/helpers/strands-rehearsal-repository.ts)
+returns the GitHub HTTPS listener, a TLS-verifying `upstreamAgent`, the real
+repository, `publishCommit()`, request records in `writes`, refusals,
+created `pulls` and `revoke()`. It answers Git smart HTTP for one repository
+and the GraphQL operations `gh pr create` sends.
 
-Both listeners bind to loopback. Register runtime cleanup before starting the
-fixtures so the runtime stops before its services and files are removed.
+The listener binds to loopback. Register runtime cleanup before starting the
+fixture so the runtime stops before its service and files are removed.
 
 ## Run the Box host checks with native inputs
 
