@@ -46,7 +46,7 @@ Current behavior is documented in the [Agent plugins reference](../../docs/refer
    - Keep eligible enabled tools without approval on same-node execution; route approval-required tools to Gateway dispatch. Do not grant disabled tools. Add `gateway.nodes.commands.requiredPolicies` to reject grants and dispatch when a required command policy owner is missing or mismatched, and invalidate stale grants when policy changes. Reuse the existing worker grant protocol.
    - **Status:** Not done; planned OpenClaw PR.
 8. **OCE native MCP human approval:** Install one OCE-managed Gateway MCP node policy and translate saved per-tool `all_actions`/`none` settings into it.
-   - Extend per-plugin Driver capability reporting so only supported managed MCP plugins advertise human approval. Reuse the existing `tools[id].approval` field and Agent-wide approvers; freeze the binding and policy in the Agent revision. Extend the Tools picker and fail deployment when the required gate cannot be installed.
+   - Extend per-plugin Driver capability reporting so only supported managed MCP plugins advertise human approval. Reuse the existing `tools[id].approval` field, Agent-wide approvers, and tool-name approval prompts; freeze the binding and policy in the Agent revision. Extend the Tools picker and fail deployment when the required gate cannot be installed.
    - **Status:** Not done; planned OCE PR, depends on step 7.
 9. **End-to-end Console and runtime qualification:** Prove the complete launch workflow on ordinarily deployed Agents.
    - Resolve the Slack tool-assembly failure reported in #4673, then verify live Slack search, Google CLI, selection changes, renewal, worker replacement, withdrawal, and multi-account isolation. Update the owning current documentation as work ships.
@@ -72,7 +72,7 @@ Use the real Agent workflow with approved provider accounts, a disposable Kubern
 
 ## Post 1.0 and separate owners
 
-- Human approval on direct credentialed script requests; per-plugin or per-tool approver routing; automatic `write_actions` approval and trusted read/write classification; generic MCP argument restrictions; arbitrary REST action mapping.
+- Guaranteed full-argument review across approval interfaces; human approval on direct credentialed script requests; per-plugin or per-tool approver routing; automatic `write_actions` approval and trusted read/write classification; generic MCP argument restrictions; arbitrary REST action mapping.
 - Direct external directory or ClawHub discovery, installation, and automatic updates; additional providers and placements; Gateway-native code and renewable Gateway credentials.
 - Google product/action UI and reusable-script or public-schema caching optimizations.
 - Codex hosted-app approval qualification belongs to the Codex Plugin Driver owner. Its real Kubernetes Agent-turn check and session-policy constraints are tracked in [plugin testing](../../docs/testing/plugins.md#current-proof-notes); this plan does not claim Codex approval enforcement is qualified.
@@ -91,4 +91,4 @@ Use the real Agent workflow with approved provider accounts, a disposable Kubern
 - 2026-11-05: Reworked the active proposal against `18041cc84aa0`. Renumbered its RFC to 0029, retained this plan's filename, recorded merged CLI/MCP delivery, replaced the old Google-only P0 with the scoped-account stack, and separated later enforcement/marketplace/Gateway work (session `01a13641-ad1f-7e93-a453-f1fd8c3ad711`).
 - 2026-11-09: Renumbered the proposal to RFC-0031 after RFC-0029 and RFC-0030 merged. Recorded template, Token Service and mixed-Driver delivery, updated the remaining Agent grant and qualification steps, and linked the living plugin support reference.
 - 2026-11-17: Renumbered the active proposal to provisional RFC-0040, aligned P0 with the 1.0 scope, separated the selected Credential Proxy capability and enforcement work, and moved reviewed uploads and same-plugin multi-account into launch delivery (source `26a24253e444`; session `01a13641-ad1f-7e93-a453-f1fd8c3ad711`).
-- 2026-11-18: Add native MCP human approval and selective same-node/Gateway placement as separate OpenClaw and OCE work items; retain direct script approval enforcement as later work.
+- 2026-11-18: Add native MCP tool-name approval and selective same-node/Gateway placement as separate OpenClaw and OCE work items; retain guaranteed argument review and direct script approval enforcement as later work.
