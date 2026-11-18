@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const hosts = process.argv.slice(2);
 const uid = process.env.POD_UID;
@@ -42,4 +42,5 @@ execFileSync(
   ],
   { stdio: "ignore" },
 );
-copyFileSync(directory + "/peer.pem", "/dev/termination-log");
+// Kubelet owns this bind-mounted file. Write its contents without copying file metadata.
+writeFileSync("/dev/termination-log", readFileSync(directory + "/peer.pem"), { flag: "r+" });
