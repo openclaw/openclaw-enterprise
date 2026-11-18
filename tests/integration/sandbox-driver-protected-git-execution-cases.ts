@@ -25,7 +25,8 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.ts";
-import { image, imageTestOptions, runDocker } from "../helpers/runtime-image-startup.mjs";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
 import type { ProtectedOpenShellGitFixture } from "./sandbox-driver-protected-git-configuration-cases.ts";
 import { verifyProtectedGitNetworkPolicy } from "./sandbox-driver-protected-git-network-admission.ts";
 import { verifyPreparedGitCleanupRefusals } from "./sandbox-driver-revision-observation-cases.ts";
@@ -190,7 +191,7 @@ export async function verifyProtectedOpenShellGitExecution(
   assert.ok(admitted);
   assert.match(
     admitted,
-    /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
+    /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
   );
   protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
   // Preparation accepts the configured facilities independently of the release label.

@@ -1,97 +1,10 @@
-import test, { type TestContext } from "node:test";
-import type { ControlRequest } from "../../apps/controller/src/drivers/repo/access/control-contracts.ts";
-import type { callControl as CallControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { chmod, lstat, readFile, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
-import { appRoot, credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-
-async function configuration(t: TestContext) {
-  const resources = createTestResourceScope(t);
-  const tls = await createTlsMaterial(resources);
-  const config: unknown = await createLoopbackServiceConfiguration(resources);
-  assert.ok(config && typeof config === "object" && "gateway" in config);
-  assert.ok(
-    config.gateway && typeof config.gateway === "object" && "controlSocket" in config.gateway,
-  );
-  assert.ok(typeof config.gateway.controlSocket === "string");
-  return { resources, config: config as { gateway: { controlSocket: string } }, tls };
-}
-
-function startProcess({ resources, config, tls }: Awaited<ReturnType<typeof configuration>>) {
-  // Only the provider is a fixture. Listener startup, control routes, sessions,
-  // signal handling and socket cleanup all belong to the real process composition.
-  const program = `
-    import { readFile } from 'node:fs/promises';
-    const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);
-    const input = JSON.parse(Buffer.concat(chunks).toString());
-    const { credentialCompositionModule, credentialDriverModule } = await import(input.runtime);
-    const [{ runService }, { createSystemClock }, { createAlternateDriverFactory }] = await Promise.all([
-      credentialCompositionModule('service'), credentialDriverModule('clock'), import(input.adapter),
-    ]);
-    const clock = createSystemClock();
-    const factory = createAlternateDriverFactory({origin:'https://upstream.example.test',gatewayOrigin:input.config.gateway.publicOrigin,clock});
-    const tls = { key: await readFile(input.key), cert: await readFile(input.cert) };
-    await runService({ config:input.config, tls, factory, trustedUpstreamOrigins:new Set(), close(){} }, clock);
-    process.send('ready');
-  `;
-  const child = spawn(process.execPath, ["--input-type=module", "--eval", program], {
-    env: {
-      PATH: process.env.PATH,
-      REPOSITORY_CREDENTIALS_APP_ROOT: appRoot,
-    },
-    stdio: ["pipe", "ignore", "pipe", "ipc"],
-  });
-  assert.ok(child.stderr && child.stdin);
-  let stderr = "";
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr = (stderr + chunk).slice(-4096);
-  });
-  child.stdin.on("error", () => {});
-  const closed = new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolve({ code, signal }));
-  });
-  const ready = new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("service readiness timed out")), 5000);
-    child.once("message", (message) => {
-      clearTimeout(timer);
-      assert.equal(message, "ready");
-      resolve();
-    });
-    void closed.then(() => {
-      clearTimeout(timer);
-      reject(new Error(`service exited before readiness: ${stderr}`));
-    }, reject);
-  });
-  resources.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
-    }
-    await closed;
-  });
-  child.stdin.end(
-    JSON.stringify({
-      config,
-      runtime: new URL("../fixtures/repository-credentials/runtime.mjs", import.meta.url).href,
-      adapter: new URL("../fixtures/repository-credentials/alternate.ts", import.meta.url).href,
-      key: tls.keyFile,
-      cert: tls.certFile,
-    }),
-  );
-  return { child, ready, closed };
-}
-
-async function operatorClient() {
-  const module: unknown = await credentialDriverModule("client/operator");
-  assert.ok(module && typeof module === "object" && "callControl" in module);
-  assert.equal(typeof module.callControl, "function");
-  return module.callControl as typeof CallControl;
-}
+import test from "node:test";
+import type { ControlRequest } from "../../apps/controller/src/drivers/repo/access/control-contracts.ts";
+import { createAlternateProcessFixture } from "../fixtures/repository-credentials/alternate-process.ts";
+import { appFunction } from "../fixtures/repository-credentials/app-functions.ts";
 
 const openRequest: ControlRequest = {
   method: "POST",
@@ -103,16 +16,18 @@ test(
   "SIGKILL restart recovers the owned stale control socket with fresh sessions",
   { timeout: 15000 },
   async (t) => {
-    const fixture = await configuration(t);
-    const callControl = await operatorClient();
-    const socketPath = fixture.config.gateway.controlSocket;
-    const first = startProcess(fixture);
+    const fixture = await createAlternateProcessFixture(t);
+    const callControl = await appFunction(
+      "drivers/repo/github/access/client/operator",
+      "callControl",
+    );
+    const { socketPath } = fixture;
+    const first = fixture.start();
     await first.ready;
     const original = await callControl(socketPath, openRequest);
     assert.ok("session" in original);
     assert.equal(original.session.state, "OPEN");
-    first.child.kill("SIGKILL");
-    assert.deepEqual(await first.closed, { code: null, signal: "SIGKILL" });
+    assert.deepEqual(await first.stop("SIGKILL"), { code: null, signal: "SIGKILL" });
 
     // SIGKILL bypasses cleanup, leaving the actual socket inode behind. A dead
     // process alone is insufficient: verify the operating system refuses connect.
@@ -131,7 +46,7 @@ test(
     });
     assert.equal(refusal.code, "ECONNREFUSED");
 
-    const restarted = startProcess(fixture);
+    const restarted = fixture.start();
     await restarted.ready;
     assert.deepEqual(
       await callControl(socketPath, {
@@ -146,8 +61,7 @@ test(
     assert.notEqual(replacement.session.sessionId, original.session.sessionId);
     assert.notEqual(replacement.bearer, original.bearer);
     assert.equal((await lstat(socketPath)).mode & 0o7777, 0o600);
-    restarted.child.kill("SIGTERM");
-    assert.deepEqual(await restarted.closed, { code: 0, signal: null });
+    assert.deepEqual(await restarted.stop("SIGTERM"), { code: 0, signal: null });
     await assert.rejects(lstat(socketPath), { code: "ENOENT" });
   },
 );
@@ -156,15 +70,18 @@ test(
   "restart refuses a live control listener and preserves its session",
   { timeout: 10000 },
   async (t) => {
-    const fixture = await configuration(t);
-    const callControl = await operatorClient();
-    const socketPath = fixture.config.gateway.controlSocket;
-    const first = startProcess(fixture);
+    const fixture = await createAlternateProcessFixture(t);
+    const callControl = await appFunction(
+      "drivers/repo/github/access/client/operator",
+      "callControl",
+    );
+    const { socketPath } = fixture;
+    const first = fixture.start();
     await first.ready;
     const opened = await callControl(socketPath, openRequest);
     assert.ok("session" in opened);
     const before = await lstat(socketPath);
-    const contender = startProcess(fixture);
+    const contender = fixture.start();
     await assert.rejects(contender.ready, /startup-failed/);
     assert.deepEqual(await contender.closed, { code: 1, signal: null });
     const after = await lstat(socketPath);
@@ -180,11 +97,11 @@ test(
 );
 
 test("restart preserves a regular file at the control path", { timeout: 10000 }, async (t) => {
-  const fixture = await configuration(t);
-  const socketPath = fixture.config.gateway.controlSocket;
+  const fixture = await createAlternateProcessFixture(t);
+  const { socketPath } = fixture;
   await writeFile(socketPath, "operator-owned file", { mode: 0o600 });
   const before = await lstat(socketPath);
-  const contender = startProcess(fixture);
+  const contender = fixture.start();
   await assert.rejects(contender.ready, /startup-failed/);
   assert.deepEqual(await contender.closed, { code: 1, signal: null });
   assert.equal((await lstat(socketPath)).ino, before.ino);
@@ -195,15 +112,14 @@ test(
   "restart preserves an abandoned socket with unsafe permissions",
   { timeout: 10000 },
   async (t) => {
-    const fixture = await configuration(t);
-    const socketPath = fixture.config.gateway.controlSocket;
-    const first = startProcess(fixture);
+    const fixture = await createAlternateProcessFixture(t);
+    const { socketPath } = fixture;
+    const first = fixture.start();
     await first.ready;
-    first.child.kill("SIGKILL");
-    await first.closed;
+    assert.deepEqual(await first.stop("SIGKILL"), { code: null, signal: "SIGKILL" });
     await chmod(socketPath, 0o660);
     const before = await lstat(socketPath);
-    const contender = startProcess(fixture);
+    const contender = fixture.start();
     await assert.rejects(contender.ready, /startup-failed/);
     assert.deepEqual(await contender.closed, { code: 1, signal: null });
     const after = await lstat(socketPath);

@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { waitForRevisionPass, advanceCleanupRetries } from "./postgres-worker-revision-support.mjs";
 import { deferred } from "./deferred.ts";
-import { waitFor, within } from "./wait-for.mjs";
+import { waitFor, within } from "./wait-for.ts";
 import { Pool } from "pg";
 import { buffer } from "node:stream/consumers";
 import { setTimeout as delay } from "node:timers/promises";
@@ -62,7 +62,7 @@ const repositorySetPermissions = {
   issues: "write",
 } as const;
 import { gitExpiryGateway } from "./openshell-online-git-journey.mjs";
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { harnessTlsFixture } from "./harness-tls.ts";
 import { bindReservedPortInProcess, reservePort } from "./available-port.ts";
 import { invoke, token, openShellMiddlewareClient } from "./openshell-online-wire.mjs";
 import { exerciseNativeRepositorySet } from "./native-repository-set.ts";
@@ -305,7 +305,6 @@ async function repositoryGitJourney(
       {
         gateway: { workspaceMode: "operator" },
         kubernetes: {
-          runtimeClassName: "openshell-sandbox",
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {
             subPath: "workspace",
@@ -1179,7 +1178,7 @@ async function repositoryGitJourney(
       const first = (await attempts())[0]!;
       const request = () => peer.exchange(() => evaluate(probe), state.installed!, false);
       assert.equal(((await request()) as { status: number }).status, 200);
-      assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
+      assert.deepEqual(peer.gh.issuesOfTokens[0]?.repositoryIds, [73]);
       if (pendingSuccessor !== "cold-worker") {
         await f.stop();
       }
@@ -1655,8 +1654,8 @@ async function repositoryGitJourney(
       assert.equal(wire.world.id, initialSandbox, "renewal preserves the running Sandbox");
       assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
       assert.equal(peer.gh.issuesOfTokens.length, 2);
-      assert.deepEqual(peer.gh.issuesOfTokens[1].repositoryIds, [73]);
-      assert.deepEqual(peer.gh.issuesOfTokens[1].permissions, repositorySetPermissions);
+      assert.deepEqual(peer.gh.issuesOfTokens[1]?.repositoryIds, [73]);
+      assert.deepEqual(peer.gh.issuesOfTokens[1]?.permissions, repositorySetPermissions);
       assert.equal(((await request()) as { status: number }).status, 200);
       await f.controller.removeAgentStandingApproval(f.actor.id, {
         ...ownerKey,
@@ -1698,8 +1697,8 @@ async function repositoryGitJourney(
     }
     if (narrow) {
       assert.equal(revision.repositoryCredentials!.bindings[0]!.profile, "git-write");
-      assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
-      assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+      assert.deepEqual(peer.gh.issuesOfTokens[0]?.repositoryIds, [73]);
+      assert.deepEqual(peer.gh.issuesOfTokens[0]?.permissions, {
         metadata: "read",
         contents: "write",
         ...((policy.draftPull ?? true) && { pull_requests: "write" }),
@@ -1803,10 +1802,10 @@ async function repositoryGitJourney(
     const originalAttachmentEpoch = entry.installed.attachmentEpoch;
     assert.equal(peer.gh.issuesOfTokens.length, 1, "one issuance for the selected set");
     assert.deepEqual(
-      peer.gh.issuesOfTokens[0].repositoryIds,
+      peer.gh.issuesOfTokens[0]?.repositoryIds,
       repositorySet.slice(0, 2).map(({ repositoryId }) => Number(repositoryId)),
     );
-    assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, repositorySetPermissions);
+    assert.deepEqual(peer.gh.issuesOfTokens[0]?.permissions, repositorySetPermissions);
     const heldSyntheticValue = state.installed!;
     const liveOriginBefore = peer.originCalls();
     assert.equal(

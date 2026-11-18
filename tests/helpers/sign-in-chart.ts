@@ -5,31 +5,22 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import type { ChartValues } from "./production-chart-network-fixture.ts";
-import { goToolEnvironment, parseProductionChart } from "./production-chart.mjs";
+import { goToolEnvironment, parseProductionChart, type ChartValues } from "./production-chart.ts";
 import { findResource } from "./production-chart-resource.ts";
+import { productionChartPath, productionValuesTemplateArgs } from "./production-values-template.ts";
 
 const execute = promisify(execFile);
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
 const helm = process.env.OCC_HELM_BIN ?? "helm";
-const chartPath = "deploy/helm/openclaw-enterprise";
 
-export { chartTooling } from "./production-chart.mjs";
+export { chartTooling } from "./production-chart.ts";
 
-function templateArguments(overrides: ChartValues, chart = chartPath): string[] {
-  const args = [
-    "template",
-    "oce",
-    chart,
-    "--namespace",
-    "openclaw-system",
-    "--values",
-    "deploy/examples/production/values.yaml",
-  ];
+function templateArguments(overrides: ChartValues, chart = productionChartPath): string[] {
+  const overrideArgs: string[] = [];
   for (const [key, value] of Object.entries(overrides)) {
-    args.push("--set", `${key}=${value}`);
+    overrideArgs.push("--set", `${key}=${value}`);
   }
-  return args;
+  return productionValuesTemplateArgs(chart, overrideArgs);
 }
 
 function renderTemplate(args: string[]) {
@@ -65,13 +56,13 @@ function string(value: unknown, label: string): string {
 /** Renders the example install with `--set` overrides and returns its named resources. */
 export async function renderChart(overrides: ChartValues = {}): Promise<ChartResource[]> {
   const { stdout } = await renderTemplate(templateArguments(overrides));
-  let parsed: unknown;
+  let parsed: unknown[];
   try {
     parsed = await parseProductionChart(stdout);
   } catch (error) {
     throw new Error("Could not parse the rendered chart with yq.", { cause: error });
   }
-  return array(parsed, "Rendered chart").map((value, index) => {
+  return parsed.map((value, index) => {
     const label = `Rendered chart resource ${index + 1}`;
     const { kind, metadata, spec } = record(value, label);
     return {
@@ -90,7 +81,7 @@ export function trustedProxyNoticeRenderer(directory: string) {
   let copied: Promise<void> | undefined;
   const chart = join(directory, "openclaw-enterprise");
   const copy = async () => {
-    await cp(join(repository, chartPath), chart, { recursive: true });
+    await cp(join(repository, productionChartPath), chart, { recursive: true });
     assert.match(
       await readFile(join(chart, "templates/NOTES.txt"), "utf8"),
       /include "openclaw\.trustedProxy\.notice"/,

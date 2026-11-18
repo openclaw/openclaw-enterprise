@@ -6,7 +6,7 @@ import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
 import type { WorkerEvent } from "../helpers/postgres-worker-refused-candidate.ts";
 import { CredentialWithdrawalRefusedError } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   removeAccessBindings,
   withUnavailableIAM,

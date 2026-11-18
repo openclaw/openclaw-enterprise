@@ -108,7 +108,6 @@ export type ConnectedStackInputs = {
   model: string;
   kubeconfigPath: string;
   kubernetesContext: string;
-  runtimeClass: string;
   controllerNamespace: string;
   controllerSelector: unknown;
   openShellGatewayNamespace: string;

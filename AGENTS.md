@@ -515,7 +515,7 @@ controls:
   per declaration, and use braces for control-flow bodies. Apply these rules with
   `pnpm lint:fix`, then run `pnpm format:fix` for Prettier layout.
 - Run `pnpm lint` for JavaScript and TypeScript changes; `pnpm lint:fix` applies
-  supported automatic fixes. Follow `eslint.config.mjs` and the
+  supported automatic fixes. Follow `eslint.config.ts` and the
   [linting guide](docs/testing/local.md#linting-and-formatting). Do not expand
   `eslint-suppressions.json` to admit new findings; prune entries as they are fixed.
 

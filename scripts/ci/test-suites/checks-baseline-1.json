@@ -25,7 +25,7 @@
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.ts",
-    "tests/docs/docs-site.test.mjs",
+    "tests/docs/docs-site.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
@@ -43,7 +43,7 @@
     "tests/conformance/kubernetes-client.test.ts",
     "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
-    "tests/integration/configuration-body-limits.test.mjs",
+    "tests/integration/configuration-body-limits.test.ts",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.ts",
     "tests/conformance/runtime-logs-admission.test.ts",
@@ -51,9 +51,10 @@
     "tests/integration/device-authorization-api.test.ts",
     "tests/integration/device-authorization-denial-audit.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
-    "tests/integration/dependency-unavailable-log.test.mjs",
+    "tests/integration/dependency-unavailable-log.test.ts",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.ts",
+    "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.ts",
@@ -72,7 +73,7 @@
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
-    "tests/integration/production-controller-security.test.mjs",
+    "tests/integration/production-controller-security.test.ts",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
@@ -107,7 +108,7 @@
     "tests/integration/production-healthcheck.test.ts",
     "tests/conformance/pr-status.test.ts",
     "tests/conformance/codex-stderr-filter.test.ts",
-    "tests/docs/docs-server.test.mjs",
+    "tests/docs/docs-server.test.ts",
     "tests/integration/console-build-metadata.test.ts",
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.ts",
@@ -121,7 +122,7 @@
     "tests/conformance/console-agent-name-runs.test.ts",
     "tests/conformance/console-json-errors.test.ts",
     "tests/integration/bootstrap-output.test.ts",
-    "tests/conformance/slack-configuration.test.mjs",
+    "tests/conformance/slack-configuration.test.ts",
     "tests/integration/slack-destination.test.ts",
     "tests/conformance/console-gateway-safety.test.ts",
     "tests/conformance/grafana-overview-dashboard.test.ts",
@@ -130,10 +131,11 @@
     "tests/conformance/url-authority.test.ts",
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
+    "tests/integration/egress-custody-observer.test.ts",
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/credential-proxy-provider-pin.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
-    "tests/integration/egress-stock-online-authority.test.mjs",
+    "tests/integration/egress-stock-online-authority.test.ts",
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
@@ -142,14 +144,13 @@
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
-    "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/agent-grant-rehearsal.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
-    "tests/integration/egress-installation-exchange.test.mjs",
+    "tests/integration/egress-installation-exchange.test.ts",
     "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.ts",
     "tests/integration/refusal-answers.test.ts",
@@ -203,10 +204,10 @@
       "path": "tests/docs/docs-length.test.mjs"
     },
     {
-      "path": "tests/docs/docs-server.test.mjs"
+      "path": "tests/docs/docs-server.test.ts"
     },
     {
-      "path": "tests/docs/docs-site.test.mjs"
+      "path": "tests/docs/docs-site.test.ts"
     },
     {
       "path": "tests/docs/generated-api-reference.test.ts"
@@ -381,7 +382,7 @@
       "path": "tests/conformance/secret-occ.test.ts"
     },
     {
-      "path": "tests/conformance/slack-configuration.test.mjs"
+      "path": "tests/conformance/slack-configuration.test.ts"
     },
     {
       "path": "tests/integration/slack-destination.test.ts"
@@ -424,6 +425,12 @@
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
+      "path": "tests/integration/production-keycloak-profile.test.ts",
+      "expectedTests": [
+        "production Keycloak example renders an attached-only pilot through the chart"
+      ]
+    },
+    {
       "path": "tests/integration/profile-public-github-read.test.mjs",
       "expectedTests": [
         "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer"
@@ -446,7 +453,7 @@
       "path": "tests/integration/configuration-controller.test.mjs"
     },
     {
-      "path": "tests/integration/configuration-body-limits.test.mjs"
+      "path": "tests/integration/configuration-body-limits.test.ts"
     },
     {
       "path": "tests/integration/json-body-depth.test.mjs"
@@ -521,7 +528,7 @@
       "path": "tests/integration/list-summaries.test.ts"
     },
     {
-      "path": "tests/integration/production-controller-security.test.mjs"
+      "path": "tests/integration/production-controller-security.test.ts"
     },
     {
       "path": "tests/integration/production-healthcheck.test.ts"
@@ -563,7 +570,7 @@
       "path": "tests/integration/openshell-device-authorization-api.test.mjs"
     },
     {
-      "path": "tests/integration/dependency-unavailable-log.test.mjs"
+      "path": "tests/integration/dependency-unavailable-log.test.ts"
     },
     {
       "path": "tests/integration/runtime-credentials-api.test.ts"
@@ -765,7 +772,13 @@
       ]
     },
     {
-      "path": "tests/integration/egress-stock-online-authority.test.mjs"
+      "path": "tests/integration/egress-custody-observer.test.ts",
+      "expectedTests": [
+        "the dispatch observer rejects malformed selections before arming its one fault"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-stock-online-authority.test.ts"
     },
     {
       "path": "tests/integration/managed-plugin-request-authority.test.ts"
@@ -777,6 +790,7 @@
         "held Git startup observes a denial inside its provider endpoint without credential access",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
         "protected Git replies to this online decision before its authority deadline",
+        "an allow or denial that settles after the call ends is not acted on",
         "shipped gh metadata stays within selected-repository authority",
         "bounded selected REST bodies retain transport and authority limits"
       ]
@@ -899,7 +913,7 @@
         "Git denial receipt refuses foreign, incomplete, and ambiguous log histories",
         "Git denial receipt rejects normalized or noncanonical event dates",
         "Git denial receipt refuses a replaced supervisor before or during the read",
-        "Git denial command retains non-403 failure categories without output"
+        "Git removal denial command reports only signed or transport failures"
       ]
     },
     {
@@ -915,15 +929,6 @@
       "expectedTests": [
         "a per-start denial joins the authenticated request to the refusal actually returned; neither side can substitute",
         "observed-hook preview has its own durable admission and cannot reinterpret v4, v5, or narrow Git"
-      ]
-    },
-    {
-      "path": "tests/integration/credential-free-online-grant.test.mjs",
-      "expectedTests": [
-        "signed stock request observes an OCC credential-free grant and its withdrawal",
-        "a signed stock request cannot carry a credential-free grant across revision replacement",
-        "a signed stock request loses a credential-free grant when OCC IAM access is removed",
-        "OCC cannot observe a live credential grant as credential-free metadata"
       ]
     },
     {
@@ -947,7 +952,8 @@
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
         "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "repository scope changes invalidate the external Driver identity while a reload preserves it"
+        "repository scope changes invalidate the external Driver identity while a reload preserves it",
+        "the loader closes an installed registration that later composition refuses"
       ]
     },
     {
@@ -973,7 +979,7 @@
       ]
     },
     {
-      "path": "tests/integration/egress-installation-exchange.test.mjs"
+      "path": "tests/integration/egress-installation-exchange.test.ts"
     },
     {
       "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
@@ -1003,6 +1009,9 @@
       "expectedTests": [
         "controller topology keeps API-only fixture inputs separate from the worker"
       ]
+    },
+    {
+      "path": "tests/integration/agent-http-chat.test.ts"
     }
   ]
 }

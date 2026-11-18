@@ -26,7 +26,7 @@ With installed workspace dependencies, run the focused source suites:
 ```sh
 pnpm test:files -- tests/integration/static-egress.test.mjs \
   tests/integration/egress-prepared-github-metadata.test.mjs \
-  tests/integration/egress-installation-exchange.test.mjs
+  tests/integration/egress-installation-exchange.test.ts
 ```
 
 This selects literal files without provisioning dependencies or preventing skips.
@@ -41,7 +41,7 @@ provider and cluster credentials are unnecessary:
   printf 'PostgreSQL run directory: %s\n' "$PG_PLATFORM_RUN_DIR"
   trap 'pg_run_status=$?; node scripts/ci/cleanup.ts --state "$PG_PLATFORM_RUN_DIR/state.json" || pg_run_status=1; exit "$pg_run_status"' EXIT
 
-  node scripts/ci/prepare.mjs --lane postgres-platform \
+  node scripts/ci/prepare.ts --lane postgres-platform \
     --state "$PG_PLATFORM_RUN_DIR/state.json" \
     --github-env "$PG_PLATFORM_RUN_DIR/owner.env"
   node scripts/ci/run-tests.ts run postgres-platform \
@@ -77,7 +77,7 @@ credential reflection, rejection fencing and withdrawal. Sequential requests exc
 blocked Secret reads fill the 1,024 active slots, which delivery releases.
 
 The digest regression reads in-memory committed authorization without sending.
-`postgres-egress-send-receipts.test.mjs` uses PostgreSQL, a fault proxy and a byte-counting
+`postgres-egress-send-receipts.test.ts` uses PostgreSQL, a fault proxy and a byte-counting
 origin. It drops the second COMMIT reply after reservation, verifies no permit or
 origin arrival, then reconstructs the Forwarder before the deadline to exclude
 replacement sends. Policy, material and acceptance remain synthetic. Other cases
@@ -143,7 +143,7 @@ synthetic fixtures, not one installed Sandbox.
 With a migrated disposable database selected through `OCC_TEST_DATABASE_URL`, run:
 
 ```sh
-node --test tests/integration/postgres-static-egress.test.mjs
+node --test tests/integration/postgres-static-egress.test.ts
 ```
 
 Follow [database setup](postgresql.md): migrate with `occ_migrator`, run with `occ_app`.
@@ -253,7 +253,7 @@ The [validator](../../tests/helpers/egress-connected-inputs.mjs) rejects missing
 | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `version`, `namespaceId`, `model`                                                                    | Version `2`, the existing `ns_*` tenant ID and explicit Codex model name.                                                                                                                                                                    |
 | `apiOrigin`                                                                                          | The controller's literal `127.0.0.1` origin with an explicit port above 1024.                                                                                                                                                                |
-| `kubeconfigPath`, `kubernetesContext`, `runtimeClass`                                                | Explicit kubeconfig, disposable `k3d-*` context and approved OpenShell RuntimeClass.                                                                                                                                                         |
+| `kubeconfigPath`, `kubernetesContext`                                                                | Explicit kubeconfig and disposable `k3d-*` context.                                                                                                                                                                                          |
 | `controllerNamespace`, `controllerSelector`, `openShellGatewayNamespace`, `openShellGatewaySelector` | Exact namespaces and selectors for the prepared controller (both API and worker) and supplier gateway Pods.                                                                                                                                  |
 | `oceCommit`, `harnessCommit`, `supplierCommit`                                                       | Full product, test-checkout and supplier commits. Retain independent image build receipts.                                                                                                                                                   |
 | `images`                                                                                             | Digest-pinned references under `agent`, `controller`, `gateway`, `openShellGateway`, `sandbox`, and `supervisor`, imported and registered in k3s. Use the exact references rendered in Pod specs.                                            |

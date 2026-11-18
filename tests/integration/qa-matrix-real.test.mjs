@@ -227,6 +227,9 @@ test(
                 artifacts,
                 {
                   repositoryInputs: selection.repository,
+                  disableNativeAdmin: selection.cells
+                    .filter((cell) => cell.installation === installation)
+                    .every((cell) => cell.scenarios.every((scenario) => scenario === "http-chat")),
                 },
               );
               await prepareQaPluginCatalogs(fixture);
@@ -299,7 +302,8 @@ test(
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
-                            apiKeyAuth: name === "codex-search-config",
+                            apiKeyAuth: name === "codex-search-config" || name === "http-chat",
+                            httpChat: name === "http-chat",
                           });
                         },
                       );
@@ -329,6 +333,15 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "http-chat",
+                    async (agent, step) => {
+                      const { verifyQaHttpChat } = await import("../helpers/qa-http-chat.ts");
+                      await step("human and service HTTP turns and isolated conversations", () =>
+                        verifyQaHttpChat(f, agent),
+                      );
+                    },
+                  ],
                   [
                     "agent-audit",
                     async (agent, step) => {

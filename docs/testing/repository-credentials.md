@@ -61,7 +61,7 @@ node --test tests/integration/repository-credentials-client-config.test.ts \
 
 ### Protected repository metadata reads
 
-`checks-baseline-2` runs the [metadata response test](../../tests/integration/protected-repository-metadata-read.test.mjs)
+`checks-baseline-2` runs the [metadata response test](../../tests/integration/protected-repository-metadata-read.test.ts)
 with the real route policy, upstream sender, and a loopback TLS origin. An independent
 socket observer captures the decrypted request and the origin response through EOF.
 Two client processes read through FIN and receive only the configured repository identity.
@@ -321,7 +321,7 @@ REPOSITORY_CREDENTIALS_LIVE=1 \
 REPOSITORY_CREDENTIALS_LIVE_AUTHORIZED=1 \
 REPOSITORY_CREDENTIALS_LIVE_CONTROL_SOCKET=/run/credential-service/control.sock \
 REPOSITORY_CREDENTIALS_LIVE_CA=/run/credential-service/public-ca.pem \
-  node --test tests/integration/repository-credentials-live.test.mjs
+  node --test tests/integration/repository-credentials-live.test.ts
 ```
 
 This exercises a real provider through the development-token sender, not OCC Agent
@@ -361,6 +361,6 @@ another. Historical results apply to the artifacts that produced them.
 The native package excludes App signing and token issuance. Its detached package
 checks cover prepared configuration and explicit development-token clients.
 The prepared native workflow is verified in
-`tests/integration/postgres-prepared-repository-git-broker.test.mjs`, including
+`tests/integration/postgres-prepared-repository-git-broker.test.ts`, including
 exact-ref enforcement, draft creation, response loss and no replay. That suite
 requires real PostgreSQL; package checks and simulated providers do not replace it.

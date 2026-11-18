@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { runPinnedClients, type CredentialClientFixture } from "./clients.ts";
-import { fixtureRepository, humanText } from "./github.mjs";
+import { fixtureRepository, humanText } from "./github.ts";
 
 type PinnedClients = Awaited<ReturnType<typeof runPinnedClients>>;
 

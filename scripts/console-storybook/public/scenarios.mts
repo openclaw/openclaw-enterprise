@@ -1779,6 +1779,9 @@ const authoredScenarios = {
     actions: [click("Delete Agent")],
     description:
       "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
+    steps: [
+      "Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
+    ],
   } satisfies LocalScenario,
   deleting: {
     group: "Components/Deletion",

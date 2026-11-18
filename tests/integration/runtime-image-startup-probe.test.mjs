@@ -11,13 +11,12 @@ import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
+import { runDocker, failureTail } from "../helpers/runtime-image-docker.ts";
 import {
   imageTestOptions,
-  runDocker,
-  failureTail,
   runGatewaySmoke,
   temporaryGatewayConfiguration,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import {
   startupProbeApiKey,
   runStartupProbeScenario,

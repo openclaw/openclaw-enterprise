@@ -40,6 +40,17 @@ import type {
 import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
+export interface AgentChatCompletionsEndpoint {
+  readonly url: string;
+  readonly model: string;
+}
+
+export type AgentChatCompletionsResolution =
+  | ({ readonly status: "available" } & AgentChatCompletionsEndpoint)
+  | { readonly status: "disabled" }
+  | { readonly status: "unavailable" }
+  | { readonly status: "unsupported" };
+
 export interface ComputeRevisionContext {
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
@@ -247,6 +258,14 @@ export interface ComputeDriver extends Driver {
   /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
   admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
   /**
+   * Side-effect-free compatibility domain for retained sessions and exclusive writers.
+   * Equal domains permit continuity; missing support keeps revision-scoped recovery.
+   * The Driver must enforce the admitted generation for graceful and crash recovery.
+   */
+  restartContinuationDomain?(revision: Readonly<AgentRevision>): string | undefined;
+  /** Optional immutable launch inputs, separate from execution authority. No side effects. */
+  snapshotRuntimeInputs?(revision: Readonly<AgentRevision>): string | undefined;
+  /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive
    * revision is admitted. Recovery uses a new revision, never an older snapshot.
@@ -380,6 +399,8 @@ export interface ComputeDriver extends Driver {
    * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
    */
   getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  /** Resolve only the private HTTP completion route for this exact revision. */
+  getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   checkNamespaceDeletion?(

@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { codexLaunchEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { startSupervisor } from "./workspace-node-supervisor-fixture.ts";
 import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   checkCodexStartup,
@@ -16,7 +25,9 @@ import {
   checkProbeEventPrecedence,
   codexProbeEvents,
 } from "./codex-failure-output-classifier-cases.ts";
+import { registerCodexPatLoginRetryCases } from "./codex-native-startup-login-retry-cases.ts";
 
+/** @type {import("../fixtures/codex-native-startup-types.ts").StartupExpectation & { code: "READY" }} */
 const ready = {
   phases: [
     ["codex-login", "ok"],
@@ -25,6 +36,10 @@ const ready = {
   ],
   code: "READY",
 };
+/**
+ * @param {import("../fixtures/codex-native-startup-types.ts").LoginFailureCode} [code]
+ * @returns {import("../fixtures/codex-native-startup-types.ts").StartupExpectation & { check: "login"; code: import("../fixtures/codex-native-startup-types.ts").LoginFailureCode }}
+ */
 function loginFailure(code = "LOGIN_FAILED") {
   return { phases: [["codex-login", "failed"]], check: "login", code };
 }
@@ -758,6 +773,196 @@ test("Codex app-server gives sandboxed commands the Pod's CA path, never the hoo
   }
 });
 
+// A Sandbox whose egress is an explicit proxy (loopback only, HTTPS_PROXY in the Harness
+// environment) can reach the model only through it, so the program Compute renders for a
+// provider-owned Sandbox other than OpenShell carries the standard proxy settings into the
+// authentication probe when they are set. OpenShell's egress is transparent and its admitted
+// commands keep their bytes, so its programs never carry them.
+test("Codex authentication probe carries proxy settings only for an explicit-proxy launch", (t) => {
+  const readyTurn = probe([
+    { type: "turn.started" },
+    { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+    { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+  ]);
+  const proxy = {
+    HTTPS_PROXY: "http://127.0.0.1:3128",
+    https_proxy: "http://127.0.0.1:3129",
+    HTTP_PROXY: "http://127.0.0.1:3130",
+    http_proxy: "http://127.0.0.1:3131",
+    ALL_PROXY: "socks5://127.0.0.1:1080",
+    all_proxy: "socks5://127.0.0.1:1081",
+    NO_PROXY: "127.0.0.1,.fixture-no-proxy.test",
+    no_proxy: ".fixture-lower-no-proxy.test",
+  };
+  const fixed = ["CODEX_HOME", "HOME", "PATH", "RUST_LOG"];
+  const unrelated = { FTP_PROXY: "http://127.0.0.1:2121", OPENCLAW_UNRELATED: "1" };
+  const openShellCa = { SSL_CERT_FILE: "/run/openshell/ca-bundle.crt" };
+  const explicitProxy = codexLaunchEntrypoint({
+    providerOwned: true,
+    protected: false,
+    explicitProxy: true,
+  });
+  for (const [name, entrypoint, environment, expected] of [
+    [
+      "an OpenShell launch keeps its probe environment",
+      undefined,
+      { ...openShellCa, ...proxy, ...unrelated },
+      openShellCa,
+    ],
+    [
+      "an explicit-proxy launch without proxy settings keeps the same environment",
+      explicitProxy,
+      { ...openShellCa, ...unrelated },
+      openShellCa,
+    ],
+    ["an explicit proxy reaches the probe", explicitProxy, { ...proxy, ...unrelated }, proxy],
+    [
+      "empty proxy settings stay out",
+      explicitProxy,
+      Object.fromEntries(Object.keys(proxy).map((key) => [key, ""])),
+      {},
+    ],
+  ]) {
+    const runtime = createCodexStartup(t, { native: [login(), readyTurn], environment });
+    runtime.start(entrypoint);
+    runtime.assertNativeScriptConsumed();
+    assert.equal(runtime.probeSpawns.length, 1, name);
+    const [{ env }] = runtime.probeSpawns;
+    assert.deepEqual(Object.keys(env).sort(), [...fixed, ...Object.keys(expected)].sort(), name);
+    for (const [key, value] of Object.entries(expected)) {
+      assert.equal(env[key], value, name);
+    }
+    // The serving app-server inherits the Harness environment as before.
+    assert.equal(runtime.appServerSpawns.length, 1, name);
+    for (const [key, value] of Object.entries(environment)) {
+      assert.equal(runtime.appServerSpawns[0].env[key], value, name);
+    }
+    // No proxy value reaches a diagnostic line.
+    for (const value of Object.values(proxy)) {
+      assert.ok(!runtime.diagnostics.some((line) => line.includes(value)), name);
+    }
+  }
+});
+
+test("Compute preserves admitted Codex commands and forwards proxy settings on new provider launches", async (t) => {
+  const environment = {
+    HTTPS_PROXY: "http://127.0.0.1:3128",
+    https_proxy: "http://127.0.0.1:3129",
+    FTP_PROXY: "ignored",
+  };
+  for (const [label, implementation, legacy, forwards] of [
+    ["existing non-OpenShell Sandbox", "fixture-provider", true, false],
+    ["new non-OpenShell Sandbox", "fixture-provider", false, true],
+    ["new OpenShell Sandbox", "openshell", false, false],
+  ]) {
+    await t.test(label, async (t) => {
+      const fixture = providerEndpointFixture();
+      // The fixture's original revision was admitted for OpenShell. Its pre-marker
+      // provider snapshot is the same one non-OpenShell revisions used before this change.
+      const prior = fixture.revision.compute.admission;
+      assert.ok(prior?.endsWith("openshell-codex-launch:v1:"));
+      const legacyAdmission = prior.slice(0, -"openshell-codex-launch:v1:".length);
+      Object.assign(fixture.sandbox, { implementation });
+      const revision = {
+        ...fixture.revision,
+        compute: {
+          ...fixture.revision.compute,
+          admission: legacy ? legacyAdmission : fixture.driver.admitRevision(fixture.revision),
+        },
+      };
+      await fixture.prepare(revision);
+      fixture.setGatewayServing();
+      await fixture.prepare(revision);
+      assert.equal(fixture.provisions.length, 1);
+      const { command } = fixture.provisions[0].requirements;
+      if (legacy) {
+        // Retry must replay the entire old command, not merely omit a proxy.
+        // Full command captured from the same fixture on pre-proxy main (5563280bd8).
+        assert.equal(
+          createHash("sha256").update(JSON.stringify(command)).digest("hex"),
+          "8602532f0647c0882e4a52a3277bda1c5074ec97122765b06d31ae01a72c713c",
+          "a stored Sandbox must keep its admitted command byte for byte",
+        );
+      }
+      const { supervisor, codex } = inspectOpenShellCodexCommand(t, command, {
+        compact: false,
+        current: false,
+      });
+      const runtime = createCodexStartup(t, {
+        environment,
+        native: [
+          login(),
+          probe([
+            { type: "turn.started" },
+            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+            { type: "turn.completed" },
+          ]),
+        ],
+      });
+      runtime.start(codex);
+      runtime.assertNativeScriptConsumed();
+      assert.equal(runtime.appServerStarts, 1);
+      const [{ env }] = runtime.probeSpawns;
+      assert.equal(env.HTTPS_PROXY, forwards ? environment.HTTPS_PROXY : undefined);
+      assert.equal(env.https_proxy, forwards ? environment.https_proxy : undefined);
+      assert.equal(env.FTP_PROXY, undefined);
+      if (forwards) {
+        // Observe both children of the delivered supervisor, before native code
+        // runs. Only Codex should inherit the provider's proxy, not the file worker.
+        const directory = await mkdtemp(join(tmpdir(), "codex-proxy-supervisor-"));
+        const observed = await startSupervisor(t, directory, {
+          entrypoint: supervisor,
+          env: { ...environment, OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup" },
+          child: [
+            "const [events, kind] = process.argv.slice(2);",
+            "const args = Object.keys(process.env).filter(key => /_proxy$/i.test(key)).sort();",
+            'require("node:fs").appendFileSync(events, JSON.stringify({ kind, args, pid: process.pid }) + "\\n");',
+            "setInterval(() => {}, 60_000);",
+          ],
+        });
+        const rows = await observed.waitFor("Codex and file worker reported proxy keys", (events) =>
+          ["codex", "node"].every((kind) => events.some((event) => event.kind === kind)),
+        );
+        assert.deepEqual(rows.find((row) => row.kind === "node")?.args, []);
+        assert.deepEqual(
+          rows.find((row) => row.kind === "codex")?.args,
+          Object.keys(environment).sort(),
+        );
+      }
+    });
+  }
+});
+
+test("a rejected Codex proxy credential stays out of diagnostics and the held failure", (t) => {
+  const sentinel = ["invented", "proxy", "password"].join("-");
+  const url = syntheticCredentialUrl({
+    protocol: "http",
+    username: "fixture",
+    password: sentinel,
+    host: "127.0.0.1",
+    port: 3128,
+    pathname: "/",
+  });
+  const message = "unexpected status 407 Proxy Authentication Required: " + url;
+  const runtime = createCodexStartup(t, {
+    environment: { HTTPS_PROXY: url },
+    native: [
+      login(),
+      probe([{ type: "turn.started" }, failedTurn(message)], { status: 1, stderr: message }),
+    ],
+  });
+  runtime.start(
+    codexLaunchEntrypoint({ providerOwned: true, protected: false, explicitProxy: true }),
+  );
+  runtime.assertNativeScriptConsumed();
+  assert.equal(runtime.appServerStarts, 0);
+  assert.equal(runtime.probeSpawns[0].env.HTTPS_PROXY, url);
+  const failure = runtime.status().runtimeFailure;
+  assert.equal(failure?.code, "MODEL_PROBE_FAILED");
+  assert.deepEqual(failure.cause, { kind: "PROBE_STATUS", detail: "turn-failed" });
+  assert.ok(!(JSON.stringify(failure) + runtime.diagnostics.join("\n")).includes(sentinel));
+});
+
 test("Codex runtime retries a transient startup model probe failure once", async (t) => {
   const started = { type: "turn.started" };
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
@@ -1282,193 +1487,11 @@ test("Codex runtime retries a reliability failure of its login or model check, n
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
   const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
   const success = probe([started, assistant, completed]);
-  const pat = { loginMode: "codex_pat" };
-  const loginFailed = (stderr, elapsed) => login({ status: 1, stderr }, undefined, elapsed);
-  const network = "failed to request personal access token metadata: error sending request for url";
-  const serverError = "personal access token metadata request failed with status 503";
   // Codex exits 1 before printing any event: the 2017 model check shape.
   const exited = (stderr, result) => probe([], { status: 1, stderr, ...result });
   const exitCause = (detail) => ({ kind: "PROCESS_EXIT", detail });
   const exitFailure = (detail) => probeFailure(exitCause(detail));
-  const loginScenarios = [
-    {
-      name: "a login network failure then success retries once",
-      native: [loginFailed(network), login(), success],
-      expect: ready,
-      loginClasses: ["network"],
-      loginPauses: [1000],
-    },
-    {
-      // The request URL Codex names is not output that fails the same way again.
-      name: "a login network failure naming a URL with failure words retries once",
-      native: [
-        loginFailed(
-          "error sending request for url (https://credential-quota.example.invalid/apikey/403)",
-        ),
-        login(),
-        success,
-      ],
-      expect: ready,
-      loginClasses: ["network"],
-      loginPauses: [1000],
-    },
-    {
-      name: "a login 5xx then success retries once",
-      native: [loginFailed(serverError), login(), success],
-      expect: ready,
-      loginClasses: ["http_5xx"],
-      loginPauses: [1000],
-    },
-    {
-      name: "a login network failure then a 5xx then success backs off twice",
-      native: [loginFailed(network), loginFailed(serverError), login(), success],
-      expect: ready,
-      loginClasses: ["network", "http_5xx"],
-      loginPauses: [1000, 2000],
-    },
-    {
-      // A timed-out attempt waited 30 s already, so only the fast failure backs off.
-      name: "a login timeout then a network failure then success waits only after the fast failure",
-      native: [login(timedOut, 30000), loginFailed(network), login(undefined, 30000), success],
-      expect: ready,
-      loginClasses: ["timeout", "network"],
-      loginPauses: [2000],
-    },
-    {
-      name: "login network failures are held after five attempts with the same status shape",
-      native: Array.from({ length: 5 }, () => loginFailed(network)),
-      expect: loginFailure(),
-      loginClasses: ["network", "network", "network", "network", "network"],
-      loginPauses: [1000, 2000, 4000, 8000],
-    },
-    {
-      // Each wait follows a fast failure; the attempts and waits stay inside 90 s.
-      name: "login backoff ends at the 90-second budget",
-      random: 0.999,
-      native: [
-        loginFailed(network, 20000),
-        loginFailed(network, 20000),
-        loginFailed(network, 20000),
-        loginFailed(network, 10000),
-      ],
-      expect: loginFailure(),
-      loginClasses: ["network", "network", "network", "network"],
-      // 20 + 1.5 + 20 + 3 + 20 + 6 + 10 s leaves under 10 s: the 12 s fourth wait does not fit.
-      loginPauses: [1500, 2999, 5998],
-    },
-    {
-      // A wait that wakes late must not start an attempt without a timeout.
-      name: "a login retry wait that wakes too late is held at once",
-      lateWakeMs: 1000,
-      native: [loginFailed(network, 87500)],
-      expect: loginFailure(),
-      loginClasses: ["network"],
-      loginPauses: [1000],
-    },
-    {
-      name: "a login network failure then a credential rejection is held at once",
-      native: [loginFailed(network), loginFailed("request failed with status 401 Unauthorized")],
-      expect: loginFailure("AUTHENTICATION_FAILED"),
-      loginClasses: ["network", "http_401_403"],
-      loginPauses: [1000],
-    },
-    {
-      // Jitter spreads retries by up to half of the base delay.
-      name: "a login retry waits at most half again its base delay",
-      random: 0.999,
-      native: [loginFailed(network), loginFailed(network), login(), success],
-      expect: ready,
-      loginClasses: ["network", "network"],
-      loginPauses: [1500, 2999],
-    },
-    {
-      // Three attempts keep the 90 s the three 30 s attempts always had.
-      name: "a login retry gets only the remaining budget",
-      native: [loginFailed(network, 59500), login(timedOut, 29500)],
-      expect: loginFailure(),
-      loginClasses: ["network", "timeout"],
-      loginPauses: [1000],
-    },
-    {
-      name: "a login network failure with no budget left for a retry is held at once",
-      native: [loginFailed(network, 89000)],
-      expect: loginFailure(),
-      loginClasses: ["network"],
-    },
-    ...[
-      [
-        "a login 401",
-        "request failed with status 401 Unauthorized",
-        "http_401_403",
-        "AUTHENTICATION_FAILED",
-      ],
-      [
-        "a login 403",
-        "request failed with status 403 Forbidden",
-        "http_401_403",
-        "AUTHENTICATION_FAILED",
-      ],
-      // A credential rejection Codex quotes beside network text still names the credential.
-      [
-        "a login credential rejection beside network text",
-        'error sending request: "status 401 Unauthorized"',
-        "network",
-        "AUTHENTICATION_FAILED",
-      ],
-      ["a login rate limit", "last status: 429 Too Many Requests", "http_other"],
-      ["a login TLS failure", "invalid peer certificate: UnknownIssuer", "tls"],
-      [
-        "a login TLS failure beside network text",
-        "error sending request: tls handshake eof",
-        "tls",
-      ],
-      // The class names the most specific text; a no-retry marker still vetoes the retry.
-      [
-        "a login proxy 5xx naming a certificate",
-        "unexpected status 502 Bad Gateway: upstream certificate verify failed",
-        "http_5xx",
-      ],
-      [
-        "a login proxy 5xx naming a TLS handshake",
-        "unexpected status 503: tls handshake eof",
-        "http_5xx",
-      ],
-      ["a login proxy 5xx naming a handshake failure", "status 502: handshake failure", "http_5xx"],
-      [
-        "a login 401 beside a transport timeout",
-        "HTTP status client error (401 Unauthorized) for url: operation timed out",
-        "network",
-      ],
-      [
-        "a login rate limit beside a closed connection",
-        "Rate limit reached, connection closed",
-        "network",
-      ],
-      ["a login invalid key beside a broken pipe", "invalid api key; broken pipe", "network"],
-      ["a login 5xx naming a credential", "status 503: credential unavailable", "http_5xx"],
-      ["an unresolvable login host", "dns error: Name does not resolve", "network"],
-      ["unrecognized login output", "something else went wrong", "unknown"],
-      ["a silent login failure", "", "empty"],
-    ].map(([description, stderr, failureClass, code]) => ({
-      name: `${description} is held at once`,
-      native: [loginFailed(stderr)],
-      expect: loginFailure(code),
-      loginClasses: [failureClass],
-    })),
-    {
-      // A wrapper-side process error is not a reliability failure, whatever the output says.
-      name: "a login whose output overflowed is held at once",
-      native: [login({ status: null, error: { code: "ENOBUFS" }, stderr: network })],
-      expect: loginFailure(),
-      loginClasses: ["network"],
-    },
-    {
-      name: "a login timeout whose output names a credential rejection is held at once",
-      native: [login({ ...timedOut, stderr: "status 401 Unauthorized" })],
-      expect: loginFailure(),
-      loginClasses: ["http_401_403"],
-    },
-  ].map((scenario) => ({ ...pat, ...scenario }));
+  await registerCodexPatLoginRetryCases(t, { success, ready, loginFailure });
   const probeScenarios = [
     {
       name: "a model check that exits with a network failure then succeeds retries once",
@@ -1612,7 +1635,7 @@ test("Codex runtime retries a reliability failure of its login or model check, n
       probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_FAILED"],
     },
   ];
-  for (const scenario of [...loginScenarios, ...probeScenarios]) {
+  for (const scenario of probeScenarios) {
     // checkCodexStartup is async since protected startup awaits its release.
     await t.test(scenario.name, (t) => checkCodexStartup(t, scenario));
   }

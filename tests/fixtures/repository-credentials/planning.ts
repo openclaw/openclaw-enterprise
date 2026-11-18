@@ -10,13 +10,13 @@ import type {
   GitHubTokenConfiguration,
 } from "../../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { appFunction } from "./app-functions.ts";
-import { createControlledClock } from "./clock.mjs";
-import { createResourceScope } from "./resources.mjs";
+import { createControlledClock } from "./clock.ts";
+import { createResourceScope } from "./resources.ts";
 import {
   githubTokenConfigurationData,
   serviceConfigurationData,
   custodyLimits,
-} from "./builders.mjs";
+} from "./builders.ts";
 
 interface ResourceScope {
   after(cleanup: () => void): void;

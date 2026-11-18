@@ -100,26 +100,7 @@ runs:
         CI_SELECTED_LANE: ${{ inputs.lane }}
         OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
-      run: |
-        node --input-type=module <<'NODE'
-        import { appendFileSync } from 'node:fs';
-        import { loadTestSuites } from './scripts/ci/test-suites.ts';
-        import { isOpenShellLane } from './scripts/ci/openshell-full-integration.ts';
-        const view = process.env.OCC_CI_SUITE_VIEW;
-        const name = process.env.CI_SELECTED_LANE;
-        const lanes = loadTestSuites('scripts/ci/test-suites.json', view).lanes;
-        if (!Object.hasOwn(lanes, name) || (view === 'full-integration' && !isOpenShellLane(name))) {
-          throw new Error('The selected lane does not belong to the action suite view.');
-        }
-        const lane = lanes[name];
-        const file = process.env.CI_SELECTED_TEST_FILE;
-        const sourceBuild = lane.prepare?.sourceBuildFiles?.some((path) =>
-          file ? path === file : lane.files.some((entry) => entry.path === path));
-        const selected = isOpenShellLane(name) &&
-          lane.prepare.selfProvisionedFiles.includes(file) && !sourceBuild;
-        appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);
-        appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
-        NODE
+      run: node scripts/ci/select-installer-image-mode.ts
     - name: Start memory sampling
       id: memory-sampler
       if: startsWith(inputs.lane, 'images-runtime-startup') || startsWith(inputs.lane, 'checks-browser')
@@ -287,7 +268,27 @@ runs:
       # CI Impact also selects part 2 for a change confined to a TypeScript test.
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
-      run: pnpm typecheck
+      run: |
+        if [[ ! -e .build/tests/tsconfig.tsbuildinfo && ! -L .build/tests/tsconfig.tsbuildinfo ]]; then
+          printf 'fresh-tests-build=true\n' >> "$GITHUB_OUTPUT" || true
+        fi
+        pnpm typecheck
+    - name: Report TypeScript test graph advisory
+      if: >-
+        inputs.lane == 'checks-baseline-2' && inputs.artifact-prefix == 'ci-results' &&
+        (github.event_name == 'pull_request' || github.event_name == 'push') &&
+        steps.typecheck-workspace.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        FRESH_TESTS_BUILD: ${{ steps.typecheck-workspace.outputs.fresh-tests-build }}
+      run: |
+        if [[ "$FRESH_TESTS_BUILD" == true ]] &&
+          report=$(timeout -k 1s 5s node scripts/ci/test-graph-advisory.ts 2>/dev/null); then
+          printf '::notice title=CI TypeScript test graph advisory::%s\n' "$report"
+        else
+          printf '::notice title=CI TypeScript test graph advisory::{"version":1,"fallback":["graph_unavailable"],"omissions":0}\n'
+        fi
     - name: Build Go CLI for development installation proof
       id: build-go-cli
       if: inputs.lane == 'checks-baseline-2' || inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix'
@@ -344,7 +345,7 @@ runs:
       id: prepare-lane
       shell: bash
       env:
-        # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
+        # Image builds keep a few minutes of it for the lane's tests (prepare.ts).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
         OCC_CI_IMAGE_CACHE: ${{ ((inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-otel' || inputs.lane == 'slack' || inputs.lane == 'production-tui' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
         BUILDX_BUILDER: ${{ steps.image-mode.outputs.source-build == 'true' && steps.builder.outputs.name || '' }}
@@ -363,7 +364,7 @@ runs:
         if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
           selection=(--selected-file "$CI_SELECTED_TEST_FILE")
         fi
-        node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
+        node scripts/ci/prepare.ts --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
     - name: Mark OpenShell preparation end
       id: openshell-prepare-end
       if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') && steps.openshell-prepare-start.outputs.uptime != ''

@@ -26,7 +26,7 @@ import {
 } from "../../packages/occ/src/egress-send-receipts.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
-import { waitUntil, within } from "../helpers/wait-for.mjs";
+import { waitUntil, within } from "../helpers/wait-for.ts";
 
 const admitMetadata = async ({
   app,

@@ -58,7 +58,7 @@ function onlyFile(summary: RunSummary) {
 
 async function writeCleanupFixture(root: string) {
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     [
       'import { appendFile } from "node:fs/promises";',
       "export async function prepareFile({ file, statePath }) {",
@@ -75,7 +75,7 @@ async function checkUpstreamInstallationPhases(root: string) {
   const repositoryUrl = new URL("../../", import.meta.url);
   const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
   const installationModule = new URL("tests/helpers/openshell-installation.ts", repositoryUrl).href;
-  const stageModule = new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href;
+  const stageModule = new URL("tests/helpers/openshell-stage.ts", repositoryUrl).href;
   const privateValue = "/fixture/installation-phase-value";
   const failure = "synthetic gateway Helm failure";
   const child = `import assert from "node:assert/strict";

@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -7,18 +8,19 @@ import { captureChild } from "../helpers/child-processes.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration as installation,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import {
   chartTooling,
   parseProductionChart,
   renderProductionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import {
   chartListeners,
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
 import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
+import { generateInstallationCheck } from "../../deploy/helm/src/generate-installation-check.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
@@ -84,6 +86,11 @@ test(
   "install and upgrade hooks load the Installation with the API's files before migration",
   tooling,
   async () => {
+    assert.equal(
+      await generateInstallationCheck(),
+      checkScript,
+      "Regenerate the Installation check with node deploy/helm/src/generate-installation-check.ts",
+    );
     for (const values of [
       {},
       repositoryCredentialValues,
@@ -102,7 +109,7 @@ test(
         ["installation-check", "migration"],
       );
       assert.deepEqual(install.hook.initContainers[1].args, [
-        "scripts/migrate-production.mjs",
+        ...selectedImageMigrationEntry,
         "--expect-empty",
       ]);
       assert.deepEqual(install.hook.containers, hook.containers);
@@ -115,7 +122,7 @@ test(
       );
       const [check, migration] = hook.initContainers;
       const server = api.containers.find(({ name }) => name === "api");
-      assert.deepEqual(migration.args, ["scripts/migrate-production.mjs"]);
+      assert.deepEqual(migration.args, selectedImageMigrationEntry);
       assert.equal(check.image, server.image);
       assert.deepEqual(check.command, ["node"]);
       assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
@@ -185,7 +192,7 @@ test(
       const { hook } = await render(values, isUpgrade);
       const migration = hook.initContainers.find(({ name }) => name === "migration");
       assert.deepEqual(migration.args, [
-        "scripts/migrate-production.mjs",
+        ...selectedImageMigrationEntry,
         isUpgrade ? "--require-current" : "--expect-empty",
       ]);
     }

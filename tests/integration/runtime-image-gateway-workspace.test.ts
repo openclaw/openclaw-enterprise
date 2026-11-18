@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
+import * as fs from "node:fs";
+import { mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { createRequire, stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
-import { describe, test } from "node:test";
+import { describe, test, type TestContext } from "node:test";
+import { createContext, runInContext } from "node:vm";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -15,15 +17,14 @@ import { codexGatewayModelConfiguration } from "../../apps/controller/src/driver
 import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import type { WorkspaceNodeHotApplyReceipt } from "../fixtures/runtime-workspace-node-hot-apply.ts";
+import { runDocker, commandOutput } from "../helpers/runtime-image-docker.ts";
+import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   imageTestOptions,
-  runDocker,
-  commandOutput,
   createAdmittedRuntimeImageConfiguration,
-  jsonLogEntries,
   runGatewaySmoke,
   assertGatewayLogEntry,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 function requiredRecord(value: unknown): Record<string, unknown> {
   const record = asRecord(value);
@@ -44,6 +45,98 @@ function lastOutputRecord(stdout: string): Record<string, unknown> {
   assert.ok(line, "expected fixture output");
   return requiredRecord(JSON.parse(line));
 }
+
+async function workspaceConfigWriteFixture(t: TestContext) {
+  const state = await temporaryDirectory(t, "oce-workspace-node-config-");
+  const target = join(state, "openclaw.json");
+  const staged = target + ".workspace-node-" + process.pid;
+  const input = join(state, "initial.json");
+  await writeFile(input, "{}");
+  const env = { OPENCLAW_STATE_DIR: state, OPENCLAW_CONFIG_PATH: input };
+  const require = createRequire(import.meta.url);
+  const beforeRuntimeSetup = new Error("Stop before Gateway runtime directory setup");
+  // Load the emitted program with no Kubernetes termination log, then stop before
+  // it sets up runtime directories or starts OpenClaw. The writer uses the real filesystem.
+  const context = createContext({
+    require(specifier: string) {
+      if (specifier === "node:fs") {
+        return {
+          ...fs,
+          existsSync: () => false,
+          mkdirSync() {
+            throw beforeRuntimeSetup;
+          },
+        };
+      }
+      return require(specifier);
+    },
+    process: { env, pid: process.pid },
+  });
+  assert.throws(
+    () => runInContext(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, context),
+    (error) => error === beforeRuntimeSetup,
+  );
+  const replace = () => runInContext('replaceOpenClawConfig({ workspace: "test" });', context);
+  return { state, target, staged, input, env, replace };
+}
+
+// The emitted Kubernetes runtime uses POSIX paths, file modes, and rename semantics.
+describe(
+  "Kubernetes Gateway workspace config writes",
+  { skip: process.platform === "win32" },
+  () => {
+    test("Kubernetes Gateway selects the replacement workspace config after a successful rename", async (t) => {
+      const { state, target, env, replace } = await workspaceConfigWriteFixture(t);
+      await writeFile(target, "{}");
+      replace();
+      assert.equal(await readFile(target, "utf8"), '{"workspace":"test"}');
+      assert.equal((await stat(target)).mode & 0o777, 0o600);
+      assert.deepEqual((await readdir(state)).sort(), ["initial.json", "openclaw.json"]);
+      assert.equal(env.OPENCLAW_CONFIG_PATH, target);
+    });
+
+    test("Kubernetes Gateway removes its staged workspace config after a failed rename", async (t) => {
+      const { state, target, staged, input, env, replace } = await workspaceConfigWriteFixture(t);
+      // A directory at the target path refuses replacement after the staging write succeeds.
+      await mkdir(target);
+      const sentinel = join(target, "sentinel");
+      await writeFile(sentinel, "keep");
+      assert.throws(replace, {
+        code: "EISDIR",
+        syscall: "rename",
+        path: staged,
+        dest: target,
+      });
+      assert.deepEqual((await readdir(state)).sort(), ["initial.json", "openclaw.json"]);
+      assert.equal(await readFile(sentinel, "utf8"), "keep");
+      assert.equal(env.OPENCLAW_CONFIG_PATH, input);
+    });
+
+    test("Kubernetes Gateway preserves an existing stage when workspace config open fails", async (t) => {
+      const { state, target, staged, input, env, replace } = await workspaceConfigWriteFixture(t);
+      // Probe the process's write permissions on a separate file so the writer owns the stage open.
+      const control = join(state, "read-only-control");
+      await writeFile(control, "", { mode: 0o400 });
+      const writableControl = await open(control, "r+").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EACCES") {
+          throw error;
+        }
+      });
+      if (writableControl) {
+        await writableControl.close();
+        t.skip("This process can open a read-only file for writing");
+        return;
+      }
+      await writeFile(target, "{}");
+      // The parent is writable, so an unlink would delete the read-only stage despite open failing.
+      await writeFile(staged, "keep", { mode: 0o400 });
+      assert.throws(replace, { code: "EACCES", syscall: "open", path: staged });
+      assert.equal(await readFile(staged, "utf8"), "keep");
+      assert.equal(await readFile(target, "utf8"), "{}");
+      assert.equal(env.OPENCLAW_CONFIG_PATH, input);
+    });
+  },
+);
 
 // Codex Gateway cases on the real runtime image, split from
 // runtime-image-startup.test.ts by measured case durations so CI runs them

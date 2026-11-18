@@ -6,8 +6,8 @@ import { request } from "node:https";
 import { join } from "node:path";
 import { buffer } from "node:stream/consumers";
 import type { TestContext } from "node:test";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import { listen } from "./listen.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
 

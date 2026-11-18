@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../../packages/utils/src/index.ts";
-import {
-  postgresImage,
-  runtimeNodeBaseImage,
-} from "../../../scripts/ci/fixture-support-images.mjs";
+import { postgresImage, runtimeNodeBaseImage } from "../../../scripts/ci/fixture-support-images.ts";
 import type { FixtureRun } from "../production-rehearsal-custody.ts";
 
 const runtimeRecipe = new URL("../../../deploy/runtime/Dockerfile", import.meta.url);

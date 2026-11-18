@@ -9,7 +9,7 @@ import {
   startProtectedOwner,
 } from "../fixtures/prepared-repository-git.mjs";
 import { selectRegisteredRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
-import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
+import { fixtureInstallationId } from "../fixtures/repository-credentials/github.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 
