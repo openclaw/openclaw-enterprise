@@ -23,7 +23,7 @@ import {
 } from "./first-agent-startup-lifecycle-cases.ts";
 import { listen } from "../helpers/listen.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
