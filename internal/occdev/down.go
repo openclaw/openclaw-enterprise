@@ -44,6 +44,10 @@ func Down(ctx context.Context, opts Options) error {
 		for key, value := range browserEnvironment {
 			r.env[key] = value
 		}
+		// Compose interpolates secret paths even for down, which neither reads nor
+		// mounts credentials. Cleanup must work without retained bootstrap inputs.
+		r.env["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"] = "/dev/null"
+		r.env["OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"] = "/dev/null"
 		args := append([]string{"compose"}, opts.ComposeArgs...)
 		if r.engine == "podman" {
 			data, err := r.output(ctx, "podman", "info", "--format", "{{.Host.RemoteSocket.Path}}")

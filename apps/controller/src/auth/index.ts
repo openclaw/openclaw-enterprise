@@ -1043,7 +1043,33 @@ function serviceKeyDetails(
   };
 }
 
+/** Bootstrap-only registration; routine issuance never accepts supplied key material. */
+export async function registerBootstrapServiceKey(
+  options: PostgresControllerAuthOptions,
+  principal: ServicePrincipal,
+  key: string,
+): Promise<ServiceKey> {
+  if (!/^occ_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(key)) {
+    throw new Error(
+      "Bootstrap service key must encode 32 random bytes as unpadded base64url with occ_ prefix.",
+    );
+  }
+  const auth = controllerAuth(
+    { ...options, database: await createOccAuthDatabase(options.pool) },
+    key,
+  );
+  const { key: _plaintext, ...registered } = await auth.createServiceKey({
+    principal,
+    name: "bootstrap-admin",
+  });
+  return registered;
+}
+
 export function createControllerAuth(options: ControllerAuthOptions): ControllerAuth {
+  return controllerAuth(options);
+}
+
+function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): ControllerAuth {
   if (options.mode !== "development" && options.mode !== "production") {
     throw new Error("Controller auth requires an explicit runtime mode.");
   }
@@ -1121,10 +1147,14 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           // the error, logs it as one structured line and answers it as a dependency failure.
           onAPIError: { throw: true },
         }),
+    ...(bootstrapKey === undefined
+      ? {}
+      : { logger: { disabled: true }, onAPIError: { throw: true } }),
     plugins: [
       ...(humanLogin === undefined ? [passwordSignOut] : [humanLogin.plugin]),
       apiKey({
         configId: SERVICE_KEY_CONFIG,
+        ...(bootstrapKey === undefined ? {} : { customKeyGenerator: async () => bootstrapKey }),
         defaultPrefix: "occ_",
         enableMetadata: true,
         enableSessionForAPIKeys: false,

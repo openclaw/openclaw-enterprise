@@ -33,6 +33,12 @@ export function registerProfilesCases(): void {
             }) ?? [],
         });
       },
+      GetProviderProfile(call, callback) {
+        assert.equal(call.request.id, "oce-openai");
+        const profile = requests.profiles[0]?.profiles?.[0]?.profile;
+        assert.ok(profile);
+        callback(null, { profile });
+      },
       CreateProvider(call, callback) {
         requests.providers.push(call.request);
         // Echo the credential so the assertion below proves the client, not this stub, redacts it.
@@ -102,7 +108,23 @@ export function registerProfilesCases(): void {
               environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
             },
           ],
-          endpoints: [{ host: "api.openai.com", port: 443, protocol: "rest", path: "/v1/**" }],
+          endpoints: [
+            { host: "api.openai.com", port: 443, protocol: "rest", path: "/v1/**" },
+            {
+              host: "github.com",
+              port: 443,
+              protocol: "rest",
+              rules: [
+                {
+                  allow: {
+                    method: "GET",
+                    path: "/example/repo.git/info/refs",
+                    query: { service: { glob: "git-upload-pack" } },
+                  },
+                },
+              ],
+            },
+          ],
           binaries: ["/app/bin/codex"],
           inferenceCapable: true,
           annotations: { "openclaw.dev/profile-digest": "digest" },
@@ -172,7 +194,31 @@ export function registerProfilesCases(): void {
           enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
           access: "NETWORK_ACCESS_PRESET_READ_WRITE",
         },
+        {
+          host: "github.com",
+          port: 443,
+          protocol: "rest",
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          rules: [
+            {
+              allow: {
+                method: "GET",
+                path: "/example/repo.git/info/refs",
+                query: { service: { glob: "git-upload-pack" } },
+              },
+            },
+          ],
+        },
       ]);
+      const stored = await client.getProviderProfile(
+        "tenant-workspace",
+        "oce-openai",
+        AbortSignal.timeout(2_000),
+      );
+      assert.deepEqual(
+        stored?.definition?.endpoints,
+        profileImport?.profiles?.[0]?.profile?.endpoints,
+      );
       assert.deepEqual(profileImport?.profiles?.[0]?.profile?.binaries, [
         { path: "/app/bin/codex" },
       ]);
