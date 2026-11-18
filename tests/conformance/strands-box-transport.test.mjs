@@ -20,6 +20,8 @@ import {
   MAX_FRAME,
   MAX_CHANNELS,
 } from "../../deploy/runtime/strands-box/transport.mjs";
+import { connect as tlsConnect } from "node:tls";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { serveHarness } from "../../deploy/runtime/strands-box/supervisor.mjs";
 
 async function supervisor(t) {
@@ -38,13 +40,17 @@ async function supervisor(t) {
   });
   gateway.connections = 0;
   await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  const tls = await harnessTlsFixture(t);
+  const probePath = join(tls.directory, "probe.sock");
   const serving = serveHarness(
     {
       port,
+      statusPort: 0,
+      revisionId: "test-revision",
       transportHash: createHash("sha256").update(token).digest("hex"),
       gateway: { host: "127.0.0.1", port: gateway.address().port },
     },
-    { reader, writer, terminate() {} },
+    { reader, writer, tls, probePath, status: async () => ({ state: "starting" }), terminate() {} },
   );
   await once(serving.server, "listening");
   t.after(() => {
@@ -53,15 +59,26 @@ async function supervisor(t) {
     writer.destroy();
     gateway.close();
   });
-  async function client() {
-    const accepted = once(serving.server, "connection");
-    const socket = connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+  async function client(local = false) {
+    const accepted = once(
+      local ? serving.probeServer : serving.server,
+      local ? "connection" : "secureConnection",
+    );
+    const socket = local
+      ? connect(probePath)
+      : tlsConnect({
+          port,
+          host: "127.0.0.1",
+          servername: "localhost",
+          ca: tls.caBundle,
+          allowHalfOpen: true,
+        });
     socket.on("error", () => {});
     t.after(() => socket.destroy());
     await accepted;
     return socket;
   }
-  return { ...serving, client, token, reader, frames, gateway };
+  return { ...serving, client, token, reader, frames, gateway, tls };
 }
 
 test(
@@ -88,8 +105,33 @@ test(
     }
     assert.equal(harness.frames[0]?.type, "open");
     assert.equal(harness.frames[1]?.type, "data");
+    assert.equal(
+      Buffer.from(harness.frames[1].data, "base64").toString().includes(harness.token),
+      false,
+    );
   },
 );
+
+test("the worker port allows readiness but refuses native upgrades with the same valid bearer", async (t) => {
+  const { diagnostics, tls, token, frames } = await supervisor(t);
+  const read = async (path) => {
+    const socket = tlsConnect({
+      host: "127.0.0.1",
+      port: diagnostics.address().port,
+      servername: "localhost",
+      ca: tls.caBundle,
+    });
+    socket.write(
+      `GET ${path} HTTP/1.1\r\nAuthorization: Bearer ${token}\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n`,
+    );
+    const chunks = [];
+    for await (const chunk of socket) chunks.push(chunk);
+    return Buffer.concat(chunks).toString();
+  };
+  assert.match(await read("/revisions/test-revision/readiness"), /200 OK[\s\S]*starting/u);
+  assert.match(await read("/"), /404 Not Found/u);
+  assert.equal(frames.length, 0);
+});
 
 test(
   "Strands shutdown closes clients still reading headers and refuses queued Gateway opens",
@@ -238,20 +280,25 @@ test(
     const racing = randomUUID();
     send({ id: racing, type: "open" });
     send({ id: ids[0], type: "data", data: Buffer.from("native survives").toString("base64") });
+    const echoed = () =>
+      Buffer.concat(
+        frames
+          .filter((frame) => frame.id === ids[0] && frame.type === "data")
+          .map((frame) => Buffer.from(frame.data, "base64")),
+      ).toString();
     for (
       let i = 0;
-      !frames.some((frame) => frame.id === ids[0] && frame.type === "data") && i < 100;
+      i < 100 &&
+      (!echoed().includes("native survives") ||
+        !frames.some((frame) => frame.id === racing && frame.type === "close"));
       i++
     ) {
       await delay(10);
     }
     assert.ok(frames.some((frame) => frame.id === racing && frame.type === "close"));
-    assert.equal(
-      Buffer.from(
-        frames.find((frame) => frame.id === ids[0] && frame.type === "data").data,
-        "base64",
-      ).toString(),
-      "native survives",
+    assert.match(
+      echoed(),
+      /^GET \/ HTTP\/1\.1\r\nAuthorization: Bearer [0-9a-f]{64}\r\nnative survives$/u,
     );
     assert.equal(inner.exitCode, null);
     assert.equal(sockets.length, MAX_CHANNELS);
@@ -482,7 +529,7 @@ test(
       const socket = await h.client();
       socket.write(`GET / HTTP/1.1\r\nAuthorization: Bearer ${h.token}\r\n\r\n`);
     }
-    const probe = await h.client();
+    const probe = await h.client(true);
     probe.write(`GET / HTTP/1.1\r\nAuthorization: Bearer ${h.token}\r\nx-oce-readiness: 1\r\n\r\n`);
     for (let i = 0; i < 100 && !h.frames.some((f) => f.type === "probe"); i++) {
       await delay(10);
@@ -506,3 +553,64 @@ test("a terminal frame flushes queued TCP output", { timeout: 10000 }, async (t)
   await end;
   assert.deepEqual(Buffer.concat(chunks), body);
 });
+
+test(
+  "the policy proxy delivers the complete response to a slow reader at EOF",
+  { timeout: 15000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "strands-policy-eof-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const payload = Buffer.alloc(5 * 1024 * 1024 + 17, 0x4f);
+    const upstream = createTcpServer((socket) => {
+      socket.once("data", () => socket.end(payload));
+    });
+    await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    t.after(() => upstream.close());
+    const client = join(directory, "read-response.cjs");
+    // The synthetic native command speaks TCP through the proxy inherited from inner.mjs.
+    await writeFile(
+      client,
+      `
+    const net=require("node:net"), crypto=require("node:crypto");
+    const proxy=new URL(process.env.HTTP_PROXY);
+    const socket=net.connect(Number(proxy.port),proxy.hostname);
+    const hash=crypto.createHash("sha256");
+    socket.on("connect",()=>{
+      socket.write("GET http://example.invalid/ HTTP/1.1\\r\\nHost: example.invalid\\r\\n\\r\\n");
+      socket.pause();setTimeout(()=>socket.resume(),250);
+    });
+    socket.on("data",bytes=>hash.update(bytes));
+    socket.on("end",()=>console.error("digest="+hash.digest("hex")));
+  `,
+    );
+    const manifest = join(directory, "manifest.json");
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        command: ["/bin/sh", "-c", 'unset NODE_OPTIONS; exec "$0" "$1"', process.execPath, client],
+        environment: {},
+        workspace: directory,
+        port: 1,
+      }),
+    );
+    const inner = spawn(
+      process.execPath,
+      [new URL("../../deploy/runtime/strands-box/inner.mjs", import.meta.url).pathname, manifest],
+      {
+        env: { ...process.env, HTTPS_PROXY: "http://127.0.0.1:" + upstream.address().port },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    t.after(() => inner.kill());
+    let result = "";
+    inner.stderr.setEncoding("utf8").on("data", (chunk) => {
+      result += chunk;
+    });
+    const [code] = await once(inner, "exit");
+    assert.equal(code, 0, result);
+    assert.ok(
+      result.includes("digest=" + createHash("sha256").update(payload).digest("hex")),
+      result,
+    );
+  },
+);

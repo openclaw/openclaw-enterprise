@@ -6,7 +6,7 @@ last_verified: "2026-11-04"
 
 # Manual tests
 
-These 10 lanes have no configured recurring GitHub runs and are excluded from
+These lanes have no configured recurring GitHub runs and are excluded from
 `ci`, `full`, and Full Integration dispatch. Select a lane explicitly after
 completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#results-and-cleanup).
 
@@ -20,3 +20,4 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
 - [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
 - [`openshell-oauth`](../../scripts/ci/test-suites/openshell-oauth.json): requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).
 - [`image-pair-qualification`](../../scripts/ci/test-suites/image-pair-qualification.json): requires staged old and new controller and broker images. See [image-pair qualification](docker.md#repository-image-pair-qualification).
+- [Strands listener replacement](../../scripts/ci/test-suites/strands-listener-replacement.json) requires a disposable, active Strands Agent in a loopback k3d cluster, the standard Helm worker, and an authenticated OCC CLI. The test replaces the Harness Pod, checks that both clients refuse its new certificate, and deploys a fresh revision to restore the Agent.

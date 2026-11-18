@@ -4,8 +4,9 @@ import {
   type KubernetesWorkloadPeer,
 } from "../compute/kubernetes/index.ts";
 import { lookup } from "node:dns/promises";
-import { createHmac } from "node:crypto";
-import { request as httpRequest } from "node:http";
+import { X509Certificate } from "node:crypto";
+import { request as httpsRequest } from "node:https";
+import { checkServerIdentity } from "node:tls";
 import { isDeepStrictEqual } from "node:util";
 import { createKubernetesClientConfiguration } from "../kubernetes/client.ts";
 import { networkPolicyToSdk } from "../kubernetes/network-policy.ts";
@@ -217,7 +218,8 @@ function owned(resource: KubernetesObject, namespaceId: string, driverId: string
   const expected = name(namespaceId, labels[AGENT], labels[REVISION]);
   if (
     resource.metadata?.name !== expected &&
-    !(resource.kind === "Service" && resource.metadata?.name === `${expected}-status`)
+    !(resource.kind === "Service" && resource.metadata?.name === `${expected}-status`) &&
+    !(resource.kind === "ConfigMap" && resource.metadata?.name === `${expected}-listener`)
   ) {
     throw new Error("Strands Box resource ownership does not match the requested scope.");
   }
@@ -306,6 +308,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
               ...config,
               appServer: {
                 ...appServer,
+                tlsPeerCertificate: "${OPENCLAW_HARNESS_TLS_PEER_CERTIFICATE}",
                 sandbox: "danger-full-access",
                 approvalsReviewer: "user",
               },
@@ -454,7 +457,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       );
     }
     const hash = sha256Hex(
-      JSON.stringify([3, context.requirements, this.options, this.dns, this.routing]),
+      JSON.stringify([4, context.requirements, this.options, this.dns, this.routing]),
     );
     // A completed preparation is immutable, including its exact input identity.
     // Do not re-read an enrollment Secret that Compute may already have retired.
@@ -665,7 +668,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     if (typeof encoded !== "string" || encoded.length === 0 || encoded.length > 65536) {
       throw new Error("Prepared transport credential is unavailable.");
     }
-    // The trusted probe mounts this one key. Native Codex gets its verifier.
+    // Only the external listener verifier enters the prepared inputs.
     return sha256Hex(Buffer.from(encoded, "base64").toString("utf8"));
   }
 
@@ -796,9 +799,141 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     return `${serviceName}.${ref.namespaceName}.svc:${port}`;
   }
 
+  private async listenerCertificate(context: SandboxHarnessContext): Promise<X509Certificate> {
+    const ref = this.harnessResource(context);
+    const metadata = { name: ref.resourceName, namespace: ref.namespaceName };
+    const deployment = await read(context, { apiVersion: "apps/v1", kind: "Deployment", metadata });
+    if (!deployment?.metadata?.uid || deployment.metadata.deletionTimestamp) {
+      throw new DependencyUnavailableError("The Strands execution Deployment is unavailable.");
+    }
+    owned(deployment, context.namespace.id, this.id);
+    const uid = deployment.metadata.uid;
+    const labels = this.labels(context);
+    const receipt = {
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { ...metadata, name: metadata.name + "-listener", labels },
+    };
+    const hostname = metadata.name + "." + metadata.namespace + ".svc";
+    const validate = (pem: unknown, podUid: unknown) => {
+      if (
+        typeof pem !== "string" ||
+        pem.length > 4096 ||
+        !/^-----BEGIN CERTIFICATE-----[\r\n]+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u.test(
+          pem.trim(),
+        ) ||
+        typeof podUid !== "string" ||
+        !/^[0-9a-f-]{36}$/u.test(podUid)
+      ) {
+        throw new Error("Invalid Strands execution certificate evidence.");
+      }
+      const leaf = new X509Certificate(pem);
+      if (
+        leaf.ca ||
+        leaf.subject !== "CN=" + podUid ||
+        !leaf.checkHost(hostname, { subject: "never" }) ||
+        !leaf.checkHost(metadata.name + "-status." + metadata.namespace + ".svc", {
+          subject: "never",
+        }) ||
+        !leaf.verify(leaf.publicKey)
+      ) {
+        throw new Error("Strands listener identity does not match its Pod and Services.");
+      }
+      return leaf;
+    };
+    const pinned = (resource: KubernetesObject) => {
+      owned(resource, context.namespace.id, this.id);
+      const object = asRecord(resource);
+      const data = asRecord(object?.data);
+      if (
+        object?.immutable !== true ||
+        resource.metadata?.deletionTimestamp ||
+        data?.deploymentUid !== uid
+      ) {
+        throw new Error("Strands execution receipt ownership changed.");
+      }
+      return validate(data.certificate, data.podUid);
+    };
+    const existing = await read(context, receipt);
+    if (existing) {
+      return pinned(existing);
+    }
+    const selector = Object.entries(labels)
+      .map(([key, value]) => key + "=" + value)
+      .join(",");
+    const pods = await api(context).list(
+      "v1",
+      "Pod",
+      metadata.namespace,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      selector,
+    );
+    const pod = pods.items.length === 1 ? pods.items[0] : undefined;
+    const owner = pod?.metadata?.ownerReferences?.find((item) => item.controller === true);
+    if (
+      !pod?.metadata?.uid ||
+      pod.metadata.deletionTimestamp ||
+      owner?.kind !== "ReplicaSet" ||
+      owner.apiVersion !== "apps/v1" ||
+      !owner.uid ||
+      !owner.name
+    ) {
+      throw new DependencyUnavailableError("Awaiting one Strands execution Pod.");
+    }
+    const rs = await read(context, {
+      apiVersion: "apps/v1",
+      kind: "ReplicaSet",
+      metadata: { ...metadata, name: owner.name },
+    });
+    const controller = rs?.metadata?.ownerReferences?.find((item) => item.controller === true);
+    if (
+      rs?.metadata?.uid !== owner.uid ||
+      rs.metadata.deletionTimestamp ||
+      controller?.kind !== "Deployment" ||
+      controller.apiVersion !== "apps/v1" ||
+      controller.name !== metadata.name ||
+      controller.uid !== uid
+    ) {
+      throw new Error("Strands Pod does not belong to the prepared Deployment.");
+    }
+    const init = asRecord(asRecord(pod)?.status)?.initContainerStatuses;
+    const evidence = Array.isArray(init)
+      ? init.find((item) => item.name === "initialize-listener")
+      : undefined;
+    const terminated = asRecord(asRecord(asRecord(evidence)?.state)?.terminated);
+    if (terminated?.exitCode !== 0) {
+      throw new DependencyUnavailableError("Awaiting Strands listener certificate.");
+    }
+    const cert = validate(terminated.message, pod.metadata.uid);
+    // Concurrent workers may observe different Pods. A single create wins.
+    // Every retry uses the winner, including after the Deployment replaces a Pod.
+    try {
+      await api(context).create({
+        ...receipt,
+        immutable: true,
+        data: {
+          deploymentUid: uid,
+          podUid: pod.metadata.uid,
+          certificate: cert.toString(),
+        },
+      } as KubernetesObject);
+    } catch (error) {
+      const winner = await read(context, receipt);
+      if (!winner) {
+        throw error;
+      }
+      return pinned(winner);
+    }
+    return cert;
+  }
+
   async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {
     return {
-      url: `ws://${await this.harnessServiceAddress(context, false)}`,
+      url: `wss://${await this.harnessServiceAddress(context, false)}`,
+      tlsPeerCertificate: (await this.listenerCertificate(context)).toString(),
       workspaceRoot: "/home/node/workspace",
       codexPermissionProfile: ":danger-full-access",
     };
@@ -807,7 +942,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
     context.signal.throwIfAborted();
     const route = "/revisions/" + encodeURIComponent(context.revision.id) + "/readiness";
-    const token = createHmac("sha256", context.transportToken).update(route).digest("hex");
+    const certificate = await this.listenerCertificate(context);
     const diagnosticAddress = await this.harnessServiceAddress(context, true);
     const timeout = AbortSignal.timeout(7500);
     return new Promise<SandboxHarnessStatus>((resolve, reject) => {
@@ -825,10 +960,19 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
           ),
         );
       };
-      const request = httpRequest(
-        new URL(`http://${diagnosticAddress}${route}`),
+      const request = httpsRequest(
+        new URL(`https://${diagnosticAddress}${route}`),
         {
-          headers: { authorization: `Bearer ${token}` },
+          agent: false,
+          ca: certificate.toString(),
+          allowPartialTrustChain: true,
+          rejectUnauthorized: true,
+          checkServerIdentity: (host, peer) =>
+            checkServerIdentity(host, peer) ??
+            (certificate.raw.equals(peer.raw)
+              ? undefined
+              : new Error("Strands readiness TLS peer changed.")),
+          headers: { authorization: `Bearer ${context.transportToken}` },
           signal: AbortSignal.any([context.signal, timeout]),
         },
         (response) => {
@@ -879,6 +1023,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       ["networking.k8s.io/v1", "NetworkPolicy"],
       ["v1", "Secret"],
       ["v1", "ConfigMap"],
+      ...(exact ? [["v1", "ConfigMap", "-listener"] as const] : []),
     ] as const) {
       const resources = exact
         ? [

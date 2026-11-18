@@ -90,7 +90,7 @@ export function strandsBoxService(
     spec: {
       selector: labels,
       ports: diagnostic
-        ? [{ name: "readiness", port: STRANDS_STATUS_PORT, targetPort: port }]
+        ? [{ name: "readiness", port: STRANDS_STATUS_PORT, targetPort: STRANDS_STATUS_PORT }]
         : [{ name: "harness", port, targetPort: port }],
       // Only the controller's held-failure read uses the unready route.
       ...(diagnostic ? { publishNotReadyAddresses: true } : {}),
@@ -553,7 +553,7 @@ mv -T preparing image`,
               podSelector: { matchLabels: options.kubernetes.controlPlanePeer.podLabels },
             },
           ],
-          ports: [{ protocol: "TCP", port }],
+          ports: [{ protocol: "TCP", port: STRANDS_STATUS_PORT }],
         },
       ],
       egress: [

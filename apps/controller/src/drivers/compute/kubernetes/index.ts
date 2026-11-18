@@ -1957,6 +1957,26 @@ function providerHarnessUrl(
       "SandboxDriver Harness native hook credential directory must be outside the workspace.",
     );
   }
+  if (endpoint.tlsPeerCertificate !== undefined) {
+    const pem = endpoint.tlsPeerCertificate;
+    try {
+      if (
+        url.protocol !== "wss:" ||
+        typeof pem !== "string" ||
+        pem.length > 16384 ||
+        !/^-----BEGIN CERTIFICATE-----[\r\n]+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u.test(
+          pem.trim(),
+        ) ||
+        !new X509Certificate(pem).checkHost(url.hostname, { subject: "never" })
+      ) {
+        throw new Error();
+      }
+    } catch {
+      throw new ConfigurationFailure(
+        "SandboxDriver TLS peer certificate must identify the WSS endpoint.",
+      );
+    }
+  }
   if (endpoint.tls !== undefined) {
     if (
       url.protocol !== "wss:" ||
@@ -17060,6 +17080,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       pluginRuntime?.runtime.kind === "codex" && !embedded
         ? pluginRuntime.runtime.publicGithubRead
         : undefined;
+    if (
+      role === "gateway" &&
+      dedicated &&
+      (providerEndpoint?.tlsPeerCertificate !== undefined ||
+        this.sandboxDriver?.implementation === "strands-box")
+    ) {
+      // The bootstrap Gateway can enroll its file node before an execution is
+      // admitted. Its mandatory certificate setting refuses every native dial.
+      variables.push({
+        name: "OPENCLAW_HARNESS_TLS_PEER_CERTIFICATE",
+        value: providerEndpoint?.tlsPeerCertificate ?? "pending-execution-admission",
+      });
+    }
     if (providerEndpoint?.tls !== undefined) {
       if (role !== "gateway" || !dedicated || configuration === undefined) {
         throw new ConfigurationFailure(

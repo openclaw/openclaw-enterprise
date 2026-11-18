@@ -94,11 +94,8 @@ harness-auth bindings before deployment; no Agent path is deployable.
 The [Docker gateway authentication reference](../reference/drivers/docker-compute.md#gateway-authentication)
 owns mode and password rules.
 
-Kubernetes supports managed bindings.
-The Strands supervisor and workload share read-only runtime objects (`strandsBoxResources`).
-SSH supports `{ "method": "runtime" }` only for unmanaged embedded OpenClaw: operator
-credentials remain on the host and OCC checks gateway readiness without model
-validation. See the [SSH flow](pr-24-ssh-compute.md).
+On Kubernetes, `strandsBoxResources` shares read-only runtime objects. `listenerCertificate` binds the supervisor certificate and Pod UID to the revision.
+[SSH](pr-24-ssh-compute.md) supports runtime authentication for unmanaged embedded OpenClaw. Operator credentials stay on the host. OCC checks Gateway readiness without model validation.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
 
@@ -241,8 +238,7 @@ the native ID.
 Kubelet probes private `/readyz`: Gateway plugin status and native `/startupz`
 and `/readyz`, Codex plugin state and authenticated app-server WebSocket, or
 dedicated OpenClaw identity gate runtime-backed workload readiness.
-Concurrent requests share the running check; a request after it ends starts a new one.
-A shared check that does not end within 5 seconds answers not ready and frees the slot.
+Concurrent probes share one check. After five seconds it returns unready and frees the slot for the next probe.
 While first-deploy [workspace setup](workspace-files.md) is pending, embedded
 preparation starts the replacement Gateway before activation. If a never-served
 version's Gateway is unready (its Service selects no Pod), for example after rejected
