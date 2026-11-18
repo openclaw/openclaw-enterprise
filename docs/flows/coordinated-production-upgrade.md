@@ -373,8 +373,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 - Inspect `dispatch/*.error`, `dispatch/*.rejected` and version history. Deployment status files in
   `status/` retain the last successful poll. Doctor writes `*.doctor.json` and `*.doctor.error` there.
 - Compare `before-workloads.json` and `after-workloads.json`: controller-only releases
-  roll affected Agents' same-image Pod templates at most once and keep their start-up
-  programs. Separately check broker-affected repository versions.
+  can roll affected Agents' same-image Pod templates once. Separately check broker-affected
+  repository versions.
 - End-to-end proof requires credentialed production Kubernetes with distinct images;
   command fixtures prove control flow.
 
@@ -399,11 +399,5 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 - 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
 
 - 2026-11-14 06:52: Trace the broker exit before socket readiness. (authoring-run/837cd51d-17ce-4c24-ad13-20197e634e9c - ba5b0832956ac3ad93695aab92db952f388ae7da)
-
-- 2026-11-13 17:42: Trace the OpenShell bearer token file check in each writer Job. (authoring-run/01a1d5fb-c244-7162-a7e2-17b48732f5c4 - 1f0bf5cd0a208f362971accbb1850db193f9d4d9)
-
-- 2026-11-13 14:29: Document optional Console entry verification. (authoring-run/a7f1373b-e0ab-4c0e-a622-91d8d3169950 - ef69b58a9e60e68af17f54bb2750fffe28804b9b)
-
-- 2026-11-13 05:08: Exclude terminating Pods when selecting Doctor targets. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - ca6bfc2f0376ee3fd9c5a9a255f7e5f37a454131)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.
