@@ -259,9 +259,10 @@ function safeIdentifier(format: RegExp, value: unknown): string | undefined {
 const ROUTE_PATTERN = /^\/[A-Za-z0-9_.~:*/{}-]{0,255}$/;
 
 function safeRoute(value: unknown): string | undefined {
-  return typeof value === "string" && ROUTE_PATTERN.test(value)
-    ? value
-    : safeScalar("route", value);
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return ROUTE_PATTERN.test(value) ? value : safeString(value);
 }
 
 function safeCode(value: unknown): string | undefined {
