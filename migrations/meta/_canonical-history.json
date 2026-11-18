@@ -646,7 +646,23 @@
       "idx": 81,
       "version": "7",
       "when": 1787000000081,
-      "tag": "0081_packaged_credential_gateway_owner",
+      "tag": "0081_restart_continuation",
+      "breakpoints": true,
+      "sha256": "58478352e5d45836ab2ae3a25a5b6327bb12a8caa16b4106b22c2b45194def86"
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1787000000082,
+      "tag": "0082_authentication_states",
+      "breakpoints": true,
+      "sha256": "59e90f20b8c414c285cf23d63b94a756d1b00a462676d56544758e4bdfca6c09"
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1787000000083,
+      "tag": "0083_packaged_credential_gateway_owner",
       "breakpoints": true,
       "sha256": "b395210303ccba7b58e9ffec5cdb9836cd7fdc40c9daf9d3ea4bf5986aa76e69"
     }
@@ -766,11 +782,18 @@
       "78b2e95f6b363174498fbf9d11b4cbe728641081fa840fb1a7b01f4b7fbfe781",
       "8689d8385dd83d6ee536176954e7d3ab59ee1a793f1bdf834a1a072c685d0d79"
     ],
-    "ff7179cd8251291c8a17d70ba0ebfed942adabcd04e9b0294e5d67afa6b05680": [
-      "6fbfae41bea5456b15e85adfe269acc8ea11918dfc838f2c6d8363e51ab31373",
-      "a29dcbe9914842ecd4540de8b8cc72f370432286fe67e5cb4003f93705ca192c",
-      "ba1f29b1bd553574e225eac5256be8ab1dbe4e2a786764eae58733518f341b9d",
-      "ec0f9b7275c5dbbc78da3ff42ec450c0f5f81fd8c925fd8bbdd94c62dbad5703"
+    "58b727523d2262fa6285e129c4517dcb50e02fbf1449e1afa81a336e1024cacc": [
+      "90eac6704be098dd457d17131fc210f7a4f35a40061a9235527abd13444ad529",
+      "f7ee04c47ae160df8579bfe28173f5d184c61351899d545b517872fafe74910e",
+      "2e1da524037470b09be9269bbfbe5a3c4f125027f4493cd4a58913a27161a8d5",
+      "ce5d061bb3881ed7ab17baf2f55c379bc79354da0e8af3537ea418bce8c7d5e6"
+    ],
+    "6962482f409df2fcc7b09ce8b355d3c50ef6e2525056c9dcee1c055514f21cb3": [
+      "3483a4073e9c9de038fcb23b021fa93e19868afb34610bdbce7050261b544b39",
+      "5ab240ee32eee350ec23a8a9aed9e6f634fa6501ffe462453bc1cf85b8202829",
+      "744dc63a09eec4a37ed5f38f62ccbdfa7815c9f1905b29a906517d965e2f00c7",
+      "9726b29c8f483e1109908d22703cf1f9ee7f31f8a97ada16d1a09eea3e13bee5",
+      "d28c8b0dec581df8406b17a70bd1f51f28587b3fb441df04b4f87c8b1fd2e43c"
     ]
   },
   "catalogs": {
@@ -830,7 +853,9 @@
     "prePendingSandboxPolicyApplication": "025fa63491e14fb1f90c09d7405bd1fa8b39f7e1bb919d17572b58436391794e",
     "prePredecessorReplacement": "4368f8db721cd6b233dc2c65895de016de99af92f87919db5ba17153c8aba229",
     "preRevisionRuntimeInputs": "a78f05679e8ef8432c94d3bdffeb21681297793829c78efef7278f1b29337128",
-    "prePackagedCredentialGatewayOwner": "c8639ab415c7d833c777d79a526357de1021552a731b873b32ba79a9b4e81f1b"
+    "preRestartContinuation": "c8639ab415c7d833c777d79a526357de1021552a731b873b32ba79a9b4e81f1b",
+    "preAuthenticationStates": "58b727523d2262fa6285e129c4517dcb50e02fbf1449e1afa81a336e1024cacc",
+    "prePackagedCredentialGatewayOwner": "6962482f409df2fcc7b09ce8b355d3c50ef6e2525056c9dcee1c055514f21cb3"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -839,7 +864,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle after the unchanged public 0077. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, and 77 upgraded to 0078. The 0079 catalogs were measured with stock Drizzle on PostgreSQL 18.6 for canonical and Provider histories, including pg_dump and pg_restore of prefixes 51, 74 through 79. The same procedure qualified 0080, including archives through 0080. The 0081 completed catalog was measured on PostgreSQL 18.6 with stock Drizzle; its logical restore aliases were measured from completed canonical and Provider archives, restored canonical prefix 51 upgraded through 0081, and restored prefixes 74 through 80 upgraded to 0081."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle after the unchanged public 0077. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, and 77 upgraded to 0078. The 0079 catalogs were measured with stock Drizzle on PostgreSQL 18.6 for canonical and Provider histories, including pg_dump and pg_restore of prefixes 51, 74 through 79. The same procedure qualified 0080, including archives through 0080. The native catalog through 0081 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51 and 74 through 80 upgraded to 0081. The same PostgreSQL 18.6 procedure qualified 0082 on canonical and Provider histories, including their completed archives and restored canonical prefixes 51 and 74 through 81 upgraded to 0082."
   },
   "compatibleLineages": {
     "providerCompleted": {

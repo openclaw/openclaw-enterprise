@@ -705,6 +705,21 @@ function journalOf(namespace: FixtureObject): Record<string, unknown> {
   return record(JSON.parse(required(required(namespace.metadata.annotations)[JOURNAL_ANNOTATION])));
 }
 
+function assertOccReplicas(
+  get: ReturnType<typeof fakeCluster>["get"],
+  expected: { api: number; worker: number },
+): void {
+  for (const [name, replicas] of [
+    ["openclaw-enterprise-api", expected.api],
+    ["openclaw-enterprise-worker", expected.worker],
+  ] as const) {
+    assert.equal(
+      required(required(get("deployments.apps", "openclaw-system", name)).spec).replicas,
+      replicas,
+    );
+  }
+}
+
 function snapshot({ get }: ReturnType<typeof fakeCluster>) {
   const volume = (name: string) => get("persistentvolumes", undefined, name);
   return {
@@ -782,18 +797,7 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
   await applyAdoption(kubectl, { archive, ...fast });
 
   // The old API serves again for the upgrade helper; the worker stays stopped.
-  for (const [component, replicas] of [
-    ["api", 1],
-    ["worker", 0],
-  ]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      replicas,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 0 });
   assert.equal(
     required(required(get("namespaces", undefined, storage)).metadata.labels)[
       "openclaw.dev/namespace"
@@ -970,15 +974,7 @@ test("revert before the upgrade restores the released layout exactly", async (t)
       1,
     );
   }
-  for (const component of ["api", "worker"]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      1,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 1 });
 });
 
 test("an interrupted rebind resumes without releasing the volume", async (t) => {
@@ -1417,15 +1413,7 @@ test("apply refuses to adopt more tenants once the controller runs other images"
     /openclaw-enterprise-api runs other images than apply recorded; roll the controller back/,
   );
   // The new release keeps serving and the second tenant is untouched.
-  for (const component of ["api", "worker"]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      1,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 1 });
   assert.equal(
     required(get("namespaces", undefined, otherStorage)).metadata.annotations?.[JOURNAL_ANNOTATION],
     undefined,
@@ -1474,18 +1462,7 @@ test("a crash between copying a Secret and recording it still lets revert remove
   await assert.rejects(applyAdoption(kubectl, { archive, ...fast }), /injected failure/);
   assert.notEqual(get("secrets", storage, `transport-${embedded}`), undefined);
   await applyAdoption(kubectl, { archive, ...fast });
-  for (const [component, replicas] of [
-    ["api", 1],
-    ["worker", 0],
-  ]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      replicas,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 0 });
   await revertAdoption(kubectl, { archive, ...fast });
   assert.equal(get("secrets", storage, `transport-${embedded}`), undefined);
 });

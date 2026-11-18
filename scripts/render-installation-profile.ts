@@ -1365,7 +1365,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
     diagnostics,
   );
   const presets = section(input, "presets", diagnostics, false);
-  closed(presets, "presets", ["files"], diagnostics);
+  closed(presets, "presets", ["includeDefaults", "files"], diagnostics);
   closed(
     controlPlane,
     "controlPlane",
@@ -2069,7 +2069,7 @@ function buildRendered(
     ...(observabilityUrl === undefined ? {} : { observability: { url: observabilityUrl } }),
     backend: [],
     presets: {
-      includeDefaults: true,
+      includeDefaults: asBoolean(presets, ["presets", "includeDefaults"], diagnostics, true),
       ...(presets.files === undefined
         ? {}
         : { files: stringArray(presets, ["presets", "files"], diagnostics, { nonempty: false }) }),

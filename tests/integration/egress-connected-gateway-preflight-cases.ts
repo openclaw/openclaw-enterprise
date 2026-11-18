@@ -19,7 +19,7 @@ import {
   waitForProtectedAgentActivation,
 } from "../helpers/egress-installed-agent.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
-import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";

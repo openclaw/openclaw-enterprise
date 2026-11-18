@@ -124,37 +124,42 @@ access for subsequent refresh.
 4. To replace the connection, sign in from the credential editor, save the new
    source, and deploy. Saving a draft does not change the running version.
 
-Starting requires Agent-create, Secret-create and credential-source-create in the
-Namespace, plus `operate` on the resulting session Secret and source. For an
-existing Agent, exact Agent `read`/`update` replaces Agent-create. Only the actor
-who started a session can poll or close it. Source use has its own exact
-`credential_source:operate` authorization; it is not tied to the login session.
+Starting requires Agent-create and credential-source-create in the Namespace.
+For an existing Agent, exact Agent `read` and `update` replace Agent-create.
+Only the person who started the login can poll or close it, while retaining
+those Agent permissions. Polling also requires `credential_source:operate` on
+the resulting source. The temporary login needs no separate grant. If polling
+returns `403`, give your platform operator the request ID. They can find the
+exact permission and resource in the [denial audit event](../topics/audit-log.md#access-and-limitations).
+Once an administrator restores access, select **Retry login check** before the
+login expires. Keep the provider's sign-in code private.
 
-The session Secret binds an opaque login handle to the actor, scope, and source.
-The Refresh Driver hands exchanged credentials to the external service. A pending session uses
-the provider deadline; a completed session closes after 24 hours on its next
-access. **Close login** discards the handle without revoking the source or
-interrupting a deployed Agent. Failed and abandoned sources remain visible in
-credential-source management; delete unused sources separately and remove their
-unreferenced session Secrets.
+For API clients, the start response includes a `session` handle with `id` and
+`namespaceId`. Use the same device-authorizations route that started the login:
+send `POST …/{id}/poll` to check it or `DELETE …/{id}` to cancel.
+
+A pending login expires at the provider deadline. A completed login handle
+expires after 24 hours. **Close login** discards the handle. Deployed Agents
+can continue using the source. Failed or abandoned attempts also leave a source
+in credential-source management. Delete an unused source there.
 
 If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
 `503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
-upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
-opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+upstream provider. The paired Refresh Driver owns the provider exchange.
+See [how OCC stores the login session](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
 
 ### Recover an interrupted Codex sign-in
 
 If the Console says **Sign-in may have started**, do not start again. The Console
-did not receive a usable session reference, so it cannot poll or cancel that
+did not receive a usable login handle, so it cannot poll or cancel that
 attempt. Give an administrator the time, Namespace, Agent ID if already saved,
-and OCC request ID if available. Do not share the device code or Secret value.
+and OCC request ID if available. Keep the device code private.
 
 Using [approved audit access](../topics/audit-log.md#access-and-limitations), look
 for a successful `openclaw.agents.device_authorization.start` for that actor and
 request with `details.phase: "session_pending"`. OCC commits this event with the
-session Secret, before sending the reply. It confirms that OCC saved the session,
-not that sign-in completed, and does not include the session ID.
+login session before sending the reply. The event confirms that OCC saved the
+session. It omits the session ID.
 
 The `source_registering` and `source_ready` phases confirm only source registration;
 they can exist even when provider login fails before OCC saves a session. A missing
@@ -171,8 +176,10 @@ message alone does not tell you whether OCC reached that exchange.
 
 Replace the mounted auth signing Secret through the deployment owner and restart
 the API processes that consume it. Verify fresh human sign-in and authenticated
-API access; do not assume existing sessions survive. This change does not replace
-human passwords or runtime provider credentials.
+API access. OCC derives the device-login encryption key from the auth secret.
+After rotation, users must restart pending Codex logins. OCC also loses access
+to the challenge for a completed login, so it cannot return that login's poll
+response again. Existing credential sources and human passwords remain valid.
 
 The initial bootstrap service key expires after 30 days. Preserve authorized
 administrator access and renew automation credentials before expiry. Deleting a

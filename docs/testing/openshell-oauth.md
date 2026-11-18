@@ -175,6 +175,15 @@ session closure/expiry, and rejection of credential leakage. The Console OAuth
 browser case exercises those routes through the actual controls; Storybook is
 separate simulated UI evidence. Neither proves external token refresh or injection.
 
+`tests/integration/postgres-device-authorization.test.ts` exercises device login
+and browser OAuth consent through two API instances sharing PostgreSQL. It checks
+that both kinds coexist in `authentication_states`, a browser attempt can be
+consumed once only by its starting session, and expiry removes its unfinished
+source. It also checks encrypted device state, polling across instances, absence
+of a session IAM grant, and cancellation fencing. The external device exchange
+uses a fixture Refresh Driver; the consent-refusal callback makes no provider
+request.
+
 `tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute
 preparation path with Driver transport fixtures. It checks source matching,
 Harness-only placeholder/metadata delivery, and refusal before provisioning on
