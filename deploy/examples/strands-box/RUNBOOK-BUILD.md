@@ -16,7 +16,7 @@ was run on an empty host with K3s.
 | OCE checkout    | Node 24.22.1 with corepack (pnpm 11.15.1 from `packageManager`)                                  | 1    |
 | Images          | Docker with Buildx; a package registry for the Driver (below)                                    | 3    |
 | Install         | `kubectl`, Helm, `yq` v4, the [OCC CLI](../../../docs/guides/cli.md)                             | 4    |
-| Database        | PostgreSQL 18 (18.6 or later) with TLS and two roles                                             | 4    |
+| Database        | PostgreSQL 18.6 with TLS and two roles                                                           | 4    |
 | Cluster add-ons | Gateway API CRDs, Envoy Gateway with a GatewayClass, cert-manager                                | 4    |
 
 ## Step 1: Node with corepack (ran)
