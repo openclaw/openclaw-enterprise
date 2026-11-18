@@ -35,7 +35,7 @@ export const settingsScenarios = {
     path: "/console/settings",
     oauthCatalog: "inference",
     description:
-      "Edit Internal vLLM to inspect its two models and pinned private server. Add a provider to choose a public endpoint, pinned private IPv4 address, or Kubernetes Service.",
+      "Edit Internal vLLM to inspect its endpoint and offered models. Add a provider using an HTTPS hostname, private IPv4 address, or Kubernetes Service DNS name.",
   },
   settings: {
     group: "Pages/Settings",

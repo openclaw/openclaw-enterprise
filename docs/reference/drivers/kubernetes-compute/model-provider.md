@@ -69,11 +69,13 @@ admissions. Existing revisions keep their saved values.
 
 ### Private endpoints
 
-Set the inference base URL to the endpoint's HTTPS hostname or IPv4 address. For an in-cluster Kubernetes Service, use its DNS name, such as `https://inference.research.svc.cluster.local/v1`. The Connection Template authorizes the host, port, method and path; it does not store a separate private network target or Service identity.
+Set the inference base URL to the endpoint's HTTPS hostname or canonical private IPv4 address. For an in-cluster Kubernetes Service, use its full `<service>.<namespace>.svc.cluster.local` DNS name, such as `https://inference.research.svc.cluster.local/v1`. The Connection Template authorizes the host, port, method and path; it does not store a separate private network target or Service identity.
 
 At deployment, Kubernetes Compute resolves the approved host and permits the required private addresses and port. For a Service DNS name, Compute reads the named Service and permits both its ClusterIP and its selected backend Pods, with their respective ports. The Service owner must grant Compute permission to read that Service. The endpoint owner controls ingress, DNS and TLS trust. A hostname must present a certificate valid for that hostname; an IPv4 endpoint needs a certificate valid for its IP address.
 
-A changed DNS answer or Service backend does not change the credential's approved HTTP destination. Compute must update network reachability before traffic can use the new address. Changing the destination URL or protocol requires a new Connection Template version and credential approval.
+Aliases for a Service and custom cluster DNS suffixes are not supported. A NetworkPolicy that permits only the resolved ClusterIP can block traffic after Kubernetes translates the address to a backend Pod.
+
+A changed DNS answer or Service backend does not change the credential's approved HTTP destination. Redeploy the Agent to refresh network reachability after an address or Service backend changes. Changing the destination URL or protocol requires a new Connection Template version and credential approval.
 
 ## Deployment overrides
 
@@ -123,7 +125,7 @@ See [Credential Sources](../../credential-sources.md) for operations and permiss
 ## Validation and recovery
 
 URLs reject credentials, `@`, wildcards, whitespace, controls, queries, fragments,
-port zero, and ambiguous IPv4 spellings. Named providers accept exact DNS hostnames and canonical IPv4 addresses. Dedicated native OpenClaw retains its HTTPS port 443 restriction.
+port zero, and ambiguous IPv4 spellings. Named providers accept exact DNS hostnames and canonical private IPv4 addresses. Dedicated native OpenClaw retains its HTTPS port 443 restriction.
 Existing [egress policies](networking-and-isolation.md) remain in force; endpoint
 configuration or authorization does not grant network access.
 

@@ -8432,15 +8432,14 @@ test("every allow policy requires an explicit approved network profile", () => {
   const execution = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
   const control = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
   const ownership = { namespaceId: tenant.id };
+  const dedicatedPolicies = driver.agentNetworkPolicies(dedicated, execution);
   // Each generated policy is paired with the revision whose workloads it scopes.
   const sources = [
     ...driver.networkPolicies(ownership, execution).map((policy) => [policy, dedicated]),
     [driver.workspaceNodeNetworkPolicy(ownership, execution), dedicated],
-    ...driver
-      .agentNetworkPolicies(dedicated, execution)
-      .map(({ resource }) => [resource, dedicated]),
+    ...dedicatedPolicies.map(({ resource }) => [resource, dedicated]),
     ...driver.agentNetworkPolicies(embedded, execution).map(({ resource }) => [resource, embedded]),
-    [driver.agentAuthenticationNetworkPolicy(dedicated, execution), dedicated],
+    [driver.agentAuthenticationNetworkPolicy(dedicated, execution, dedicatedPolicies), dedicated],
     [driver.channelNetworkPolicy(dedicated, [], control), dedicated],
   ];
   const d = digest(dedicated.agentId);
@@ -8604,7 +8603,7 @@ test("SandboxDriver Harness Pods get transport ingress and only workspace-node e
   );
   // Compute must not issue an authentication egress grant for a fenced Harness.
   assert.throws(
-    () => driver.agentAuthenticationNetworkPolicy(revision, execution),
+    () => driver.agentAuthenticationNetworkPolicy(revision, execution, []),
     /approved model egress policy/,
   );
   // The Gateway still reaches the Harness transport in both directions.

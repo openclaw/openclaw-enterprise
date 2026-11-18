@@ -1765,7 +1765,6 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preModelProviders"],
-      [81, "prePrivateInferencePeers"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2068,7 +2067,6 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preModelProviders"],
-      [81, "prePrivateInferencePeers"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2269,7 +2267,6 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preModelProviders"],
-      [81, "prePrivateInferencePeers"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2346,7 +2343,6 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preModelProviders"],
-      [81, "prePrivateInferencePeers"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
