@@ -18,15 +18,8 @@ import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { refreshPinnedOAuthGrant } from "./oauth-token-endpoint.ts";
 export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { CredentialDeliveries } from "./state/credential-deliveries.ts";
-export type {
-  CredentialDeliveryKey,
-  CredentialDeliverySnapshot,
-} from "./state/credential-deliveries.ts";
+export type { CredentialDeliveryKey } from "./state/credential-deliveries.ts";
 export { CredentialDeliveryReductions } from "./state/credential-delivery-reductions.ts";
-export type {
-  CredentialDeliveryReduction,
-  CredentialDeliveryReductionProgress,
-} from "./state/credential-delivery-reductions.ts";
 export {
   eligibleRepositoryApprovalScope,
   repositoryApprovalFingerprint,
@@ -72,7 +65,6 @@ import type {
   ExecutionAdmission,
   StaticEgressSource,
   ProxyPlan,
-  EgressBinding,
   EgressRefusal,
   EgressRoute,
   EgressSelectionEvidence,
@@ -475,7 +467,6 @@ import type {
 
 export {
   accessBindingsRemovedWithAgent,
-  accessBindingsTargeting,
   removeNamespacePolicy,
   removedPolicyDetails,
   restrictionsRemovedWithAgent,
@@ -510,7 +501,6 @@ export {
   ChannelCredentialError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
-  ComputeRepositoryCredentialsUnsupportedError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   ConfigurationSizeError,
@@ -551,7 +541,6 @@ export {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
-  RepositoryDriverNotConfiguredError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -569,7 +558,6 @@ export {
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
-  SavedRepositorySelectionError,
   RepositorySessionWithdrawnError,
   ScopeViolationError,
   SecretBindingDriverError,
@@ -583,23 +571,17 @@ export {
   StoredCredentialSourceConfigError,
   TransientDependencyError,
   WorkClaimLostError,
-  type ActivationFailedCode,
-  type ActivationPendingCode,
   type CodexPermissionDenial,
   type RuntimeLogsErrorCode,
-  type TransientDependency,
-  type TransientDependencyReason,
 } from "./errors.ts";
 export {
   createRuntimeLogCursorCodec,
   maskRuntimeEventText,
   redactRuntimeLogText,
   RUNTIME_LOG_DEFAULT_TAIL_LINES,
-  RUNTIME_LOG_LIMIT_BYTES,
   RUNTIME_LOG_MAX_TAIL_LINES,
   sanitizeRuntimeLogChunk,
   sanitizeSandboxLogLines,
-  type RuntimeLogCursorCodec,
   type RuntimeLogPage,
   type RuntimeLogQuery,
   type RuntimeLogViewAdmission,
@@ -610,7 +592,6 @@ export {
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,
   provisionsDedicatedOpenClaw,
   type NativeWorkerSupport,
-  type NativeWorkerSupportSource,
 } from "./native-worker-support.ts";
 export {
   backendDefinitionMap,
@@ -622,35 +603,21 @@ export {
 export {
   provisioningEffectReceipt,
   provisioningPendingEffect,
-  settleProvisioningEffect,
   type ProvisioningEffectReceipt,
-  type ProvisioningEffectKind,
   type ProvisioningEffectTarget,
   type ProvisioningPendingEffect,
 } from "./provisioning-effects.ts";
 export {
   InMemoryPlatformState,
-  type AgentReadRepository,
-  type AgentRepository,
-  type PredecessorReplacement,
   type AgentRevisionReadRepository,
-  type AgentRevisionRepository,
   type InMemoryPlatformStateOptions,
-  type InstallationReadRepository,
-  type InstallationRepository,
-  type NamespaceReadRepository,
-  type NamespaceRepository,
-  type PlatformAuditRepository,
   type PlatformAuditSink,
   type PlatformOperation,
-  type PlatformOperationRepository,
   type ConnectionTokenCustody,
   type PlatformReadView,
   type PlatformStateStore,
   type PlatformUnitOfWork,
   type ServiceAccountReadRepository,
-  type ServiceAccountRepository,
-  type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export { imageReferenceProblem } from "./image-reference.ts";
@@ -688,7 +655,6 @@ export {
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
-  isHttpFieldName,
   PROVIDER_MODELS_LIST,
   urlHoldsUserinfo,
 } from "./model-provider-settings.ts";
@@ -698,7 +664,6 @@ export {
   requireChannelSecretBindings,
   slackAccountTargets,
 } from "./channel-secret-bindings.ts";
-export type { SlackAccountTarget } from "./channel-secret-bindings.ts";
 export {
   CODEX_APPROVAL_POLICY_SETTING,
   codexApprovalPolicy,
@@ -716,19 +681,12 @@ export {
 export type {
   HumanAuthenticationActivation,
   HumanAuthenticationActivationHooks,
-  HumanAuthenticationEnrolment,
   PreparedPasswordAccount,
   HumanAuthenticationActor,
   HumanAuthenticationAccount,
   HumanAuthenticationRecovery,
-  HumanAuthenticationUser,
   HumanAuthenticationProof,
-  HumanAuthenticationSnapshot,
   HumanAuthenticationSession,
-  HumanAuthenticationAttemptKey,
-  HumanAuthenticationAttempt,
-  HumanAuthenticationDenial,
-  PostgresHumanAuthenticationOptions,
 } from "./state/human-authentication.ts";
 export type { NativeBrowserAccess } from "./state/native-browser-access.ts";
 export {
@@ -736,16 +694,9 @@ export {
   PostgresHumanAuthenticationMaintenance,
   WritersNotStoppedError,
 } from "./state/human-authentication-maintenance.ts";
-export type {
-  HumanAuthenticationMaintenanceAccount,
-  HumanAuthenticationMaintenanceBackend,
-  HumanAuthenticationMaintenanceRefusal,
-  HumanAuthenticationMaintenanceStatus,
-} from "./state/human-authentication-maintenance.ts";
 export { createPostgresPool } from "./state/postgres-pool.ts";
-export type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
+export type { AgentAuditState } from "./ports/agent-audit.ts";
 export type {
-  RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
   RepositorySessionAttempt,
   RepositorySessionPhase,
@@ -756,7 +707,6 @@ export type {
 export {
   PostgresCertificateRejectedError,
   PostgresPlatformState,
-  PostgresPlatformStateStore,
   type PersistedNativeIAMState,
   type PostgresClient,
   type PostgresPlatformStateOptions,
@@ -798,17 +748,8 @@ export {
   type RuntimeFailureCause,
   type RuntimeFailureEvidence,
 } from "./state/controller-work.ts";
-export {
-  type AgentProvisioningConfigurationInput,
-  type AgentProvisioningProgress,
-  type ProvisionAgentInput,
-  type ProvisionAgentResult,
-} from "./agent-provisioning.ts";
-export type {
-  AgentProvisioningRecord,
-  AgentProvisioningRepository,
-  AgentProvisioningStatus,
-} from "./state/agent-provisioning.ts";
+export { type AgentProvisioningProgress, type ProvisionAgentInput } from "./agent-provisioning.ts";
+export type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
 
 export { createPostgresAuthBinding } from "./auth-persistence/postgres-auth-binding.ts";
 export type {
@@ -3447,14 +3388,6 @@ export class OpenClawController {
       }
       return { agent, revision, endpoint: compute.getChatCompletionsEndpoint(revision) };
     });
-  }
-
-  async getAdministerableAgent(
-    principalId: string,
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<Agent>> {
-    return this.getAuthorizedAgent(principalId, namespaceId, agentId, "administer");
   }
 
   /** Select the native browser authority for this exact Agent through the selected IAM Driver. */
@@ -6509,14 +6442,6 @@ export class OpenClawController {
     return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "operate");
   }
 
-  async getAdministerableActiveAgentRevision(
-    principalId: string,
-    namespaceId: string,
-    agentId: string,
-  ): Promise<ActiveAgentRevisionSelection> {
-    return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "administer");
-  }
-
   private getAuthorizedActiveAgentRevision(
     principalId: string,
     namespaceId: string,
@@ -7919,85 +7844,6 @@ export class OpenClawController {
       },
       this.credentialProxyCapacity,
     );
-  }
-
-  /**
-   * Observe current policy for one already-admitted credential-free metadata binding. The caller
-   * owns the association with the execution; reported target fields do not authenticate it.
-   * This is neither execution admission nor authority to release material, dispatch a request, or
-   * release its response. Never substitute this observation for the protected exchange below.
-   */
-  async observeCredentialFreeMetadataGrant(
-    admittedBinding: EgressBinding,
-    target: Readonly<{ method: "GET"; origin: string; path: string }>,
-  ): Promise<"current" | "not_current"> {
-    if (this.transactionContext.getStore() !== undefined) {
-      return "not_current"; // Never reuse a policy snapshot from an enclosing request.
-    }
-    const { binding, method, origin, path } = immutableCopy({
-      ...target,
-      binding: admittedBinding,
-    });
-    const execution = binding.execution;
-    return this.transact(async (state) => {
-      const { namespaceId, agentId, revisionId, servicePrincipalId } = execution;
-      const namespace = await state.namespaces.findNamespace(namespaceId);
-      const agent = await state.agents.findAgent(namespaceId, agentId);
-      if (
-        execution.installationId !== this.installation.id ||
-        namespace?.status !== "ready" ||
-        agent?.status !== "active" ||
-        agent.executionMode !== "dedicated" ||
-        agent.desiredRuntimeState !== "running" ||
-        agent.servicePrincipalId !== servicePrincipalId ||
-        agent.activeRevisionId !== revisionId
-      ) {
-        return "not_current";
-      }
-      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
-      const plan = revision?.egressPlan;
-      const route = plan?.routes.length === 1 ? plan.routes[0] : undefined;
-      if (
-        revision?.executionAdmission?.mode !== "protected" ||
-        !route ||
-        !isDeepStrictEqual(plan?.execution, execution) ||
-        !isDeepStrictEqual(route.binding, binding) ||
-        route.method !== method ||
-        route.origin !== origin ||
-        route.path !== path
-      ) {
-        return "not_current";
-      }
-      const id = binding.source.source.id;
-      const source = await state.credentialSources.findCredentialSource(namespaceId, id);
-      if (
-        source?.state !== "ready" ||
-        !this.currentCredentialSourceOwner(source, revision) ||
-        !matchesCredentialFreeMetadataGrant(source, route) ||
-        (await state.credentialSources.findCredentialWithdrawal(namespaceId, revisionId, id)) !==
-          undefined
-      ) {
-        return "not_current";
-      }
-      const driver = this.selectedDriver("credential_proxy");
-      const { backend, sender, resolver } = driver.sourceControl;
-      const { egress } = source;
-      if (
-        !plan ||
-        !this.selectedProxyOwner().ownsProxyPlan(plan) ||
-        !isDeepStrictEqual(egress?.key.backend, backend) ||
-        !isDeepStrictEqual(egress?.sender, sender) ||
-        !isDeepStrictEqual(egress?.resolver, resolver)
-      ) {
-        return "not_current";
-      }
-      const { decision } = await this.authorizationDecision(servicePrincipalId, "operate", {
-        kind: "credential_source",
-        namespaceId,
-        id,
-      });
-      return decision.allowed ? "current" : "not_current";
-    });
   }
 
   private async checkEgressUse(

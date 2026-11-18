@@ -637,7 +637,7 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   assert.equal(cleared.desiredRuntimeState, "stopped");
   assert.equal(cleared.activeRevisionId, undefined);
   const controllerStatus = () =>
-    context.fixture.controller.getAdministerableActiveAgentRevision(
+    context.fixture.controller.getBrowserAccessibleActiveAgentRevision(
       adminPrincipal(context.fixture).id,
       context.namespace.id,
       context.agent.id,

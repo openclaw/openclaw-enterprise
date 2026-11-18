@@ -201,7 +201,6 @@
     "tests/integration/controlled-tls-origin.test.ts": 7200,
     "tests/integration/controller-lifecycle.test.ts": 500,
     "tests/integration/credential-free-metadata-grant.test.ts": 1500,
-    "tests/integration/credential-free-online-grant.test.ts": 1800,
     "tests/integration/credential-policy-recovery.test.ts": 300,
     "tests/integration/credential-proxy-configuration.test.ts": 700,
     "tests/integration/credential-proxy-peer-pin.test.ts": 1100,

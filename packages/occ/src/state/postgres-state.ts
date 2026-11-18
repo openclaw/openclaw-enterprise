@@ -5923,5 +5923,3 @@ export class PostgresPlatformState implements PlatformStateStore {
     }
   }
 }
-
-export { PostgresPlatformState as PostgresPlatformStateStore };

@@ -494,7 +494,7 @@ export async function selectNativeAdminRevision(context: TestContext): Promise<v
   ]);
 
   // An unreadable older snapshot must not make a healthy active revision unavailable.
-  const selection = await controller.getAdministerableActiveAgentRevision(
+  const selection = await controller.getBrowserAccessibleActiveAgentRevision(
     principalId,
     namespaceId,
     agent.id,
@@ -504,7 +504,7 @@ export async function selectNativeAdminRevision(context: TestContext): Promise<v
 
   // Only the newest later revision is decoded strictly, and it fails closed when unreadable.
   const newer = await createRevision(3);
-  const withSuccessor = await controller.getAdministerableActiveAgentRevision(
+  const withSuccessor = await controller.getBrowserAccessibleActiveAgentRevision(
     principalId,
     namespaceId,
     agent.id,
@@ -512,7 +512,7 @@ export async function selectNativeAdminRevision(context: TestContext): Promise<v
   assert.equal(withSuccessor.successor?.id, newer.id);
   await insertUnreadable(active, 4);
   await assert.rejects(
-    controller.getAdministerableActiveAgentRevision(principalId, namespaceId, agent.id),
+    controller.getBrowserAccessibleActiveAgentRevision(principalId, namespaceId, agent.id),
     { name: "DependencyUnavailableError" },
   );
 }
