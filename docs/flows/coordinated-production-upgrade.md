@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-14"
-last_updated_session: "authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/41295bf4-e6da-47ab-b16d-10cfa74ade48"
 ---
 
 # Production image upgrade flow
@@ -285,7 +285,10 @@ Worker preparation re-renders current launch requirements.
 Repository-bound Agents receive maintenance every 30 seconds until their session
 deadline; other Agents are re-prepared if deployment remains unfinished.
 Kubernetes Compute rolls changed Gateway and Harness Pod templates even with
-unchanged runtime images. Chat waits for readiness.
+unchanged runtime images. A revision keeps its containers' images, commands and
+arguments until its next deployment
+(`apps/controller/src/drivers/compute/kubernetes/index.ts:keepRevisionPrograms`).
+Chat waits for readiness.
 OpenShell instead requires exact existing Sandbox content
 (`apps/controller/src/drivers/sandbox/openshell.ts:verifyExistingSandbox`).
 Generated-command changes require a fresh Agent revision; controller-only reuse
@@ -370,8 +373,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 - Inspect `dispatch/*.error`, `dispatch/*.rejected` and version history. Deployment status files in
   `status/` retain the last successful poll. Doctor writes `*.doctor.json` and `*.doctor.error` there.
 - Compare `before-workloads.json` and `after-workloads.json`: controller-only releases
-  roll affected Agents' same-image Pod templates once. Separately check broker-affected
-  repository versions.
+  roll affected Agents' same-image Pod templates at most once and keep their start-up
+  programs. Separately check broker-affected repository versions.
 - End-to-end proof requires credentialed production Kubernetes with distinct images;
   command fixtures prove control flow.
 
@@ -390,6 +393,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 06:13: Say that a running revision keeps its start-up programs and images until its next deployment. (authoring-run/41295bf4-e6da-47ab-b16d-10cfa74ade48 - afa16d964e441fe705ad90abd4db723a21d75a80)
 
 - 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
 
