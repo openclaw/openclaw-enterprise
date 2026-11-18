@@ -6,7 +6,7 @@
     "controllerImage": "registry.example.invalid/openclaw-enterprise/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "authBaseUrl": "https://console.oce.example.com",
     "adminEmail": "admin@example.invalid",
-    "bootstrapPasswordClaimName": "occ-bootstrap-admin-password",
+    "bootstrapCredentialsSecretName": "occ-bootstrap-credentials",
     "recoveryUserId": "replace-with-existing-recovery-user-id",
     "oidc": {
       "issuer": "https://sso.example.com/realms/acme",

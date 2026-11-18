@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -551,8 +552,7 @@ func TestOpenShellImageImportRegistersThePodmanRecordedName(t *testing.T) {
 	assertRetriedImport(t, commands(), filepath.Join(root, "gateway-image.tar"), state.Cluster, stdout.String())
 }
 
-const controlPlaneKubectlCases = `"-n oce-system get pod bootstrap-password-prepare -o jsonpath={.status.phase}") echo Succeeded ;;
-"-n oce-system rollout status statefulset/postgres "*) ;;
+const controlPlaneKubectlCases = `"-n oce-system rollout status statefulset/postgres "*) ;;
 "-n oce-system get pod postgres-0 -o jsonpath={.status.podIP}") echo 10.42.0.20 ;;
 "-n default get endpoints kubernetes -o jsonpath={.subsets[0].addresses[0].ip}") echo 172.30.42.3 ;;
 "-n default get endpoints kubernetes -o jsonpath={.subsets[0].ports[0].port}") echo 6443 ;;
@@ -833,25 +833,23 @@ func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testin
 		"deploy/helm/openclaw-enterprise", "helm-values.json"), 1)
 }
 
-func TestKubernetesOnlyControlPlaneStartsPostgreSQLWhileTheBootstrapVolumeIsPrepared(t *testing.T) {
-	for _, scenario := range []string{"prepared", "prepare failure"} {
+func TestKubernetesOnlyControlPlanePrecreatesCredentialsBeforeHelm(t *testing.T) {
+	for _, scenario := range []string{"created", "Secret failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			state := kubernetesOnlyOpenShellState(t)
 			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			// The prepare Pod finishes only after PostgreSQL was applied, so a
-			// launcher that waited for it first would wait until its deadline.
-			applied := filepath.Join(state.directory, "postgres-applied")
-			finished := "Succeeded"
-			if scenario == "prepare failure" {
-				finished = "Failed"
+			// Rejecting the Secret must stop the launcher before Helm can start
+			// its pre-install hook. No credential storage or reader Pod is needed.
+			apply := ":"
+			if scenario == "Secret failure" {
+				apply = "echo 'credential Secret denied' >&2; exit 1"
 			}
 			commands := fakeProfileCommands(t, map[string]string{
-				"kubectl": `"apply -f ` + filepath.Join(state.directory, "postgres.json") + `") : > ` + shellQuote(applied) + ` ;;
+				"kubectl": `"apply -f ` + filepath.Join(state.directory, "bootstrap-credentials.json") + `") ` + apply + ` ;;
 "apply -f "*) ;;
-"-n oce-system get pod bootstrap-password-prepare -o jsonpath={.status.phase}") if [ -e ` + shellQuote(applied) + ` ]; then echo ` + finished + `; else echo Pending; fi ;;
-` + controlPlaneKubectlCases, // the prepare-phase case above wins: case takes the first match
+` + controlPlaneKubectlCases,
 				"docker": controlPlaneNetworkCase,
 				"helm":   `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
 			})
@@ -861,19 +859,39 @@ func TestKubernetesOnlyControlPlaneStartsPostgreSQLWhileTheBootstrapVolumeIsPrep
 			err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, "postgres@"+profileTestDigest, false, 3*time.Second)
 			calls := commands()
 			helm := slices.ContainsFunc(calls, func(command string) bool { return strings.HasPrefix(command, "helm ") })
-			if scenario == "prepared" {
+			if scenario == "created" {
 				if err != nil {
 					t.Fatalf("%v\n%s", err, strings.Join(calls, "\n"))
 				}
 				if !helm {
 					t.Fatalf("the chart was not installed:\n%s", strings.Join(calls, "\n"))
 				}
+				secretIndex := slices.IndexFunc(calls, func(command string) bool {
+					return strings.Contains(command, "apply -f "+filepath.Join(state.directory, "bootstrap-credentials.json"))
+				})
+				helmIndex := slices.IndexFunc(calls, func(command string) bool { return strings.HasPrefix(command, "helm ") })
+				if secretIndex < 0 || secretIndex >= helmIndex {
+					t.Fatalf("credentials must precede Helm: %v", calls)
+				}
+				secret := readJSONFile(t, filepath.Join(state.directory, "bootstrap-credentials.json"))
+				for name, file := range map[string]string{"admin-password": "initial-admin-password", "admin-service-key": "initial-admin-service-key"} {
+					input, err := os.ReadFile(filepath.Join(state.directory, file))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if secret["stringData"].(map[string]any)[name] != string(input) {
+						t.Fatalf("Secret %s does not match retained input", name)
+					}
+				}
+				for _, name := range []string{"bootstrap-password.json", "bootstrap-password-prepare.json", "bootstrap-key-reader.json"} {
+					if _, err := os.Stat(filepath.Join(state.directory, name)); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("obsolete bootstrap resource %s: %v", name, err)
+					}
+				}
 				return
 			}
-			// The chart's bootstrap uses the prepared volume, so a failed prepare
-			// Pod stops startup before the chart is installed.
-			if err == nil || !strings.Contains(err.Error(), "Pod bootstrap-password-prepare failed") || helm {
-				t.Fatalf("want the prepare failure before the chart install, got %v:\n%s", err, strings.Join(calls, "\n"))
+			if err == nil || !strings.Contains(err.Error(), "kubectl failed") || helm {
+				t.Fatalf("want the Secret failure before the chart install, got %v:\n%s", err, strings.Join(calls, "\n"))
 			}
 		})
 	}
@@ -1109,7 +1127,6 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 			}
 			commands := fakeProfileCommands(t, map[string]string{
 				"kubectl": `"apply -f "*) ;;
-"-n oce-system get pod bootstrap-password-prepare -o jsonpath={.status.phase}") echo Succeeded ;;
 "-n oce-system rollout status statefulset/postgres "*) ;;
 "-n oce-system get pod postgres-0 -o jsonpath={.status.podIP}") echo 10.42.0.20 ;;
 "-n default get endpoints kubernetes -o jsonpath={.subsets[0].addresses[0].ip}") echo 172.30.42.3 ;;
