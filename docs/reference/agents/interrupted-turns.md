@@ -3,6 +3,9 @@
 OpenClaw can continue eligible interrupted work by sending a new internal input to
 the same retained session. The continuation uses saved context and checks the
 session owner's current authority. It does not restore a process or tool handle.
+Chat messages sent from the Agent UI while the turn ran wait in the session's
+queue and follow it. HTTP chat requests are not in that queue; see
+[HTTP chat callers](#http-chat-callers).
 
 ## Recovery boundary
 
@@ -27,6 +30,16 @@ revision retry cannot prepare or activate with an ended generation.
 Other Compute Drivers and provider-managed Harnesses retain revision-scoped
 recovery. A new deployment ends their previous recovery scope. Missing Driver
 support never selects an Agent-wide scope.
+
+## HTTP chat callers
+
+An [HTTP chat](../agent-http-chat.md) request that waits behind the turn is not
+kept when the Gateway ends, in every case in the table. The caller gets an error
+from OCC: `502` with code `BAD_GATEWAY` when the connection closes before a
+response, or the runtime's own error status. A streamed response that already
+started closes without `[DONE]`. Send the request again. The caller of the
+interrupted turn gets the same error. If that turn resumes, its reply goes to the
+conversation: continue with the same `user` label to read it.
 
 ## Native enforcement and limits
 
