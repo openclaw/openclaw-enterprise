@@ -506,3 +506,64 @@ test("a terminal frame flushes queued TCP output", { timeout: 10000 }, async (t)
   await end;
   assert.deepEqual(Buffer.concat(chunks), body);
 });
+
+test(
+  "the policy proxy delivers the complete response to a slow reader at EOF",
+  { timeout: 15000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "strands-policy-eof-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const payload = Buffer.alloc(5 * 1024 * 1024 + 17, 0x4f);
+    const upstream = createTcpServer((socket) => {
+      socket.once("data", () => socket.end(payload));
+    });
+    await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    t.after(() => upstream.close());
+    const client = join(directory, "read-response.cjs");
+    // The synthetic native command speaks TCP through the proxy inherited from inner.mjs.
+    await writeFile(
+      client,
+      `
+    const net=require("node:net"), crypto=require("node:crypto");
+    const proxy=new URL(process.env.HTTP_PROXY);
+    const socket=net.connect(Number(proxy.port),proxy.hostname);
+    const hash=crypto.createHash("sha256");
+    socket.on("connect",()=>{
+      socket.write("GET http://example.invalid/ HTTP/1.1\\r\\nHost: example.invalid\\r\\n\\r\\n");
+      socket.pause();setTimeout(()=>socket.resume(),250);
+    });
+    socket.on("data",bytes=>hash.update(bytes));
+    socket.on("end",()=>console.error("digest="+hash.digest("hex")));
+  `,
+    );
+    const manifest = join(directory, "manifest.json");
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        command: ["/bin/sh", "-c", 'unset NODE_OPTIONS; exec "$0" "$1"', process.execPath, client],
+        environment: {},
+        workspace: directory,
+        port: 1,
+      }),
+    );
+    const inner = spawn(
+      process.execPath,
+      [new URL("../../deploy/runtime/strands-box/inner.mjs", import.meta.url).pathname, manifest],
+      {
+        env: { ...process.env, HTTPS_PROXY: "http://127.0.0.1:" + upstream.address().port },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    t.after(() => inner.kill());
+    let result = "";
+    inner.stderr.setEncoding("utf8").on("data", (chunk) => {
+      result += chunk;
+    });
+    const [code] = await once(inner, "exit");
+    assert.equal(code, 0, result);
+    assert.ok(
+      result.includes("digest=" + createHash("sha256").update(payload).digest("hex")),
+      result,
+    );
+  },
+);

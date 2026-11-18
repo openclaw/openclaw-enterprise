@@ -312,6 +312,8 @@ removal.
 
 ## Debugging and Verification
 
+[Strands companion](strands-box-companion.md).
+
 - `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
   reports `worker.openshell-git-continuity-refused` with the failed comparison.
   Held-startup comparisons expose SHA-256 hashes through `keyHash`.
