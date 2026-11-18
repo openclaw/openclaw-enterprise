@@ -274,6 +274,7 @@ export function registerPostgresMigrationTransactionCommandCases({
         } while (Date.now() < deadline);
         return false;
       }
+      let exitTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         assert.equal(
           await until(
@@ -287,7 +288,13 @@ export function registerPostgresMigrationTransactionCommandCases({
         child.kill("SIGTERM");
         await delay(5);
         child.kill("SIGTERM");
-        const [code, signal] = await exited;
+        const exitDeadline = new Promise<never>((_, reject) => {
+          exitTimer = setTimeout(
+            () => reject(new Error("migration did not exit within 10 seconds after SIGTERM")),
+            10_000,
+          );
+        });
+        const [code, signal] = await Promise.race([exited, exitDeadline]);
         assert.equal(code, 143);
         assert.equal(signal, null);
         assert.equal(
@@ -296,11 +303,15 @@ export function registerPostgresMigrationTransactionCommandCases({
           "migration session survived caller cancellation",
         );
       } finally {
-        if (child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGKILL");
-          await exited;
+        clearTimeout(exitTimer);
+        try {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+            await exited;
+          }
+        } finally {
+          await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
         }
-        await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
       }
     },
   );
