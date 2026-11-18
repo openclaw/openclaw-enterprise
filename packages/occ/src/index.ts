@@ -552,6 +552,7 @@ export {
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
   RepositoryDriverNotConfiguredError,
+  RecoveryPasswordPolicyError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
