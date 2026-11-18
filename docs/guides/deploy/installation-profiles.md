@@ -27,7 +27,7 @@ catalog discovery ready.
 Both profiles enable:
 
 - Native admin UI and private gateway routing.
-- Standard OpenClaw and Standard Codex Preset seeding.
+- Bundled Preset seeding, unless `presets.includeDefaults` is `false`.
 - Kubernetes Compute, Kubernetes Configuration, Kubernetes Secrets, native IAM,
   private metrics, digest-pinned images, DNS policy, trusted proxy CIDRs, and
   plugin-status proxy CIDRs.
@@ -79,6 +79,10 @@ standard Presets. Both controller processes must be able to read the files at
 startup; the renderer validates the list but does not read container files. See
 [Preset initialization](../../reference/presets.md#installation-defaults) for path
 resolution and startup validation.
+
+Set `presets.includeDefaults` to `false` (default `true`) to seed only the
+listed files; saved Presets remain. To keep **Start with default Preset**, name
+your starter Preset `default-codex`.
 
 Repository support is optional. When enabled, the renderer wires the broker
 container, GitHub Backend, Repo Driver, and Compute peer. The repository registry
@@ -132,6 +136,8 @@ one `@` and a dotted domain.
   }
 }
 ```
+
+Optional `controlPlane.clusterPort` sets the Kubernetes API egress port (default 443).
 
 `controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
 `controlPlane.databaseCa.secretName` must be Kubernetes resource names of at
@@ -214,6 +220,8 @@ see [OIDC setup](oidc-sign-in.md). Both require an HTTPS Console origin and the
 existing `recoveryUserId`. Google disables native access; OIDC supports it. To use host-only exchange,
 set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
 same-site HTTPS Console and Agent domains.
+
+For Keycloak, start with the [production profile example](oidc-keycloak.md#render-the-production-profile).
 
 Use `controlPlane.oidc.enrollment` for the
 [enrollment policy](../../reference/authentication/team-enrollment.md), including

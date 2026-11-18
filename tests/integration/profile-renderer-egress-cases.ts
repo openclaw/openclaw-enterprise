@@ -13,6 +13,8 @@ import {
   externalSignInInput,
 } from "./profile-renderer-inputs.ts";
 import {
+  helmSkip,
+  helmTemplate,
   loadYaml,
   syntheticCredentialUrl,
   render,
@@ -351,4 +353,33 @@ export function registerEgressCases(): void {
     assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
     assert.match(accepted.values, new RegExp(domain253));
   });
+
+  test(
+    "clusterPort reaches the Kubernetes API egress rule in the rendered chart",
+    { skip: helmSkip },
+    async () => {
+      // OVN-Kubernetes matches egress after Service translation, so OpenShift needs 6443.
+      const input = baseInput();
+      input.controlPlane.clusterPort = 6443;
+      const output = await render("openclaw", input);
+      assert.equal(propertyAt(loadYaml(output.values), "cluster", "port"), 6443);
+      assert.match(
+        helmTemplate(output),
+        /cidr: 192\.0\.2\.11\/32\s+ports:\s+- protocol: TCP\s+port: 6443/,
+      );
+
+      // The port is optional: omitting it keeps the chart default of 443.
+      const defaults = await render("openclaw", baseInput());
+      assert.equal(propertyAt(loadYaml(defaults.values), "cluster", "port"), undefined);
+
+      for (const bad of [0, 65536, "6443"]) {
+        input.controlPlane.clusterPort = bad;
+        await assertPreflightFailure(
+          "openclaw",
+          input,
+          /controlPlane\.clusterPort must be an integer from 1 through 65535/,
+        );
+      }
+    },
+  );
 }

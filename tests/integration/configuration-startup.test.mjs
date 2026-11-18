@@ -919,6 +919,7 @@ test("production embedded replacements preserve their active Service across fail
   worker.state.read = async (read) =>
     read({
       agents: {
+        findRestartContinuation: async () => undefined,
         findAgent: async () => ({
           id: agentId,
           namespaceId,
@@ -953,6 +954,7 @@ test("production embedded replacements preserve their active Service across fail
           },
         },
         agents: {
+          findRestartContinuation: async () => undefined,
           lockAgent: async (...arguments_) => {
             locks.push(["agent", ...arguments_]);
             return activeAgent;
@@ -1007,7 +1009,10 @@ test("production embedded replacements preserve their active Service across fail
     name,
     ownership,
     { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
+    {
+      runtime: "openclaw-enterprise/gateway-fixture:local",
+      workspaceSetup: computeDriver.options.images.gateway,
+    },
     `agent-${shortHash(agentId, 12)}`,
     "gateway",
     {},

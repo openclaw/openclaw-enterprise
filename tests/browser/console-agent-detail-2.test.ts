@@ -16,8 +16,6 @@ import {
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
@@ -55,6 +53,7 @@ import {
   registerSettingsRefocusAndTabsCases,
   registerSharingCredentialsAndChannelsCases,
 } from "./console-agent-detail-cases.mts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function assertRecord(
   value: unknown,
@@ -462,6 +461,7 @@ test("Agent browser access keeps the Open chat label while refreshing", async (t
 });
 
 test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   if (!nativeBrowserSupported(t)) {
     return;
   }
@@ -849,6 +849,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
 registerSharingCredentialsAndChannelsCases(detailApp);
 
 test("Deployment activity keeps keyboard focus when refresh discovers a newer version", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Deployment refresh focus", { ready: true });
   const agent = await fixture.createAgent(

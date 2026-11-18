@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { inspect } from "node:util";
 
-import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   DependencyUnavailableError,
   RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
-import { options, routedOptions } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
+import { options, routedOptions } from "../helpers/kubernetes-routed-options.ts";
 import { createRuntimeLogDriverFixture } from "./kubernetes-runtime-log-fixture.ts";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
@@ -22,9 +21,8 @@ function runtimeLogDriverFixture({ twoCluster = false }: { twoCluster?: boolean 
     kubeconfigPath,
     contextName,
     twoCluster,
-    // The JavaScript builders infer their fixed mode discriminants as string.
-    options: (overrides) => options(overrides) as KubernetesComputeDriverOptions,
-    routedOptions: (overrides) => routedOptions(overrides) as KubernetesComputeDriverOptions,
+    options,
+    routedOptions,
   });
 }
 

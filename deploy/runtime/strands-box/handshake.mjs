@@ -5,7 +5,7 @@ export function nativeReady(port, token) {
   return new Promise((resolve) => {
     const id = randomUUID();
     const socket = new WebSocket(`ws://127.0.0.1:${port}`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `Bearer ${token}`, "x-oce-readiness": "1" },
       maxPayload: 16384,
       handshakeTimeout: 4000,
     });
@@ -23,7 +23,7 @@ export function nativeReady(port, token) {
         JSON.stringify({
           id,
           method: "initialize",
-          params: { clientInfo: { name: "oce_box_readiness", version: "1" } },
+          params: { clientInfo: { name: "codex_app_server_daemon", version: "1" } },
         }),
       ),
     );

@@ -232,6 +232,8 @@ function fakeCluster() {
   };
   const get = (resource: string, namespace: string | undefined, name: string | undefined) =>
     store.get(key(resource, namespace, name));
+  const deleteFixture = (resource: string, namespace: string | undefined, name: string) =>
+    store.delete(key(resource, namespace, name));
   const items = (resource: string, namespace: string | undefined) =>
     [...store.entries()]
       .filter(
@@ -448,7 +450,7 @@ function fakeCluster() {
     }
   };
   return {
-    store,
+    deleteFixture,
     put,
     get,
     items,
@@ -705,6 +707,21 @@ function journalOf(namespace: FixtureObject): Record<string, unknown> {
   return record(JSON.parse(required(required(namespace.metadata.annotations)[JOURNAL_ANNOTATION])));
 }
 
+function assertOccReplicas(
+  get: ReturnType<typeof fakeCluster>["get"],
+  expected: { api: number; worker: number },
+): void {
+  for (const [name, replicas] of [
+    ["openclaw-enterprise-api", expected.api],
+    ["openclaw-enterprise-worker", expected.worker],
+  ] as const) {
+    assert.equal(
+      required(required(get("deployments.apps", "openclaw-system", name)).spec).replicas,
+      replicas,
+    );
+  }
+}
+
 function snapshot({ get }: ReturnType<typeof fakeCluster>) {
   const volume = (name: string) => get("persistentvolumes", undefined, name);
   return {
@@ -782,18 +799,7 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
   await applyAdoption(kubectl, { archive, ...fast });
 
   // The old API serves again for the upgrade helper; the worker stays stopped.
-  for (const [component, replicas] of [
-    ["api", 1],
-    ["worker", 0],
-  ]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      replicas,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 0 });
   assert.equal(
     required(required(get("namespaces", undefined, storage)).metadata.labels)[
       "openclaw.dev/namespace"
@@ -890,7 +896,7 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
     data: {},
   });
   await assert.rejects(finalizeAdoption(kubectl, fast), /secrets\/late-secret/);
-  cluster.store.delete(`secrets/${tenantNamespace}/late-secret`);
+  cluster.deleteFixture("secrets", tenantNamespace, "late-secret");
   await finalizeAdoption(kubectl, fast);
   assert.equal(get("namespaces", undefined, tenantNamespace), undefined);
   assert.equal(
@@ -970,15 +976,7 @@ test("revert before the upgrade restores the released layout exactly", async (t)
       1,
     );
   }
-  for (const component of ["api", "worker"]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      1,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 1 });
 });
 
 test("an interrupted rebind resumes without releasing the volume", async (t) => {
@@ -1084,7 +1082,7 @@ test("apply waits out the grace period of a Pod that is slow to stop", async (t)
     await new Promise((done) => setTimeout(done, 30));
     // Gone after about 150 ms: past the 50 ms timeout, inside the 1 s grace period.
     if (++sleeps === 5) {
-      cluster.store.delete(`pods/${tenantNamespace}/gateway-slow`);
+      cluster.deleteFixture("pods", tenantNamespace, "gateway-slow");
     }
   };
   await applyAdoption(kubectl, { archive, sleep, timeoutMs: 50 });
@@ -1174,12 +1172,13 @@ test("plan refuses tenants adoption cannot carry, and apply then changes nothing
     ],
     [
       "a missing storage grant",
-      ({ store }) => store.delete(`rolebindings.rbac.authorization.k8s.io/${storage}/grant-api`),
+      ({ deleteFixture }) =>
+        deleteFixture("rolebindings.rbac.authorization.k8s.io", storage, "grant-api"),
       /lacks a RoleBinding of ClusterRole \*-openclaw-tenant-api/,
     ],
     [
       "no tenant namespace in this cluster",
-      ({ store }) => store.delete(`namespaces//${tenantNamespace}`),
+      ({ deleteFixture }) => deleteFixture("namespaces", undefined, tenantNamespace),
       /two-cluster control target/,
     ],
     [
@@ -1288,7 +1287,7 @@ test("an operator can accept OAuth reconnects and drop a confirmed resource kind
   // The confirmed kind does not stop finalize either; an object added after apply does.
   put("configmaps", { metadata: { name: "added-later", namespace: tenantNamespace } });
   await assert.rejects(finalizeAdoption(kubectl, fast), /configmaps\/added-later/);
-  cluster.store.delete(`configmaps/${tenantNamespace}/added-later`);
+  cluster.deleteFixture("configmaps", tenantNamespace, "added-later");
   await finalizeAdoption(kubectl, fast);
   assert.equal(get("namespaces", undefined, tenantNamespace), undefined);
 });
@@ -1417,15 +1416,7 @@ test("apply refuses to adopt more tenants once the controller runs other images"
     /openclaw-enterprise-api runs other images than apply recorded; roll the controller back/,
   );
   // The new release keeps serving and the second tenant is untouched.
-  for (const component of ["api", "worker"]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      1,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 1 });
   assert.equal(
     required(get("namespaces", undefined, otherStorage)).metadata.annotations?.[JOURNAL_ANNOTATION],
     undefined,
@@ -1474,18 +1465,7 @@ test("a crash between copying a Secret and recording it still lets revert remove
   await assert.rejects(applyAdoption(kubectl, { archive, ...fast }), /injected failure/);
   assert.notEqual(get("secrets", storage, `transport-${embedded}`), undefined);
   await applyAdoption(kubectl, { archive, ...fast });
-  for (const [component, replicas] of [
-    ["api", 1],
-    ["worker", 0],
-  ]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      replicas,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 0 });
   await revertAdoption(kubectl, { archive, ...fast });
   assert.equal(get("secrets", storage, `transport-${embedded}`), undefined);
 });

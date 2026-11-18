@@ -25,6 +25,7 @@ import {
   validateFailureData,
   validateSuccessResultData,
   type ControllerWorkAttempt,
+  type ControllerWorkLookup,
   type DeferredWork,
   type EnqueueWork,
   type PermanentFailure,
@@ -1209,6 +1210,31 @@ export class PostgresWorkQueue {
       [nonempty(idempotencyKey, "Controller work idempotency key")],
     );
     return found.rows[0] === undefined ? undefined : asWork(found.rows[0]);
+  }
+
+  async findWorkByKeys(idempotencyKeys: readonly string[]): Promise<ControllerWorkLookup> {
+    if (idempotencyKeys.length === 0) {
+      return new Map();
+    }
+    const found = await this.client.query(
+      `SELECT *, state = 'claimed' AND lease_expires_at > clock_timestamp() AS lease_active
+       FROM occ.controller_work WHERE idempotency_key = ANY($1::text[])`,
+      [idempotencyKeys.map((key) => nonempty(key, "Controller work idempotency key"))],
+    );
+    const workByKey = new Map(
+      found.rows.map((row) => {
+        const work = asRow(row);
+        return [work.idempotency_key, work];
+      }),
+    );
+    return {
+      // Decode in the caller's operation order so a later malformed row does not
+      // mask the first refusal.
+      get(idempotencyKey) {
+        const work = workByKey.get(idempotencyKey);
+        return work === undefined ? undefined : asWork(work);
+      },
+    };
   }
 
   async hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean> {

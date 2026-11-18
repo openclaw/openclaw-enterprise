@@ -8,6 +8,7 @@ import {
   deliver,
   firstHeader,
   MAX_CHANNELS,
+  PROBE_CHANNELS,
   CHUNK,
   write,
 } from "./transport.mjs";
@@ -19,6 +20,8 @@ if (boxProxy.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(boxPro
 }
 const channels = new Map();
 const proxySockets = new Set();
+const probes = new Set();
+const pendingGateway = new Map();
 let child;
 let stopping = false;
 function stop() {
@@ -37,17 +40,30 @@ const send = framed(
   process.stdin,
   process.stdout,
   (message) => {
-    if (message.type === "open") {
+    if (message.type === "open" || message.type === "probe") {
       if (channels.has(message.id)) {
         throw new Error("Duplicate channel");
       }
-      if (channels.size >= MAX_CHANNELS) {
+      const probe = message.type === "probe";
+      if (probe ? probes.size >= PROBE_CHANNELS : channels.size - probes.size >= MAX_CHANNELS) {
         send({ id: message.id, type: "close" });
         return;
       }
       const socket = connect({ host: "127.0.0.1", port: manifest.port });
       channels.set(message.id, socket);
-      relay(socket, message.id, send, () => channels.delete(message.id));
+      if (probe) {
+        probes.add(message.id);
+      }
+      relay(socket, message.id, send, () => {
+        channels.delete(message.id);
+        probes.delete(message.id);
+      });
+    } else if (message.type === "opened") {
+      const open = pendingGateway.get(message.id);
+      if (open) {
+        pendingGateway.delete(message.id);
+        open();
+      }
     } else {
       const socket = channels.get(message.id);
       if (socket) {
@@ -93,22 +109,31 @@ const proxy = createServer((socket) => {
       gateway &&
       ((target?.[1] === gateway.host && Number(target[2]) === gateway.port) || plainGateway)
     ) {
-      if (channels.size >= MAX_CHANNELS) {
+      if (channels.size - probes.size >= MAX_CHANNELS) {
         socket.destroy();
         return;
       }
       const id = channelId();
       channels.set(id, socket);
-      relay(socket, id, send, () => channels.delete(id));
+      relay(socket, id, send, () => {
+        pendingGateway.delete(id);
+        channels.delete(id);
+      });
+      pendingGateway.set(id, () => {
+        if (!plainGateway) {
+          write(socket, Buffer.from("HTTP/1.1 200 Connection Established\r\n\r\n"));
+        }
+        const head = plainGateway ?? bytes.subarray(bytes.indexOf("\r\n\r\n") + 4);
+        for (let offset = 0; offset < head.length; offset += CHUNK) {
+          send({
+            id,
+            type: "data",
+            data: head.subarray(offset, offset + CHUNK).toString("base64"),
+          });
+        }
+        socket.resume();
+      });
       send({ id, type: "open" });
-      if (!plainGateway) {
-        write(socket, Buffer.from("HTTP/1.1 200 Connection Established\r\n\r\n"));
-      }
-      const head = plainGateway ?? bytes.subarray(bytes.indexOf("\r\n\r\n") + 4);
-      for (let offset = 0; offset < head.length; offset += CHUNK) {
-        send({ id, type: "data", data: head.subarray(offset, offset + CHUNK).toString("base64") });
-      }
-      socket.resume();
       return;
     }
     // All other destinations still pass through the unmodified Box proxy and

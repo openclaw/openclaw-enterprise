@@ -1,5 +1,5 @@
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { APIError, betterAuth, type Auth, type BetterAuthOptions } from "better-auth";
 import { splitSetCookieHeader } from "better-auth/cookies";
@@ -45,6 +45,13 @@ import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./sessio
 import { sessionAuthority } from "./session-authority.ts";
 import { createServiceKeyVerification } from "./service-key-verification.ts";
 import { passwordSignOut } from "./password-sign-out.ts";
+import {
+  authLibraryFailureEvent,
+  authLibraryLog,
+  withAuthLogContext,
+  type AuthLibraryOperation,
+  type AuthLogRequest,
+} from "./library-log.ts";
 import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
@@ -247,8 +254,7 @@ export interface ControllerAuthOptions {
   readonly passwordHasher?: PasswordHasher;
   /**
    * The password-only profile's known-device account state (see known-device.ts). Without
-   * it, and without an external provider, entries are bound to the user and a hash of its
-   * stored password hash, read through Better Auth.
+   * it, and without an external provider, no known-device entries are issued.
    */
   readonly knownDeviceState?: KnownDeviceAccountState;
   /**
@@ -819,7 +825,39 @@ function authFailureMessage(error: unknown, status: number, failure: AuthEndpoin
   return failure.refused;
 }
 
+/**
+ * The request an auth library call serves, for its log lines: never the path or query. Reading
+ * it never throws, so logging cannot change an answer.
+ */
+function authLogRequest(request: FastifyRequest): AuthLogRequest | undefined {
+  try {
+    const route = request.routeOptions.url;
+    return {
+      requestId: request.id,
+      method: request.method,
+      ...(route === undefined ? {} : { route }),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+// The curated endpoints runPrivateEndpoint calls, as log operations.
+function privateEndpointOperation(path: string): AuthLibraryOperation {
+  if (path === "/oce/password") {
+    return "sign-in-password";
+  }
+  if (path === "/oce/sign-out") {
+    return "sign-out";
+  }
+  if (path.endsWith("/callback")) {
+    return "provider-callback";
+  }
+  return path.endsWith("/result") ? "provider-result" : "provider-start";
+}
+
 async function sendAuthEndpoint(
+  operation: AuthLibraryOperation,
   request: FastifyRequest,
   reply: FastifyReply,
   run: () => Promise<{
@@ -831,7 +869,7 @@ async function sendAuthEndpoint(
   failureText: AuthEndpointFailure,
 ): Promise<void> {
   try {
-    const result = await run();
+    const result = await withAuthLogContext(operation, authLogRequest(request), run);
     setAuthHeaders(reply, result?.headers);
     reply.status(result?.status ?? 200).send({
       data: data(result?.response ?? null),
@@ -915,12 +953,19 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
     }
 
     const headers = authHeaders(request.headers);
+    const logRequest: AuthLogRequest = {
+      requestId: request.requestId,
+      method: request.method,
+      ...(request.route === undefined ? {} : { route: request.route }),
+    };
     // An explicitly supplied key never falls back to a potentially more privileged cookie.
     if (headers.has(OCC_SERVICE_KEY_HEADER)) {
-      const result = await serviceKeyVerification.verify(() =>
-        this.#auth.api.verifyApiKey({
-          body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
-        }),
+      const result = await withAuthLogContext("verify-api-key", logRequest, () =>
+        serviceKeyVerification.verify(() =>
+          this.#auth.api.verifyApiKey({
+            body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
+          }),
+        ),
       );
       if (!result.valid || !result.key) {
         throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid service API key is required.");
@@ -944,12 +989,14 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
       };
     }
 
-    const session = await this.#auth.api.getSession({
-      headers: sessionHeaders(headers, this.#sessionCookieName),
-      query: { disableCookieCache: true, disableRefresh: true },
-      asResponse: false,
-      returnHeaders: true,
-    });
+    const session = await withAuthLogContext("verify-session", logRequest, () =>
+      this.#auth.api.getSession({
+        headers: sessionHeaders(headers, this.#sessionCookieName),
+        query: { disableCookieCache: true, disableRefresh: true },
+        asResponse: false,
+        returnHeaders: true,
+      }),
+    );
     const response = session && "response" in session ? session.response : session;
     const authenticatedSession = safeAuthenticatedSession(response);
     if (authenticatedSession === undefined) {
@@ -1006,11 +1053,6 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   }
 
   const expectedBrowserOrigin = new URL(options.baseURL).origin;
-  if (Object.hasOwn(options, "sharedCookieDomain")) {
-    throw new Error(
-      "sharedCookieDomain has been removed; session cookie scope is derived from Console and Agent hostnames.",
-    );
-  }
   const sessionMode = options.sessionMode ?? "shared-cookie";
   if (sessionMode !== "shared-cookie" && sessionMode !== "host-only-exchange") {
     throw new Error("Session mode must be shared-cookie or host-only-exchange.");
@@ -1054,8 +1096,17 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     ...(humanLogin === undefined
       ? {
           // Credential refusals are Better Auth warnings with no request or account; the
-          // sign-in audit records them instead. Errors still reach the console.
-          logger: { level: "error" },
+          // sign-in audit records them instead. Errors go to the structured log when there
+          // is one (a refused API key as one informational line), else to the console.
+          logger: {
+            level: "error",
+            ...(options.onOperationalEvent === undefined
+              ? {}
+              : { log: authLibraryLog(options.onOperationalEvent) }),
+          },
+          // As in the guarded profile, so the router never prints an unclassified exception to
+          // the console. Nothing on this profile calls the router today, so it changes no response.
+          onAPIError: { throw: true },
         }
       : {
           session: {
@@ -1067,7 +1118,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           // Better Call logs an unclassified exception to the console even when the auth
           // logger is disabled, and since Better Auth 1.7.9 `onAPIError.onError` can only
           // observe it. Throwing leaves the router without logging; runPrivateEndpoint owns
-          // the error and answers it as a dependency failure.
+          // the error, logs it as one structured line and answers it as a dependency failure.
           onAPIError: { throw: true },
         }),
     plugins: [
@@ -1123,26 +1174,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   // external provider its name follows the curated endpoints that issue it.
   const knownDeviceSecure = humanLogin?.knownDeviceSecure ?? true;
   // What a known-device entry is bound to: with an external provider, the guarded account
-  // state (versions and enabled state); otherwise the composition's password state.
+  // state (versions and enabled state); otherwise the composition's password state. Without
+  // either, no entry is issued.
   const knownDeviceState: KnownDeviceAccountState =
-    humanLogin?.knownDeviceState ??
-    options.knownDeviceState ??
-    (async (email) => {
-      const found = await (
-        await auth.$context
-      ).internalAdapter.findUserByEmail(email, { includeAccounts: true });
-      const credentials = (found?.accounts ?? []).filter(
-        (account) =>
-          account.providerId === "credential" &&
-          typeof account.password === "string" &&
-          account.password.length > 0,
-      );
-      if (found === null || credentials.length !== 1) {
-        return undefined;
-      }
-      const passwordHash = createHash("sha256").update(credentials[0]!.password!).digest("hex");
-      return `adapter\0${found.user.id}\0${credentials[0]!.id}\0${passwordHash}`;
-    });
+    humanLogin?.knownDeviceState ?? options.knownDeviceState ?? (async () => undefined);
   // Bound fresh proof reads before account access. Signed keys constrain resources only;
   // a refused or failed proof retains those constraints on the ordinary shared lane.
   const knownDeviceReads = keyedAdmission(
@@ -1180,7 +1215,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         if (humanLogin !== undefined) {
           // The recovery account is the documented way in when a provider is down, so
           // strangers spending its email can slow it but never refuse it.
-          if (humanLogin.isRecoveryEmail(email)) {
+          if (await humanLogin.isRecoveryEmail(email)) {
             return true;
           }
           // Recovery-only: every other password is refused unread, reserved or not.
@@ -1349,11 +1384,22 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     });
     let response: Response;
     try {
-      response = await auth.handler(authRequest);
-    } catch {
+      response = await withAuthLogContext(
+        privateEndpointOperation(path),
+        authLogRequest(request),
+        () => auth.handler(authRequest),
+      );
+    } catch (error) {
       // Better Auth answers its own APIErrors; it throws only an error it cannot classify
-      // (onAPIError.throw), such as a database or audit failure. The error itself may hold
-      // dependency detail, so it is not logged or returned.
+      // (onAPIError.throw), such as a database or audit failure. Its message may hold
+      // dependency detail, so only the operation and its code or class name are logged.
+      try {
+        withAuthLogContext(privateEndpointOperation(path), authLogRequest(request), () =>
+          options.onOperationalEvent?.(authLibraryFailureEvent(error)),
+        );
+      } catch {
+        // Logging never changes the answer.
+      }
       throw new AuthDependencyUnavailable();
     }
     if (!response.ok) {
@@ -1389,6 +1435,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     return {
       async start(request: FastifyRequest, reply: FastifyReply): Promise<void> {
         await sendAuthEndpoint(
+          "provider-start",
           request,
           reply,
           () => {
@@ -1434,6 +1481,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       async result(request: FastifyRequest, reply: FastifyReply): Promise<void> {
         reply.header("cache-control", "no-store");
         await sendAuthEndpoint(
+          "provider-result",
           request,
           reply,
           () => {
@@ -1458,6 +1506,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   async function signInEmail(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
+      "sign-in-password",
       request,
       reply,
       async () => {
@@ -1597,6 +1646,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   async function signOut(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
+      "sign-out",
       request,
       reply,
       async () => {
@@ -1641,6 +1691,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   async function session(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
+      "session-check",
       request,
       reply,
       async () => {
@@ -1670,13 +1721,15 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     const headers = sessionHeaders(request.headers, sessionCookieName);
     requireSessionKey(headers, options.secret, undefined);
     const session = safeAuthenticatedSession(
-      await api.getSession({
-        headers,
-        query: { disableCookieCache: true, disableRefresh: true },
-        asResponse: false,
-        returnHeaders: false,
-        returnStatus: false,
-      }),
+      await withAuthLogContext("resolve-session", authLogRequest(request), () =>
+        api.getSession({
+          headers,
+          query: { disableCookieCache: true, disableRefresh: true },
+          asResponse: false,
+          returnHeaders: false,
+          returnStatus: false,
+        }),
+      ),
     );
     if (session !== undefined) {
       requireSessionKey(headers, options.secret, session.id);
@@ -1737,20 +1790,22 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       // account or session is created for this existing IAM automation identity.
       let created;
       try {
-        created = await api.createApiKey({
-          body: {
-            configId: SERVICE_KEY_CONFIG,
-            userId: principal.id,
-            name,
-            ...(expiresIn === undefined ? {} : { expiresIn }),
-            metadata: {
-              installationId: options.installationId,
-              ...(principal.namespaceId === undefined
-                ? {}
-                : { namespaceId: principal.namespaceId }),
+        created = await withAuthLogContext("create-service-key", undefined, () =>
+          api.createApiKey({
+            body: {
+              configId: SERVICE_KEY_CONFIG,
+              userId: principal.id,
+              name,
+              ...(expiresIn === undefined ? {} : { expiresIn }),
+              metadata: {
+                installationId: options.installationId,
+                ...(principal.namespaceId === undefined
+                  ? {}
+                  : { namespaceId: principal.namespaceId }),
+              },
             },
-          },
-        });
+          }),
+        );
       } catch (error) {
         throw serviceKeyNameRefusal(error) ? new ServiceKeyNameRefused(error) : error;
       }
@@ -1915,7 +1970,10 @@ export async function createPostgresControllerAuth(
           state,
           options.installationId,
           betterAuthIssuer(options.installationId),
-          { externalProviderIds },
+          {
+            externalProviderIds,
+            ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
+          },
         );
   // Any external provider activates the guarded profile; all share its recovery user.
   const recoveryUserId = google?.recoveryUserId ?? oidc?.recoveryUserId;
@@ -2026,9 +2084,6 @@ export async function createPostgresControllerAuth(
     if (!designation) {
       throw new Error("Recovery designation is unavailable.");
     }
-    // The recovery account's password lane stays admitted under sign-in floods. It follows the
-    // stored designation, never the environment seed, which may name a replaced holder.
-    humanLogin!.designateRecovery(designation.email);
     if (passwordSignIn === "recovery-only") {
       withoutExternalIdentity = await persistence!.accountsWithoutExternalIdentity(
         [humanLogin!.googleProviderId, humanLogin!.oidcProviderId].filter(
@@ -2109,18 +2164,19 @@ export async function createPostgresControllerAuth(
             actor: HumanAuthenticationActor,
             expectedVersion: number,
           ) => {
-            const { email, ...replaced } = await persistence!.replaceRecovery(
+            const replaced = await persistence!.replaceRecovery(
               userId,
               principalId,
               expectedCurrentUserId,
               actor,
               expectedVersion,
             );
-            // Move the reserved password lane to the committed holder's email. The email comes
-            // from the replacing transaction, so no later read can fail and leave the old holder
-            // on the lane.
-            humanLogin.designateRecovery(email);
-            return replaced;
+            return {
+              userId: replaced.userId,
+              principalId: replaced.principalId,
+              methodId: replaced.methodId,
+              changed: replaced.changed,
+            };
           },
           enrolAccount: (userId: string, actor: HumanAuthenticationActor) =>
             persistence!.enrolAccount(userId, actor),

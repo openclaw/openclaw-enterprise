@@ -51,6 +51,20 @@ export function assertConnectedCheckout(input) {
   if (input.controllerUpgrade) {
     git("merge-base", "--is-ancestor", input.controllerUpgrade.fromCommit, input.oceCommit);
   }
+  // A later harness may observe historical controllers, but its class-free Pod
+  // checks cannot qualify the removed configuration contract. Inspect committed
+  // source before touching the prepared stack; do not infer this from Pod state.
+  const controllers = [
+    input.oceCommit,
+    ...(input.controllerUpgrade ? [input.controllerUpgrade.fromCommit] : []),
+  ];
+  for (const commit of controllers) {
+    const sandboxDriver = git("show", `${commit}:apps/controller/src/drivers/sandbox/openshell.ts`);
+    assert.ok(
+      !/\bruntimeClassName\b/.test(sandboxDriver),
+      `Controller ${commit} predates RuntimeClass removal; use its matching historical harness. Controller-only upgrades cannot cross this configuration change with an unchanged Installation.`,
+    );
+  }
 }
 
 // The gateway client loads proto3 with defaults:false and longs:String. An

@@ -69,7 +69,6 @@
       "signingSecretName": "openshell-jwt-signing-key",
       "gatewayId": "openshell-gateway"
     },
-    "defaultRuntimeClassName": "openshell-sandbox",
     "dataStorageClass": $storageClass,
     "dataStorageSize": "1Gi",
     "drivers": {

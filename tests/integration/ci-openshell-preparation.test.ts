@@ -6,6 +6,10 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import {
+  loadYaml,
+  type V1Pod,
+} from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   agentSandboxControllerForNodes,
@@ -42,7 +46,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl with runc", async (t) => {
+test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl", async (t) => {
   const root = await openShellTestDirectory(t, "openshell-cluster-bootstrap-test");
   const calls: CommandCall[] = [];
 
@@ -67,8 +71,6 @@ test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl with runc"
   const kubectl = join(root, "bin", `kubectl-darwin-arm64-${kubectlVersion}`);
   assert.deepEqual(result, {
     k3sImage,
-    runtimeClass: "openshell-sandbox",
-    runtimeHandler: "runc",
     kubectl,
     kubectlVersion,
   });
@@ -129,6 +131,42 @@ test("prepareOpenShell rejects mutable OpenShell image overrides before kubectl 
   assert.deepEqual(calls, []);
 });
 const execFileAsync = promisify(execFileCallback);
+
+type CandidateCommandHandlers = {
+  inspectImage?: (image: string) => { stdout: string } | Promise<{ stdout: string }>;
+  showChart?: (chart: string) => { stdout: string } | Promise<{ stdout: string }>;
+};
+
+// Git and chart filesystem checks run for real; scenarios supply Docker and Helm metadata.
+function candidateCommands(handlers: CandidateCommandHandlers): PrepareOptions["execFile"] {
+  return async (command, args) => {
+    if (command === "git") {
+      return execFileAsync(command, args);
+    }
+    if (command === "docker") {
+      assert.equal(args.length, 5);
+      assert.deepEqual(args.slice(0, 4), [
+        "image",
+        "inspect",
+        "--format",
+        '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
+      ]);
+      const image = args[4];
+      assert.ok(image);
+      assert.ok(handlers.inspectImage, "unexpected Docker image inspection");
+      return handlers.inspectImage(image);
+    }
+    if (command === "helm") {
+      assert.equal(args.length, 3);
+      assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
+      const chart = args[2];
+      assert.ok(chart);
+      assert.ok(handlers.showChart, "unexpected Helm chart inspection");
+      return handlers.showChart(chart);
+    }
+    assert.fail(`unexpected candidate command ${command}`);
+  };
+}
 
 async function candidateCheckout(t: TestContext, { gatewayAppVersion = "0.0.0" } = {}) {
   const root = await openShellTestDirectory(t, "openshell-candidate");
@@ -238,39 +276,36 @@ test("OpenShell candidate preflight uses verified chart bytes and removes its sn
   const { env } = await candidateCheckout(t);
   const inspected: string[] = [];
   let charts: { gateway: string; directory: string; workspace: string } | undefined;
-  const selection = await validateOpenShellSelection(env, async (command, args) => {
-    if (command === "git") {
-      return execFileAsync(command, args);
-    }
-    if (command === "helm") {
-      assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
-      const chart = args[2];
-      assert.ok(chart);
-      const gateway = await readFile(join(chart, "Chart.yaml"), "utf8");
-      const directory = dirname(chart);
-      const workspace = await readFile(
-        join(directory, "openshell-workspace", "values.yaml"),
-        "utf8",
-      );
-      charts = { gateway, directory, workspace };
-      return { stdout: gateway };
-    }
-    // Docker reports fixture metadata. Git tree and on-disk chart comparisons run for real.
-    assert.equal(command, "docker");
-    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-    if (inspected.length === 0) {
-      // The checkout can change after chart validation and before Helm consumes it.
-      await writeFile(join(env.OCC_TEST_OPENSHELL_HELM_CHART, "Chart.yaml"), "appVersion: 9.9.9\n");
-      await writeFile(
-        join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"),
-        "replicaCount: 99\n",
-      );
-    }
-    const image = args.at(-1);
-    assert.ok(image);
-    inspected.push(image);
-    return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
-  });
+  const selection = await validateOpenShellSelection(
+    env,
+    candidateCommands({
+      async inspectImage(image) {
+        if (inspected.length === 0) {
+          // The checkout can change after chart validation and before Helm consumes it.
+          await writeFile(
+            join(env.OCC_TEST_OPENSHELL_HELM_CHART, "Chart.yaml"),
+            "appVersion: 9.9.9\n",
+          );
+          await writeFile(
+            join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"),
+            "replicaCount: 99\n",
+          );
+        }
+        inspected.push(image);
+        return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
+      },
+      async showChart(chart) {
+        const gateway = await readFile(join(chart, "Chart.yaml"), "utf8");
+        const directory = dirname(chart);
+        const workspace = await readFile(
+          join(directory, "openshell-workspace", "values.yaml"),
+          "utf8",
+        );
+        charts = { gateway, directory, workspace };
+        return { stdout: gateway };
+      },
+    }),
+  );
   assert.deepEqual(
     new Set(inspected),
     new Set([
@@ -392,21 +427,13 @@ test("prepareOpenShell rejects a verified gateway chart without an application v
   await assert.rejects(
     prepareOpenShell({
       cluster: ownedCluster(root),
-      async execFile(command, args) {
-        if (command === "git") {
-          return execFileAsync(command, args);
-        }
-        if (command === "docker") {
-          assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-          return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
-        }
-        assert.equal(command, "helm");
-        assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
-        const chart = args[2];
-        assert.ok(chart);
-        assert.equal(dirname(dirname(chart)), root);
-        return { stdout: await readFile(join(chart, "Chart.yaml"), "utf8") };
-      },
+      execFile: candidateCommands({
+        inspectImage: () => ({ stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` }),
+        async showChart(chart) {
+          assert.equal(dirname(dirname(chart)), root);
+          return { stdout: await readFile(join(chart, "Chart.yaml"), "utf8") };
+        },
+      }),
       registerImage: async () => assert.fail("invalid candidate must not register images"),
       env,
     }),
@@ -422,14 +449,10 @@ test("prepareOpenShell rejects source, chart, and image mismatches before cluste
     assert.fail("mismatched candidates must not register images"),
   );
   let imageRevision = env.OCC_TEST_OPENSHELL_SOURCE_REVISION;
-  const execFile: PrepareOptions["execFile"] = async (command, args) => {
-    if (command === "git") {
-      return execFileAsync(command, args);
-    }
-    assert.equal(command, "docker", "candidate mismatch must fail before cluster commands");
-    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-    return { stdout: `${imageRevision}\n` };
-  };
+  // No Helm handler: mismatches must stop before later preflight or cluster commands.
+  const execFile = candidateCommands({
+    inspectImage: () => ({ stdout: `${imageRevision}\n` }),
+  });
   const prepare = (selected = env) =>
     prepareOpenShell({
       cluster: ownedCluster(root),
@@ -473,29 +496,38 @@ test("prepareOpenShell rejects source, chart, and image mismatches before cluste
   assert.equal(registerImage.mock.callCount(), 0);
 });
 
-test("prepareOpenShell fails before downloads when the RuntimeClass smoke Pod fails", async (t) => {
+test("prepareOpenShell fails before downloads when the default runtime smoke Pod fails", async (t) => {
   const clusterName = "openclaw-k8s-openshell-test";
   const root = await openShellTestDirectory(t, clusterName);
   const calls: CommandCall[] = [];
   const cluster = ownedCluster(root, clusterName);
   const agentImage =
     "localhost/openclaw-k8s-openshell-test/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const admissionProbes: V1Pod[] = [];
 
   async function execFile(command: string, args: string[]) {
     calls.push([command, args]);
-    if (command === "docker" && args[0] === "exec") {
-      return {
-        stdout: "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.'runc']\n",
-        stderr: "",
-      };
-    }
     if (
       command === "kubectl" &&
       args.includes("--dry-run=server") &&
       args.some((arg) => arg.endsWith("openshell-psa-restricted-rejection.yaml"))
     ) {
+      const manifestPath = args[args.indexOf("-f") + 1];
+      assert.ok(manifestPath);
+      const pod = loadYaml<V1Pod>(await readFile(manifestPath, "utf8"));
+      const securityContext = pod.spec?.containers[0]?.securityContext;
+      assert.ok(securityContext);
+      // Kubernetes rejects this combination before PSA. The mock below proves
+      // orchestration only; the generated input must independently be valid.
+      if (securityContext.privileged) {
+        assert.notEqual(securityContext.allowPrivilegeEscalation, false);
+      } else {
+        assert.equal(securityContext.allowPrivilegeEscalation, false);
+        assert.deepEqual(securityContext.capabilities?.add, ["NET_ADMIN"]);
+      }
+      admissionProbes.push(pod);
       throw new Error(
-        'Error from server (Forbidden): pods "openshell-psa-violation" is forbidden: violates PodSecurity "restricted:latest": privileged',
+        `Error from server (Forbidden): pods "openshell-psa-violation" is forbidden: violates PodSecurity "restricted:latest": ${securityContext.privileged ? "privileged" : "unrestricted capabilities"}`,
       );
     }
     if (command === "kubectl" && args.includes("--for=jsonpath={.status.phase}=Succeeded")) {
@@ -538,71 +570,19 @@ test("prepareOpenShell fails before downloads when the RuntimeClass smoke Pod fa
       ([command, args]) =>
         command === "kubectl" &&
         args.includes("delete") &&
-        args.includes("openshell-runtimeclass-smoke"),
+        args.includes("openshell-runtime-smoke"),
     ),
   );
 
-  const manifest = await readFile(
-    join(root, "openshell", "openshell-runtimeclass-smoke.yaml"),
-    "utf8",
+  assert.deepEqual(
+    admissionProbes.map((pod) => pod.spec?.containers[0]?.securityContext?.privileged === true),
+    [true, false],
+    "both admission probes must complete before the runtime smoke",
   );
-  assert.match(manifest, /runtimeClassName: openshell-sandbox/);
+  const manifest = await readFile(join(root, "openshell", "openshell-runtime-smoke.yaml"), "utf8");
+  assert.doesNotMatch(manifest, /runtimeClassName:/);
   assert.match(manifest, new RegExp(`image: "${agentImage}"`));
   assert.match(manifest, /imagePullPolicy: Never/);
-});
-
-test("prepareOpenShell fails before downloads when the k3d node lacks the selected handler", async (t) => {
-  const clusterName = "openclaw-k8s-openshell-test";
-  const root = await openShellTestDirectory(t, clusterName);
-  const calls: CommandCall[] = [];
-  const cluster = ownedCluster(root, clusterName);
-
-  async function execFile(command: string, args: string[]) {
-    calls.push([command, args]);
-    return { stdout: "", stderr: "" };
-  }
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster,
-        execFile,
-        registerImage: async () => {
-          assert.fail("OpenShell must refuse before image registration");
-        },
-        env: {
-          OCC_KUBECTL_BIN: "kubectl",
-          OCC_HELM_BIN: "helm",
-          OCC_DOCKER_BIN: "docker",
-        },
-      }),
-    /does not advertise that handler/,
-  );
-
-  assert.equal(
-    calls.some(([command]) => command === "tar"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "helm" && args[0] === "pull"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "docker" && args[0] !== "exec"),
-    false,
-  );
-  assert.deepEqual(
-    calls.filter(([command]) => command === "docker").map(([, args]) => args[1]),
-    [`k3d-${cluster.name}-server-0`],
-  );
-  for (const [, args] of calls.filter(([command]) => command === "kubectl")) {
-    assert.deepEqual(args.slice(0, 4), [
-      "--kubeconfig",
-      cluster.kubeconfig,
-      "--context",
-      cluster.context,
-    ]);
-  }
 });
 
 function first<T>(values: readonly T[]): T {
