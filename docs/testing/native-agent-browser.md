@@ -233,7 +233,9 @@ Download these artifacts from the same run and attempt:
   JSON, including source SHA, per-file counts, and immutable runtime image digests.
 - `diagnostics-qa-advisory-oidc-agent-chat-gateway-routing-attempt-<attempt>`:
   preparation and runtime failure diagnostics, when available.
-- `native-browser-media-<run-id>-<attempt>`: only PNG screenshots and WebM clips.
+- `native-browser-media-<run-id>-<attempt>`: PNG screenshots, WebM clips, and
+  `native-profile-upgrade-receipt.json` when the installation-upgrade case
+  completes. A missing receipt does not establish upgrade success.
 
 For example, after replacing the run and attempt values:
 
@@ -246,8 +248,9 @@ gh run download "$run" --repo openclaw/openclaw-enterprise \
 ```
 
 Verify that the PR merge commit contains the intended head, the result has full
-lane scope, and all four selected cases pass without skips. Open the images and
-play the clips before attaching them to the PR. These captures are raw E2E
-footage, not a paced Console walkthrough. Label the exact tested revision and
-runtime images, and state any missing or truncated visual proof. An artifact
-upload alone does not establish that the requested behavior passed.
+lane scope, and all five manifest-selected cases pass without skips. Check the
+upgrade receipt, open the images, and play the clips before attaching them to the
+PR. These captures are raw E2E footage, not a paced Console walkthrough. Label the
+exact tested revision and runtime images, and state any missing or truncated
+visual proof. An artifact upload alone does not establish that the requested
+behavior passed.
