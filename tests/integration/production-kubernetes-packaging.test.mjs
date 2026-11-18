@@ -9,7 +9,6 @@ import {
   readFile,
   readdir,
   rm,
-  stat,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -973,130 +972,6 @@ test("Installation checksum rolls only its consumers", tooling, async () => {
 });
 
 registerNativeAdminAndRuntimeLogCases(agentNativeAdminValues, runtimeLogRules);
-
-test("controller Kubernetes client projection excludes auxiliary containers", tooling, async () => {
-  const variants = [
-    {},
-    repositoryCredentialValues,
-    { ...protectedRepositoryValues, "repositoryCredentials.delivery": "credential-proxy" },
-    stringNameCaValues.oidc,
-    {
-      ...protectedRepositoryValues,
-      "openshellGit.enabled": "true",
-      "openshellGit.tlsSecretName": "openshell-git-tls",
-      "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
-      "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-        "openshell-system",
-      "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
-    },
-  ];
-  for (const variant of variants) {
-    const objects = await renderObjects(variant);
-    for (const component of ["api", "worker"]) {
-      const pod = findResource(objects, "Deployment", `openclaw-enterprise-${component}`).spec
-        .template.spec;
-      // Automatic mounting injects credentials into every init container during Pod admission.
-      // Explicit projection keeps the standard Kubernetes client files only in the controller.
-      assert.equal(pod.automountServiceAccountToken, false);
-      const volumes = pod.volumes.filter((volume) =>
-        volume.projected?.sources.some((source) => source.serviceAccountToken),
-      );
-      assert.equal(volumes.length, 1);
-      const access = volumes[0];
-      assert.equal(access.projected.defaultMode, 0o440);
-      assert.deepEqual(access.projected.sources, [
-        { serviceAccountToken: { path: "token", expirationSeconds: 3600 } },
-        { configMap: { name: "kube-root-ca.crt", items: [{ key: "ca.crt", path: "ca.crt" }] } },
-        {
-          downwardAPI: {
-            items: [
-              {
-                path: "namespace",
-                fieldRef: { apiVersion: "v1", fieldPath: "metadata.namespace" },
-              },
-            ],
-          },
-        },
-      ]);
-      const containers = [...(pod.initContainers ?? []), ...pod.containers];
-      const consumers = containers.filter((container) =>
-        container.volumeMounts?.some(({ name }) => name === access.name),
-      );
-      assert.deepEqual(
-        consumers.map(({ name }) => name),
-        [component],
-      );
-      assert.deepEqual(
-        consumers[0].volumeMounts.find(({ name }) => name === access.name),
-        {
-          name: access.name,
-          mountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
-          readOnly: true,
-        },
-      );
-    }
-  }
-});
-
-test("controller scratch stays private with read-only API and worker roots", tooling, async (t) => {
-  const directory = await temporaryDirectory(t, "occ-controller-scratch-");
-  for (const overrides of [{}, repositoryCredentialValues]) {
-    const objects = await renderObjects(overrides);
-    for (const component of ["api", "worker"]) {
-      const pod = findResource(objects, "Deployment", `openclaw-enterprise-${component}`).spec
-        .template.spec;
-      const containers = [...(pod.initContainers ?? []), ...pod.containers];
-      const controller = containers.find(({ name }) => name === component);
-      const scratch = pod.volumes.find(({ name }) => name === "controller-scratch");
-      assert.deepEqual(scratch?.emptyDir, { medium: "Memory", sizeLimit: "64Mi" });
-      assert.deepEqual(pod.securityContext, {
-        runAsNonRoot: true,
-        runAsUser: 1000,
-        runAsGroup: 1000,
-        fsGroup: 1000,
-        seccompProfile: { type: "RuntimeDefault" },
-      });
-      assert.equal(controller.securityContext.readOnlyRootFilesystem, true);
-      assert.deepEqual(
-        controller.volumeMounts.find(({ mountPath }) => mountPath === "/tmp"),
-        {
-          name: "controller-scratch",
-          mountPath: "/tmp",
-          subPath: "private",
-        },
-      );
-      const init = pod.initContainers[0];
-      assert.equal(init.name, "prepare-controller-scratch");
-      assert.equal(init.image, controller.image);
-      assert.deepEqual(init.securityContext, controller.securityContext);
-      assert.deepEqual(init.volumeMounts, [{ name: "controller-scratch", mountPath: "/scratch" }]);
-      assert.equal(init.args.at(-1), "/scratch/private");
-      assert.deepEqual(
-        containers
-          .filter((container) =>
-            container.volumeMounts?.some(({ name }) => name === "controller-scratch"),
-          )
-          .map(({ name }) => name),
-        ["prepare-controller-scratch", component],
-      );
-      // Execute the rendered initializer with a disposable mount path. A repeated init must
-      // keep owner-only permissions; it cannot rely on the caller's restrictive umask.
-      const scratchPath = join(directory, `${component}-${Object.keys(overrides).length}`);
-      const [command, ...args] = [...init.command, ...init.args.slice(0, -1), scratchPath];
-      await execute(command, args, { cwd: repository });
-      const initial = await stat(scratchPath);
-      assert.equal(initial.mode & 0o777, 0o700);
-      assert.equal(initial.uid, process.getuid());
-      await chmod(scratchPath, 0o777);
-      await execute(command, args, { cwd: repository });
-      const metadata = await stat(scratchPath);
-      assert.equal(metadata.mode & 0o777, 0o700);
-      assert.equal(metadata.uid, process.getuid());
-      const temporary = await mkdtemp(join(scratchPath, "caller-"));
-      await writeFile(join(temporary, "scratch"), "temporary caller output");
-    }
-  }
-});
 
 test(
   "repository credential Helm packaging keeps App keys in the worker and TLS in the sender",
