@@ -6,27 +6,40 @@ last_updated_session: "authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef"
 
 # CI resource preparation
 
-[Parent flow](../github-actions-testing.md).
+## Overview
 
-## Execution trace
+CI prepares lane and file resources before the runner starts selected tests.
+
+## Entry Points
+
+- `scripts/ci/prepare-cli.ts:runPreparationCli`
+- `scripts/ci/prepare.mjs:prepareFile`
+
+## Flow
+
+```mermaid
+graph TD
+  A["Action or runner"] --> G{"Inputs valid?"}
+  G -->|no| F["Refuse before state"]
+  G -->|yes| P["Prepare owned resources"]
+  P --> T["Hand outputs to runner"]
+```
+
+## Execution Trace
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
+Static Checks restores the documentation pnpm store and saves misses after
+Pagefind succeeds; Baseline and browser part 1 only restore it. Keys include OS,
+architecture, Node.js, pnpm and lockfile hash; prefix matches can cross lockfiles.
+Frozen installation fetches missing packages.
 
-Static Checks restores the documentation pnpm store before installation. On
-cache misses, it saves the store after Pagefind succeeds. Baseline part 1 and
-browser part 1 only restore it. Keys include OS, architecture, Node.js, pnpm,
-and lockfile hash. Prefix matches can cross lockfiles. Frozen installation
-fetches missing packages.
-
-First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
-downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
-checked-in platform checksum. `scripts/ci/download-pinned.sh` verifies installed
-or cached bytes in private staging before atomic publication with mode 0755.
-Missing or corrupt entries use pinned downloads; cache outages do not fail setup. Hits preserve cached bytes.
-PostgreSQL, image and Kubernetes profiles share OS-, architecture- and
-installer-source-keyed caches. Direct callers can reuse verified installed bytes.
+First Agent Smoke and `run-ci-lane` restore yq and k3d outside `PATH`.
+`scripts/ci/setup-tools.sh` selects platform checksums;
+`scripts/ci/download-pinned.sh` verifies bytes in private staging before atomic
+0755 publication. Missing or corrupt entries trigger pinned downloads; cache
+outages do not fail setup. PostgreSQL, image and Kubernetes profiles share
+platform- and installer-keyed caches. Direct callers can reuse verified bytes.
 
 For packaging and shared-runtime artifact consumers using `run-ci-lane`,
 `scripts/ci/setup-registry-transport.sh:verify_skopeo` reuses working `PATH` tools;
@@ -38,15 +51,12 @@ each APT command allows 120 plus 10 seconds, three acquisition retries and
 installation. APT output and failure status are preserved.
 The final probe must pass.
 
-`scripts/ci/image-pull.ts:pullImage` logs each failed pull attempt before deciding
-whether to retry, including the final attempt. It reports elapsed time, timeout status and up to eight layer states from captured output tails.
-The summary includes only known Docker phases and hexadecimal layer IDs;
-it omits unmatched output and leading partial lines at the tail cutoff.
-The First Agent smoke adapter forwards both captured streams to this parser.
-Diagnostic emission is best effort and cannot replace the terminal pull error.
-Docker suppresses numeric progress on non-terminal
-output, so these states provide partial evidence, not the current transfer phase. If no progress matches, the
-summary says so. Diagnostics change no timeouts, backoff, concurrency or digest verification, and establish neither registry health nor stall causes.
+`scripts/ci/image-pull.ts:pullImage` logs failed attempts, elapsed time, timeout
+status and up to eight known Docker layer states with hexadecimal IDs. It omits
+unmatched and partial lines. First Agent Smoke forwards both streams. Diagnostics
+are best effort; Docker's non-terminal output can omit progress. The summary
+reports missing matches. Diagnostics do not change retries, timeouts or digest
+checks, or establish registry health or stall causes.
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
@@ -266,6 +276,17 @@ for hosted proof and remaining coverage.
 
 The OpenShell test owns management port-forwards throughout the test. Teardown stops the worker, drains forwards, then attempts app, database, namespace and directory cleanup even after an earlier failure. Forward shutdown allows two seconds after `SIGTERM`, then sends `SIGKILL` if necessary and waits two more seconds. Cleanup errors fail the test.
 
-## Related
+## Debugging and Verification
 
-- [Return to the parent flow](../github-actions-testing.md).
+Preparation errors go to stderr; successful CLI output lists exported names.
+See [lane verification](../../testing/ci/run-lanes.md).
+
+## Related docs
+
+- [Parent flow](../github-actions-testing.md).
+
+## Manual Notes
+
+## Changelog
+
+- 2026-11-18 01:27: Trace input admission and dispatch. (authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)
