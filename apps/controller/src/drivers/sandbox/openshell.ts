@@ -159,16 +159,15 @@ import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoin
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/harness-workspace-preparation.ts";
 import {
   compareResourceQuantities,
-  isResourceQuantity,
+  isNonNegativeResourceQuantity,
 } from "../compute/kubernetes/resource-quantities.ts";
-import { isKubernetesResourceName } from "../compute/kubernetes/resource-name.ts";
 import { nodeProgramArguments, prependNodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS,
   WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS,
   WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
-  WORKSPACE_SETUP_RUNTIME,
+  WORKSPACE_SETUP_RUNTIME_WITH_VERIFY_EXISTING,
 } from "../compute/workspace-setup-runtime.ts";
 import {
   COMPUTE_RELEASE_PROFILE,
@@ -209,7 +208,6 @@ interface OpenShellAgentResourceOverride {
   readonly agentId: string;
   readonly requests: AgentResourceQuantities;
   readonly limits: AgentResourceQuantities;
-  readonly runtimeClassName?: string;
 }
 
 export interface OpenShellSandboxDriverOptions {
@@ -231,7 +229,6 @@ export interface OpenShellSandboxDriverOptions {
     readonly networkPolicyResources?: readonly KubernetesNamespacedResource[];
   };
   readonly kubernetes: {
-    readonly runtimeClassName: string;
     readonly serviceAccount: { readonly mode: "gatewayConfigured" };
     readonly sandboxDataMount: {
       readonly claimName?: string;
@@ -623,7 +620,7 @@ function environment(
     if ("valueFrom" in entry) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-        `OpenShell v0.1.5 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
+        `OpenShell cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
       );
     }
     // Account claims are opaque data, not paths inside the Harness filesystem.
@@ -1354,8 +1351,8 @@ function sandboxCommand(
     prelude + loader,
     ...command.slice(loaderIndex + 1),
   ];
-  // Preserve existing immutable Sandbox commands that fit. Larger preludes use
-  // the same codec as the Harness so the complete command retains its 64 KiB budget.
+  // Keep the existing command encoding. Pack larger preludes with the program
+  // to reduce their size, including for revisions above the 64 KiB design target.
   return Buffer.byteLength(JSON.stringify(composed)) <= 65_536
     ? composed
     : [
@@ -1398,13 +1395,24 @@ try {
     fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600);
   const stat = fs.fstatSync(lock);
   if (!stat.isFile() || stat.nlink !== 1) throw new Error();
-  const acquired = spawnSync("/usr/bin/flock", ["--exclusive", "--timeout", "20", "3"],
-    { stdio: ["ignore", "ignore", "ignore", lock], timeout: 25000 });
+  // A duplicate can arrive while the original initializer still owns the lock.
+  // Share the existing 270-second budget across both stages of this 300-second RPC.
+  const budgetMs = 270000;
+  const deadline = performance.now() + budgetMs;
+  // Let flock time out on its own if its parent dies while waiting.
+  const acquired = spawnSync("/usr/bin/flock", ["--exclusive", "--timeout", String(budgetMs / 1000), "3"],
+    { stdio: ["ignore", "ignore", "ignore", lock], timeout: budgetMs });
   if (acquired.error || acquired.status !== 0) throw new Error();
-  const result = spawnSync(process.execPath, ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME)}], {
+  const remainingMs = Math.floor(deadline - performance.now());
+  if (remainingMs <= 0) throw new Error();
+  // Only verify an existing marker if a fresh initializer can no longer receive
+  // its full budget. Otherwise a nested writer could outlive this lock holder.
+  const args = ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME_WITH_VERIFY_EXISTING)}];
+  if (remainingMs < 250000) args.push("verify-existing");
+  const result = spawnSync(process.execPath, args, {
     input: fs.readFileSync(0),
     env: { ...process.env, OPENCLAW_WORKSPACE_SETUP_PATH: undefined },
-    stdio: ["pipe", "ignore", "ignore", lock], timeout: 250000,
+    stdio: ["pipe", "ignore", "ignore", lock], timeout: Math.min(250000, remainingMs),
   });
   if (!result.error && [${WORKSPACE_SETUP_REFUSED_EXIT_STATUS},
       ${WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS}, ${WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS}].includes(result.status)) {
@@ -1744,9 +1752,6 @@ async function prepareNativeWorkspace(
         "openshell-sandbox",
       "OpenShell Sandbox ServiceAccount",
     ),
-    runtimeClassName:
-      agentResourceOverride(options, context.revision)?.runtimeClassName ??
-      options.kubernetes.runtimeClassName,
     securityContext: {
       runAsUser: uid,
       runAsGroup: gid,
@@ -1837,7 +1842,6 @@ async function prepareNativeWorkspace(
         asRecord(expectedContainer?.readinessProbe)?.exec,
       ) ||
       !isDeepStrictEqual(observedContainer?.securityContext, expectedContainer?.securityContext) ||
-      observed?.runtimeClassName !== expected.runtimeClassName ||
       !isDeepStrictEqual(observedContainer?.volumeMounts, expectedContainer?.volumeMounts) ||
       observed?.serviceAccountName !== expected.serviceAccountName ||
       observed?.automountServiceAccountToken !== false ||
@@ -2012,10 +2016,7 @@ function validateAgentResources(
   for (const section of ["requests", "limits"] as const) {
     if (
       Object.values(agentResources[section]).some(
-        (quantity) =>
-          typeof quantity !== "string" ||
-          !isResourceQuantity(quantity) ||
-          (compareResourceQuantities(quantity, "0") ?? 0) < 0,
+        (quantity) => typeof quantity !== "string" || !isNonNegativeResourceQuantity(quantity),
       )
     ) {
       quantitiesValid[section] = false;
@@ -2100,16 +2101,6 @@ function validatePolicySettings(options: OpenShellSandboxDriverOptions): void {
       });
     }
     scopes.add(scope);
-    if (
-      override.runtimeClassName !== undefined &&
-      !isKubernetesResourceName(override.runtimeClassName)
-    ) {
-      details.push({
-        path: `${path}/runtimeClassName`,
-        code: "INVALID_VALUE",
-        message: "Use a Kubernetes RuntimeClass resource name.",
-      });
-    }
     if (validDefaults) {
       validateAgentResources(agentResourceMaps(options, override), path, details);
     }
@@ -2319,10 +2310,8 @@ function sandboxSpec(
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
   const volumeMounts = workspace.mounts;
   const override = agentResourceOverride(options, revision);
-  const runtimeClassName = override?.runtimeClassName ?? options.kubernetes.runtimeClassName;
   const resources = agentResourceMaps(options, override);
   const driverConfig = {
-    pod: { runtime_class_name: runtimeClassName },
     containers: {
       agent: {
         resources: {
@@ -2347,7 +2336,6 @@ function sandboxSpec(
     },
     template: {
       image: requirements.image,
-      runtime_class_name: runtimeClassName,
       labels: { ...requirements.labels },
       driver_config: { fields: toProtobufStruct({ kubernetes: driverConfig }) },
       ...(options.kubernetes.userNamespaces === undefined
@@ -2491,7 +2479,6 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     refuseIngressAlias(resource, `/gateway/operatorWorkspaceResources/${index}`);
     refuseUnsentFields(resource, "operatorWorkspaceResources", index);
   });
-  nonempty(options.kubernetes.runtimeClassName, "OpenShell RuntimeClass name");
   if (options.kubernetes.serviceAccount.mode !== "gatewayConfigured") {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell serviceAccount mode must be gatewayConfigured.",
@@ -2602,7 +2589,6 @@ export const configurationSchema = Object.freeze({
       type: "object",
       additionalProperties: false,
       properties: {
-        runtimeClassName: { type: "string" },
         serviceAccount: {
           type: "object",
           additionalProperties: false,
@@ -2638,7 +2624,6 @@ export const configurationSchema = Object.freeze({
               agentId: AgentId,
               requests: agentResourceQuantitySchema,
               limits: agentResourceQuantitySchema,
-              runtimeClassName: { type: "string" },
             },
           },
         },
@@ -3414,7 +3399,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (context.requirements.workloadIdentity !== undefined) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "OpenShell v0.1.5 cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
+        "OpenShell cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
       );
     }
     labels(context.requirements.labels, "Harness workload labels");

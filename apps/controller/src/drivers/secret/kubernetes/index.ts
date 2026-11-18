@@ -263,13 +263,14 @@ export class KubernetesSecretDriver implements SecretDriver {
       create: async (ref, value) => {
         validateValue(value);
         const client = await this.core();
+        const requested = identity(ref);
         const secret = await this.request(
           () =>
             client.createNamespacedSecret({
               namespace,
               body: {
                 metadata: {
-                  ...identity(ref),
+                  ...requested,
                   labels: { "app.kubernetes.io/managed-by": MANAGER },
                   annotations: ownership(ref),
                 },
@@ -280,7 +281,14 @@ export class KubernetesSecretDriver implements SecretDriver {
           "create",
           { mutating: true },
         );
-        verify(secret, ref);
+        try {
+          verify(secret, ref);
+        } catch (error) {
+          await withoutMutationDeadline(() =>
+            this.discardRefusedCreate(client, requested.namespace, requested.name, secret),
+          );
+          throw error;
+        }
       },
       update: async (ref, value) => {
         validateValue(value);

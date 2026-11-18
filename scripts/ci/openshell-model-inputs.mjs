@@ -8,6 +8,11 @@ const codexOnlyFiles = new Set([
   "tests/integration/openshell-withdrawal-real.test.ts",
 ]);
 
+/**
+ * @param {string} lane
+ * @param {string} file
+ * @param {NodeJS.ProcessEnv} env
+ */
 export function openShellHarnessError(lane, file, env) {
   if (
     isOpenShellLane(lane) &&
@@ -19,6 +24,12 @@ export function openShellHarnessError(lane, file, env) {
 }
 
 // Preparation and execution must agree on the credential consumed by the selected test.
+/**
+ * @param {string} lane
+ * @param {string | undefined} file
+ * @param {readonly string[]} requiredEnv
+ * @param {NodeJS.ProcessEnv} env
+ */
 export function openShellRequiredEnv(lane, file, requiredEnv, env) {
   const gatewayFile =
     codexOnlyFiles.has(file) ||

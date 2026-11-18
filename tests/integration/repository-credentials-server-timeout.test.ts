@@ -5,19 +5,19 @@ import { request as httpsRequest, createServer as createHttpsServer } from "node
 import { connect as connectTcp } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
-import { within } from "../helpers/wait-for.mjs";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
-import { startTokenServiceScope } from "../fixtures/repository-credentials/service.mjs";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { within } from "../helpers/wait-for.ts";
+import { listen } from "../fixtures/repository-credentials/process.ts";
+import { startTokenServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import {
   createStaticTokenServiceFactory,
   startServiceListeners,
-} from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/service-resources.ts";
 
 async function fixture(t: TestContext) {
   const options = {
     github: true,
-    clock: "system",
+    clock: "system" as const,
     limits: {
       headerMs: 200,
       stallMs: 2000,

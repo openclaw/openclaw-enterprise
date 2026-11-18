@@ -5,7 +5,7 @@
 Select Drivers in the Installation configuration to choose where OCC stores
 configuration, authorizes operations, and runs Agents. Only the Installation
 operator can select Drivers, add controller dependencies, or publish controller
-images; individual Agents cannot choose their own implementations.
+images; individual Agents cannot choose implementations.
 
 ## Choose a bundled Driver
 
@@ -16,7 +16,7 @@ images; individual Agents cannot choose their own implementations.
    If you need embedded OpenClaw on existing Linux hosts with credentials
    supplied on those hosts, start with [SSH Compute](ssh-compute.md) instead.
 2. Select the required Configuration, IAM, Compute, and Secret implementations.
-   The table below lists each capability and its allowed choices. Omit optional
+   The table lists each capability and its allowed choices. Omit optional
    Sandbox, Credential Gateway, ServiceAccount, Plugin, and Repo selections
    unless you need them.
 3. Set `OCC_CONFIG_PATH` to the absolute path of that trusted YAML and select
@@ -77,15 +77,16 @@ contract still requires the Secret selection.
 
 ## Select a protected sender
 
-Implementers start with the [Credential Proxy contract](credential-proxy.md), which
-distinguishes request-time exchange, recipient installation and sender guarantees,
-and the [Driver walkthrough](../../contributing/credential-proxy-driver.md).
+Implementers start with the [Credential Proxy contract](credential-proxy.md) and the
+[Driver walkthrough](../../contributing/credential-proxy-driver.md#4-bind-the-selected-transport).
 
 With bundled Kubernetes Compute, select the trusted package under
 `drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
 same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
 registration and check its identity against the Agent revision.
+The package runs in the worker beside the GitHub App and custody keys
+([Helm](#supply-protected-git-credentials-with-helm)); reviewing it is their boundary.
 
 For protected Git, match `repository.id` to the GitHub Backend's `drivers.repo`
 policy member. Set `repository.configuration.sessionDurationSeconds` and
@@ -103,9 +104,9 @@ recipient before release.
 | v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
 
-Observed OpenShell Git routes keep the original launch acknowledgment during credential
-rotation. They reopen only after the model provider observation matches the new
-shared provider environment; stale or incomplete observations leave the route pending.
+Observed OpenShell Git routes keep their launch acknowledgment through rotation and
+reopen only when the model provider observation matches the new shared environment;
+stale or incomplete observations leave the route pending.
 
 A lost authorization reply records possible use. Do not retry the exchange.
 Stock OpenShell lacks v7 qualification. For isolation and release requirements,
@@ -243,7 +244,7 @@ metadata alone, before any package code runs; neither the file's contents nor
 Node's `--no-experimental-detect-module` flag changes it. Accepting detected
 ESM would tie startup to Node's detection heuristic, which has changed between
 releases, and the only way to read a detected format without running the file
-is Node's process-lifetime module hooks. Node itself treats the shape as a
+is Node's process-lifetime module hooks. Node treats the shape as a
 mistake: outside `node_modules` it warns about such a file and asks for
 `"type": "module"`. To fix a refusal, add `"type": "module"` to the
 `package.json` it names, or rename the entry to `.mjs`.
@@ -334,7 +335,7 @@ drivers:
         mode: inCluster
 ```
 
-Include the existing required `occ` settings and use the
+Include the required `occ` settings and use the
 [complete production Installation example](../../guides/deploy/production-installation.md#configure-the-installation)
 as the baseline for the selected Drivers. Each Driver owns its closed
 configuration schema; bundled Kubernetes settings apply only when that bundled

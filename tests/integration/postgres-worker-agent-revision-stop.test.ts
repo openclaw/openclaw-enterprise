@@ -32,7 +32,7 @@ import {
   repositoryRestartState,
 } from "../helpers/postgres-repository-restart-inventory.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { waitFor, within } from "../helpers/wait-for.mjs";
+import { waitFor, within } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
@@ -45,9 +45,9 @@ import {
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Agent stop and its Gateway drain, Agent deletion and Namespace teardown, moved unchanged from
-// the -teardown sibling, which keeps the repository session cases, so the two run side by side in
-// the PostgreSQL Application lane. Deployment and dispatch cases, and the persisted deploy, stop
-// and delete lifecycle, are in postgres-worker-agent-revision.test.mjs.
+// postgres-worker-agent-revision-teardown.test.ts, which keeps the repository session cases, so the two run side by side in
+// the PostgreSQL Application lane. Deployment and dispatch cases are in
+// postgres-worker-agent-revision.test.mjs. The -lifecycle sibling covers persisted deploy, Stop and delete.
 
 const fixtures = createWorkerRevisionFixtures(import.meta.url);
 type RawFixture = Awaited<ReturnType<typeof fixtures.setup>>;
@@ -430,11 +430,54 @@ async function stopAudit(fixture: Fixture, owner: { id: string }) {
   const audit = await fixture.observerPool.query<{ reason_code: string }>(
     `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
      WHERE namespace_id = $1 AND resource_id = $2
-       AND (action = 'openclaw.agents.lifecycle.stop' OR details->>'reasonCode' = 'AGENT_STOP_YIELDED')
+       AND action = 'openclaw.agents.lifecycle.stop'
      ORDER BY reason_code`,
     [fixture.namespace.id, owner.id],
   );
   return audit.rows.map(({ reason_code: code }) => code);
+}
+
+async function assertStopYieldAudit(
+  fixture: Fixture,
+  owner: { id: string },
+  first: WorkIdentity,
+  second?: WorkIdentity,
+) {
+  const audit = await fixture.observerPool.query<{
+    action: string;
+    outcome: string;
+    work_id: string;
+    work_state: string;
+    attempt_id: string;
+    claim_id: string | null;
+  }>(
+    `SELECT deferred.action, deferred.outcome, deferred.details->>'workId' AS work_id,
+            deferred.details->>'workState' AS work_state,
+            deferred.details->>'attemptId' AS attempt_id, claim.id AS claim_id
+       FROM occ.audit_events AS deferred
+       LEFT JOIN occ.audit_events AS claim
+         ON claim.id = deferred.details->>'attemptId'
+        AND claim.namespace_id = deferred.namespace_id
+        AND claim.resource_kind = deferred.resource_kind
+        AND claim.resource_id = deferred.resource_id
+        AND claim.details->>'workId' = deferred.details->>'workId'
+        AND claim.action = 'openclaw.controller_work.claimed'
+      WHERE deferred.namespace_id = $1 AND deferred.resource_kind = 'agent'
+        AND deferred.resource_id = $2 AND deferred.details->>'reasonCode' = 'AGENT_STOP_YIELDED'`,
+    [fixture.namespace.id, owner.id],
+  );
+  // A yield returns the same job to the queue. It has its own evidence and
+  // names the claim that yielded, even if the worker coalesces its log lines.
+  assert.ok(audit.rows.some(({ work_id }) => work_id === first.idempotencyKey));
+  for (const row of audit.rows) {
+    assert.ok(row.work_id === first.idempotencyKey || row.work_id === second?.idempotencyKey);
+    assert.equal(row.action, "openclaw.controller_work.deferred");
+    assert.equal(row.outcome, "success");
+    assert.equal(row.work_state, "queued");
+    assert.match(row.attempt_id, /^aud_/);
+    assert.equal(row.claim_id, row.attempt_id);
+  }
+  assert.equal(new Set(audit.rows.map(({ attempt_id }) => attempt_id)).size, audit.rows.length);
 }
 
 // A provisioned caller that keeps every fixture grant except delete, so a refusal comes from the
@@ -551,9 +594,9 @@ test(
     const current = required(await fixture.currentAgent(owner));
     assert.equal(current.desiredRuntimeState, "stopped");
     assert.equal(current.activeRevisionId, undefined);
-    // A yield is neither audited nor recorded as evidence; each stop records one outcome, and
-    // no pass of either stop failed.
+    // Each stop records one terminal outcome even when the worker yielded during the drain.
     assert.deepEqual(await stopAudit(fixture, owner), ["AGENT_ALREADY_STOPPED", "AGENT_STOPPED"]);
+    await assertStopYieldAudit(fixture, owner, first, second);
     for (const stop of [first, second]) {
       assert.ok(stopPasses(events, stop).every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
     }
@@ -758,13 +801,14 @@ for (const change of ["redeploy", "deletion"]) {
           },
           30_000,
         );
-        // Quiet: one logged yield, and no failed pass or failure audit for the deleted Agent.
+        // Deletion removes the queued stop without recording a terminal stop outcome.
         assert.deepEqual(await stopAudit(fixture, owner), []);
         assert.deepEqual(
           stopPasses(events, stop).map(({ code }) => code),
           ["AGENT_STOP_YIELDED"],
         );
       }
+      await assertStopYieldAudit(fixture, owner, stop);
       // While yielded the Harness kept running and the pointer named it.
       assert.deepEqual(record.harnessStops, []);
       assert.deepEqual([...record.pointers], [candidate.id]);
@@ -1294,6 +1338,153 @@ test(
       [],
     );
     assert.deepEqual(await readCleanup(), cleanupBeforeInventory);
+  },
+);
+
+test(
+  "retained repository cleanup refuses a different sender after Agent deletion and recovers with its owner",
+  requiresPostgres,
+  async (context) => {
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const { owner, candidate } = await fixture.admitInitialRevision("retained-sender", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    const events: WorkerEvent[] = [];
+    const emit = (event: Readonly<Record<string, unknown>>) =>
+      events.push(checkedWorkerEvent(event));
+    await fixture.start(fixture.compute, { emit });
+    await fixture.work(candidate, "succeeded");
+    const opened = await repositoryAttempts(fixture, candidate);
+    assert.equal(opened.length, 1);
+    const original = required(opened[0]);
+    assert.equal(original.phase, "open");
+    assert.equal(original.brokerProtocol, 3);
+    assert.ok(original.sessionId);
+    assert.deepEqual(original.cleanupContext, {
+      driver: repository.snapshot.driver,
+      binding: repository.snapshot.bindings[0],
+    });
+    assert.deepEqual(
+      repository.calls.map(({ operation }) => operation),
+      ["open"],
+    );
+
+    // Fail before disposal: this is a definite close failure, not a lost response.
+    const close = repository.driver.close.bind(repository.driver);
+    repository.driver.close = async (sessionId) => {
+      repository.calls.push({ operation: "close", sessionId });
+      throw new Error("REPOSITORY_BROKER_UNAVAILABLE");
+    };
+    await fixture.requestStop(owner);
+    const pending = await completion(
+      events,
+      "failed close to leave a queued repository cleanup",
+      (event) =>
+        event.event === "worker.completed" &&
+        event.revisionId === candidate.id &&
+        event.code === "REPOSITORY_CLEANUP_PENDING" &&
+        event.workId?.includes(":repository_cleanup:"),
+    );
+    const cleanupKey = required(pending.workId);
+    await fixture.stop();
+    assert.ok(repository.calls.some(({ operation }) => operation === "close"));
+    await fixture.requestDeletion(owner);
+    await fixture.start(fixture.compute, { emit });
+    await waitFor("normal Agent deletion to remove the owner", async () =>
+      (await fixture.currentAgent(owner)) === undefined ? true : undefined,
+    );
+    await fixture.stop();
+
+    const assertRevisionAbsent = async () => {
+      const rows = await fixture.observerPool.query(
+        "SELECT id FROM occ.agent_revisions WHERE id = $1",
+        [candidate.id],
+      );
+      assert.deepEqual(rows.rows, [], "the revision must remain physically deleted");
+    };
+    await assertRevisionAbsent();
+    const baseline = await repositoryAttempts(fixture, candidate);
+    assert.deepEqual(baseline, [
+      {
+        ...original,
+        liveRevisionId: null,
+        phase: "closing",
+        updatedAt: required(baseline[0]).updatedAt,
+      },
+    ]);
+    const retained = await fixture.observerPool.query<
+      Pick<CleanupWorkRow, "agent_id" | "revision_id" | "state"> & { idempotency_key: string }
+    >(
+      `SELECT idempotency_key, agent_id, revision_id, state
+       FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2
+       ORDER BY idempotency_key`,
+      [fixture.namespace.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
+    );
+    // Stop and deletion coalesce session cleanup under this same key. No second
+    // retained item can race the selected claim after the worker has joined.
+    assert.deepEqual(retained.rows, [
+      {
+        idempotency_key: cleanupKey,
+        agent_id: null,
+        revision_id: null,
+        state: "queued",
+      },
+    ]);
+    const callsBeforeRefusal = [...repository.calls];
+    repository.driver.close = close;
+    events.length = 0;
+    await fixture.start(fixture.compute, {
+      emit,
+      transformDrivers(drivers) {
+        assert.ok(drivers.nativeRepositorySender);
+        return {
+          ...drivers,
+          nativeRepositorySender: {
+            ...drivers.nativeRepositorySender,
+            implementation: "different-repository-sender",
+          },
+        };
+      },
+    });
+    await makeWorkDue(fixture.observerPool, cleanupKey);
+    await completion(
+      events,
+      "retained cleanup to report the sender mismatch",
+      (event) =>
+        event.event === "worker.repository-cleanup-warning" &&
+        event.workId === cleanupKey &&
+        event.cause === "REPOSITORY_DRIVER_MISMATCH",
+    );
+    await completion(
+      events,
+      "the exact refused cleanup to remain pending",
+      (event) =>
+        event.event === "worker.completed" &&
+        event.workId === cleanupKey &&
+        event.outcome === "pending" &&
+        event.code === "REPOSITORY_CLEANUP_PENDING",
+    );
+    await fixture.stop();
+    await fixture.work({ id: candidate.id, idempotencyKey: cleanupKey }, "queued");
+    assert.deepEqual(await repositoryAttempts(fixture, candidate), baseline);
+    assert.deepEqual(
+      repository.calls,
+      callsBeforeRefusal,
+      "wrong sender must have no boundary effects",
+    );
+    await fixture.start(fixture.compute);
+    await makeWorkDue(fixture.observerPool, cleanupKey);
+    await fixture.work({ id: candidate.id, idempotencyKey: cleanupKey }, "succeeded");
+    await fixture.stop();
+    const settled = await repositoryAttempts(fixture, candidate);
+    assert.deepEqual(settled, [
+      { ...required(baseline[0]), phase: "disposed", updatedAt: required(settled[0]).updatedAt },
+    ]);
+    assert.deepEqual(repository.calls.slice(callsBeforeRefusal.length), [
+      { operation: "close", sessionId: original.sessionId },
+    ]);
+    await assertRevisionAbsent();
   },
 );
 
@@ -2946,6 +3137,75 @@ revisionTest(
         code === "REVISION_MAINTENANCE_SUPERSEDED" &&
         revisionId === revision.id,
     );
+  },
+);
+
+// The runtime resumes an interrupted turn only under the revision ID it was interrupted
+// under (finding 3347). That holds only if a stopped revision never runs again: its stale
+// maintenance must not prepare it, and the next start must be a new revision.
+revisionTest(
+  "a stopped revision never starts again under its own ID; the next start is a new revision",
+  async (fixture) => {
+    const owner = await fixture.agent("stop-no-same-revision");
+    const first = await fixture.revision(owner, 1);
+    const prepared: string[] = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, deploymentContext) {
+        if (revision.namespaceId === fixture.namespace.id) {
+          prepared.push(revision.id);
+        }
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+    });
+    await fixture.work(first, "succeeded");
+    const stop = await fixture.requestStop(owner);
+    await fixture.work(stop, "succeeded");
+    const stopped = required(await fixture.currentAgent(owner));
+    assert.equal(stopped.desiredRuntimeState, "stopped");
+    assert.equal(stopped.activeRevisionId, undefined);
+    const preparedBeforeStop = [...prepared];
+
+    // Maintenance of the stopped revision, as a delayed or redelivered item would run it.
+    const staleMaintenance = async () => {
+      const item = {
+        id: first.id,
+        idempotencyKey: `agent_revision:${first.id}:maintenance:${randomUUID()}`,
+      };
+      await fixture.state.transactWithQueue((_unit, queue) =>
+        queue.enqueue({
+          idempotencyKey: item.idempotencyKey,
+          namespaceId: fixture.namespace.id,
+          agentId: owner.id,
+          revisionId: first.id,
+          actorId: fixture.actor.id,
+          availableAt: new Date(0),
+        }),
+      );
+      await fixture.work(item, "succeeded");
+      return required((await fixture.workResult(item)).rows[0]).reason_code;
+    };
+    // The observation the running revision had queued, if Stop left one, ends there too.
+    for (const row of (await fixture.advanceMaintenance(first)).rows) {
+      await fixture.work({ id: first.id, idempotencyKey: row.idempotency_key }, "succeeded");
+    }
+    assert.equal(await staleMaintenance(), "REVISION_MAINTENANCE_SUPERSEDED");
+    assert.deepEqual(prepared, preparedBeforeStop, "stopped maintenance never prepares");
+
+    const second = await fixture.revision(owner, 2);
+    await fixture.work(second, "succeeded");
+    assert.notEqual(second.id, first.id);
+    const running = required(await fixture.currentAgent(owner));
+    assert.equal(running.desiredRuntimeState, "running");
+    assert.equal(running.activeRevisionId, second.id);
+    assert.ok(!prepared.slice(preparedBeforeStop.length).includes(first.id));
+    assert.ok(prepared.slice(preparedBeforeStop.length).includes(second.id));
+
+    // Running again under the new revision does not revive the stopped one either.
+    const preparedAfterStart = [...prepared];
+    await staleMaintenance();
+    assert.ok(!prepared.slice(preparedAfterStart.length).includes(first.id));
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, second.id);
   },
 );
 

@@ -8,12 +8,12 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.mjs";
+import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.ts";
 import { chromium } from "playwright";
 import { publishedJSON } from "./dev-up-keycloak.mjs";
 import { launchTrustingBrowser, preflightTrustingBrowser } from "./trusted-chromium.ts";
 import { enableInstalledOidcNativeAdmin } from "./native-admin-oidc-k3d.mjs";
-import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
+import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.ts";
 
 const execute = promisify(execFile);
 
@@ -168,7 +168,7 @@ export async function verifyOpenShellOwnerSession({
     execute(
       process.execPath,
       [
-        fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url)),
+        fileURLToPath(new URL("../../scripts/first-agent.ts", import.meta.url)),
         name,
         "--harness",
         "codex",

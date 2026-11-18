@@ -8,8 +8,18 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
+
+var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// IsTypedID reports whether value has the expected OCC prefix followed by a
+// lowercase version 4 UUID.
+func IsTypedID(value, prefix string) bool {
+	suffix, ok := strings.CutPrefix(value, prefix)
+	return ok && uuidV4.MatchString(suffix)
+}
 
 // RuntimeLogPage is one page of sanitized runtime log records. Records keep the
 // server's JSON so callers can re-emit them unchanged.
@@ -384,17 +394,11 @@ type FirstDeploymentIntent struct {
 	ExpectedGeneration      int64          `json:"expectedGeneration"`
 }
 
-const firstDeploymentUUIDPattern = `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}`
-
 var firstDeploymentKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
-var firstDeploymentConfiguration = regexp.MustCompile(`^cfg_` + firstDeploymentUUIDPattern + `$`)
-var firstDeploymentRevision = regexp.MustCompile(`^rev_` + firstDeploymentUUIDPattern + `$`)
-var firstDeploymentNamespace = regexp.MustCompile(`^ns_` + firstDeploymentUUIDPattern + `$`)
-var firstDeploymentAgent = regexp.MustCompile(`^agt_` + firstDeploymentUUIDPattern + `$`)
 
 // Validate checks each intent field before client construction or a request.
 func (intent FirstDeploymentIntent) Validate() error {
-	if !firstDeploymentConfiguration.MatchString(intent.ExpectedConfigurationID) {
+	if !IsTypedID(intent.ExpectedConfigurationID, "cfg_") {
 		return fmt.Errorf("--configuration must be an exact Configuration ID")
 	}
 	if intent.ExpectedGeneration < 1 || intent.ExpectedGeneration > 9007199254740991 {
@@ -467,8 +471,8 @@ func validateFirstDeploymentReceipt(value any, namespaceID, agentID string, inte
 	createdAt, _ := receipt["createdAt"].(string)
 	const timestampLayout = "2006-01-02T15:04:05.000Z"
 	created, timeErr := time.Parse(timestampLayout, createdAt)
-	if !firstDeploymentRevision.MatchString(revision) || !firstDeploymentNamespace.MatchString(namespace) ||
-		!firstDeploymentAgent.MatchString(agent) || !firstDeploymentConfiguration.MatchString(configuration) ||
+	if !IsTypedID(revision, "rev_") || !IsTypedID(namespace, "ns_") ||
+		!IsTypedID(agent, "agt_") || !IsTypedID(configuration, "cfg_") ||
 		namespace != namespaceID || agent != agentID || configuration != intent.ExpectedConfigurationID ||
 		receipt["configurationGeneration"] != float64(intent.ExpectedGeneration) ||
 		timeErr != nil || created.Format(timestampLayout) != createdAt {
@@ -528,8 +532,9 @@ func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int,
 // a later page may be empty if access changes. The loop also supports older servers.
 func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
 	cursor := ""
+	limit := 1
 	for {
-		page, err := client.ListAgentRevisions(namespaceID, agentID, 100, cursor)
+		page, err := client.ListAgentRevisions(namespaceID, agentID, limit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -540,6 +545,8 @@ func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, err
 			return nil, nil
 		}
 		cursor = page.NextCursor
+		// Older servers may return empty pages across a gap in readable revisions.
+		limit = 100
 	}
 }
 

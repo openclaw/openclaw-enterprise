@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createGunzip, createZstdDecompress } from "node:zlib";
-import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
+import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.ts";
 
 type RuntimeIdentity = {
   sourceSha: string;
@@ -688,6 +688,11 @@ async function build(directory: string) {
     ],
     180 * 60_000,
   );
+  if (process.env.GITHUB_ACTIONS === "true") {
+    console.log(
+      `::notice title=CI runtime image timing::Buildx returned after ${Math.round(performance.now() - started)} ms.`,
+    );
+  }
   const layout = await mkdtemp(join(tmpdir(), "oce-runtime-producer-"));
   let verified: Awaited<ReturnType<typeof inspectLayout>>;
   try {

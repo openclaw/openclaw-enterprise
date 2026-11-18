@@ -13,6 +13,8 @@ import {
   type LocalRehearsalCluster,
   type RehearsalCustody,
 } from "./production-rehearsal-custody.ts";
+import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
@@ -358,6 +360,9 @@ export async function measureUpgradeAvailability<T>(
   directory: string,
   upgrade: () => Promise<T>,
   record: (details: object) => Promise<void>,
+  receiptName:
+    | "forward-api-availability.json"
+    | "runtime-api-availability.json" = "forward-api-availability.json",
 ) {
   const samples: {
     phase: "before" | "during" | "after";
@@ -365,25 +370,63 @@ export async function measureUpgradeAvailability<T>(
     finishedAt: string;
     elapsedMs: number;
     gapMs: number | null;
+    startOffsetMs: number;
+    startGapMs: number | null;
+    scheduledSlot: number | null;
+    scheduleDelayMs: number | null;
     outcome:
       "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
     status: number | undefined;
     requestId?: string;
   }[] = [];
+  const origin = performance.now();
+  const nominalIntervalMs = 1_000;
+  let previousStart: number | undefined;
   let previousFinish: number | undefined;
+  let maxStartGapMs = 0;
+  const cadence: { start?: number; finish?: number } = {};
   const evidenceErrors: unknown[] = [];
-  const evidence = (upgradeSucceeded: boolean | null) => ({
-    requestTimeoutMs: 5_000,
-    intervalAfterResponseMs: 1_000,
-    upgradeSucceeded,
-    samples: samples.map((observation) => ({ ...observation })),
-  });
+  const evidence = (upgradeSucceeded: boolean | null) => {
+    // A checkpoint covers only the last completed request. File-write time is
+    // exposed by the next start; an interrupted write cannot extend this boundary.
+    const through = previousFinish ?? origin;
+    const duration = cadence.start === undefined ? 0 : (cadence.finish ?? through) - cadence.start;
+    const scheduledSlots = Math.floor(duration / nominalIntervalMs) + 1;
+    const probedSlots = samples.filter(({ scheduledSlot }) => scheduledSlot !== null).length;
+    return {
+      schemaVersion: 2,
+      requestTimeoutMs: 5_000,
+      // Version 1 slept after each response. Null explicitly retires that policy.
+      intervalAfterResponseMs: null,
+      nominalIntervalMs,
+      upgradeSucceeded,
+      complete: upgradeSucceeded !== null,
+      throughOffsetMs: through - origin,
+      maxStartGapMs,
+      tailGapMs: previousStart === undefined ? 0 : through - previousStart,
+      cadence:
+        cadence.start === undefined
+          ? null
+          : {
+              startOffsetMs: cadence.start - origin,
+              endOffsetMs: (cadence.finish ?? through) - origin,
+              complete: cadence.finish !== undefined,
+              scheduledSlots,
+              probedSlots,
+              unprobedSlots: scheduledSlots - probedSlots,
+            },
+      samples: samples.map((observation) => ({ ...observation })),
+    };
+  };
   const sample = async (
     phase: (typeof samples)[number]["phase"],
     upgradeSucceeded: boolean | null = null,
   ) => {
     const startedAt = new Date().toISOString();
     const start = performance.now();
+    const startGapMs = previousStart === undefined ? null : start - previousStart;
+    const scheduledSlot =
+      phase === "during" ? Math.floor((start - cadence.start!) / nominalIntervalMs) : null;
     const signal = AbortSignal.timeout(5_000);
     let outcome: (typeof samples)[number]["outcome"];
     let status: number | undefined;
@@ -426,15 +469,22 @@ export async function measureUpgradeAvailability<T>(
       finishedAt: new Date().toISOString(),
       elapsedMs: Math.round(finish - start),
       gapMs: previousFinish === undefined ? null : Math.round(start - previousFinish),
+      startOffsetMs: start - origin,
+      startGapMs,
+      scheduledSlot,
+      scheduleDelayMs:
+        scheduledSlot === null ? null : start - cadence.start! - scheduledSlot * nominalIntervalMs,
       outcome,
       status,
       ...(requestId === undefined ? {} : { requestId }),
     });
+    previousStart = start;
     previousFinish = finish;
+    maxStartGapMs = Math.max(maxStartGapMs, startGapMs ?? 0);
     try {
       // A killed runner leaves the last complete snapshot, never a truncated one.
       // Null means the action has not been recorded as settled.
-      const path = join(directory, "forward-api-availability.json");
+      const path = join(directory, receiptName);
       await writeFile(`${path}.tmp`, JSON.stringify(evidence(upgradeSucceeded)) + "\n", {
         mode: 0o600,
       });
@@ -450,18 +500,28 @@ export async function measureUpgradeAvailability<T>(
   const stopped = new AbortController();
   let observing: Promise<void> | undefined;
   let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
+  cadence.start = performance.now();
   try {
     const upgrading = upgrade();
     observing = (async () => {
       while (!stopped.signal.aborted) {
         await sample("during");
-        await delay(1_000, undefined, { signal: stopped.signal }).catch(() => {});
+        // Start at most once per nominal slot, with at least one interval between
+        // actual starts. A slow request/write or late wake skips slots, never
+        // queues requests to replay them. Recheck time after early timer wakes.
+        const nextStart = previousStart! + nominalIntervalMs;
+        while (!stopped.signal.aborted && performance.now() < nextStart) {
+          await delay(nextStart - performance.now(), undefined, { signal: stopped.signal }).catch(
+            () => {},
+          );
+        }
       }
     })();
     outcome = { succeeded: true, value: await upgrading };
   } catch (error) {
     outcome = { succeeded: false, error };
   }
+  cadence.finish = performance.now();
   stopped.abort();
   // Join the final bounded request before taking the post-upgrade observation.
   await observing;
@@ -562,8 +622,88 @@ type Pod = {
   };
 };
 
+const labels = Type.Record(Type.String(), Type.String());
+const container = Type.Object({ name: Type.String(), image: Type.String() });
+const installationVolumes = Type.Optional(
+  Type.Array(
+    Type.Object({
+      name: Type.String(),
+      secret: Type.Optional(
+        Type.Object({ secretName: Type.String(), items: Type.Optional(Type.Unknown()) }),
+      ),
+    }),
+  ),
+);
+const runningContainer = Type.Object({
+  name: Type.String(),
+  imageID: Type.String(),
+  containerID: Type.Optional(Type.String()),
+  ready: Type.Boolean(),
+});
+const controllerPod = Type.Object({
+  metadata: Type.Object({
+    name: Type.String(),
+    uid: Type.String(),
+    labels,
+    deletionTimestamp: Type.Optional(Type.String()),
+  }),
+  spec: Type.Object({
+    nodeName: Type.Optional(Type.String()),
+    serviceAccountName: Type.String(),
+    containers: Type.Array(container),
+    volumes: installationVolumes,
+  }),
+  status: Type.Object({
+    phase: Type.Optional(Type.String()),
+    podIP: Type.Optional(Type.String()),
+    containerStatuses: Type.Optional(Type.Array(runningContainer)),
+  }),
+});
+const controllerPods = Type.Object({ items: Type.Array(controllerPod) });
+const persistentClaim = Type.Object({
+  metadata: Type.Object({ uid: Type.String() }),
+  spec: Type.Object({ volumeName: Type.String() }),
+});
+const controllerDeployment = Type.Object({
+  metadata: Type.Object({ uid: Type.String(), labels }),
+  spec: Type.Object({
+    replicas: Type.Integer(),
+    template: Type.Object({
+      spec: Type.Object({
+        containers: Type.Array(container),
+        volumes: installationVolumes,
+      }),
+    }),
+  }),
+});
+const serviceAccount = Type.Object({ metadata: Type.Object({ uid: Type.String() }) });
+const nodeIdentity = Type.Object({
+  metadata: Type.Object({ uid: Type.String() }),
+  status: Type.Object({
+    nodeInfo: Type.Object({
+      operatingSystem: Type.String(),
+      architecture: Type.String(),
+    }),
+  }),
+});
+const scheduledPod = Type.Object({
+  metadata: Type.Object({ uid: Type.String() }),
+  spec: Type.Object({ nodeName: Type.String() }),
+});
+const imageStatus = Type.Object({ imageID: Type.String(), containerID: Type.String() });
+const runningImage = Type.Object({
+  reference: Type.String(),
+  platform: Type.String(),
+  manifestDigest: Type.String(),
+  configDigest: Type.String(),
+});
+type RunningControllerImage = Pick<
+  ControllerImage,
+  "reference" | "platform" | "manifestDigest" | "configDigest"
+>;
+
 export async function assertRunningController(
-  image: Pick<ControllerImage, "reference" | "platform" | "manifestDigest" | "configDigest">,
+  image: RunningControllerImage,
   platform: string,
   imageID: string | undefined,
   readContainerImage: () => Promise<string | undefined>,
@@ -648,71 +788,86 @@ export function rehearsalPlane({
   namespace,
 }: Pick<Rehearsal, "run" | "release" | "localCluster" | "kubeconfig" | "context" | "namespace"> & {
   kube: Kubectl;
-  get: (resource: string) => Promise<ReturnType<typeof JSON.parse>>;
+  get: (resource: string) => Promise<unknown>;
 }) {
-  const pods = async () =>
-    (
-      JSON.parse(
-        await kube(
-          "get",
-          "pods",
-          "-l",
-          `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${release},app.kubernetes.io/component in (api,worker)`,
-          "-o",
-          "json",
-        ),
-      ) as { items: Pod[] }
-    ).items;
+  const pods = async () => {
+    const listed = protectedJSON<unknown>(
+      await kube(
+        "get",
+        "pods",
+        "-l",
+        `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${release},app.kubernetes.io/component in (api,worker)`,
+        "-o",
+        "json",
+      ),
+    );
+    assert.ok(Check(controllerPods, listed), "invalid controller Pod list");
+    return listed.items;
+  };
   const claimIdentity = async () =>
     Promise.all(
       ["postgres-data", "bootstrap-password"].map(async (name) => {
-        const { metadata, spec } = await get(`pvc/${name}`);
+        const claim = await get(`pvc/${name}`);
+        assert.ok(Check(persistentClaim, claim), `invalid claim ${name}`);
+        const { metadata, spec } = claim;
         assert.ok(metadata.uid && spec.volumeName, `unbound claim ${name}`);
         return { name, uid: metadata.uid, volume: spec.volumeName };
       }),
     );
-  const verifyPodImage = async (
-    image: ControllerImage,
-    pod: Pod,
-    status: ContainerStatus | undefined,
-  ) => {
+  async function verifyPodImage(
+    image: RunningControllerImage,
+    pod: { metadata: { uid: string }; spec: { nodeName?: string } },
+    status: Pick<Static<typeof runningContainer>, "imageID" | "containerID"> | undefined,
+  ): Promise<string>;
+  async function verifyPodImage(image: unknown, pod: unknown, status: unknown) {
+    // The migration observer passes these values directly from kubectl through JavaScript.
+    assert.ok(Check(runningImage, image), "invalid controller image");
+    assert.ok(Check(scheduledPod, pod), "invalid scheduled Pod");
+    assert.ok(Check(imageStatus, status), "invalid container image status");
     assert.equal(
       pod.spec.nodeName,
       localCluster.node,
       "controller Pod must use the owned k3d Node",
     );
     const node = await get(`node/${pod.spec.nodeName}`);
+    assert.ok(Check(nodeIdentity, node), "invalid controller Node");
     assert.equal(node.metadata.uid, localCluster.nodeUID, "the owned k3d Node was replaced");
     const { operatingSystem, architecture } = node.status.nodeInfo;
-    assert.ok(status, "the controller container has no runtime status");
     return assertRunningController(
       image,
       `${operatingSystem}/${architecture}`,
       status.imageID,
       () => localCluster.runningConfigDigest(status.containerID, pod.metadata.uid),
     );
-  };
-  const controlPlane = async (image: ControllerImage, database: string, secretName: string) => {
+  }
+  const controlPlane = async (
+    image: RunningControllerImage,
+    database: string,
+    secretName: string,
+  ) => {
     const currentPods = await pods();
     assert.equal(currentPods.length, components.length, "expected one API and one worker Pod");
     return Promise.all(
       components.map(async (component) => {
         const deployment = await get(`deployment/openclaw-enterprise-${component}`);
+        assert.ok(Check(controllerDeployment, deployment), "invalid controller Deployment");
         assert.equal(deployment.metadata.labels["app.kubernetes.io/instance"], release);
         assert.equal(deployment.spec.replicas, 1);
         assert.ok(deployment.metadata.uid);
         assertInstallationVolume(deployment.spec.template.spec, secretName);
         assert.equal(
-          deployment.spec.template.spec.containers.find(
-            (container: { name: string }) => container.name === component,
-          )?.image,
+          deployment.spec.template.spec.containers.find((container) => container.name === component)
+            ?.image,
           image.reference,
         );
         const pod = currentPods.find(
           (item) => item.metadata.labels["app.kubernetes.io/component"] === component,
         );
         assert.ok(
-          pod?.metadata.uid && pod.status.podIP && pod.status.phase === "Running",
+          pod?.metadata.uid &&
+            pod.spec.nodeName &&
+            pod.status.podIP &&
+            pod.status.phase === "Running",
           `${component} Pod did not start`,
         );
         assert.equal(
@@ -721,10 +876,11 @@ export function rehearsalPlane({
         );
         assertInstallationVolume(pod.spec, secretName);
         const status = pod.status.containerStatuses?.find((item) => item.name === component);
-        assert.ok(status?.ready, `${component} container is not ready`);
+        assert.ok(status?.ready && status.containerID, `${component} container is not ready`);
         const imageDigest = await verifyPodImage(image, pod, status);
         assert.equal(pod.spec.serviceAccountName, `openclaw-enterprise-${component}`);
         const account = await get(`serviceaccount/${pod.spec.serviceAccountName}`);
+        assert.ok(Check(serviceAccount, account), "invalid controller ServiceAccount");
         assert.ok(account.metadata.uid, `${component} ServiceAccount must have an identity`);
         const selectedDatabase = await run(
           "kubectl",

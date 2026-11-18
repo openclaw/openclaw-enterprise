@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
 
-import type { MessageTypeDefinition } from "../../apps/controller/node_modules/@grpc/proto-loader/build/src/index.js";
+import type {
+  MessageTypeDefinition,
+  PackageDefinition,
+} from "../../apps/controller/node_modules/@grpc/proto-loader/build/src/index.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
 export function verifyStockReadinessEvidence(
-  product: MessageTypeDefinition<object, unknown>,
-  stock: MessageTypeDefinition<object, unknown>,
+  productDefinitions: PackageDefinition,
+  stockDefinitions: PackageDefinition,
 ): void {
+  const readiness = "openshell.v1.ProviderReadinessStatus";
+  const product = message(productDefinitions, readiness);
+  const stock = message(stockDefinitions, readiness);
   const evidence = {
     state: "PROVIDER_READINESS_STATE_READY",
     network_instance_id: "network-one",
@@ -56,4 +62,60 @@ export function verifyStockReadinessEvidence(
   assert.equal(received.observed, undefined);
   assert.equal(received.observed_time, undefined);
   assert.equal(received.evaluated_time, undefined);
+}
+
+function verifyStockRoundTrip(
+  product: MessageTypeDefinition<object, unknown>,
+  stock: MessageTypeDefinition<object, unknown>,
+  evidence: object,
+  expectedStock: object,
+): void {
+  const bytes = product.serialize(evidence);
+  assert.deepEqual(product.deserialize(bytes), evidence);
+  const decoded = stock.deserialize(bytes);
+  assert.ok(isRecord(decoded));
+  assert.deepEqual(decoded, expectedStock);
+  assert.deepEqual(product.deserialize(stock.serialize(decoded)), expectedStock);
+}
+
+function message(
+  definitions: PackageDefinition,
+  name: string,
+): MessageTypeDefinition<object, unknown> {
+  const definition = definitions[name];
+  assert.ok(
+    definition &&
+      "format" in definition &&
+      definition.format === "Protocol Buffer 3 DescriptorProto",
+    `Missing protobuf message ${name}`,
+  );
+  return definition;
+}
+
+export function verifyStockExtensionRoundTrips(
+  product: PackageDefinition,
+  stock: PackageDefinition,
+): void {
+  const policyStatus = "openshell.v1.GetSandboxPolicyStatusResponse";
+  const enforcement = {
+    sandbox_id: "sandbox-one",
+    enforced_capabilities: ["test-only-capability"],
+  };
+  verifyStockRoundTrip(
+    message(product, policyStatus),
+    message(stock, policyStatus),
+    {
+      active_version: 1,
+      loaded_enforcement: enforcement,
+      loaded_policy_observation: { source_policy_hash: "policy-one", enforcement },
+    },
+    { active_version: 1 },
+  );
+  const spec = "openshell.v1.SandboxSpec";
+  verifyStockRoundTrip(
+    message(product, spec),
+    message(stock, spec),
+    { provider_attachment_epoch: "epoch-one" },
+    {},
+  );
 }

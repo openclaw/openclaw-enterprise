@@ -304,6 +304,10 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  chatWithAgent: {
+    messages: [{ role: "user", content: "Reply with a short greeting." }],
+    stream: false,
+  },
   launchAgentNativeAdmin: {},
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
@@ -422,6 +426,15 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  chatWithAgent: {
+    id: "chatcmpl-example",
+    object: "chat.completion",
+    created: 1792411200,
+    model: "openclaw:main",
+    choices: [
+      { index: 0, message: { role: "assistant", content: "Hello." }, finish_reason: "stop" },
+    ],
+  },
   listUsableConnectionTemplates: [connectionTemplate],
   listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {
@@ -490,6 +503,22 @@ export const responseExamples = {
   },
   deployAgent: revision,
   getAgentRevision: revision,
+  listAgentAuditEvents: {
+    projectionVersion: 1,
+    window: { start: "2026-09-30T12:00:00.000Z", end: time },
+    events: [
+      {
+        id: id("aud"),
+        occurredAt: "2026-10-01T11:30:00.000000Z",
+        event: "api_request",
+        outcome: "success",
+        actorId: id("prn"),
+        requestId: id("req"),
+        operationId: "getAgent",
+      },
+    ],
+    nextCursor: null,
+  },
   listAgentRevisions: [
     {
       id: revisionId,
@@ -755,12 +784,14 @@ export const errorExamples = {
   401: ["UNAUTHENTICATED", "The caller did not provide valid credentials."],
   403: ["FORBIDDEN", "The caller is not allowed to perform this operation."],
   404: ["NOT_FOUND", "The requested platform resource was not found."],
+  408: ["REQUEST_TIMEOUT", "The request body deadline expired."],
   409: ["RESOURCE_CONFLICT", "The requested operation conflicts with the current resource state."],
   413: ["PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size."],
   415: ["UNSUPPORTED_MEDIA_TYPE", "The request content type is not supported."],
   429: ["RATE_LIMITED", "Too many requests. Retry later."],
   500: ["INTERNAL_ERROR", "The platform request could not be completed."],
   501: ["NOT_IMPLEMENTED", "The selected Driver does not support this operation."],
+  502: ["BAD_GATEWAY", "The Agent request was interrupted."],
   503: ["DEPENDENCY_UNAVAILABLE", "A required dependency is unavailable."],
   504: ["GATEWAY_TIMEOUT", "The runtime request timed out."],
 } satisfies Record<number, readonly [string, string]>;

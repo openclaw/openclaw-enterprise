@@ -22,13 +22,14 @@ seconds. `apply` also waits for the old Pods to stop, up to 5.5 minutes for a
 Gateway that is not ready, so stop such Agents first. Dedicated Gateways keep
 serving until they are deployed again; Harnesses and embedded Gateways are down
 from `apply` until then. Run the commands from a checkout of the target
-release, with cluster-admin `kubectl` for the cluster (`--context`/`--kubeconfig`
-are passed through).
+release. Use Node.js in the range specified by `engines.node` in
+`package.json` (`>=24.22.1 <26 || >=26.12.1`). Use a `kubectl` identity with
+cluster-admin access. Select the cluster with `--context` or `--kubeconfig`.
 
 1. Plan. This only reads:
 
    ```bash
-   node scripts/split-layout-adopt.mjs plan --out /secure/occ/adopt-plan.json
+   node scripts/split-layout-adopt.ts plan --out /secure/occ/adopt-plan.json
    ```
 
    It lists, per tenant, the claims, Secrets and routes to move and the Agents
@@ -52,13 +53,18 @@ are passed through).
    worker stays stopped:
 
    ```bash
-   node scripts/split-layout-adopt.mjs apply --archive /secure/occ/adopt --yes
+   node scripts/split-layout-adopt.ts apply --archive /secure/occ/adopt --yes
    ```
 
    It records each step on the `oce-gateways-*` namespace, so running it again
    after any failure continues. Until step 4 starts the new release,
-   `revert --archive /secure/occ/adopt --yes` restores the old layout and
-   restarts OCC. With `--namespace-id`, revert restores only those tenants and
+   the following command restores the old layout and restarts OCC.
+
+   ```bash
+   node scripts/split-layout-adopt.ts revert --archive /secure/occ/adopt --yes
+   ```
+
+   With `--namespace-id`, revert restores only those tenants and
    restarts the old API; the worker stays stopped until the rest are reverted
    or the new release starts. Keep the archive directory: it holds the old
    routes. Adopt every tenant before the upgrade: once the controller runs
@@ -77,7 +83,7 @@ are passed through).
 6. Delete the old namespaces. After this there is no way back:
 
    ```bash
-   node scripts/split-layout-adopt.mjs finalize --yes
+   node scripts/split-layout-adopt.ts finalize --yes
    ```
 
    It refuses while the controller still runs the images `apply` recorded,

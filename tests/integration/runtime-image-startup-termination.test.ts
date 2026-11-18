@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { describe, test, type TestContext } from "node:test";
 import type { ProbeSnapshot } from "../helpers/runtime-image-model-probe.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
-import { imageTestOptions, runDocker, failureTail } from "../helpers/runtime-image-startup.mjs";
+import { runDocker, failureTail } from "../helpers/runtime-image-docker.ts";
+import { imageTestOptions } from "../helpers/runtime-image-startup.ts";
 import {
   runStartupProbeScenario,
   observedValue,
@@ -27,10 +28,9 @@ import {
 // Gateway's 330 seconds: a wrapper that ignores SIGTERM never meets it.
 const promptTerminationMs = 15_000;
 
-type TerminationSnapshot = Pick<
-  ProbeSnapshot,
-  "events" | "phases" | "output" | "running" | "exitCode"
->;
+type TerminationSnapshot = Pick<ProbeSnapshot, "events" | "output" | "running" | "exitCode"> & {
+  phases: readonly Record<string, unknown>[];
+};
 type TerminationScenario = {
   containerName: string;
   collect: () => Promise<TerminationSnapshot>;
