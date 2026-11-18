@@ -827,6 +827,8 @@ test(
   { skip: helmSkip },
   () => {
     const chartError = /database.caMountPath must be distinct from other active mounts/;
+    const rendererError =
+      /controlPlane\.databaseCa\.mountPath must be distinct from other active mounts/;
     const cases: ParityCase[] = [];
     for (const profile of ["openclaw", "codex"]) {
       const extraInput = profile === "codex" ? codexInput() : {};
@@ -868,21 +870,28 @@ test(
               "/etc/openclaw/execution",
             ].includes(mountPath),
           chartError,
+          rendererError,
         });
       }
       // No CA mount creates no collision, even when every other feature uses its defaults.
       cases.push({ label: `${profile}: no database CA`, profile, extraInput, accepted: true });
-      for (const mountPath of [
-        "/etc/openclaw/repository-registry",
-        "/etc/openclaw/repository-ca",
-        "/etc/openclaw/prepared-repository",
-        "etc/openclaw/prepared-repository/",
-        "/var/run/secrets/kubernetes.io/serviceaccount",
-        "/run/secrets/kubernetes.io/serviceaccount",
-        "/run/openclaw/repository-control",
-        "/var/run/openclaw/repository-control",
-        "/etc/openclaw/repository-inputs", // Broker-only mounts cannot collide with its absent CA.
-      ]) {
+      // Scratch and the ServiceAccount path stay reserved regardless of repository support.
+      for (const [mountPath, conflicts] of [
+        ["/tmp", "always"],
+        ["tmp/", "always"],
+        ["/var/run/../tmp", "always"], // Step out of /run after following the image symlink.
+        ["/var/run/secrets/kubernetes.io/serviceaccount", "always"],
+        ["/run/secrets/kubernetes.io/serviceaccount", "always"],
+        ["var/run/secrets/kubernetes.io/./serviceaccount/", "always"],
+        ["/etc/openclaw/repository-registry", "repository"],
+        ["/etc/openclaw/repository-ca", "repository"],
+        ["/etc/openclaw/prepared-repository", "repository"],
+        ["etc/openclaw/prepared-repository/", "repository"],
+        ["/run/openclaw/repository-control", "repository"],
+        ["/var/run/openclaw/repository-control", "repository"],
+        ["/var/tmp", "never"],
+        ["/etc/openclaw/repository-inputs", "never"], // Broker-only mounts cannot collide with its absent CA.
+      ] as const) {
         for (const enabled of [false, true]) {
           cases.push({
             label: `${profile}: repository ${enabled}: ${mountPath}`,
@@ -893,8 +902,9 @@ test(
               database: { caSecretName: "occ-db-ca", caMountPath: mountPath },
               repositoryCredentials: { ...repositoryInput, enabled },
             },
-            accepted: !enabled || mountPath === "/etc/openclaw/repository-inputs",
+            accepted: conflicts === "never" || (conflicts === "repository" && !enabled),
             chartError,
+            rendererError,
           });
         }
       }
@@ -923,6 +933,7 @@ test(
         },
         accepted: !enabled,
         chartError,
+        rendererError,
       });
     }
     return each(cases, assertParity);

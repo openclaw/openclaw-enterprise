@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-15
-last_updated_session: authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf
+updated: 2026-11-18
+last_updated_session: authoring-run/52f2af39-6c44-420f-9ad3-1ea2e7b6bbab
 ---
 
 # Installation Profile Rendering Flow
@@ -160,15 +160,16 @@ produces failed preflight without either deployment file.
 253 characters; neither `.` nor a `..` prefix. Thus `..ca.pem` and 254-character
 keys fail preflight before Helm. Omission uses `ca.pem`.
 
-`validateDatabaseCaMount` compares Linux destinations with the chart's active
-mounts: Installation, worker runtime, bootstrap, gateway key and private gateway CA.
-Relative, dot-segment and trailing-slash aliases collide too. Repository and
-ChatGPT paths are reserved only when enabled; execution-cluster paths remain free.
-Prepared Git also reserves `/etc/openclaw/prepared-repository`, including relative,
-dot-segment and trailing-slash aliases, when repository credentials are enabled.
-Without CA configuration no restriction applies; omission keeps
-`/etc/openclaw/database-ca`. A collision adds a field-specific error and withholds
-both deployment files. Noncolliding paths retain their supplied spelling.
+`validateDatabaseCaMount` compares resolved Linux destinations with the chart's
+active mounts. Installation, worker runtime, bootstrap, gateway key, private
+gateway CA, `/tmp`, and `/var/run/secrets/kubernetes.io/serviceaccount` are always
+reserved. The comparison resolves relative paths, dot segments, trailing slashes,
+and image symlinks such as `/var/run`. Repository paths, including
+`/etc/openclaw/prepared-repository`, and ChatGPT paths are reserved only when
+their features are enabled. Execution-cluster paths remain available.
+With a CA Secret, the default is `/etc/openclaw/database-ca`. A collision adds a
+field-specific error and withholds both deployment files. Accepted paths retain
+their supplied spelling.
 
 The Helm values select the control-plane image, Better Auth base URL,
 bootstrap administrator, database and cluster egress CIDRs, API client
@@ -317,6 +318,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 02:38: Reserve controller scratch and ServiceAccount mount destinations during database CA preflight. (authoring-run/52f2af39-6c44-420f-9ad3-1ea2e7b6bbab - b6bc08e727964f69227e556c522a2e1bedb3a860)
 
 - 2026-11-15 10:07: Align database CA mount preflight with prepared Git mounts. (authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
 
