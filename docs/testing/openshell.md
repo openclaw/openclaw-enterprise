@@ -329,34 +329,27 @@ OpenClaw Control UI URLs. Trust startup's browser CA first. Finish with
 
 ### Guided native OpenClaw redeployment
 
-`tests/integration/local-first-agent-real.test.mjs` provisions Compose-plus-k3d and
-Kubernetes-only stacks through public Local Setup. Hosted jobs prepare
-[current-source images](ci.md); local runs build by default. Only the Compose file
-accepts `OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE` for a verified development
-controller, paired with `OCC_KUBERNETES_RUNTIME_IMAGE`.
-Installer tests use `OPENAI_API_KEY` and verify exact CredentialSource access.
-The first run checks a nonce and custom prompt. Reuse checks a new nonce
-without that prompt or helper-environment credentials, retaining the exact Agent,
-revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret-timing-and-proof)
-retain stage timings.
+`tests/integration/local-first-agent-real.test.mjs` uses public Local Setup for
+Compose-plus-k3d and Kubernetes-only stacks. Hosted jobs prepare
+[current-source images](ci.md). Local runs build by default. Only the Compose
+test accepts a verified `OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE` paired
+with `OCC_KUBERNETES_RUNTIME_IMAGE`. Installer tests use `OPENAI_API_KEY` and
+verify exact CredentialSource access. The first run checks a nonce and custom
+prompt. Reuse checks a fresh nonce with the same Agent, revision, Namespace,
+and model, without helper-environment credentials or the custom prompt.
+[CI results](ci/openshell-execution.md#interpret-timing-and-proof) retain timings.
 
-After checking Local Setup's ready default Namespace, the test runs distinct
-Codex and native Agents concurrently with separate `openai` sources using
-`OPENAI_API_KEY`. Native OpenClaw uses the pinned runtime,
-and production Drivers without the k3d helper's compatibility bridge. Both
-operations drain before shared denial checks and teardown.
+With the default Namespace ready, Codex and native OpenClaw run concurrently
+using separate `openai` sources. OpenClaw uses the pinned runtime and
+production Drivers. Both runs drain before denial checks and teardown.
 
-For a custom service, set
-`OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
-`baseUrl`, `api` (`openai-responses` or `openai-completions`), and native `models`
-metadata. The first model selects the native Agent and can differ from Codex.
-Supply that service's key as
-`OPENAI_API_KEY`; this custom-provider case requires a separate
-`CODEX_ACCESS_TOKEN` and `codex-pat` source for Codex.
-Configure the Installation `runtime.modelProvider` with that URL and API first.
-The native source authorizes that destination. Provisioning, model-and-exec,
-and retained-session assertions still run;
-changing only the embedded QA preset does not exercise this path.
+For a custom service, set `OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to
+a private JSON file with `baseUrl`, `api` (`openai-responses` or
+`openai-completions`), and native `models` metadata. The first model is used by
+OpenClaw. Set Installation `runtime.modelProvider` to the same URL and API
+before provisioning. Use `OPENAI_API_KEY` for the custom service and a separate
+`CODEX_ACCESS_TOKEN` with a `codex-pat` source for Codex. All native execution
+and retained-session assertions still run.
 
 The case edits `USER.md` through the workspace API, verifies its marker through
 real model execution and `exec`. That turn writes a unique session-worktree file. It
@@ -369,8 +362,13 @@ apply; emitted events are not counted. Checks also cover replacement Sandbox and
 Pod UIDs, retained workspace PVC/subpath, and every owner file's bytes. Resuming
 the same session ID and key must produce another model turn and `exec` reading
 the original file and hash. Run placement must identify the replacement Harness
-and required worker profile. A fresh session would miss lost worktrees despite
-surviving session metadata.
+and required worker profile. Reusing the session exposes lost worktrees.
+
+The owned Kubernetes-only stack enables `controlPlaneAudit.enabled` before
+either Agent deploys. A human account with a
+direct `read_audit` grant reads the Gateway's turn start and successful
+completion for both native OpenClaw revisions in the retained session. Both
+reads use the same API process.
 
 Previously captured guided live proof covers native OpenClaw only and predates
 the current Sandbox-owned initialization. It does not establish fresh proof

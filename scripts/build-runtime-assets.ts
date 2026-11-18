@@ -2,6 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   cp,
   lstat,
   mkdir,
@@ -10,6 +11,7 @@ import {
   readlink,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -77,7 +79,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-codex-runtime-audit.patch",
-    sha256: "aca6d77e46be4c382c79f9b950aae5da88c9a323c38d359531d8fc1d1afd0370",
+    sha256: "a7fe181337a2cda56329d7224958beaff552eb03e4ba571d356ebe60d82ac7c9",
   },
 ];
 const runtimePaths = [
@@ -219,6 +221,53 @@ async function readCodexRuntimeIdentity(root: string) {
     resolvedBinary: relativeRuntimePath(root, resolvedBinary, "Codex platform binary target"),
     binarySha256: hash(await readFile(resolvedBinary)),
   };
+}
+
+function codexAuditPaths(
+  root: string,
+  output: string,
+  stock: Awaited<ReturnType<typeof readCodexRuntimeIdentity>>,
+) {
+  const stockBin = dirname(join(root, stock.resolvedBinary));
+  return {
+    installed: join(stockBin, "oce-codex-audit-app-server"),
+    bwrap: join(stockBin, "..", "codex-resources", "bwrap"),
+    launcher: join(output, "bin", "codex-audit-app-server"),
+  };
+}
+
+async function installCodexAuditAppServer(root: string, output: string, bundle: string) {
+  const stock = await readCodexRuntimeIdentity(root);
+  const paths = codexAuditPaths(root, output, stock);
+  const built = await readJsonObject(join(bundle, "provenance.json"));
+  const expectedTarget = `${stock.architecture === "amd64" ? "x86_64" : "aarch64"}-unknown-linux-gnu`;
+  const expectedPackage = `${stock.version}-linux-${process.arch}`;
+  const binary = join(bundle, "codex-app-server");
+  if (
+    built.version !== stock.version ||
+    stock.packageVersion !== expectedPackage ||
+    built.target !== expectedTarget ||
+    built.binarySha256 !== hash(await readFile(binary)) ||
+    built.bwrapSha256 !== hash(await readFile(paths.bwrap))
+  ) {
+    throw new Error(
+      "The audited Codex App Server must match its build and the pinned stock package.",
+    );
+  }
+  await cp(binary, paths.installed, { force: false, errorOnExist: true });
+  await chmod(paths.installed, 0o555);
+  const bin = dirname(paths.launcher);
+  await mkdir(bin, { recursive: true });
+  await symlink(relative(await realpath(bin), paths.installed), paths.launcher);
+  const provenancePath = join(output, "provenance.json");
+  const provenance = await readJsonObject(provenancePath);
+  provenance.codexAuditAppServer = {
+    ...built,
+    source: "https://github.com/openai/codex",
+    installedBinary: relativeRuntimePath(root, paths.installed, "audited Codex App Server"),
+    bundledBwrap: relativeRuntimePath(root, paths.bwrap, "audited Codex bundled bwrap"),
+  };
+  await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
 }
 
 async function writeRuntimeInventory(
@@ -465,7 +514,21 @@ async function inventoryFinalImage(
   const provenancePath = join(output, "provenance.json");
   const provenance = await readJsonObject(provenancePath);
   provenance.runtimeContentsSha256 = hash(contents);
-  provenance.codex = await readCodexRuntimeIdentity(root);
+  const stockCodex = await readCodexRuntimeIdentity(root);
+  provenance.codex = stockCodex;
+  const audit = provenance.codexAuditAppServer;
+  const { installed, launcher, bwrap } = codexAuditPaths(root, output, stockCodex);
+  if (
+    !isJsonObject(audit) ||
+    (await realpath(launcher)) !== installed ||
+    audit.version !== stockCodex.version ||
+    audit.installedBinary !== relativeRuntimePath(root, installed, "audited Codex App Server") ||
+    audit.bundledBwrap !== relativeRuntimePath(root, bwrap, "audited Codex bundled bwrap") ||
+    audit.binarySha256 !== hash(await readFile(installed)) ||
+    audit.bwrapSha256 !== hash(await readFile(bwrap))
+  ) {
+    throw new Error("The installed audited Codex App Server does not match runtime provenance.");
+  }
   provenance.node = node;
   provenance.downloadClients = downloadClients;
   await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
@@ -473,7 +536,8 @@ async function inventoryFinalImage(
 
 const [command, sourceRoot, output, manifestPath, downloadClientSelectionPath] =
   process.argv.slice(2);
-const usage = "Expected inputs, package, or inventory with source root and output directory.";
+const usage =
+  "Expected inputs, package, install-codex-audit, or inventory with source root and output directory.";
 if (sourceRoot === undefined || output === undefined) {
   throw new Error(usage);
 }
@@ -485,6 +549,11 @@ if (command === "inputs") {
     throw new Error("Runtime packaging requires the OpenClaw source manifest path");
   }
   await packageRuntime(root, output, manifestPath);
+} else if (command === "install-codex-audit") {
+  if (!manifestPath) {
+    throw new Error("Installing the audited Codex App Server requires its verified build bundle.");
+  }
+  await installCodexAuditAppServer(root, output, manifestPath);
 } else if (command === "inventory") {
   if (manifestPath === undefined) {
     throw new Error("Runtime inventory requires the installed Node provenance path");

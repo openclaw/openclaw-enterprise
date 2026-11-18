@@ -679,6 +679,7 @@ interface GatewayConfigurationSnapshot {
   readonly revisionId: string;
   readonly restartResumeScope: string;
   readonly gatewayManagedMode: boolean;
+  readonly auditCodexModelAttempts?: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -13933,6 +13934,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revisionId: revision.id,
       restartResumeScope: revision.restartContinuation?.generation ?? revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
+      ...(this.usesAuditedCodexServer(revision) && { auditCodexModelAttempts: true }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -15382,6 +15384,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return sandbox.implementation === "openshell" ? OPENSHELL_CODEX_LAUNCH : PROXY_CODEX_LAUNCH;
   }
 
+  private usesAuditedCodexServer(revision: AgentRevision): boolean {
+    if (
+      revision.harness.id !== "codex" ||
+      this.gatewayRuntimeAuditDestination(
+        revision.harness.mode === "dedicated",
+        revision.gatewayManagedMode,
+      ) === undefined
+    ) {
+      return false;
+    }
+    const sandbox = this.sandboxDriverForRevision(revision);
+    return sandbox?.provisionHarness === undefined && sandbox?.harnessEndpoint === undefined;
+  }
+
   private codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch {
     const saved = this.savedRuntimeAdmission(revision);
     const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
@@ -15393,6 +15409,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
+      ...(this.usesAuditedCodexServer(revision) && { auditModelAttempts: true }),
       ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
       ...(prefix === OPENSHELL_CODEX_LAUNCH && {
         openShellProgram:
@@ -17806,6 +17823,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               value: `${RUNTIME_AUDIT_DIRECTORY}/${RUNTIME_AUDIT_TOKEN_KEY}`,
             },
           );
+          if (configuration.nativeWorkerProfile === undefined) {
+            variables.push({
+              name: "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT",
+              value: configuration.auditCodexModelAttempts && providerUrl === undefined ? "1" : "0",
+            });
+          }
           if (auditDestination.managed !== undefined) {
             const { config } = this.gatewayRuntimeAuditTransportNames(
               agentId,

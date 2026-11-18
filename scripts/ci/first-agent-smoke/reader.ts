@@ -18,6 +18,7 @@ import {
   waitFor,
 } from "./process.ts";
 import {
+  enableLocalSetupAudit,
   kubectl,
   wireField,
   podList,
@@ -49,7 +50,6 @@ interface Reader {
 interface HelmValues {
   images: { controller: string };
   controlPlane?: Record<string, unknown>;
-  controlPlaneAudit?: { enabled: boolean };
 }
 
 interface InstallationValues {
@@ -106,24 +106,8 @@ export async function configureSmokeInstallation(stack: LocalSetup): Promise<Rea
     ...values.controlPlane,
     installationChecksum: createHash("sha256").update(installationData).digest("hex"),
   };
-  values.controlPlaneAudit = { enabled: true };
   await writeFile(valuesPath, JSON.stringify(values));
-  await run("helm", [
-    "upgrade",
-    "openclaw-enterprise",
-    "deploy/helm/openclaw-enterprise",
-    "--namespace",
-    stack.state.platformNamespace,
-    "--kubeconfig",
-    stack.kubeconfig,
-    "--kube-context",
-    stack.context,
-    "-f",
-    valuesPath,
-    "--wait",
-    "--timeout",
-    "5m",
-  ]);
+  await enableLocalSetupAudit(stack);
   return reader;
 }
 

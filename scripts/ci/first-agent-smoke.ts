@@ -32,11 +32,12 @@ import {
   type SmokeStack,
 } from "./first-agent-smoke/setup.ts";
 import {
-  allowCodexAuditRead,
-  assertCodexTurnAudit,
+  allowAgentAuditRead,
+  chatCodexWithAudit,
   chatTurn,
   createCodexAgent,
   deployAgent,
+  proveCodexAuditInterruptions,
   readLogs,
   runFirstAgent,
   stopAgent,
@@ -151,7 +152,7 @@ async function smoke() {
         modelDirectory,
         process.env.OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE ||
           process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
-        { credentialDigests },
+        { credentialDigests, auditFailures: true },
       ),
     );
     const [embedded, codex, control] = await initialAdmissions({
@@ -161,9 +162,8 @@ async function smoke() {
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
     });
     const readCodexAudit = await smokeStep("codex-chat", async () => {
-      const readAudit = await allowCodexAuditRead(stack, codex.agent, adminPassword);
-      await chatTurn(stack, codex.agent, codex.revisionId);
-      await assertCodexTurnAudit(readAudit, codex.agent, codex.revisionId);
+      const readAudit = await allowAgentAuditRead(stack, codex.agent, adminPassword);
+      await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readAudit);
       return readAudit;
     });
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
@@ -186,10 +186,17 @@ async function smoke() {
     await smokeStep("chat-after-start", async () => {
       await Promise.all([
         chatTurn(stack, embedded.agent, embeddedRevision),
-        chatTurn(stack, codex.agent, codexRevision),
+        chatCodexWithAudit(stack, codex.agent, codexRevision, readCodexAudit),
       ]);
-      await assertCodexTurnAudit(readCodexAudit, codex.agent, codexRevision);
       assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");
+    });
+    await smokeStep("codex-audit-interruptions", async () => {
+      await proveCodexAuditInterruptions(stack, codex.agent, codexRevision, readCodexAudit);
+      assert.deepEqual(
+        await apiProcess(stack),
+        servingApi,
+        "the API restarted during Gateway recovery",
+      );
     });
   } catch (error) {
     await diagnostics(diagnosticStack);

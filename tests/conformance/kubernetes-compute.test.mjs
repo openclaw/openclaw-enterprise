@@ -850,6 +850,13 @@ test("dedicated Gateway waits for its own audit grant and reuses the winning Sec
       assert.ok(!JSON.stringify(gatewayPod).includes(winningToken));
       assert.ok(!JSON.stringify(harnessPod).includes("runtime-audit"));
       const gatewayContainer = gatewayPod.containers[0];
+      const modelAuditSelector = "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT";
+      // Only the Gateway paired with this Compute-owned Codex Harness can accept its model receipts.
+      assert.equal(
+        gatewayContainer.env.find(({ name }) => name === modelAuditSelector)?.value,
+        "1",
+      );
+      assert.ok(!harnessPod.containers[0].env.some(({ name }) => name === modelAuditSelector));
       assert.equal(
         gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_URL")?.value,
         target.endpoint,

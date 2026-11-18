@@ -64,8 +64,8 @@ async function probeHttp(port, auth = token) {
     await exited;
   }
 }
-async function identity(name) {
-  const socket = new WebSocket("ws://127.0.0.1:18991", {
+async function identity(name, port) {
+  const socket = new WebSocket("ws://127.0.0.1:" + port, {
     headers: { Authorization: "Bearer " + token }, perMessageDeflate: false,
   });
   let userAgent;
@@ -86,18 +86,24 @@ async function identity(name) {
   assert.equal(typeof userAgent, "string");
   return userAgent;
 }
+// Both packaged servers must preserve the same authenticated readiness and
+// client identity behavior under the normal read-only, unprivileged image.
+for (const [executable, args, auditEnvironment, port] of [
+  ["codex", ["app-server"], {}, 18991],
+  ["/opt/oce/runtime/bin/codex-audit-app-server", [], { CODEX_PROVIDER_ATTEMPT_AUDIT: "1" }, 18993],
+]) {
 let serverLog = "";
-const server = spawn("codex", ["-c", 'otel.exporter="none"', "app-server", "--listen", "ws://127.0.0.1:18991",
+const server = spawn(executable, ["-c", 'otel.exporter="none"', ...args, "--listen", "ws://127.0.0.1:" + port,
   "--ws-auth", "capability-token", "--ws-token-sha256", createHash("sha256").update(token).digest("hex")],
-  { env, stdio: ["ignore", "ignore", "pipe"] });
+  { env: { ...env, ...auditEnvironment }, stdio: ["ignore", "ignore", "pipe"] });
 server.stderr.on("data", data => { serverLog += data; });
 const serverExit = once(server, "exit");
 try {
   const deadline = Date.now() + 10000;
   for (;;) {
-    assert.equal(server.exitCode, null, "real Codex server must stay alive");
+    assert.equal(server.exitCode, null, executable + " must stay alive");
     const listening = await new Promise(resolve => {
-      const socket = connect(18991, "127.0.0.1");
+      const socket = connect(port, "127.0.0.1");
       socket.once("connect", () => { socket.destroy(); resolve(true); });
       socket.once("error", () => resolve(false));
     });
@@ -106,25 +112,26 @@ try {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   // Probing before the first ordinary client must not claim its originator.
-  assert.deepEqual(await probe(18991), { code: 0, output: "" });
-  assert.equal(await probeHttp(18991), 200);
-  const ordinaryIdentity = await identity("ordinary-client");
+  assert.deepEqual(await probe(port), { code: 0, output: "" });
+  assert.equal(await probeHttp(port), 200);
+  const ordinaryIdentity = await identity("ordinary-client", port);
   assert.match(ordinaryIdentity, /^ordinary-client\//);
   // Later polling must also preserve that client's process-wide user-agent suffix.
   for (let attempt = 0; attempt < 2; attempt++) {
-    assert.deepEqual(await probe(18991), { code: 0, output: "" });
-    assert.equal(await probeHttp(18991), 200);
-    assert.equal(await identity("codex_app_server_daemon"), ordinaryIdentity);
+    assert.deepEqual(await probe(port), { code: 0, output: "" });
+    assert.equal(await probeHttp(port), 200);
+    assert.equal(await identity("codex_app_server_daemon", port), ordinaryIdentity);
   }
   assert.match(serverLog, /"level":"INFO"/, "the log capture must observe production INFO output");
   assert.doesNotMatch(serverLog, /notification[^\n]*initialized/, "default logging must not add an initialized event per poll");
-  assert.equal((await probe(18991, "wrong-capability-token")).code, 1);
-  assert.equal(await probeHttp(18991, "wrong-capability-token"), 503);
+  assert.equal((await probe(port, "wrong-capability-token")).code, 1);
+  assert.equal(await probeHttp(port, "wrong-capability-token"), 503);
 } finally {
   server.kill("SIGTERM");
   const kill = setTimeout(() => server.kill("SIGKILL"), 2000);
   await serverExit;
   clearTimeout(kill);
+}
 }
 const cases = ["silent", "wrong-id", "rejected", "invalid-json", "missing-identity", "closed", "abrupt-after-result"];
 for (const mode of cases) {
@@ -160,7 +167,7 @@ for (const mode of cases) {
     await new Promise(resolve => peer.close(resolve));
   }
 }
-console.log(JSON.stringify({ repeatedInitialization: true, peerCases: cases.length }));
+console.log(JSON.stringify({ packagedServers: 2, repeatedInitialization: true, peerCases: cases.length }));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 `;
 
@@ -210,6 +217,10 @@ test(
       { timeout: 55000, maxBuffer: 65536 },
       JSON.stringify({ residentProgram: parts[0] }),
     );
-    assert.deepEqual(JSON.parse(result.stdout), { repeatedInitialization: true, peerCases: 7 });
+    assert.deepEqual(JSON.parse(result.stdout), {
+      packagedServers: 2,
+      repeatedInitialization: true,
+      peerCases: 7,
+    });
   },
 );

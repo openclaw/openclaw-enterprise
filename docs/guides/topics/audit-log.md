@@ -136,8 +136,15 @@ connection. The in-process runtime can also record tool calls and workspace
 read and write decisions. The standard dedicated OpenClaw worker makes model
 requests and runs tools locally. Those operations still need a trusted audit
 source. The Codex Gateway records its dynamic tool calls and the command,
-file-change, and MCP items from the native server. The stock Codex server
-does not supply a record for each provider request.
+file-change, and MCP items from the native server.
+
+When Kubernetes Compute starts a managed dedicated Codex revision with an
+audit endpoint, it uses the packaged audit App Server. The App Server
+reports foreground Responses model requests during a turn. The Gateway
+saves a start and a result when it observes each of them. A retry that makes
+a new model request has a new call ID. The Agent audit API returns these
+records with the session and turn IDs. Warmup and background requests are
+outside this coverage.
 
 If the Gateway stops before it sends a result, the ledger can keep the start
 record alone. The outcome of that attempt is unknown. If OpenClaw resumes

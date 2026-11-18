@@ -155,6 +155,9 @@ Use the regular Agent workflow for proof: message → turn → policy decision �
 tool execution → result → reply. Missing runtime, provider or infrastructure
 proof remains an explicit gap. This document changes no runtime behavior.
 
+The [OpenClaw audit producer proposal](openclaw-audit-producers.md) covers
+the protected execution paths needed for the remaining M2 observations.
+
 ## Rationale and alternatives
 
 Extending the existing contract reuses its producers, ownership and persistence.

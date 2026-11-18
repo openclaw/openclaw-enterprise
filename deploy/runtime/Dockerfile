@@ -49,6 +49,29 @@ RUN --network=none \
     --mount=type=bind,source=deploy/runtime/native-tools/install.sh,target=/tmp/install-native-tools.sh \
     sh /tmp/install-native-tools.sh
 
+# Keep the stock CLI and its lockfile intact. Compile only the standalone App
+# Server for audited managed Codex runs, with upstream's paired bwrap digest.
+FROM docker.io/library/rust:1.99.1-slim-bookworm@sha256:b78cfbe4c0fd96b8a06b259092f1f412cb3ad3c5aed89d188bc40a1b8637f8f6 AS codex-audit-source
+ARG TARGETARCH
+RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends \
+      binutils ca-certificates clang cmake curl g++ git libclang-dev libssl-dev make pkg-config protobuf-compiler python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/runtime/codex-audit/ /codex-audit/
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca CARGO_HTTP_SSL_CAINFO=/run/secrets/build-ca; fi; \
+    sh /codex-audit/build.sh fetch "$TARGETARCH"
+
+FROM codex-audit-source AS codex-audit-build
+ARG TARGETARCH
+ENV CARGO_TARGET_DIR=/codex-target CARGO_BUILD_JOBS=4
+RUN --network=none \
+    --mount=type=cache,target=/codex-target,id=codex-audit-target-${TARGETARCH},sharing=locked \
+    sh /codex-audit/build.sh build "$TARGETARCH"
+
+FROM scratch AS codex-audit-artifact
+COPY --from=codex-audit-build /out/ /
+
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -267,7 +290,7 @@ RUN echo '7aaf5549c6a42c11a9345432dfde7d4f91bdaacca69e25d655fdacc764ebd8c2  /tmp
     && git apply /tmp/openclaw-runtime-audit.patch
 
 COPY deploy/runtime/openclaw-codex-runtime-audit.patch /tmp/openclaw-codex-runtime-audit.patch
-RUN echo 'aca6d77e46be4c382c79f9b950aae5da88c9a323c38d359531d8fc1d1afd0370  /tmp/openclaw-codex-runtime-audit.patch' | sha256sum --check --strict \
+RUN echo 'a7fe181337a2cda56329d7224958beaff552eb03e4ba571d356ebe60d82ac7c9  /tmp/openclaw-codex-runtime-audit.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-runtime-audit.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
@@ -337,6 +360,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/gateway/worker-environments/worker-exec-approval.test.ts \
     src/gateway/worker-environments/worker-turn-admission.test.ts \
     extensions/codex/src/app-server/run-attempt-runtime-audit.test.ts \
+    src/agents/harness/codex-runtime-audit.test.ts \
     extensions/codex/src/app-server/thread-lifecycle.test.ts \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
@@ -555,6 +579,17 @@ RUN mkdir -p node_modules/.bin \
 
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
+
+RUN --network=none \
+    --mount=type=bind,from=codex-audit-artifact,source=/,target=/tmp/codex-audit-artifact \
+    set -eu; \
+    node /tmp/build-runtime-assets.ts install-codex-audit /app/node_modules/openclaw /opt/oce/runtime /tmp/codex-audit-artifact; \
+    server=/opt/oce/runtime/bin/codex-audit-app-server; \
+    LC_ALL=C ldd "$server" > /tmp/codex-audit-linkage; \
+    if grep 'not found' /tmp/codex-audit-linkage; then exit 1; fi; \
+    codex_home="$(mktemp -d)"; \
+    test "$(CODEX_HOME="$codex_home" "$server" --version)" = "codex-app-server ${OPENAI_CODEX_VERSION}"; \
+    rm -rf "$codex_home" /tmp/codex-audit-linkage
 
 RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp/lib/runtime-download-clients.ts \
     --mount=type=bind,source=deploy/runtime/additional-download-clients.json,target=/tmp/additional-download-clients.json \

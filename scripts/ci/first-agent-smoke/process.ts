@@ -157,7 +157,8 @@ type Phase =
   | "agent-logs"
   | "stop-agents"
   | "start-agents"
-  | "chat-after-start";
+  | "chat-after-start"
+  | "codex-audit-interruptions";
 
 interface TimingRow {
   name: string | undefined;
@@ -188,6 +189,7 @@ export function createStepRecorder(now = () => performance.now()) {
     ["stop-agents", "stop both Agents"],
     ["start-agents", "start both Agents"],
     ["chat-after-start", "chat turns after start"],
+    ["codex-audit-interruptions", "Codex provider retry, cancellation, and Gateway recovery"],
   ]);
 
   async function step<T>(

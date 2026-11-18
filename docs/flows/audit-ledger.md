@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: "2026-11-18"
-last_updated_session: "authoring-run/6a1e940c-115b-4fd9-b4e0-be3e1602d5d8"
+last_updated_session: "authoring-run/51fe8bbd-9fd9-44a4-b12c-7aaf26cdb440"
 ---
 
 # Audit ledger flow
@@ -258,6 +258,16 @@ If the write fails, deployment stops at that step. A retry uses the token
 already saved in the revision's Secret. Compute mounts the Secret read-only
 in the Gateway container.
 
+When Compute starts the managed dedicated Codex workload, it selects the
+packaged audit App Server for the serving connection when the Gateway has an
+audit endpoint. The Gateway admits the turn after OCC saves its admission
+record. The App Server reports the start and outcome
+of observed foreground Responses requests over its existing authenticated
+connection. The Gateway checks the active turn and records when it receives
+each observation. Agent model credentials stay in the Codex workload.
+See `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`
+and `deploy/runtime/openclaw-codex-runtime-audit.patch`.
+
 ### 8. OCC accepts an observation from an enrolled runtime
 
 `apps/controller/src/http/runtime-audit.ts:registerRuntimeAudit` and
@@ -318,6 +328,8 @@ batch before it returns the OTLP response.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 15:31: Trace how the packaged Codex App Server reports foreground model requests. (authoring-run/51fe8bbd-9fd9-44a4-b12c-7aaf26cdb440 - 4ef3a6947e60309d88ecd796018f7e32e5a8993b)
 
 - 2026-11-18 14:48: Trace how the Agent audit API selects and returns lifecycle records. (authoring-run/6a1e940c-115b-4fd9-b4e0-be3e1602d5d8 - fcf72c27b375405d62e6e64015a36d7637018387)
 

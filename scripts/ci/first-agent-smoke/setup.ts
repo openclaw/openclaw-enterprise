@@ -296,7 +296,7 @@ export function kubectl(
 }
 
 export async function signInConsole(
-  stack: LocalSetup,
+  stack: Pick<LocalSetup, "directory" | "state">,
   credentials: { email: string; password: string },
 ): Promise<Api> {
   const { cookieHeaderFromSetCookie } = await import("../../../packages/utils/src/index.ts");
@@ -372,17 +372,52 @@ export async function signInConsole(
   return api;
 }
 
-export async function apiProcess(stack: LocalSetup) {
-  const { stdout } = await kubectl(stack, [
-    "-n",
-    stack.state.platformNamespace,
-    "get",
-    "pods",
-    "-l",
-    "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=api",
-    "-o",
-    "json",
-  ]);
+export function enableLocalSetupAudit(
+  stack: Pick<LocalSetup, "directory" | "context" | "kubeconfig" | "state">,
+  options?: RunOptions,
+) {
+  return run(
+    "helm",
+    [
+      "upgrade",
+      "openclaw-enterprise",
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      stack.state.platformNamespace,
+      "--kubeconfig",
+      stack.kubeconfig,
+      "--kube-context",
+      stack.context,
+      "-f",
+      join(stack.directory, "helm-values.json"),
+      "--set",
+      "controlPlaneAudit.enabled=true",
+      "--wait",
+      "--timeout",
+      "5m",
+    ],
+    { timeout: 6 * minute, ...options },
+  );
+}
+
+export async function apiProcess(
+  stack: Pick<LocalSetup, "kubeconfig" | "context" | "state">,
+  options?: RunOptions,
+) {
+  const { stdout } = await kubectl(
+    stack,
+    [
+      "-n",
+      stack.state.platformNamespace,
+      "get",
+      "pods",
+      "-l",
+      "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=api",
+      "-o",
+      "json",
+    ],
+    options,
+  );
   const ready = podList(stdout).filter(
     (pod) =>
       !pod.metadata.deletionTimestamp &&
@@ -411,10 +446,12 @@ export async function routeModelProvider(
     journey = "PROBE_PUBLIC_READ_JOURNEY",
     cleanup = [],
     credentialDigests,
+    auditFailures = false,
   }: {
     journey?: string;
     cleanup?: (() => Promise<unknown>)[];
     credentialDigests?: Record<string, string>;
+    auditFailures?: boolean;
   } = {},
 ) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
@@ -457,6 +494,7 @@ export async function routeModelProvider(
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
     "--env",
     `${journey}=1`,
+    ...(auditFailures ? ["--env", "PROBE_CODEX_AUDIT_FAILURES=1"] : []),
     // With digests, the stand-in answers only these credentials and names each caller.
     ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",

@@ -9,6 +9,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
+import {
+  allowAgentAuditRead,
+  assertAgentTurnAudit,
+} from "../../scripts/ci/first-agent-smoke/agents.ts";
+import { apiProcess, enableLocalSetupAudit } from "../../scripts/ci/first-agent-smoke/setup.ts";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -28,6 +33,7 @@ import {
   localFirstAgentStack,
   ownFirstAgentWork,
   measureFirstAgentStage,
+  withoutModelCredentials,
 } from "../helpers/local-first-agent-stack.mjs";
 import {
   recordFirstAgentPodTiming,
@@ -700,8 +706,16 @@ test(
     const own = ownFirstAgentWork(context);
     let finishCapacity = () => {};
     context.after(() => finishCapacity());
+    // The Kubernetes-only profile can change the chart on the stack this test creates.
+    const auditAdministratorPassword =
+      selectedSandboxDriver === "openshell" &&
+      process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE === "kubernetes" &&
+      process.env.OCC_DEVELOPMENT_STATE_DIRECTORY === undefined
+        ? randomUUID()
+        : undefined;
     const stack = await localFirstAgentStack(context, {
       modelCredential: credentialVariable === "OPENAI_API_KEY" ? "openai" : undefined,
+      administratorPassword: auditAdministratorPassword,
     });
     const stateDirectory = stack.directory;
     assert.ok(
@@ -722,6 +736,22 @@ test(
       /^occ-dev-[a-z0-9][a-z0-9-]*$/.test(recorded.cluster ?? ""),
       "The Local Setup state must identify a disposable Kubernetes context",
     );
+    const chartStack = {
+      directory: stateDirectory,
+      state: recorded,
+      kubeconfig: join(stateDirectory, "kubeconfig"),
+      context: `k3d-${recorded.cluster}`,
+    };
+    const chartOptions = {
+      env: withoutModelCredentials(process.env),
+      signal: context.signal,
+    };
+    let servingApi;
+    if (auditAdministratorPassword !== undefined) {
+      assert.equal(recorded.deploymentMode, "k3d");
+      await enableLocalSetupAudit(chartStack, chartOptions);
+      servingApi = await apiProcess(chartStack, chartOptions);
+    }
     const keyFile = await stat(recorded.keyPath);
     assert.ok(
       keyFile.isFile() && (keyFile.mode & 0o077) === 0,
@@ -876,6 +906,14 @@ test(
       const revision = await request("GET", `${nativePath}/revisions/${initialRevisionId}`);
       assert.equal(revision.harness.id, "openclaw");
       assert.equal(revision.harness.mode, "dedicated");
+      const readAudit =
+        auditAdministratorPassword === undefined
+          ? undefined
+          : await allowAgentAuditRead(
+              { ...chartStack, namespaceId: nativeNamespace.id },
+              nativeAgent,
+              auditAdministratorPassword,
+            );
       const access = await request("GET", `${base}/iam/access-bindings`);
       assert.ok(
         access.some(
@@ -1091,6 +1129,14 @@ test(
         initialProvider.pod.spec.hostname ?? initialProvider.pod.metadata.name,
         "The initial native model turn and exec must run in the first revision's Harness Pod",
       );
+      if (readAudit !== undefined) {
+        await assertAgentTurnAudit(readAudit, {
+          label: "Dedicated OpenClaw",
+          revisionId: initialRevisionId,
+          runtimeSource: "openclaw",
+          sessionId: firstNativeProof.session.sessionId,
+        });
+      }
 
       // Keep the genuine Gateway expiry. The successor must reuse the saved device
       // credential even though the original one-shot setup can no longer enroll it.
@@ -1181,6 +1227,19 @@ test(
         firstNativeProof.sessionFile,
         "The resumed exec must read the relative file written before redeployment",
       );
+      if (readAudit !== undefined) {
+        await assertAgentTurnAudit(readAudit, {
+          label: "Dedicated OpenClaw",
+          revisionId: replacement.id,
+          runtimeSource: "openclaw",
+          sessionId: replacementNativeProof.session.sessionId,
+        });
+        assert.deepEqual(
+          await apiProcess(chartStack, chartOptions),
+          servingApi,
+          "The API must serve both native revisions without restarting for enrollment",
+        );
+      }
     };
     // Distinct Agents and sources share only the already-ready Namespace. Keep
     // mutation/denial checks below the join and retain each real identity proof.
