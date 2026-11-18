@@ -10,7 +10,7 @@ on your own machine, start with [Local Setup](../quickstart.md).
 ## Install the platform
 
 Start with [Control plane setup](../deploy/control-plane-setup.md) to choose
-local, Kubernetes, or platform-specific preparation.
+Kubernetes or platform-specific preparation.
 
 For EKS, follow the [complete quickstart](../deploy/eks-openshell-setup.md) from
 AWS prerequisites through browser access and Agent onboarding.

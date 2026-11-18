@@ -628,10 +628,6 @@
                         "label": "Overview"
                       },
                       {
-                        "page": "guides/quickstart",
-                        "label": "Local Without OpenShell"
-                      },
-                      {
                         "page": "guides/deploy/production-installation",
                         "label": "Kubernetes"
                       },
@@ -843,6 +839,7 @@
               }
             ],
             "hidden": [
+              "guides/quickstart",
               "guides/deploy/production-installation-preparation",
               "guides/deploy/service-keys",
               "guides/deploy/oidc-upgrade",

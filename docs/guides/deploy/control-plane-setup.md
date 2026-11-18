@@ -1,12 +1,10 @@
 # Set up the control plane
 
-Choose a setup path for the OpenClaw Control Plane (OCC). Local setup creates a
-development installation. The Kubernetes path uses the shared Helm procedure
-for a cluster you operate.
+Set up the OpenClaw Control Plane (OCC) on a Kubernetes cluster you operate.
+Use the shared Helm procedure and any preparation required by your platform.
 
 | Environment                             | Start here                                                                                                                  |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Local Linux or macOS                    | [Local setup without OpenShell](../quickstart.md)                                                                           |
 | Existing Kubernetes cluster             | [Prepare the cluster](kubernetes.md), then [install the control plane](production-installation.md)                          |
 | OpenShift                               | [Prepare the cluster](kubernetes.md), apply [OpenShift networking settings](openshift.md), then use the shared installation |
 | Azure PostgreSQL with workload identity | Prepare [database authentication](azure-postgresql.md) before the shared Kubernetes installation                            |
