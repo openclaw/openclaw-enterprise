@@ -191,7 +191,7 @@ Otherwise Drizzle retains pending migration and read-only refusal.
 Console origin before database access, including during `--verify-existing`.
 
 After both init containers succeed, the image's Node entrypoint runs
-`node scripts/bootstrap-installation.ts`. The program starts
+`node scripts/bootstrap-installation.ts`. It starts
 `scripts/bootstrap-installation.ts:bootstrapInstallation` in production mode.
 Fresh bootstrap creates the Installation, administrators, IAM seed, audit
 evidence, and initial service key. `OpenClawController.createNamespace` queues

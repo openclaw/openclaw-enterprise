@@ -117,7 +117,7 @@ or PostgreSQL administrator URL.
 
 `compose.yaml:services.bootstrap`, `scripts/bootstrap-installation.ts`
 
-After migration exits `0`, Compose runs `node scripts/bootstrap-installation.ts`
+After migration, Compose runs `node scripts/bootstrap-installation.ts`
 in development mode. It creates the Installation, administrators, native IAM,
 audit evidence, service key, and a `provisioning` default Namespace. The worker
 provisions the Docker boundary. Reruns preserve state and keys.
