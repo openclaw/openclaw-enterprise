@@ -16,7 +16,7 @@ import type {
 import {
   composePostgresDevelopment,
   createPostgresControllerAuth,
-} from "../helpers/password-hasher.mjs";
+} from "../helpers/password-hasher.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";

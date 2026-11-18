@@ -127,7 +127,7 @@ test(
       );
       started.push({ path: statePath, owner });
       node([
-        "scripts/ci/prepare.mjs",
+        "scripts/ci/prepare.ts",
         "--lane",
         "postgres-auth",
         "--state",
@@ -167,7 +167,7 @@ test(
     assert.equal(ports.size, 2);
     const envFile = join(root, "test.env");
     node([
-      "scripts/ci/prepare.mjs",
+      "scripts/ci/prepare.ts",
       "--lane",
       "postgres-auth",
       "--state",

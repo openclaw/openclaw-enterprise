@@ -1,6 +1,7 @@
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.ts";
+import { emitOpenShellReplacementCheckpoint } from "../../scripts/ci/openshell-progress.mjs";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
@@ -86,9 +87,7 @@ import {
   observedTurn,
   tokenEchoDigest,
   tokenEchoReply,
-  summarizeWorkerEvents,
   createOpenShellWorkerLogEmitter,
-  workerDiagnosticLines,
   workerFailureDetail,
   rethrowOpenShellFailure,
 } from "../helpers/k3d-failure-diagnostics.ts";
@@ -104,6 +103,11 @@ import {
 } from "./keycloak-issuer-material.ts";
 import { defaultKeycloakImage, startKeycloak } from "./keycloak-real.mjs";
 import { pollReplacementActivation } from "./openshell-replacement-activation.ts";
+import {
+  diagnosticQuery,
+  diagnosticQueryTimeoutMs,
+  writeWorkerCompletionDiagnostics,
+} from "./openshell-worker-diagnostics.ts";
 
 /** @param {unknown} turn */
 function turnMessages(turn) {
@@ -156,7 +160,6 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
 const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
   "",
@@ -241,7 +244,6 @@ if (demoStatePath !== undefined) {
   process.once("SIGTERM", resolveDemoStop);
 }
 const portableCommandArgumentBytes = 30 * 1024;
-const diagnosticQueryTimeoutMs = 3_000;
 const observerPoolConnectionTimeoutMs = 5_000;
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -256,7 +258,6 @@ const fixture = createOpenShellKubernetesFixture({
   openShellGatewayImage,
   openShellSandboxImage,
   openShellSupervisorImage,
-  openShellRuntimeClass,
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
@@ -280,6 +281,7 @@ const {
   assertProviderOwnedHarness,
   assertWorkspaceMounts,
   assertApprovedOpenShellPrivileges,
+  assertRestrictedPodSecurity,
   assertGatewayBootstrapPolicies,
   assertNoSecretBytes,
   requestCodexTurnFromGatewayPod,
@@ -520,79 +522,6 @@ function workspaceGatewayHostname(workspaceGateway) {
   return `occ-gateway-${hash(
     `${workspaceGateway.routing.gatewayNamespace}/${workspaceGateway.routing.gatewayName}`,
   )}.${workspaceGateway.routing.envoyNamespace}.svc.cluster.local`;
-}
-
-async function diagnosticQuery(pool, text, values) {
-  return pool.query({ text, values, query_timeout: diagnosticQueryTimeoutMs });
-}
-
-async function readWorkerRevisionState(pool, { namespaceId, agentId, revisionId }) {
-  const [agent, revision, work] = await Promise.all([
-    diagnosticQuery(
-      pool,
-      "SELECT active_revision_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
-      [namespaceId, agentId],
-    ),
-    diagnosticQuery(
-      pool,
-      `SELECT revision_number
-       FROM occ.agent_revisions
-       WHERE namespace_id = $1 AND agent_id = $2 AND id = $3`,
-      [namespaceId, agentId, revisionId],
-    ),
-    diagnosticQuery(
-      pool,
-      `SELECT revision_id, namespace_target, state, attempt_count, completed_at IS NOT NULL AS completed
-       FROM occ.controller_work
-       WHERE namespace_id = $1 AND (revision_id = $2 OR agent_id = $3)
-       ORDER BY updated_at DESC, created_at DESC
-       LIMIT 8`,
-      [namespaceId, revisionId, agentId],
-    ),
-  ]);
-
-  return {
-    activeRevisionId: agent.rows[0]?.active_revision_id,
-    revision: revision.rows[0]
-      ? { revisionId, revisionNumber: revision.rows[0].revision_number }
-      : undefined,
-    queue: work.rows.map((row) => ({
-      operation:
-        row.revision_id === null
-          ? row.namespace_target === null
-            ? "work.reconcile"
-            : `namespace.${row.namespace_target}`
-          : "agent_revision.reconcile",
-      revisionId: row.revision_id ?? undefined,
-      state: row.state,
-      attempt: row.attempt_count,
-      completed: row.completed,
-    })),
-  };
-}
-
-// The reporter keeps 1,000 characters of each output line, so the persisted state comes before
-// the event list. Returns the diagnostic for callers that also put it in a failure message.
-async function writeWorkerCompletionDiagnostics(options) {
-  let persisted;
-  try {
-    persisted = await readWorkerRevisionState(options.pool, options);
-  } catch {
-    persisted = { readError: "unavailable" };
-  }
-  const diagnostic = {
-    operation: "agent_revision.reconcile",
-    revisionId: options.revisionId,
-    persisted,
-    events: summarizeWorkerEvents(options.events, options.revisionId),
-  };
-  for (const line of workerDiagnosticLines(diagnostic)) {
-    if (diagnosticDeadlinePassed()) {
-      break;
-    }
-    process.stderr.write(`${line}\n`);
-  }
-  return diagnostic;
 }
 
 async function assertWorkerCompleted(options) {
@@ -1193,13 +1122,6 @@ function integrationGatewayClient(
       observeSandboxCreation?.("sandbox-created");
       observeServiceUrl(created.serviceUrls[""]);
       return created;
-    },
-    async getServiceUrl(request, signal) {
-      const serviceUrl = await gateway.getServiceUrl(request, signal);
-      if (serviceUrl !== undefined) {
-        observeServiceUrl(serviceUrl);
-      }
-      return serviceUrl;
     },
   };
   return new Proxy(gateway, {
@@ -2135,7 +2057,6 @@ async function prepareProductionInstallation(
     platformNamespace,
     gatewayImage,
     codexImage,
-    openShellRuntimeClass,
     cluster: "k3d-openshell-sandboxdriver",
   });
   if (pluginInstallOnly) {
@@ -2500,6 +2421,7 @@ async function prepareProductionInstallation(
   });
   await waitForOpenShellGateway(placement);
   await assertGatewayBootstrapPolicies(placement);
+  await assertRestrictedPodSecurity(placement);
   if (harnessId === "codex") {
     // Each test Namespace runs its own OpenShell gateway, so its address is known only now. An
     // operator configures the dedicated Agent Gateway's route to the gateway that exposes Codex
@@ -8478,7 +8400,39 @@ export async function waitForReplacementActivation(
   }
 }
 
-async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext) {
+export async function redeployOpenShellReplacement(
+  topology,
+  testContext,
+  reportProgress,
+  diagnose,
+) {
+  if (reportProgress) {
+    emitOpenShellReplacementCheckpoint("redeploy-request");
+  }
+  const redeployed = await topology.request(
+    "POST",
+    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
+  );
+  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+  assert.notEqual(redeployed.data.id, topology.revision.id);
+  const revisionId = redeployed.data.id;
+  const observedAcceptance =
+    reportProgress && typeof revisionId === "string" && revisionId.length > 0;
+  if (observedAcceptance) {
+    emitOpenShellReplacementCheckpoint("activation");
+  }
+  await waitForReplacementActivation(topology, redeployed, testContext, undefined, diagnose);
+  if (observedAcceptance) {
+    emitOpenShellReplacementCheckpoint("reconciliation");
+  }
+  return redeployed;
+}
+
+async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(
+  topology,
+  testContext,
+  reportProgress,
+) {
   // Suspending the upstream Sandbox removes its Pod while retaining the provider resource.
   // Replacement must still discover and retire that Sandbox without relying on Pod observation.
   await kubectl(
@@ -8509,13 +8463,7 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, 
   );
   assert.equal(suspendedSandbox.spec.operatingMode, "Suspended");
 
-  const redeployed = await topology.request(
-    "POST",
-    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
-  );
-  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
-  assert.notEqual(redeployed.data.id, topology.revision.id);
-  await waitForReplacementActivation(topology, redeployed, testContext);
+  const redeployed = await redeployOpenShellReplacement(topology, testContext, reportProgress);
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
   await waitForProviderHarnessPod(topology.placement, redeployed.data);
@@ -10012,7 +9960,11 @@ export function registerProviderLifecycleTest(workflow) {
           // Retire the Harness used by the positive turns before changing DNS. A fresh
           // lookup alone cannot redirect its already established model connection.
           await measureOpenShellStage(testContext, "replacement", () =>
-            assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext),
+            assertDuplicateReconciliationDoesNotDuplicateOpenShell(
+              topology,
+              testContext,
+              workflow === "upstream" && selectedScenario === "full",
+            ),
           );
         }
         if (workflow === "upstream") {

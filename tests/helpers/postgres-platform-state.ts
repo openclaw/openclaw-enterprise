@@ -105,7 +105,7 @@ async function prepareCaseDatabase(
   if (!statePath) {
     return databaseUrl;
   }
-  const { prepareFile } = await import("../../scripts/ci/prepare.mjs");
+  const { prepareFile } = await import("../../scripts/ci/prepare.ts");
   const prepared = await prepareFile({
     lane,
     file: fileURLToPath(testFile),

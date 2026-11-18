@@ -258,7 +258,7 @@ assert.match(result.stderr, /must be an immutable image@sha256 reference/);
     bin,
     "node",
     `if [ "$1" = -e ]; then exec '${process.execPath}' "$@"; fi
-if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
+if printf '%s' "$*" | grep -q 'scripts/ci/prepare.ts'; then
   printf '%s' "$*" | grep -q -- '--lane ${selectedHarness === "openclaw" ? "openshell" : "gateway-routing"}' || exit 93
   [ -z "$OCC_TEST_KUBERNETES_GATEWAY_IMAGE" ] || exit 92
   [ -z "$OCC_TEST_KUBERNETES_AGENT_IMAGE" ] || exit 92
@@ -440,7 +440,7 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
     assert.deepEqual(
       preparations,
       (afterReset ? ["--file"] : ["--selected-file", "--file"]).map((selection) => [
-        "scripts/ci/prepare.mjs",
+        "scripts/ci/prepare.ts",
         "--lane",
         "openshell",
         selection,

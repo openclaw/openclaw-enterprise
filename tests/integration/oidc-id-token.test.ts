@@ -61,7 +61,7 @@ function verified(value: string, expected: Partial<IdTokenExpectation> = {}) {
   })?.sub;
 }
 
-test("OIDC configuration is all or none and pins every URL to the issuer's host", () => {
+test("OIDC configuration is all or none and pins each configured HTTPS endpoint", () => {
   assert.equal(oidcLoginConfiguration({}), undefined);
   assert.deepEqual(oidcLoginConfiguration(environment), {
     issuer,
@@ -145,8 +145,14 @@ test("OIDC configuration is all or none and pins every URL to the issuer's host"
   ]) {
     for (const value of [
       "http://tenant.idp.example.test/x",
-      "https://other.idp.example.test/x",
-      "https://idp.example.test/x",
+      "https://127.0.0.1/x",
+      "https://169.254.169.254/x",
+      "https://localhost/x",
+      "https://oauth2.exam\tple.test/token",
+      "https://@oauth2.example.test/token",
+      "https://other.example.test\\@oauth2.example.test/token",
+      "https://toKen.example.test/token",
+      "https://ſso.example.test/jwks",
       "https://tenant.idp.example.test:444/x",
       "https://tenant.idp.example.test/x?y=1",
       "https://tenant.idp.example.test/x?",
@@ -155,7 +161,7 @@ test("OIDC configuration is all or none and pins every URL to the issuer's host"
     ]) {
       assert.throws(
         () => oidcLoginConfiguration({ ...environment, [variable]: value }),
-        new RegExp(`${variable} must be an https URL on port 443 on the issuer's host`),
+        new RegExp(`${variable} must be an https URL on port 443 with a DNS host name`),
         `${variable}=${value}`,
       );
     }

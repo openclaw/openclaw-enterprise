@@ -36,6 +36,7 @@ export function launcherEnvironment() {
   );
   for (const name of [
     "OCC_DEVELOPMENT_K3S_IMAGE",
+    "OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE",
     "OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR",
     "OCC_DEVELOPMENT_K3D_DNS_RESOLVER",
     "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT",
@@ -285,7 +286,12 @@ export async function createQaInstallation(
   context,
   controlPlane,
   artifacts,
-  { repositoryInputs = true, sandboxDriver = "none", sandboxNetworkPolicyFile = undefined } = {},
+  {
+    repositoryInputs = true,
+    sandboxDriver = "none",
+    sandboxNetworkPolicyFile = undefined,
+    disableNativeAdmin = false,
+  } = {},
 ) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
   assert.ok(["none", "openshell"].includes(sandboxDriver));
@@ -437,6 +443,7 @@ export async function createQaInstallation(
         "-f",
         join(stateDirectory, "compose.yaml"),
         ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
+        ...(f.nativeAdminComposeFile === undefined ? [] : ["-f", f.nativeAdminComposeFile]),
         ...args,
       ]);
     },
@@ -683,6 +690,39 @@ export async function createQaInstallation(
     };
   }
   registerQaSecret(f.credentials.password);
+  assertQaConsoleReady(f);
+  if (disableNativeAdmin) {
+    if (controlPlane === "compose") {
+      f.nativeAdminComposeFile = await f.write("http-chat.compose.json", {
+        services: { controller: { environment: { OCC_AGENT_NATIVE_ADMIN_ENABLED: "false" } } },
+      });
+      await f.compose("up", "-d", "--no-deps", "--force-recreate", "controller");
+    } else {
+      await f.kubectl(
+        "-n",
+        f.state.platformNamespace,
+        "set",
+        "env",
+        "deployment/openclaw-enterprise-api",
+        "OCC_AGENT_NATIVE_ADMIN_ENABLED=false",
+      );
+      await f.kubectl(
+        "-n",
+        f.state.platformNamespace,
+        "rollout",
+        "status",
+        "deployment/openclaw-enterprise-api",
+        "--timeout=300s",
+      );
+    }
+    await f.waitFor("HTTP API with native browser access disabled", async () => {
+      try {
+        return await f.api("GET", "/installation");
+      } catch {
+        return undefined;
+      }
+    });
+  }
   await f.record("startup", {
     installationId: f.installation.id,
     defaultNamespaceId: f.defaultNamespace.id,
@@ -800,7 +840,7 @@ export async function createQaAgent(
   presetName,
   browserOrigin,
   nameSuffix = "",
-  { apiKeyAuth = false } = {},
+  { apiKeyAuth = false, httpChat = false } = {},
 ) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
@@ -831,7 +871,22 @@ export async function createQaAgent(
     f.configuration.drivers.plugin?.some(({ id }) => id === pluginDriverId),
     "prepare the preset before starting parallel Agent scenarios",
   );
-  values.gateway.http = { endpoints: { chatCompletions: { enabled: true } } };
+  if (process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE === "danger-full-access") {
+    assert.ok(httpChat, "Container-only verification requires the explicit HTTP chat scenario.");
+    if (codex) {
+      values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+      // A named workspace network profile supersedes the legacy sandbox selector.
+      // Kubernetes NetworkPolicies remain the network boundary for this explicit test mode.
+      values.plugins.entries.codex.config.appServer.networkProxy = { enabled: false };
+    }
+  }
+  if (httpChat) {
+    // Exercise Compute defaults without a native browser launch or endpoint opt-in.
+    delete values.gateway.http;
+    values.gateway.controlUi = { enabled: false };
+  } else {
+    values.gateway.http = { endpoints: { chatCompletions: { enabled: true } } };
+  }
   values.gateway.controlUi = {
     ...values.gateway.controlUi,
     ...(browserOrigin ? { allowedOrigins: [browserOrigin] } : {}),
@@ -859,7 +914,7 @@ export async function createQaAgent(
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
   agent.harnessAuth = auth;
-  if (f.controlPlane === "kubernetes") {
+  if (f.controlPlane === "kubernetes" && !httpChat) {
     // Persist the same native access opt-in as Agent provisioning, including the required scope header.
     const nativeValues = prepareNativeAdminConfiguration(values, {
       publicOrigin: f.consoleUrl,
@@ -895,3 +950,32 @@ export async function createQaAgent(
 }
 
 export { repository };
+
+/**
+ * @typedef {{
+ *   consoleUrl: string,
+ *   credentials: import("./auth-session.mjs").SignInCredentials,
+ * }} QaConsoleBindings
+ */
+
+/**
+ * @template {object} Fixture
+ * @param {Fixture} fixture
+ * @returns {asserts fixture is Fixture & QaConsoleBindings}
+ */
+function assertQaConsoleReady(fixture) {
+  assert.ok(
+    "consoleUrl" in fixture && typeof fixture.consoleUrl === "string",
+    "expected the QA Console URL",
+  );
+  const credentials = "credentials" in fixture ? fixture.credentials : undefined;
+  assert.ok(
+    credentials !== null &&
+      typeof credentials === "object" &&
+      "email" in credentials &&
+      typeof credentials.email === "string" &&
+      "password" in credentials &&
+      typeof credentials.password === "string",
+    "expected the QA sign-in credentials",
+  );
+}

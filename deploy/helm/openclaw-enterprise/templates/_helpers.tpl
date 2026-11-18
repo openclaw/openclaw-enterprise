@@ -240,14 +240,15 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientSecretKey" "value" $oidc.clientSecretKey) -}}
 {{- if eq $oidc.clientIdKey $oidc.clientSecretKey -}}{{- fail "auth.oidc client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
-{{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
-{{- $endpoint := "^(?i)https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?)(:443)?(/[^?#]*)?$" -}}
+{{- /* The API's startup checks, mirrored for each configured URL: https on 443, a DNS host, no userinfo, query or fragment. */ -}}
+{{- $endpoint := "^[Hh][Tt][Tt][Pp][Ss]://(([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(:443)?(/[^?#]*)?$" -}}
 {{- $issuer := regexReplaceAll $jsTrim (toString (default "" $oidc.issuer)) "" -}}
-{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
-{{- $host := lower (regexReplaceAll $endpoint $issuer "${1}") -}}
+{{- $issuerHost := regexReplaceAll $endpoint $issuer "${1}" -}}
+{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^[Hh][Tt][Tt][Pp][Ss]://[^/]*:" $issuer) (gt (len $issuerHost) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
 {{- range $key := list "authorizationUrl" "tokenUrl" "jwksUrl" -}}
 {{- $url := regexReplaceAll $jsTrim (toString (default "" (index $oidc $key))) "" -}}
-{{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
+{{- $host := regexReplaceAll $endpoint $url "${1}" -}}
+{{- if or (not (regexMatch $endpoint $url)) (gt (len $host) 253) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 with a DNS host name and no query or fragment" $key) -}}{{- end -}}
 {{- end -}}
 {{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
 {{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
@@ -681,6 +682,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if kindIs "slice" $routing.remoteNodeCidrs -}}
 {{- range $cidr := $routing.remoteNodeCidrs -}}
 {{- include "openclaw.networkPolicy.cidr" (dict "name" "gatewayRouting.remoteNodeCidrs" "value" $cidr) -}}
+{{- if hasSuffix "/0" (toString $cidr) -}}{{- fail "gatewayRouting.remoteNodeCidrs must not allow every address; list the remote node sources" -}}{{- end -}}
 {{- end -}}
 {{- else if not (kindIs "invalid" $routing.remoteNodeCidrs) -}}
 {{- fail "gatewayRouting.remoteNodeCidrs must be a list of IPv4 or IPv6 CIDR strings" -}}

@@ -139,6 +139,7 @@ export function createCodexStartup(
 
   let appServerStarts = 0;
   const appServerSpawns = [];
+  const probeSpawns = [];
   let nativeCalls = 0;
   let clock = 0;
   const absent = (environment, names) => {
@@ -320,6 +321,7 @@ export function createCodexStartup(
                 clock += step.elapsed ?? 0;
               } else {
                 assert.ok(args.includes("exec"));
+                probeSpawns.push({ env: { ...childEnvironment } });
                 if (protectedInference) {
                   assert.equal(args[args.indexOf("unbounded_connection_retries") - 1], "--disable");
                   for (const argument of [
@@ -393,6 +395,7 @@ export function createCodexStartup(
       return appServerStarts;
     },
     appServerSpawns,
+    probeSpawns,
     start(
       entrypoint = codexLaunchEntrypoint({
         providerOwned: true,

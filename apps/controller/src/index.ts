@@ -1,3 +1,4 @@
+import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
 import swagger from "@fastify/swagger";
@@ -226,6 +227,7 @@ export interface ControllerAppOptions {
   readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
+  /** Private Agent gateway transport credential, shared by native browser and HTTP chat relays. */
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   /**
    * How often a native admin WebSocket rechecks its admission (default 25 s). The server
@@ -1245,10 +1247,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     throw new Error("The native admin WebSocket lease interval must be a positive integer.");
   }
   let publicOrigin: string | undefined;
+  let publicOriginHost: string | undefined;
   if (options.publicOrigin !== undefined) {
     try {
       const parsed = new URL(options.publicOrigin);
       publicOrigin = parsed.origin;
+      publicOriginHost = parsed.host;
       if (
         parsed.username ||
         parsed.password ||
@@ -1829,11 +1833,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       audit.denialObserved = true;
     }
     try {
+      // Chat has no Namespace path input, so it needs the stored Agent target.
+      // Other operations keep the requested audit target, separate from enforcement.
       await options.auditSink.append(
         event(
           operation,
           request,
-          operationTarget(operation, installationId, request.params as Record<string, unknown>),
+          operation.operationId === "chatWithAgent" && authorization !== undefined
+            ? authorization.resource
+            : operationTarget(operation, installationId, request.params as Record<string, unknown>),
           kind,
           context,
           evidence,
@@ -1978,7 +1986,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }),
   };
 
+  const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();
   app.addHook("onRequest", async (request, reply) => {
+    if (request.routeOptions.url === "/agents/:agentId/chat") {
+      const timer = setTimeout(() => {
+        if (!reply.sent) {
+          reply.header("connection", "close");
+          reply.raw.once("finish", () => request.raw.destroy());
+          void reply.code(408).send({
+            error: { code: "REQUEST_TIMEOUT", message: "The request body deadline expired." },
+            meta: { requestId: request.id },
+          });
+        }
+      }, 60_000);
+      chatBodyDeadlines.set(request, timer);
+      request.raw.once("end", () => clearTimeout(timer));
+      request.raw.once("aborted", () => clearTimeout(timer));
+    }
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
     if (await nativeAdmin.interceptHttp(request, reply)) {
@@ -1997,6 +2021,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.addHook("onResponse", async (request, reply) => {
+    clearTimeout(chatBodyDeadlines.get(request));
     const startedAt = requestStartedAt.get(request);
     const durationMs =
       startedAt === undefined ? undefined : Number(process.hrtime.bigint() - startedAt) / 1_000_000;
@@ -2139,6 +2164,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         requestId: request.id,
         method: request.method,
         routeId: operation.operationId,
+        ...(request.routeOptions.url === undefined ? {} : { route: request.routeOptions.url }),
         requestedScope: {
           installationId,
           ...(typeof params.namespaceId === "string" ? { namespaceId: params.namespaceId } : {}),
@@ -2229,6 +2255,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     contexts.set(request, context);
     if (
       admitted.method === "api_key" &&
+      operation.operationId !== "chatWithAgent" &&
       admitted.admittedScope.namespaceId !== undefined &&
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
@@ -2286,7 +2313,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     operation: OccApiRoute,
   ): Promise<void> {
     const admitted = admissions.get(request);
-    if (controller === undefined || admitted?.method !== "session") {
+    if (
+      operation.operationId === "chatWithAgent" ||
+      controller === undefined ||
+      admitted?.method !== "session"
+    ) {
       return perform(request, reply, operation);
     }
     const { session } = admitted;
@@ -2304,6 +2335,32 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const context = contexts.get(request);
     if (!context) {
       throw dependencyUnavailable();
+    }
+    if (operation.operationId === "chatWithAgent") {
+      const admission = admissions.get(request);
+      if (controller === undefined || admission === undefined) {
+        throw dependencyUnavailable();
+      }
+      return relayAgentChat({
+        installationId,
+        controller,
+        request,
+        reply,
+        context,
+        admission,
+        factory,
+        auditSink: options.auditSink,
+        gatewayApiKey: options.nativeAdminGatewayApiKey,
+        auditFailure: (error) =>
+          logRequestAuditFailure(request, operation, operation.action, error),
+        reauthenticate: async () => {
+          await admit(request, operation);
+          await resolveIdentity(request, operation);
+          if (contexts.get(request)?.actorId !== context.actorId) {
+            throw dependencyUnavailable();
+          }
+        },
+      });
     }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
@@ -3854,11 +3911,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       targetUserId?: string,
     ) {
       const admitted = admissions.get(request);
+      const origin = request.headers.origin;
+      const fetchMode = request.headers["sec-fetch-mode"];
+      // A browser GET from the Console omits Origin. Its Fetch Metadata is scoped
+      // to the requested host, so match the configured Console authority as well.
+      const sameOriginBrowserRead =
+        request.method === "GET" &&
+        origin === undefined &&
+        request.headers.host?.toLowerCase() === publicOriginHost &&
+        request.headers["sec-fetch-site"] === "same-origin" &&
+        (fetchMode === "cors" || fetchMode === "same-origin") &&
+        request.headers["sec-fetch-dest"] === "empty";
       if (
         admitted?.method !== "session" ||
         admitted.session.userId !== context.subject ||
         publicOrigin === undefined ||
-        request.headers.origin !== publicOrigin
+        (origin !== publicOrigin && !sameOriginBrowserRead)
       ) {
         throw failure(
           403,
@@ -3998,7 +4066,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: accountReadOperation.operationId,
           summary: accountReadOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.",
+            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4227,7 +4295,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: recoveryReadOperation.operationId,
           summary: recoveryReadOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.",
+            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4861,6 +4929,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
+        ...(operation.operationId === "chatWithAgent" ? { bodyLimit: AGENT_CHAT_BODY_LIMIT } : {}),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" ||
@@ -4898,7 +4967,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }
           const unstorable =
             unstorableTextFailure("params", request.params) ??
-            unstorableTextFailure("body", request.body);
+            (operation.operationId === "chatWithAgent"
+              ? undefined
+              : unstorableTextFailure("body", request.body));
           if (unstorable !== undefined) {
             throw unstorable;
           }

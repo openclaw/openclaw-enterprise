@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { prepareFile } from "../../scripts/ci/prepare.mjs";
+import { prepareFile } from "../../scripts/ci/prepare.ts";
 import { authorizedPrincipal } from "./development-iam-state.ts";
 import {
   createBackendWorkerDrivers,
@@ -306,6 +306,7 @@ export function createWorkerRevisionFixtures(
    *   leaseDurationMs?: number,
    *   maxAttempts?: number,
    *   onHealthy?: ControllerWorkerOptions["onHealthy"],
+   *   healthClock?: ControllerWorkerOptions["healthClock"],
    *   onProgress?: ControllerWorkerOptions["onProgress"],
    *   metrics?: ControllerWorkerOptions["metrics"],
    *   repoDriver?: RepositoryWorkerDriver,
@@ -322,6 +323,7 @@ export function createWorkerRevisionFixtures(
       leaseDurationMs = 30_000,
       maxAttempts = 5,
       onHealthy,
+      healthClock,
       onProgress,
       metrics,
       repoDriver,
@@ -870,6 +872,7 @@ export function createWorkerRevisionFixtures(
         leaseDurationMs,
         maxAttempts,
         onHealthy,
+        ...(healthClock === undefined ? {} : { healthClock }),
         onProgress,
         ...(drivers === undefined ? { computeDriver } : { drivers }),
         ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),

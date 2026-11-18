@@ -27,7 +27,6 @@ import {
   exists,
   fileConcurrency,
   fileInputEnv,
-  isObject,
   issue,
   logIssues,
   loadRunnerManifest,
@@ -45,6 +44,7 @@ import {
   type RunnerLane,
   type RunnerManifest,
 } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 import { runCompleteLifecycle } from "./runner-lifecycle.ts";
 import {
   abandonedSteps,
@@ -357,6 +357,7 @@ async function runFile(
           absolutePath,
           relativePath,
           laneName: lane.name,
+          expectedTests: file.expectedTests,
           env,
           focused: testName !== undefined,
         },
@@ -423,6 +424,7 @@ async function runFile(
     details,
     measurements,
     unfinishedStage,
+    openShellReplacement,
     testRunExercised,
   } = evidence;
   if (
@@ -543,6 +545,7 @@ async function runFile(
         firstTest.name === file.expectedTests[0]))
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
+    ...(openShellReplacement ? { openShellReplacement } : {}),
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
@@ -779,7 +782,7 @@ async function completePhaseChild() {
     if (request === null || request === undefined) {
       throw new TypeError("Missing lifecycle phase request.");
     }
-    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = isObject(
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = isRecord(
       request,
     )
       ? request
@@ -788,8 +791,8 @@ async function completePhaseChild() {
       if (typeof root !== "string") {
         throw new Error("Invalid lifecycle phase root.");
       }
-      const owner: unknown = await import(pathToFileURL(join(root, "scripts/ci/prepare.mjs")).href);
-      if (!isObject(owner) || typeof owner.prepareLane !== "function") {
+      const owner: unknown = await import(pathToFileURL(join(root, "scripts/ci/prepare.ts")).href);
+      if (!isRecord(owner) || typeof owner.prepareLane !== "function") {
         throw new Error("Invalid lifecycle preparation owner.");
       }
       const prepared: unknown = Reflect.apply(owner.prepareLane, owner, [
@@ -802,7 +805,7 @@ async function completePhaseChild() {
         throw new Error("Invalid lifecycle phase root.");
       }
       const owner: unknown = await import(pathToFileURL(join(root, "scripts/ci/cleanup.ts")).href);
-      if (!isObject(owner) || typeof owner.cleanupState !== "function") {
+      if (!isRecord(owner) || typeof owner.cleanupState !== "function") {
         throw new Error("Invalid lifecycle cleanup owner.");
       }
       const cleaned: unknown = Reflect.apply(owner.cleanupState, owner, [statePath]);
