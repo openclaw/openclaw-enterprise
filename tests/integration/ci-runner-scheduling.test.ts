@@ -162,10 +162,9 @@ function concurrencyProbe(name: string, partner: string | null) {
           "      await sleep(10);",
           "    }",
         ].join("\n")
-      : [
-          `    assert.deepEqual(readdirSync(running), ["${name}"]);`,
-          "    await sleep(50);",
-        ].join("\n"),
+      : [`    assert.deepEqual(readdirSync(running), ["${name}"]);`, "    await sleep(50);"].join(
+          "\n",
+        ),
     "  } finally {",
     `    rmSync(running + "/${name}", { force: true });`,
     "  }",
