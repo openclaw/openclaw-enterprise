@@ -43,12 +43,17 @@ export function invoke(client, method, request, bearer, { signal } = {}) {
       { deadline: Date.now() + 5000 },
       (error, result) => {
         signal?.removeEventListener("abort", cancel);
-        if (error) reject(error);
-        else resolve(result);
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
+        }
       },
     );
     signal?.addEventListener("abort", cancel, { once: true });
-    if (signal?.aborted) cancel();
+    if (signal?.aborted) {
+      cancel();
+    }
   });
 }
 
