@@ -9,9 +9,9 @@ The helper exits **3** after both writers stop and before submitting Helm.
 
 1. Keep the maintenance window active. Use the [maintenance Job](auth-maintenance.md#run-the-command)
    with the selected immutable candidate image, this database's migrator credential and CA,
-   and args `["--run","db:migrate:production"]`. Wait for the Job to finish.
+   and args `["scripts/migrate-production.ts"]`. Wait for the Job to finish.
 2. If its outcome is uncertain, preserve its logs and confirm the Job and Pods are terminal.
-   Check the same image and database with `["--run","db:migrate:production","--","--require-current"]`.
+   Check the same image and database with `["scripts/migrate-production.ts","--require-current"]`.
    Proceed only after exit zero and `migration.checked` with history `completed`.
 3. Repeat the upgrade command with `--resume --migration-history-checked` and the original
    evidence directory. The helper rechecks both stopped Deployments’ UIDs, generations and

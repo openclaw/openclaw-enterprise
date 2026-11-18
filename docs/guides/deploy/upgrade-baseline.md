@@ -240,7 +240,7 @@ unexpected history, or different receipts.
   pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" -- \
     "$CANDIDATE_RETURN/candidate.pgdump"
   NODE_ENV=production OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" \
-    node --run db:migrate:production -- --check >"$CANDIDATE_RETURN/restored-history.json"
+    node scripts/migrate-production.ts --check >"$CANDIDATE_RETURN/restored-history.json"
   jq -se --arg expected "$EXPECTED_CANDIDATE_HISTORY" \
     'length == 1 and .[0].event == "migration.checked" and .[0].history == $expected' \
     "$CANDIDATE_RETURN/restored-history.json" >/dev/null

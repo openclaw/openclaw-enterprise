@@ -201,7 +201,7 @@ export async function standInChart(
               {
                 name: "migration",
                 image,
-                args: ["--run", "db:migrate:production", "--"],
+                args: ["scripts/migrate-production.ts"],
                 ...(initializationResources ? { resources: initializationResources } : {}),
                 securityContext: { capabilities: { drop: ["ALL"] } },
               },

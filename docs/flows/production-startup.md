@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/d1d2f3b0-6dbf-4fce-b8d6-94df71d391b8"
+last_updated_session: "authoring-run/c3b46e7f-1066-4c87-9808-34e281ccaa98"
 ---
 
 # Production Startup Flow
@@ -138,16 +138,12 @@ Jobs during connected installs. Offline rendering cannot check this; lookup
 neither locks names nor verifies database/volume freshness.
 
 `openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
-checks routing, ports and peer labels. Operators supply GatewayClass, CRDs,
-controllers and Secrets. [Disabling routing](../guides/deploy/workspace-routing.md#explicit-opt-out)
-omits its resources/mounts and requires disabling native admin and sandbox routing.
-Database/API ports accept 1–65535 without leading zeros; worker metrics/repository
-ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
-numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
+checks routing, ports and peer labels. See [routing opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
+and [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
 Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
 (generated from `deploy/helm/src/check-installation.ts`) before
-`db:migrate:production`, bootstrap and API rollout.
+`node scripts/migrate-production.ts`, bootstrap and API rollout.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
 up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
 `OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
@@ -157,17 +153,13 @@ For chart routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
 to the hook, API and worker. `requireChartGatewayRouting` checks the Gateway name, Gateway and Envoy
 namespaces, and hostname. It reports mismatched fields without values.
 
-The hook keeps the release name and bounds its suffix to 63 characters. Both
-database containers optionally mount the CA. Helm validates distinct application and
-migration Secret keys against Kubernetes syntax before use. `installation.key`
-and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
-not `.` or a `..` prefix.
+The hook validates its name and distinct database Secret keys; both database containers can mount the CA. See [production settings](../reference/settings/production.md).
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
 `internal/occcli/installation_doctor.go:installationHandoffCommand` verifies receipt
 namespace/release/cluster connection before reading the named Job.
 `initializationEvidence` checks marker, captured UID, chart steps, controller and
-terminal status. Missing UID, replacement, refusal or inconclusive status leaves
+terminal status. A separate-upgrade Job verifies the already-applied schema before bootstrap; it does not apply migrations. Missing UID, replacement, refusal or inconclusive status leaves
 the checkpoint unknown. Doctor separately reports Helm's outcome; plan adds
 read-only recovery. Both check the buffered report's `WriteTo` before returning
 Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and exit `1`.
@@ -177,6 +169,7 @@ Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and
 After source verification, all modes reject PostgreSQL before 17 with
 fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access
 ([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
+On SIGINT or SIGTERM, the command uses a second migrator connection to terminate its uniquely named database session and waits for cleanup before exit. If that connection fails, it reports `migration.cancellation-failed` and waits for the migration to return.
 Under the advisory lock, the same connection verifies roles and receipts,
 then catalogs and grants against native or reviewed restore digests. Unsupported
 history fails before DDL/bootstrap. After option guards, completed apply
@@ -389,6 +382,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 02:26: Run the migration entry directly and distinguish separate-upgrade verification. (authoring-run/c3b46e7f-1066-4c87-9808-34e281ccaa98 - 8e8474eec4c7027bb45b5fe470e675e2e3e321cf)
 
 - 2026-11-18 01:53: Reconcile the generated Installation check with the production migration command. (authoring-run/d1d2f3b0-6dbf-4fce-b8d6-94df71d391b8 - 0bd8061ff988a0847541fa3d890f676f1a57a676)
 

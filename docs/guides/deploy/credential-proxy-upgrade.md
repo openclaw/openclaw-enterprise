@@ -67,7 +67,7 @@ pnpm db:migrate:production --check
 ```
 
 An image-only install runs the release controller image with
-`node --run db:migrate:production -- --check` instead; on Kubernetes, the
+`node scripts/migrate-production.ts --check` instead; on Kubernetes, the
 [maintenance procedure](auth-maintenance.md#run-the-command) provides the image, the
 migrator credential and the database CA.
 
@@ -82,8 +82,8 @@ pnpm db:migrate:production
 pnpm db:migrate:production --check
 ```
 
-In the controller image, run `node --run db:migrate:production`, then run
-`node --run db:migrate:production -- --check`.
+In the controller image, run `node scripts/migrate-production.ts`, then run
+`node scripts/migrate-production.ts --check`.
 
 Migration reports its **starting** history; the last check must use the same
 release and report `completed`. Upgrade the control plane without mixed-version

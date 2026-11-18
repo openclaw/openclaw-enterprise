@@ -1958,9 +1958,7 @@ test(
         ({ name }) => name === "migration",
       );
       assert.deepEqual(migration.args, [
-        "--run",
-        "db:migrate:production",
-        "--",
+        "scripts/migrate-production.ts",
         ...(isUpgrade ? [] : ["--expect-empty"]),
       ]);
       const worker = findResourceByComponent(
@@ -2121,7 +2119,7 @@ test(
     const [bootstrap] = pod.containers;
     assert.equal(check.name, "installation-check");
     assert.equal(migration.name, "migration");
-    assert.deepEqual(migration.args, ["--run", "db:migrate:production", "--", "--expect-empty"]);
+    assert.deepEqual(migration.args, ["scripts/migrate-production.ts", "--expect-empty"]);
     assert.equal(bootstrap.name, "bootstrap");
     assert.deepEqual(bootstrap.args, ["scripts/bootstrap-installation.mjs"]);
     assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));

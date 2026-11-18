@@ -249,7 +249,7 @@ one read-only PostgreSQL snapshot. On success it prints
 `installation.bootstrap-verified` and the matched ID. An empty database, a different
 ID or a failed administrator check returns a nonzero exit. This mode requires no
 bootstrap output paths and creates no credentials. Check migration history
-separately with `node --run db:migrate:production -- --require-current`.
+separately with `node scripts/migrate-production.ts --require-current`.
 
 On fresh bootstrap, both files are created exclusively with mode `0600`; their
 parent directory must be private and neither destination may already exist.

@@ -206,7 +206,7 @@ export async function rehearseOnlineMigration({
   assert.equal(migration.image, candidate.reference);
   // Both generations of chart must request an apply with no migration mode flags.
   assert.ok(
-    isDeepStrictEqual(migration.args, ["--run", "db:migrate:production", "--"]) ||
+    isDeepStrictEqual(migration.args, ["scripts/migrate-production.ts"]) ||
       isDeepStrictEqual(migration.args, ["scripts/migrate-production.mjs"]),
     "the candidate chart did not render its migration apply command",
   );

@@ -59,37 +59,23 @@ pnpm db:migrate --check
 ```
 
 Exit 0 and `migration.checked` identify `empty`, a stage below, or `completed`.
-`prePresetsMain` ends at `0023_runtime_failure_timestamp_validation`;
-`main` also includes `0024_agent_presets`. `repositoryCredentials` adds
-`0025_repository_credentials` and `0026_privileged_function_search_paths`.
-`repositoryRetention`, `workspaceSetup`, and `agentProvisioning` add migrations
-through `0029_agent_provisioning_work`. `backendCompleted` and `providerCompleted`
-are the respective 31-receipt Backend and Provider histories before compatibility.
-`backendTerminology` has the 32 receipts
-through `0031_backend_terminology_compatibility`; `prePluginApprovers` adds
-`0032_credential_sources` for 33 receipts. `preBrokerReceipts` has 34 receipts
-through `0033_agent_plugin_approvers`; `preAgentDeletion` has 35 through
-`0034_repository_broker_receipts`; `preDeploymentProgress` has 36 through
-`0035_agent_deletion_repository_session_evidence`. `preHumanAuthentication` has
-the 37 receipts through `0036_deployment_progress`; `preAgentDeletionTakeover`
-has 38 through `0037_human_authentication`; `preNamespaceDeletionTakeover` has
-39 through `0038_agent_deletion_takeover`; `preRepositoryAccess` has 40 through
-`0039_namespace_deletion_takeover`; `preRestrictionReadLogs` has 41 through
-`0040_repository_access`; `preOAuth` has 42 through
-`0041_restriction_read_logs`; `preCredentialWithdrawals` has 43 through
-`0042_oauth_harness_auth`; `preBrokerReceiptFence` has 44 through
-`0043_credential_withdrawals`; `preModelProbeFailureCause` has 45 through
-`0045_repository_broker_receipt_fence`; `preProvisioningConfigurationRelease`
-has 46 through `0046_model_probe_failure_cause`;
-`preAdministratorCredentialSourceGrants` has 47 through
-`0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
-`0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
-through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
-`preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
-`0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
-63 receipts mean `preGatewayManagedMode`; `0064_gateway_managed_mode` is pending.
+History stages end at these migrations (stage, receipt count when specified):
+
+- `prePresetsMain`: `0023_runtime_failure_timestamp_validation`; `main`: `0024_agent_presets`.
+- `repositoryCredentials`: `0025_repository_credentials` and `0026_privileged_function_search_paths`; `repositoryRetention`, `workspaceSetup`, and `agentProvisioning`: through `0029_agent_provisioning_work`.
+- `backendCompleted` and `providerCompleted`: 31 receipts before compatibility; `backendTerminology`: 32, through `0031_backend_terminology_compatibility`.
+- `prePluginApprovers`: 33, `0032_credential_sources`; `preBrokerReceipts`: 34, `0033_agent_plugin_approvers`; `preAgentDeletion`: 35, `0034_repository_broker_receipts`.
+- `preDeploymentProgress`: 36, `0035_agent_deletion_repository_session_evidence`; `preHumanAuthentication`: 37, `0036_deployment_progress`; `preAgentDeletionTakeover`: 38, `0037_human_authentication`.
+- `preNamespaceDeletionTakeover`: 39, `0038_agent_deletion_takeover`; `preRepositoryAccess`: 40, `0039_namespace_deletion_takeover`; `preRestrictionReadLogs`: 41, `0040_repository_access`.
+- `preOAuth`: 42, `0041_restriction_read_logs`; `preCredentialWithdrawals`: 43, `0042_oauth_harness_auth`; `preBrokerReceiptFence`: 44, `0043_credential_withdrawals`.
+- `preModelProbeFailureCause`: 45, `0045_repository_broker_receipt_fence`; `preProvisioningConfigurationRelease`: 46, `0046_model_probe_failure_cause`; `preAdministratorCredentialSourceGrants`: 47, `0047_provisioning_configuration_release`.
+- `preCodexPatSources`: 48, `0048_administrator_credential_source_grants`; `preAgentCredentialSources`: 49, `0049_codex_pat_sources`; `preCredentialWithdrawalRequester`: 50, `0050_agent_credential_sources`.
+- Later `pre*` stages add one receipt each: `preCredentialProxy` has 59; `prePreparedAttemptSettlement` has 62 through `0062_credential_delivery_custody`; `preGatewayManagedMode` has 63 after `0063_prepared_attempt_settlement`, with `0064_gateway_managed_mode` pending.
+
 Rerun `--check` after migration and require `completed` from the same release.
+
+SIGINT or SIGTERM uses a second migrator connection to terminate the command's session. Reserve connection capacity. On connection failure, `migration.cancellation-failed` is reported while migration continues. Check history before retry.
+
 The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
 accepted source and catalog hashes. Never delete or relabel unsupported preview
 receipts. Empty schemas may be absent or owner-only, with no objects or

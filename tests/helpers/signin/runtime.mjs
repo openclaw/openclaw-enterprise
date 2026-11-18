@@ -64,7 +64,7 @@ export function runtimeProof({
       const entry =
         mode === "--expect-empty" || mode === "--require-current" ? args.slice(0, -1) : args;
       assert(
-        isDeepStrictEqual(entry, ["--run", "db:migrate:production", "--"]) ||
+        isDeepStrictEqual(entry, ["scripts/migrate-production.ts"]) ||
           isDeepStrictEqual(entry, ["scripts/migrate-production.mjs"]),
       );
       const db = migration.env.find((e) => e.name === "OCC_MIGRATION_DATABASE_URL")?.valueFrom

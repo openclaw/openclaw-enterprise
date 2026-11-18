@@ -168,7 +168,7 @@ connecting process (migration, bootstrap, API, and worker) the identity
 environment variables and a renewed federation-token projection. Provision
 federation and database grants for separate application and migrator
 identities, confining migrator privileges to migration. Use
-`node --run db:migrate:production` for this authentication mode.
+`node scripts/migrate-production.ts` for this authentication mode.
 
 The chart configures none of these inputs. Its migration and bootstrap
 containers share an initialization Pod and service account, so changing the

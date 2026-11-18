@@ -47,7 +47,7 @@ func TestInstallationDoctor(t *testing.T) {
 	check := installationCheckContainer(checkArg)
 	job := strings.Replace(unchecked, `"initContainers":[`, `"initContainers":[`+check+`,`, 1)
 	const migration = `"scripts/migrate-production.mjs"`
-	const currentMigration = `"--run","db:migrate:production","--"`
+	const currentMigration = `"scripts/migrate-production.ts"`
 	failed := strings.Replace(strings.Replace(job, `"type":"Complete"`, `"type":"Failed"`, 1), `"succeeded":1`, `"failed":1`, 1)
 	wrongRelease := strings.Replace(job, `io/instance":"demo"`, `io/instance":"other"`, 1)
 	upgrade := strings.Replace(job, migration+`,"--expect-empty"`, migration, 1)
@@ -61,9 +61,12 @@ func TestInstallationDoctor(t *testing.T) {
 		success    bool
 		uid        string
 	}{
-		{"package-install", 200, strings.Replace(job, migration, currentMigration, 1), "Initialization Job (install hook): complete", true, ""},
-		{"package-upgrade", 200, strings.Replace(upgrade, migration, currentMigration, 1), "upgrade hook): complete", true, ""},
-		{"package-command-override", 200, strings.Replace(job, `"name":"migration","args":[`+migration, `"name":"migration","command":["node"],"args":[`+currentMigration, 1), "steps do not match", false, ""},
+		{"typed-install", 200, strings.Replace(job, migration, currentMigration, 1), "Initialization Job (install hook): complete", true, ""},
+		{"typed-upgrade", 200, strings.Replace(upgrade, migration, currentMigration, 1), "upgrade hook): complete", true, ""},
+		{"separate-upgrade", 200, strings.Replace(upgrade, migration, currentMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
+		{"historical-separate-upgrade", 200, strings.Replace(upgrade, migration, migration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
+		{"separate-extra-arg", 200, strings.Replace(upgrade, migration, currentMigration+`,"--require-current","unexpected"`, 1), "steps do not match", false, ""},
+		{"typed-command-override", 200, strings.Replace(job, `"name":"migration","args":[`+migration, `"name":"migration","command":["node"],"args":[`+currentMigration, 1), "steps do not match", false, ""},
 		{"wrong-package-task", 200, strings.Replace(upgrade, migration, `"--run","db:migrate","--"`, 1), "steps do not match", false, ""},
 		{"install", 200, job, "Initialization Job (install hook): complete", true, ""},
 		{"unchecked-upgrade", 200, strings.Replace(unchecked, migration+`,"--expect-empty"`, migration, 1), "steps do not match", false, ""},

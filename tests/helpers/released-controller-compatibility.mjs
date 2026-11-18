@@ -15,11 +15,12 @@ const sharedCookieOrigin = "https://console.oce.localhost";
 const agentDomain = "agents.oce.localhost";
 const bootstrapProgram = "/app/scripts/bootstrap-installation.mjs";
 const processProgram = "released-controller-process.mts";
-const bootstrapProbe = `
-  import { existsSync } from "node:fs";
+const imageProbe = `
+  import { existsSync, readFileSync } from "node:fs";
   const configuration = "/app/apps/controller/src/auth/configuration.ts";
   console.log(JSON.stringify({
     bootstrap: existsSync(${JSON.stringify(bootstrapProgram)}),
+    migration: JSON.parse(readFileSync("/app/package.json", "utf8")).scripts?.["db:migrate:production"],
     sharedCookies: existsSync(configuration) &&
       typeof (await import(configuration)).deriveSharedCookieDomain === "function",
   }));
@@ -51,9 +52,9 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     assert.equal(inspected.length, 1);
     assert.equal(inspected[0].Config.Labels["org.opencontainers.image.revision"], image.revision);
   }
-  // Select auth inputs from each image before creating the database. Never retry
+  // Select the image's production migration entry and auth inputs before creating the database. Never retry
   // bootstrap after it might have written an Installation.
-  const authByImage = new Map();
+  const inputsByImage = new Map();
   for (const image of new Set(Object.values(images).map(({ reference }) => reference))) {
     const probe = await command([
       "run",
@@ -72,17 +73,24 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
       image,
       "--input-type=module",
       "--eval",
-      bootstrapProbe,
+      imageProbe,
     ]);
-    const { bootstrap, sharedCookies } = JSON.parse(probe.stdout);
+    const { bootstrap, sharedCookies, migration } = JSON.parse(probe.stdout);
+    const entry = /^(?:NODE_ENV=production )?node (scripts\/migrate-production\.(?:mjs|ts))$/.exec(
+      migration ?? "",
+    )?.[1];
+    assert.ok(entry, "The image must declare a supported production migration command.");
     assert.equal(typeof sharedCookies, "boolean");
-    authByImage.set(image, {
+    inputsByImage.set(image, {
       bootstrap,
+      migration: entry,
       OCC_AUTH_BASE_URL: sharedCookies ? sharedCookieOrigin : legacyOrigin,
       OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     });
   }
-  const { bootstrap, ...bootstrapAuth } = authByImage.get(images.released.reference);
+  const { bootstrap, OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } = inputsByImage.get(
+    images.released.reference,
+  );
   assert.equal(bootstrap, true, "The released image must ship the Installation bootstrap command.");
   const db = await createDatabase();
   const migrationUrl = new URL(db.migrationUrl);
@@ -119,11 +127,10 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
   ];
   const migrate = (image, ...options) =>
     command([
-      ...args(image, "--run", {
+      ...args(image, inputsByImage.get(image.reference).migration, {
+        NODE_ENV: "development",
         OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
       }),
-      "db:migrate",
-      "--",
       ...options,
     ]);
   const history = async () =>
@@ -143,7 +150,7 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
       "--mount",
       `type=bind,src=${fileURLToPath(new URL(file, import.meta.url))},dst=/proof/${file},readonly`,
     ]);
-    const { OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } = authByImage.get(image.reference);
+    const { OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } = inputsByImage.get(image.reference);
     const child = spawn(
       docker,
       withTestOwnerLabel(
@@ -292,7 +299,8 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
         NODE_ENV: "development",
         OCC_DATABASE_URL: applicationUrl.toString(),
         OCC_AUTH_SECRET: authSecret,
-        ...bootstrapAuth,
+        OCC_AUTH_BASE_URL,
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN,
         OPENCLAW_DEV_EMAIL: "postgres-admin@openclaw.local",
         OPENCLAW_DEV_PASSWORD: "postgres-development-password",
         OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/service-key.json",

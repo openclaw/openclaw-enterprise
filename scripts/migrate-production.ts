@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Pool } from "pg";
 import {
   migrateWithHistory as executeMigration,
@@ -16,6 +18,9 @@ const migrateWithHistory: (
 
 const databaseUrl = process.env.OCC_MIGRATION_DATABASE_URL;
 let pool: Pool | undefined;
+let cancellation: Promise<void> | undefined;
+let interrupted = false;
+let migrationFinished = false;
 let logger = createOccLogger({ component: "occ-migration", level: "info", destination: "stderr" });
 
 try {
@@ -44,8 +49,53 @@ try {
     throw new Error("The migration connection must identify a PostgreSQL database.");
   }
 
-  pool = await createPostgresPool(databaseUrl, { max: 1 });
-  const history = await migrateWithHistory(pool, { checkOnly, expectEmpty, requireCurrent });
+  const applicationName = "oce-migration-" + randomUUID();
+  parsed.searchParams.set("application_name", applicationName);
+  pool = await createPostgresPool(parsed.toString(), { max: 1 });
+  const interrupt = (signal: NodeJS.Signals) => {
+    if (interrupted) {
+      return;
+    }
+    interrupted = true;
+    process.exitCode = signal === "SIGINT" ? 130 : 143;
+    cancellation = (async () => {
+      const control = await createPostgresPool(databaseUrl, {
+        max: 1,
+        connectionTimeoutMillis: 5000,
+      });
+      try {
+        // PostgreSQL can keep a disconnected backend waiting on an advisory lock.
+        // Terminate only this command's uniquely named session and wait for it to exit.
+        while (!migrationFinished) {
+          await control.query(
+            "SELECT pg_catalog.pg_terminate_backend(pid, 5000) FROM pg_catalog.pg_stat_activity WHERE datname = pg_catalog.current_database() AND usename = current_user AND application_name = $1",
+            [applicationName],
+          );
+          await delay(25);
+        }
+      } finally {
+        await control.end();
+      }
+    })().catch(() => {
+      emitOccLogEvent(logger, { event: "migration.cancellation-failed", code: "MIGRATION_FAILED" });
+    });
+  };
+  const onInterrupt = () => interrupt("SIGINT");
+  const onTerminate = () => interrupt("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+  let history: Awaited<ReturnType<typeof migrateWithHistory>>;
+  try {
+    history = await migrateWithHistory(pool, { checkOnly, expectEmpty, requireCurrent });
+    if (interrupted) {
+      throw new Error("Migration interrupted.");
+    }
+  } finally {
+    migrationFinished = true;
+    await cancellation;
+    process.removeListener("SIGINT", onInterrupt);
+    process.removeListener("SIGTERM", onTerminate);
+  }
   const event = checkOnly ? "migration.checked" : "migration.completed";
   process.stdout.write(`${JSON.stringify({ event, history })}\n`);
   emitOccLogEvent(logger, { event });
@@ -72,7 +122,9 @@ try {
     event: "migration.failed",
     code,
   });
-  process.exitCode = 1;
+  if (!interrupted) {
+    process.exitCode = 1;
+  }
 } finally {
   if (pool !== undefined) {
     await pool.end();

@@ -1093,7 +1093,7 @@ export function registerStartupPreflightCases({
     assert.deepEqual(migrationContainers[0], {
       ...migration,
       command: ["node"],
-      args: ["--run", "db:migrate:production", "--", "--check"],
+      args: ["scripts/migrate-production.ts", "--check"],
     });
     assert.ok(
       containerEnvironment(migration).some(

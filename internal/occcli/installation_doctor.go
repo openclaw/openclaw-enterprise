@@ -331,9 +331,9 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	is := func(cs []container, name string, args ...string) bool {
 		return len(cs) == 1 && cs[0].Name == name && len(cs[0].Command) == 0 && slices.Equal(cs[0].Args, args)
 	}
-	// Current charts select the task inside the image. Retained Jobs used the JavaScript entry.
+	// Retained Jobs can use the historical JavaScript entry point.
 	migration := func(flags ...string) bool {
-		return is(init, "migration", append([]string{"--run", "db:migrate:production", "--"}, flags...)...) ||
+		return is(init, "migration", append([]string{"scripts/migrate-production.ts"}, flags...)...) ||
 			is(init, "migration", append([]string{"scripts/migrate-production.mjs"}, flags...)...)
 	}
 	var hook string
@@ -342,6 +342,8 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 		hook = "install"
 	case checked && expectedAttempt == "" && migration():
 		hook = "upgrade"
+	case checked && expectedAttempt == "" && migration("--require-current"):
+		hook = "separate upgrade"
 	}
 	if hook == "" || !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") {
 		return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. Job steps do not match the supported chart."}
@@ -352,7 +354,11 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	case initializationFailed:
 		message = "Initialization Job: failed. Inspect this attempt; migration or bootstrap might already have taken effect."
 	case initializationComplete:
-		message = "Initialization Job (" + hook + " hook): complete. The chart reports migration and bootstrap completed (created or verified existing installation). Current database state and external provisioning are not verified. This Job does not establish Helm release status or whether the API and worker Deployments rolled out and are ready."
+		steps := "migration and bootstrap completed (created or verified existing installation)"
+		if hook == "separate upgrade" {
+			steps = "schema verification and bootstrap completed (created or verified existing installation)"
+		}
+		message = "Initialization Job (" + hook + " hook): complete. The chart reports " + steps + ". Current database state and external provisioning are not verified. This Job does not establish Helm release status or whether the API and worker Deployments rolled out and are ready."
 	}
 	// Helm reuses the name; the UID identifies this Job, not an API attempt.
 	message += fmt.Sprintf("\nObserved Job %s/%s, UID %+q", namespace, name, m.UID)

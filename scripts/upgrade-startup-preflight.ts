@@ -733,7 +733,7 @@ function migrationJob(
   const entry =
     option === "--expect-empty" || option === "--require-current" ? args.slice(0, -1) : args;
   if (
-    !isDeepStrictEqual(entry, ["--run", "db:migrate:production", "--"]) &&
+    !isDeepStrictEqual(entry, ["scripts/migrate-production.ts"]) &&
     !isDeepStrictEqual(entry, ["scripts/migrate-production.mjs"])
   ) {
     fail("the initialization Job contains invalid migration arguments.");
