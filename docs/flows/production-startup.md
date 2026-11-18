@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/fd6bab1e-731b-4e93-8d14-0e64f6280246"
+last_updated_session: "authoring-run/da926a36-2fb0-4cf2-8e67-0b1b08e9ead5"
 ---
 
 # Production Startup Flow
@@ -86,20 +86,21 @@ The process continues; the next query opens a new connection.
 ### 1. Prepare native production inputs
 
 `scripts/diagnose-kubernetes-prerequisites.ts:diagnose` checks controllers, CRDs, addresses,
-quotas, Service grants and public TLS leaves. EKS verifies identity.
+quotas, Service grants and serving TLS. Client checks bind public leaves to
+workload mounts. EKS verifies identity.
 [Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Keep and synchronize values and Installation YAML outside the checkout. Helm selects images,
+Synchronize values and Installation YAML outside the checkout. Helm selects images,
 endpoint, Secrets, claim, selectors and egress. `openclaw.validate` requires a
 DNS-1123 release Namespace label (63 characters maximum).
 Installation YAML selects Drivers, Backends, runtime images, projected identity,
 networking and storage.
 
 File-backed Secrets supply startup Installation, database URLs/optional CA,
-Better Auth signing, and optional ChatGPT administrator credentials. Supply
-Driver configuration and runtime images explicitly.
+Better Auth signing, and optional ChatGPT administrator credentials. Specify
+Driver configuration and runtime images.
 
 ### 2. Prepare the fresh bootstrap volume
 
@@ -110,7 +111,7 @@ It preserves namespace/selector strings, applying selectors before
 WaitForFirstConsumer binding. It requires an empty root except filesystem-owned
 `lost+found` and sets UID/GID `1000`, mode `0700`.
 
-If forbidden, storage administrators prepare the claim through approved procedures.
+Storage administrators handle forbidden preparation.
 The helper cannot create PVCs, repair used claims, retrieve credentials or
 change controller configuration.
 
@@ -118,11 +119,10 @@ change controller configuration.
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
 kubeconfig/chart/values, checks release states and syncs intent and its directory.
-A failed stdout notice preserves and names intent, stopping before dispatch or
-Helm. Otherwise it syncs the unknown marker and starts Helm.
-`observeInstallationJob` records the first recognized attempt-matched Job UID
-(installs only). Helm's outcome stays separate; final report write errors fail
-the command without changing that outcome or replaying install.
+A failed stdout notice names and preserves intent before dispatch. Otherwise the
+command syncs the unknown marker and starts Helm. `observeInstallationJob`
+records the first recognized attempt-matched Job UID on installs. Final report
+errors fail the command while preserving Helm's outcome and preventing replay.
 
 Template failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
 Helm stderr is bounded to 4 MiB in memory; raw diagnostics are not printed or saved.
@@ -384,6 +384,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 21:28: Check mounted client certificates. (authoring-run/da926a36-2fb0-4cf2-8e67-0b1b08e9ead5 - 741723fa9a6d09a4d3cbf7e453cdac91936a9877)
 
 - 2026-11-18 13:04: Check Service dependencies. (authoring-run/fd6bab1e-731b-4e93-8d14-0e64f6280246 - cb0f0300e53fd639cec1741323c7799a425b6dc9)
 

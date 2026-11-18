@@ -266,7 +266,7 @@ test(
         { name: "addons.k3s.cattle.io", version: "v1" },
       ],
     };
-    type Plan = typeof config & { serviceDependency?: unknown };
+    type Plan = typeof config & { serviceDependency?: unknown; clientCertificate?: unknown };
     const configPath = join(dir, "plan.json");
     type Check = {
       id: string;
@@ -327,6 +327,7 @@ test(
     assert.equal(initial.checks.get("crd:missing.example.test")?.status, "failed");
     assert.equal(initial.checks.has("service-egress"), false);
     assert.equal(initial.checks.has("service-tls"), false);
+    assert.equal(initial.checks.has("client-certificate"), false);
     assert.equal(initial.status, 1);
 
     // ResourceQuota's own controller supplies usage. One slot remains, but the candidate needs two
@@ -434,7 +435,7 @@ test(
       Buffer.from(expired.cert).toString("base64"),
       "BEGIN CERTIFICATE",
     ];
-    async function setLeaf(pem: string) {
+    async function setLeaf(pem: string, name = secretName) {
       const encoded = Buffer.from(pem).toString("base64");
       protectedValues.push(pem, encoded);
       const patch = join(dir, "certificate-patch.json");
@@ -444,7 +445,7 @@ test(
         namespace,
         "patch",
         "secret",
-        secretName,
+        name,
         "--type=merge",
         "--patch-file",
         patch,
@@ -581,6 +582,212 @@ test(
       assert.match(result.tls?.summary ?? "", /unreadable validity window/u);
     }
 
+    const clientName = "gateway-client";
+    const clientSecret = "mounted-client";
+    const detachedSecret = "detached-client";
+    const clientLeaf = await signedLeaf(dir, ca, {
+      name: "current-client",
+      commonName: clientName,
+      usage: "clientAuth",
+      keyPem: expired.key,
+    });
+    for (const name of [clientSecret, detachedSecret]) {
+      await kubectl(
+        "-n",
+        namespace,
+        "create",
+        "secret",
+        "tls",
+        name,
+        `--cert=${clientLeaf.certPath}`,
+        `--key=${clientLeaf.keyPath}`,
+      );
+    }
+    protectedValues.push(clientLeaf.cert, Buffer.from(clientLeaf.cert).toString("base64"));
+    const clientLabels = { app: clientName };
+    const mountPath = "/etc/openclaw/openshell";
+    const worker = {
+      name: "worker",
+      image: "example.invalid/client:test",
+      volumeMounts: [{ name: "client", mountPath, readOnly: true }],
+    };
+    const publicItem = { key: "tls.crt", path: "admin.pem" };
+    const clientVolume = {
+      name: "client",
+      secret: { secretName: clientSecret, items: [publicItem] },
+    };
+    const clientCertificate = {
+      workload: { kind: "Deployment", namespace, name: clientName },
+      container: "worker",
+      certificatePath: `${mountPath}/admin.pem`,
+    };
+    await applyManifest(
+      JSON.stringify({
+        apiVersion: "apps/v1",
+        kind: "Deployment",
+        metadata: { name: clientName, namespace },
+        spec: {
+          replicas: 0,
+          selector: { matchLabels: clientLabels },
+          template: {
+            metadata: { labels: clientLabels },
+            spec: {
+              containers: [worker],
+              volumes: [clientVolume, { name: "detached", secret: { secretName: detachedSecret } }],
+            },
+          },
+        },
+      }),
+    );
+    const clientPlan = { ...config, clientCertificate };
+    const clientCheck = async (plan: Plan = clientPlan) =>
+      (await diagnose(plan, protectedValues)).checks.get("client-certificate");
+    const identity = async (kind: string, resourceKind: string, name: string) => {
+      const { uid, resourceVersion } = (await resource(resourceKind, name)).metadata;
+      return { kind, namespace, name, uid, resourceVersion };
+    };
+    await waitFor("client Deployment generation observation", async () => {
+      const deployment = await resource("deployment", clientName);
+      return deployment.status?.observedGeneration === deployment.metadata.generation;
+    });
+    const workloadIdentity = await identity("Deployment", "deployment", clientName);
+    const secretIdentity = await identity("Secret", "secret", clientSecret);
+    const bound = await clientCheck();
+    assert.equal(bound?.status, "passed");
+    assert.deepEqual(bound?.resources, [workloadIdentity, secretIdentity]);
+    assert.deepEqual(await identity("Deployment", "deployment", clientName), workloadIdentity);
+    assert.deepEqual(await identity("Secret", "secret", clientSecret), secretIdentity);
+
+    await setLeaf(expired.cert, clientSecret);
+    const expiredClient = await clientCheck();
+    assert.equal(expiredClient?.status, "failed");
+    assert.match(expiredClient?.summary ?? "", /expired/u);
+    assert.equal(expiredClient?.resources?.at(-1)?.name, clientSecret);
+    await setLeaf(replacement.cert, clientSecret);
+    const wrongUsage = await clientCheck();
+    assert.equal(wrongUsage?.status, "failed");
+    assert.match(wrongUsage?.summary ?? "", /extended key usage does not permit client/u);
+    for (const [name, extension] of [
+      ["no-client-eku", ""],
+      ["unreadable-client-eku", "2.5.29.37=critical,DER:05:00"],
+    ] as const) {
+      const unconfirmed = await signedLeaf(dir, ca, {
+        name,
+        usage: "clientAuth",
+        keyPem: expired.key,
+        run: async (command, args) => {
+          if (args[0] === "x509") {
+            const extensions = args[args.indexOf("-extfile") + 1];
+            assert.ok(extensions);
+            const original = await readFile(extensions, "utf8");
+            assert.match(original, /^extendedKeyUsage=clientAuth$/mu);
+            await writeFile(
+              extensions,
+              original.replace(/^extendedKeyUsage=clientAuth$/mu, extension),
+            );
+          }
+          return execFileSync(command, args);
+        },
+      });
+      assert.equal(new X509Certificate(unconfirmed.cert).keyUsage, undefined);
+      await setLeaf(unconfirmed.cert, clientSecret);
+      const result = await clientCheck();
+      assert.equal(result?.status, "unknown");
+      assert.match(result?.summary ?? "", /current.*does not establish client authentication/u);
+      assert.deepEqual(result?.resources, [
+        workloadIdentity,
+        await identity("Secret", "secret", clientSecret),
+      ]);
+    }
+    await setLeaf(clientLeaf.cert, clientSecret);
+
+    const peerClients = ["stateful-client", "claim-client", "alias-client"] as const;
+    const [peerName, claimName, aliasName] = peerClients;
+    const peerClientPlan = (name: (typeof peerClients)[number]) => ({
+      ...clientPlan,
+      clientCertificate: {
+        ...clientCertificate,
+        workload: { kind: "StatefulSet", namespace, name },
+      },
+    });
+    const aliasItems = [publicItem, { key: "tls.key", path: "./admin.pem" }];
+    for (const name of peerClients) {
+      const peerLabels = { app: name };
+      await applyManifest(
+        JSON.stringify({
+          apiVersion: "apps/v1",
+          kind: "StatefulSet",
+          metadata: { name, namespace },
+          spec: {
+            replicas: 0,
+            serviceName,
+            selector: { matchLabels: peerLabels },
+            template: {
+              metadata: { labels: peerLabels },
+              spec: {
+                containers: [{ name: "broker", image: worker.image }],
+                initContainers: [{ ...worker, restartPolicy: "Always" }],
+                volumes: [
+                  name === aliasName
+                    ? { ...clientVolume, secret: { ...clientVolume.secret, items: aliasItems } }
+                    : clientVolume,
+                ],
+              },
+            },
+            ...(name === claimName
+              ? {
+                  volumeClaimTemplates: [
+                    {
+                      metadata: { name: clientVolume.name },
+                      spec: {
+                        accessModes: ["ReadWriteOnce"],
+                        resources: { requests: { storage: "1Mi" } },
+                      },
+                    },
+                  ],
+                }
+              : {}),
+          },
+        }),
+      );
+      await waitFor(`StatefulSet generation for ${name}`, async () => {
+        const peer = await resource("statefulset", name);
+        return peer.status?.observedGeneration === peer.metadata.generation;
+      });
+    }
+    const peer = await clientCheck(peerClientPlan(peerName));
+    assert.equal(peer?.status, "passed");
+    assert.deepEqual(peer?.resources, [
+      await identity("StatefulSet", "statefulset", peerName),
+      await identity("Secret", "secret", clientSecret),
+    ]);
+    const claimed = await resource("statefulset", claimName);
+    assert.equal(claimed.spec.volumeClaimTemplates[0].metadata.name, clientVolume.name);
+    assert.equal(claimed.spec.template.spec.volumes[0].secret.secretName, clientSecret);
+    const aliased = await resource("statefulset", aliasName);
+    assert.deepEqual(aliased.spec.template.spec.volumes[0].secret.items, aliasItems);
+
+    const unmounted = await clientCheck({
+      ...clientPlan,
+      clientCertificate: { ...clientCertificate, certificatePath: "/etc/detached/tls.crt" },
+    });
+    assert.equal(unmounted?.status, "failed");
+    assert.match(unmounted?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
+    assert.deepEqual(unmounted?.resources, [workloadIdentity]);
+    const override = await invokeDiagnostic(
+      {
+        ...clientPlan,
+        clientCertificate: { ...clientCertificate, secretName: detachedSecret },
+      },
+      protectedValues,
+    );
+    assert.equal(override.status, 2);
+    assert.equal(override.stdout, "");
+    assert.match(
+      override.stderr,
+      /clientCertificate accepts only workload, container and certificatePath/u,
+    );
+
     // The same real API refuses this identity. A refusal is incomplete evidence,
     // not a negative readiness observation; credentials must never enter output.
     await kubectl("-n", namespace, "create", "serviceaccount", "reader");
@@ -627,6 +834,52 @@ test(
       assert.equal(denied.checks.get(id)?.status, "unknown", id);
     }
     assert.equal(denied.status, 2);
+
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "role",
+      "client-workload-reader",
+      "--verb=get",
+      "--resource=deployments.apps,statefulsets.apps",
+      `--resource-name=${clientName}`,
+      ...[claimName, aliasName].map((name) => `--resource-name=${name}`),
+    );
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "rolebinding",
+      "client-workload-reader",
+      "--role=client-workload-reader",
+      `--serviceaccount=${namespace}:reader`,
+    );
+    const deniedClient = await diagnose(
+      { ...clientPlan, kubeconfig: deniedConfig, context: "reader" },
+      [token, ...protectedValues],
+    );
+    const deniedSecret = deniedClient.checks.get("client-certificate");
+    assert.equal(deniedSecret?.status, "unknown");
+    assert.match(deniedSecret?.summary ?? "", /not authorized/u);
+    assert.deepEqual(deniedSecret?.resources, [workloadIdentity]);
+    // A Secret read under this identity would be unknown, like the control above.
+    for (const name of [claimName, aliasName]) {
+      const invalid = await diagnose(
+        { ...peerClientPlan(name), kubeconfig: deniedConfig, context: "reader" },
+        [token, ...protectedValues],
+      );
+      const result = invalid.checks.get("client-certificate");
+      assert.equal(result?.status, "failed");
+      assert.match(result?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
+      assert.deepEqual(result?.resources, [await identity("StatefulSet", "statefulset", name)]);
+    }
+
+    await kubectl("-n", namespace, "delete", "secret", clientSecret);
+    const missingClient = await clientCheck();
+    assert.equal(missingClient?.status, "failed");
+    assert.match(missingClient?.summary ?? "", /TLS Secret does not exist/u);
+    assert.deepEqual(missingClient?.resources, [workloadIdentity]);
 
     const missingService = "missing-middleware";
     const role = "missing-service-reader";

@@ -4,7 +4,7 @@ import { X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 
 type PeakAdditional = { jobs: number; replicaSets: number };
@@ -14,6 +14,12 @@ type ServiceDependency = {
   service: DeploymentSelection & { port: number };
   policy: DeploymentSelection;
   tls?: { secretName: string; serverName: string };
+};
+type WorkloadKind = "Deployment" | "StatefulSet";
+type ClientCertificate = {
+  workload: DeploymentSelection & { kind: WorkloadKind };
+  container: string;
+  certificatePath: string;
 };
 
 type PlanInput = {
@@ -25,6 +31,7 @@ type PlanInput = {
   crds?: { name?: unknown; version?: unknown }[];
   apiCidrs?: unknown;
   serviceDependency?: unknown;
+  clientCertificate?: unknown;
   peakAdditional?: Partial<Record<keyof PeakAdditional, unknown>>;
   eks?: { clusterArn?: unknown; webhookCidrs?: unknown };
 };
@@ -38,6 +45,7 @@ type DiagnosticPlan = {
   crds: CrdSelection[];
   apiCidrs: string[];
   serviceDependency: ServiceDependency | undefined;
+  clientCertificate: ClientCertificate | undefined;
   peakAdditional: PeakAdditional | undefined;
   eks:
     | {
@@ -58,7 +66,7 @@ type NamedMetadata = KubernetesMetadata & {
   resourceVersion?: string;
 };
 type ResourceObservation = DeploymentSelection & {
-  kind: "Service" | "NetworkPolicy" | "Secret";
+  kind: "Service" | "NetworkPolicy" | "Secret" | WorkloadKind;
   uid: string;
   resourceVersion: string;
 };
@@ -146,6 +154,31 @@ type Deployment = {
     updatedReplicas?: number;
     availableReplicas?: number;
     replicas?: number;
+  };
+};
+
+type ClientContainer = {
+  name: string;
+  restartPolicy?: string;
+  volumeMounts?: { name: string; mountPath: string; subPath?: string; subPathExpr?: string }[];
+};
+
+type ClientWorkload = {
+  apiVersion?: string;
+  kind?: string;
+  metadata?: NamedMetadata;
+  spec?: {
+    volumeClaimTemplates?: { metadata?: { name?: string } }[];
+    template?: {
+      spec?: {
+        containers?: ClientContainer[];
+        initContainers?: ClientContainer[];
+        volumes?: {
+          name: string;
+          secret?: { secretName: string; items?: { key: string; path: string }[] };
+        }[];
+      };
+    };
   };
 };
 
@@ -310,6 +343,46 @@ function serviceDependency(value: unknown): ServiceDependency | undefined {
   return selection;
 }
 
+function clientCertificate(value: unknown): ClientCertificate | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObject(value, ["workload", "container", "certificatePath"])) {
+    throw new DiagnosticError(
+      "clientCertificate accepts only workload, container and certificatePath",
+    );
+  }
+  const { workload, container, certificatePath } = value;
+  if (!isObject(workload, ["kind", "name", "namespace"])) {
+    throw new DiagnosticError("clientCertificate.workload must specify kind, name and namespace");
+  }
+  const { kind, name, namespace } = workload;
+  if (
+    (kind !== "Deployment" && kind !== "StatefulSet") ||
+    typeof name !== "string" ||
+    !isDnsName(name) ||
+    typeof namespace !== "string" ||
+    !dnsLabel.test(namespace) ||
+    typeof container !== "string" ||
+    !dnsLabel.test(container)
+  ) {
+    throw new DiagnosticError(
+      "clientCertificate requires a named Deployment or StatefulSet and container",
+    );
+  }
+  if (
+    typeof certificatePath !== "string" ||
+    certificatePath.length > 1024 ||
+    !/^\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+(?![\s\S])/u.test(certificatePath) ||
+    posix.normalize(certificatePath) !== certificatePath
+  ) {
+    throw new DiagnosticError(
+      "clientCertificate.certificatePath must be a normalized absolute file path",
+    );
+  }
+  return { workload: { kind, name, namespace }, container, certificatePath };
+}
+
 function validateConfig(value: unknown): DiagnosticPlan {
   const config = value as PlanInput;
   const kubeconfig = requireSelection(config.kubeconfig, "kubeconfig");
@@ -370,6 +443,7 @@ function validateConfig(value: unknown): DiagnosticPlan {
     crds,
     apiCidrs,
     serviceDependency: serviceDependency(config.serviceDependency),
+    clientCertificate: clientCertificate(config.clientCertificate),
     peakAdditional,
     eks,
   };
@@ -492,6 +566,17 @@ function observeResource(
     name: selection.name,
     uid: metadata.uid,
     resourceVersion: metadata.resourceVersion,
+  };
+}
+
+function unreadable(error: unknown): CheckResult {
+  // Provider errors can contain credential-plugin output or private endpoints.
+  return {
+    status: "unknown",
+    summary:
+      error instanceof DiagnosticError
+        ? error.message
+        : "The read failed or returned incomplete data.",
   };
 }
 
@@ -630,10 +715,10 @@ async function serviceEgress(
 const tlsColumns =
   "NAME:.metadata.name,NS:.metadata.namespace,UID:.metadata.uid,RV:.metadata.resourceVersion,DELETED:.metadata.deletionTimestamp,CERT:.data.tls\\.crt";
 
-function servingCertificate(
-  namespace: string,
-  { secretName, serverName }: NonNullable<ServiceDependency["tls"]>,
+function inspectCertificate(
+  selection: DeploymentSelection,
   output: string,
+  serverName?: string,
 ): CheckResult {
   if (output === "") {
     return { status: "failed", summary: "The selected TLS Secret does not exist." };
@@ -653,16 +738,12 @@ function servingCertificate(
     throw new DiagnosticError("The response lacks the selected TLS Secret fields.");
   }
   const resources = [
-    observeResource(
-      "Secret",
-      { namespace, name: secretName },
-      {
-        namespace: observedNamespace,
-        name,
-        uid,
-        resourceVersion,
-      },
-    ),
+    observeResource("Secret", selection, {
+      namespace: observedNamespace,
+      name,
+      uid,
+      resourceVersion,
+    }),
   ];
   const failure = (summary: string): CheckResult => ({ status: "failed", summary, resources });
   if (deletionTimestamp !== "<none>") {
@@ -693,14 +774,111 @@ function servingCertificate(
   if (now > notAfter) {
     return failure("The selected TLS leaf has expired.");
   }
-  if (!leaf.checkHost(serverName, { subject: "never", partialWildcards: false })) {
+  if (
+    serverName !== undefined &&
+    !leaf.checkHost(serverName, { subject: "never", partialWildcards: false })
+  ) {
     return failure("The selected TLS leaf lacks a DNS SAN matching the expected serverName.");
+  }
+  if (serverName === undefined) {
+    const usages = leaf.keyUsage;
+    // Node reports undefined for both absent and undecodable extensions.
+    if (usages === undefined) {
+      return {
+        status: "unknown",
+        summary:
+          "The mounted TLS leaf is current. Its extended key usage does not establish client authentication suitability.",
+        resources,
+      };
+    }
+    if (!usages.includes("1.3.6.1.5.5.7.3.2") && !usages.includes("2.5.29.37.0")) {
+      return failure(
+        "The selected TLS leaf's extended key usage does not permit client authentication.",
+      );
+    }
   }
   return {
     status: "passed",
-    summary: "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
+    summary:
+      serverName === undefined
+        ? "The mounted TLS leaf is within its validity window and its extended key usage permits client use."
+        : "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
     resources,
   };
+}
+
+function mountedClientSecret(
+  selection: ClientCertificate,
+  observed: ClientWorkload,
+): string | undefined {
+  const pod = observed.spec?.template?.spec;
+  if (!Array.isArray(pod?.containers)) {
+    throw new DiagnosticError("The selected workload response lacks its Pod template containers.");
+  }
+  const containers = [
+    ...pod.containers,
+    ...(pod.initContainers ?? []).filter(({ restartPolicy }) => restartPolicy === "Always"),
+  ].filter(({ name }) => name === selection.container);
+  const [container] = containers;
+  if (containers.length !== 1 || !container) {
+    return undefined;
+  }
+
+  const path = selection.certificatePath;
+  const mounts = (container.volumeMounts ?? []).filter(({ mountPath }) => {
+    const normalized = posix.normalize(mountPath).replace(/\/$/u, "");
+    return path === normalized || path.startsWith(`${normalized}/`);
+  });
+  const [mount] = mounts;
+  if (mounts.length !== 1 || !mount || mount.subPath || mount.subPathExpr) {
+    return undefined;
+  }
+  // The StatefulSet controller gives claims precedence over same-name Pod volumes.
+  if (
+    selection.workload.kind === "StatefulSet" &&
+    observed.spec?.volumeClaimTemplates?.some(({ metadata }) => metadata?.name === mount.name)
+  ) {
+    return undefined;
+  }
+  const prefix = mount.mountPath.endsWith("/") ? mount.mountPath : `${mount.mountPath}/`;
+  if (!path.startsWith(prefix)) {
+    return undefined;
+  }
+
+  const volumes = (pod.volumes ?? []).filter(({ name }) => name === mount.name);
+  const secret = volumes.length === 1 ? volumes[0]?.secret : undefined;
+  if (!secret || typeof secret.secretName !== "string" || !isDnsName(secret.secretName)) {
+    return undefined;
+  }
+  const file = path.slice(prefix.length);
+  if (secret.items?.length) {
+    const keys: string[] = [];
+    for (const { key, path: target } of secret.items) {
+      // Match what the volume writer resolves, including "./" and repeated slashes.
+      if (
+        !target ||
+        posix.isAbsolute(target) ||
+        target.startsWith("..") ||
+        target.split("/").includes("..")
+      ) {
+        return undefined;
+      }
+      const resolved = posix.normalize(target).replace(/\/$/u, "");
+      if (
+        resolved === "." ||
+        resolved.startsWith("..") ||
+        resolved.startsWith(`${file}/`) ||
+        file.startsWith(`${resolved}/`)
+      ) {
+        return undefined;
+      }
+      if (resolved === file) {
+        keys.push(key);
+      }
+    }
+    return keys.length === 1 && keys[0] === "tls.crt" ? secret.secretName : undefined;
+  }
+  return file === "tls.crt" ? secret.secretName : undefined;
 }
 
 function quantity(value: unknown) {
@@ -778,6 +956,23 @@ async function diagnose(
   const kube = async <T>(...args: string[]) => parseJson<T>(await kubeOutput(...args));
   const getNamed = <T>(kind: string, { namespace, name }: DeploymentSelection) =>
     kube<T | null>("-n", namespace, "get", kind, name, "--ignore-not-found", "-o", "json");
+  const readCertificate = async (selection: DeploymentSelection, serverName?: string) =>
+    inspectCertificate(
+      selection,
+      await kubeOutput(
+        "-n",
+        selection.namespace,
+        "get",
+        "secret",
+        selection.name,
+        "--ignore-not-found",
+        "--no-headers",
+        "--v=0",
+        "-o",
+        `custom-columns=${tlsColumns}`,
+      ),
+      serverName,
+    );
   async function check(
     id: string,
     action: string,
@@ -787,14 +982,7 @@ async function diagnose(
     try {
       result = await inspect();
     } catch (error) {
-      // Provider errors can contain credential-plugin output or private endpoints.
-      result = {
-        status: "unknown",
-        summary:
-          error instanceof DiagnosticError
-            ? error.message
-            : "The read failed or returned incomplete data.",
-      };
+      result = unreadable(error);
     }
     checks.push({ id, ...result, ...(result.status === "passed" ? {} : { action }) });
     return result;
@@ -1193,25 +1381,60 @@ async function diagnose(
       await check(
         "service-tls",
         "Verify the selected Secret and renew its serving certificate for the expected serverName through the certificate owner.",
-        async () =>
-          servingCertificate(
-            selectedService.namespace,
-            tls,
-            await kubeOutput(
-              "-n",
-              selectedService.namespace,
-              "get",
-              "secret",
-              tls.secretName,
-              "--ignore-not-found",
-              "--no-headers",
-              "--v=0",
-              "-o",
-              `custom-columns=${tlsColumns}`,
-            ),
+        () =>
+          readCertificate(
+            { namespace: selectedService.namespace, name: tls.secretName },
+            tls.serverName,
           ),
       );
     }
+  }
+
+  const client = config.clientCertificate;
+  if (client) {
+    await check(
+      "client-certificate",
+      "Verify the selected container's certificate path and renew its mounted Secret through the certificate owner.",
+      async () => {
+        const { kind, namespace } = client.workload;
+        const workload = await getNamed<ClientWorkload>(
+          kind === "Deployment" ? "deployments.apps" : "statefulsets.apps",
+          client.workload,
+        );
+        if (!workload) {
+          return { status: "failed", summary: "The selected client workload does not exist." };
+        }
+        if (workload.kind !== kind || workload.apiVersion !== "apps/v1") {
+          throw new DiagnosticError(
+            "The response does not identify the selected client workload kind.",
+          );
+        }
+        const identity = observeResource(kind, client.workload, workload.metadata);
+        const resources = [identity];
+        if (workload.metadata?.deletionTimestamp) {
+          return {
+            status: "failed",
+            summary: "The selected client workload is terminating.",
+            resources,
+          };
+        }
+        try {
+          const name = mountedClientSecret(client, workload);
+          if (!name) {
+            return {
+              status: "failed",
+              summary:
+                "The certificate path does not resolve to one mounted tls.crt Secret item in the selected container.",
+              resources,
+            };
+          }
+          const certificate = await readCertificate({ namespace, name });
+          return { ...certificate, resources: [...resources, ...(certificate.resources ?? [])] };
+        } catch (error) {
+          return { ...unreadable(error), resources };
+        }
+      },
+    );
   }
 
   await check(
@@ -1322,6 +1545,11 @@ async function diagnose(
         ? [
             "Verify the selected NetworkPolicy source Pod selector covers the calling workload.",
             "Verify policy enforcement, the served TLS leaf and its trust chain separately from the caller's network.",
+          ]
+        : []),
+      ...(config.clientCertificate
+        ? [
+            "The client certificate check observes the workload template and Secret only. It does not observe mounted or active process credentials, gateway client-CA acceptance, peer identity or an mTLS RPC.",
           ]
         : []),
       "Quota observations do not predict chart admission, node capacity or storage availability.",
