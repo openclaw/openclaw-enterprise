@@ -62,7 +62,9 @@ test(
   "separate migration Helm upgrades keep writers stopped until the database passes verification",
   observabilitySelection,
   async (t) => {
-    const f = await installObservabilityControlPlane(t);
+    // The unused dedicated runtime slot gives the real upgrade helper a change
+    // to make while the embedded runtime stays usable for the Agent journey.
+    const f = await installObservabilityControlPlane(t, { nodeForDedicatedRuntime: true });
     const installation = record(await f.api("GET", "/installation"));
     const installationId = string(installation.id);
     const { kubeconfigPath, kubernetesContext } = f.selection;
@@ -521,7 +523,6 @@ test(
     );
     await assertDatabase(repairedSnapshot, "compatible-after");
     await assertIncumbent();
-    await connection.stop();
 
     // The operator's maintenance window stops both writers before either database phase.
     await f.kubectl(
@@ -569,58 +570,169 @@ test(
       assert.equal((await f.pods(component)).length, 0);
     }
 
-    // Reconcile the known fault, then use the documented independent migration Job
-    // with the same candidate image, migrator Secret, and initialization network policy.
+    // Recover the failed Helm revision before entering a new tool-owned handoff.
     await sql("GRANT SELECT ON occ.iam_identities TO occ_app");
-    const template = record(record(record(hook.spec).template).spec);
-    const migration = array(template.initContainers).find(
-      (container) => named(container) && container.name === "migration",
-    );
-    assert.ok(named(migration));
-    const mounts = new Set(
-      array(migration.volumeMounts ?? []).map((mount) => string(record(mount).name)),
-    );
-    const jobName = "separate-database-migration";
-    await f.apply({
-      apiVersion: "batch/v1",
-      kind: "Job",
-      metadata: f.metadata(jobName),
-      spec: {
-        backoffLimit: 0,
-        template: {
-          metadata: {
-            labels: {
-              "app.kubernetes.io/name": "openclaw-enterprise",
-              "app.kubernetes.io/instance": f.release,
-              "app.kubernetes.io/component": "initialization",
-            },
-          },
-          spec: {
-            serviceAccountName: string(template.serviceAccountName),
-            automountServiceAccountToken: false,
-            restartPolicy: "Never",
-            securityContext: record(template.securityContext),
-            containers: [{ ...migration, args: array(migration.args).slice(0, -1) }],
-            volumes: array(template.volumes).filter((volume) =>
-              mounts.has(string(record(volume).name)),
-            ),
-          },
-        },
-      },
-    });
-    await f.kubectl(
-      "-n",
-      f.system,
-      "wait",
-      "--for=condition=Complete",
-      `job/${jobName}`,
-      "--timeout=180s",
-    );
-    const migrated = await f.kubectl("-n", f.system, "logs", `job/${jobName}`);
-    assert.match(migrated, /"event":"migration.completed","history":"completed"/);
-    await f.kubectl("-n", f.system, "delete", "job", jobName, "--wait=true", "--timeout=120s");
-
     await f.upgrade({});
+    const predecessorRevision = await helmRevision();
+    assert.ok(predecessorRevision > revision);
+    const recoveredValues = { ...f.values };
+    await writeFile(join(profileDirectory, "values.yaml"), JSON.stringify(recoveredValues), {
+      mode: 0o600,
+    });
+    await writeFile(join(profileDirectory, "installation.yaml"), await readFile(installationPath), {
+      mode: 0o600,
+    });
+    const applyProfile = join(profileDirectory, "apply.json");
+    await writeFile(
+      applyProfile,
+      JSON.stringify({
+        kubeconfig: kubeconfigPath,
+        context: kubernetesContext,
+        namespace: f.system,
+        release: f.release,
+        installationDirectory: profileDirectory,
+        sourceRevision: source,
+        occ,
+        images: { runtime: f.images.runtime },
+      }),
+      { mode: 0o600 },
+    );
+    const upgradeEvidence = join(f.directory, "separate-upgrade");
+    const upgrade = (operation: string[], ...extra: string[]) =>
+      f.run(
+        occ,
+        [
+          "installation",
+          "upgrade",
+          ...operation,
+          "--profile",
+          applyProfile,
+          "--evidence-dir",
+          upgradeEvidence,
+          "--",
+          "--timeout-seconds",
+          "120",
+          ...extra,
+        ],
+        { env: cliEnvironment, timeout: 360_000 },
+      );
+    await assert.rejects(
+      upgrade([]),
+      /API and worker stopped for the separate database deployment/,
+    );
+    const frozen = async () =>
+      Promise.all(
+        ["api", "worker"].map(async (component) => {
+          assert.equal((await f.pods(component)).length, 0);
+          const observed = deployment(
+            await f.get("deployment", `openclaw-enterprise-${component}`),
+          );
+          assert.equal(observed.spec.replicas, 0);
+          return observed;
+        }),
+      );
+    const handoff = await frozen();
+    assert.equal(await helmRevision(), predecessorRevision);
+
+    // Recreate the recognized 0081 predecessor in this disposable database.
+    // The genuine migrator must execute the pending 0082 SQL and append its receipt.
+    const completeReceipts = array(JSON.parse(before));
+    const manifest = record(
+      JSON.parse(await readFile("migrations/meta/_canonical-history.json", "utf8")),
+    );
+    const entries = array(manifest.entries);
+    const last = record(entries.at(-1));
+    assert.equal(last.tag, "0082_authentication_states");
+    assert.equal(entries.length, completeReceipts.length);
+    const digest = string(last.sha256);
+    const timestamp = number(last.when);
+    assert.match(digest, /^[a-f0-9]{64}$/);
+    assert.ok(Number.isSafeInteger(timestamp));
+    assert.equal((await sql("SELECT count(*) FROM occ.authentication_states")).trim(), "0");
+    const statements = (await readFile("migrations/0070_saved_connections.sql", "utf8")).split(
+      "--> statement-breakpoint",
+    );
+    const restore = [
+      /CREATE TABLE occ\.connection_sessions \(/,
+      /CREATE INDEX connection_sessions_expiry_idx ON occ\.connection_sessions/,
+      /GRANT SELECT, INSERT, DELETE ON occ\.connection_sessions TO occ_app/,
+      /CREATE TRIGGER connection_session_checks_template_scope BEFORE INSERT ON occ\.connection_sessions/,
+    ].map((pattern) => {
+      const matched = statements.filter((statement) => pattern.test(statement));
+      assert.equal(matched.length, 1, "the predecessor DDL must come from the canonical migration");
+      return string(matched[0]);
+    });
+    const [create, index, grant, trigger] = restore;
+    await sql(`
+      BEGIN;
+      SET LOCAL ROLE occ_migrator;
+      DROP TABLE occ.authentication_states;
+      DROP FUNCTION occ.guard_authentication_state_update();
+      ${create}
+      ${index}
+      REVOKE ALL ON occ.connection_sessions FROM PUBLIC, occ_app;
+      ${grant}
+      ${trigger}
+      DELETE FROM drizzle.__drizzle_migrations WHERE hash = '${digest}' AND created_at = ${timestamp};
+      COMMIT;
+    `);
+    const pending = array(JSON.parse(await receipts()));
+    assert.deepEqual(pending, completeReceipts.slice(0, -1));
+    const schemaState = () =>
+      sql(
+        "SELECT to_regclass('occ.connection_sessions') IS NOT NULL, to_regclass('occ.authentication_states') IS NOT NULL, to_regprocedure('occ.guard_authentication_state_update()') IS NOT NULL",
+      );
+    assert.equal((await schemaState()).trim(), "t|f|f");
+    assert.match(
+      await migrationCheck("pending-canonical", recoveredValues),
+      /Migration check passed \(history: preAuthenticationStates\)/,
+    );
+    assert.deepEqual(array(JSON.parse(await receipts())), pending);
+    assert.deepEqual(await frozen(), handoff);
+
+    // The new CLI owns both Jobs. The old schema disappears and the live
+    // ledger gains exactly the canonical receipt while Helm and writers wait.
+    assert.match(await upgrade(["migration", "apply"]), /Database migration verified/);
+    for (const [stage, option] of [
+      ["apply", "--apply-for-installation"],
+      ["verify", "--require-current-for-installation"],
+    ]) {
+      const path = join(
+        upgradeEvidence,
+        `migration-deploy-${stage}`,
+        "preflight-migration-job.json",
+      );
+      const job = record(JSON.parse(await readFile(path, "utf8")));
+      const template = record(record(job.spec).template);
+      const migrator = record(array(record(template.spec).containers)[0]);
+      assert.deepEqual(array(migrator.args).slice(-2), [option, installationId]);
+    }
+    assert.match(
+      await readFile(
+        join(upgradeEvidence, "migration-deploy-apply", "preflight-migration.log"),
+        "utf8",
+      ),
+      /"event":"migration.completed","history":"preAuthenticationStates"/,
+    );
+    assert.match(
+      await readFile(
+        join(upgradeEvidence, "migration-deploy-verify", "preflight-migration.log"),
+        "utf8",
+      ),
+      /"event":"migration.checked","history":"completed"/,
+    );
+    const migrated = array(JSON.parse(await receipts()));
+    assert.equal(migrated.length, pending.length + 1);
+    assert.deepEqual(migrated.slice(0, -1), pending);
+    assert.equal(record(migrated.at(-1)).hash, digest);
+    assert.equal(record(migrated.at(-1)).created_at, timestamp);
+    assert.equal((await schemaState()).trim(), "f|t|t");
+    assert.deepEqual(await frozen(), handoff);
+    assert.equal(await helmRevision(), predecessorRevision);
+    await assertPreflightClean();
+
+    await upgrade(["resume"], "--migration-history-checked");
+    assert.equal(await helmRevision(), predecessorRevision + 1);
     const checked = await f.kubectl("-n", f.system, "logs", `job/${hookName}`, "-c", "migration");
     assert.match(checked, /"event":"migration.checked","history":"completed"/);
     for (const component of ["api", "worker"]) {
@@ -630,7 +742,7 @@ test(
         1,
       );
     }
-    assert.equal(await receipts(), before);
+    assert.deepEqual(JSON.parse(await receipts()), migrated);
     assert.equal(string(record(await f.api("GET", "/installation")).id), installationId);
     // Prove the recovered API and worker can still deploy an Agent through their real caller.
     const agent = await f.createAgent();

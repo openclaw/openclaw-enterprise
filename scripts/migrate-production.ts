@@ -27,14 +27,22 @@ let logger = createOccLogger({ component: "occ-migration", level: "info", destin
 
 try {
   const [option, ...extra] = process.argv.slice(2);
-  const requireCurrent = option === "--require-current";
+  const guarded =
+    option === "--apply-for-installation" || option === "--require-current-for-installation";
+  const requireCurrent =
+    option === "--require-current" || option === "--require-current-for-installation";
   const checkOnly = option === "--check" || requireCurrent;
   const expectEmpty = option === "--expect-empty";
-  if (extra.length || (option !== undefined && !checkOnly && !expectEmpty)) {
+  if (
+    guarded
+      ? extra.length !== 1
+      : extra.length || (option !== undefined && !checkOnly && !expectEmpty)
+  ) {
     throw new Error(
-      "The migration command accepts no arguments, --check, --require-current, or --expect-empty.",
+      "The migration command accepts no arguments, --check, --require-current, --expect-empty, --apply-for-installation ID, or --require-current-for-installation ID.",
     );
   }
+  const installationId = guarded ? extra[0] : undefined;
   const logging = await loadOperationalLoggingConfiguration({
     mode: process.env.NODE_ENV === "development" ? "development" : "production",
   });
@@ -88,7 +96,12 @@ try {
   process.on("SIGTERM", onTerminate);
   let history: Awaited<ReturnType<typeof migrateWithHistory>>;
   try {
-    history = await migrateWithHistory(pool, { checkOnly, expectEmpty, requireCurrent });
+    history = await migrateWithHistory(pool, {
+      checkOnly,
+      expectEmpty,
+      requireCurrent,
+      installationId,
+    });
     if (interrupted) {
       throw new Error("Migration interrupted.");
     }

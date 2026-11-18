@@ -11,6 +11,45 @@ Before maintenance, use the
 [migration compatibility check](production-upgrade-command.md#check-database-migration-compatibility)
 to check the selected image against the deployed release's migration history.
 
+## Apply and verify the prepared migration
+
+After exit **3**, keep the maintenance window active. Use the same profile,
+checkout, evidence directory, and candidate options as the original upgrade.
+
+```sh
+occ installation upgrade migration apply \
+  --profile /secure/occ/upgrade.json \
+  --evidence-dir /secure/occ/upgrade-1 \
+  -- --candidate-values /secure/occ/candidate-values.yaml
+```
+
+Grant the upgrade operator read access to the exact migrator Secret and any
+database CA Secret referenced by the chart. The command records their UIDs and
+resource versions. Keep the database endpoint, those Secrets, other writers,
+autoscalers, and Helm changes under exclusive maintenance control until resume
+finishes. These checks observe the Secrets separately from the Pods that mount them.
+
+The apply Job checks that the database has recognized history and belongs to
+the recorded Installation before running SQL. A separate verification Job
+checks the same Installation and requires completed history. Use a candidate
+image that supports both guarded commands.
+
+Wait for **Database migration verified and its Jobs and Pods are gone**. Then
+resume the original upgrade with the same options and `--migration-history-checked`.
+The command rechecks the recorded migrator and CA Secret identities before
+Helm writes, including recovery.
+
+Keep `<evidence-directory>.migration-state.json` beside the original evidence
+in a directory that protects it from removal by other users. Keep the journal
+outside backups that you restore over the evidence. After interruption, settle the
+original local processes using [upgrade recovery](production-upgrade-recovery.md).
+Repeat `migration apply` with the same inputs to read the original Job and Pod
+after a log-read failure or to confirm cleanup. If a create is unknown, the apply
+Job fails, or cleanup is unresolved, keep writers stopped and reconcile the
+original Job, Pod, and database history. Preserve both evidence locations.
+After a failed verification Job has ended and its cleanup is confirmed, address
+the failure and run the same command to retry verification.
+
 ## Run a selected-image migration
 
 Read the migration program from the reviewed chart. From the reviewed release checkout root:
@@ -92,6 +131,8 @@ match the chart invocation, including for apply. For a check mode, a missing or
 extra separator fails before migration.
 
 ## Deploy the database
+
+Use this procedure for a handoff with no tool-managed migration Job journal.
 
 1. Keep the maintenance window active and both writers stopped. Assign `MIGRATION_ARGS`
    for apply, then create the maintenance Job with the selected immutable candidate image,

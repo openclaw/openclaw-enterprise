@@ -37,7 +37,8 @@ cleanup_preflight() {
       continue
     fi
     uri="/apis/batch/v1/namespaces/$namespace/jobs/$name"
-    if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
+    if ((! ${preflight_cleanup_observe_only:-0})) &&
+      ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
       <<<"$delete_options" 2>&1 >/dev/null); then
       # A prior cleanup may have deleted the original. Re-read instead of
       # interpreting kubectl's error text; child settlement is still required.

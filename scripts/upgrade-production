@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-OPERATIONS = ("plan", "preflight", "migration-check", "upgrade", "status", "resume", "cleanup-preflight")
+OPERATIONS = ("plan", "preflight", "migration-check", "migration-apply", "upgrade", "status", "resume", "cleanup-preflight")
 REQUIRED = (
     "kubeconfig",
     "context",
@@ -38,6 +38,7 @@ PROTECTED = {
     *IMAGE_FLAGS.values(),
     "--preflight-only",
     "--migration-check-only",
+    "--migration-apply-only",
     "--resume",
     "--cleanup-preflight",
     "--help",
@@ -116,6 +117,8 @@ def report_status(parser, directory):
                 ("prepared", False),
                 ("database-migration-handoff.json", False),
                 ("migration-check-passed", False),
+                ("migration-deploy-apply", True),
+                ("migration-deploy-verify", True),
                 ("helm-started", False),
                 ("completed", False),
                 (".upgrade-lock", True),
@@ -144,6 +147,8 @@ def report_status(parser, directory):
         print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
     elif observed["database-migration-handoff.json"]:
         print("A migration pause was recorded; confirm migration history before an authorized resume.")
+        if observed["migration-deploy-apply"] or observed["migration-deploy-verify"]:
+            print("Migration Job evidence exists. Use migration apply with the original inputs to reconcile it.")
     elif observed["migration-check-passed"]:
         print("The migration compatibility check and Job cleanup were recorded. This evidence cannot resume an upgrade.")
     else:
@@ -287,6 +292,8 @@ def main():
             command.append("--preflight-only")
         elif args.operation == "migration-check":
             command.append("--migration-check-only")
+        elif args.operation == "migration-apply":
+            command.append("--migration-apply-only")
         elif args.operation == "resume":
             command.append("--resume")
 

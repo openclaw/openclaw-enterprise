@@ -74,6 +74,21 @@ reconcile that create before another check. Use the
 [preflight cleanup procedure](production-preflight-cleanup.md) for recorded
 resources. Use fresh upgrade evidence for a later deployment.
 
+## Retired bootstrap outputs
+
+An older release's saved Helm values can contain `bootstrap.password` or
+`bootstrap.serviceKey`. Keep those exact settings in the candidate or omit them.
+The helper removes only these retired fields from its private prepared candidate
+before rendering the upgrade chart. Changing their values or any other
+`bootstrap` setting, including `adminEmail` or `credentials`, remains prohibited.
+It does not modify the associated PVCs or Secrets.
+
+For this transition, `migration check` captures the baseline and candidate once
+and verifies the baseline against live Helm values before creating a Job. The
+upgrade retains the original baseline in its evidence directory; its normal
+commit path replaces the operator's values file with the prepared candidate
+before submitting Helm.
+
 ## Run the image upgrade
 
 Before the first preflight, [bind the Installation Secret](production-upgrade.md#bind-the-installation-once)
@@ -98,6 +113,11 @@ Keep reviewed optional arguments, such as candidate-file flags, identical for th
 ```bash
 occ installation upgrade --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
 ```
+
+When this command exits **3** for a separate database deployment, use
+[`migration apply`](separate-database-upgrade.md#apply-and-verify-the-prepared-migration)
+with the original profile, evidence, and candidate options. Keep the maintenance
+window active through apply, verification, and resume.
 
 Use fresh evidence directories for preflight and upgrade. After an interruption, inspect the original private evidence without contacting the cluster:
 

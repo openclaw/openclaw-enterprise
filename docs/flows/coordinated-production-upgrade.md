@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-18"
-last_updated_session: "authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965"
+last_updated_session: "authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6"
 ---
 
 # Production image upgrade flow
@@ -12,7 +12,7 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 
 ## Entry Points
 
-- Run `scripts/upgrade-production-images` with reviewed inputs, or use `occ installation upgrade` with a private operator profile.
+- Run `occ installation upgrade` with a private profile or use `scripts/upgrade-production-images`.
 - Stderr phases are advisory; `--verbose` shows native output.
 - Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
@@ -57,8 +57,12 @@ graph TD
     RI -->|No| X
     RI -->|Yes| E["Stop writer Pods"]
     E --> DBP{"Separate database deployment?"}
-    DBP -->|Yes| PAUSE["Pause for migration/history check"]
-    PAUSE -->|Resume with checked history| F["Select Installation and run Helm hook"]
+    DBP -->|Yes| PAUSE["Exit 3 with frozen writers"]
+    PAUSE -->|Apply| MA["Journal SQL apply and verification"]
+    MA -->|Unresolved| X
+    MA -->|Verified and cleaned| RES["Resume with checked history"]
+    PAUSE -->|Manual verification| RES
+    RES --> F["Select Installation and run Helm hook"]
     DBP -->|No| F
     F --> G{"Helm completes?"}
     G -->|No| H["Inspect migration/release before retry"]
@@ -90,18 +94,19 @@ graph TD
 
 Before access, reject [Helm overrides](../guides/deploy/production-upgrade.md), source mismatch, chart edits/symlinks and evidence/baseline aliases. Other edits/image provenance are unchecked.
 
-`check_migration` renders the candidate and matches migrator inputs to the
-deployed revision's Helm hook. It rechecks the revision around one read-only
-migration Job. Success requires nonempty history and UID-bound cleanup.
-An unknown create retains the lock and journal. The check exits without
-prepared upgrade evidence.
+`check_migration` snapshots inputs once. It strips unchanged retired bootstrap
+outputs from its private candidate, then verifies the baseline against live Helm
+before rendering. It matches deployed migrator inputs and pins the revision
+around one read-only Job. Success requires
+nonempty history and UID-bound cleanup. Unknown creates retain lock and journal;
+no upgrade evidence is prepared.
 
 `preprovisionedNamespace` must yield one `false` before access
 (`preprovisioned-namespace.err`).
 
 Resume locks evidence paths/devices/inodes/aliases and dispatch journals.
 
-`matches_yaml` validates candidates and compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings.
+`matches_yaml` matches [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live exactly; only candidate comparison uses that projection.
 Invalid inputs or unwritable evidence yield `Cannot compare upgrade YAML`.
 Projections/`cmp` allow Slack directory proxy, curated Codex PluginDriver selection
 and wrapping one registration. `agentNativeAdmin.sharedCookieDomain` is removed only
@@ -234,29 +239,27 @@ shutdown, exclusive ownership, resource reconciliation and database history.
 ### 3. Quiesce writers and run the candidate release
 
 `scripts/upgrade-production-images:quiescence_remaining` bounds shutdown.
-Validate both Deployments. Before either stop, check named patch permission for
-running workers. Refuse denial and warn on inconclusive review.
-While the worker runs, refuse inventory drift, including on resume. Restore stopped
-API access under exclusive maintenance ownership before retry.
-Skip stopped writers. Stopped workers lack prospective checks.
-Sequential patches test UID, resource version and replicas. Conflicts can leave
-the API stopped. Verify Pod absence and original Deployments at zero. Operators
-stop other writers/autoscalers and keep nodes reachable.
-`database.upgradeMigration: separate` records both stopped UIDs and generations
-and exits 3. Resume requires matching writers and checked history.
+Validate both Deployments. While the worker runs, refuse named patch denial and
+inventory drift. Warn on inconclusive access. Patches test UID, resource version
+and replicas. Conflicts can leave the API stopped. Skip stopped
+writers. Verify Pod absence and original Deployments at zero under exclusive maintenance.
+`database.upgradeMigration: separate` records stopped UIDs and generations and exits 3.
+`apply_database_migration` checks frozen writers, predecessor and Secret identities.
+The sibling journal records intent before Job creation. After terminal failure
+and UID-bound cleanup, only verification can retry. Resume requires completed
+verification, cleanup and rechecked Secret identities before Helm writes.
 
-Protected files change atomically. Resource-version checks preserve unrelated
-mutable Secret data. Reference switches preserve both Secrets; both OCC templates
-select the successor and checksum.
+Atomic file replacements and resource-version checks preserve unrelated Secret
+data. Reference switches preserve both Secrets and verify successor checksums.
 
 `upgrade-helm-state.py:new_attempt` renders and dry-runs immutable values. Hooks
 and the initializer Pod receive the fresh `installation.upgradeAttemptId`.
 Upgrade and recovery preserve `.json` format.
 `record_submission` saves intent and predecessor before publishing `helm-started`.
 Identical interrupted staging can finish. Published intent survives staged retries.
-In separate mode, `scripts/migration-history.mjs:migrateWithHistory` verifies the
-completed candidate ledger, catalog and grants under lock. Pending or unsupported
-history fails the hook. Hook mode applies pending SQL.
+`scripts/migration-history.mjs:migrateWithHistory` checks the Installation and
+nonempty history under the migration lock for both separate Jobs. Verification
+and the separate Helm hook require complete candidate history. Hook mode applies pending SQL.
 
 ### 4. Verify control-plane recovery
 
@@ -344,18 +347,17 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Debugging and Verification
 
-- Read `helm-attempts/<UUID>/{render-error.log,server-dry-run-error.log}` for native
-  preparation failures; `server-dry-run.txt` retains successful output. Inspect
-  `preflight-<api|worker|migration>.log`, `-logs.err` and `-status.json` for rejected candidates;
-  use the current `upgrade-preflight-resume.*` directory on resume.
-- Inspect `native-command-failures.tsv` for scale, Helm upgrade or rollout failures; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
-- Inspect `dispatch/*.error`, `dispatch/*.rejected` and version history. Deployment status files in
-  `status/` retain the last successful poll. Doctor writes `*.doctor.json` and `*.doctor.error` there.
-- Compare `before-workloads.json` and `after-workloads.json`: controller-only releases
-  roll affected Agents' same-image Pod templates once. Separately check broker-affected
-  repository versions.
-- End-to-end proof requires credentialed production Kubernetes with distinct images;
-  command fixtures prove control flow.
+- Preparation failures appear in `helm-attempts/<UUID>/{render-error.log,server-dry-run-error.log}`;
+  `server-dry-run.txt` records success. Candidate failures use
+  `preflight-<api|worker|migration>.log`, `-logs.err` and `-status.json`; resume uses
+  `upgrade-preflight-resume.*`.
+- For scale, Helm or rollout failures, read `native-command-failures.tsv` ([upgrade recovery](../guides/deploy/production-upgrade-recovery.md)).
+- Inspect `dispatch/*.error`, `dispatch/*.rejected` and version history. `status/`
+  retains successful polls, `*.doctor.json` and `*.doctor.error`.
+- Compare `before-workloads.json` and `after-workloads.json` for the single
+  same-image Agent rollout; check broker-affected repository versions separately.
+- Command fixtures prove control flow; end-to-end proof requires credentialed
+  production Kubernetes and distinct images.
 
 ## Related docs
 
@@ -372,6 +374,10 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 14:34: Retire bootstrap outputs safely (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - ce0bd74dcbb7bdf2fd97a6d87e9ea0f88cf0199d)
+
+- 2026-11-18 20:23: Apply and verify separate database Jobs. (authoring-run/859166ef-2ed3-42e1-b8fd-88441bb8746f - 084874338baf51ad05d0b1a2b438e8bcd0120c1b)
 
 - 2026-11-18 19:45: Tighten the upgrade trace. (authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965 - aed2f7edd530ab336bbd6cb8c7389b24cb83e397)
 

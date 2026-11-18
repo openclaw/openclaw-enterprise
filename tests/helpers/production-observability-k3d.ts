@@ -47,6 +47,7 @@ type Labels = Record<string, string>;
 type InstallationOptions = {
   modelTurns?: boolean;
   nativeRepository?: boolean;
+  nodeForDedicatedRuntime?: boolean;
 };
 
 const nativeRepositoryValues = Type.Object({
@@ -114,7 +115,11 @@ export const observabilitySelection = {
 // all use the installed production implementations, with a credential-free runtime fixture.
 export async function installObservabilityControlPlane(
   t: TestContext,
-  { modelTurns = false, nativeRepository = false }: InstallationOptions = {},
+  {
+    modelTurns = false,
+    nativeRepository = false,
+    nodeForDedicatedRuntime = false,
+  }: InstallationOptions = {},
 ) {
   const modelInputs = modelTurns ? readModelTurnInputs() : undefined;
   const selectionInput = explicitK3dSelection();
@@ -249,7 +254,7 @@ export async function installObservabilityControlPlane(
     authentication: { mode: "inCluster" },
     platformNamespace: system,
     gatewayImage: images.runtime,
-    codexImage: images.codex ?? images.runtime,
+    codexImage: images.codex ?? (nodeForDedicatedRuntime ? images.node : images.runtime),
     codexSeccompProfile: modelTurns
       ? process.env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE
       : undefined,

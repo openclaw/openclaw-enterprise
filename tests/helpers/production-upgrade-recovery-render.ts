@@ -245,7 +245,13 @@ export async function runPreflight(
   const spec = field(pod, "spec");
   const container = field(field(spec, "containers"), 0);
   const name = field(container, "name");
-  const scripted = optionalField(state.preflightResults, String(name));
+  const migrationMode = list(field(container, "args") ?? [], "preflight container arguments").find(
+    (argument) =>
+      argument === "--apply-for-installation" || argument === "--require-current-for-installation",
+  );
+  const scripted =
+    optionalField(state.preflightResults, String(migrationMode ?? name)) ??
+    optionalField(state.preflightResults, String(name));
   if (scripted) {
     return scripted;
   }

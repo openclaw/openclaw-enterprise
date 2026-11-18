@@ -142,15 +142,15 @@ cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
 chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
 ```
 
-Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
-These copies may change the
-[Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
-and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-An explicit candidate may also wrap an existing single `drivers.plugin`
-registration in a one-element array, preserving its `id` and `configuration`.
-Remove retired `agentNativeAdmin.sharedCookieDomain` whatever its value; keep
-`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
-The helper does not convert the baseline automatically. Other configuration changes are unsupported.
+Candidates support [separate migrations](separate-database-upgrade.md), [immutable Installation Secrets](immutable-installation-upgrade.md),
+[Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies) changes and
+[curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs) selection.
+They can wrap one existing `drivers.plugin` registration in an array, preserving
+its `id` and `configuration`. Remove retired `agentNativeAdmin.sharedCookieDomain`
+regardless of value; preserve `auth.baseUrl` and `agentNativeAdmin.domain` for cookie scope.
+The baseline remains in evidence. Unchanged retired bootstrap outputs are
+[removed from the prepared candidate](production-upgrade-command.md#retired-bootstrap-outputs).
+Other configuration changes remain unsupported.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
 Candidate files cannot change IAM, authentication, Installation identity, database credentials,

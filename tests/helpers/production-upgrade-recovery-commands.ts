@@ -941,6 +941,12 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           return fail(1, `Error from server (NotFound): ${resource} not found`);
         }
         if (args.includes("logs")) {
+          const selected = requiredArg("--container");
+          assert.deepEqual(
+            args.slice(args.indexOf("logs")),
+            ["logs", resource, "--container", selected],
+            "kubectl logs takes one Pod and its exact container selector",
+          );
           const component = requiredContainerName(field(object, "spec"));
           assert.ok(typeof component === "string", "logs require a preflight container");
           list(
@@ -973,7 +979,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               "installation-startup-ready\nunbound-log-sentinel\n";
           }
           save();
-          const selected = fileArg("--container");
           if (selected !== component) {
             const initContainers = field(field(object, "spec"), "initContainers");
             if (
@@ -1261,18 +1266,13 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               .join(" "),
           );
         } else {
+          const identity = optionalField(state.deploymentIdentities, component);
           out({
             metadata: {
               name: "openclaw-enterprise-" + component,
-              uid:
-                optionalField(optionalField(state.deploymentIdentities, component), "uid") ??
-                component + "-deployment-uid",
-              resourceVersion:
-                optionalField(
-                  optionalField(state.deploymentIdentities, component),
-                  "resourceVersion",
-                ) ?? "1",
-              generation: 1,
+              uid: optionalField(identity, "uid") ?? component + "-deployment-uid",
+              resourceVersion: optionalField(identity, "resourceVersion") ?? "1",
+              generation: optionalField(identity, "generation") ?? 1,
               labels: {
                 "app.kubernetes.io/instance": state.release,
                 "app.kubernetes.io/component": component,

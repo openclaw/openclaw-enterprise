@@ -7,6 +7,9 @@ For runtime upgrades, preserve `<evidence-directory>.dispatch-state` separately
 from evidence backups. Missing or invalid journals stop resume before live access.
 After possible restoration, reconcile OCC history and audit records.
 
+For [separate migration recovery](separate-database-upgrade.md#apply-and-verify-the-prepared-migration),
+retain the sibling journal and keep writers stopped until verification and cleanup succeed.
+
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.
 
