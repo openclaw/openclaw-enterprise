@@ -45,13 +45,13 @@ Current behavior is documented in the [Agent plugins reference](../../docs/refer
    - **Status:** Not done; depends on steps 1–3.
 7. **OpenClaw selective MCP admission:** Extend node policy admission to classify each exact account-qualified server and upstream tool before issuing worker grants.
    - Keep eligible enabled tools without approval on same-node execution; route approval-required tools to Gateway dispatch. Do not grant disabled tools. Invalidate stale grants when policy changes and reuse the existing worker grant protocol.
-   - **Status:** Not done; planned OpenClaw PR.
+   - **Status:** Draft [OpenClaw #201081](https://github.com/openclaw/openclaw/pull/201081). Focused Gateway, worker, and MCP approval tests passed; deployed-Agent qualification remains blocked on credential delivery.
 8. **OCE native MCP human approval:** Install one OCE-managed Gateway MCP node policy and translate saved per-tool `all_actions`/`none` settings into it.
    - Extend per-plugin Driver capability reporting so only supported managed MCP plugins advertise human approval. Reuse the existing `tools[id].approval` field, Agent-wide approvers, and tool-name approval prompts; freeze the binding and policy in the Agent revision. Extend the Tools picker and validate the packaged Gateway extension and configuration on deployment.
-   - **Status:** Not done; planned OCE PR, depends on step 7.
+   - **Status:** Draft [OCE #6461](https://github.com/openclaw/openclaw-enterprise/pull/6461). Depends on step 7 and a qualified OCE runtime pin. Console saved the Ask setting; deployed-Agent approval remains blocked on credential delivery.
 9. **End-to-end Console and runtime qualification:** Prove the complete launch workflow on ordinarily deployed Agents.
    - Resolve the Slack tool-assembly failure reported in #4673, then verify live Slack search, Google CLI, selection changes, renewal, worker replacement, withdrawal, and multi-account isolation. Update the owning current documentation as work ships.
-   - **Status:** Not done; [#4819](https://github.com/openclaw/openclaw-enterprise/issues/4819) tracks the connected-account lifecycle portion. Imports and multi-account proof belong to steps 4–6.
+   - **Status:** Blocked on the credential implementation in steps 1–3; [#4819](https://github.com/openclaw/openclaw-enterprise/issues/4819) tracks the connected-account lifecycle portion. Imports and multi-account proof belong to steps 4–6.
 10. **Codex Plugin Driver catalog cleanup:** Use authenticated hosted discovery as the only Codex catalog source.
 
 - Remove the hardcoded `openai-curated` catalog, `catalogSource` selector, controller-side reader, and its `codexExecutable`, `codexHome`, and `requestTimeoutMs` settings. The Codex Driver configuration becomes `{}`. Preserve native `openai-curated-remote` IDs and Harness installation.
@@ -99,3 +99,4 @@ Use the real Agent workflow with approved provider accounts, a disposable Kubern
 - 2026-11-17: Renumbered the active proposal to provisional RFC-0040, aligned P0 with the 1.0 scope, separated the selected Credential Proxy capability and enforcement work, and moved reviewed uploads and same-plugin multi-account into launch delivery (source `26a24253e444`; session `01a13641-ad1f-7e93-a453-f1fd8c3ad711`).
 - 2026-11-18: Add native MCP tool-name approval and selective same-node/Gateway placement as separate OpenClaw and OCE work items; retain guaranteed argument review and direct script approval enforcement as later work.
 - 2026-11-18: Renumber the proposal and its linked plan to RFC-0043; record merged credential deployment contracts and open plugin deployment descriptions.
+- 2026-11-18: Link the OpenClaw and OCE approval drafts and record the blocked deployed-Agent qualification.
