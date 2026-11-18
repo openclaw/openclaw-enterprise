@@ -59,7 +59,7 @@ export function verifyOpenclawBuild(source: OpenclawSource, env: NodeJS.ProcessE
   for (const [key, value] of Object.entries(openclawBuildValues(source))) {
     if (env[key] !== value) {
       throw new Error(
-        `${key} must match deploy/runtime/openclaw-source.json; pass the arguments from node scripts/lib/openclaw-source.mjs build-args`,
+        `${key} must match deploy/runtime/openclaw-source.json; pass the arguments from node scripts/lib/openclaw-source.ts build-args`,
       );
     }
   }
@@ -68,7 +68,7 @@ export function verifyOpenclawBuild(source: OpenclawSource, env: NodeJS.ProcessE
 export async function runOpenclawSourceCli(args: readonly string[] = process.argv.slice(2)) {
   const [command, path, ...extra] = args;
   if ((command !== "build-args" && command !== "verify") || extra.length > 0) {
-    throw new Error("Usage: node scripts/lib/openclaw-source.mjs <build-args|verify> [manifest]");
+    throw new Error("Usage: node scripts/lib/openclaw-source.ts <build-args|verify> [manifest]");
   }
   const source = await readOpenclawSource(path);
   if (command === "verify") {

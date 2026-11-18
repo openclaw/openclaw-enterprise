@@ -6,24 +6,26 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/postgres-worker-agent-revision.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-lifecycle.test.ts",
+    "tests/integration/postgres-worker-agent-revision-convergence.test.ts",
     "tests/integration/postgres-worker-repository-roles.test.ts",
-    "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-replacement.test.ts",
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.ts",
     "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
     "tests/integration/postgres-worker-agent-revision-stop.test.ts",
     "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts",
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.ts",
-    "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.ts",
     "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
     "tests/integration/postgres-worker-harness-exposure.test.ts",
     "tests/integration/auth-maintain.test.ts",
-    "tests/integration/occ-metrics.test.mjs"
+    "tests/integration/occ-metrics.test.ts"
   ],
   "files": [
     {
-      "path": "tests/integration/occ-metrics.test.mjs",
+      "path": "tests/integration/occ-metrics.test.ts",
       "expectedTests": [
         "API metrics follow real authenticated routes and keep replica registries isolated",
         "metrics settings reject exposed development binds and disabled stray settings",
@@ -47,18 +49,8 @@
         "the revision worker rejects associated-account access revoked after admission before invoking Compute",
         "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
         "the revision worker retries transient Backend binding read failures without activating",
-        "an older revision retry is superseded without preparing or retiring a newer active revision",
-        "an expired claim keeps a started deployment running under any controller clock",
-        "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
-        "real PostgreSQL preserves the failure budget while an Agent runtime converges",
-        "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
-        "an overdue Agent runtime fails closed without activating its incomplete revision",
-        "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
-        "the convergence deadline judges work age by the database clock, not the controller clock",
-        "a stop orders the running revision by the database clock, not the controller clock",
         "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
         "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
-        "a lost retirement claim preserves the activated replacement and cannot complete stolen work",
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
@@ -69,8 +61,32 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-worker-agent-revision-lifecycle.test.ts",
+      "expectedTests": [
+        "an older revision retry is superseded without preparing or retiring a newer active revision",
+        "a stop orders the running revision by the database clock, not the controller clock",
+        "a lost retirement claim preserves the activated replacement and cannot complete stolen work"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision-convergence.test.ts",
+      "expectedTests": [
+        "an expired claim keeps a started deployment running under any controller clock",
+        "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
+        "real PostgreSQL preserves the failure budget while an Agent runtime converges",
+        "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
+        "an overdue Agent runtime fails closed without activating its incomplete revision",
+        "an OAuth bootstrap still running at the convergence deadline retires its revision with the failure",
+        "the convergence deadline judges work age by the database clock, not the controller clock"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-worker-repository-roles.test.ts",
       "expectedTests": [
+        "retained protocol 1 consumes committed disposal with lost session ID and no sender",
+        "retained protocol 1 consumes committed disposal with saved session ID and no sender",
+        "retained protocol 3 consumes committed disposal with lost session ID and no sender",
+        "retained protocol 3 consumes committed disposal with saved session ID and no sender",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
         "worker refuses repository credentials when repositoryPolicy is absent",
@@ -83,7 +99,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
         "credential withdrawal work revokes from the active revision without redeploying it",
         "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",
@@ -125,9 +141,11 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-replacement.test.ts",
       "expectedTests": [
-        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision"
+        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision",
+        "compatible deployment generations survive redeploy but cannot cross an explicit stop",
+        "a stop and redeploy during preparation cannot activate the ended recovery generation"
       ]
     },
     {

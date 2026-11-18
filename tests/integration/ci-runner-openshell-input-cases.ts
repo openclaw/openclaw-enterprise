@@ -5,8 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { isRecord } from "../../scripts/ci/records.ts";
 import type openShellLane from "../../scripts/ci/test-suites/openshell.json";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import {
   createRunnerFixture as fixture,
   laneArgs,
@@ -35,6 +36,45 @@ type FocusedSelection = {
     }
 );
 
+function jsonObject(value: unknown) {
+  assert.ok(isRecord(value), "expected a JSON object");
+  return value;
+}
+
+function jsonObjects(value: unknown): Record<string, unknown>[] {
+  assert.ok(Array.isArray(value) && value.every(isRecord), "expected an array of JSON objects");
+  return value;
+}
+
+async function readSummary(path: string) {
+  const summary = jsonObject(JSON.parse(await readFile(path, "utf8")));
+  return { ...summary, files: jsonObjects(summary.files), issues: jsonObjects(summary.issues) };
+}
+
+function readSelectedOpenShellLane(name: string, view = "default") {
+  const suite = jsonObject(
+    loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view),
+  );
+  const lane = jsonObject(jsonObject(suite.lanes)[name]);
+  const { requiredEnv } = lane;
+  assert.ok(isStrings(requiredEnv));
+  return {
+    ...lane,
+    requiredEnv,
+    files: jsonObjects(lane.files).map((entry) => {
+      const { path, expectedTests, requiredEnv } = entry;
+      assert.ok(typeof path === "string");
+      assert.ok(isStrings(expectedTests));
+      assert.ok(requiredEnv === undefined || isStrings(requiredEnv));
+      return { ...entry, path, expectedTests, requiredEnv };
+    }),
+  };
+}
+
+function isStrings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item: unknown) => typeof item === "string");
+}
+
 async function readOpenShellLane(): Promise<OpenShellLane> {
   return JSON.parse(
     await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
@@ -43,7 +83,7 @@ async function readOpenShellLane(): Promise<OpenShellLane> {
 
 async function copyBrowserFixture(root: string) {
   await writeFile(join(root, browserFile), await readFile(join(repositoryRoot, browserFile)));
-  for (const path of ["scripts/ci/failure-redaction.mjs", "scripts/ci/agent-sandbox.ts"]) {
+  for (const path of ["scripts/ci/failure-redaction.ts", "scripts/ci/agent-sandbox.ts"]) {
     await symlink(join(repositoryRoot, path), join(root, path));
   }
   for (const path of ["apps", "node_modules", "tests/helpers"]) {
@@ -146,8 +186,7 @@ export function registerOpenShellAdmissionCases() {
     for (const focused of [false, true]) {
       test(`the Namespace runner selects file model inputs before setup (${selection.name}, focused: ${focused})`, async (t) => {
         const root = await fixture(t);
-        const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
-        const lane: OpenShellLane = suites.lanes.openshell;
+        const lane = readSelectedOpenShellLane("openshell");
         const file = lane.files.find(({ path }) =>
           path.endsWith("/namespace-driver-openshell-k3d-real.test.ts"),
         );
@@ -156,8 +195,8 @@ export function registerOpenShellAdmissionCases() {
         const resultsPath = join(root, "results/namespace.json");
         await writeRunnerManifest(root, { lanes: { openshell: { ...lane, files: [file] } } });
         await writeFile(
-          join(root, "scripts/ci/prepare.mjs"),
-          `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};`,
+          join(root, "scripts/ci/prepare.ts"),
+          `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.ts")).href)};`,
         );
         // Preserve real metadata and preparation. Only the unstarted model child is
         // inert; a regression still stops at the immutable-image gate before setup.
@@ -184,10 +223,11 @@ export function registerOpenShellAdmissionCases() {
           },
         );
         assert.equal(result.status, 1);
-        const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-        assert.ok(summary.issues.some(({ code }: { code: string }) => code === "prepare-failed"));
-        assert.equal(summary.files[0].nodeExitCode, null);
-        assert.deepEqual(summary.files[0].tests, []);
+        const summary = await readSummary(resultsPath);
+        assert.ok(summary.issues.some(({ code }) => code === "prepare-failed"));
+        const fileResult = summary.files[0];
+        assert.equal(fileResult?.nodeExitCode, null);
+        assert.deepEqual(fileResult?.tests, []);
         const diagnostics = await readFile(`${statePath}.diagnostics.json`, "utf8");
         assert.match(diagnostics, selection.error);
         assert.doesNotMatch(
@@ -284,8 +324,7 @@ export function registerOpenShellAdmissionCases() {
   for (const workflow of apiKeyWorkflows) {
     test(`the ${workflow} runner preserves the selected provider URL with its API key`, async (t) => {
       const root = await fixture(t);
-      const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
-      const lane: OpenShellLane = suites.lanes.openshell;
+      const lane = readSelectedOpenShellLane("openshell");
       const file = lane.files.find(({ path }) =>
         path.endsWith(`/openshell-${workflow}-real.test.ts`),
       );
@@ -317,8 +356,8 @@ export function registerOpenShellAdmissionCases() {
         },
       );
       assert.equal(result.status, 0, result.stderr);
-      const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
-      assert.equal(receipt.files[0].tests[0].status, "passed");
+      const receipt = await readSummary(resultsPath);
+      assert.equal(jsonObjects(receipt.files[0]?.tests)[0]?.status, "passed");
     });
   }
 
@@ -326,9 +365,8 @@ export function registerOpenShellAdmissionCases() {
     for (const selection of ["compose prepared", "compose default", "kubernetes"]) {
       test(`the ${view} guided installer runner scopes prepared controller inputs (${selection})`, async (t) => {
         const root = await fixture(t);
-        const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view);
         const laneName = view === "default" ? "openshell" : "openshell-installers";
-        const lane: OpenShellLane = suites.lanes[laneName];
+        const lane = readSelectedOpenShellLane(laneName, view);
         const path =
           selection === "kubernetes"
             ? "tests/integration/local-first-agent-openshell-k3d-real.test.mjs"
@@ -374,11 +412,11 @@ export function registerOpenShellAdmissionCases() {
           },
         );
         assert.equal(result.status, 0, result.stderr);
-        const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
-        assert.equal(receipt.status, "passed");
-        assert.equal(receipt.counts.passed, file.expectedTests.length);
-        assert.equal(receipt.counts.failed, 0);
-        assert.equal(receipt.counts.skipped, 0);
+        const receipt = await readSummary(resultsPath);
+        assert.partialDeepStrictEqual(receipt, {
+          status: "passed",
+          counts: { passed: file.expectedTests.length, failed: 0, skipped: 0 },
+        });
       });
     }
   }
@@ -428,21 +466,19 @@ export function registerOpenShellSelectionCases() {
           },
         );
         assert.notEqual(result.status, 0, "The fixture must stop before cluster setup");
-        const summary = JSON.parse(await readFile(join(root, "results/browser.json"), "utf8"));
-        const failure = summary.files[0].tests.find(
-          ({ status }: { status: string }) => status === "failed",
-        );
+        const summary = await readSummary(join(root, "results/browser.json"));
+        const fileResult = summary.files[0];
+        const failure = jsonObjects(fileResult?.tests).find(({ status }) => status === "failed");
         assert.ok(failure, JSON.stringify(summary));
         assert.equal(failure.name, testName);
+        const message = jsonObject(failure.error).message;
+        assert.ok(typeof message === "string");
         if (name === "custom") {
-          assert.match(
-            failure.error.message,
-            /The browser Agent requires the public OpenAI endpoint/,
-          );
-          assert.doesNotMatch(failure.error.message, /ENOENT/);
+          assert.match(message, /The browser Agent requires the public OpenAI endpoint/);
+          assert.doesNotMatch(message, /ENOENT/);
         } else {
-          assert.match(failure.error.message, /ENOENT.*bin\/occ/);
-          assert.doesNotMatch(failure.error.message, /requires the public OpenAI endpoint/);
+          assert.match(message, /ENOENT.*bin\/occ/);
+          assert.doesNotMatch(message, /requires the public OpenAI endpoint/);
         }
       });
     }
@@ -598,20 +634,22 @@ test("receives selected model inputs", () => {
         ],
         { ...inputs, ...value.env },
       );
-      const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+      const summary = await readSummary(resultsPath);
       if (value.outcome === "unsupported-harness") {
         assert.equal(result.status, 1);
-        assert.match(summary.issues[0]?.message ?? "", /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
+        const message = summary.issues[0]?.message;
+        assert.ok(typeof message === "string");
+        assert.match(message, /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
         assert.deepEqual(summary.files, []);
         continue;
       }
       const missingInput = value.outcome === "missing-input";
       assert.equal(result.status, missingInput ? 1 : 0, result.stderr);
       assert.deepEqual(
-        summary.issues.map(({ code, env }: { code: string; env?: string }) => ({ code, env })),
+        summary.issues.map(({ code, env }) => ({ code, env })),
         missingInput ? [{ code: "missing-env", env: value.missing }] : [],
       );
-      assert.equal(summary.counts.passed, missingInput ? 0 : 1);
+      assert.partialDeepStrictEqual(summary, { counts: { passed: missingInput ? 0 : 1 } });
     }
   });
 
@@ -657,9 +695,8 @@ test("full lane model inputs", () => {
         env,
       );
       assert.equal(result.status, 0, result.stderr);
-      const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-      assert.equal(summary.scope, "full");
-      assert.equal(summary.counts.passed, 1);
+      const summary = await readSummary(resultsPath);
+      assert.partialDeepStrictEqual(summary, { scope: "full", counts: { passed: 1 } });
       assert.deepEqual(summary.issues, []);
     }
   });

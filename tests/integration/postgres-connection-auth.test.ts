@@ -14,11 +14,11 @@ import { startupDependencyFailure } from "../../apps/controller/src/startup-fail
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { listen } from "../helpers/listen.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const { Client } = pg;
 const execute = promisify(execFile);
@@ -448,12 +448,10 @@ function assertIpIdentityCheck(client: pg.Client): void {
 }
 
 async function databaseCertificates(directory: string) {
-  // The certificate helpers only call run with the executable and its argument list.
-  const run = ((command: string, args: readonly string[]) =>
-    execute(command, args, { timeout: 10000 })) as typeof execute;
+  const run = (command: string, args: readonly string[]) =>
+    execute(command, args, { timeout: 10_000 });
   const ca = await certificateAuthority(directory, {
     caName: "occ-test-database-ca",
-    caKeyPem: undefined,
     run,
   });
   const leaf = async (name: string, subjectAltName: string) => {
@@ -461,7 +459,6 @@ async function databaseCertificates(directory: string) {
       name,
       commonName: "localhost",
       subjectAltName,
-      keyPem: undefined,
       run,
     });
     return { key, cert };

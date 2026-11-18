@@ -37,7 +37,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
 - `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` — Optional comma-separated Google Workspace hosted domains; when set, sign-in requires a matching `hd` claim and a verified email.
-- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
+- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: each uses `https:` on port 443 with a DNS host and no query or fragment. The hosts can differ. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
 - `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client; with the issuer, they select the provider instance.
 - `OCC_AUTH_OIDC_TOKEN_AUTH` — `client_secret_post` (default) or `client_secret_basic`.
 - `OCC_AUTH_OIDC_DISPLAY_NAME` — Optional Console button label, 1–40 printable characters; default `single sign-on`.
@@ -110,6 +110,7 @@ These settings belong to the checkout's development stack. See
 for supported engines, images, and security restrictions.
 
 - `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `kubernetes` (default) or `docker`; the Docker preview cannot deploy Agents.
+- `OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE` — `workspace-write` (default) or explicit `danger-full-access`; controls [workspace-write startup verification](../../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification), without changing Agent presets.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
 - `OCC_DEVELOPMENT_CONTROL_PLANE` — `kubernetes` or `compose`; the default follows the Compute Driver (`kubernetes` on Kubernetes Compute, `compose` on Docker Compute). Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.
@@ -154,7 +155,7 @@ for supported engines, images, and security restrictions.
 
 ### First Agent and local model credentials
 
-These inputs belong to the [local first-Agent helper](../../../scripts/first-agent.mjs).
+These inputs belong to the [local first-Agent helper](../../../scripts/first-agent.ts).
 Use only one of the two credential inputs. In production, use
 [platform Secret bindings](../configuration/secrets.md) instead of setting the
 credential on the controller.

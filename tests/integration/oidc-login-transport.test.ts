@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:https";
 import test from "node:test";
+import {
+  Agent,
+  buildConnector,
+  getGlobalDispatcher,
+  setGlobalDispatcher,
+} from "../../apps/controller/node_modules/undici/index.js";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import { oidcLoginConfiguration, oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
+import { refusingPort } from "../helpers/available-port.ts";
+import { selfSigned } from "../helpers/certificates.ts";
+import { listen } from "../helpers/listen.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {
   assertSafeEqual,
   assertSafeThrows,
@@ -12,18 +23,19 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
-  parseAuthorizationUrl,
   providerAttemptId,
   providerInstanceId,
-  readProviderRequestBody,
-  redirectProviderFetch,
   responseFields,
-  startProviderServer,
   testOversizedProviderBodies,
   type LoginFixtureOptions,
-  type ProviderHandler,
 } from "../helpers/human-login-transport.ts";
-import { refusingPort } from "../helpers/available-port.ts";
+import {
+  parseAuthorizationUrl,
+  readProviderRequestBody,
+  redirectProviderFetch,
+  startProviderServer,
+  type ProviderHandler,
+} from "../helpers/provider-http-transport.ts";
 
 const subject = "auth0|65f0c1d2e3a4b5c6d7e8f901";
 const environment = {
@@ -76,6 +88,133 @@ test("OIDC sign-in configuration shares the recovery user with Google", () => {
   assertSafeThrows(
     () => humanLoginConfiguration({ ...environment, OCC_AUTH_RECOVERY_USER_ID: " " }),
     /OIDC sign-in requires its provider settings and a recovery user ID/,
+  );
+});
+
+test("OIDC callback uses independently configured TLS token and JWKS hosts", async (t) => {
+  // This has the same issuer/endpoint shape as Google's public OIDC metadata.
+  const splitEnvironment = {
+    ...environment,
+    OCC_AUTH_OIDC_ISSUER: "https://accounts.idp.example.test",
+    OCC_AUTH_OIDC_AUTHORIZATION_URL: "https://accounts.idp.example.test/o/oauth2/v2/auth",
+    OCC_AUTH_OIDC_TOKEN_URL: "https://oauth2.idp.example.test/token",
+    OCC_AUTH_OIDC_JWKS_URL: "https://www.idp.example.test/oauth2/v3/certs",
+  };
+  const configured = oidcLoginConfiguration(splitEnvironment);
+  assert.ok(configured);
+  const { enrollment: splitEnrollment, ...split } = configured;
+  assert.equal(splitEnrollment, undefined);
+  const directory = await temporaryDirectory(t, "oidc-split-hosts-");
+  const tls = await selfSigned(directory, {
+    commonName: "oauth2.idp.example.test",
+    subjectAltName:
+      "DNS:oauth2.idp.example.test,DNS:www.idp.example.test,DNS:untrusted.example.test",
+  });
+  const wire: {
+    host: string | undefined;
+    path: string | undefined;
+    method: string | undefined;
+    body: string;
+    authorization: string | undefined;
+  }[] = [];
+  let redirectToken = false;
+  const token = () =>
+    signer.sign({
+      iss: split.issuer,
+      aud: split.clientId,
+      sub: subject,
+      iat: Math.floor(Date.now() / 1000) - 5,
+      exp: Math.floor(Date.now() / 1000) + 600,
+      nonce: oidcNonce(secret, callbackState),
+    });
+  function server() {
+    return createServer({ key: tls.key, cert: tls.cert }, async (request, response) => {
+      const body = await readProviderRequestBody(request);
+      wire.push({
+        host: request.headers.host,
+        path: request.url,
+        method: request.method,
+        body,
+        authorization: request.headers.authorization,
+      });
+      if (request.headers.host === "oauth2.idp.example.test" && request.url === "/token") {
+        if (redirectToken) {
+          response.writeHead(307, { location: "https://untrusted.example.test/stolen" }).end();
+        } else {
+          response.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              id_token: token(),
+              token_endpoint: "https://untrusted.example.test/stolen",
+            }),
+          );
+        }
+      } else if (
+        request.headers.host === "www.idp.example.test" &&
+        request.url === "/oauth2/v3/certs"
+      ) {
+        response
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify(signer.jwks));
+      } else {
+        response.writeHead(400).end();
+      }
+    });
+  }
+  const ports = new Map([
+    ["oauth2.idp.example.test", await listen(t, server())],
+    ["www.idp.example.test", await listen(t, server())],
+    ["untrusted.example.test", await listen(t, server())],
+  ]);
+  const connect = buildConnector({ ca: tls.cert });
+  const dispatcher = new Agent({
+    connect(options, callback) {
+      const port = ports.get(options.hostname);
+      if (
+        port === undefined ||
+        options.protocol !== "https:" ||
+        (options.port !== "" && options.port !== "443")
+      ) {
+        callback(new Error("Unexpected OIDC TLS destination"), null);
+        return;
+      }
+      connect(
+        { ...options, hostname: "127.0.0.1", servername: options.hostname, port: String(port) },
+        callback,
+      );
+    },
+  });
+  const original = getGlobalDispatcher();
+  t.after(async () => {
+    setGlobalDispatcher(original);
+    await dispatcher.destroy();
+  });
+  setGlobalDispatcher(dispatcher);
+  const fixture = loginFixture({ oidc: split });
+  const start = await fixture.start();
+  const authorization = parseAuthorizationUrl((await responseFields(start)).get("url"));
+  assert.equal(`${authorization.origin}${authorization.pathname}`, split.authorizationUrl);
+  assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(authorization.href.includes(split.clientSecret), false);
+  await expectDenied(await fixture.callback());
+  assert.deepEqual(fixture.subjects, [[providerInstanceId("oidc", split), subject]]);
+  assert.deepEqual(
+    wire.map(({ host, path, method }) => [host, path, method]),
+    [
+      ["oauth2.idp.example.test", "/token", "POST"],
+      ["www.idp.example.test", "/oauth2/v3/certs", "GET"],
+    ],
+  );
+  assert.equal(new URLSearchParams(wire[0]!.body).get("client_secret"), split.clientSecret);
+  assert.equal(wire[1]!.body, "");
+  assert.equal(wire[1]!.authorization, undefined);
+
+  // A redirect must not send the confidential exchange to any second host.
+  redirectToken = true;
+  wire.length = 0;
+  await expectProviderUnavailable(await loginFixture({ oidc: split }).callback());
+  assert.deepEqual(
+    wire.map(({ host, path }) => [host, path]),
+    [["oauth2.idp.example.test", "/token"]],
   );
 });
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { composeConfiguration, composeConfigurationProvider } from "../helpers/compose.mjs";
+import { composeConfiguration, composeConfigurationProvider } from "../helpers/compose.ts";
 
 import { firstAgentComposeImages } from "../helpers/local-first-agent-stack.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

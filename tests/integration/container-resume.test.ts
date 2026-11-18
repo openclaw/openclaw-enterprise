@@ -8,7 +8,7 @@ import {
   publishPrepared,
   publishWorkflow,
   repository,
-} from "../../scripts/ci/container-release.mjs";
+} from "../../scripts/ci/container-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -250,10 +250,6 @@ if (args[0] === "inspect") {
     status: "completed",
     conclusion: "success",
   }));
-  const legacyJobs = ["Prepare controller OCI image", "Prepare runtime OCI image"].map((name) => ({
-    ...item(jobs, 0),
-    name,
-  }));
   const artifacts = images.map((image, index) => ({
     id: index + 10,
     name: `container-${image}-123-1`,
@@ -481,14 +477,6 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
       () => jobs.splice(1, 1),
       /^Exactly one successful prepare \/ Prepare controller \(amd64\) job/,
     ],
-    [
-      () => jobs.splice(2, Infinity, ...legacyJobs),
-      /^Preparation attempt mixes legacy and native jobs/,
-    ],
-    [
-      () => jobs.splice(1, Infinity, item(legacyJobs, 0)),
-      /^Exactly one successful Prepare runtime OCI image job/,
-    ],
     [() => (item(jobs, 0).head_sha = "f".repeat(40)), mismatch("'f{40}'")],
     [() => (item(jobs, 1).status = "queued"), mismatch("'queued'")],
     [
@@ -644,10 +632,6 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     assert.deepEqual(parse(await readFile(statePath, "utf8")), state);
   }
   run.conclusion = "failure";
-  // Older producers sealed both architectures in one job per image.
-  jobs.splice(1, Infinity, ...legacyJobs);
-  await runRecovery();
-  assert.deepEqual(parse(await readFile(statePath, "utf8")), state);
   // The ordinary publication command updates a mutable alias only after both
   // immutable tags exist. Recovery above must not move an older build to latest.
   const latestRefs = images.map(
@@ -697,7 +681,7 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     await writeFixture();
     execFileSync(
       process.execPath,
-      ["--import", preload, "scripts/ci/container-release.mjs", command, directory],
+      ["--import", preload, "scripts/ci/container-release.ts", command, directory],
       {
         env: {
           ...process.env,

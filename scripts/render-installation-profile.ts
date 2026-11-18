@@ -24,7 +24,7 @@ import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
 import {
   preparedRepositoryBackend,
   preparedRepositoryInstallation,
-} from "./lib/prepared-repository-installation.mjs";
+} from "./lib/prepared-repository-installation.ts";
 
 interface SignInValues {
   enabled: boolean;
@@ -307,7 +307,7 @@ function fail(message: string): never {
 }
 
 function usage() {
-  return `Usage: node scripts/render-installation-profile.mjs --profile openclaw|codex \\
+  return `Usage: node scripts/render-installation-profile.ts --profile openclaw|codex \\
   --input <site-inputs.json> --out-dir <rendered-directory>
 
 The renderer writes values.yaml, installation.yaml, and preflight.json. Missing
@@ -755,6 +755,7 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
       "/etc/openclaw/repository-ca",
       "/var/run/secrets/kubernetes.io/serviceaccount",
       "/run/openclaw/repository-control",
+      "/etc/openclaw/prepared-repository",
     ]) {
       reserved.add(path);
     }
@@ -1170,11 +1171,10 @@ function renderOidc(source: InputRecord, diagnostics: Errors) {
       "an https URL on port 443 with a DNS host name and no query or fragment, written without a port",
   });
   rendered.issuer = issuer;
-  const host = oidcEndpointHost(issuer, { issuer: true });
   for (const key of ["authorizationUrl", "tokenUrl", "jwksUrl"] as const) {
     rendered[key] = asString(source, [...path, key], diagnostics, {
-      validate: (value) => host === undefined || oidcEndpointHost(value) === host,
-      description: "an https URL on port 443 on the issuer's host, with no query or fragment",
+      validate: (value) => oidcEndpointHost(value) !== undefined,
+      description: "an https URL on port 443 with a DNS host name and no query or fragment",
     });
   }
   const tokenAuth = optionalString(source, [...path, "tokenAuth"], diagnostics, {
@@ -1380,6 +1380,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
       "apiClients",
       "databaseCidrs",
       "clusterCidrs",
+      "clusterPort",
       "dns",
       "gatewayClassName",
       "gatewayApiKeySecretName",
@@ -1840,6 +1841,13 @@ function buildRendered(
     );
   }
 
+  const clusterPort = optionalPositiveInteger(
+    controlPlane,
+    ["controlPlane", "clusterPort"],
+    diagnostics,
+    { max: 65535 },
+  );
+
   // Same rule the controller applies to Installation observability.url at startup, including
   // its refusal of any @ before the host (http://@host).
   // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
@@ -1986,6 +1994,7 @@ function buildRendered(
         validate: (value) => isIpv4Cidr(value, 32),
         description: "an IPv4 /32 CIDR",
       }),
+      ...(clusterPort === undefined ? {} : { port: clusterPort }),
     },
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined
@@ -2293,7 +2302,7 @@ function buildRendered(
         "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Token Service custody. Do not transfer keys or replay uncertain work.",
       );
     }
-    values.repositoryCredentials = {
+    const credentials = {
       enabled: true,
       authority: "prepared-git",
       preparedCustodySecretName: asString(
@@ -2351,10 +2360,9 @@ function buildRendered(
         validate: isIpv4Cidr,
         description: "an IPv4 CIDR",
       }),
-    };
-    installation.backend.push(
-      preparedRepositoryBackend({ backendId: values.repositoryCredentials.backendId }),
-    );
+    } satisfies RepositoryValues;
+    values.repositoryCredentials = credentials;
+    installation.backend.push(preparedRepositoryBackend({ backendId: credentials.backendId }));
     installation.repository = preparedRepositoryInstallation({ sessionDurationSeconds: 86_400 });
     installation.drivers.compute.configuration.network.repositoryCredentials = {
       namespace,
@@ -2646,7 +2654,7 @@ export async function renderInstallationProfile(args: RenderArguments) {
   );
 }
 
-export async function runInstallationProfileCli() {
+async function runInstallationProfileCli() {
   try {
     const preflight = await renderInstallationProfile(parseArgs(process.argv.slice(2)));
     process.stdout.write(`${JSON.stringify(preflight, null, 2)}\n`);
@@ -2660,4 +2668,8 @@ export async function runInstallationProfileCli() {
     process.stderr.write(`render-installation-profile: ${error.message}\n`);
     process.exit(1);
   }
+}
+
+if (import.meta.main) {
+  await runInstallationProfileCli();
 }

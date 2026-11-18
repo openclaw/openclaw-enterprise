@@ -12,7 +12,7 @@
       "owner": "Driver package composition",
       "reason": "The installed Driver loader validates configured package identity, trusted root and entrypoint at runtime; its target is deliberately not a statically enumerable workspace import.",
       "removeWhen": "Remove this exception if the supported installed Driver loader is removed or replaced by static registration.",
-      "loaderIdentity": "loader:sha256:aaf2e17996ad46914de4b676b56f00d3b7630762da0ea93aa5aca4943dc7210b"
+      "loaderIdentity": "loader:sha256:6d4fa66e0139115271d3b6e56a5680b9fb4869153f1bf6ba0e0ca9df52e2e38e"
     },
     {
       "rule": "cross-provider-implementation",
@@ -200,18 +200,26 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
-      "to": "packages/contracts/src/runtime-failure.mjs",
-      "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
-      "kind": "import",
+      "to": "packages/contracts/src/runtime-failure.ts",
+      "specifier": "../../../../../../packages/contracts/src/runtime-failure.ts",
+      "kind": "require",
       "typeOnly": false,
-      "bindings": [
-        "value:RUNTIME_DIAGNOSTIC_CHECKS",
-        "value:RUNTIME_DIAGNOSTIC_CODES",
-        "value:RUNTIME_FAILURE_CHECKS"
-      ],
+      "bindings": ["*"],
       "owner": "Kubernetes runtime programs",
-      "reason": "Image builds and the in-image supervisor proof load the runtime programs from a checkout or copy with no workspace packages installed, so they read the shared runtime failure vocabulary from its source.",
-      "removeWhen": "Image builds and the in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+      "reason": "Checkout CI and the in-image supervisor proof load this dependency-free source without workspace packages installed. The renderer reads the three vocabulary arrays and validates them at load time.",
+      "removeWhen": "The checkout and in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+    },
+    {
+      "rule": "unresolved-local-import",
+      "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+      "to": "packages/contracts/dist/runtime-failure.js",
+      "specifier": "../../../../../../packages/contracts/dist/runtime-failure.js",
+      "kind": "require",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Kubernetes runtime programs",
+      "reason": "The compiled renderer loads the emitted vocabulary from the contracts project output. The authored-source graph excludes that output.",
+      "removeWhen": "The compiled renderer uses a package export or build-output resolution is represented in the analyzer."
     },
     {
       "rule": "unresolved-local-import",
@@ -252,18 +260,6 @@
       "owner": "Console asset delivery",
       "reason": "This browser URL is served by the explicit Console asset map from the contracts package; it is not a file beside the consuming browser module.",
       "removeWhen": "Remove this exception when browser asset resolution is represented in the analyzer or the import moves to a statically resolved module."
-    },
-    {
-      "rule": "unresolved-local-import",
-      "from": "apps/controller/src/repository-credentials.mjs",
-      "to": "apps/controller/dist/repository-credentials.js",
-      "specifier": "../dist/repository-credentials.js",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:main"],
-      "owner": "Repository credential service packaging",
-      "reason": "The source launcher executes the compiled service entrypoint after the workspace build; generated dist files are intentionally outside the authored-source graph.",
-      "removeWhen": "Remove this exception when the launcher no longer imports the compiled entrypoint or build-output resolution is represented in the analyzer."
     },
     {
       "rule": "unresolved-local-import",

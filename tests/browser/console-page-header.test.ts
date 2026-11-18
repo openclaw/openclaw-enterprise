@@ -11,7 +11,7 @@ import {
   settledView,
 } from "./console-agents-browser-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 // The page header (UX plan D3, spec 3.2): collections show the Namespace selector as one compact
 // 32 px control beside Refresh; an Agent's page and Create Agent lead with ← Agents and carry the
@@ -237,6 +237,89 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
     await header.getByRole("status").filter({ hasText: "Copied" }).waitFor();
     assert.equal(await page.evaluate(() => globalThis.navigator.clipboard.readText()), agent.id);
   }
+});
+
+test("Copy Agent ID gives manual copy instructions when clipboard writes are unavailable", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Header clipboard");
+  const agent = await fixture.createAgent(namespace.id, "Copy test", nativeValues("copy"));
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href);
+  await page.getByRole("button", { name: "Deploy new version" }).waitFor();
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  const header = page.locator(".content .page-header");
+  const copy = header.getByRole("button", { name: "Copy Agent ID" });
+  const status = header.locator(".page-meta-id").getByRole("status", { includeHidden: true });
+  const guidance = "Copy selection";
+  const before = await headerLayout(page);
+  const clickCopy = async () => {
+    await page.evaluate(() => globalThis.document.getSelection()?.removeAllRanges());
+    await copy.click();
+  };
+  const assertManualCopy = async () => {
+    assert.equal(
+      await page.evaluate(() => globalThis.document.getSelection()?.toString()),
+      agent.id,
+    );
+    assert.equal(await status.textContent(), guidance);
+    assert.ok(await status.isVisible(), "manual copy guidance is visible in the header");
+  };
+  // Control only clipboard availability and settlement. Use the real button and DOM selection.
+  const useClipboard = (mode: "write" | "deny" | "missing") =>
+    page.evaluate((mode) => {
+      Object.defineProperty(globalThis.navigator, "clipboard", {
+        configurable: true,
+        value:
+          mode === "missing"
+            ? undefined
+            : {
+                writeText: () =>
+                  mode === "deny"
+                    ? Promise.reject(new DOMException("", "NotAllowedError"))
+                    : Promise.resolve(),
+              },
+      });
+    }, mode);
+
+  await useClipboard("write");
+  await clickCopy();
+  await status.filter({ hasText: "Copied" }).waitFor();
+  // A denied copy must replace earlier success with the recovery action.
+  await useClipboard("deny");
+  await clickCopy();
+  await assertManualCopy();
+
+  await useClipboard("missing");
+  await clickCopy();
+  await assertManualCopy();
+  const fallback = await headerLayout(page);
+  assert.ok(fallback.bottom <= 240, `header bottom with recovery guidance ${fallback.bottom}`);
+  const copyWidth = (layout: Awaited<ReturnType<typeof headerLayout>>) => {
+    const control = layout.controls.find(({ name }) => name === "Copy Agent ID");
+    assert.ok(control);
+    return control.right - control.left;
+  };
+  assert.equal(copyWidth(fallback), copyWidth(before));
+
+  // An older write can finish after the next click. It must leave the latest feedback alone.
+  const olderWrite = await page.evaluateHandle(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: () => promise },
+    });
+    return resolve;
+  });
+  await clickCopy();
+  assert.equal(await status.textContent(), "", "the pending copy clears previous feedback");
+  await useClipboard("deny");
+  await clickCopy();
+  await assertManualCopy();
+  await olderWrite.evaluate((resolve) => resolve());
+  await olderWrite.dispose();
+  await assertManualCopy();
 });
 
 test("a phone shows a short-named Agent's header in four rows, ending by 240 px", async (t) => {

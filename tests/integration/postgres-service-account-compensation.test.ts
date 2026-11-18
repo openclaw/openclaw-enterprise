@@ -28,9 +28,9 @@ import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 

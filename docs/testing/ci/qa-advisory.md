@@ -29,8 +29,8 @@ or publication gates.
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
-are ineligible. Narrow labels select their union. `full-qa` overrides them and
-runs `console-secrets` in both Codex cells and `agent-audit` in the Compose cell.
+are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
+`agent-audit` in Compose, and `http-chat` for both presets and placements.
 The focused Compose job checks
 native redeployment and required-worker execution on Kubernetes workloads.
 
@@ -77,6 +77,8 @@ for Codex.
 
 [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
 [scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
+
+See [HTTP chat verification](../agent-http-chat.md).
 
 ### Scenario details
 
@@ -277,7 +279,7 @@ qa_status="$(git status --porcelain --untracked-files=all)"
 qa_metadata="$(mktemp -d)"
 qa_prefix="localhost/oce-qa-$(date +%s)-$$"
 qa_node_base="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
-qa_source="$(node scripts/lib/openclaw-source.mjs build-args)"
+qa_source="$(node scripts/lib/openclaw-source.ts build-args)"
 qa_runtime_args=()
 while IFS= read -r argument; do
   qa_runtime_args+=(--build-arg "$argument")

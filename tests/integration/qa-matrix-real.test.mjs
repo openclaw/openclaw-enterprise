@@ -97,13 +97,13 @@ test(
     validateQaInputs(selection);
     const { createQaInstallation, prepareQaPluginCatalogs, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
-    const { protectedText } = await import("../helpers/qa-secrets.mjs");
+    const { protectedText } = await import("../helpers/qa-secrets.ts");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
       await import("../helpers/qa-repository.mjs");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
-    const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.mjs");
+    const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.ts");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
       ? resolve(process.env.OCC_TEST_QA_ARTIFACTS)
       : await mkdtemp(join(tmpdir(), "oce-qa-matrix-evidence-"));
@@ -227,6 +227,9 @@ test(
                 artifacts,
                 {
                   repositoryInputs: selection.repository,
+                  disableNativeAdmin: selection.cells
+                    .filter((cell) => cell.installation === installation)
+                    .every((cell) => cell.scenarios.every((scenario) => scenario === "http-chat")),
                 },
               );
               await prepareQaPluginCatalogs(fixture);
@@ -299,7 +302,8 @@ test(
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
-                            apiKeyAuth: name === "codex-search-config",
+                            apiKeyAuth: name === "codex-search-config" || name === "http-chat",
+                            httpChat: name === "http-chat",
                           });
                         },
                       );
@@ -329,6 +333,15 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "http-chat",
+                    async (agent, step) => {
+                      const { verifyQaHttpChat } = await import("../helpers/qa-http-chat.ts");
+                      await step("human and service HTTP turns and isolated conversations", () =>
+                        verifyQaHttpChat(f, agent),
+                      );
+                    },
+                  ],
                   [
                     "agent-audit",
                     async (agent, step) => {

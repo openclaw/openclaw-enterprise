@@ -16,7 +16,7 @@ Each case copies the migrated template and runs as the limited application role.
 Clearing stale overrides ensures it uses this run's prepared database:
 
 ```sh
-node scripts/ci/prepare.mjs --lane postgres-application \
+node scripts/ci/prepare.ts --lane postgres-application \
   --file tests/integration/postgres-external-protected-git.test.ts \
   --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/test.env"
 env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
@@ -32,6 +32,14 @@ bare origin. They also require rejection of a provider-protected ref and fresh
 Git denial after withdrawal, with no issuance or workload traffic, while the same token
 still works directly at the controlled provider. Git and PostgreSQL are real;
 the installed external Driver, workload, placement and GitHub API are fixtures.
+
+The `git-write` journey admits one repository grant with a single draft pull request
+for online authorization. The installed sender pushes the granted ref; OCC refuses
+another ref before any pack reaches the origin, refuses a wrong base, accepts one
+draft and refuses a second. The sender refuses a non-draft pull request before asking
+OCC. After withdrawal OCC refuses each fresh fetch, push and draft, with no origin,
+provider or issuance traffic. The case reads OCC's use
+rows, the spent draft allowance and the delivery record.
 
 The default file-based GitHub policy case signs in a persisted account through Fastify,
 creates and deploys an Agent without a public Repo Driver, and refuses the same
@@ -186,7 +194,7 @@ forward to the API service alive across Pod replacement. Include setup, test,
 fresh API readiness, evidence and cleanup in the actual slot and outer deadline.
 
 ```sh
-node tests/fixtures/egress-custody-postgres-observer.mjs "$new_observer_dir" "$data_port"
+node tests/fixtures/egress-custody-postgres-observer.ts "$new_observer_dir" "$data_port"
 ```
 
 In the qualification shell, set the four connected inputs from the lane manifest,
@@ -195,7 +203,7 @@ then select the actual lane. The state and results paths must belong to this att
 ```sh
 export OCC_TEST_EGRESS_DISPATCH_OBSERVER_SOCKET="$new_observer_dir/control.sock"
 CI_RUNNER_DEADLINE_MS=$(node -p 'Date.now() + 95 * 60000') \
-CI_RUNNER_TEST_TIMEOUT_MS=5100000 node scripts/ci/run-tests.mjs run egress-custody-installed \
+CI_RUNNER_TEST_TIMEOUT_MS=5100000 node scripts/ci/run-tests.ts run egress-custody-installed \
   --state "$attempt/state.json" --results "$attempt/results.json"
 ```
 

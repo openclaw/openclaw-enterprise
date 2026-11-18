@@ -3,7 +3,7 @@ import test, { type TestContext } from "node:test";
 import type { Pool } from "pg";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,
@@ -13,9 +13,8 @@ import {
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 import {
-  onboarded,
   readAccount,
   type SignInApp,
   changeAccount,
@@ -59,16 +58,13 @@ test(
     const {
       admin,
       accounts: { limited, member },
-    } = onboarded(
-      await onboard({
-        remoteAddress: address(),
-        accounts: {
-          limited: { email: "scope-limited@example.test", role: "admin" },
-          member: { email: "scope-member@example.test" },
-        },
-      }),
-      ["limited", "member"],
-    );
+    } = await onboard({
+      remoteAddress: address(),
+      accounts: {
+        limited: { email: "scope-limited@example.test", role: "admin" },
+        member: { email: "scope-member@example.test" },
+      },
+    });
 
     // Account creation binds the Role to the exact Installation only.
     const installation = await state.loadInstallation();

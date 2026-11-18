@@ -1124,7 +1124,14 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
   readonly configuration?: Readonly<Record<string, unknown>>;
 }
 
+/** Server-owned permission to continue interrupted work within a compatible lifecycle. */
+export interface RestartContinuation {
+  readonly generation: string;
+  readonly domain: string;
+}
+
 export interface AgentRevision extends Scope {
+  readonly restartContinuation?: RestartContinuation;
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
   readonly id: string;
@@ -1146,6 +1153,8 @@ export interface AgentRevision extends Scope {
     readonly implementation: string;
     /** Private, immutable admission state owned by the selected Compute Driver. */
     readonly admission?: string;
+    /** Optional private runtime inputs; separate from authority admission for older readers. */
+    readonly runtimeInputs?: string;
   };
   readonly sandboxDriverId?: string;
   readonly sandboxPolicy?: SandboxPolicySnapshot;
@@ -1507,7 +1516,6 @@ export type {
 export type {
   CredentialRefreshDriver,
   CredentialRefreshInput,
-  CredentialRefreshStatus,
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "./drivers/credential-refresh/index.ts";
@@ -1546,6 +1554,8 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  AgentChatCompletionsEndpoint,
+  AgentChatCompletionsResolution,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,
@@ -1634,7 +1644,7 @@ export {
   WORKSPACE_SETUP_CHECK,
   WORKSPACE_SETUP_FAILED,
   WORKSPACE_SETUP_REFUSED,
-} from "./runtime-failure.mjs";
+} from "./runtime-failure.ts";
 
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";
 export { normalizeInitialWorkspaceFiles, normalizeWorkspaceDefaultsId } from "./workspace-setup.ts";
@@ -1642,7 +1652,7 @@ export {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
-} from "./workspace-defaults.mjs";
+} from "./workspace-defaults.ts";
 
 export type {
   ProtectedRepositoryGitAuthority,
@@ -1670,3 +1680,49 @@ export type {
   NamespaceLifecycleHooks,
   NamespaceLifecycleParticipant,
 } from "./drivers/namespace-lifecycle.ts";
+
+export type {
+  TokenServiceSourceRef,
+  InstallationClientSecretRef,
+  TokenServiceRegistration,
+  RegisteredTokenServiceSource,
+  SourceLifecycleConfig,
+  SourceRegistrationInput,
+  SourceUpdate,
+  ResolvedCredential,
+  CredentialRefreshStatus,
+  SourceRefreshOperation,
+  TokenServiceDriver,
+} from "./drivers/token-service/index.ts";
+
+export type {
+  BearerCredentialProjection,
+  CredentialProjection,
+  DeploymentWorkloadRequirement,
+  DeploymentRequestPolicy,
+  DeploymentRequestMatch,
+  NetworkAccessPolicy,
+  CredentialInjectionPolicy,
+  CredentialProxyRouting,
+  CredentialDeploymentRef,
+  CredentialDeploymentTarget,
+  CredentialDeploymentConfiguration,
+  CredentialDeploymentReadiness,
+  DeploymentCredentialBinding,
+} from "./credential-deployment.ts";
+
+export type {
+  PluginDeploymentTool,
+  PluginDeploymentNetworkRequirement,
+  PluginCredentialConnection,
+  PluginDeploymentDescription,
+  PluginDeploymentContract,
+} from "./drivers/plugin/deployment.ts";
+
+export type {
+  HarnessStartupObservation,
+  HarnessStartupRef,
+  SandboxDeploymentContract,
+} from "./drivers/sandbox/deployment.ts";
+
+export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";

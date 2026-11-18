@@ -146,4 +146,4 @@ The [CI flow](../../flows/github-actions-testing.md) describes result accounting
 - [CI workflow](../../../.github/workflows/ci.yml): selection, jobs, and merge gate.
 - [Suite index](../../../scripts/ci/test-suites.json): lane groups; individual manifests are linked above.
 - [Lane action](../../../.github/actions/run-ci-lane/action.yml): preparation, execution, artifacts, and cleanup.
-- [Test runner](../../../scripts/ci/run-tests.mjs): inventory checks, execution, and aggregation.
+- [Test runner](../../../scripts/ci/run-tests.ts): inventory checks, execution, and aggregation.

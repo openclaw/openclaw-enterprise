@@ -5,7 +5,7 @@ import { readFile, rename, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage } from "../../scripts/ci/prepare.ts";
 import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
@@ -17,7 +17,7 @@ import {
 } from "../helpers/ci-prepare-fixture.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.ts";
-import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
+import { waitFor, waitUntil, within } from "../helpers/wait-for.ts";
 import { interceptFixtureDocker, type ImageCommands } from "./ci-prepare-k3d-docker-fixture.ts";
 
 // Linux reports an exited but unreaped process as a zombie; it holds nothing.

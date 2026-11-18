@@ -152,12 +152,12 @@ after the remaining resources. The worker settles deletion only from the resulti
 
 ## Debugging and Verification
 
-- Run `node --test tests/conformance/utils.test.ts tests/conformance/compute-lifecycle-hooks.test.mjs`
+- Run `node --test tests/conformance/utils.test.ts tests/conformance/compute-lifecycle-hooks.test.ts`
   for shared immutable copies, callback capture, preparation/teardown ordering, opaque placeholders,
   cancellation, and rollback.
 - Run `node --test --test-name-pattern='Kubernetes lifecycle owners cannot be replaced|Kubernetes lifecycle hooks never run' tests/conformance/kubernetes-compute.test.mjs`
   for concrete Kubernetes owner and lifecycle-boundary behavior.
-- Run `node --test tests/conformance/plugin-compute.test.mjs --test-name-pattern "embedded plugin preparation applies runtime egress before gateway readiness"`
+- Run `node --test --test-name-pattern "embedded plugin preparation applies runtime egress before gateway readiness" tests/conformance/plugin-compute.test.ts`
   for Kubernetes preparation ordering of embedded and dedicated runtime NetworkPolicies before Gateway readiness.
 - Errors include only the failing hook phase and owner. Investigate exact selected identities,
   operation cancellation, unsafe placeholder values, and pending revocation without printing
