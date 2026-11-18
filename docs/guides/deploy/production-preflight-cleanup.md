@@ -9,8 +9,9 @@ reports whether cleanup completed.
 This command applies only to runs with a versioned `preflight-journal.json`. For
 older or uncertain evidence, follow [manual reconciliation](#reconcile-unsupported-or-uncertain-evidence).
 Never create a journal or fill missing receipts from current resource names.
-The journal is bound to hashes of the original helper files. A newer checkout
-cannot clean up older evidence merely because it recognizes that journal shape.
+The journal is bound to hashes of the original helper files and the chart’s
+selected-image migration program. A newer checkout cannot clean up older
+evidence merely because it recognizes that journal shape.
 Retain the original checkout; do not update recorded hashes to bypass this check.
 
 ## Prepare the cleanup
@@ -24,8 +25,8 @@ private evidence directory and `.upgrade-lock`. Before proceeding:
 2. Confirm this is the original evidence directory, with its original files.
    Do not use a restored backup, replace the directory, or edit receipts to make
    validation pass. A backup can omit an already-started create.
-3. Use the original checkout and unchanged helper files. Retain the original
-   kubeconfig path and contents, context, namespace and release from
+3. Use the original checkout with unchanged helper files and chart program.
+   Retain the original kubeconfig path and contents, context, namespace and release from
    `parameters.json`. Current credentials must still authorize the cleanup.
 
 The command requires Python 3, Node.js matching the release checkout's

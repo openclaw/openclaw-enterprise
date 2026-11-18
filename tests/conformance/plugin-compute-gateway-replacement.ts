@@ -10,6 +10,7 @@ import {
   waitForCondition,
 } from "./plugin-compute-fixtures.ts";
 import { registerGatewayConfigurationRefusalCases } from "./plugin-compute-gateway-configuration-refusal-cases.ts";
+import { registerGatewayStateLockCases } from "./plugin-compute-gateway-state-lock-cases.ts";
 import { readReadyStatusFromHandler } from "./plugin-compute-status.ts";
 import {
   assertDeliberateRestart,
@@ -655,4 +656,5 @@ export function registerGatewayReplacement(): void {
   });
 
   registerGatewayConfigurationRefusalCases();
+  registerGatewayStateLockCases();
 }

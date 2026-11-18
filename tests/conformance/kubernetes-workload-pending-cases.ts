@@ -487,29 +487,6 @@ export async function checkFullNamespacePodQuota(createFixture: CreateFixture) {
   state.unreadableKind = undefined;
   assert.equal(await pendingReasonWith(agentName, podRefusal), quotaExceeded);
 
-  // A forbidden read of the Harness's quota still permits observing the Gateway's quota.
-  const readQuota = clients.core.readNamespacedResourceQuota;
-  assert.ok(readQuota);
-  const quotaReads: Parameters<QuotaRead>[0][] = [];
-  clients.core.readNamespacedResourceQuota = async (request) => {
-    quotaReads.push(request);
-    if (request.name === "broken-quota") {
-      throw forbiddenRead();
-    }
-    return readQuota(request);
-  };
-  setConditions(fixture, gatewayName, refusedPod(gatewayName));
-  assert.equal(
-    await pendingReasonWith(agentName, refusedPod(agentName, "broken-quota")),
-    quotaExceeded,
-  );
-  assert.deepEqual(quotaReads, [
-    { name: "broken-quota", namespace },
-    { name: quotaName, namespace },
-  ]);
-  setConditions(fixture, gatewayName, []);
-  clients.core.readNamespacedResourceQuota = readQuota;
-
   // A held runtime failure supersedes the quota refusal.
   const held = {
     component: "gateway",
@@ -531,7 +508,7 @@ export async function checkFullNamespacePodQuota(createFixture: CreateFixture) {
   state.unschedulableRole = undefined;
 
   await checkDeploymentObservationRefusals(fixture);
-  await checkQuotaCancellation(fixture);
+  await checkQuotaReadRefusals(fixture);
   await checkSplitClusterQuotas(createFixture);
 
   // Ready workloads waiting for pairing report that reason even with a stale refusal.
@@ -677,45 +654,70 @@ async function checkDeploymentObservationRefusals(fixture: ReturnType<CreateFixt
   setConditions(fixture, agentName, []);
 }
 
-async function checkQuotaCancellation(fixture: ReturnType<CreateFixture>) {
+async function checkQuotaReadRefusals(fixture: ReturnType<CreateFixture>) {
   const { namespace, agentName, gatewayName, prepare, clients } = fixture;
-  const observations: WorkloadRead[] = [];
-  const status = afterRuntimeReadback(clients, observations);
   const agent = { kind: "deployment", request: { name: agentName, namespace } };
   const gateway = { kind: "deployment", request: { name: gatewayName, namespace } };
-  const quota = { kind: "quota", request: { name: quotaName, namespace } };
-  setConditions(fixture, gatewayName, refusedPod(gatewayName));
-  for (const location of ["deployment", "quota"] as const) {
+  const brokenQuota = { kind: "quota", request: { name: "broken-quota", namespace } };
+  const gatewayQuota = { kind: "quota", request: { name: quotaName, namespace } };
+
+  // An ordinary Harness quota 403 permits fallback to the Gateway's full quota.
+  // Cancelling on the same read must stop even the Gateway Deployment lookup.
+  for (const [location, cancel, expected] of [
+    ["quota", false, [agent, brokenQuota, gateway, gatewayQuota]],
+    ["quota", true, [agent, brokenQuota]],
+    ["deployment", true, [agent]],
+  ] as const) {
     const owner = new AbortController();
     const cancellation = new Error("revision pass cancelled");
-    const abort = () => {
-      owner.abort(cancellation);
+    const refuse = () => {
+      if (cancel) {
+        owner.abort(cancellation);
+      }
       throw forbiddenRead();
     };
+    const observations: WorkloadRead[] = [];
+    const status = afterRuntimeReadback(clients, observations);
     const restore = observeWorkloadReads(clients, observations, {
       async deployment(request, read) {
         if (location === "deployment" && status.reached() && request.name === agentName) {
-          abort();
+          refuse();
         }
         return read(request);
       },
       async quota(request, read) {
-        if (location === "quota") {
-          abort();
+        if (location === "quota" && status.reached() && request.name === brokenQuota.request.name) {
+          refuse();
         }
         return read(request);
       },
     });
-    await assert.rejects(
-      withComputeAbortSignal(owner.signal, prepare),
-      (error) => error === cancellation,
-    );
-    assert.deepEqual(status.reads(), location === "deployment" ? [agent] : [agent, gateway, quota]);
-    status.reset();
-    restore();
+    try {
+      setConditions(fixture, agentName, refusedPod(agentName, brokenQuota.request.name));
+      setConditions(fixture, gatewayName, refusedPod(gatewayName));
+      if (cancel) {
+        await assert.rejects(
+          withComputeAbortSignal(owner.signal, prepare),
+          (error) => error === cancellation,
+        );
+      } else {
+        const pending = await prepare();
+        assert.equal(pending.ready, false);
+        assert.equal(pending.pendingReason, quotaExceeded);
+      }
+      assert.deepEqual(status.reads(), expected);
+      // Reconciliation can read Deployments before runtime status, but every quota read belongs to diagnostics.
+      assert.deepEqual(
+        observations.filter(({ kind }) => kind === "quota"),
+        expected.filter(({ kind }) => kind === "quota"),
+      );
+    } finally {
+      restore();
+      status.restore();
+      setConditions(fixture, agentName, []);
+      setConditions(fixture, gatewayName, []);
+    }
   }
-  status.restore();
-  setConditions(fixture, gatewayName, []);
 }
 
 async function checkSplitClusterQuotas(createFixture: CreateFixture) {

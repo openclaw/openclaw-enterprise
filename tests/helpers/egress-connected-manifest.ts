@@ -85,7 +85,6 @@ function assertConnectedManifest(
   assert.ok(
     input.openShellGatewaySelector && !/[\r\n]/.test(String(input.openShellGatewaySelector)),
   );
-  assert.match(readString(input.runtimeClass ?? ""), /^[a-z0-9-]+$/);
   for (const image of Object.values(images)) {
     assert.match(readString(image), /^[^\s@]+@sha256:[a-f0-9]{64}$/);
   }

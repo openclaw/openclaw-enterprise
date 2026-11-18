@@ -18,6 +18,43 @@ import {
 const postgresWorkTargetShape =
   "Controller work requires one exact Namespace, Agent, or revision target shape.";
 
+async function verifyRevisionOrder(
+  store: PlatformStateStore,
+  first: PlatformStateSeed["revision"],
+): Promise<void> {
+  const { namespaceId, agentId } = first;
+  const second = { ...first, id: identifier("rev"), revision: 2 };
+  const third = { ...first, id: identifier("rev"), revision: 3 };
+  await store.transact(async ({ revisions }) => {
+    await revisions.createRevision(first);
+    await revisions.createRevision(third);
+    await revisions.createRevision(second);
+  });
+
+  const identity = ({ id, revision }: Pick<typeof first, "id" | "revision">) => [revision, id];
+  const expected = [first, second, third].map(identity);
+  const assertHistory = () =>
+    store.read(async ({ revisions }) => {
+      const lists = ["listRevisions", "listRevisionMetadata", "listRevisionsForBrowsing"] as const;
+      for (const list of lists) {
+        const rows = await revisions[list](namespaceId, agentId);
+        assert.deepEqual(rows.map(identity), expected, list);
+      }
+    });
+  await assertHistory();
+  await assert.rejects(
+    store.transact(({ revisions }) =>
+      revisions.createRevision({ ...second, id: identifier("rev") }),
+    ),
+    storeRefusal(
+      "ResourceConflictError",
+      "The Agent already has a revision with this number.",
+      postgresIdentityConflict,
+    ),
+  );
+  await assertHistory();
+}
+
 export async function verifyPlatformStateTransactions(
   store: PlatformStateStore,
   {
@@ -188,6 +225,15 @@ export async function verifyPlatformStateTransactions(
       ),
       { ...providerAgent, backendId: null },
     );
+  });
+
+  // Use the sibling's empty history: both Agents can have revision 1 in this Namespace.
+  await verifyRevisionOrder(store, {
+    ...revision,
+    id: identifier("rev"),
+    agentId: providerAgent.id,
+    configurationId: backendConfiguration.id,
+    servicePrincipalId: providerAgent.servicePrincipalId,
   });
 
   await assert.rejects(

@@ -43,7 +43,7 @@
     "tests/conformance/kubernetes-client.test.ts",
     "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
-    "tests/integration/configuration-body-limits.test.mjs",
+    "tests/integration/configuration-body-limits.test.ts",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.ts",
     "tests/conformance/runtime-logs-admission.test.ts",
@@ -51,7 +51,7 @@
     "tests/integration/device-authorization-api.test.ts",
     "tests/integration/device-authorization-denial-audit.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
-    "tests/integration/dependency-unavailable-log.test.mjs",
+    "tests/integration/dependency-unavailable-log.test.ts",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
@@ -130,6 +130,7 @@
     "tests/conformance/url-authority.test.ts",
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
+    "tests/integration/egress-custody-observer.test.ts",
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/credential-proxy-provider-pin.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
@@ -446,7 +447,7 @@
       "path": "tests/integration/configuration-controller.test.mjs"
     },
     {
-      "path": "tests/integration/configuration-body-limits.test.mjs"
+      "path": "tests/integration/configuration-body-limits.test.ts"
     },
     {
       "path": "tests/integration/json-body-depth.test.mjs"
@@ -563,7 +564,7 @@
       "path": "tests/integration/openshell-device-authorization-api.test.mjs"
     },
     {
-      "path": "tests/integration/dependency-unavailable-log.test.mjs"
+      "path": "tests/integration/dependency-unavailable-log.test.ts"
     },
     {
       "path": "tests/integration/runtime-credentials-api.test.ts"
@@ -765,6 +766,12 @@
       ]
     },
     {
+      "path": "tests/integration/egress-custody-observer.test.ts",
+      "expectedTests": [
+        "the dispatch observer rejects malformed selections before arming its one fault"
+      ]
+    },
+    {
       "path": "tests/integration/egress-stock-online-authority.test.ts"
     },
     {
@@ -777,6 +784,7 @@
         "held Git startup observes a denial inside its provider endpoint without credential access",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
         "protected Git replies to this online decision before its authority deadline",
+        "an allow or denial that settles after the call ends is not acted on",
         "shipped gh metadata stays within selected-repository authority",
         "bounded selected REST bodies retain transport and authority limits"
       ]
@@ -947,7 +955,8 @@
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
         "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "repository scope changes invalidate the external Driver identity while a reload preserves it"
+        "repository scope changes invalidate the external Driver identity while a reload preserves it",
+        "the loader closes an installed registration that later composition refuses"
       ]
     },
     {
@@ -1003,6 +1012,9 @@
       "expectedTests": [
         "controller topology keeps API-only fixture inputs separate from the worker"
       ]
+    },
+    {
+      "path": "tests/integration/agent-http-chat.test.ts"
     }
   ]
 }

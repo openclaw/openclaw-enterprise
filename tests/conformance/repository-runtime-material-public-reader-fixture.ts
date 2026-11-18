@@ -36,7 +36,10 @@ export async function publicReaderAdmission() {
   };
   const admission = driver.admitRevision(revision);
   assert.ok(admission);
-  assert.match(admission, /^model-provider:v1:[a-f0-9]{64}:public-github-read:v1:[a-f0-9]{64}$/);
+  assert.match(
+    admission,
+    /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:public-github-read:v1:[a-f0-9]{64}$/,
+  );
   return { f, revision, driver, admission };
 }
 

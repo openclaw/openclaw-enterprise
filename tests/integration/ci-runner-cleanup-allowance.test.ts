@@ -99,7 +99,7 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
       }
     });
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       [
         'import { spawn } from "node:child_process";',
         'import { readFile, writeFile } from "node:fs/promises";',
@@ -193,7 +193,7 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
       (name) => `tests/integration/${name}.test.mjs`,
     );
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       `export async function prepareFile() {\n  return { cleanup: () => ${hangForever} };\n}\n`,
     );
     const hung = files.map((file) => join(root, `state/${file.split("/").at(-1)}-hung`));

@@ -40,6 +40,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { within } from "../helpers/wait-for.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   persistedDeploymentError,
@@ -1431,7 +1432,7 @@ for (const leave of [false, true]) {
       page.clock.runFor(1_000),
     ]);
     assert.equal(response.status(), 200);
-    await deploymentReads.started.promise;
+    await within(deploymentReads.started.promise, "the stalled deployment read to start");
     const cancelled = page.waitForEvent("requestfailed", {
       predicate: (request) => request === response.request(),
       timeout: 5_000,

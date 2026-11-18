@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { text } from "node:stream/consumers";
 import { appModule } from "../fixtures/repository-credentials/runtime.ts";
+import { appFunction } from "../fixtures/repository-credentials/app-functions.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
@@ -13,20 +14,93 @@ import {
   receiveThroughFin,
 } from "../fixtures/repository-credentials/socket-observer.ts";
 
-const { createRoutePolicy } = await appModule("drivers/repo/github/access/routes");
-const { createUpstreamSender } = await appModule("drivers/repo/access/transport/upstream");
-const { inspectRequestHead } = await appModule("drivers/repo/access/transport/request");
-const { sendError } = await appModule("drivers/repo/access/transport/errors");
-const { createSystemClock } = await appModule("drivers/repo/access/clock");
-const { validateServiceConfig } = await appModule("drivers/repo/access/configuration");
+type RuntimeModules = {
+  "drivers/repo/github/access/routes": Pick<
+    typeof import("../../apps/controller/src/drivers/repo/github/access/routes.ts"),
+    "createRoutePolicy"
+  >;
+  "drivers/repo/access/transport/upstream": Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/transport/upstream.ts"),
+    "createUpstreamSender"
+  >;
+  "drivers/repo/access/transport/request": Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/transport/request.ts"),
+    "inspectRequestHead"
+  >;
+  "drivers/repo/access/transport/errors": Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/transport/errors.ts"),
+    "sendError"
+  >;
+};
+
+function assertRuntimeExport<Path extends keyof RuntimeModules>(
+  value: unknown,
+  name: keyof RuntimeModules[Path],
+): asserts value is RuntimeModules[Path] {
+  assert.ok(typeof value === "object" && value !== null && name in value);
+  assert.equal(typeof Reflect.get(value, name), "function");
+}
+
+async function runtimeExport<
+  Path extends keyof RuntimeModules,
+  Name extends keyof RuntimeModules[Path],
+>(path: Path, name: Name): Promise<RuntimeModules[Path][Name]> {
+  const value = await appModule(path);
+  assertRuntimeExport<Path>(value, name);
+  return value[name];
+}
+
+const createRoutePolicy = await runtimeExport(
+  "drivers/repo/github/access/routes",
+  "createRoutePolicy",
+);
+const createUpstreamSender = await runtimeExport(
+  "drivers/repo/access/transport/upstream",
+  "createUpstreamSender",
+);
+const inspectRequestHead = await runtimeExport(
+  "drivers/repo/access/transport/request",
+  "inspectRequestHead",
+);
+const sendError = await runtimeExport("drivers/repo/access/transport/errors", "sendError");
+const createSystemClock = await appFunction("drivers/repo/access/clock", "createSystemClock");
+const validateServiceConfig = await appFunction(
+  "drivers/repo/access/configuration",
+  "validateServiceConfig",
+);
+
+type OriginScenario = {
+  body?: string;
+  status?: number;
+  declaration?: boolean;
+  benignTrailer?: boolean;
+  trailer?: boolean;
+};
+type MetadataCase = [name: string, scenario: OriginScenario, accepted?: true];
+type ParsedRequest = {
+  method: string | undefined;
+  target: string | undefined;
+  authorization: IncomingHttpHeaders["authorization"];
+  body: string;
+};
+type ExchangeOutcome =
+  import("../../apps/controller/src/drivers/repo/access/internal-contracts.ts").ExchangeOutcome;
+type Profile = Parameters<typeof createRoutePolicy>[0]["profile"];
+
+function portOf(server: Server): number {
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return address.port;
+}
 
 const target = "/repos/fixture/repository";
 const identity = { id: 73, full_name: "fixture/repository" };
 const credential = "Bearer synthetic-metadata-origin-only";
 const request = (path = target, framing = "Content-Length: 0", body = "") =>
   `GET ${path} HTTP/1.1\r\nHost: gateway.example\r\nConnection: close\r\n${framing}\r\n\r\n${body}`;
-function assertFixedResponse(raw, status, body) {
+function assertFixedResponse(raw: string, status: string, body: string) {
   const [head, receivedBody, ...extra] = raw.split("\r\n\r\n");
+  assert.ok(head);
   const [receivedStatus, ...headers] = head.split("\r\n");
   assert.equal(receivedStatus, `HTTP/1.1 ${status}`);
   assert.deepEqual(
@@ -52,8 +126,8 @@ test(
     const config = validateServiceConfig(
       serviceConfigurationData({ limits: { apiResponseBytes: 1024 } }),
     );
-    let scenario = {};
-    const parsedRequests = [];
+    let scenario: OriginScenario = {};
+    const parsedRequests: ParsedRequest[] = [];
     const originServer = createServer(async (req, res) => {
       parsedRequests.push({
         method: req.method,
@@ -80,8 +154,8 @@ test(
       res.end();
     });
     await listen(resources, originServer);
-    const observed = await observeTlsOrigin(resources, tls, originServer.address().port);
-    const policy = (profile) =>
+    const observed = await observeTlsOrigin(resources, tls, portOf(originServer));
+    const policy = (profile: Profile) =>
       createRoutePolicy({
         repository: identity.full_name,
         repositoryId: String(identity.id),
@@ -92,7 +166,7 @@ test(
         limits: config.limits,
       });
     let selected = policy("metadata-read");
-    const outcomes = [];
+    const outcomes: ExchangeOutcome[] = [];
     const gateway = createServer(async (req, res) => {
       res.sendDate = false;
       const parsed = inspectRequestHead(req, {
@@ -102,13 +176,18 @@ test(
         headerPairs: 64,
         targetBytes: 8192,
       });
-      const plan = parsed.kind === "denied" ? parsed : selected.plan(parsed.head);
-      if (plan.kind === "denied") {
+      if (parsed.kind === "denied") {
+        req.resume();
+        sendError(res, parsed.status, parsed.code);
+        return;
+      }
+      const plan = selected.plan(parsed.head);
+      if ("kind" in plan) {
         req.resume();
         sendError(res, plan.status, plan.code);
         return;
       }
-      const tracked = [];
+      const tracked: Promise<void>[] = [];
       const sender = createUpstreamSender({
         request: req,
         response: res,
@@ -144,8 +223,8 @@ test(
       }
     });
     await listen(resources, gateway);
-    const port = gateway.address().port;
-    const verifyOrigin = async (index) => {
+    const port = portOf(gateway);
+    const verifyOrigin = async (index: number) => {
       assert.ok(observed.connections[index], "origin connection was observed");
       const wire = await observed.connections[index];
       assert.ok(wire.request.startsWith(`GET ${target} HTTP/1.1\r\n`));
@@ -192,7 +271,7 @@ test(
       assert.equal(observed.connections.length, before);
       assert.equal(parsedRequests.length, before);
     });
-    for (const [name, value, accepted = false] of [
+    const cases: MetadataCase[] = [
       ["valid identity with zero actual trailers", { body: JSON.stringify(identity) }, true],
       // GitHub answers with its own spelling; the configured one is released (finding 2239).
       [
@@ -225,7 +304,8 @@ test(
         "response byte overflow",
         { body: JSON.stringify({ ...identity, extra: "x".repeat(1024) }) },
       ],
-    ]) {
+    ];
+    for (const [name, value, accepted = false] of cases) {
       await t.test(`${name}: exact response through recipient FIN`, async () => {
         scenario = value;
         const index = observed.connections.length;
@@ -247,7 +327,7 @@ test(
         // Exact local error bytes distinguish a safe error from leaked provider headers/body.
         const body = '{"error":{"code":"exchange-uncertain"}}';
         assertFixedResponse(raw, "502 Bad Gateway", body);
-        assert.equal(outcomes.at(-1).kind, "possibly-dispatched");
+        assert.equal(outcomes.at(-1)?.kind, "possibly-dispatched");
       });
     }
     await t.test("general git-read retains descriptions with a benign actual trailer", async () => {
@@ -263,7 +343,11 @@ test(
       const wire = await verifyOrigin(index);
       assert.ok(wire.response.endsWith("0\r\nx-declared: benign\r\n\r\n"));
       assert.match(raw, /^HTTP\/1.1 200 OK\r\n/);
-      assert.equal(JSON.parse(raw.split("\r\n\r\n")[1]).description, description);
+      const body = raw.split("\r\n\r\n")[1];
+      assert.ok(body);
+      const response: unknown = JSON.parse(body);
+      assert.ok(typeof response === "object" && response !== null && "description" in response);
+      assert.equal(response.description, description);
     });
   },
 );
