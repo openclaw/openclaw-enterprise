@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-17"
-last_updated_session: "authoring-run/e410717c-d715-4c61-9ec7-adc9e88c1232"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/4b6e27d3-fbfc-4030-9235-6ec1011de508"
 ---
 
 # Audit ledger flow
@@ -9,14 +9,14 @@ last_updated_session: "authoring-run/e410717c-d715-4c61-9ec7-adc9e88c1232"
 ## Overview
 
 OpenClaw Control Plane (OCC) records audit evidence as controller requests and
-reconciliation work run and when an enrolled runtime sends an observation. This flow follows PostgreSQL event append, commit,
-the internal State repository's list operation, and the Agent audit API. See the
+reconciliation work run and when an enrolled runtime sends an observation. This
+flow follows Gateway enrollment, PostgreSQL writes, and the Agent audit API. See the
 [audit guide](../guides/topics/audit-log.md) for the operator boundary.
 
 ## Entry Points
 
-- Trigger: the API admits or answers a resource request, a controller operation
-  appends an event, or internal code lists events in a State unit of work.
+- Trigger: the API admits or answers a resource request, the worker deploys an
+  Agent revision with audit enabled, or an enrolled runtime sends an event.
 - Source: `apps/controller/src/index.ts:appendRequestAudit`
 - Source: `apps/controller/src/http/runtime-audit.ts:registerRuntimeAudit`
 - Source: `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
@@ -42,7 +42,14 @@ graph TD
   ResultEvent -->|Write failed| Diagnostic["Log audit write failure"]
   Diagnostic --> Send
   Request["Controller operation"] --> Factory["Create and sanitize event"]
+  Chart["Helm enables audit"] --> TLS["Open private HTTPS listener<br/>for Gateway events"]
+  Deploy["Deploy Agent revision"] --> Token["Kubernetes Compute creates<br/>or reads the Gateway Secret"]
+  Token --> SaveGrant{"Save token hash and revision?"}
+  SaveGrant -->|Saved| Gateway["Start Gateway"]
+  SaveGrant -->|Failed| Retry["Retry deployment"]
+  Gateway --> Runtime
   Runtime["Runtime observation"] --> Grant{"Valid producer grant and event?"}
+  TLS --> Grant
   Grant -->|Yes| Factory
   Grant -->|No| Reject
   Factory --> Append["State audit append"]
@@ -230,27 +237,44 @@ projection version, and number of returned records. The API releases the
 page after it confirms commit. The next-page cursor is encrypted and bound
 to the same session, Agent, and window.
 
-### 7. OCC accepts an observation from an enrolled runtime
+### 7. Deployment enrolls the Gateway
+
+`apps/controller/src/worker.mjs`,
+`apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevisionWorkloads`,
+and `packages/occ/src/state/postgres-state.ts:registerGatewayRuntimeGrant`
+
+Kubernetes Compute enrolls a managed dedicated Gateway when the Control Plane
+audit setting is on and an audit endpoint is available. Compute
+creates or reads the revision's Secret in the Gateway namespace. It saves the
+token's hash and revision scope in PostgreSQL before it starts the Gateway.
+If the write fails, deployment stops at that step. A retry uses the token
+already saved in the revision's Secret. Compute mounts the Secret read-only
+in the Gateway container.
+
+### 8. OCC accepts an observation from an enrolled runtime
 
 `apps/controller/src/http/runtime-audit.ts:registerRuntimeAudit` and
 `packages/contracts/src/runtime-audit.ts:runtimeAuditObservationSchema`
 
-The Control Plane audit setting enables the Agent audit API. The runtime
-write routes also require sender grants. For a managed dedicated Gateway,
-Kubernetes Compute mounts the revision's audit credential when the same
-setting is on and the Gateway has an audit endpoint.
-
 The producer sends the same event ID, time, and metadata if it retries the
-request. OCC checks the bearer credential, the action, and the fields. It
-looks up the Agent and revision from the credential's grant. The request
-body supplies execution context and cannot select the Agent or revision.
+request. The API hashes the credential and finds its grant in PostgreSQL in
+the transaction that writes the event. OCC checks the action and fields. It
+takes the Agent and revision from the grant and the turn context from the body.
 OCC derives the ledger ID from the grant scope and the producer event ID.
 It returns HTTP 204 after the transaction commits. A retry with the same
 stored values returns the same result without a new row. A retry with
 different values for the same ID fails.
 
-The OpenShell OCSF path uses a separate exporter credential and the enrolled
-Sandbox UUID. OCC checks that the resource, log attributes, and decision
+With Helm-managed Gateway routing, the chart creates a private HTTPS Service
+when audit is on. OCC accepts Gateway audit requests on that listener.
+Kubernetes Compute mounts the public certificate authority certificate in
+the Gateway and grants network access to the exact API peer. Cert-manager
+renews the server certificate. The API checks the mounted certificate files
+every minute and loads a new valid pair when they change.
+
+The OpenShell OCSF path uses a separate file with exporter grants. Each grant
+identifies the exporter credential and an enrolled Sandbox UUID. OCC checks
+that the resource, log attributes, and decision
 identify the same Sandbox. It projects approved fields from a blocked
 network decision and uses the native event ID for retries. It commits the
 batch before it returns the OTLP response.
@@ -287,6 +311,8 @@ batch before it returns the OTLP response.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 13:56: Trace automatic enrollment and live grant checks for a managed Gateway. (authoring-run/4b6e27d3-fbfc-4030-9235-6ec1011de508 - 3943a3fcf3da51a1558cd66cc762eee63f73b964)
 
 - 2026-11-17 12:32: Add runtime event admission, persistence, and the Agent audit view. (authoring-run/e410717c-d715-4c61-9ec7-adc9e88c1232 - c8c1fb2d1e00413a4a911d1bd7980d44a4e252a1)
 

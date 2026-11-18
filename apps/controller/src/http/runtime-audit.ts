@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import type { IncomingMessage } from "node:http";
+import { createServer } from "node:https";
 import { isAbsolute } from "node:path";
 
 import { AuditEventFactory, redactAuditDetails } from "@openclaw-enterprise/audit";
@@ -12,7 +14,11 @@ import {
   type RuntimeAuditObservation,
   type RuntimeAuditSource,
 } from "@openclaw-enterprise/contracts";
-import type { OpenClawController } from "@openclaw-enterprise/occ";
+import type {
+  GatewayRuntimeAuditGrant,
+  OpenClawController,
+  PlatformUnitOfWork,
+} from "@openclaw-enterprise/occ";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -20,22 +26,12 @@ import { Check } from "typebox/value";
 import { failure } from "./errors.ts";
 import { createOpenShellAuditDecoder, OPENSHELL_AUDIT_BYTES } from "./openshell-runtime-audit.ts";
 
-const grantProperties = {
-  tokenDigest: Type.String({ pattern: "^[0-9a-f]{64}$" }),
-  namespaceId: Type.String({ minLength: 1, maxLength: 200 }),
-  agentId: Type.String({ minLength: 1, maxLength: 200 }),
-  agentRevisionId: Type.String({ minLength: 1, maxLength: 200 }),
-};
-const grantSchema = Type.Object(
-  {
-    ...grantProperties,
-    runtimeSource: Type.Union([Type.Literal("openclaw"), Type.Literal("codex")]),
-  },
-  { additionalProperties: false },
-);
 const openShellGrantSchema = Type.Object(
   {
-    ...grantProperties,
+    tokenDigest: Type.String({ pattern: "^[0-9a-f]{64}$" }),
+    namespaceId: Type.String({ minLength: 1, maxLength: 200 }),
+    agentId: Type.String({ minLength: 1, maxLength: 200 }),
+    agentRevisionId: Type.String({ minLength: 1, maxLength: 200 }),
     runtimeSource: Type.Literal("openshell"),
     openshellSandboxId: Type.String({
       pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -43,26 +39,30 @@ const openShellGrantSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const grantFileSchema = Type.Array(Type.Union([grantSchema, openShellGrantSchema]), {
+const grantFileSchema = Type.Array(openShellGrantSchema, {
   minItems: 1,
   maxItems: 1000,
 });
 
-type HarnessGrant = Omit<Static<typeof grantSchema>, "tokenDigest">;
-type Grant = Omit<HarnessGrant, "runtimeSource"> & { readonly runtimeSource: RuntimeAuditSource };
-type OpenShellGrants = ReadonlyMap<string, Grant>;
+type OpenShellGrant = Omit<
+  Static<typeof openShellGrantSchema>,
+  "tokenDigest" | "openshellSandboxId"
+>;
+type Grant = GatewayRuntimeAuditGrant | OpenShellGrant;
+type OpenShellGrants = ReadonlyMap<string, OpenShellGrant>;
 
-export type RuntimeAuditAdmission = {
-  (authorization: string | undefined): HarnessGrant | undefined;
-  readonly admitOpenShell?: (authorization: string | undefined) => OpenShellGrants | undefined;
-};
+export type OpenShellRuntimeAuditAdmission = (
+  authorization: string | undefined,
+) => OpenShellGrants | undefined;
 
 function credentialDigest(authorization: string | undefined): string | undefined {
   const token = authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
   return token === undefined ? undefined : createHash("sha256").update(token).digest("hex");
 }
 
-export async function loadRuntimeAuditAdmission(path: string): Promise<RuntimeAuditAdmission> {
+export async function loadRuntimeAuditAdmission(
+  path: string,
+): Promise<OpenShellRuntimeAuditAdmission> {
   if (!isAbsolute(path)) {
     throw new Error("OCC_RUNTIME_AUDIT_GRANTS_PATH must be an absolute path.");
   }
@@ -75,46 +75,21 @@ export async function loadRuntimeAuditAdmission(path: string): Promise<RuntimeAu
   if (!Check(grantFileSchema, document)) {
     throw new Error("The runtime audit grants file is invalid.");
   }
-  const grants = new Map<string, HarnessGrant>();
-  const openShellGrants = new Map<string, Map<string, Grant>>();
+  const openShellGrants = new Map<string, Map<string, OpenShellGrant>>();
   const enrolledSandboxes = new Set<string>();
-  for (const { tokenDigest, ...grant } of document) {
-    if ("openshellSandboxId" in grant) {
-      const { openshellSandboxId, ...scope } = grant;
-      if (enrolledSandboxes.has(openshellSandboxId)) {
-        throw new Error("An OpenShell Sandbox UUID has more than one runtime audit grant.");
-      }
-      enrolledSandboxes.add(openshellSandboxId);
-      const sandboxes = openShellGrants.get(tokenDigest) ?? new Map<string, Grant>();
-      sandboxes.set(openshellSandboxId, Object.freeze(scope));
-      openShellGrants.set(tokenDigest, sandboxes);
-      continue;
+  for (const { tokenDigest, openshellSandboxId, ...scope } of document) {
+    if (enrolledSandboxes.has(openshellSandboxId)) {
+      throw new Error("An OpenShell Sandbox UUID has more than one runtime audit grant.");
     }
-    if (grants.has(tokenDigest)) {
-      throw new Error("A runtime audit credential has more than one grant.");
-    }
-    grants.set(tokenDigest, Object.freeze(grant));
+    enrolledSandboxes.add(openshellSandboxId);
+    const sandboxes = openShellGrants.get(tokenDigest) ?? new Map<string, OpenShellGrant>();
+    sandboxes.set(openshellSandboxId, Object.freeze(scope));
+    openShellGrants.set(tokenDigest, sandboxes);
   }
-  for (const digest of openShellGrants.keys()) {
-    if (grants.has(digest)) {
-      throw new Error(
-        "An OpenShell exporter credential is also a scoped runtime audit credential.",
-      );
-    }
-  }
-  const admit = (authorization: string | undefined) => {
+  return (authorization) => {
     const digest = credentialDigest(authorization);
-    return digest === undefined ? undefined : grants.get(digest);
+    return digest === undefined ? undefined : openShellGrants.get(digest);
   };
-  if (openShellGrants.size === 0) {
-    return admit;
-  }
-  return Object.assign(admit, {
-    admitOpenShell: (authorization: string | undefined) => {
-      const digest = credentialDigest(authorization);
-      return digest === undefined ? undefined : openShellGrants.get(digest);
-    },
-  });
 }
 
 function parseObservation(
@@ -206,59 +181,127 @@ function auditEvidence(installationId: string, grant: Grant, event: RuntimeAudit
 }
 
 async function recordBatch(
-  controller: OpenClawController,
+  unit: PlatformUnitOfWork,
+  installationId: string,
   observations: readonly { grant: Grant; event: RuntimeAuditObservation }[],
 ): Promise<void> {
-  if (observations.length === 0) {
-    return;
-  }
-  await controller.transact(async (unit) => {
-    const checked = new Set<Grant>();
-    for (const { grant, event } of observations) {
-      if (!checked.has(grant)) {
-        const revision = await unit.revisions.findRevision(
-          grant.namespaceId,
-          grant.agentId,
-          grant.agentRevisionId,
-        );
-        const agent = await unit.agents.findAgent(grant.namespaceId, grant.agentId);
-        if (
-          revision === undefined ||
-          agent === undefined ||
-          agent.status === "deleting" ||
-          agent.servicePrincipalId !== revision.servicePrincipalId ||
-          (grant.runtimeSource !== "openshell" && revision.harness.id !== grant.runtimeSource)
-        ) {
-          throw failure(
-            403,
-            "FORBIDDEN",
-            "The runtime audit grant no longer has an Agent revision.",
-          );
-        }
-        checked.add(grant);
+  const checked = new Set<Grant>();
+  for (const { grant, event } of observations) {
+    if (!checked.has(grant)) {
+      const revision = await unit.revisions.findRevision(
+        grant.namespaceId,
+        grant.agentId,
+        grant.agentRevisionId,
+      );
+      const agent = await unit.agents.findAgent(grant.namespaceId, grant.agentId);
+      if (
+        revision === undefined ||
+        agent === undefined ||
+        agent.status === "deleting" ||
+        agent.servicePrincipalId !== revision.servicePrincipalId ||
+        (grant.runtimeSource !== "openshell" && revision.harness.id !== grant.runtimeSource)
+      ) {
+        throw failure(403, "FORBIDDEN", "The runtime audit grant no longer has an Agent revision.");
       }
-      await unit.audit.append(auditEvidence(controller.installation.id, grant, event));
+      checked.add(grant);
     }
-  });
+    await unit.audit.append(auditEvidence(installationId, grant, event));
+  }
 }
+
+const privateGatewayRequests = new WeakSet<IncomingMessage>();
 
 function auditReason(reason: string): string {
   const safe = redactAuditDetails(reason);
   return [...(safe as string)].slice(0, RUNTIME_AUDIT_REASON_LIMIT).join("");
 }
 
+export async function startGatewayRuntimeAuditListener(
+  app: FastifyInstance,
+  options: {
+    readonly host: string;
+    readonly port: number;
+    readonly loadTls: () => Promise<{ readonly key: Buffer; readonly cert: Buffer }>;
+    readonly onTlsReloadError: () => void;
+  },
+) {
+  let tls = await options.loadTls();
+  const server = createServer(
+    { ...tls, requestTimeout: 5_000, headersTimeout: 5_000, connectionsCheckingInterval: 1_000 },
+    (request, response) => {
+      if (request.method !== "POST" || request.url !== "/internal/runtime-audit") {
+        response.writeHead(404).end();
+        return;
+      }
+      privateGatewayRequests.add(request);
+      app.routing(request, response);
+    },
+  );
+  server.setTimeout(5_000, (socket) => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(options.port, options.host, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  // Kubernetes replaces the mounted files when cert-manager renews the leaf.
+  let refreshing = false;
+  const refresh = setInterval(() => {
+    if (refreshing) {
+      return;
+    }
+    refreshing = true;
+    void options
+      .loadTls()
+      .then((next) => {
+        if (!next.key.equals(tls.key) || !next.cert.equals(tls.cert)) {
+          server.setSecureContext(next);
+          tls = next;
+        }
+      })
+      .catch(options.onTlsReloadError)
+      .finally(() => {
+        refreshing = false;
+      });
+  }, 60_000).unref();
+  server.once("close", () => clearInterval(refresh));
+  return server;
+}
+
 export function registerRuntimeAudit(
   app: FastifyInstance,
-  admit: RuntimeAuditAdmission,
   getController: () => OpenClawController | undefined,
+  privateGateway: boolean,
+  admitOpenShell?: OpenShellRuntimeAuditAdmission,
 ): void {
-  const admittedRequests = new WeakMap<FastifyRequest, Grant>();
+  const requestDigests = new WeakMap<FastifyRequest, string>();
   app.post(
     "/internal/runtime-audit",
     {
       bodyLimit: 4096,
       onRequest: async (request) => {
-        const grant = admit(request.headers.authorization);
+        if (privateGateway && !privateGatewayRequests.has(request.raw)) {
+          throw failure(404, "NOT_FOUND", "The audit endpoint is unavailable on this listener.");
+        }
+        const digest = credentialDigest(request.headers.authorization);
+        if (digest === undefined) {
+          throw failure(401, "UNAUTHENTICATED", "A runtime audit credential is required.");
+        }
+        requestDigests.set(request, digest);
+      },
+    },
+    async (request, reply) => {
+      const digest = requestDigests.get(request);
+      if (digest === undefined) {
+        throw failure(401, "UNAUTHENTICATED", "A runtime audit credential is required.");
+      }
+      const controller = getController();
+      if (controller === undefined) {
+        throw failure(503, "DEPENDENCY_UNAVAILABLE", "The runtime audit writer is unavailable.");
+      }
+      await controller.transact(async (unit) => {
+        const grant = await unit.audit.findGatewayRuntimeGrant(digest);
         if (grant === undefined) {
           throw failure(401, "UNAUTHENTICATED", "A runtime audit credential is required.");
         }
@@ -269,28 +312,20 @@ export function registerRuntimeAudit(
             "The runtime audit credential does not match the source.",
           );
         }
-        admittedRequests.set(request, grant);
-      },
-    },
-    async (request, reply) => {
-      const grant = admittedRequests.get(request);
-      const controller = getController();
-      if (grant === undefined || controller === undefined) {
-        throw failure(503, "DEPENDENCY_UNAVAILABLE", "The runtime audit writer is unavailable.");
-      }
-      const event = parseObservation(request.body, grant.runtimeSource);
-      await recordBatch(controller, [{ grant, event }]);
+        const event = parseObservation(request.body, grant.runtimeSource);
+        await recordBatch(unit, controller.installation.id, [{ grant, event }]);
+      });
       await reply.code(204).send();
     },
   );
-  if (admit.admitOpenShell !== undefined) {
-    registerOpenShellRuntimeAudit(app, admit.admitOpenShell, getController);
+  if (admitOpenShell !== undefined) {
+    registerOpenShellRuntimeAudit(app, admitOpenShell, getController);
   }
 }
 
 function registerOpenShellRuntimeAudit(
   app: FastifyInstance,
-  admit: NonNullable<RuntimeAuditAdmission["admitOpenShell"]>,
+  admit: OpenShellRuntimeAuditAdmission,
   getController: () => OpenClawController | undefined,
 ): void {
   const decode = createOpenShellAuditDecoder();
@@ -339,7 +374,11 @@ function registerOpenShellRuntimeAudit(
             event: parseObservation(event, "openshell"),
           }),
         );
-        await recordBatch(controller, observations);
+        if (observations.length > 0) {
+          await controller.transact((unit) =>
+            recordBatch(unit, controller.installation.id, observations),
+          );
+        }
         // An empty protobuf message is a successful OTLP ExportLogsServiceResponse.
         await reply.code(200).type("application/x-protobuf").send(Buffer.alloc(0));
       },

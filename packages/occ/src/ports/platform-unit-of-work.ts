@@ -231,7 +231,13 @@ export function bindPlatformUnitOfWork(
       "retryByWorkId",
       "releaseConfiguration",
     ]),
-    audit: bindRepository(repositories.audit, lifetime, ["append", "list"]),
+    audit: bindRepository(repositories.audit, lifetime, [
+      "append",
+      "list",
+      "findGatewayRuntimeGrant",
+      "registerGatewayRuntimeGrant",
+      "removeGatewayRuntimeGrant",
+    ]),
     operations: bindRepository(repositories.operations, lifetime, [
       "append",
       "list",

@@ -47,7 +47,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_ENABLED` — Enables the Agent native admin pilot; default: `false`.
 - `OCC_AGENT_RUNTIME_LOGS_ENABLED` — `false` makes the Agent runtime status and log routes answer `501`; default: `true`. Set by the chart's `agentRuntimeLogs.enabled`.
 - `OCC_CONTROL_PLANE_AUDIT_ENABLED` — Enables Control Plane audit, audit events from configured runtimes, and authorized Agent audit reads. Defaults to `true` in development and `false` in production. Helm sets it on the API and worker from `controlPlaneAudit.enabled`. See the [audit guide](../../guides/topics/audit-log.md).
-- `OCC_RUNTIME_AUDIT_GRANTS_PATH` — API-only absolute path to the runtime sender grants file. The API reads it at startup when audit is on. See [runtime activity](../../guides/topics/audit-log.md#runtime-activity).
+- `OCC_RUNTIME_AUDIT_GRANTS_PATH` — API-only absolute path to the OpenShell audit exporter grants file. The API reads it at startup when audit is on. See [OpenShell network denials](../../guides/topics/audit-log.md#openshell-network-denials).
 - `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` — `shared-cookie` (default) or guarded OIDC `host-only-exchange`; see [native access](../agent-native-admin.md#host-only-session-exchange).
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required for shared browser sessions even when native access is disabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.

@@ -1,4 +1,4 @@
-import { registerRuntimeAudit, type RuntimeAuditAdmission } from "./http/runtime-audit.ts";
+import { registerRuntimeAudit, type OpenShellRuntimeAuditAdmission } from "./http/runtime-audit.ts";
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
@@ -215,7 +215,10 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
-  readonly runtimeAuditAdmission?: RuntimeAuditAdmission;
+  readonly runtimeAudit?: {
+    readonly privateGateway?: boolean;
+    readonly admitOpenShell?: OpenShellRuntimeAuditAdmission;
+  };
   /** Durable sink for required HTTP admission and result records. */
   readonly durableRequestAuditSink?: AuditSink;
   readonly agentAuditCursorSecret?: string;
@@ -1986,8 +1989,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }),
   };
 
-  if (options.runtimeAuditAdmission !== undefined) {
-    registerRuntimeAudit(app, options.runtimeAuditAdmission, () => controller);
+  if (options.runtimeAudit !== undefined) {
+    registerRuntimeAudit(
+      app,
+      () => controller,
+      options.runtimeAudit.privateGateway === true,
+      options.runtimeAudit.admitOpenShell,
+    );
   }
 
   const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();

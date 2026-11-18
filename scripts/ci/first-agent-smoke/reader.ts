@@ -49,15 +49,16 @@ interface Reader {
 interface HelmValues {
   images: { controller: string };
   controlPlane?: Record<string, unknown>;
+  controlPlaneAudit?: { enabled: boolean };
 }
 
 interface InstallationValues {
   drivers: { compute: { configuration: { network: { publicGithubRead?: Reader["peer"] } } } };
 }
 
-// Local Setup installs the controller first. Use its generated Installation and
-// chart values to add the reserved reader peer before admitting a revision.
-export async function enablePublicReader(stack: LocalSetup): Promise<Reader> {
+// Use Local Setup's Installation and chart values to add the reader peer and
+// turn on the default chart-managed audit transport before admitting revisions.
+export async function configureSmokeInstallation(stack: LocalSetup): Promise<Reader> {
   const valuesPath = join(stack.directory, "helm-values.json");
   const chartValues: unknown = JSON.parse(await readFile(valuesPath, "utf8"));
   const values = chartValues as HelmValues;
@@ -105,6 +106,7 @@ export async function enablePublicReader(stack: LocalSetup): Promise<Reader> {
     ...values.controlPlane,
     installationChecksum: createHash("sha256").update(installationData).digest("hex"),
   };
+  values.controlPlaneAudit = { enabled: true };
   await writeFile(valuesPath, JSON.stringify(values));
   await run("helm", [
     "upgrade",

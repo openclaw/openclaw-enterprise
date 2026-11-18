@@ -1,5 +1,9 @@
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
-import { controlPlaneAuditEnabled } from "./control-plane-audit.ts";
+import {
+  CHART_RUNTIME_AUDIT_CA_PATH,
+  chartRuntimeAudit,
+  controlPlaneAuditEnabled,
+} from "./control-plane-audit.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
   openShellProxyConfiguration,
@@ -239,6 +243,7 @@ export interface InstallationRuntimeDrivers {
   readonly bundledPresetVersions?: readonly BundledPresetVersion[];
   readonly installation: InstallationStartupConfiguration;
   readonly computeDriver: ComputeDriver;
+  readonly privateGatewayRuntimeAudit?: boolean;
   readonly configurationDriver: ConfigurationDriver;
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
@@ -827,6 +832,9 @@ export async function loadInstallationConfiguration(options: {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly packageRoot?: string;
   readonly startupConfiguration?: StartupConfigurationSnapshot;
+  readonly gatewayRuntimeAudit?: NonNullable<
+    ConstructorParameters<typeof KubernetesComputeDriver>[1]
+  >["gatewayRuntimeAudit"];
   /** Real-runtime tests replace the transport or the Driver; never a production path. */
   readonly createOpenShellBackend?: (
     definition: OpenShellBackendDefinition,
@@ -1555,6 +1563,7 @@ async function composeInstallationConfiguration(
   // actual recipient and enforcement before release or the first eligible material read.
   repositoryGitDriver?.requireRepositoryGitTransport();
   let computeDriver: ComputeDriver;
+  let privateGatewayRuntimeAudit = false;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
       computePackage.module,
@@ -1571,46 +1580,72 @@ async function composeInstallationConfiguration(
       },
     );
   } else {
-    computeDriver = new KubernetesComputeDriver(
-      compute.configuration as unknown as KubernetesComputeDriverOptions,
-      {
-        id: compute.id,
-        implementation: compute.implementation,
-        lifecycleDrivers: [configurationDriver],
-        auditEnabled: controlPlaneAuditEnabled(
-          options.mode,
-          environment.OCC_CONTROL_PLANE_AUDIT_ENABLED,
-        ),
-        ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-        ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-        // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
-        ...(openShell !== undefined &&
-        sandboxDriver !== undefined &&
-        sandboxPackage === undefined &&
-        options.createSandboxDriver === undefined &&
-        credentialGatewayDriver !== undefined
-          ? {
-              openShellAttachments: {
-                sandboxDriver,
-                credentialGatewayDriver,
-                attachments: credentialGatewayDriver.attachments,
-              },
-            }
-          : {}),
-        ...(protectedDriver === undefined ? {} : { protectedDriver }),
-        preparedTokens: tokenService,
-        ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
-          ? {}
-          : { preparedRepositoryIngress: true }),
-        preprovisionedNamespace,
-        nodeEnrollment: createGatewayNodeEnrollment(() =>
-          readWorkspaceFilesApiKey(
-            nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
-          ),
-        ),
-        readNodeCa: () => readHarnessNodeCa(environment),
-      },
+    const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
+    const auditEnabled = controlPlaneAuditEnabled(
+      options.mode,
+      environment.OCC_CONTROL_PLANE_AUDIT_ENABLED,
     );
+    const chartAudit = auditEnabled
+      ? chartRuntimeAudit(environment.OCC_CHART_RUNTIME_AUDIT)
+      : undefined;
+    privateGatewayRuntimeAudit =
+      chartAudit !== undefined && kubernetes.runtime?.audit === undefined;
+    computeDriver = new KubernetesComputeDriver(kubernetes, {
+      id: compute.id,
+      implementation: compute.implementation,
+      lifecycleDrivers: [configurationDriver],
+      auditEnabled,
+      ...(options.gatewayRuntimeAudit === undefined
+        ? {}
+        : { gatewayRuntimeAudit: options.gatewayRuntimeAudit }),
+      ...(chartAudit === undefined ||
+      !privateGatewayRuntimeAudit ||
+      options.gatewayRuntimeAudit === undefined
+        ? {}
+        : {
+            gatewayRuntimeAuditTarget: {
+              endpoint: `https://openclaw-enterprise-runtime-audit.${chartAudit.namespace}.svc:${chartAudit.port}/internal/runtime-audit`,
+              caBundle: await readPublicCaBundle(CHART_RUNTIME_AUDIT_CA_PATH),
+              peer: {
+                namespace: chartAudit.namespace,
+                port: chartAudit.port,
+                podLabels: {
+                  "app.kubernetes.io/name": "openclaw-enterprise",
+                  "app.kubernetes.io/instance": chartAudit.release,
+                  "app.kubernetes.io/component": "api",
+                },
+              },
+            },
+          }),
+      ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+      ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+      // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
+      ...(openShell !== undefined &&
+      sandboxDriver !== undefined &&
+      sandboxPackage === undefined &&
+      options.createSandboxDriver === undefined &&
+      credentialGatewayDriver !== undefined
+        ? {
+            openShellAttachments: {
+              sandboxDriver,
+              credentialGatewayDriver,
+              attachments: credentialGatewayDriver.attachments,
+            },
+          }
+        : {}),
+      ...(protectedDriver === undefined ? {} : { protectedDriver }),
+      preparedTokens: tokenService,
+      ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
+        ? {}
+        : { preparedRepositoryIngress: true }),
+      preprovisionedNamespace,
+      nodeEnrollment: createGatewayNodeEnrollment(() =>
+        readWorkspaceFilesApiKey(
+          nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
+        ),
+      ),
+      readNodeCa: () => readHarnessNodeCa(environment),
+    });
   }
   const namespaceLifecycleBindings =
     sandboxDriver === undefined ||
@@ -1645,6 +1680,7 @@ async function composeInstallationConfiguration(
     bundledPresetVersions,
     installation,
     computeDriver,
+    ...(privateGatewayRuntimeAudit ? { privateGatewayRuntimeAudit } : {}),
     namespaceLifecycleBindings,
     configurationDriver,
     secretDriver,

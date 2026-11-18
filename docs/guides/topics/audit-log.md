@@ -100,33 +100,24 @@ event names the permission that admitted the reader, `read_logs` or `administer`
 ### Runtime activity
 
 Turn on [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
-before you configure a runtime sender. This setting also enables the Agent
-audit API. In Helm, set `api.runtimeAudit.grantsSecretName` to a dedicated
-Secret in the API namespace with the key `grants.json`.
-In other deployments, set `OCC_RUNTIME_AUDIT_GRANTS_PATH` on the API to the
-absolute path of a file that only the operator can change.
-Each grant in the file contains `namespaceId`, `agentId`,
-`agentRevisionId`, `runtimeSource`, and `tokenDigest`. Generate 32 random
-bytes and encode them as Base64URL without padding. Set `tokenDigest` to
-the lowercase SHA-256 digest of that token text. Store the grants in a JSON
-array. The API reads grants at startup. Restart the API after you update them.
+to collect runtime events and use the Agent audit API.
 
-For a dedicated Kubernetes Gateway, set the Compute Driver
-`runtime.audit.endpoint` to the HTTPS endpoint at `/internal/runtime-audit`.
-Create the revision’s Secret in the Gateway namespace. Use the name
-`runtime-audit-` followed by the first 24 hexadecimal characters of the
-SHA-256 digest of `JSON.stringify([agentId, agentRevisionId])`. Store the
-token text under the key `token`. The Gateway mounts the file read-only.
-Each Gateway waits for its revision's Secret before it starts.
-The Kubernetes configuration must let that Gateway reach the selected API.
+With Helm-managed Gateway routing, the audit setting also creates the private
+HTTPS endpoint for managed dedicated Gateways. Deploy Agent revisions from
+the Console as usual. During deployment, Kubernetes Compute saves a token
+for the revision in a Kubernetes Secret and mounts it read-only in the
+Gateway. Compute saves a grant with the token's hash in PostgreSQL before
+it starts the Gateway.
+The API checks the grant when it receives an event. The grant takes effect as
+soon as PostgreSQL saves it.
+
+For an installation that supplies its own receiver route, set the Compute
+Driver's `runtime.audit.endpoint` to its HTTPS URL at
+`/internal/runtime-audit`. Make that URL reachable from the Gateway.
+
 If you turn audit off, reconcile the Agent so the Gateway starts without
 the audit configuration. A Gateway with audit configured must save the
 admission record before it starts a covered turn.
-
-For direct Gateway testing, set `OPENCLAW_RUNTIME_AUDIT_URL` and
-`OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH` on the Gateway process. Protect the
-credential file from Agent tools and workloads. The Gateway reads it at
-startup.
 
 Runtime activity shows the action, the reporting component, and the Agent
 revision. A turn ID links events from one turn. A message ID points to a saved
@@ -167,10 +158,18 @@ OpenShell Helm values, set the following parameters under
 | `headers_file` | Absolute path to the export credential file                                    |
 
 Mount the file with `server.extraVolumes` and `server.extraVolumeMounts`.
-Use the line `authorization=Bearer <token>` in the file. Give this exporter
-its own credential. In the OCC grants file, use `runtimeSource: "openshell"`,
-the exporter token digest, and the enrolled `openshellSandboxId` for each
-Agent revision. Start the supervisors with the new export settings.
+Generate 32 random bytes for the exporter token. Encode them as Base64URL
+without padding. Use the line `authorization=Bearer <token>` in the file.
+
+Create an OCC grants file with a JSON array. Each entry contains
+`namespaceId`, `agentId`, `agentRevisionId`, `runtimeSource: "openshell"`,
+`openshellSandboxId`, and `tokenDigest`. Set `tokenDigest` to the lowercase
+SHA-256 hash of the exporter token text. In Helm, set
+`api.runtimeAudit.grantsSecretName` to the name of a Secret in the API namespace
+with the key `grants.json`. In other deployments, set
+`OCC_RUNTIME_AUDIT_GRANTS_PATH` on the API to the absolute path of the file.
+Restart the API after you change the OpenShell grants. Start the supervisors
+with the new export settings.
 Get the Sandbox UUID from the authenticated OpenShell Gateway. Confirm that
 the Sandbox's `openclaw.dev/revision-id` annotation identifies the revision
 in the grant. Use a new grant when the Sandbox has a new UUID.

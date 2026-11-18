@@ -72,7 +72,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose
  *   ServicePrincipal may operate that Secret, deploys it, and returns
- *   `{ namespace, secretRef, agent, revision }`.
+ *   `{ namespace, secretRef, agent, revision }`. Pass `{ dedicated: true }` for dedicated Codex.
  */
 export async function createPostgresAgentApp(
   t,
@@ -181,17 +181,14 @@ export async function createPostgresAgentApp(
   );
   assert.ok(principal);
 
-  async function deployAgent(name) {
+  async function deployAgent(name, { dedicated = sandboxDriver !== undefined } = {}) {
     const created = await inject("POST", "/namespaces", { name: `${name} ${randomUUID()}` });
     assert.equal(created.statusCode, 201, created.body);
     const namespace = created.json().data;
     await controller.handleNamespaceLifecycle(principal.id, namespace.id, "ready");
     const configuration = await inject("POST", `/namespaces/${namespace.id}/configurations`, {
       kind: "agent",
-      values: createHarnessConfiguration(
-        sandboxDriver === undefined ? "openclaw" : "codex",
-        "gpt-4.1",
-      ),
+      values: createHarnessConfiguration(dedicated ? "codex" : "openclaw", "gpt-4.1"),
     });
     assert.equal(configuration.statusCode, 201, configuration.body);
     const secret = await inject("POST", `/namespaces/${namespace.id}/secrets`, {
@@ -208,7 +205,7 @@ export async function createPostgresAgentApp(
     );
     const createdAgent = await inject("POST", `/namespaces/${namespace.id}/agents`, {
       name: `${name} ${randomUUID()}`,
-      ...(sandboxDriver === undefined ? {} : { executionMode: "dedicated" }),
+      ...(dedicated ? { executionMode: "dedicated" } : {}),
       configurationId: configuration.json().data.id,
       harnessAuth: { method: "api_key", source: secretRef },
     });

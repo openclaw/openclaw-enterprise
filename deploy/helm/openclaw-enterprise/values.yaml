@@ -121,7 +121,8 @@ agentNativeAdmin:
 agentRuntimeLogs:
   enabled: true
 
-# Durable request and worker audit records, plus the authorized Agent audit API.
+# Durable audit records and the Agent audit API. With Gateway routing, also
+# configures a private receiver for audit events from managed dedicated Gateways.
 controlPlaneAudit:
   enabled: false
 
@@ -251,7 +252,7 @@ database:
 
 api:
   runtimeAudit:
-    # When audit is enabled, mount this Secret from the API namespace.
+    # Optional OpenShell audit exporter grants. Mount this Secret in the API when audit is on.
     # The Secret must contain the key grants.json.
     grantsSecretName: ""
   # Public branding files: theme.json and referenced images. The API and the initialization Job's

@@ -190,6 +190,7 @@ export interface Pod {
   metadata: {
     namespace: string;
     name: string;
+    uid: string;
     creationTimestamp: string;
     deletionTimestamp?: string | null;
     labels?: Record<string, string>;
@@ -200,6 +201,7 @@ export interface Pod {
   status?: {
     phase?: string;
     conditions?: { type: string; status: string }[];
+    containerStatuses?: { name: string; containerID?: string; restartCount: number }[];
   };
 }
 
@@ -288,6 +290,33 @@ export function kubectl(
     timeout: 2 * minute,
     ...options,
   });
+}
+
+export async function apiProcess(stack: LocalSetup) {
+  const { stdout } = await kubectl(stack, [
+    "-n",
+    stack.state.platformNamespace,
+    "get",
+    "pods",
+    "-l",
+    "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=api",
+    "-o",
+    "json",
+  ]);
+  const ready = podList(stdout).filter(
+    (pod) =>
+      !pod.metadata.deletionTimestamp &&
+      pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+  );
+  assert.equal(ready.length, 1, "the chart must have one ready API Pod");
+  const api = ready[0]!;
+  const container = api.status?.containerStatuses?.find(({ name }) => name === "api");
+  assert.ok(api.metadata.uid && container?.containerID, "the API Pod must identify its process");
+  return {
+    podUid: api.metadata.uid,
+    containerId: container.containerID,
+    restartCount: container.restartCount,
+  };
 }
 
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent

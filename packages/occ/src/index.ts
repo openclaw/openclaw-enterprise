@@ -635,6 +635,7 @@ export {
   type PredecessorReplacement,
   type AgentRevisionReadRepository,
   type AgentRevisionRepository,
+  type GatewayRuntimeAuditGrant,
   type InMemoryPlatformStateOptions,
   type InstallationReadRepository,
   type InstallationRepository,

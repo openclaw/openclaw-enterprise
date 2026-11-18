@@ -175,7 +175,7 @@ export function createStepRecorder(now = () => performance.now()) {
   const timings: TimingRow[] = [];
   const phases = new Map<Phase, string>([
     ["local-setup", "Local Setup (occ dev up)"],
-    ["install-reader", "install public reader and select its peer"],
+    ["install-reader", "install public reader and enable auditing"],
     ["route-model", "route api.openai.com to the stand-in provider"],
     ["initial-admissions", "initial Agent admissions"],
     ["admit-embedded", "embedded OpenClaw Agent via scripts/first-agent.ts"],

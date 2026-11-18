@@ -193,7 +193,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 79 && completedCount > 79) {
     return "preRevisionRuntimeInputs";
   }
-  if (count === 81 && completedCount > 81) {
+  if (count === 80 && completedCount > 80) {
     return "preRuntimeAudit";
   }
   if (count === completedCount) {

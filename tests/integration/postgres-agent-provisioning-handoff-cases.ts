@@ -964,7 +964,7 @@ export function registerDeploymentHandoffCases() {
         // Turn collection off in the API while the original worker still holds the audited claim.
         await fixture.restartApi({
           controlPlaneAuditEnabled: false,
-          runtimeAuditAdmission: () => undefined,
+          openShellRuntimeAuditAdmission: () => undefined,
         });
         // Sender configuration alone cannot expose the runtime audit route.
         const auditOff = await fixture.request("POST", "/internal/runtime-audit", {});

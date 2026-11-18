@@ -1,4 +1,4 @@
-import type { RuntimeAuditAdmission } from "../http/runtime-audit.ts";
+import type { OpenShellRuntimeAuditAdmission } from "../http/runtime-audit.ts";
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { validateAuthSecret } from "../auth/configuration.ts";
 import {
@@ -67,7 +67,8 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
-  readonly runtimeAuditAdmission?: RuntimeAuditAdmission;
+  readonly privateGatewayRuntimeAudit?: boolean;
+  readonly openShellRuntimeAuditAdmission?: OpenShellRuntimeAuditAdmission;
   readonly channelDirectoryProxyUrl?: string;
   readonly channelDirectoryManagedProxyHost?: string;
   /**
@@ -393,9 +394,12 @@ export async function composeProduction(
         ? {
             durableRequestAuditSink: state.auditSink,
             agentAuditCursorSecret: config.authSecret,
-            ...(config.runtimeAuditAdmission === undefined
-              ? {}
-              : { runtimeAuditAdmission: config.runtimeAuditAdmission }),
+            runtimeAudit: {
+              privateGateway: config.privateGatewayRuntimeAudit === true,
+              ...(config.openShellRuntimeAuditAdmission === undefined
+                ? {}
+                : { admitOpenShell: config.openShellRuntimeAuditAdmission }),
+            },
           }
         : {}),
       backendSummaries: backendSummariesFromDefinitions(installation.backend),

@@ -110,12 +110,14 @@ import type {
   ConfigurationOwnership,
   ConfigurationRepository,
   CredentialSourceRepository,
+  GatewayRuntimeAuditGrant,
   InstallationRepository,
   IAMPolicyRepository,
   NamespaceRepository,
   PersistedNamespace,
   PresetRepository,
   PlatformAuditSink,
+  PlatformAuditRepository,
   PlatformOperation,
   PlatformReadView,
   PlatformStateStore,
@@ -1693,6 +1695,27 @@ export class PostgresPlatformState implements PlatformStateStore {
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
     return this.execute(false, async (state) => work(state));
+  }
+
+  async registerGatewayRuntimeGrant(
+    grant: Parameters<PlatformAuditRepository["registerGatewayRuntimeGrant"]>[0],
+  ): Promise<void> {
+    await this.transactReadCommitted((state) => state.audit.registerGatewayRuntimeGrant(grant));
+  }
+
+  async removeGatewayRuntimeGrant(
+    grant: Parameters<PlatformAuditRepository["removeGatewayRuntimeGrant"]>[0],
+  ): Promise<void> {
+    await this.transact((state) => state.audit.removeGatewayRuntimeGrant(grant));
+  }
+
+  async hasGatewayRuntimeGrant(grant: GatewayRuntimeAuditGrant): Promise<boolean> {
+    const grants = await this.readStatement(
+      `SELECT 1 FROM occ.gateway_runtime_audit_grants
+       WHERE (namespace_id, agent_id, revision_id, runtime_source) = ($1, $2, $3, $4)`,
+      [grant.namespaceId, grant.agentId, grant.agentRevisionId, grant.runtimeSource],
+    );
+    return grants.length > 0;
   }
 
   /** Observe changes committed while acquiring locks, regardless of the connection default. */
@@ -5536,6 +5559,108 @@ export class PostgresPlatformState implements PlatformStateStore {
             ).rows,
           );
           return Object.freeze(found.map((row) => auditFromRow(row, installation.id)));
+        },
+        findGatewayRuntimeGrant: async (tokenDigest) => {
+          const found = rows(
+            (
+              await client.query(
+                `SELECT grant_row.namespace_id, grant_row.agent_id,
+                        grant_row.revision_id, grant_row.runtime_source
+                 FROM occ.gateway_runtime_audit_grants AS grant_row
+                 JOIN occ.agent_revisions AS revision
+                   ON (revision.namespace_id, revision.agent_id, revision.id) =
+                      (grant_row.namespace_id, grant_row.agent_id, grant_row.revision_id)
+                 JOIN occ.agents AS agent
+                   ON (agent.namespace_id, agent.id) = (revision.namespace_id, revision.agent_id)
+                 WHERE grant_row.token_digest = $1 AND agent.status = 'active'
+                   AND revision.gateway_managed_mode
+                   AND revision.admitted_spec #>> '{harness,mode}' = 'dedicated'
+                   AND revision.admitted_spec #>> '{harness,id}' = grant_row.runtime_source
+                 FOR KEY SHARE OF grant_row`,
+                [tokenDigest],
+              )
+            ).rows,
+          )[0];
+          if (found === undefined) {
+            return undefined;
+          }
+          const runtimeSource = text(found, "runtime_source");
+          if (runtimeSource !== "openclaw" && runtimeSource !== "codex") {
+            throw new PersistedStateInvalidError("The runtime audit grant source is invalid.");
+          }
+          return immutableCopy<GatewayRuntimeAuditGrant>({
+            namespaceId: text(found, "namespace_id"),
+            agentId: text(found, "agent_id"),
+            agentRevisionId: text(found, "revision_id"),
+            runtimeSource,
+          });
+        },
+        registerGatewayRuntimeGrant: async (grant) => {
+          const values = [
+            grant.tokenDigest,
+            grant.namespaceId,
+            grant.agentId,
+            grant.agentRevisionId,
+            grant.runtimeSource,
+          ];
+          const result = await client.query(
+            `WITH eligible_revision AS MATERIALIZED (
+               SELECT revision.namespace_id, revision.agent_id, revision.id
+               FROM occ.agent_revisions AS revision
+               JOIN occ.agents AS agent
+                 ON (agent.namespace_id, agent.id) = (revision.namespace_id, revision.agent_id)
+               WHERE (revision.namespace_id, revision.agent_id, revision.id) = ($2, $3, $4)
+                 AND agent.status = 'active' AND revision.gateway_managed_mode
+                 AND revision.admitted_spec #>> '{harness,mode}' = 'dedicated'
+                 AND revision.admitted_spec #>> '{harness,id}' = $5
+               FOR SHARE OF agent
+             ), registration AS (
+               INSERT INTO occ.gateway_runtime_audit_grants
+                 (token_digest, namespace_id, agent_id, revision_id, runtime_source)
+               SELECT $1, namespace_id, agent_id, id, $5 FROM eligible_revision
+               ON CONFLICT DO NOTHING
+               RETURNING token_digest
+             )
+             SELECT EXISTS (SELECT FROM eligible_revision) AS eligible,
+                    EXISTS (SELECT FROM registration) AS registered`,
+            values,
+          );
+          const resolution = rows(result.rows)[0];
+          if (resolution?.eligible !== true) {
+            throw new ScopeViolationError(
+              "The runtime audit grant requires a managed Gateway revision.",
+            );
+          }
+          if (resolution.registered !== true) {
+            // ON CONFLICT waits for a concurrent insert. Read its committed binding
+            // in a new statement so the matching retry can succeed.
+            const current = await client.query(
+              `SELECT token_digest FROM occ.gateway_runtime_audit_grants
+               WHERE (token_digest, namespace_id, agent_id, revision_id, runtime_source) =
+                     ($1, $2, $3, $4, $5)
+               FOR KEY SHARE`,
+              values,
+            );
+            if (current.rowCount !== 1) {
+              throw new ResourceConflictError(
+                "The runtime audit grant conflicts with a registered Gateway.",
+              );
+            }
+          }
+        },
+        removeGatewayRuntimeGrant: async (grant) => {
+          await client.query(
+            `DELETE FROM occ.gateway_runtime_audit_grants
+             WHERE (token_digest, namespace_id, agent_id, revision_id, runtime_source) =
+                   ($1, $2, $3, $4, $5)`,
+            [
+              grant.tokenDigest,
+              grant.namespaceId,
+              grant.agentId,
+              grant.agentRevisionId,
+              grant.runtimeSource,
+            ],
+          );
         },
       },
       operations: {

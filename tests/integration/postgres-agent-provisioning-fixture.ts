@@ -537,7 +537,7 @@ export async function createProvisioningFixture<
   async function restartApi(
     overrides: Pick<
       PostgresDevelopmentConfig,
-      "controlPlaneAuditEnabled" | "runtimeAuditAdmission"
+      "controlPlaneAuditEnabled" | "openShellRuntimeAuditAdmission"
     > = {},
   ) {
     await app.close();

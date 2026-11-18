@@ -956,12 +956,17 @@ index 94a8232..32792c3 100644
      if (recorder) {
 diff --git a/src/infra/openclaw-runtime-audit.test.ts b/src/infra/openclaw-runtime-audit.test.ts
 new file mode 100644
-index 0000000..c5dd94d
+index 0000000..a76a5e0
 --- /dev/null
 +++ b/src/infra/openclaw-runtime-audit.test.ts
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,235 @@
++import { execFileSync } from "node:child_process";
 +import { once } from "node:events";
++import { mkdtemp, readFile, rm } from "node:fs/promises";
 +import { createServer } from "node:http";
++import { createServer as createHttpsServer } from "node:https";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
 +import { expect, it, vi } from "vitest";
 +import {
 +  admitOpenClawRuntimeAuditTurn,
@@ -1006,6 +1011,7 @@ index 0000000..c5dd94d
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_URL", `http://127.0.0.1:${address.port}/runtime-audit`);
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN", "fixture-audit-token");
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH", undefined);
++    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_CA_PATH", undefined);
 +    initializeOpenClawRuntimeAudit();
 +    expect(process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN).toBeUndefined();
 +
@@ -1121,16 +1127,85 @@ index 0000000..c5dd94d
 +    });
 +  }
 +});
++
++it("uses the projected CA only for audit requests", async () => {
++  const directory = await mkdtemp(join(tmpdir(), "openclaw-audit-ca-"));
++  const caPath = join(directory, "ca.pem");
++  const keyPath = join(directory, "key.pem");
++  try {
++    execFileSync(
++      "openssl",
++      [
++        "req",
++        "-x509",
++        "-newkey",
++        "rsa:2048",
++        "-noenc",
++        "-keyout",
++        keyPath,
++        "-out",
++        caPath,
++        "-days",
++        "1",
++        "-subj",
++        "/CN=Runtime Audit Test",
++        "-addext",
++        "subjectAltName=IP:127.0.0.1",
++      ],
++      { stdio: "ignore" },
++    );
++    const requests: Array<{ url?: string; authorization?: string }> = [];
++    const server = createHttpsServer(
++      { cert: await readFile(caPath), key: await readFile(keyPath) },
++      (request, response) => {
++        requests.push({ url: request.url, authorization: request.headers.authorization });
++        request.resume();
++        response.writeHead(204).end();
++      },
++    );
++    server.listen(0, "127.0.0.1");
++    await once(server, "listening");
++    try {
++      const address = server.address();
++      if (!address || typeof address === "string") {
++        throw new Error("Fixture failed to get a loopback address");
++      }
++      const url = `https://127.0.0.1:${address.port}/internal/runtime-audit`;
++      vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_URL", url);
++      vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN", "fixture-audit-token");
++      vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH", undefined);
++      vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_CA_PATH", caPath);
++      vi.resetModules();
++      const audit = await import("./openclaw-runtime-audit.js");
++      audit.initializeOpenClawRuntimeAudit();
++      expect(process.env.OPENCLAW_RUNTIME_AUDIT_CA_PATH).toBeUndefined();
++      await audit.recordOpenClawRuntimeAudit({ action: "openclaw.runtime.turn.admitted" });
++      await expect(fetch(url)).rejects.toThrow();
++      expect(requests).toEqual([
++        { url: "/internal/runtime-audit", authorization: "Bearer fixture-audit-token" },
++      ]);
++    } finally {
++      vi.unstubAllEnvs();
++      server.closeAllConnections();
++      await new Promise<void>((resolve, reject) => {
++        server.close((error) => (error ? reject(error) : resolve()));
++      });
++    }
++  } finally {
++    await rm(directory, { recursive: true, force: true });
++  }
++});
 diff --git a/src/infra/openclaw-runtime-audit.ts b/src/infra/openclaw-runtime-audit.ts
 new file mode 100644
-index 0000000..fca6c76
+index 0000000..359f231
 --- /dev/null
 +++ b/src/infra/openclaw-runtime-audit.ts
-@@ -0,0 +1,465 @@
+@@ -0,0 +1,484 @@
 +/** Protected OpenClaw Enterprise runtime audit sender. */
 +import { randomUUID } from "node:crypto";
 +import { readFileSync } from "node:fs";
 +import { setTimeout as delay } from "node:timers/promises";
++import { Agent, fetch as fetchWithDispatcher } from "undici";
 +import { AsyncContext } from "../shared/async-context.js";
 +import {
 +  formatExecAutoReviewAssessment,
@@ -1180,6 +1255,17 @@ index 0000000..fca6c76
 +};
 +
 +type Destination = { url: URL; token: string };
++type AuditResponse = { ok: boolean; status: number; body: { cancel: () => Promise<void> } | null };
++type AuditPost = (
++  url: URL,
++  options: {
++    method: "POST";
++    headers: Record<string, string>;
++    body: string;
++    redirect: "error";
++    signal: AbortSignal;
++  },
++) => Promise<AuditResponse>;
 +type RuntimeAuditSource = "openclaw" | "codex";
 +type AuditTool = {
 +  fields: { sessionId: string; turnId: string; toolCallId: string; toolName: string };
@@ -1227,10 +1313,12 @@ index 0000000..fca6c76
 +  const candidate = process.env.OPENCLAW_RUNTIME_AUDIT_URL;
 +  const tokenValue = process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN;
 +  const tokenPath = process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH;
++  const caPath = process.env.OPENCLAW_RUNTIME_AUDIT_CA_PATH;
 +  delete process.env.OPENCLAW_RUNTIME_AUDIT_URL;
 +  delete process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN;
 +  delete process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH;
-+  if (!candidate && !tokenValue && !tokenPath) {
++  delete process.env.OPENCLAW_RUNTIME_AUDIT_CA_PATH;
++  if (!candidate && !tokenValue && !tokenPath && !caPath) {
 +    state.initialized = true;
 +    return;
 +  }
@@ -1243,6 +1331,7 @@ index 0000000..fca6c76
 +      url.password ||
 +      url.hash ||
 +      url.search ||
++      (caPath && url.protocol !== "https:") ||
 +      (tokenPath && tokenValue)
 +    ) {
 +      throw new Error("Invalid audit configuration");
@@ -1251,7 +1340,11 @@ index 0000000..fca6c76
 +    if (!token || !/^[A-Za-z0-9._~+/-]+=*$/.test(token)) {
 +      throw new Error("Invalid audit credential");
 +    }
-+    const post = globalThis.fetch;
++    let post: AuditPost = globalThis.fetch;
++    if (caPath) {
++      const dispatcher = new Agent({ connect: { ca: readFileSync(caPath, "utf8") } });
++      post = (url, options) => fetchWithDispatcher(url, { ...options, dispatcher });
++    }
 +    state.sender = (body, source) => deliverAuditEvent({ url, token }, body, source, post);
 +    state.initialized = true;
 +  } catch {
@@ -1289,13 +1382,13 @@ index 0000000..fca6c76
 +  destination: Destination,
 +  body: string,
 +  source: RuntimeAuditSource,
-+  post: typeof fetch,
++  post: AuditPost,
 +): Promise<void> {
 +  for (const retryDelay of [0, 100, 300]) {
 +    if (retryDelay) {
 +      await delay(retryDelay);
 +    }
-+    let response: Response;
++    let response: AuditResponse;
 +    try {
 +      response = await post(destination.url, {
 +        method: "POST",

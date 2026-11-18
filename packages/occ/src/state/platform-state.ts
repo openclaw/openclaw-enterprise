@@ -1110,9 +1110,21 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
   }
 }
 
+export interface GatewayRuntimeAuditGrant {
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly agentRevisionId: string;
+  readonly runtimeSource: "openclaw" | "codex";
+}
+
+type StoredGatewayRuntimeAuditGrant = GatewayRuntimeAuditGrant & { readonly tokenDigest: string };
+
 export interface PlatformAuditRepository {
   append(event: AuditEvent): Promise<void>;
   list(): Promise<readonly Readonly<AuditEvent>[]>;
+  findGatewayRuntimeGrant(tokenDigest: string): Promise<GatewayRuntimeAuditGrant | undefined>;
+  registerGatewayRuntimeGrant(grant: StoredGatewayRuntimeAuditGrant): Promise<void>;
+  removeGatewayRuntimeGrant(grant: StoredGatewayRuntimeAuditGrant): Promise<void>;
 }
 
 interface PlatformOperationBase {
@@ -1314,6 +1326,7 @@ interface PlatformSnapshot {
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
   readonly repositoryWithdrawals: Map<string, Readonly<ControllerWork>>;
   readonly audit: Readonly<AuditEvent>[];
+  readonly gatewayRuntimeAuditGrants: Map<string, GatewayRuntimeAuditGrant>;
   readonly operations: Readonly<PlatformOperation>[];
 }
 
@@ -1445,8 +1458,39 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     repositorySessions: copyStoredMap(snapshot.repositorySessions),
     repositoryBrokerReceipts: copyStoredMap(snapshot.repositoryBrokerReceipts),
     audit: snapshot.audit.map((event) => storedCopy(event)),
+    gatewayRuntimeAuditGrants: new Map(snapshot.gatewayRuntimeAuditGrants),
     operations: snapshot.operations.map((operation) => storedCopy(operation)),
   };
+}
+
+function sameGatewayRuntimeRevision(
+  left: GatewayRuntimeAuditGrant,
+  right: GatewayRuntimeAuditGrant,
+): boolean {
+  return (
+    left.namespaceId === right.namespaceId &&
+    left.agentId === right.agentId &&
+    left.agentRevisionId === right.agentRevisionId
+  );
+}
+
+function eligibleGatewayRuntimeGrant(
+  snapshot: PlatformSnapshot,
+  grant: GatewayRuntimeAuditGrant,
+): boolean {
+  const key = agentKey(grant.namespaceId, grant.agentId);
+  return (
+    snapshot.agents.get(key)?.status === "active" &&
+    snapshot.revisions
+      .get(key)
+      ?.some(
+        (revision) =>
+          revision.id === grant.agentRevisionId &&
+          revision.gatewayManagedMode &&
+          revision.harness.mode === "dedicated" &&
+          revision.harness.id === grant.runtimeSource,
+      ) === true
+  );
 }
 
 function assertInitialized(snapshot: PlatformSnapshot): void {
@@ -4327,6 +4371,48 @@ function repositories(
         snapshot.audit.push(immutableCopy(event));
       },
       list: async () => Object.freeze(snapshot.audit.map((event) => immutableCopy(event))),
+      async findGatewayRuntimeGrant(tokenDigest) {
+        const grant = snapshot.gatewayRuntimeAuditGrants.get(tokenDigest);
+        return grant !== undefined && eligibleGatewayRuntimeGrant(snapshot, grant)
+          ? grant
+          : undefined;
+      },
+      async registerGatewayRuntimeGrant({ tokenDigest, ...grant }) {
+        if (!/^[a-f0-9]{64}$/.test(tokenDigest) || !eligibleGatewayRuntimeGrant(snapshot, grant)) {
+          throw new ScopeViolationError(
+            "The runtime audit grant requires a managed Gateway revision.",
+          );
+        }
+        const current = snapshot.gatewayRuntimeAuditGrants.get(tokenDigest);
+        if (
+          current !== undefined &&
+          sameGatewayRuntimeRevision(current, grant) &&
+          current.runtimeSource === grant.runtimeSource
+        ) {
+          return;
+        }
+        if (
+          current !== undefined ||
+          [...snapshot.gatewayRuntimeAuditGrants.values()].some((stored) =>
+            sameGatewayRuntimeRevision(stored, grant),
+          )
+        ) {
+          throw new ResourceConflictError(
+            "The runtime audit grant conflicts with a registered Gateway.",
+          );
+        }
+        snapshot.gatewayRuntimeAuditGrants.set(tokenDigest, immutableCopy(grant));
+      },
+      async removeGatewayRuntimeGrant({ tokenDigest, ...grant }) {
+        const current = snapshot.gatewayRuntimeAuditGrants.get(tokenDigest);
+        if (
+          current !== undefined &&
+          sameGatewayRuntimeRevision(current, grant) &&
+          current.runtimeSource === grant.runtimeSource
+        ) {
+          snapshot.gatewayRuntimeAuditGrants.delete(tokenDigest);
+        }
+      },
     },
     operations: {
       append: async (operation) => {
@@ -4541,6 +4627,11 @@ function finalizeAgentDeletion(
   for (const id of revisionIds) {
     snapshot.firstDeploymentDigests.delete(id);
   }
+  for (const [tokenDigest, grant] of snapshot.gatewayRuntimeAuditGrants) {
+    if (grant.namespaceId === namespaceId && grant.agentId === agentId) {
+      snapshot.gatewayRuntimeAuditGrants.delete(tokenDigest);
+    }
+  }
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
@@ -4612,6 +4703,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     repositorySessions: new Map(),
     repositoryBrokerReceipts: new Map(),
     audit: [],
+    gatewayRuntimeAuditGrants: new Map(),
     operations: [],
   };
   private pending: Promise<void> = Promise.resolve();

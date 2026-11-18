@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { defaultAgentModel } from "../../../apps/controller/src/console/agents/starter-model.mts";
+import type { AgentAuditPage } from "../../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.mjs";
 import {
   log,
@@ -233,6 +234,45 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   assertChatReply(result, nonce, agent.label);
   const transport = await assertModelAnswered(nonce, agent.label);
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
+}
+
+export async function assertCodexTurnAudit(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+) {
+  const path = `/namespaces/${stack.namespaceId}/agents/${agent.id}/audit-events?limit=100`;
+  // The installed owner reads the persisted events through the same public API as the Console.
+  await waitFor(
+    `${agent.label} turn audit on ${revisionId}`,
+    async () => {
+      const page = (await stack.api("GET", path)) as AgentAuditPage;
+      const events = page.events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          (event) =>
+            event.details.runtimeSource === "codex" && event.details.agentRevisionId === revisionId,
+        );
+      const starts = events.filter((event) => event.action === "openclaw.runtime.turn.started");
+      const completes = events.filter(
+        (event) => event.action === "openclaw.runtime.turn.completed",
+      );
+      return {
+        done: completes.some(
+          (complete) =>
+            complete.details.outcome === "succeeded" &&
+            starts.some(
+              (start) =>
+                start.details.sessionId === complete.details.sessionId &&
+                start.details.turnId === complete.details.turnId,
+            ),
+        ),
+        state: { actions: events.map(({ action }) => action) },
+      };
+    },
+    minute,
+  );
+  log(`${agent.label}: stored matching turn start and successful completion on ${revisionId}`);
 }
 
 export async function readLogs(stack: SmokeStack, agent: SmokeAgent, source: "gateway" | "agent") {

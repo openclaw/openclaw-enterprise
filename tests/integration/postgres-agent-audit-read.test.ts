@@ -1,21 +1,26 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 
 import {
   loadRuntimeAuditAdmission,
-  type RuntimeAuditAdmission,
+  startGatewayRuntimeAuditListener,
+  type OpenShellRuntimeAuditAdmission,
 } from "../../apps/controller/src/http/runtime-audit.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { RUNTIME_AUDIT_ACTIONS, type AgentAuditPage } from "../../packages/contracts/src/index.ts";
+import { ResourceConflictError, ScopeViolationError } from "../../packages/occ/src/index.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 
 const authSecret = "agent-audit-reader-postgres-auth-secret";
@@ -109,7 +114,7 @@ test(
     const proxy = await commitAckProxy(databaseUrl, {
       transactionStatement: "SELECT occ.hold_agent_audit_policy($1)",
     });
-    const runtimeAudit: { admit?: RuntimeAuditAdmission } = {};
+    const openShellAudit: { admit?: OpenShellRuntimeAuditAdmission } = {};
     const { pool, state, principal, app, adminAccount, computeDriver, inject, deployAgent } =
       await createPostgresAgentApp(t, {
         label: "agent-audit",
@@ -120,17 +125,16 @@ test(
         stateOptions: { workQueue: { controlPlaneAuditEnabled: true } },
         appOptions: {
           agentAuditCursorSecret: authSecret,
-          runtimeAuditAdmission: Object.assign(
-            (authorization: string | undefined) => runtimeAudit.admit?.(authorization),
-            {
-              admitOpenShell: (authorization: string | undefined) =>
-                runtimeAudit.admit?.admitOpenShell?.(authorization),
-            },
-          ),
+          runtimeAudit: {
+            admitOpenShell: (authorization: string | undefined) =>
+              openShellAudit.admit?.(authorization),
+          },
         },
       });
     t.after(() => proxy.close());
-    const { agent, namespace, revision } = await deployAgent("Agent Audit Reader");
+    const { agent, namespace, revision } = await deployAgent("Agent Audit Reader", {
+      dedicated: true,
+    });
     const other = await deployAgent("Other Agent");
     const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const otherPath = `/namespaces/${other.namespace.id}/agents/${other.agent.id}`;
@@ -363,35 +367,14 @@ test(
       details: { ...runtimeEvent.details, agentRevisionId: other.revision.id },
     });
 
-    const exporterToken = randomBytes(32).toString("base64url");
     const harnessToken = randomBytes(32).toString("base64url");
-    const sandboxId = randomUUID();
-    const grantFile = join(
-      await privateBootstrapDirectory(t, "runtime-audit-grants-"),
-      "grants.json",
-    );
-    await writeFile(
-      grantFile,
-      JSON.stringify([
-        {
-          tokenDigest: createHash("sha256").update(exporterToken).digest("hex"),
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          agentRevisionId: revision.id,
-          runtimeSource: "openshell",
-          openshellSandboxId: sandboxId,
-        },
-        {
-          tokenDigest: createHash("sha256").update(harnessToken).digest("hex"),
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          agentRevisionId: revision.id,
-          runtimeSource: "openclaw",
-        },
-      ]),
-      { mode: 0o600 },
-    );
-    runtimeAudit.admit = await loadRuntimeAuditAdmission(grantFile);
+    const harnessGrant = {
+      tokenDigest: createHash("sha256").update(harnessToken).digest("hex"),
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      agentRevisionId: revision.id,
+      runtimeSource: "codex",
+    } as const;
     const reviewWithRationale = {
       action: RUNTIME_AUDIT_ACTIONS.reviewDecision,
       eventId: randomUUID(),
@@ -400,7 +383,7 @@ test(
       decision: "denied",
       rationale: `Bearer a ${"Z".repeat(241)}`,
     } as const;
-    const postRuntimeAudit = (payload: unknown, token?: string, source = "openclaw") =>
+    const postRuntimeAudit = (payload: unknown, token?: string, source = "codex") =>
       app.inject({
         method: "POST",
         url: "/internal/runtime-audit",
@@ -413,9 +396,32 @@ test(
         payload: JSON.stringify(payload),
       });
     assert.equal((await postRuntimeAudit(reviewWithRationale)).statusCode, 401);
-    assert.equal((await postRuntimeAudit(reviewWithRationale, exporterToken)).statusCode, 401);
+    assert.equal((await postRuntimeAudit(reviewWithRationale, harnessToken)).statusCode, 401);
+    assert.equal(await state.hasGatewayRuntimeGrant(harnessGrant), false);
+    // The saved harness determines eligibility. Replaying an identical registration can
+    // recover an interrupted worker without replacing a different credential.
+    await assert.rejects(
+      state.registerGatewayRuntimeGrant({ ...harnessGrant, runtimeSource: "openclaw" }),
+      ScopeViolationError,
+    );
+    await Promise.all([
+      state.registerGatewayRuntimeGrant(harnessGrant),
+      state.registerGatewayRuntimeGrant(harnessGrant),
+    ]);
+    assert.equal(await state.hasGatewayRuntimeGrant(harnessGrant), true);
     assert.equal(
-      (await postRuntimeAudit(reviewWithRationale, harnessToken, "codex")).statusCode,
+      await state.hasGatewayRuntimeGrant({ ...harnessGrant, runtimeSource: "openclaw" }),
+      false,
+    );
+    await assert.rejects(
+      state.registerGatewayRuntimeGrant({
+        ...harnessGrant,
+        tokenDigest: randomBytes(32).toString("hex"),
+      }),
+      ResourceConflictError,
+    );
+    assert.equal(
+      (await postRuntimeAudit(reviewWithRationale, harnessToken, "openclaw")).statusCode,
       403,
     );
     assert.equal(
@@ -449,6 +455,144 @@ test(
       const admitted = await postRuntimeAudit(reviewWithRationale, harnessToken);
       assert.equal(admitted.statusCode, 204, admitted.body);
     }
+
+    // An API process already serving this Agent must see a new revision's grant and later
+    // changes to that grant in PostgreSQL without loading a new file or restarting.
+    const replacement = await inject("POST", `${agentPath}/deploy`);
+    assert.equal(replacement.statusCode, 202, replacement.body);
+    const replacementId = replacement.json().data.id as string;
+    assert.notEqual(replacementId, revision.id);
+    const replacementToken = randomBytes(32).toString("base64url");
+    const replacementGrant = {
+      ...harnessGrant,
+      tokenDigest: createHash("sha256").update(replacementToken).digest("hex"),
+      agentRevisionId: replacementId,
+    };
+    const replacementReview = {
+      ...reviewWithRationale,
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+      sessionId: "replacement-session",
+    };
+    assert.equal((await postRuntimeAudit(replacementReview, replacementToken)).statusCode, 401);
+    await state.transact((unit) => unit.audit.registerGatewayRuntimeGrant(replacementGrant));
+    await state.transact((unit) =>
+      unit.audit.removeGatewayRuntimeGrant({ ...harnessGrant, agentRevisionId: replacementId }),
+    );
+    assert.equal((await postRuntimeAudit(reviewWithRationale, harnessToken)).statusCode, 204);
+    const lastReview = { ...reviewWithRationale, eventId: randomUUID(), sessionId: "last-review" };
+    await withPool(migrationUrl, async (migratorPool) => {
+      const holder = await migratorPool.connect();
+      let admitted: ReturnType<typeof postRuntimeAudit> | undefined;
+      let revoked: Promise<void> | undefined;
+      try {
+        // Stall the real API after grant lookup and before ledger insertion. Revocation
+        // must wait for that admitted append to finish before it can remove the grant.
+        await holder.query("BEGIN");
+        await holder.query("LOCK TABLE occ.audit_events IN SHARE MODE");
+        const pid = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        assert.ok(pid.rows[0]);
+        admitted = postRuntimeAudit(lastReview, harnessToken);
+        const appendPid = await waitForLockWaiter(pool, pid.rows[0].pid, "runtime audit append", {
+          queryLike: "INSERT INTO occ.audit_events%",
+        });
+        revoked = state.removeGatewayRuntimeGrant(harnessGrant);
+        void revoked.catch(() => {});
+        await waitForLockWaiter(pool, appendPid, "Gateway grant revocation", {
+          queryLike: "DELETE FROM occ.gateway_runtime_audit_grants%",
+        });
+      } finally {
+        await holder.query("ROLLBACK").finally(() => holder.release());
+        await Promise.allSettled([admitted, revoked]);
+      }
+      assert.equal((await admitted)?.statusCode, 204);
+      await revoked;
+    });
+    assert.equal((await postRuntimeAudit(reviewWithRationale, harnessToken)).statusCode, 401);
+    assert.equal(await state.hasGatewayRuntimeGrant(harnessGrant), false);
+
+    // The private wire listener must authenticate TLS before accepting the Gateway's
+    // bearer credential, and expose no ordinary Console or Agent API routes.
+    const material = await selfSigned(
+      await privateBootstrapDirectory(t, "private-runtime-audit-tls-"),
+      { subjectAltName: "IP:127.0.0.1" },
+    );
+    const tls = { key: Buffer.from(material.key), cert: Buffer.from(material.cert) };
+    const listener = await startGatewayRuntimeAuditListener(app, {
+      host: "127.0.0.1",
+      port: 0,
+      loadTls: async () => tls,
+      onTlsReloadError: () => assert.fail("Private listener TLS reload failed."),
+    });
+    t.after(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          listener.close((error) => (error ? reject(error) : resolve())),
+        ),
+    );
+    const address = listener.address();
+    assert.ok(address !== null && typeof address !== "string");
+    const requestPrivate = (
+      method: "GET" | "POST",
+      path: string,
+      ca: Buffer | undefined,
+      token?: string,
+    ) =>
+      new Promise<number | undefined>((resolve, reject) => {
+        const request = httpsRequest(
+          {
+            host: address.address,
+            port: address.port,
+            agent: false,
+            method,
+            path,
+            ca,
+            headers: {
+              "content-type": "application/json",
+              "x-openclaw-runtime-audit-source": "codex",
+              ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+            },
+          },
+          (response) => {
+            response.resume();
+            response.once("end", () => resolve(response.statusCode));
+            response.once("error", reject);
+          },
+        );
+        request.once("error", reject);
+        request.end(method === "POST" ? JSON.stringify(replacementReview) : undefined);
+      });
+    const privatePath = "/internal/runtime-audit";
+    await assert.rejects(requestPrivate("POST", privatePath, undefined), {
+      code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+    });
+    assert.equal(await requestPrivate("GET", auditPath, tls.cert), 404);
+    assert.equal(await requestPrivate("POST", privatePath, tls.cert), 401);
+    assert.equal(await requestPrivate("POST", privatePath, tls.cert, replacementToken), 204);
+
+    // The Gateway requests above use no grants file. Only the OpenShell exporter uses one.
+    const exporterToken = randomBytes(32).toString("base64url");
+    const sandboxId = randomUUID();
+    const grantFile = join(
+      await privateBootstrapDirectory(t, "runtime-audit-grants-"),
+      "grants.json",
+    );
+    await writeFile(
+      grantFile,
+      JSON.stringify([
+        {
+          tokenDigest: createHash("sha256").update(exporterToken).digest("hex"),
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          agentRevisionId: revision.id,
+          runtimeSource: "openshell",
+          openshellSandboxId: sandboxId,
+        },
+      ]),
+      { mode: 0o600 },
+    );
+    openShellAudit.admit = await loadRuntimeAuditAdmission(grantFile);
+    assert.equal((await postRuntimeAudit(reviewWithRationale, exporterToken)).statusCode, 401);
 
     // Stock OTLP envelope with typed native OCSF, restricted to a distinct exporter credential.
     const ocsfId = randomUUID();
@@ -557,11 +701,32 @@ test(
     assert.equal(persistedReview?.event, "runtime_activity");
     assert.deepEqual(persistedReview.details, {
       agentRevisionId: revision.id,
-      runtimeSource: "openclaw",
+      runtimeSource: "codex",
       sessionId: "safe-session",
       decision: "denied",
       rationale: `[REDACTED] ${"Z".repeat(239)}`,
     });
+    assert.equal(
+      runtimePage.events.filter(
+        (entry) =>
+          entry.event === "runtime_activity" &&
+          entry.action === lastReview.action &&
+          "sessionId" in entry.details &&
+          entry.details.sessionId === lastReview.sessionId,
+      ).length,
+      1,
+    );
+    assert.deepEqual(
+      runtimePage.events.flatMap((entry) =>
+        entry.event === "runtime_activity" &&
+        entry.action === replacementReview.action &&
+        "sessionId" in entry.details &&
+        entry.details.sessionId === replacementReview.sessionId
+          ? [entry.details.agentRevisionId]
+          : [],
+      ),
+      [replacementId],
+    );
     assert.deepEqual(
       runtimePage.events.filter(
         (entry) => entry.event === "runtime_activity" && entry.id === runtimeEvent.id,

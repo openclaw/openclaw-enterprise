@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { buildImages, writeReleaseSelection } from "./first-agent-smoke/images.ts";
 import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/process.ts";
 import {
+  apiProcess,
   clusterName,
   routeModelProvider,
   startLocalSetup,
@@ -31,6 +32,7 @@ import {
   type SmokeStack,
 } from "./first-agent-smoke/setup.ts";
 import {
+  assertCodexTurnAudit,
   chatTurn,
   createCodexAgent,
   deployAgent,
@@ -39,8 +41,8 @@ import {
   stopAgent,
 } from "./first-agent-smoke/agents.ts";
 import {
+  configureSmokeInstallation,
   diagnostics,
-  enablePublicReader,
   proveRetirement,
   publicReadTurn,
 } from "./first-agent-smoke/reader.ts";
@@ -123,7 +125,22 @@ async function smoke() {
     const initialized = Object.assign(setup, { namespaceId });
     assert.ok(initialized.namespaceId, "Local Setup created no default Namespace");
     const stack = initialized as SmokeStack;
-    const reader = await smokeStep("install-reader", () => enablePublicReader(stack));
+    const reader = await smokeStep("install-reader", async () => {
+      const installedReader = await configureSmokeInstallation(stack);
+      // Gateway audit ingestion is available only on the chart's private listener.
+      const ordinaryAudit = await fetch(new URL("/internal/runtime-audit", stack.origin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        redirect: "error",
+        signal: AbortSignal.timeout(30_000),
+      });
+      await ordinaryAudit.body?.cancel();
+      assert.equal(ordinaryAudit.status, 404, "the ordinary API listener exposes audit ingestion");
+      return installedReader;
+    });
+    // Both Codex revisions must enroll after the serving API has started.
+    const servingApi = await apiProcess(stack);
     await smokeStep("route-model", () =>
       routeModelProvider(
         stack,
@@ -139,7 +156,10 @@ async function smoke() {
       control: () =>
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
     });
-    await smokeStep("codex-chat", () => chatTurn(stack, codex.agent, codex.revisionId));
+    await smokeStep("codex-chat", async () => {
+      await chatTurn(stack, codex.agent, codex.revisionId);
+      await assertCodexTurnAudit(stack, codex.agent, codex.revisionId);
+    });
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
     const retiredRevision = await smokeStep("reader-retirement", () =>
       proveRetirement(stack, codex, control, reader, proofResults),
@@ -157,12 +177,14 @@ async function smoke() {
     );
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
     assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
-    await smokeStep("chat-after-start", () =>
-      Promise.all([
+    await smokeStep("chat-after-start", async () => {
+      await Promise.all([
         chatTurn(stack, embedded.agent, embeddedRevision),
         chatTurn(stack, codex.agent, codexRevision),
-      ]),
-    );
+      ]);
+      await assertCodexTurnAudit(stack, codex.agent, codexRevision);
+      assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");
+    });
   } catch (error) {
     await diagnostics(diagnosticStack);
     throw error;
