@@ -4,13 +4,10 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page, Route } from "playwright";
 
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import {
   DEPLOYMENT_FAILURE_STEPS,
   deploymentFailureStep,
-} from "../../apps/controller/src/console/deployment-failure-steps.mjs";
+} from "../../packages/occ/src/deployment-failure-steps.ts";
 import { AgentProvisioningStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
@@ -24,6 +21,7 @@ import {
   routeFailedDeployment,
   AGENT_READ,
   apiRequests,
+  writeRequests,
   asksBeforeUnload,
   consoleViewports,
   denyRevisionRead,
@@ -72,6 +70,7 @@ import {
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type DeploymentResponseOptions = Parameters<typeof deploymentStatusResponse>[1];
 
@@ -206,7 +205,7 @@ test("an individual Agent keeps its fallback heading through a failed read and k
   await page.getByRole("heading", { level: 1, name: agent.name, exact: true }).waitFor();
   assert.equal(await heading.evaluate((node) => node.matches(":focus")), true);
   assert.deepEqual(
-    requests.filter((request) => !["GET", "HEAD"].includes(request.method)),
+    writeRequests(requests).filter((request) => request.method !== "HEAD"),
     [],
   );
 });
@@ -244,8 +243,8 @@ function routeFailedRecord(
 
 // The in-memory fixture never runs deployment work, so its Versions list reports a deployment as
 // queued at most. This lists `revision` as failed with `code`, as the API does once its record
-// ended that way (finding 2422; postgres-agent-provisioning.test.mjs and
-// postgres-worker-agent-revision.test.mjs list real stopped and superseded work).
+// ended that way (finding 2422; postgres-agent-provisioning.test.ts and
+// postgres-worker-agent-revision-lifecycle.test.ts list real stopped and superseded work).
 async function routeFailedListing(
   page: Page,
   fixture: Fixture,
@@ -275,6 +274,7 @@ async function routeFailedListing(
 // version's deployment record was read (finding 1438). Its loading text now follows the 250 ms
 // rule: it is hidden for the first 250 ms, so a read that settles sooner never shows it.
 test("the Agent summary's loading text follows the 250 ms rule", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace, agent, page } = await agentPage(t, "Quiet summary", "Quiet Summary");
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const record = await holdRequests(
@@ -323,6 +323,7 @@ test("the Agent summary's loading text follows the 250 ms rule", async (t) => {
 // "Checking…", which dropped its focus, and rebuilt the role=status notice, which screen
 // readers announced again (finding 1409). A poll now leaves both alone unless they change.
 test("deletion status polls leave Refresh and the deletion notice untouched", async (t) => {
+  const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
   const { fixture, namespace, agent, page } = await agentPage(
     t,
     "Quiet deletion",
@@ -857,6 +858,8 @@ for (const readback of ["stop status", "deployment"]) {
     await page.getByRole("dialog").getByRole("button", { name: "Stop Agent", exact: true }).click();
     await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
     await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+    // The cancellation notice stays visible during the read; wait before another actor deploys.
+    await waitForEnabled(stopRegion.getByRole("button", { name: "Refresh stop status" }));
     await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
 
     // Another actor deploys. A lifecycle read must retire this viewer's earlier Stop result,
@@ -1059,7 +1062,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     harnessError: Error | undefined;
   } = sandbox.state;
   const { fixture, namespace } = await readyNamespace(t, "Lost Sandbox", {
-    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" }),
+    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespaceName: () => "tenant-console" }),
     sandboxDriver,
   });
   const agent = await fixture.createAgent(
@@ -1756,6 +1759,7 @@ test("A replaced current version still says who can check the logs once Logs is 
 });
 
 test("Recovery waits for the caller's permission answer before offering the draft link", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace, agent, page } = await agentPage(
     t,
     "Pending permissions",
@@ -2055,9 +2059,10 @@ test("Every failed deployment code has its own message and next step", async () 
       "RUNTIME_MODEL_PROBE_FAILED",
       "RUNTIME_MODEL_PROBE_TIMEOUT",
       "RUNTIME_STARTUP_FAILED",
+      "RUNTIME_STATE_LOCK_UNVERIFIED",
       "UNKNOWN_FAILURE",
     ],
-    // A setting, grant or stored record must change first; no runtime logged anything.
+    // A setting, grant or stored record must change first.
     change: [
       "AUTHORIZATION_DENIED",
       "BACKEND_UNAVAILABLE",
@@ -2084,6 +2089,8 @@ test("Every failed deployment code has its own message and next step", async () 
       "REPOSITORY_RUNTIME_UNSUPPORTED",
       "REPOSITORY_STANDING_APPROVAL_REMOVED",
       "REPOSITORY_STANDING_POLICY_CHANGED",
+      "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+      "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
       "SANDBOX_GATEWAY_UNAUTHORIZED",
       "SANDBOX_HARNESS_UNSUPPORTED",
       "SANDBOX_POD_LABELS_NOT_PERMITTED",
@@ -2479,6 +2486,7 @@ test("a failed version's banner does not move the overview on a slow link", asyn
 // at desktop or phone width. Only a failure's card, which leads the page (finding 2094), and the
 // viewed version's own failure or read error, which its record states in full, may move them.
 test("a late first deployment read moves nothing above the version tabs", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await readyNamespace(t, "Late activity");
   const agent = await fixture.createAgent(namespace.id, "Late Activity", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -2847,6 +2855,7 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`deployment polls touch only what changed and keep Share Agent in place at ${size}`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const { page, recordUrl, pending, open } = await pendingDeploy(t, viewport, "Quiet");
     // The fixture has no deployment worker: serve the record a deploy reports as it runs.
     let record: DeploymentResponseOptions = { status: "running" };
@@ -2861,7 +2870,12 @@ for (const viewport of [
     const now = await page.evaluate(() => Date.now());
     await page.clock.pauseAt(new Date(now + 1000));
     await page.evaluate(() => globalThis.document.fonts.ready);
-    await page.evaluate(() => {
+    const summaryNote = page
+      .getByRole("region", { name: "Agent state at a glance" })
+      .getByText("Latest visible deployment", { exact: true })
+      .locator("..")
+      .locator("p");
+    await summaryNote.evaluate((note) => {
       globalThis.pollChanges = [];
       new globalThis.MutationObserver((records) => {
         for (const change of records) {
@@ -2869,6 +2883,10 @@ for (const viewport of [
             change.target instanceof Element ? change.target : change.target.parentElement;
           if (!where) {
             throw new Error("Expected a mutation element");
+          }
+          if (where === note && change.type === "childList") {
+            globalThis.pollChanges.push("childList latest deployment summary note");
+            continue;
           }
           const region = where.closest(
             ".version-diagnostics, .version-deployment-record, .deployment-evidence, .agent-overview-status",
@@ -2914,18 +2932,21 @@ for (const viewport of [
       attempt: { at: new Date("2026-10-16T12:00:20.000Z"), code: "REVISION_INCOMPLETE" },
     };
     await poll();
-    await page.getByText("Waiting for the runtime to become ready.").waitFor({ state: "attached" });
+    const wait = "Waiting for the runtime to become ready.";
+    const activityWait = deploymentActivity(page).getByText(wait, { exact: true });
+    await activityWait.waitFor({ state: "attached" });
+    assert.equal(await summaryNote.textContent(), wait);
     // A patched row drops the attributes the new one lacks: the result is no longer muted.
-    assert.equal(
-      await page.getByText("Waiting for the runtime to become ready.").getAttribute("class"),
-      null,
-    );
+    assert.equal(await activityWait.getAttribute("class"), null);
     const changed = await page.evaluate(() => globalThis.pollChanges.splice(0));
-    assert.ok(changed.length > 0);
-    // Only the activity's details changed: the version's record and diagnostics read the same.
+    const summaryMutation = "childList latest deployment summary note";
+    assert.equal(changed.filter((entry) => entry === summaryMutation).length, 1);
+    assert.ok(changed.some((entry) => entry.includes("deployment-evidence")));
+    // The attempt updates the summary note and activity details. The record and diagnostics
+    // still read the same, and the rest of the overview stays in place.
     assert.ok(
-      changed.every((entry) => entry.includes("deployment-evidence")),
-      `only the changed details were written: ${changed.join(" | ")}`,
+      changed.every((entry) => entry === summaryMutation || entry.includes("deployment-evidence")),
+      `only the summary note and activity were written: ${changed.join(" | ")}`,
     );
     const attemptTop = await shareTop();
 
@@ -2956,6 +2977,7 @@ for (const viewport of [
     await poll();
     await expectDeploymentOutcome(page, "Completed", { folded: false });
     await waitForIdleFetches(page);
+    assert.equal(await summaryNote.textContent(), "Latest update received.");
     // The settled details end just under the outcome, their last line: only the details' own
     // padding is left, not the reserved band of about 150 px.
     const band = await page.evaluate(() => {
@@ -2991,6 +3013,7 @@ for (const refreshDuring of ["terminal poll", "automatic overview reread"]) {
     `terminal deployment refresh stays quiet and coalesces a click during ${refreshDuring}`,
     { timeout: 30_000 },
     async (t) => {
+      const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
       const { page, recordUrl, pending, open } = await pendingDeploy(
         t,
         { width: 1440, height: 900 },
@@ -3143,6 +3166,7 @@ for (const refreshDuring of ["terminal poll", "automatic overview reread"]) {
 // and the open details shrank by a line, moving Share Agent up, when the deploy moved from Queued
 // to In progress (finding 2456).
 test("a deploy's details keep their queued height when its first claim starts", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { page, recordUrl, pending, open } = await pendingDeploy(
     t,
     { width: 1440, height: 900 },
@@ -3205,6 +3229,7 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`a settling deploy keeps the version's record in place on the Deployment tab at ${size}`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const { page, recordUrl, pending, open } = await pendingDeploy(t, viewport, "Anchored");
     // A started deploy waiting for its next attempt shows every pending row.
     let record: DeploymentResponseOptions = {
@@ -3274,6 +3299,7 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`a watched deploy that fails shows its recovery as a reload does at ${size}`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const { page, recordUrl, agent, pending, open } = await pendingDeploy(t, viewport, "Failing");
     let record = deploymentStatusResponse(pending, { status: "running" });
     await page.route(recordUrl, (route) => route.fulfill(record));
@@ -3281,7 +3307,7 @@ for (const viewport of [
     await page.route(`**/agents/${agent.id}/native-admin`, (route) =>
       route.fulfill({
         json: {
-          data: { status: "available", url: "https://admin.example.test/" },
+          data: { status: "available", mode: "admin", url: "https://admin.example.test/" },
           meta: { requestId: "req_test_failing_deploy" },
         },
       }),
@@ -4274,7 +4300,7 @@ for (const viewport of [
     assert.deepEqual(steps, [
       ["done", "Done: ", `Saved · Configuration ${agent.configurationId} · generation 1`],
       ["done", "Done: ", "Saved · API key · Secret configured"],
-      ["pending", "Not done: ", "Creates an immutable version from the saved draft"],
+      ["pending", "Not done: ", "Use the Installation default at deployment."],
     ]);
 
     // Deploy is the page's one primary.
@@ -4368,6 +4394,7 @@ for (const viewport of [
 // opens a version, and Tab leaves the list. A poll that lands the outcome rebuilds the list and
 // keeps focus on the same version (finding 2115).
 test("Version picker retains selection and focus while deployment outcomes change", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { fixture, namespace, agent, page } = await agentPage(t, "Version picker", "Picker Agent");
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await fixture.deployAgent(namespace.id, agent.id);

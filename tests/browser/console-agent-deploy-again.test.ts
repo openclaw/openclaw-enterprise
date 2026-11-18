@@ -11,9 +11,8 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   persistedDeploymentError,
@@ -44,6 +43,7 @@ import {
   OVERVIEW_REFRESH_FAILED,
   READ_OUTAGE_REASON,
 } from "../helpers/refusal-text.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createReadyConsoleNamespace>>["fixture"];
 
@@ -630,6 +630,7 @@ const watchNotice = (page: Page) =>
   });
 
 test("A version that is deploying is labelled Deploying, not Historical, until it becomes current", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { fixture, namespace, agent, current, next, page, record, summary } =
     await deployingVersion(t, "Deploying label");
   // v1 is still the version selected for service.
@@ -666,6 +667,7 @@ for (const [from, to] of [
   ["available", "stopped"],
 ]) {
   test(`Open Agent UI keeps keyboard focus when access goes from ${from} to ${to} after a deployment`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const access = { status: from };
     const { fixture, namespace, agent, current, next, page, record } = await deployingVersion(
       t,
@@ -682,6 +684,7 @@ for (const [from, to] of [
                   access.status === "available"
                     ? {
                         status: "available",
+                        mode: "admin",
                         host,
                         origin: `https://${host}`,
                         activeRevisionId: current.id,
@@ -712,6 +715,7 @@ for (const [from, to] of [
 // A Configuration tab parked while the deployment fails shows Failed when it comes back: a failed
 // version that never became current is not history (finding 2403).
 test("A deploying version's parked Configuration tab says Failed once the deployment fails", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { page, record } = await deployingVersion(t, "Deploying parked");
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("tab", { name: "Plugins", exact: true, selected: true }).waitFor();
@@ -745,6 +749,7 @@ test("A queued version is labelled Deploying, and an older version browsed meanw
 // A completed deployment whose Agent reread failed kept "Deploying" beside "v2 · Completed"
 // (finding 2085). The record says the deployment completed, so the notice says so.
 test("A completed deployment whose Agent reread fails is labelled Deployed, not Deploying", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { fixture, namespace, agent, current, next, page, record, summary } =
     await deployingVersion(t, "Deployed label");
   await watchNotice(page);
@@ -798,6 +803,7 @@ for (const [status, label] of [
 // The notice keeps the last record's label, polling goes on, and a completion read right after
 // the failure still rereads the Agent.
 test("One failed status read keeps a deploying version Deploying and polling", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { fixture, namespace, agent, current, next, page, record, summary } =
     await deployingVersion(t, "Status blip");
   await watchNotice(page);
@@ -820,6 +826,7 @@ test("One failed status read keeps a deploying version Deploying and polling", a
 // A rate limit is not an answer either: a 429 status read leaves the version Deploying and
 // polling goes on, as after a 503.
 test("A rate-limited status read keeps a deploying version polling", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { page, record, summary } = await deployingVersion(t, "Status rate limit");
   record.fail = 429;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
@@ -945,6 +952,7 @@ test("A failure read with startup warnings keeps them in view", async (t) => {
 // A refused record read ends the wait: polling stops, and the version is no longer labelled
 // Deploying from a record the page can no longer follow (internal review of finding 2085).
 test("A refused status read ends the wait and the Deploying label", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { page, record, summary } = await deployingVersion(t, "Status refused");
   record.fail = 403;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { repositoryGitRecipientFields } from "@openclaw-enterprise/contracts";
 import type {
+  AgentRevision,
   EgressInstallation,
   ProxyPlan,
   ProxyRevisionContext,
@@ -9,8 +10,37 @@ import type {
 import type { InstalledDriver } from "./installed-driver.ts";
 import type {
   CredentialPolicyReductionState,
+  CredentialPolicyReductionUnitOfWork,
   CredentialPolicyReductionStore,
 } from "./ports/credential-policy-reduction.ts";
+
+import { repositoryRemovalWorkKey, repositoryRetirementWorkKey } from "./repository-withdrawal.ts";
+
+async function finiteRemovalState(
+  unit: CredentialPolicyReductionUnitOfWork,
+  revision: Readonly<AgentRevision>,
+  sourceId: string | undefined,
+): Promise<"removal" | "retiring" | undefined> {
+  if (
+    sourceId !== undefined ||
+    !revision.repositoryCredentials ||
+    revision.repositoryCredentials.standingApprovalId
+  ) {
+    return undefined;
+  }
+  const owns = (work: Awaited<ReturnType<typeof unit.operations.findWork>>) =>
+    work?.namespaceId === revision.namespaceId &&
+    work.agentId === revision.agentId &&
+    work.revisionId === revision.id &&
+    work.agentTarget === undefined &&
+    work.namespaceTarget === undefined;
+  const removal = await unit.operations.findWork(repositoryRemovalWorkKey(revision.id));
+  const retirement = await unit.operations.findWork(repositoryRetirementWorkKey(revision.id));
+  if (owns(retirement)) {
+    return "retiring";
+  }
+  return owns(removal) ? "removal" : undefined;
+}
 
 /** A stored successor only removes whole routes; v2 can also remove the Git binding. */
 export function isReducedCredentialPlan(
@@ -146,10 +176,14 @@ export async function reduceCredentialPolicy(
         : [];
     const gitWithdrawn =
       attempts.length > 0 && !attempts.some(({ phase }) => phase === "open" || phase === "opening");
+    const removal = await finiteRemovalState(unit, revision, sourceId);
+    if (removal === "retiring") {
+      return "retire-runtime" as const;
+    }
     if (
       !agent ||
       agent.status !== "active" ||
-      agent.desiredRuntimeState !== "running" ||
+      (agent.desiredRuntimeState !== "running" && removal !== "removal") ||
       agent.activeRevisionId !== revision.id ||
       !currentRevision ||
       !isDeepStrictEqual(currentRevision.egressPlan, context.plan) ||
@@ -173,7 +207,23 @@ export async function reduceCredentialPolicy(
     if (recorded) {
       return { recorded, dispatch: false };
     }
-    if (reductions.some((item) => !item.observed)) {
+    const unobserved = reductions.filter((item) => !item.observed);
+    if (unobserved.length > 0) {
+      const predecessor = unobserved[0]!;
+      // Finite Git removal may observe a previously dispatched source effect. It
+      // never dispatches or completes source withdrawal, nor skips the sole-operation fence.
+      if (
+        removal === "removal" &&
+        unobserved.length === 1 &&
+        withdrawals.some(
+          (item) => predecessor.bindingId === `policy:source:${item.credentialSourceId}`,
+        ) &&
+        predecessor.request.version === reducer.version &&
+        isDeepStrictEqual(predecessor.request.expected, installation) &&
+        isReducedCredentialPlan(installation.plan, predecessor.request.retained)
+      ) {
+        return { recorded: predecessor, dispatch: false, predecessor: true };
+      }
       return undefined;
     }
     // Discovery gates a new effect only. Recovery must still observe the committed request.
@@ -227,6 +277,7 @@ export async function reduceCredentialPolicy(
     return prepared;
   }
   const { recorded, dispatch } = prepared;
+  const predecessor = "predecessor" in prepared && prepared.predecessor;
   const request = recorded.request;
   context.signal.throwIfAborted();
   if (dispatch) {
@@ -293,12 +344,36 @@ export async function reduceCredentialPolicy(
   return state.transact(async (unit) => {
     await unit.namespaces.lockNamespace(revision.namespaceId);
     const agent = await unit.agents.lockAgent(revision.namespaceId, revision.agentId);
+    const removal = await finiteRemovalState(unit, revision, sourceId);
+    if (removal === "retiring") {
+      return "retire-runtime" as const;
+    }
     if (
       agent?.activeRevisionId !== revision.id ||
       agent.status !== "active" ||
-      agent.desiredRuntimeState !== "running"
+      (agent.desiredRuntimeState !== "running" && removal !== "removal") ||
+      (predecessor && removal !== "removal")
     ) {
       return "pending";
+    }
+    if (predecessor || agent.desiredRuntimeState !== "running") {
+      const currentRevision = await unit.revisions.findRevision(
+        revision.namespaceId,
+        revision.agentId,
+        revision.id,
+      );
+      const attempts = await unit.repositorySessions.listRevisionAttempts({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      });
+      if (
+        !isDeepStrictEqual(currentRevision?.egressPlan, context.plan) ||
+        attempts.length === 0 ||
+        attempts.some(({ phase }) => phase === "open" || phase === "opening")
+      ) {
+        return "pending";
+      }
     }
     const current = await unit.credentialSources.findRevisionEgressInstallation(
       revision.namespaceId,
@@ -321,6 +396,8 @@ export async function reduceCredentialPolicy(
     ) {
       throw new Error("Credential policy reduction lost its installation fence.");
     }
-    return "withdrawn";
+    // A predecessor receipt is not evidence that Git has been detached. The next
+    // normal cleanup pass may dispatch the Git reduction against this installation.
+    return predecessor ? "pending" : "withdrawn";
   });
 }

@@ -1,14 +1,12 @@
 package occcli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occdev"
@@ -17,6 +15,18 @@ import (
 
 func developmentCommand() *cobra.Command {
 	command := commandGroup("dev", "Start or stop a local development stack from a source checkout")
+	command.AddCommand(&cobra.Command{
+		Use:   "check",
+		Short: "Check recorded Local Setup provisioning dependencies",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			return occdev.Check(cmd.Context(), occdev.Options{Repository: repository, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()})
+		},
+	})
 	// Development commands do not use the remote resource client's flags, but
 	// an explicit empty --key-output must not fall back to the dev-owned path.
 	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error { return refuseEmptyFlags(cmd) }
@@ -49,15 +59,13 @@ func developmentCommand() *cobra.Command {
 				if err := occdev.CheckDevelopmentProfile(); err != nil {
 					return err
 				}
-				switch os.Getenv("OCC_DEVELOPMENT_COMPUTE_DRIVER") {
+				profile := occdev.ResolveProfile(os.Getenv)
+				switch profile.ComputeDriver {
 				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
-				case "", "docker":
+				case "docker":
 					if sandboxNetworkPolicyFile != "" || sandboxNetworkPolicyCeilingFile != "" {
 						return fmt.Errorf("Sandbox policy input requires Kubernetes Compute and a Sandbox Driver")
-					}
-					if err := occdev.CheckDevelopmentSignIn(os.Getenv); err != nil {
-						return err
 					}
 					// Reuse the established Docker startup flow. Its Kubernetes
 					// dispatch cannot recur because this branch selects Docker.
@@ -68,24 +76,13 @@ func developmentCommand() *cobra.Command {
 					arguments = append(arguments, "--")
 					arguments = append(arguments, args...)
 					process := exec.CommandContext(cmd.Context(), "bash", arguments...)
-					process.Dir, process.Stdin = repository, cmd.InOrStdin()
-					process.Stdout, process.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
-					// On interrupt, terminate rather than kill the script so its EXIT
-					// trap removes the temporary directory with the rendered Compose
-					// configuration; kill it only if it does not stop in time.
-					process.Cancel = func() error { return process.Process.Signal(syscall.SIGTERM) }
-					process.WaitDelay = 10 * time.Second
-					err := process.Run()
-					// The script prints its own diagnostic; pass its status on
-					// (usage errors exit 2) instead of collapsing it to 1. An
-					// interrupt keeps the generic error.
-					var exited *exec.ExitError
-					if errors.As(err, &exited) && exited.ExitCode() > 0 && cmd.Context().Err() == nil {
-						return &ExitStatusError{Code: exited.ExitCode()}
-					}
-					return err
+					process.Dir = repository
+					// Name the selection the script would otherwise default, so a
+					// change to either default cannot send it back here.
+					process.Env = append(os.Environ(), "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker")
+					return runStreamingProcess(cmd, process, 10*time.Second)
 				default:
-					return fmt.Errorf("OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes")
+					return profile.CheckComputeDriver()
 				}
 			},
 		}
@@ -104,6 +101,27 @@ func developmentCommand() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return occdev.CheckDevelopmentProfile()
+		},
+	})
+	command.AddCommand(&cobra.Command{
+		Use:    "prepare-browser",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			environment, err := occdev.DockerBrowserEnvironment(repository, true)
+			if err != nil {
+				return err
+			}
+			for _, key := range []string{"OCC_DEVELOPMENT_BROWSER_ORIGIN", "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN", "OCC_DEVELOPMENT_BROWSER_PORT", "OCC_DEVELOPMENT_BROWSER_TLS_CERT", "OCC_DEVELOPMENT_BROWSER_TLS_KEY"} {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), environment[key]); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	})
 	var profile string
@@ -129,36 +147,6 @@ func developmentCommand() *cobra.Command {
 	return command
 }
 
-// ExitStatusError asks the caller to exit with Code without printing anything
-// more: the child process that failed has already reported why.
-type ExitStatusError struct{ Code int }
-
-func (err *ExitStatusError) Error() string { return fmt.Sprintf("exit status %d", err.Code) }
-
 func developmentRepository() (string, error) {
-	directory, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	const declaration = "module github.com/openclaw/openclaw-enterprise"
-	for {
-		modulePath := filepath.Join(directory, "go.mod")
-		module, err := os.ReadFile(modulePath)
-		content := string(module)
-		line, _, hasNewline := strings.Cut(content, "\n")
-		if err == nil && hasNewline && strings.TrimSuffix(line, "\r") == declaration {
-			if _, err := os.Stat(filepath.Join(directory, "compose.yaml")); err == nil {
-				if !strings.Contains(content, "\r\n") {
-					return directory, nil
-				}
-				return "", fmt.Errorf("%q uses CRLF line endings; convert it to LF before running occ dev", modulePath)
-			}
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			break
-		}
-		directory = parent
-	}
-	return "", fmt.Errorf("run occ dev from an OpenClaw Enterprise source checkout")
+	return checkoutRepository("occ dev", "compose.yaml")
 }

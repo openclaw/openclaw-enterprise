@@ -4,6 +4,10 @@ export default { title: "Pages/Agents" };
 
 export const Agents = { ...story("agents"), name: "Populated" };
 export const RowNavigation = story("agentsRowNavigation");
+export const NamespaceFocusDuringRefresh = {
+  ...story("agentsNamespaceFocusDuringRefresh"),
+  name: "Namespace focus during list refresh",
+};
 export const UnreadableConfiguration = story("agentsUnreadableConfiguration");
 export const LongName = story("agentsLongName");
 export const LongNameDigits = story("agentsLongNameDigits");

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-05
-last_updated_session: authoring-run/17947441-42c1-43df-93a6-339dac4803dc
+updated: 2026-11-06
+last_updated_session: authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf
 ---
 
 # Console Agent editing and runtime requests
@@ -14,7 +14,7 @@ Related flows: [parent](../platform-console.md),
 ## Entry Points
 
 - `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
-- `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel` saves channel Secret bindings.
+- `apps/controller/src/console/agents/credentials.mts:createChannelSecretsPanel` saves channel Secret bindings.
 - `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
 - Actions require exact-resource permission.
 
@@ -71,22 +71,24 @@ plus `configurationReadError` on decode failure. Operational reads and queries s
 **Load older versions** appends, keeps selection and focuses the picker after the last page.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
-**Deployment** mounts activity, the selected record, and diagnostics
-(`agents/deployment-evidence.mts`). Polling continues across tabs.
-Activity and its label cannot anchor scrolling (`console.css`, 3016).
+**Deployment** mounts activity, selected records, and diagnostics
+(`agents/deployment-evidence.mts`); polling spans tabs.
+Activity and label cannot anchor scrolling (`console.css`).
 `detail.mts:renderTab` offers **Retry** for transient snapshot errors.
-After `FIRST_ACTIVITY_WAIT_MS`, completion and reads fold unless cleanup,
-warnings, or overview errors need attention. Overview errors preserve outcomes.
+After `FIRST_ACTIVITY_WAIT_MS`, completion folds unless cleanup, warnings,
+repository access, or overview errors need attention; outcomes remain.
 
-`createDeploymentStatusPanel` polls until completion or refusal. Transient errors retain
+`createDeploymentStatusPanel` polls until completion or refusal; transient errors retain
 progress. `invalidate` and `fail` clear caches and reads. `onFreshRecord` shares matching
-GETs. `show` never republishes. Refusals override success. Any `401` expires the session.
-`terminalOverview` tracks reconciliation, excluding denied records. For unreconciled outcomes, read Agent
-and revisions once, sharing matching reads. Retry failures explicitly.
-`readingOverview` protects explicit reads. `recordGeneration` rejects stale payloads.
-Fresh evidence renders during Refresh. **Refresh deployment** queues one full reread.
-**Refresh record** keeps focus and ignores repeats. Refusals open details.
-Matching errors share an alert.
+GETs; `show` never republishes. Refusals override success; `401` expires sessions.
+`terminalOverview` reconciles outcomes once through shared Agent/history reads, excluding
+denied records. Retry failures explicitly. `readingOverview` protects explicit reads;
+`recordGeneration` rejects stale payloads.
+**Refresh deployment** queues a full reread; **Refresh record** preserves focus, ignoring
+repeats. Refusals open details; matching errors share alerts.
+
+Each surface shows revision-specific `repositoryAccess.message` beside unchanged outcomes.
+Conditions reveal details without deploying. Missing guidance leaves repository health unknown.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
@@ -176,7 +178,7 @@ clear captures; pending saves retain recovery guards.
 Like Escape, cancellation discards channel drafts, clears Secret inputs, and
 retains plugin selections. Pending channel saves and Secret creation prevent dismissal.
 
-`apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
+`apps/controller/src/console/channels.mts:renderChannels` renders Slack settings;
 only **Open draft** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
@@ -193,7 +195,7 @@ Absent, loading, and unavailable states stay distinct. Failures retain IDs.
 Stale responses are ignored. Current 401s expire the session. Summaries need neither
 collection permission nor Secret values.
 
-`apps/controller/src/console/channels/slack.mjs:appendFields` separates channel
+`apps/controller/src/console/channels/slack.mts:appendFields` separates channel
 senders from DMs. Wildcard, empty, or omitted channel `users` selects **Allow
 everyone**; explicit IDs fill the mutually exclusive input. Mention
 requirements remain independent. `updatedSlack` replaces selected channels'
@@ -225,7 +227,7 @@ reasons, never staged. Refused binding saves reread it; inline creation rereads 
 Any listed denial means per-Secret operate: new Secrets have none, disabling picker/Preset
 creation with reasons and existing-only hints. Failed rereads keep prior answers.
 
-`apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
+`apps/controller/src/console/agents/secret-picker.mts:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),
 and optional fixed Slack key. Both meet the API's rules before POST, which stores the Secret
 and stages returned metadata; cancellation never deletes it. Conflicts retain inputs.
@@ -243,7 +245,7 @@ the caller cannot `operate` is refused before the PATCH, so **Disable** is offer
 A save that rebinds such a Secret rereads the permission answer; Plugins, Repositories and the
 authentication source follow it without a reload.
 
-After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
+After PATCH, `apps/controller/src/console/agents/credential-access.mts:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace IAM. A failed
 grant leaves Configuration saved; a 403 names the Installation administrator, who selects
 **Retry Secret access**; a timeout or 5xx stays unknown. A member's session sends no grant and
@@ -271,7 +273,7 @@ but does not stop a running Agent.
 Agent and rejects changed bindings before saving authentication. PATCH replaces
 the prior Harness `credentialSources` entry, preserving unrelated entries without
 deleting the old source or revoking grants. After PATCH,
-`apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
+`apps/controller/src/console/agents/credential-access.mts:ensureCredentialOperateBinding`
 grants the Agent service principal exact Secret (`api_key` or imported `codex_pat`)
 or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
@@ -325,7 +327,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-a
 
 ### 8. Confirm deletion and read back the Agent
 
-`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`.
+`apps/controller/src/console/agents/deletion.mts:createAgentDeletion`.
 Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion-and-read-back-the-agent).
 
 ## Debugging and Verification
@@ -353,6 +355,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
 
 - 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
 - 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)

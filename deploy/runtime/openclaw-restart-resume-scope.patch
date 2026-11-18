@@ -1,0 +1,703 @@
+diff --git a/src/config/sessions/session-entry-json.test.ts b/src/config/sessions/session-entry-json.test.ts
+--- a/src/config/sessions/session-entry-json.test.ts
++++ b/src/config/sessions/session-entry-json.test.ts
+@@ -13,20 +13,31 @@
+     { field: "inputTokens", value: "12" },
+     { field: "queueCap", value: false },
+     { field: "runtimeMs", value: null },
+-  ])("rejects malformed $field before publishing a session entry", ({ field, value }) => {
+-    expect(() =>
+-      parseCanonicalSqliteSessionEntry({
+-        current_session_id: "session",
+-        entry_json: JSON.stringify({ sessionId: "session", updatedAt: 1, [field]: value }),
+-      }),
+-    ).toThrow(`Session field "${field}" must be a finite number`);
+-  });
++  ])(
++    "rejects malformed $field before publishing a session entry",
++    ({ field, value }) => {
++      expect(() =>
++        parseCanonicalSqliteSessionEntry({
++          current_session_id: "session",
++          entry_json: JSON.stringify({
++            sessionId: "session",
++            updatedAt: 1,
++            [field]: value,
++          }),
++        }),
++      ).toThrow(`Session field "${field}" must be a finite number`);
++    },
++  );
+
+   it.each([Number.NaN, Number.POSITIVE_INFINITY])(
+     "rejects non-finite in-memory metadata %s at unknown admission",
+     (estimatedCostUsd) => {
+       expect(() =>
+-        admitCanonicalSessionEntry({ sessionId: "session", updatedAt: 1, estimatedCostUsd }),
++        admitCanonicalSessionEntry({
++          sessionId: "session",
++          updatedAt: 1,
++          estimatedCostUsd,
++        }),
+       ).toThrow('Session field "estimatedCostUsd" must be a finite number');
+     },
+   );
+@@ -88,7 +99,11 @@
+       snoozedAt: "invalid legacy snooze",
+     });
+
+-    expect(projected).toMatchObject({ sessionId: "session", spawnDepth: 2, extension });
++    expect(projected).toMatchObject({
++      sessionId: "session",
++      spawnDepth: 2,
++      extension,
++    });
+     expect(projected).not.toHaveProperty("sessionFile");
+     expect(projected).not.toHaveProperty("snoozedUntil");
+     expect(projected).not.toHaveProperty("snoozedAt");
+@@ -102,7 +117,12 @@
+       lifecycleRevision: "incarnation",
+       updatedAt: 1,
+       resumeAfterRestart,
+-      mainRestartRecovery: { cycleId: "upgrade", revision: 1, executionIdentity: "retired" },
++      lifecycleRestartScope: "generation-a",
++      mainRestartRecovery: {
++        cycleId: "upgrade",
++        revision: 1,
++        executionIdentity: "retired",
++      },
+       restartRecoveryOperatorSource: { snapshot: { obsolete: true } },
+       pendingExecNotifications: { obsolete: {} },
+     });
+@@ -111,14 +131,19 @@
+       lifecycleRevision: "incarnation",
+       updatedAt: 1,
+       resumeAfterRestart,
++      lifecycleRestartScope: "generation-a",
+       mainRestartRecovery: { cycleId: "upgrade" },
+     });
+     const publicEntry = projectPublicSessionEntry(entry);
+     expect(publicEntry).not.toHaveProperty("resumeAfterRestart");
++    expect(publicEntry).not.toHaveProperty("lifecycleRestartScope");
+     expect(publicEntry).not.toHaveProperty("mainRestartRecovery");
+-    expect(preserveGenerationPrivateFields(entry, { label: "Renamed" })).toMatchObject({
++    expect(
++      preserveGenerationPrivateFields(entry, { label: "Renamed" }),
++    ).toMatchObject({
+       label: "Renamed",
+       resumeAfterRestart,
++      lifecycleRestartScope: "generation-a",
+     });
+     for (const next of [
+       publicEntry,
+@@ -136,6 +161,13 @@
+         {},
+       ).entry;
+       expect(written.mainRestartRecovery).toBeUndefined();
++      expect(written.lifecycleRestartScope).toEqual(
++        next.sessionId === entry.sessionId &&
++          next.lifecycleRevision === entry.lifecycleRevision &&
++          !("archivedAt" in next)
++          ? "generation-a"
++          : undefined,
++      );
+       expect(written.resumeAfterRestart).toEqual(
+         next === publicEntry ? resumeAfterRestart : undefined,
+       );
+diff --git a/src/config/sessions/session-entry-projection.ts b/src/config/sessions/session-entry-projection.ts
+--- a/src/config/sessions/session-entry-projection.ts
++++ b/src/config/sessions/session-entry-projection.ts
+@@ -18,6 +18,7 @@
+   activeWriterRunId: undefined,
+   lastRunId: undefined,
+   lifecycleRunId: undefined,
++  lifecycleRestartScope: undefined,
+   resumeAfterRestart: undefined,
+   mainRestartRecovery: undefined,
+   pendingProjectGitUrl: undefined,
+@@ -37,6 +38,7 @@
+   "activeWriterRunId",
+   "lastRunId",
+   "lifecycleRunId",
++  "lifecycleRestartScope",
+   "resumeAfterRestart",
+   "operatorSources",
+   "mainRestartRecovery",
+diff --git a/src/config/sessions/session-entry-public-patch.ts b/src/config/sessions/session-entry-public-patch.ts
+--- a/src/config/sessions/session-entry-public-patch.ts
++++ b/src/config/sessions/session-entry-public-patch.ts
+@@ -26,6 +26,9 @@
+       : {}),
+     ...(existingEntry.activeWriterRunId !== undefined
+       ? { activeWriterRunId: existingEntry.activeWriterRunId }
++      : {}),
++    ...(existingEntry.lifecycleRestartScope !== undefined
++      ? { lifecycleRestartScope: existingEntry.lifecycleRestartScope }
+       : {}),
+     ...(existingEntry.lifecycleRunId !== undefined
+       ? { lifecycleRunId: existingEntry.lifecycleRunId }
+diff --git a/src/config/sessions/session-entry-write-policy.ts b/src/config/sessions/session-entry-write-policy.ts
+--- a/src/config/sessions/session-entry-write-policy.ts
++++ b/src/config/sessions/session-entry-write-policy.ts
+@@ -23,24 +23,35 @@
+   let normalizedEntry = initialEntry;
+   if (
+     canonicalPreviousEntry?.sessionId !== normalizedEntry.sessionId ||
+-    canonicalPreviousEntry.lifecycleRevision !== normalizedEntry.lifecycleRevision ||
++    canonicalPreviousEntry.lifecycleRevision !==
++      normalizedEntry.lifecycleRevision ||
+     normalizedEntry.archivedAt !== undefined ||
+     normalizedEntry.incognito
+   ) {
+     delete normalizedEntry.resumeAfterRestart;
++    delete normalizedEntry.lifecycleRestartScope;
+     delete normalizedEntry.mainRestartRecovery;
+-  } else if (!Object.hasOwn(normalizedEntry, "resumeAfterRestart")) {
+-    // Public projections omit the shutdown marker; same-incarnation bookkeeping retains it.
+-    normalizedEntry = {
+-      ...normalizedEntry,
+-      ...(canonicalPreviousEntry.resumeAfterRestart
+-        ? { resumeAfterRestart: canonicalPreviousEntry.resumeAfterRestart }
+-        : {}),
+-    };
++  } else {
++    if (!Object.hasOwn(normalizedEntry, "resumeAfterRestart")) {
++      // Public projections omit the shutdown marker; same-incarnation bookkeeping retains it.
++      normalizedEntry = {
++        ...normalizedEntry,
++        ...(canonicalPreviousEntry.resumeAfterRestart
++          ? { resumeAfterRestart: canonicalPreviousEntry.resumeAfterRestart }
++          : {}),
++      };
++    }
++    if (!Object.hasOwn(normalizedEntry, "lifecycleRestartScope")) {
++      normalizedEntry = {
++        ...normalizedEntry,
++        lifecycleRestartScope: canonicalPreviousEntry.lifecycleRestartScope,
++      };
++    }
+   }
+   if (
+     canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId &&
+-    canonicalPreviousEntry.lifecycleRevision === normalizedEntry.lifecycleRevision &&
++    canonicalPreviousEntry.lifecycleRevision ===
++      normalizedEntry.lifecycleRevision &&
+     canonicalPreviousEntry.compactionQualityDegraded
+   ) {
+     normalizedEntry = { ...normalizedEntry, compactionQualityDegraded: true };
+@@ -51,7 +62,8 @@
+       ...normalizedEntry,
+       providerReview:
+         canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId &&
+-        canonicalPreviousEntry.lifecycleRevision === normalizedEntry.lifecycleRevision
++        canonicalPreviousEntry.lifecycleRevision ===
++          normalizedEntry.lifecycleRevision
+           ? canonicalPreviousEntry.providerReview
+           : undefined,
+     };
+@@ -64,7 +76,10 @@
+       normalizedEntry.sandbox !== "required" ||
+       normalizedEntry.createdVia !== canonicalPreviousEntry.createdVia ||
+       normalizedEntry.createdAt !== canonicalPreviousEntry.createdAt ||
+-      !isDeepStrictEqual(normalizedEntry.createdActor, canonicalPreviousEntry.createdActor)
++      !isDeepStrictEqual(
++        normalizedEntry.createdActor,
++        canonicalPreviousEntry.createdActor,
++      )
+     ) {
+       getChildLogger({ subsystem: "session-sqlite" }).warn(
+         "blocked role-required session creation provenance downgrade",
+@@ -75,10 +90,19 @@
+   // Doctor/import owners validate and select a whole creator stamp across aliases.
+   // Preserve their selection unless this canonical node already owns required isolation;
+   // ordinary writes cannot restamp a logical node's creator.
+-  if (!options.allowStoredAliases || canonicalPreviousEntry?.sandbox === "required") {
+-    normalizedEntry = preserveCreationStamp(normalizedEntry, canonicalPreviousEntry);
++  if (
++    !options.allowStoredAliases ||
++    canonicalPreviousEntry?.sandbox === "required"
++  ) {
++    normalizedEntry = preserveCreationStamp(
++      normalizedEntry,
++      canonicalPreviousEntry,
++    );
+   }
+-  if (isIncognitoSessionKey(sessionKey) && normalizedEntry.createdAt === undefined) {
++  if (
++    isIncognitoSessionKey(sessionKey) &&
++    normalizedEntry.createdAt === undefined
++  ) {
+     // Pin timestamp-less creation once at the writer, never independently in
+     // each Gateway observer. Existing legacy rows retain their known age.
+     normalizedEntry = {
+@@ -100,7 +124,8 @@
+       profileInvolvement: { ...involvement, key: sessionKey },
+     };
+   } else if (normalizedEntry.profileInvolvement) {
+-    const { profileInvolvement: _sourceInvolvement, ...forkEntry } = normalizedEntry;
++    const { profileInvolvement: _sourceInvolvement, ...forkEntry } =
++      normalizedEntry;
+     normalizedEntry = forkEntry;
+   }
+   // Authenticated sources belong to this logical node's people, not its transcript generation.
+@@ -108,10 +133,14 @@
+   const operatorSources = Object.hasOwn(normalizedEntry, "operatorSources")
+     ? normalizedEntry.operatorSources
+     : canonicalPreviousEntry?.operatorSources;
+-  if (operatorSources && (canonicalPreviousEntry || options.allowStoredAliases)) {
++  if (
++    operatorSources &&
++    (canonicalPreviousEntry || options.allowStoredAliases)
++  ) {
+     normalizedEntry = { ...normalizedEntry, operatorSources };
+   } else if (Object.hasOwn(normalizedEntry, "operatorSources")) {
+-    const { operatorSources: _forkSources, ...entryWithoutSources } = normalizedEntry;
++    const { operatorSources: _forkSources, ...entryWithoutSources } =
++      normalizedEntry;
+     normalizedEntry = entryWithoutSources;
+   }
+   const previousEntry =
+@@ -129,7 +158,10 @@
+   }
+   // Fresh child installation can retain its current audience; other replacements clear it.
+   if (previousEntry && previousEntry.sessionId !== normalizedEntry.sessionId) {
+-    if (options.preserveVisibility && canonicalPreviousEntry?.visibility !== undefined) {
++    if (
++      options.preserveVisibility &&
++      canonicalPreviousEntry?.visibility !== undefined
++    ) {
+       normalizedEntry.visibility = canonicalPreviousEntry.visibility;
+     } else {
+       delete normalizedEntry.visibility;
+diff --git a/src/config/sessions/session-restart-resume-scope.ts b/src/config/sessions/session-restart-resume-scope.ts
+new file mode 100644
+--- /dev/null
++++ b/src/config/sessions/session-restart-resume-scope.ts
+@@ -0,0 +1,56 @@
++import type { InternalSessionEntry } from "./types.js";
++
++type RestartResumeMarker = NonNullable<InternalSessionEntry["resumeAfterRestart"]>;
++
++/**
++ * A supervisor that starts a new deployment generation (for example after an
++ * explicit stop) sets a new scope. Shutdown stamps restart markers with the
++ * current scope; startup resumes only markers from the same scope.
++ */
++export const GATEWAY_RESTART_RESUME_SCOPE_ENV = "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE";
++
++export function resolveRestartResumeScope(
++  env: NodeJS.ProcessEnv = process.env,
++): string | undefined {
++  return env[GATEWAY_RESTART_RESUME_SCOPE_ENV]?.trim() || undefined;
++}
++
++/** Shutdown-written markers carry the scope of the Gateway that wrote them. */
++export function createRestartResumeMarker(
++  marker: Omit<RestartResumeMarker, "scope">,
++  scope = resolveRestartResumeScope(),
++): RestartResumeMarker {
++  return scope ? { ...marker, scope } : { ...marker };
++}
++
++/** Work interrupted under another scope belongs to an ended generation and never resumes. */
++export function isRestartResumeMarkerInScope(
++  marker: RestartResumeMarker,
++  scope = resolveRestartResumeScope(),
++): boolean {
++  return marker.scope === scope;
++}
++
++/**
++ * The pending-input target of a session whose marker was written under another scope, so
++ * its queued inputs can be settled once the marker is cleared; otherwise undefined.
++ */
++export function outOfScopeRestartTarget<T extends object>(
++  entry: Pick<InternalSessionEntry, "resumeAfterRestart" | "sessionId">,
++  target: T,
++  scope = resolveRestartResumeScope(),
++): (T & { sessionId: string }) | undefined {
++  return entry.resumeAfterRestart && !isRestartResumeMarkerInScope(entry.resumeAfterRestart, scope)
++    ? { ...target, sessionId: entry.sessionId }
++    : undefined;
++}
++
++/** Graceful markers and unmarked crash/child recovery carry the interrupted generation. */
++export function isRestartResumeEntryInScope(
++  entry: Pick<InternalSessionEntry, "resumeAfterRestart" | "lifecycleRestartScope">,
++  scope = resolveRestartResumeScope(),
++): boolean {
++  return entry.resumeAfterRestart
++    ? isRestartResumeMarkerInScope(entry.resumeAfterRestart, scope)
++    : entry.lifecycleRestartScope === scope;
++}
+diff --git a/src/config/sessions/session-run-lifecycle-projection.ts b/src/config/sessions/session-run-lifecycle-projection.ts
+--- a/src/config/sessions/session-run-lifecycle-projection.ts
++++ b/src/config/sessions/session-run-lifecycle-projection.ts
+@@ -13,6 +13,7 @@
+ } from "../../routing/session-key.js";
+ import type { ProviderReviewTerminalFact } from "../../sessions/provider-review-terminal.js";
+ import { buildUpdatedSessionGoalStatus } from "./goals-transitions.js";
++import { createRestartResumeMarker, resolveRestartResumeScope } from "./session-restart-resume-scope.js";
+ import type { InternalSessionEntry as SessionEntry } from "./types.js";
+
+ export type SessionLifecycleProviderReview = Pick<
+@@ -97,7 +98,7 @@
+
+ type PersistedLifecycleSessionShape = Pick<
+   SessionEntry,
+-  keyof LifecycleSessionShape | "status" | "lifecycleRunId"
++  keyof LifecycleSessionShape | "status" | "lifecycleRunId" | "lifecycleRestartScope"
+ >;
+
+ type GatewaySessionLifecycleSnapshot = Partial<
+@@ -281,7 +282,7 @@
+   return {
+     ...snapshot,
+     ...(phase === "start"
+-      ? { lifecycleRunId: runId, lastRunId: undefined }
++      ? { lifecycleRunId: runId, lifecycleRestartScope: resolveRestartResumeScope(), lastRunId: undefined }
+       : snapshot.status && resolveSettledLifecycleTerminalOutcome(params.event)
+         ? { lifecycleRunId: undefined, lastRunId: clientRunId }
+         : {}),
+@@ -444,7 +445,8 @@
+     !restartResumeSkipReason(params.canonicalKey, entry)
+   ) {
+     // A timed-out shutdown marker must not turn cancellation into a lost continuation.
+-    patch.resumeAfterRestart = entry.resumeAfterRestart ?? { queuedInputIds: [] };
++    patch.resumeAfterRestart =
++      entry.resumeAfterRestart ?? createRestartResumeMarker({ queuedInputIds: [] });
+   }
+   const stopped =
+     patch.status === "killed" &&
+diff --git a/src/config/sessions/types.ts b/src/config/sessions/types.ts
+--- a/src/config/sessions/types.ts
++++ b/src/config/sessions/types.ts
+@@ -709,6 +709,8 @@
+   publicShare?: { id: string; sessionId: string; createdAt: number };
+   /** Run that owns the current non-terminal Gateway lifecycle projection. */
+   lifecycleRunId?: string;
++  /** Supervisor recovery generation in which the latest execution started. */
++  lifecycleRestartScope?: string;
+   /** Exact run that produced the latest terminal Gateway lifecycle projection. */
+   lastRunId?: string;
+   /** Run admitted by the session lane; overwritten at admission and checked by transcript writes. */
+@@ -728,6 +730,8 @@
+   /** Written only by committed graceful shutdown, consumed by the next startup. */
+   resumeAfterRestart?: {
+     queuedInputIds: string[];
++    /** Restart resume scope of the Gateway that wrote the marker; see session-restart-resume-scope. */
++    scope?: string;
+     /** Original per-input limits, restored only after current source revalidation. */
+     queuedInputSources?: Record<
+       string,
+diff --git a/src/gateway/session-lifecycle-projection.ts b/src/gateway/session-lifecycle-projection.ts
+--- a/src/gateway/session-lifecycle-projection.ts
++++ b/src/gateway/session-lifecycle-projection.ts
+@@ -27,7 +27,7 @@
+   entry?: Parameters<typeof derivePersistedSessionLifecyclePatch>[0]["entry"];
+   event: LifecycleEventLike;
+ }): ReturnType<typeof deriveGatewaySessionLifecycleSnapshot> {
+-  const { lifecycleRunId: _lifecycleRunId, ...patch } = derivePersistedSessionLifecyclePatch({
++  const { lifecycleRunId: _lifecycleRunId, lifecycleRestartScope: _lifecycleRestartScope, ...patch } = derivePersistedSessionLifecyclePatch({
+     ...params,
+     currentLifecycleGeneration: getAgentRunLifecycleGeneration(),
+     lastRunError: resolveLifecycleFailureSummary(params.event),
+diff --git a/src/gateway/session-restart-resume-custody.ts b/src/gateway/session-restart-resume-custody.ts
+--- a/src/gateway/session-restart-resume-custody.ts
++++ b/src/gateway/session-restart-resume-custody.ts
+@@ -1,3 +1,4 @@
++import { isRestartResumeEntryInScope } from "../config/sessions/session-restart-resume-scope.js";
+ import {
+   getSubagentRunsForRequesterSession,
+   subagentRuns,
+@@ -42,6 +43,10 @@
+   assertCurrent();
+   const recovered: string[] = [];
+   for (const { sessionKey, entry } of entries) {
++    // Completion wakes can start parent work too; an ended generation cannot regain custody.
++    if (!isRestartResumeEntryInScope(entry)) {
++      continue;
++    }
+     try {
+       recovered.push(
+         ...(await recoverRequesterCompletionCustody({
+diff --git a/src/gateway/session-restart-resume.test.ts b/src/gateway/session-restart-resume.test.ts
+--- a/src/gateway/session-restart-resume.test.ts
++++ b/src/gateway/session-restart-resume.test.ts
+@@ -21,6 +21,7 @@
+   readSessionPendingInput,
+ } from "../config/sessions/session-pending-input-history.js";
+ import * as pendingInputWithdrawal from "../config/sessions/session-pending-input-withdrawal.js";
++import { GATEWAY_RESTART_RESUME_SCOPE_ENV } from "../config/sessions/session-restart-resume-scope.js";
+ import type { InternalSessionEntry, SessionEntry } from "../config/sessions/types.js";
+ import type { OpenClawConfig } from "../config/types.openclaw.js";
+ import { claimAgentRunContext, releaseAgentRunContext } from "../infra/agent-run-registry.js";
+@@ -861,3 +862,180 @@
+       await live!.settled?.();
+     }
+   }));
++
++// A supervisor that ends a deployment generation (for example an explicit operator
++// stop followed by a new deployment) starts the next Gateway under a new scope. Work
++// that the old generation interrupted must not run again, and the message queued
++// behind it must not run without its sender; a restart within the same scope still
++// resumes.
++it.for([
++  { live: "run", written: "generation-a", startup: "generation-a", resumes: true },
++  { live: "turn", written: "generation-a", startup: "generation-a", resumes: true },
++  { live: "run", written: "generation-a", startup: "generation-b", resumes: false },
++  { live: "turn", written: "generation-a", startup: "generation-b", resumes: false },
++  { live: "run", written: undefined, startup: "generation-b", resumes: false },
++  { live: "run", written: "generation-a", startup: undefined, resumes: false },
++  // Without a supervisor scope the behavior is unchanged.
++  { live: "run", written: undefined, startup: undefined, resumes: true },
++  { live: "turn", written: undefined, startup: undefined, resumes: true },
++] as const)(
++  "resumes a $live interrupted under scope $written only at startup scope $startup",
++  ({ live, written, startup, resumes }) =>
++    withOpenClawTestState({ scenario: "minimal" }, async () => {
++      const cfg = { agents: { entries: { main: {} } } };
++      setRuntimeConfigSnapshot(cfg);
++      const name = `scoped-${live}-${written ?? "none"}-${startup ?? "none"}`;
++      const target = { agentId: "main", sessionKey: `agent:main:${name}`, sessionId: name };
++      replaceSessionEntrySync(target, { sessionId: target.sessionId, updatedAt: Date.now() });
++      const previousScope = process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV];
++      const setScope = (scope: string | undefined) => {
++        if (scope === undefined) {
++          delete process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV];
++        } else {
++          process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV] = scope;
++        }
++      };
++      // The live work at shutdown: a claimed agent run, or a session turn.
++      const runId = `${name}-run`;
++      const claim =
++        live === "run"
++          ? claimAgentRunContext(runId, target, { trackOwner: true, ownsContext: true })
++          : undefined;
++      const turn =
++        live === "turn"
++          ? await withSessionTurn(target, async (active) => {
++              assert(active, "Expected a real session turn");
++              return { operation: active, release: active.retainExecution() };
++            })
++          : undefined;
++      const queued = await stageSessionPendingInput(target, {
++        runId: `${name}-queued`,
++        message: {
++          role: "user",
++          content: "Sent while the turn was running",
++          timestamp: Date.now(),
++          idempotencyKey: `${name}-queued:user`,
++        },
++        assertCurrent() {},
++      });
++      assert(queued, "Queued fixture input was not admitted");
++      // Resume admission starts with the session principal's authority. Stop there:
++      // reaching it is the resume decision under test.
++      const admission = vi
++        .spyOn(systemTurnAuthority, "prepareSessionSystemTurnAuthority")
++        .mockRejectedValue(new Error("Stop after observing restart admission"));
++      const resume = vi.spyOn(sessionEvents, "enqueueSessionEventForHost");
++      const dispatch = vi
++        .spyOn(gatewayDispatch, "dispatchGatewayRequestInProcess")
++        .mockResolvedValue({});
++      try {
++        setScope(written);
++        await persistRunningSessionsForRestart({ cfg });
++        expect(loadExactSessionEntry(target)?.entry.resumeAfterRestart).toEqual({
++          queuedInputIds: [queued.inputId],
++          queuedInputSources: expect.any(Object),
++          ...(written ? { scope: written } : {}),
++        });
++        // The process ends: its run, turn and queued sender are gone.
++        if (claim !== undefined) {
++          releaseAgentRunContext(runId, claim);
++        }
++        turn?.release();
++        await turn?.operation.ownerSettlement;
++        queued.finish("interrupted");
++        await queued.settled?.();
++        openOpenClawAgentDatabase({ agentId: "main" })
++          .db.prepare(
++            "UPDATE session_pending_inputs SET state = 'queued', lifecycle_generation = 'previous-process' WHERE input_id = ?",
++          )
++          .run(queued.inputId);
++
++        setScope(startup);
++        await resumeMarkedSessions({
++          context: createContext([], () => cfg),
++          signal: new AbortController().signal,
++          log: { warn: vi.fn() },
++        });
++        expect(admission.mock.calls.length > 0).toBe(resumes);
++        expect(resume).not.toHaveBeenCalled();
++        expect(loadExactSessionEntry(target)?.entry.resumeAfterRestart).toBeUndefined();
++        if (!resumes) {
++          expect(dispatch).not.toHaveBeenCalled();
++          expect(await readSessionPendingInput(target, queued.inputId)).toMatchObject({
++            state: "cancelled",
++            message: { content: "Sent while the turn was running" },
++          });
++        }
++      } finally {
++        setScope(previousScope);
++        admission.mockRestore();
++        resume.mockRestore();
++        dispatch.mockRestore();
++        queued.finish("interrupted");
++        await queued.settled?.();
++      }
++    }),
++);
++
++it.for([
++  { written: "generation-a", startup: "generation-a", resumes: true },
++  { written: "generation-a", startup: "generation-b", resumes: false },
++  { written: undefined, startup: "generation-b", resumes: false },
++  { written: "generation-a", startup: undefined, resumes: false },
++  { written: undefined, startup: undefined, resumes: true },
++] as const)(
++  "recovers a crash interrupted under scope $written only at startup scope $startup",
++  ({ written, startup, resumes }) =>
++    withOpenClawTestState({ scenario: "minimal" }, async () => {
++      const cfg = { agents: { entries: { main: {} } } };
++      setRuntimeConfigSnapshot(cfg);
++      const target = { agentId: "main", sessionKey: "agent:main:scoped-crash", sessionId: "scoped-crash" };
++      // Create the session before recording run ownership, as real run admission does.
++      // New-incarnation writes clear private evidence inherited from another session.
++      replaceSessionEntrySync(target, { sessionId: target.sessionId, updatedAt: 100 });
++      const existing = loadExactSessionEntry(target)!.entry;
++      replaceSessionEntrySync(target, {
++        ...existing, updatedAt: 110, startedAt: 110,
++        lifecycleRunId: "crashed-run", lifecycleRestartScope: written,
++      });
++      const queued = await stageSessionPendingInput(target, {
++        runId: "scoped-crash-queued",
++        message: { role: "user", content: "Queued before process loss", timestamp: 111, idempotencyKey: "scoped-crash-queued:user" },
++        assertCurrent() {},
++      });
++      assert(queued);
++      queued.finish("interrupted");
++      await queued.settled?.();
++      openOpenClawAgentDatabase({ agentId: "main" }).db.prepare(
++        "UPDATE session_pending_inputs SET state = 'queued', lifecycle_generation = 'previous-process' WHERE input_id = ?",
++      ).run(queued.inputId);
++      const previousScope = process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV];
++      if (startup === undefined) {
++        delete process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV];
++      } else {
++        process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV] = startup;
++      }
++      // Observe real restart admission at its authority boundary; model execution is
++      // separately qualified by the production Agent workflow.
++      const admission = vi.spyOn(systemTurnAuthority, "prepareSessionSystemTurnAuthority")
++        .mockRejectedValue(new Error("Stop after observing crash recovery admission"));
++      const dispatch = vi.spyOn(gatewayDispatch, "dispatchGatewayRequestInProcess").mockResolvedValue({});
++      try {
++        const context = createContext([], () => cfg);
++        context.restartResumeWindows = { main: [{ startedAt: 100, endedAt: 200 }] };
++        await resumeMarkedSessions({ context, signal: new AbortController().signal, log: { warn: vi.fn() } });
++        expect(admission.mock.calls.length > 0).toBe(resumes);
++        expect(dispatch).not.toHaveBeenCalled();
++        expect(loadExactSessionEntry(target)?.entry.lifecycleRunId).toBeUndefined();
++        expect(await readSessionPendingInput(target, queued.inputId)).toMatchObject({ state: "cancelled" });
++      } finally {
++        if (previousScope === undefined) {
++          delete process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV];
++        } else {
++          process.env[GATEWAY_RESTART_RESUME_SCOPE_ENV] = previousScope;
++        }
++        admission.mockRestore();
++        dispatch.mockRestore();
++      }
++    }),
++);
+diff --git a/src/gateway/session-restart-resume.ts b/src/gateway/session-restart-resume.ts
+--- a/src/gateway/session-restart-resume.ts
++++ b/src/gateway/session-restart-resume.ts
+@@ -19,6 +19,11 @@
+ } from "../config/sessions/session-accessor.js";
+ import { captureSessionQueuedInputsForRestart } from "../config/sessions/session-pending-input-history.js";
+ import { interruptOrphanedSessionPendingInputs } from "../config/sessions/session-pending-input-withdrawal.js";
++import {
++  createRestartResumeMarker,
++  outOfScopeRestartTarget,
++  isRestartResumeEntryInScope,
++} from "../config/sessions/session-restart-resume-scope.js";
+ import {
+   derivePersistedSessionLifecyclePatch,
+   restartResumeSkipReason,
+@@ -246,10 +251,10 @@
+               sessionKey,
+               entry: {
+                 ...entry,
+-                resumeAfterRestart: {
++                resumeAfterRestart: createRestartResumeMarker({
+                   queuedInputIds: queued.queuedInputIds,
+                   queuedInputSources: queued.queuedInputSources,
+-                },
++                }),
+               },
+             });
+             preserve.push({ session, preserve: queued.preserve });
+@@ -471,6 +476,7 @@
+       const agentId = parseAgentSessionKey(sessionKey)?.agentId ?? target.agentId;
+       let authority: Awaited<ReturnType<typeof prepareSessionSystemTurnAuthority>> | undefined;
+       let interrupted = false;
++      let stale: Parameters<typeof interruptOrphanedSessionPendingInputs>[0] | undefined;
+       try {
+         await waitForAgentInputAdmission(agentId, {
+           sessionKey,
+@@ -508,7 +514,13 @@
+               !hasAgentRunContextExecutionOwner(selected.lifecycleRunId) &&
+               (!selected.activeWriterRunId ||
+                 !hasAgentRunContextExecutionOwner(selected.activeWriterRunId));
+-            const marker: InternalSessionEntry["resumeAfterRestart"] =
++            // A marker from another scope belongs to an ended deployment generation, such
++            // as an explicit stop. Clear it without resuming; its queued inputs are settled
++            // below, like a crash's.
++            stale = outOfScopeRestartTarget(selected, { ...target, sessionKey }) ??
++              ((!isRestartResumeEntryInScope(selected) && (orphanedRun || parked || selected.mainRestartRecovery))
++                ? { ...target, sessionKey, sessionId: selected.sessionId } : undefined);
++            const recovered: InternalSessionEntry["resumeAfterRestart"] =
+               selected.resumeAfterRestart ??
+               (parked ||
+               (orphanedRun &&
+@@ -523,9 +535,10 @@
+                 selected.status === "interrupted" &&
+                 selected.updatedAt <= performance.timeOrigin &&
+                 selected.updatedAt >= performance.timeOrigin - LEGACY_RESTART_RESUME_WINDOW_MS)
+-                ? { queuedInputIds: [] }
++                ? { queuedInputIds: [], ...(selected.lifecycleRestartScope ? { scope: selected.lifecycleRestartScope } : {}) }
+                 : undefined);
+-            if (!marker && !selected.mainRestartRecovery && !orphanedRun) {
++            const marker = stale ? undefined : recovered;
++            if (!marker && !stale && !selected.mainRestartRecovery && !orphanedRun) {
+               return { result: undefined };
+             }
+             const entry = {
+@@ -562,6 +575,12 @@
+           },
+         });
+         if (!resumed) {
++          if (stale) {
++            // The cleared marker no longer keeps custody of the input queued behind it.
++            await interruptOrphanedSessionPendingInputs(stale, () => signal.throwIfAborted());
++            summary.record(agentId, sessionKey, "scope-changed");
++            continue;
++          }
+           summary.record(
+             agentId,
+             sessionKey,
+diff --git a/src/plugins/session-entry-slot-keys.ts b/src/plugins/session-entry-slot-keys.ts
+--- a/src/plugins/session-entry-slot-keys.ts
++++ b/src/plugins/session-entry-slot-keys.ts
+@@ -83,6 +83,7 @@
+   "inheritedToolAllow",
+   "delegatedToolPolicy",
+   "lifecycleRunId",
++  "lifecycleRestartScope",
+   "lastRunId",
+   "activeWriterRunId",
+   "resumeAfterRestart",

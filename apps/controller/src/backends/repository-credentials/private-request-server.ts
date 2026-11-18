@@ -1,9 +1,20 @@
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { chmod, lstat, mkdir, realpath, unlink } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Socket } from "node:net";
 import { prepareControlSocket } from "./control-socket.ts";
-import { inspectRequestHead } from "../../drivers/repo/credentials/transport/request.ts";
+import { inspectRequestHead } from "../../drivers/repo/access/transport/request.ts";
+
+function writeReply(response: ServerResponse, status: 200 | 503, body: Buffer): void {
+  response.writeHead(status, {
+    "content-type": "application/json",
+    "content-length": body.length,
+    "cache-control": "no-store",
+    connection: "close",
+  });
+  response.end(body, () => body.fill(0));
+}
 
 /** Only peers sharing the worker's private directory can reach this bounded, single-request socket. */
 export async function servePrivateRepositoryRequest(
@@ -33,10 +44,18 @@ export async function servePrivateRepositoryRequest(
   }
   await prepareControlSocket(path, 1000);
   const sockets = new Set<Socket>();
+  const handlers = new Set<Promise<void>>();
+  let closePromise: Promise<void> | undefined;
   const server = createServer(
     { maxHeaderSize: 4096, headersTimeout: 2000, requestTimeout: 5000 },
     (request, response) => {
+      if (closePromise) {
+        response.destroy();
+        return;
+      }
       response.shouldKeepAlive = false;
+      const abort = new AbortController();
+      response.once("close", () => abort.abort());
       const execute = async () => {
         const inspected = inspectRequestHead(request, {
           authority: "localhost",
@@ -79,41 +98,41 @@ export async function servePrivateRepositoryRequest(
           string,
           unknown
         >;
-        const abort = new AbortController();
-        response.on("close", () => abort.abort());
-        const value = await handle(parsed, abort.signal);
-        abort.signal.throwIfAborted();
-        return value;
+        if (
+          closePromise ||
+          response.destroyed ||
+          request.socket.destroyed ||
+          abort.signal.aborted
+        ) {
+          return;
+        }
+        // Track the operation itself: disconnecting its client need not settle State work.
+        let complete!: () => void;
+        const completion = new Promise<void>((resolve) => {
+          complete = resolve;
+        });
+        handlers.add(completion);
+        try {
+          const value = await handle(parsed, abort.signal);
+          abort.signal.throwIfAborted();
+          const body = Buffer.from(JSON.stringify(value));
+          writeReply(response, 200, body);
+        } finally {
+          handlers.delete(completion);
+          complete();
+        }
       };
-      void execute().then(
-        (result) => {
-          const body = Buffer.from(JSON.stringify(result));
-          response.writeHead(200, {
-            "content-type": "application/json",
-            "content-length": body.length,
-            "cache-control": "no-store",
-            connection: "close",
-          });
-          response.end(body, () => body.fill(0));
-        },
-        () => {
-          if (!response.destroyed) {
-            const body = Buffer.from('{"error":"unavailable"}');
-            response.writeHead(503, {
-              "content-type": "application/json",
-              "content-length": body.length,
-              "cache-control": "no-store",
-              connection: "close",
-            });
-            response.end(body, () => body.fill(0));
-          }
-        },
-      );
+      void execute().catch(() => {
+        if (!response.destroyed) {
+          const body = Buffer.from('{"error":"unavailable"}');
+          writeReply(response, 503, body);
+        }
+      });
     },
   );
   server.maxRequestsPerSocket = 1;
   server.on("connection", (socket) => {
-    if (sockets.size >= 64) {
+    if (closePromise || sockets.size >= 64) {
       socket.destroy();
       return;
     }
@@ -130,38 +149,47 @@ export async function servePrivateRepositoryRequest(
     server.once("error", reject);
     server.listen(path, done);
   });
-  let identity;
+  let identity: Stats | undefined;
+  const close = (startupFailure = false): Promise<void> => {
+    if (closePromise) {
+      return closePromise;
+    }
+    let completeTransport!: (error?: unknown) => void;
+    const closed = new Promise<unknown>((resolve) => {
+      completeTransport = resolve;
+    });
+    const result = closed.then(async (error) => {
+      await Promise.all(handlers);
+      if (error && !startupFailure) {
+        throw error;
+      }
+      const current = await lstat(path).catch(() => undefined);
+      if (
+        identity &&
+        current?.isSocket() &&
+        current.dev === identity.dev &&
+        current.ino === identity.ino
+      ) {
+        await unlink(path);
+      }
+    });
+    closePromise = result;
+    try {
+      server.close(completeTransport);
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+    } catch (error) {
+      completeTransport(error);
+    }
+    return result;
+  };
   try {
     identity = await lstat(path);
     await chmod(path, 0o600);
   } catch (error) {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise<void>((done) => server.close(() => done()));
-    const current = await lstat(path).catch(() => undefined);
-    if (
-      identity &&
-      current?.isSocket() &&
-      current.dev === identity.dev &&
-      current.ino === identity.ino
-    ) {
-      await unlink(path);
-    }
+    await close(true);
     throw error;
   }
-  return {
-    async close() {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      await new Promise<void>((done, reject) =>
-        server.close((error) => (error ? reject(error) : done())),
-      );
-      const current = await lstat(path).catch(() => undefined);
-      if (current?.isSocket() && current.dev === identity.dev && current.ino === identity.ino) {
-        await unlink(path);
-      }
-    },
-  };
+  return { close: () => close() };
 }

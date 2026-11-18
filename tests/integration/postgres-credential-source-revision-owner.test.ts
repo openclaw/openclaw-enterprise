@@ -17,7 +17,7 @@ import {
   testPool,
   withPool,
 } from "../helpers/postgres-database.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const options = { ...requiresPostgres, timeout: 30_000 };
@@ -99,7 +99,13 @@ async function fixture(t: TestContext, sourceCount = 2) {
     gatewayManagedMode: true,
     harnessAuth: { method: "credential_source", ...listed[0]!, loginMode: "api_key" },
     credentialSources: listed,
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    },
     compute: { id: "fixture-compute", implementation: "fixture" },
     executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,

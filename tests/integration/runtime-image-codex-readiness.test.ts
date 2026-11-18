@@ -172,7 +172,7 @@ test(
   },
   async (t) => {
     assert.ok(image);
-    const { runDockerCommand } = await import("../helpers/runtime-image-startup.mjs");
+    const { runDockerCommand } = await import("../helpers/runtime-image-docker.ts");
     const name = `oce-codex-readiness-${randomBytes(6).toString("hex")}`;
     t.after(() =>
       runDockerCommand(docker, ["rm", "--force", name], { timeout: 10000 }).catch(() => {}),

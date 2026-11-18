@@ -58,6 +58,11 @@ function resolutionDeadline(deadline: number) {
   };
 }
 
+type IssuerRegistration = {
+  readonly issuer: PreparedTokenIssuer | OAuthRefreshTokenIssuer;
+  postgresProof?: PostgresProof;
+};
+
 /** The same issuance budget applies to scheduled and request-triggered work. */
 export function runPreparation(owner: Preparation, outer: AbortSignal) {
   const budget = 25_000;
@@ -72,15 +77,21 @@ export function runPreparation(owner: Preparation, outer: AbortSignal) {
  * input authority and custody. A request can prepare only its authorized registration.
  */
 export class TokenService implements TokenServiceContract {
-  private readonly issuers = new Map<string, PreparedTokenIssuer | OAuthRefreshTokenIssuer>();
-  private readonly proofs = new Map<string, PostgresProof>();
+  private readonly issuers = new Map<string, IssuerRegistration>();
 
   /** Called inside the platform transaction that authorizes the send. No credential bytes are read. */
   readonly postgresCurrentProof: PostgresProof = (client) => ({
     current: async (source, evidence, authority, lifetime) => {
       const issuer = this.issuer(source.key.provider);
-      const proof =
-        issuer?.issuerAuthority === authority && this.proofs.get(issuer.provider.id)?.(client);
+      if (!issuer || issuer.issuerAuthority !== authority) {
+        return false;
+      }
+      const registration = this.issuers.get(`provider/${issuer.provider.id}`);
+      if (!registration || registration.issuer !== issuer) {
+        return false;
+      }
+      const { postgresProof } = registration;
+      const proof = postgresProof?.(client);
       return proof ? proof.current(source, evidence, authority, lifetime) : false;
     },
   });
@@ -106,9 +117,14 @@ export class TokenService implements TokenServiceContract {
     if (this.issuers.has(key)) {
       throw new Error("A token issuer already owns this registration.");
     }
-    this.issuers.set(key, issuer);
-    if (postgresProof && issuer.tokenKind !== "oauth_refresh_token") {
-      this.proofs.set(issuer.provider.id, postgresProof);
+    const registration: IssuerRegistration = { issuer };
+    this.issuers.set(key, registration);
+    if (
+      postgresProof &&
+      issuer.tokenKind !== "oauth_refresh_token" &&
+      key === `provider/${issuer.provider.id}`
+    ) {
+      registration.postgresProof = postgresProof;
     }
   }
 
@@ -116,10 +132,10 @@ export class TokenService implements TokenServiceContract {
   issuer(provider: EgressRef): PreparedTokenIssuer | undefined;
   issuer(target: EgressRef | OAuthAccountRef["kind"]) {
     if (target === "oauth_refresh_token") {
-      const issuer = this.issuers.get(target);
+      const issuer = this.issuers.get(target)?.issuer;
       return issuer?.tokenKind === target ? issuer : undefined;
     }
-    const issuer = this.issuers.get(`provider/${target.id}`);
+    const issuer = this.issuers.get(`provider/${target.id}`)?.issuer;
     if (
       issuer &&
       issuer.tokenKind !== "oauth_refresh_token" &&

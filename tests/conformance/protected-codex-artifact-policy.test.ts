@@ -62,7 +62,6 @@ function sandbox(
     {
       gateway: { workspaceMode: "operator" },
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
@@ -141,6 +140,14 @@ test("artifact qualification refuses routes that widen destination, process, wri
     ["audit only", { ...original, endpoints: [{ ...endpoint, enforcement: "audit" }] }],
     ["write access", { ...original, endpoints: [{ ...endpoint, access: "read_write" }] }],
     ["another process", { ...original, binaries: [{ path: "/usr/bin/curl" }] }],
+    [
+      "package registry for a non-Codex executable",
+      {
+        ...original,
+        binaries: [{ path: "/usr/local/bin/node" }],
+        endpoints: [{ ...endpoint, host: "registry.npmjs.org" }],
+      },
+    ],
   ];
   for (const [name, rule] of cases) {
     await t.test(name, (context) => {
@@ -184,7 +191,7 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
     configurationGeneration: 1,
     configuration: createHarnessConfiguration("codex", "fixture"),
     gatewayManagedMode: false,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     compute: { id: "kubernetes", implementation: "kubernetes" },
     sandboxDriverId: snapshot.driverId,
     sandboxPolicy: snapshot,

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-11-04
-last_updated_session: 01a12074-7896-7f63-99fe-9f42e9041d02
+updated: 2026-11-18
+last_updated_session: authoring-run/9a169618-9c17-48f1-927c-556605a302b2
 ---
 
 # Platform Startup Flow
@@ -22,7 +22,7 @@ requests and the worker starts polling PostgreSQL for queued operations.
 
 - Trigger: Start the API with `node apps/controller/src/server.mjs`; start the
   worker separately with `node apps/controller/src/worker.mjs`.
-- Source: `apps/controller/src/api-startup.mjs:startApi`,
+- Source: `apps/controller/src/api-startup.ts:startApi`,
   `apps/controller/src/worker.mjs:configuration`, and
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`.
 - Assumptions: PostgreSQL-backed startup requires the same migrated application
@@ -78,18 +78,19 @@ graph TD
 
 ### 1. Launch independent API and worker processes
 
-`apps/controller/src/api-startup.mjs:startApi`
+`apps/controller/src/api-startup.ts:startApi`
 
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
-[history preflight](../../scripts/migration-history.mjs) accepts only reviewed
+[history preflight](../../scripts/migration-history-preflight.ts) accepts only reviewed
 receipt and catalog prefixes, including the two published 31-receipt completed
 lineages: the current Backend terminology history and the historical Provider
 terminology history. The append-only compatibility migration converts the
 Provider schema and owned persisted JSON to Backend terminology without
 rewriting applied receipts or terminal provisioning fingerprints. It refuses
 mixed receipt histories, manually edited catalogs, and the older divergent
-credential history before migration DDL. The
+credential history before migration DDL. It also refuses invalid release metadata
+before connecting to PostgreSQL. The
 [migration history reference](../reference/settings/operations.md#migration-history)
 owns the exact supported shapes and recovery boundary. Neither API nor worker
 startup rewrites migration receipts or converts an unsupported database.
@@ -135,7 +136,7 @@ comes from server-owned singleton state, never startup YAML.
 
 API and worker use matching logical Driver identities but separate instances.
 Each IAM Driver loads current persisted policy for every identity lookup and
-authorization decision. Only `api-startup.mjs` reads the mounted ChatGPT admin key,
+authorization decision. Only `api-startup.ts` reads the mounted ChatGPT admin key,
 constructs `Backend<ChatGPTClient>`, and injects it into the optional
 ServiceAccount Driver factory. The worker consumes only nonsecret Backend
 metadata and never receives the client or admin credential. Startup validates
@@ -179,10 +180,12 @@ ServiceAccount Driver with OCC before
 exact-resource-authorized API routes.
 Route request validators and response serializers come from
 [`route-compilers.ts`](../../apps/controller/src/http/route-compilers.ts). When
-[`precompile-route-schemas.mjs`](../../apps/controller/src/precompile-route-schemas.mjs)
+[`precompile-route-schemas.ts`](../../apps/controller/src/precompile-route-schemas.ts)
 has written `apps/controller/dist/route-compilers.cjs`, as the image build does, the API
 loads code generated for exactly the same schema, options, Node version and lockfile
-instead of compiling it; anything else compiles at start, as before.
+instead of compiling it; anything else compiles at start, as before. The
+[development image](../../Dockerfile) copies `pnpm-lock.yaml` with ownership for
+the `node` user so this startup check can read a lockfile with restrictive permissions.
 
 Development with `OCC_DATABASE_URL` instead calls
 [`composePostgresDevelopment`](../../apps/controller/src/composition/development-postgres.ts)
@@ -244,8 +247,9 @@ execution begins in the adjacent
 
 ## Debugging and Verification
 
-- Verify matching selection and process-local instances with
-  `node --test --test-name-pattern='independent API and worker startup construct the same selected runtime Drivers' tests/integration/configuration-startup.test.mjs`.
+- Check the startup errors reported when no Installation ID is set with
+  `node --test --test-name-pattern='production server and worker resolve singleton startup without an Installation ID' tests/integration/configuration-startup.test.mjs`.
+  The API rejects the missing authentication base URL before it loads Drivers. The worker reports the unavailable PostgreSQL connection.
 - Expect API `{"event":"listening",...}` and worker
   `{"event":"worker.started","computeDriverId":"..."}` events, followed by
   `worker.health`. Startup failures emit `startup-error` or
@@ -282,6 +286,10 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 01:13: Record release-metadata refusal before the migration connection. (authoring-run/9a169618-9c17-48f1-927c-556605a302b2 - 254d0a96f86744b23f2394d233f0d7728480e844)
+
+- 2026-11-12 00:19: Give the development image runtime user ownership of the lockfile used by route compiler checks. (authoring-run/a7e18694-91f7-4a70-9555-4ef0ed62d27b - a1e00c855e88f42499d266baeea4dca599e3b227)
 
 - 2026-11-04 20:24: Refuse negative Kubernetes workload resources before persistence. (01a12074-7896-7f63-99fe-9f42e9041d02 - 9d714d63dd7d54b2b94546616f7d8c30571d70d3)
 

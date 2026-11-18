@@ -1,3 +1,4 @@
+import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
@@ -77,7 +78,9 @@ import {
   ActivationPendingError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
+  AuditAppendUnavailableError,
   DependencyUnavailableError,
+  PostgresCommitOutcomeUnknownError,
   KubernetesSecretWriteForbiddenError,
   PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
@@ -87,6 +90,7 @@ import {
   type OperationRefusalHintCode,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
+  RepositorySessionWithdrawnError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   ScopeViolationError,
@@ -113,6 +117,7 @@ import {
   type PostgresPool,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
+  recognizedRuntimeFailureValues,
   validateRuntimeFailureEvidence,
 } from "@openclaw-enterprise/occ";
 import {
@@ -125,16 +130,17 @@ import {
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
-import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/credentials/prepared-repository-git.ts";
+import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
-  captureNamespaceEnsureHint,
-  type NamespaceEnsureHintCode,
+  captureNamespaceHint,
+  type NamespaceHintCode,
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
+import { DeploymentTimings } from "./worker/deployment-timing.ts";
 import {
   isStopYieldedCode,
   PredecessorStopYieldedError,
@@ -174,6 +180,7 @@ export interface ControllerWorkerOptions {
   readonly metrics?: OccMetrics;
   readonly pool: PostgresPool & PostgresQueryClient;
   readonly mode?: "development" | "production";
+  readonly controlPlaneAuditEnabled?: boolean;
   readonly drivers?: InstallationRuntimeDrivers;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
@@ -185,6 +192,11 @@ export interface ControllerWorkerOptions {
   readonly convergenceTimeoutMs?: number;
   readonly emit?: (event: Readonly<Record<string, unknown>>) => void;
   readonly onHealthy?: () => Promise<void>;
+  /**
+   * Monotonic milliseconds for the health check's startup warning window. Tests only; the
+   * default is `performance.now`.
+   */
+  readonly healthClock?: () => number;
   /**
    * Called, at most once per health interval, when the run loop starts a pass or a claim
    * heartbeat renews. It goes quiet only while the loop is stuck, so a liveness probe can tell
@@ -237,6 +249,12 @@ const REVISION_KEPT_WITHOUT_GIT_CODES: ReadonlySet<string> = new Set([
   "REPOSITORY_GIT_TOKEN_QUARANTINED",
   "REPOSITORY_GIT_TOKEN_PENDING",
 ]);
+
+function requireClaimRenewal(renewed: ClaimedWork | undefined): void {
+  if (renewed === undefined) {
+    throw new WorkClaimLostError();
+  }
+}
 
 // A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
 // An active revision's source is already consumed.
@@ -372,6 +390,7 @@ function loggedErrorClass(error: unknown): string {
 function revisionFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
+  readonly failure?: string;
   readonly status?: number;
   readonly reason?: string;
   readonly method?: string;
@@ -398,6 +417,7 @@ function computeCleanupLogFields(error: unknown): { readonly cleanupCause?: stri
 function primaryFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
+  readonly failure?: string;
   readonly status?: number;
   readonly reason?: string;
   readonly method?: string;
@@ -409,6 +429,9 @@ function primaryFailureLogFields(error: unknown): {
   }
   const record = error !== null && typeof error === "object" ? error : undefined;
   const errorClass = loggedErrorClass(error);
+  if (error instanceof ActivationFailedError && error.permissionDenials !== undefined) {
+    return { cause: errorClass, failure: error.permissionDenials.join("_") };
+  }
   if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
     const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
     return { cause: errorClass, method, grpcStatus, validationCategory };
@@ -466,6 +489,10 @@ class ClaimLeaseLostError extends WorkClaimLostError {
     super();
     this.lossCause = lossCause;
   }
+}
+
+class RestartContinuationEndedError extends Error {
+  readonly code = "RESTART_CONTINUATION_ENDED";
 }
 
 /**
@@ -546,10 +573,11 @@ function revisionReadinessRecheckMs(ageMs: number): number {
 }
 
 interface DispatchResult {
+  readonly namespaceParticipants?: readonly NamespaceLifecycleEvidence[];
   readonly outcome: Outcome;
   readonly code: string;
   readonly observation?: Observation;
-  readonly hintCode?: NamespaceEnsureHintCode;
+  readonly hintCode?: NamespaceHintCode;
   readonly decision?: AuthorizationDecision;
   readonly authorization?: AuthorizationRequest;
 }
@@ -848,18 +876,6 @@ function workOperation(claim: ControllerWork): string {
   return "work.reconcile";
 }
 
-// Worker-local phase timing for one deployment work item. It spans the passes
-// this process observes; a restart or eviction starts a new record.
-interface DeployTiming {
-  passes: number;
-  passStartedAt: number;
-  prepareMs: number;
-  firstUnreadyAt: number | undefined;
-  readinessWaitMs: number | undefined;
-  readyAt: number | undefined;
-}
-
-const MAX_DEPLOY_TIMINGS = 256;
 const SAFE_COMPUTE_FAILURE_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const SAFE_COMPUTE_FAILURE_STAGE = /^[a-z][a-z0-9_]{0,63}$/;
 const SAFE_COMPUTE_FAILURE_CLASS = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
@@ -904,6 +920,44 @@ function workLogFields(claim: ClaimedWork): {
     attempt: claim.attemptCount,
     operation: workOperation(claim),
   };
+}
+
+function agentWorkLogFields(claim: ClaimedWork) {
+  return {
+    ...workLogFields(claim),
+    namespaceId: claim.namespaceId,
+    agentId: claim.agentId,
+  };
+}
+
+// The worker health check's steps, in order: the work queue read, the repository credential
+// broker's admission readiness, and the readiness report (the readiness file).
+type HealthDependency = "work-queue" | "repository-credential-broker" | "readiness-report";
+
+// How long after start a failed health check only warns about a dependency that has not
+// passed once in this process (finding 3297). On Kubernetes the broker is the Worker Pod's
+// main container, so it always starts after the worker's native sidecar.
+const HEALTH_STARTUP_WARNING_MS = 30_000;
+
+function workerPassErrorCode(error: unknown): string {
+  if (error instanceof WorkClaimLostError) {
+    return "CLAIM_LOST";
+  }
+  if (error instanceof PostgresCommitOutcomeUnknownError) {
+    return "COMMIT_OUTCOME_UNKNOWN";
+  }
+  if (
+    (error instanceof AuditAppendUnavailableError &&
+      error.reasonCode === "AUDIT_CAPACITY_EXCEEDED") ||
+    (error instanceof Error &&
+      "code" in error &&
+      error.code === "53400" &&
+      "constraint" in error &&
+      error.constraint === "control_plane_audit_capacity")
+  ) {
+    return "AUDIT_CAPACITY_EXCEEDED";
+  }
+  return "WORKER_UNAVAILABLE";
 }
 
 function validDriver(driver: ComputeDriver): boolean {
@@ -962,12 +1016,7 @@ function validLifecycleHooks(driver: Driver): boolean {
   if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) {
     return false;
   }
-  const phases = new Set([
-    "afterNamespacePrepared",
-    "beforeWorkloadStart",
-    "beforeWorkloadStop",
-    "beforeNamespaceDelete",
-  ]);
+  const phases = new Set(["beforeWorkloadStart", "beforeWorkloadStop"]);
   const candidate = hooks as unknown as Record<string, unknown>;
   return (
     Object.keys(candidate).length > 0 &&
@@ -1094,7 +1143,8 @@ function runtimeFailureFromObservation(observation: unknown): RuntimeFailureEvid
 // for the container's CPU limit; the others are a probe timeout or failure, a
 // failed Codex login, a missing probe configuration, and an invalid plugin
 // approver configuration. Kubernetes Compute reports a workspace setup refusal
-// that every init container restart repeats (finding 1677). Unknown codes stay
+// that every init container restart repeats (finding 1677), and a runtime
+// container in a crash loop as UNAVAILABLE (finding 3041). Unknown codes stay
 // pending until the deadline.
 const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.freeze({
   AUTHENTICATION_FAILED: "RUNTIME_AUTHENTICATION_FAILED",
@@ -1108,18 +1158,28 @@ const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.free
   REPOSITORY_ROUTE_BLOCKED: "REPOSITORY_GIT_ROUTE_BLOCKED",
 });
 
+// A dedicated Gateway or a Kubernetes Harness held on a state lock whose holder it cannot verify
+// stopped (check `gateway-state-lock`). The deployment record keeps only its code, and the
+// recovery differs from every other startup check, so the code names it (finding 3348).
+const STATE_LOCK_DEPLOYMENT_CODE = "RUNTIME_STATE_LOCK_UNVERIFIED";
+
 // The deployment failure codes of held runtime failures. `finalizeRevision` does not stop their
 // runtime, but the failure of a version with repository credentials also queues its retirement
 // (`agent_revision:<id>:repository_cleanup:retire:<hash>`), which stops it: see
 // `heldRuntimeSuccessor`.
-const HELD_RUNTIME_DEPLOYMENT_CODES: ReadonlySet<string> = new Set(
-  Object.values(HELD_RUNTIME_FAILURE_CODES),
-);
+const HELD_RUNTIME_DEPLOYMENT_CODES: ReadonlySet<string> = new Set([
+  ...Object.values(HELD_RUNTIME_FAILURE_CODES),
+  STATE_LOCK_DEPLOYMENT_CODE,
+]);
 
-function heldRuntimeFailureCode(code: string): string | undefined {
-  return Object.hasOwn(HELD_RUNTIME_FAILURE_CODES, code)
-    ? HELD_RUNTIME_FAILURE_CODES[code]
-    : undefined;
+function heldRuntimeFailureCode(evidence: RuntimeFailureEvidence): string | undefined {
+  if (!Object.hasOwn(HELD_RUNTIME_FAILURE_CODES, evidence.code)) {
+    return undefined;
+  }
+  const code = HELD_RUNTIME_FAILURE_CODES[evidence.code];
+  return code === "RUNTIME_STARTUP_FAILED" && evidence.check === "gateway-state-lock"
+    ? STATE_LOCK_DEPLOYMENT_CODE
+    : code;
 }
 
 function convergenceDeadlineResultData(
@@ -1171,6 +1231,7 @@ export class ControllerWorker {
   private readonly policyCeiling: readonly import("@openclaw-enterprise/contracts").SandboxNetworkGrant[];
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
+  private readonly namespaceLifecycleBindings: InstallationRuntimeDrivers["namespaceLifecycleBindings"];
   private readonly configuration: ConfigurationDriver | undefined;
   private readonly queueOptions: PostgresWorkQueueOptions;
   private readonly iamDriverId: string;
@@ -1222,6 +1283,13 @@ export class ControllerWorker {
   private closing = false;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
+  // Set once the first health check after start has ended. That check always only warns.
+  private firstHealthCheckEnded = false;
+  private readonly healthClock: () => number;
+  // When this process started, on `healthClock`: the startup warning window's origin.
+  private startedAt = 0;
+  // The health dependencies that have passed at least once in this process.
+  private readonly healthyDependencies = new Set<HealthDependency>();
   private lastProgressAt = 0;
   private pendingProgress = false;
   /**
@@ -1237,7 +1305,7 @@ export class ControllerWorker {
     string,
     { readonly stoppedAt: number; readonly restopAfterMs: number }
   >();
-  private readonly deployTimings = new Map<string, DeployTiming>();
+  private readonly deployTimings = new DeploymentTimings();
   /** The last stuck-cleanup cause logged per repository cleanup work item. */
   private readonly repositoryCleanupCauses = new Map<string, string>();
   /**
@@ -1281,6 +1349,7 @@ export class ControllerWorker {
     this.queueOptions = {
       leaseDurationMs: this.leaseDurationMs,
       maxAttempts: this.maxAttempts,
+      controlPlaneAuditEnabled: options.controlPlaneAuditEnabled ?? this.mode === "development",
     };
     this.state = new PostgresPlatformState(options.pool, {
       workQueue: this.queueOptions,
@@ -1311,6 +1380,7 @@ export class ControllerWorker {
       throw new Error("A before-commit Compute Driver must implement activateRevision.");
     }
     this.compute = computeDriver;
+    this.namespaceLifecycleBindings = drivers?.namespaceLifecycleBindings;
     const selectedSecretDriver = drivers?.secretDriver;
     this.secretDriver = selectedSecretDriver;
     const selectedSecretConfiguration = drivers?.installation.drivers.secret;
@@ -1374,6 +1444,7 @@ export class ControllerWorker {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       });
     this.onHealthy = options.onHealthy;
+    this.healthClock = options.healthClock ?? (() => performance.now());
     this.onProgress = options.onProgress;
     this.repositoryGitMaterial = options.repositoryGitMaterial;
     this.repositoryPolicy = drivers?.repositoryPolicy;
@@ -1404,7 +1475,10 @@ export class ControllerWorker {
     const bound = this.repositoryAdmission?.policy;
     if (
       this.repositoryAdmission !== undefined &&
-      (bound !== this.repositoryPolicy || typeof bound?.resolveBindings !== "function")
+      ((this.repositoryAdmission.policyMode === "built-in"
+        ? this.repositoryPolicy !== undefined
+        : bound !== this.repositoryPolicy) ||
+        typeof bound?.resolveBindings !== "function")
     ) {
       throw new Error("The bound repository admission owner is not selected or unavailable.");
     }
@@ -1436,9 +1510,11 @@ export class ControllerWorker {
       throw new Error("The platform Installation must be bootstrapped before starting the worker.");
     }
     this.installation = installation;
+    this.startedAt = this.healthClock();
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
+      namespaceLifecycleBindings: this.namespaceLifecycleBindings,
       preparedTokens: this.preparedTokens,
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
@@ -1569,6 +1645,9 @@ export class ControllerWorker {
             await this.provisioningController?.cleanupOAuthClients();
           }
         }
+        if (this.stopping) {
+          break;
+        }
         const claim = await this.queue.claim();
         this.claimedLastPass = claim !== undefined;
         if (claim !== undefined) {
@@ -1627,7 +1706,7 @@ export class ControllerWorker {
         } else {
           this.emit({
             event: "worker.error",
-            code: error instanceof WorkClaimLostError ? "CLAIM_LOST" : "WORKER_UNAVAILABLE",
+            code: workerPassErrorCode(error),
             ...(error instanceof ClaimLeaseLostError
               ? {
                   ...(claimed === undefined ? {} : workLogFields(claimed)),
@@ -1698,12 +1777,12 @@ export class ControllerWorker {
     let nextCleanupAt = 0;
     while (!this.stopping) {
       if (Date.now() >= nextCleanupAt) {
-        // Abandoned attempts still need cleanup if browser connections were disabled.
+        // Attempts still need cleanup when connection renewal is disabled.
         nextCleanupAt = Date.now() + cleanupIntervalMs;
         try {
-          await controller.expireConnectionSessions(32);
+          await controller.expireAuthenticationStates(32);
         } catch {
-          this.emit({ event: "worker.error", code: "CONNECTION_SESSION_CLEANUP_FAILED" });
+          this.emit({ event: "worker.error", code: "AUTHENTICATION_STATE_CLEANUP_FAILED" });
         }
       }
       let waitMs = cleanupIntervalMs;
@@ -1790,17 +1869,39 @@ export class ControllerWorker {
     }
     this.lastHealthAt = now;
     this.pendingHealth = (async () => {
-      const pending = await this.queue.pending();
-      await this.nativeRepositorySender?.checkAdmissionReady?.(AbortSignal.timeout(2000));
-      await this.onHealthy?.();
-      this.emit({ event: "worker.health", status: "ready", pending });
-    })()
-      .catch(() => {
-        this.emit({ event: "worker.error", code: "HEALTH_UNAVAILABLE" });
-      })
-      .finally(() => {
-        this.pendingHealth = undefined;
-      });
+      let dependency: HealthDependency = "work-queue";
+      try {
+        const pending = await this.queue.pending();
+        this.healthyDependencies.add(dependency);
+        dependency = "repository-credential-broker";
+        await this.nativeRepositorySender?.checkAdmissionReady?.(AbortSignal.timeout(2000));
+        this.healthyDependencies.add(dependency);
+        dependency = "readiness-report";
+        await this.onHealthy?.();
+        this.healthyDependencies.add(dependency);
+        this.emit({ event: "worker.health", status: "ready", pending });
+      } catch (error) {
+        // Name the step that failed and the error's class, never its message, which can carry
+        // hosts or connection details (finding 3259). A dependency that has not passed once
+        // yet may still be starting, such as the broker sidecar's control socket: it only
+        // warns on the first check and during the startup window (finding 3297). Any other
+        // failure is an error, so an outage that persists or returns is reported as one.
+        const starting =
+          !this.healthyDependencies.has(dependency) &&
+          (!this.firstHealthCheckEnded ||
+            this.healthClock() - this.startedAt < HEALTH_STARTUP_WARNING_MS);
+        this.emit({
+          event: starting ? "worker.health-warning" : "worker.error",
+          code: "HEALTH_UNAVAILABLE",
+          dependency,
+          cause: loggedErrorClass(error),
+        });
+      } finally {
+        this.firstHealthCheckEnded = true;
+      }
+    })().finally(() => {
+      this.pendingHealth = undefined;
+    });
     return this.pendingHealth;
   }
 
@@ -1862,6 +1963,17 @@ export class ControllerWorker {
     return decision;
   }
 
+  private async assertRestartContinuation(revision: Readonly<AgentRevision>): Promise<void> {
+    const current = await this.state.read((view) =>
+      view.agents.findRestartContinuation(revision.namespaceId, revision.agentId),
+    );
+    if (!isDeepStrictEqual(current, revision.restartContinuation)) {
+      throw new RestartContinuationEndedError(
+        "The Agent ended this revision's recovery generation.",
+      );
+    }
+  }
+
   private async stagedRevision(
     operation: "activateRevision" | "deactivateRevision",
     revision: Readonly<AgentRevision>,
@@ -1872,6 +1984,7 @@ export class ControllerWorker {
       throw new Error(`The selected production Compute Driver requires ${operation}.`);
     }
     if (operation === "activateRevision") {
+      await this.assertRestartContinuation(revision);
       if (!this.revisionPluginDriverAvailable(revision)) {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
@@ -2041,21 +2154,10 @@ export class ControllerWorker {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
     }
     this.validateExecutionAdmission(revision);
-    const timing = this.deployTimings.get(claim.idempotencyKey);
-    const started = Date.now();
+    const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
       const prepared = await this.prepareRevisionPass(claim, revision, context);
-      if (timing !== undefined) {
-        const now = Date.now();
-        if (!prepared.observation.ready) {
-          timing.firstUnreadyAt ??= now;
-        } else {
-          timing.readyAt = now;
-          if (timing.readinessWaitMs === undefined && timing.firstUnreadyAt !== undefined) {
-            timing.readinessWaitMs = now - timing.firstUnreadyAt;
-          }
-        }
-      }
+      timing?.observeReadiness(prepared.observation);
       return prepared;
     } catch (failure) {
       const error = primaryComputeFailure(failure);
@@ -2091,9 +2193,7 @@ export class ControllerWorker {
       }
       throw error;
     } finally {
-      if (timing !== undefined) {
-        timing.prepareMs += Date.now() - started;
-      }
+      timing?.finish();
     }
   }
 
@@ -2156,6 +2256,37 @@ export class ControllerWorker {
       if (previous === undefined) {
         continue;
       }
+      const retargeted = await this.state.transactWithQueue(async (unit, queue) => {
+        const agent = await this.lockClaimAgent(unit, claim);
+        if ((await queue.heartbeat(claim)) === undefined) {
+          throw new WorkClaimLostError();
+        }
+        if (agent?.activeRevisionId !== previous.id || claim.revisionId === undefined) {
+          return;
+        }
+        const operation = await unit.agents.findPredecessorReplacement(
+          previous.namespaceId,
+          previous.agentId,
+        );
+        if (
+          operation?.predecessorRevisionId === previous.id &&
+          operation.phase === "pre-stop" &&
+          operation.candidateRevisionId !== claim.revisionId
+        ) {
+          // Release the live claim so the winning deployment can run immediately.
+          await queue.defer(claim, { code: "PREDECESSOR_STOP_RETARGETED" });
+          return true;
+        }
+        await unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
+          predecessorRevisionId: previous.id,
+          candidateRevisionId: claim.revisionId,
+          phase: "stopping",
+        });
+      }, this.queueOptions);
+      if (retargeted) {
+        // The transaction already released this claim and refunded its attempt.
+        throw new WorkClaimLostError();
+      }
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
@@ -2212,6 +2343,7 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
+    await this.assertRestartContinuation(revision);
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
@@ -2249,6 +2381,7 @@ export class ControllerWorker {
       prepared = { ...prepared, repositoryCredentials };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
+      await this.assertRestartContinuation(revision);
       observation = await this.withClaimHeartbeat(claim, () =>
         this.compute.prepareRevision(revision, prepared),
       );
@@ -2353,9 +2486,7 @@ export class ControllerWorker {
       cause = repositoryCleanupFailureCode(error);
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (denial !== undefined) {
         await this.appendRevisionDenial(unit, claim, denial);
       }
@@ -2373,21 +2504,24 @@ export class ControllerWorker {
       }
       if (expiryRevision !== undefined && withdrawal !== undefined) {
         // Recheck the exact active owner under admission's locks after the supplier call. A
-        // concurrent stop, replacement or terminal retirement wins, including over pending.
+        // replacement or terminal retirement wins, including over pending. Stop keeps its
+        // own supersedable runtime disposition while finite withdrawal remains fenced.
         const agent = await this.lockClaimAgent(unit, claim);
         const owner = {
           namespaceId: claim.namespaceId,
           agentId: claim.agentId!,
           revisionId: expiryRevision.id,
         };
+        const expiry = await queue.repositoryExpiryState(owner);
+        const waitingForStop = expiry === "removal" && agent?.desiredRuntimeState === "stopped";
         if (
           withdrawal === "retire-runtime" ||
           agent?.status !== "active" ||
           agent.activeRevisionId !== expiryRevision.id ||
-          agent.desiredRuntimeState !== "running" ||
+          (!waitingForStop && agent.desiredRuntimeState !== "running") ||
           agent.servicePrincipalId !== expiryRevision.servicePrincipalId ||
           (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
-          (await queue.repositoryExpiryState(owner)) === "retiring"
+          expiry === "retiring"
         ) {
           // Transfer every outstanding session and the runtime to irrevocable retirement.
           await queue.enqueueRepositoryCleanup(claim, owner, "terminal-runtime");
@@ -2395,6 +2529,11 @@ export class ControllerWorker {
           await queue.complete(claim, { code: completionCode });
           complete = true;
           return;
+        }
+        if (waitingForStop) {
+          // Stopped intent cannot authorize retirement, including after denied Stop.
+          // Keep cleanup responsible for later running intent without repeating Git effects.
+          complete = false;
         }
       }
       const attempts =
@@ -2423,25 +2562,38 @@ export class ControllerWorker {
       if (complete && expiryRevision !== undefined && withdrawal === "withdrawn") {
         // Publish withdrawal and resume normal runtime maintenance in this same transaction.
         // A recovered expiry claim may be far older than the interrupted maintenance bucket.
-        const previous =
-          withdrawnRevision === undefined
-            ? await queue.latestRevisionMaintenanceKey({
-                namespaceId: claim.namespaceId,
-                agentId: claim.agentId!,
-                revisionId: expiryRevision.id,
-              })
-            : claim.idempotencyKey;
+        const previous = claim.idempotencyKey.startsWith(
+          `agent_revision:${expiryRevision.id}:maintenance:`,
+        )
+          ? claim.idempotencyKey
+          : await queue.latestRevisionMaintenanceKey({
+              namespaceId: claim.namespaceId,
+              agentId: claim.agentId!,
+              revisionId: expiryRevision.id,
+            });
+        const existing =
+          previous === undefined || previous === claim.idempotencyKey
+            ? undefined
+            : await queue.findWork(previous);
+        const maintenancePending = existing?.state === "queued" || existing?.state === "claimed";
         // Use the ordinary observation cadence. In particular, do not require the removed
         // standing policy (or its shorter renewal cadence) to supervise the retained runtime.
-        if (expiryRevision.repositoryCredentials?.standingApprovalId) {
+        // Another cleanup or the original deployment may already have started this chain.
+        if (!maintenancePending && expiryRevision.repositoryCredentials?.standingApprovalId) {
           const interval = Math.min(
             this.maintenanceIntervalMs ?? Infinity,
             this.repositoryCleanupRetryMs,
           );
           await this.enqueueMaintenance(queue, claim, expiryRevision, previous, interval);
-        } else if (this.revisionMaintenanceInterval(expiryRevision) !== undefined) {
+        } else if (
+          !maintenancePending &&
+          this.revisionMaintenanceInterval(expiryRevision) !== undefined
+        ) {
           await this.enqueueMaintenance(queue, claim, expiryRevision, previous);
         }
+        // An unfinished original deployment can retain the verified runtime too, but this
+        // observation proves neither activation nor workspace setup. Keep its nonactivation
+        // result; only completeActivatedRevision publishes ordinary deployment success.
         completionCode = "REPOSITORY_ACCESS_WITHDRAWN";
       }
       if (complete) {
@@ -2466,9 +2618,7 @@ export class ControllerWorker {
     this.reportRepositoryCleanupCause(claim, complete ? undefined : cause);
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: cleanupRevisionId,
       outcome: complete ? "success" : "pending",
       code: complete
@@ -2492,7 +2642,6 @@ export class ControllerWorker {
     if (
       namespace?.status !== "ready" ||
       agent?.status !== "active" ||
-      agent.desiredRuntimeState !== "running" ||
       agent.activeRevisionId !== revision.id ||
       agent.servicePrincipalId !== revision.servicePrincipalId
     ) {
@@ -2535,9 +2684,14 @@ export class ControllerWorker {
             : {}),
         };
       }
-      // Both retained expiry work and regular maintenance supervise the running revision.
-      // Recover the original source obligations, including companions, without replaying here.
-      await this.recoverPendingCredentialWithdrawals(claim, revision);
+      if (agent.desiredRuntimeState !== "running" && expiry !== "removal") {
+        return { withdrawal: "pending" };
+      }
+      // A committed finite removal must detach Git even if Stop is pending or denied.
+      // Other source obligations remain owned by running maintenance, not this exception.
+      if (agent.desiredRuntimeState === "running") {
+        await this.recoverPendingCredentialWithdrawals(claim, revision);
+      }
       if (
         authorization.status === "rejected" ||
         authorization.value !== undefined ||
@@ -2603,9 +2757,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.repository-cleanup-warning",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: repositoryCleanupRevisionId(claim),
       code: "REPOSITORY_CLEANUP_STALLED",
       cause,
@@ -2693,7 +2845,11 @@ export class ControllerWorker {
       }
       result = await this.observe(claim, namespace);
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
+      if (
+        error instanceof WorkClaimLostError ||
+        error instanceof AuditAppendUnavailableError ||
+        error instanceof PostgresCommitOutcomeUnknownError
+      ) {
         throw error;
       }
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
@@ -2712,9 +2868,7 @@ export class ControllerWorker {
     this.passOutcome = result.outcome === "succeeded" ? "success" : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       outcome: this.passOutcome,
       code: result.outcome === "succeeded" ? "PROVISIONING_COMPLETED" : result.code,
       ...(result.outcome === "succeeded" ? { revisionId: result.revisionId } : {}),
@@ -3171,9 +3325,7 @@ export class ControllerWorker {
         this.passOutcome = "pending";
         this.emit({
           event: "worker.completed",
-          ...workLogFields(claim),
-          namespaceId: claim.namespaceId,
-          agentId: claim.agentId,
+          ...agentWorkLogFields(claim),
           outcome: "pending",
           code: "REPOSITORY_CLEANUP_PENDING",
         });
@@ -3212,9 +3364,7 @@ export class ControllerWorker {
         : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       // `result` is the Driver's classification; `outcome` the queue's decision, so a retry that
       // spent the attempt budget reads `permanent` here, as the hint says (finding 1694).
       result: result.outcome,
@@ -3256,9 +3406,7 @@ export class ControllerWorker {
     result: AgentStopDispatchResult,
   ): Promise<void> {
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (result.outcome === "success" && result.agent !== undefined) {
         const agent = await this.lockClaimAgent(unit, claim);
         if (agent === undefined || agent.servicePrincipalId !== result.agent.servicePrincipalId) {
@@ -3318,9 +3466,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: result.revision?.id,
       // As for a deletion: `outcome` is the queue's decision (finding 1694).
       result: result.outcome,
@@ -3589,9 +3735,7 @@ export class ControllerWorker {
     const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
       outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       result = dispatched;
       let terminalFailure = terminal(result);
       // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
@@ -3680,9 +3824,7 @@ export class ControllerWorker {
     this.passOutcome = terminal(result) ? "permanent" : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       // `outcome` is the queue's decision; a terminal retry (`permanent` here) has its recovery
       // series queued (finding 1694).
@@ -4127,9 +4269,7 @@ export class ControllerWorker {
       // Namespace first, as every transaction that may also lock it (the work insert's
       // foreign key) must.
       await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const pending = await this.pendingCredentialWithdrawals(unit, revision);
       await this.requeueCredentialWithdrawals(unit, pending);
       await queue.complete(claim, { code: "CREDENTIAL_WITHDRAWN" });
@@ -4140,9 +4280,7 @@ export class ControllerWorker {
     this.passOutcome = "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "success",
       outcome: "success",
@@ -4234,9 +4372,7 @@ export class ControllerWorker {
     }
     await this.state.transactWithQueue(async (unit, queue) => {
       await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       await this.requeueCredentialWithdrawals(
         unit,
         await this.pendingCredentialWithdrawals(unit, revision, sourceIds),
@@ -4362,64 +4498,19 @@ export class ControllerWorker {
     });
   }
 
-  private beginDeployPass(claim: ClaimedWork): void {
-    // Maintenance, cleanup and stop work are not deployments.
-    if (claim.idempotencyKey !== `agent_revision:${claim.revisionId}:reconcile`) {
-      return;
-    }
-    let timing = this.deployTimings.get(claim.idempotencyKey);
-    if (timing === undefined) {
-      if (this.deployTimings.size >= MAX_DEPLOY_TIMINGS) {
-        this.deployTimings.delete(this.deployTimings.keys().next().value!);
-      }
-      timing = {
-        passes: 0,
-        passStartedAt: 0,
-        prepareMs: 0,
-        firstUnreadyAt: undefined,
-        readinessWaitMs: undefined,
-        readyAt: undefined,
-      };
-      this.deployTimings.set(claim.idempotencyKey, timing);
-    }
-    timing.passes += 1;
-    timing.passStartedAt = Date.now();
-    timing.readyAt = undefined;
-  }
-
-  /**
-   * Phase timing for the deployment pass that is finishing. Milliseconds are
-   * worker wall clock: `durationMs` is this pass, `prepareMs` sums Compute
-   * preparation across passes, `readinessWaitMs` runs from the first unready
-   * observation to the first ready one (or now), `activationMs` runs from this
-   * pass's ready observation to completion, and `elapsedMs` is since admission,
-   * by the database clock (`workAgeMs`).
-   */
   private deployTimingFields(claim: ClaimedWork): Readonly<Record<string, number>> {
-    const timing = this.deployTimings.get(claim.idempotencyKey);
-    if (timing === undefined) {
-      return {};
-    }
-    const now = Date.now();
-    if (this.passOutcome === "success" || this.passOutcome === "permanent") {
-      this.deployTimings.delete(claim.idempotencyKey);
-    }
-    let readinessWaitMs = timing.readinessWaitMs ?? 0;
-    if (timing.readinessWaitMs === undefined && timing.firstUnreadyAt !== undefined) {
-      readinessWaitMs = now - timing.firstUnreadyAt;
-    }
-    return {
-      durationMs: now - timing.passStartedAt,
-      deployPasses: timing.passes,
-      prepareMs: timing.prepareMs,
-      readinessWaitMs,
-      ...(timing.readyAt === undefined ? {} : { activationMs: now - timing.readyAt }),
-      elapsedMs: this.workAgeMs(claim),
-    };
+    return this.deployTimings.completionFields(
+      claim.idempotencyKey,
+      this.passOutcome === "success" || this.passOutcome === "permanent",
+      () => this.workAgeMs(claim),
+    );
   }
 
   private async processRevision(claim: ClaimedWork): Promise<void> {
-    this.beginDeployPass(claim);
+    // Maintenance, cleanup and stop work are not deployments.
+    if (claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`) {
+      this.deployTimings.beginPass(claim.idempotencyKey);
+    }
     let result: RevisionDispatchResult;
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
     let refusalWaitRead = false;
@@ -4497,6 +4588,16 @@ export class ControllerWorker {
         });
         return;
       }
+      const repositoryWithdrawal =
+        revision.repositoryCredentials !== undefined &&
+        agent.activeRevisionId === revision.id &&
+        agent.desiredRuntimeState === "running"
+          ? await this.queue.repositoryExpiryState({
+              namespaceId: revision.namespaceId,
+              agentId: revision.agentId,
+              revisionId: revision.id,
+            })
+          : undefined;
       if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
         const original = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
         if (original === undefined) {
@@ -4507,7 +4608,9 @@ export class ControllerWorker {
           (original.state === "failed_permanent" &&
             // An existing Agent's version kept running without Git (continueRevisionWithoutGit)
             // is maintained: that failure queued this chain while the version was active.
-            !REVISION_KEPT_WITHOUT_GIT_CODES.has(original.reasonCode ?? "")) ||
+            !REVISION_KEPT_WITHOUT_GIT_CODES.has(original.reasonCode ?? "") &&
+            repositoryWithdrawal !== "removal" &&
+            repositoryWithdrawal !== "retiring") ||
           original.reasonCode === "REVISION_SUPERSEDED"
         ) {
           // Maintenance must never prepare or reactivate a terminally failed deployment.
@@ -4522,19 +4625,15 @@ export class ControllerWorker {
         });
         return;
       }
-      const expiredMaintenance =
-        revision.repositoryCredentials !== undefined &&
-        agent.activeRevisionId === revision.id &&
-        agent.desiredRuntimeState === "running" &&
-        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`) &&
-        (await this.queue.repositoryExpiryState({
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-        })) !== undefined;
-      // Expired maintenance rechecks independent authority in cleanup after the existing
-      // successor decision. Authorization and Backend checks must not strand its retirement work.
-      if (!expiredMaintenance) {
+      const withdrawnExecutionWork =
+        repositoryWithdrawal !== undefined &&
+        (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`) ||
+          (isCandidateDeployment(claim) &&
+            (repositoryWithdrawal === "removal" || repositoryWithdrawal === "retiring")));
+      // A removal can commit after the original deployment published its active pointer.
+      // Like maintenance, unfinished activation withdraws instead of readmitting Git; cleanup
+      // cannot complete setup, publish activation success or retire its predecessors.
+      if (!withdrawnExecutionWork) {
         const denied = await this.authorizeRevision(claim, agent, revision);
         if (denied !== undefined) {
           await this.finalizeRevision(claim, denied);
@@ -4560,12 +4659,19 @@ export class ControllerWorker {
       }
       if (agent.desiredRuntimeState === "stopped") {
         if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
+          if (await this.yieldRemovedRevisionMaintenance(claim, revision)) {
+            return;
+          }
           if (revision.repositoryCredentials !== undefined) {
             await this.closeRevisionCredentials(claim, revision);
             if (this.compute.bindAgent !== undefined) {
               await this.withClaimHeartbeat(claim, async () => {
                 await this.compute.bindAgent!({ namespace, agent });
               });
+            }
+            // Removal can commit while closing credentials or binding Compute.
+            if (await this.yieldRemovedRevisionMaintenance(claim, revision)) {
+              return;
             }
             await this.stopYieldingDrain(claim, revision);
           }
@@ -4648,6 +4754,9 @@ export class ControllerWorker {
         this.compute.requiresStoppedPredecessors?.(revision) === true
           ? await this.heldRuntimeSuccessor(revision)
           : undefined;
+      // Pre-stop access does not authorize re-preparing the old runtime with a
+      // changed Installation. Safe maintenance during a wait needs Driver-owned
+      // immutable runtime inputs; preserve existing supersession until then.
       const supersededBy = successor ?? heldSuccessor;
       if (supersededBy !== undefined) {
         // A refusal decided after this check (lost repository authority, a Secret or
@@ -4734,7 +4843,7 @@ export class ControllerWorker {
         });
         return;
       }
-      if (expiredMaintenance) {
+      if (withdrawnExecutionWork) {
         // Cleanup owns continued supervision only after successor and refusal retirement.
         await this.processRepositoryCleanup(claim, revision);
         return;
@@ -4853,7 +4962,9 @@ export class ControllerWorker {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
           if (
             error instanceof WorkClaimLostError ||
+            error instanceof RestartContinuationEndedError ||
             error instanceof RepositoryCredentialAuthorityError ||
+            error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
             error instanceof ComputePreparationFailedError
           ) {
@@ -4891,9 +5002,7 @@ export class ControllerWorker {
             this.passOutcome = "pending";
             this.emit({
               event: "worker.completed",
-              ...workLogFields(claim),
-              namespaceId: claim.namespaceId,
-              agentId: claim.agentId,
+              ...agentWorkLogFields(claim),
               revisionId: revision.id,
               outcome: "pending",
               code,
@@ -4952,6 +5061,21 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
+      if (error instanceof RepositorySessionWithdrawnError) {
+        // Removal won the admission race. The next pass observes its durable cleanup
+        // work without exhausting retries or retiring the independently authorized runtime.
+        const code = "REPOSITORY_CLEANUP_PENDING";
+        await this.queue.defer(claim, { code }, { delayMs: this.repositoryCleanupRetryMs });
+        this.passOutcome = "pending";
+        this.emit({
+          event: "worker.completed",
+          ...agentWorkLogFields(claim),
+          revisionId: claim.revisionId,
+          outcome: "pending",
+          code,
+        });
+        return;
+      }
       if (
         supervisedRevision !== undefined &&
         error instanceof RepositoryCredentialAuthorityError &&
@@ -4985,6 +5109,7 @@ export class ControllerWorker {
           // could not authenticate retries within the attempt budget first (finding 1694).
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
+          error instanceof RestartContinuationEndedError ||
           error instanceof RepositoryCredentialAuthorityError ||
           // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
           // can never enroll, so it fails now instead of at the convergence deadline.
@@ -5022,7 +5147,14 @@ export class ControllerWorker {
         throw error;
       }
       const pending = error.pending();
-      await this.finalizeRevision(claim, pending.result, pending.logFields);
+      const permissionDenials =
+        result.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+          ? failureLogFields?.failure
+          : undefined;
+      await this.finalizeRevision(claim, pending.result, {
+        ...pending.logFields,
+        ...(permissionDenials === undefined ? {} : { failure: permissionDenials }),
+      });
     }
   }
 
@@ -5064,9 +5196,7 @@ export class ControllerWorker {
     }
     const deferred = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (!isCurrent(agent)) {
         await queue.complete(claim, { code: "REVISION_MAINTENANCE_SUPERSEDED" });
         return false;
@@ -5086,9 +5216,7 @@ export class ControllerWorker {
     this.passOutcome = deferred ? "pending" : "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: revision.id,
       outcome: this.passOutcome,
       code,
@@ -5117,9 +5245,7 @@ export class ControllerWorker {
     const completed = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
       const namespace = await unit.namespaces.findNamespace(claim.namespaceId);
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const revision = await unit.revisions.findRevision(
         claim.namespaceId,
         claim.agentId!,
@@ -5197,9 +5323,7 @@ export class ControllerWorker {
       this.passOutcome = "success";
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: claim.revisionId,
         result: "success",
         outcome: "success",
@@ -6003,7 +6127,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     namespace: Readonly<Namespace>,
   ): Promise<DispatchResult> {
-    return this.withClaimHeartbeat(claim, async () => {
+    return this.withClaimHeartbeat(claim, async (signal) => {
       if (claim.namespaceTarget === "deleted") {
         const attempts = await this.state.read((view) =>
           view.repositorySessions.listNamespaceAttempts(namespace.id),
@@ -6018,10 +6142,24 @@ export class ControllerWorker {
           }
         }
       }
-      const observed =
-        claim.namespaceTarget === "ready"
-          ? await captureNamespaceEnsureHint(() => this.compute.ensureNamespace(namespace))
-          : { observation: await this.compute.deleteNamespace(namespace) };
+      const namespaceParticipants: NamespaceLifecycleEvidence[] = [];
+      const observe = () =>
+        this.provisioningController!.observeNamespaceLifecycle(
+          namespace,
+          claim.namespaceTarget ?? "ready",
+          signal,
+          (evidence) => {
+            namespaceParticipants.push(evidence);
+            this.emit({
+              event: "worker.namespace-participant",
+              actorId: claim.actorId,
+              namespaceId: namespace.id,
+              workId: claim.idempotencyKey,
+              ...evidence,
+            });
+          },
+        );
+      const observed = await captureNamespaceHint(observe);
       const { observation } = observed;
       if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
@@ -6041,6 +6179,7 @@ export class ControllerWorker {
       return {
         outcome,
         code: complete ? "NAMESPACE_RECONCILED" : "NAMESPACE_INCOMPLETE",
+        namespaceParticipants,
         ...observed,
       };
     });
@@ -6098,13 +6237,15 @@ export class ControllerWorker {
       !isStopYieldedCode(result.code) &&
       this.workAgeMs(claim) >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
-    // end, and then hold the container unready until an explicit restart that
-    // nothing performs: no liveness probe or controller restarts it. Waiting for
-    // the convergence deadline therefore cannot change the result, so every held
-    // failure ends the deployment at once with a code naming its cause. The kubelet
-    // does restart a refused workspace setup, but it refuses the same way each time.
+    // end, and then hold the container unready: no liveness probe or controller
+    // restarts it. Only a Gateway held on its state lock restarts itself once no
+    // holder remains, and a lock left by another Pod stays until an operator's
+    // recovery, which stops the Agent first. Waiting for the convergence deadline
+    // therefore does not help, so every held failure ends the deployment at once
+    // with a code naming its cause. The kubelet does restart a refused workspace
+    // setup, but it refuses the same way each time.
     const heldFailureCode =
-      runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure.code);
+      runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure);
     let resolved: RevisionDispatchResult;
     if (heldFailureCode !== undefined) {
       resolved = {
@@ -6228,9 +6369,7 @@ export class ControllerWorker {
       };
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (resolved.supersededBy !== undefined && resolved.outcome === "success") {
         const revision = await unit.revisions.findRevision(
           claim.namespaceId,
@@ -6261,7 +6400,14 @@ export class ControllerWorker {
           activeRevisionChanged = true;
           return;
         }
-        if (current.desiredRuntimeState !== "running") {
+        const continuation = await unit.agents.findRestartContinuation(
+          claim.namespaceId,
+          current.id,
+        );
+        if (
+          current.desiredRuntimeState !== "running" ||
+          !isDeepStrictEqual(continuation, resolved.revision.restartContinuation)
+        ) {
           stoppedCandidate = resolved.revision;
           return;
         }
@@ -6409,7 +6555,10 @@ export class ControllerWorker {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        if (error instanceof RepositoryCredentialAuthorityError) {
+        if (
+          error instanceof RestartContinuationEndedError ||
+          error instanceof RepositoryCredentialAuthorityError
+        ) {
           await this.finalizeRevision(
             claim,
             { outcome: "permanent", code: error.code },
@@ -6456,9 +6605,7 @@ export class ControllerWorker {
       : resolved;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: reported.outcome,
       outcome: reported.outcome,
@@ -6745,6 +6892,64 @@ export class ControllerWorker {
     );
   }
 
+  // Finite removal has its own durable supervision. A due ordinary maintenance
+  // claim must not turn stopped intent (including a denied Stop) into runtime retirement.
+  private async yieldRemovedRevisionMaintenance(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<boolean> {
+    if (!revision.repositoryCredentials || revision.repositoryCredentials.standingApprovalId) {
+      return false;
+    }
+    const outcome = await this.state.transactWithQueue(async (unit, queue) => {
+      requireClaimRenewal(await queue.heartbeat(claim));
+      const agent = await this.lockClaimAgent(unit, claim);
+      if (
+        agent?.status !== "active" ||
+        agent.activeRevisionId !== revision.id ||
+        agent.servicePrincipalId !== revision.servicePrincipalId
+      ) {
+        return undefined;
+      }
+      const disposition = await queue.repositoryExpiryState({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      });
+      if (disposition !== "removal" && disposition !== "retiring") {
+        return undefined;
+      }
+      // Intent may have returned to running since the stopped snapshot. The same
+      // durable owner still supervises removal; never drain from that stale snapshot.
+      // Neither complete nor replace the removal/terminal row: its owner keeps
+      // detachment, authority checks, and any irrevocable shutdown obligation.
+      if (disposition === "removal") {
+        // A completed cleanup may have relied on this pending maintenance row.
+        // Retain it for a fresh dispatch instead of discarding the last supervisor.
+        await queue.defer(
+          claim,
+          { code: "REPOSITORY_CLEANUP_PENDING" },
+          { delayMs: this.repositoryCleanupRetryMs },
+        );
+        return "pending" as const;
+      }
+      await queue.complete(claim, { code: "REVISION_MAINTENANCE_SUPERSEDED" });
+      return "success" as const;
+    }, this.queueOptions);
+    if (outcome !== undefined) {
+      this.passOutcome = outcome;
+      this.emit({
+        event: "worker.completed",
+        ...agentWorkLogFields(claim),
+        revisionId: revision.id,
+        outcome,
+        code:
+          outcome === "pending" ? "REPOSITORY_CLEANUP_PENDING" : "REVISION_MAINTENANCE_SUPERSEDED",
+      });
+    }
+    return outcome !== undefined;
+  }
+
   private async completeStoppedRevisionWork(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
@@ -6752,17 +6957,13 @@ export class ControllerWorker {
   ): Promise<void> {
     await this.closeRevisionCredentials(claim, revision);
     await this.state.transactWithQueue(async (_unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       await queue.complete(claim, { code });
     }, this.queueOptions);
     this.passOutcome = "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: revision.id,
       result: "success",
       outcome: "success",
@@ -6796,10 +6997,9 @@ export class ControllerWorker {
       throw new Error("The activated Agent revision is unavailable.");
     }
     let completed = false;
+    let withdrawalPending = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
@@ -6808,6 +7008,24 @@ export class ControllerWorker {
         agent.activeRevisionId !== revision.id
       ) {
         await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
+        return;
+      }
+      // Activation has completed under this claim. A later stop waits for its
+      // acknowledgement instead of making this work repeat the stop itself.
+      const repositoryWithdrawal = await queue.repositoryExpiryState({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      });
+      if (
+        repositoryWithdrawal === "retiring" ||
+        (!isCandidateDeployment(claim) && repositoryWithdrawal === "removal")
+      ) {
+        // Maintenance observed the old Git admission. Its next pass must supervise withdrawal.
+        // An original deployment reaching this method has already completed activation and
+        // predecessor retirement; its completion does not consume the separate removal work.
+        await queue.defer(claim, { code: "REPOSITORY_WITHDRAWAL_UNCONFIRMED" });
+        withdrawalPending = true;
         return;
       }
       const setup = await unit.workspaceSetups.find(revision.namespaceId, revision.agentId);
@@ -6822,20 +7040,39 @@ export class ControllerWorker {
         code: result.code,
         ...(result.resultData === undefined ? {} : { resultData: result.resultData }),
       });
-      if (this.revisionMaintenanceInterval(revision) !== undefined) {
+      // Removal owns follow-through if Stop or deletion intervenes. Without it,
+      // preserve maintenance: a later deployment can supersede Stop without replacing
+      // this active revision, leaving no other owner to resume its observation.
+      if (
+        this.revisionMaintenanceInterval(revision) !== undefined &&
+        (repositoryWithdrawal !== "removal" ||
+          (agent.status === "active" &&
+            agent.desiredRuntimeState === "running" &&
+            (await unit.namespaces.findNamespace(claim.namespaceId))?.status === "ready"))
+      ) {
         await this.enqueueMaintenance(queue, claim, revision);
       }
       completed = true;
     }, this.queueOptions);
     this.passOutcome = result.outcome;
+    if (withdrawalPending) {
+      this.passOutcome = "pending";
+      this.emit({
+        event: "worker.completed",
+        ...agentWorkLogFields(claim),
+        revisionId: claim.revisionId,
+        result: "pending",
+        outcome: "pending",
+        code: "REPOSITORY_WITHDRAWAL_UNCONFIRMED",
+      });
+      return;
+    }
     if (!completed) {
       this.passOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
       // Like the pointer commit's lost race, this pass committed a retry (finding 1611).
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: claim.revisionId,
         result: "retry",
         outcome: "retry",
@@ -6852,9 +7089,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: result.outcome,
       outcome: result.outcome,
@@ -6912,9 +7147,7 @@ export class ControllerWorker {
       }
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
@@ -6937,14 +7170,15 @@ export class ControllerWorker {
     this.passOutcome = superseded ? "success" : "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "pending",
       outcome: "pending",
       code,
       ...failure.failureLogFields,
+      ...(runtimeFailure === undefined
+        ? {}
+        : { failure: recognizedRuntimeFailureValues(runtimeFailure).code }),
       ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }
@@ -7012,9 +7246,7 @@ export class ControllerWorker {
     this.passOutcome = "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId,
       result: "retry",
       outcome: "retry",
@@ -7039,9 +7271,7 @@ export class ControllerWorker {
   ): Promise<
     { readonly agent: Readonly<Agent>; readonly revision: Readonly<AgentRevision> } | undefined
   > {
-    if ((await queue.heartbeat(claim)) === undefined) {
-      throw new WorkClaimLostError();
-    }
+    requireClaimRenewal(await queue.heartbeat(claim));
     const agent = await this.lockClaimAgent(unit, claim);
     if (
       agent === undefined ||
@@ -7111,9 +7341,7 @@ export class ControllerWorker {
     this.passOutcome = "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "permanent",
       outcome: "permanent",
@@ -7366,9 +7594,7 @@ export class ControllerWorker {
         : undefined;
     let auditedPending = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const current =
         namespace === undefined
           ? undefined
@@ -7474,6 +7700,9 @@ export class ControllerWorker {
       return;
     }
     const details = {
+      ...(result.namespaceParticipants === undefined
+        ? {}
+        : { participants: result.namespaceParticipants.map((evidence) => ({ ...evidence })) }),
       computeDriverId: this.compute.id,
       ...("namespaceReady" in observation
         ? { namespaceReady: observation.namespaceReady }

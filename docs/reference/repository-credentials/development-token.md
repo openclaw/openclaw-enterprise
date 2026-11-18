@@ -5,8 +5,7 @@ GitHub App, for local development only: a fine-grained or classic personal
 access token, or the token the host `gh` CLI holds. The token stays inside the
 service process. Clients receive the same per-session gateway bearer, Git
 configuration and `gh` configuration as with the App, and the same
-[access levels](access-levels.md) apply. The decision record is
-[RFC-0060](https://github.com/openclaw/openclaw-enterprise/pull/1196).
+[access levels](access-levels.md) apply.
 
 This is **not a production authority**. Kubernetes projection, Helm, the k3d
 launcher and registry mode accept only the GitHub App. `occ dev up` stays on the
@@ -108,8 +107,18 @@ A static token cannot be narrowed per session, so the gateway enforces scope:
 
 Upstream sees every action as the token owner. A leaked session bearer reaches
 what the token reaches through these routes until the session closes or expires.
-Prefer a fine-grained token limited to one scratch repository, ideally on a
-scratch account, and revoke it when you finish.
+Prefer a fine-grained token limited to one disposable repository, ideally on a
+scratch account, and revoke it when you finish. Closing or expiring a session
+does not revoke the token.
+
+**Workflow files.** The gateway inspects ref names only and never parses the
+packfile. App sessions lack the `workflows` permission, so GitHub refuses App
+pushes that change `.github/workflows/`. A classic token or `gh` OAuth token with
+`workflow` scope gets no such refusal: a leaked `git-write` bearer can push a
+workflow file to an allowed branch, where it runs in Actions with the
+repository's secrets. Use a token without `workflow` scope, or a repository with
+no secrets. With `allowGraphql`, reads reach every repository the fine-grained
+token can read.
 
 ## Custody and identity
 

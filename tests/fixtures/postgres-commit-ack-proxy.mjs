@@ -4,7 +4,12 @@ import pg from "pg";
 
 // Real PostgreSQL transport faults: drop the server's COMMIT completion, or
 // pause the client's COMMIT request before forwarding it to the server.
-export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = false } = {}) {
+/**
+ * @param {string} databaseUrl
+ * @param {{port?: number, egressDispatch?: boolean, transactionStatement?: string}} [options]
+ */
+export async function commitAckProxy(databaseUrl, options = {}) {
+  const { port = 0, egressDispatch = false, transactionStatement } = options;
   const target = new URL(databaseUrl);
   // Resolve query-string and environment precedence with the same installed
   // driver as the caller. URL authority alone is not the effective destination.
@@ -27,8 +32,10 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
   let heldCommit;
   const sockets = new Set();
   let expectedInstance;
+  /** @type {ReturnType<typeof dispatch>} */
   let dropped;
   let authorizations = 0;
+  /** @param {string[]} params */
   const dispatch = (params) => {
     const [instanceId, useId, attemptId] = params;
     if (
@@ -54,8 +61,11 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
     let startup = true;
     let dropping = false;
     let parsedDispatch = false;
+    /** @type {ReturnType<typeof dispatch>} */
     let selected;
+    /** @type {ReturnType<typeof dispatch>} */
     let updated;
+    let sawTransactionStatement = false;
     const close = () => {
       if (heldCommit?.upstream === upstream) {
         heldCommit = undefined;
@@ -81,6 +91,12 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
         }
         const frame = frontend.subarray(0, size);
         frontend = frontend.subarray(size);
+        if (!startup && transactionStatement !== undefined && frame[0] === 80) {
+          // Parse names a prepared statement without inspecting its Bind values.
+          const sqlOffset = frame.indexOf(0, 5) + 1;
+          const sql = frame.toString("utf8", sqlOffset, frame.indexOf(0, sqlOffset));
+          sawTransactionStatement ||= sql === transactionStatement;
+        }
         if (!startup && egressDispatch && frame[0] === 80) {
           // Parse. Match only the OCC authorization update, never a reservation or
           // an unrelated COMMIT. The product uses pg's unnamed extended query.
@@ -119,7 +135,8 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
           frame[0] === 81 &&
           frame.subarray(5, -1).toString().trim().toUpperCase() === "COMMIT" &&
           armed &&
-          (!egressDispatch || updated)
+          (!egressDispatch || updated) &&
+          (transactionStatement === undefined || sawTransactionStatement)
         ) {
           if (skipCommits > 0) {
             skipCommits -= 1;
@@ -167,6 +184,9 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
           }
           updated = undefined;
         }
+        if (frame[0] === 90 && frame[5] === 73) {
+          sawTransactionStatement = false;
+        }
         if (
           egressDispatch &&
           (frame[0] === 69 || (frame[0] === 90 && frame[5] === 73 && !dropping))
@@ -193,6 +213,7 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
   proxyUrl.searchParams.delete("port");
   return {
     url: proxyUrl.toString(),
+    /** @param {{skipCommits?: number, pauseCommit?: boolean, instanceId?: string}} [options] */
     arm(options = {}) {
       const skip = options.skipCommits ?? 0;
       if (!Number.isSafeInteger(skip) || skip < 0) {
@@ -202,7 +223,12 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
         throw new Error("The single-use fault is already armed or consumed.");
       }
       if (egressDispatch) {
-        if (!/^[a-f0-9-]{36}$/.test(options.instanceId)) {
+        if (
+          typeof options.instanceId !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            options.instanceId,
+          )
+        ) {
           throw new Error("Expected supervisor instance UUID.");
         }
         expectedInstance = options.instanceId;

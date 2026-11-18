@@ -82,7 +82,8 @@ export function createMarkdownRenderer() {
   md.renderer.rules.heading_close = (tokens, idx, options, env, self) => {
     const headingOpen = tokens[idx - 2];
     const id = headingOpen?.type === "heading_open" ? headingOpen.attrGet("id") : "";
-    const anchor = id ? headingAnchorLink(id) : "";
+    const permalinkId = env?.headingIds?.get(id)?.id ?? id;
+    const anchor = permalinkId ? headingAnchorLink(permalinkId) : "";
     return `${anchor}${renderHeadingClose(tokens, idx, options, env, self)}`;
   };
   md.renderer.rules.fence = renderFence;
@@ -238,7 +239,9 @@ function mermaidHtml(source) {
 export function renderMdxish(markdown, md, options) {
   const { tokens, env } = parseDocsDocument(markdown, md, options);
   return rewriteDocsRelativeLinks(
-    postprocess(md.renderer.render(tokens, md.options, env)),
+    postprocess(
+      md.renderer.render(tokens, md.options, { ...env, headingIds: options?.headingIds }),
+    ),
     options,
   );
 }

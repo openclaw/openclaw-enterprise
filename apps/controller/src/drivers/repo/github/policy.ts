@@ -1,4 +1,4 @@
-import { hasControlCharacter } from "../credentials/client-contracts.ts";
+import { hasControlCharacter } from "../access/client-contracts.ts";
 import type {
   ErrorDetail,
   JSONSchema,
@@ -16,7 +16,7 @@ import {
   resolveGitHubStandingApprovalScope,
   validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
-} from "./credentials/registry.ts";
+} from "./access/registry.ts";
 
 /** Repository selection and approval policy, independent of credential transport. */
 export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {

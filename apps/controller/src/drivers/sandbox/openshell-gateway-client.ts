@@ -33,6 +33,8 @@ import {
   getServiceDocument,
   postServiceDocument,
   serviceWebSocketHandshake,
+  serviceCodexReadinessStatus,
+  type OpenShellCodexReadiness,
   type OpenShellServiceDocument,
 } from "./openshell-service-transport.ts";
 import type {
@@ -445,8 +447,6 @@ export interface OpenShellGatewayClient
     request: OpenShellSandboxDeleteRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse | undefined>;
-  /** The exposed service's URL, or undefined when the endpoint does not exist. */
-  getServiceUrl(request: OpenShellServiceRequest, signal: AbortSignal): Promise<string | undefined>;
   getService(
     workspace: string,
     sandbox: string,
@@ -494,6 +494,13 @@ export interface OpenShellGatewayClient
     bearer: string,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** Reads the dedicated Codex process’s permission policy and, if needed, PAT status. */
+  serviceCodexReadinessStatus(
+    serviceUrl: string,
+    bearer: string,
+    requirePat: boolean,
+    signal: AbortSignal,
+  ): Promise<OpenShellCodexReadiness>;
   /** Read a profile in its Workspace, or pass null to request the platform profile. */
   getProviderProfile(
     workspace: string | null,
@@ -662,6 +669,13 @@ function gatewayRequestFailureMessage(
   error: unknown,
 ): string {
   const grpcStatus = rawStatusCode(error);
+  if (method === "UpdateConfig" && grpcStatus === 10) {
+    const reason =
+      openShellErrorReason(error, grpcStatus) === "RESOURCE_VERSION_CONFLICT"
+        ? "RESOURCE_VERSION_CONFLICT"
+        : "UNKNOWN";
+    return `OpenShell UpdateConfig failed with gRPC status 10 (reason ${reason}).`;
+  }
   // A failure without a gRPC status (a local client error) keeps only its class: its message
   // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
   const detail =
@@ -700,10 +714,42 @@ function createSandboxValidationCategory(
   error: unknown,
 ): NonNullable<DependencyUnavailableError["requestDiagnostic"]>["validationCategory"] {
   const details = asRecord(error)?.details;
+  if (method !== "CreateSandbox" || typeof details !== "string") {
+    return "UNKNOWN";
+  }
+  // b2069a2 maps the resource metadata lookup's Kubernetes 403 through the
+  // compute driver to INTERNAL. Keep the fixed reason without the resource name.
+  if (
+    grpcStatus === 13 &&
+    /^create sandbox failed: gateway is forbidden from reading metadata for (?:PersistentVolumeClaim '[a-z0-9-]{1,63}\/[a-z0-9.-]{1,253}'|(?:RuntimeClass|PriorityClass) '[a-z0-9.-]{1,253}') \(Kubernetes 403\); check gateway RBAC$/u.test(
+      details,
+    )
+  ) {
+    return "RESOURCE_METADATA_FORBIDDEN";
+  }
+  if (grpcStatus === 9) {
+    // b2069a2 resource_admission.rs reports the kind and name before a fixed label
+    // refusal. Classify the exact shape without retaining names or supplier text.
+    if (
+      /^PersistentVolumeClaim '[a-z0-9-]{1,63}\/[a-z0-9.-]{1,253}': external resource not admitted by required labels$/u.test(
+        details,
+      )
+    ) {
+      return "PVC_ADMISSION_LABELS";
+    }
+    if (
+      /^(?:RuntimeClass|PriorityClass) '[a-z0-9.-]{1,253}': external resource not admitted by required labels$/u.test(
+        details,
+      )
+    ) {
+      return "CLASS_ADMISSION_LABELS";
+    }
+    return "UNKNOWN";
+  }
   // Pinned supplier 246bac67400487c03595f7d883dd2b5256f4baf0:
   // grpc/validation.rs and middleware.rs wrap CreateSandbox policy errors with these exact
   // prefixes. Do not normalize text or match embedded prefixes: other validation stays unknown.
-  if (method !== "CreateSandbox" || grpcStatus !== 3 || typeof details !== "string") {
+  if (grpcStatus !== 3) {
     return "UNKNOWN";
   }
   if (details.startsWith("policy contains unsafe content: ")) {
@@ -1372,6 +1418,21 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
   }
 
+  async serviceCodexReadinessStatus(
+    serviceUrl: string,
+    bearer: string,
+    requirePat: boolean,
+    signal: AbortSignal,
+  ): Promise<OpenShellCodexReadiness> {
+    return serviceCodexReadinessStatus(
+      this.serviceTransportOptions(),
+      serviceUrl,
+      bearer,
+      requirePat,
+      signal,
+    );
+  }
+
   private serviceRootCertificate: Buffer | undefined;
 
   private serviceTransportOptions() {
@@ -1736,20 +1797,20 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       );
     } catch (error) {
       const { grpc } = await this.ensureClient();
-      if (statusCode(error) === grpc.status.ALREADY_EXISTS) {
+      const code = statusCode(error);
+      if (code === grpc.status.ALREADY_EXISTS) {
         throw new OpenShellSandboxAlreadyExistsError(request.name);
       }
-      const reason = openShellErrorReason(error, grpc.status.FAILED_PRECONDITION);
-      if (
-        statusCode(error) === grpc.status.FAILED_PRECONDITION &&
-        reason !== undefined &&
-        REPLAY_REFUSAL_REASONS.has(reason)
-      ) {
-        const details = asRecord(error)?.details;
-        throw new OpenShellRequestReplayRefusedError(
-          reason,
-          typeof details === "string" ? details : "request_id refused",
-        );
+      if (code === grpc.status.FAILED_PRECONDITION) {
+        const reason = openShellErrorReason(error, grpc.status.FAILED_PRECONDITION);
+        if (reason !== undefined && REPLAY_REFUSAL_REASONS.has(reason)) {
+          const details = asRecord(error)?.details;
+          throw new OpenShellRequestReplayRefusedError(
+            reason,
+            typeof details === "string" ? details : "request_id refused",
+          );
+        }
+        throw new OpenShellGatewayRequestFailure("CreateSandbox", error);
       }
       throw error;
     }
@@ -1786,30 +1847,6 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       }
       throw error;
     }
-  }
-
-  async getServiceUrl(
-    request: OpenShellServiceRequest,
-    signal: AbortSignal,
-  ): Promise<string | undefined> {
-    let response: RecordValue;
-    try {
-      response = await this.unary(
-        "GetService",
-        {
-          sandbox: request.sandbox,
-          name: request.service,
-          workspace_scope: { workspace: request.workspace },
-        },
-        signal,
-      );
-    } catch (error) {
-      if (await this.isStatus(error, "NOT_FOUND")) {
-        return undefined;
-      }
-      throw error;
-    }
-    return normalizeServiceUrl(response.url, this.options.endpoint);
   }
 
   async getService(

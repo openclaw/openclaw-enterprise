@@ -1,13 +1,14 @@
 import { postgresStandingRepositoryApprovals } from "./postgres-standing-repository-approvals.ts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError } from "../errors.ts";
+import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
+import { DependencyUnavailableError, ScopeViolationError } from "../errors.ts";
 import type {
   RepositorySessionAttempt,
   RepositoryBrokerReceipt,
   RepositorySessionPhase,
   RepositorySessionRepository,
 } from "../ports/repository-sessions.ts";
-import type { PostgresQueryClient } from "./postgres-work-queue.ts";
+import { enqueueWithAuditSql, type PostgresQueryClient } from "./postgres-work-queue.ts";
 
 const columns = `namespace_id, agent_id, revision_id, repository_ref, admission_id,
   duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at,
@@ -102,6 +103,10 @@ function receiptFromRow(value: unknown): Readonly<RepositoryBrokerReceipt> {
   });
 }
 
+function decodeOptionalRow<T>(row: unknown, decode: (value: unknown) => T): T | undefined {
+  return row === undefined ? undefined : decode(row);
+}
+
 /** Uses the enclosing State transaction; database constraints own persisted invariants. */
 export function postgresRepositorySessions(
   client: PostgresQueryClient,
@@ -124,26 +129,78 @@ export function postgresRepositorySessions(
         execution.fingerprint,
       ]);
     },
+    async withdrawFinite(owner, at, requestId) {
+      const key = repositoryRemovalWorkKey(owner.revisionId);
+      // The caller holds the Agent lock. Read existing immutable ownership without
+      // locking the cleanup row: its worker takes that row before the Agent lock.
+      const result = await client.query(
+        `SELECT work.actor_id, cleanup.idempotency_key IS NOT NULL AS existing,
+          (cleanup.namespace_id,cleanup.agent_id,cleanup.revision_id,cleanup.actor_id)=
+            (v.namespace_id,v.agent_id,v.id,work.actor_id)
+            AND cleanup.agent_target IS NULL AND cleanup.namespace_target IS NULL AS same_owner
+         FROM occ.agent_revisions v JOIN occ.agents a
+           ON (a.namespace_id,a.id,a.active_revision_id)=(v.namespace_id,v.agent_id,v.id)
+         JOIN occ.controller_work work ON (work.namespace_id,work.agent_id,work.revision_id)=(v.namespace_id,v.agent_id,v.id)
+           AND work.idempotency_key='agent_revision:' || v.id || ':reconcile'
+           AND work.agent_target IS NULL AND work.namespace_target IS NULL
+         LEFT JOIN occ.controller_work cleanup ON cleanup.idempotency_key=$4
+         WHERE (v.namespace_id,v.agent_id,v.id)=($1,$2,$3)
+           AND a.status='active'
+           AND v.admitted_spec->'repository_credentials' IS NOT NULL
+           AND NOT (v.admitted_spec->'repository_credentials' ? 'standingApprovalId')`,
+        [owner.namespaceId, owner.agentId, owner.revisionId, key],
+      );
+      const recorded = result.rows[0] as
+        { actor_id: string; existing: boolean; same_owner: boolean | null } | undefined;
+      if (!recorded || (recorded.existing && !recorded.same_owner)) {
+        throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
+      }
+      if (!recorded.existing) {
+        const insert = `INSERT INTO occ.controller_work
+            (idempotency_key,namespace_id,agent_id,revision_id,actor_id,state,available_at,created_at,updated_at)
+           VALUES ($4,$1,$2,$3,$5,'queued',clock_timestamp(),clock_timestamp(),clock_timestamp())`;
+        const parameters = [
+          owner.namespaceId,
+          owner.agentId,
+          owner.revisionId,
+          key,
+          recorded.actor_id,
+        ];
+        if (requestId === undefined) {
+          await client.query(insert, parameters);
+        } else {
+          await client.query(enqueueWithAuditSql(`${insert} RETURNING *`, 6), [
+            ...parameters,
+            requestId,
+          ]);
+        }
+      }
+      await client.query(
+        `UPDATE occ.repository_session_attempts SET phase='closing',updated_at=greatest(updated_at,$4::timestamptz)
+         WHERE (namespace_id,agent_id,revision_id)=($1,$2,$3) AND phase IN ('opening','open')`,
+        [owner.namespaceId, owner.agentId, owner.revisionId, at],
+      );
+    },
     lockAttempt: async (admissionId) => {
       const result = await client.query(
         `SELECT ${columns} FROM occ.repository_session_attempts WHERE admission_id = $1 FOR UPDATE`,
         [admissionId],
       );
-      return result.rows[0] === undefined ? undefined : attemptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], attemptFromRow);
     },
     findBrokerReceipt: async (admissionId) => {
       const result = await client.query(
         `SELECT ${receiptColumns} FROM occ.repository_broker_receipts WHERE admission_id = $1`,
         [admissionId],
       );
-      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], receiptFromRow);
     },
     findBrokerReceiptBySession: async (sessionId) => {
       const result = await client.query(
         `SELECT ${receiptColumns} FROM occ.repository_broker_receipts WHERE session_id = $1`,
         [sessionId],
       );
-      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], receiptFromRow);
     },
     createBrokerReceipt: async (input) => {
       const result = await client.query(
@@ -166,21 +223,21 @@ export function postgresRepositorySessions(
           input.expired ?? null,
         ],
       );
-      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], receiptFromRow);
     },
     fenceBrokerReceipt: async (input) => {
       const result = await client.query(
         `UPDATE occ.repository_broker_receipts SET state = 'fenced' WHERE admission_id = $1 AND state = 'reserved' AND generation = $2 RETURNING ${receiptColumns}`,
         [input.admissionId, input.generation],
       );
-      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], receiptFromRow);
     },
     findAttempt: async (admissionId) => {
       const result = await client.query(
         `SELECT ${columns} FROM occ.repository_session_attempts WHERE admission_id = $1`,
         [admissionId],
       );
-      return result.rows[0] === undefined ? undefined : attemptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], attemptFromRow);
     },
     listRevisionAttempts: async (owner) => {
       const result = await client.query(
@@ -238,7 +295,7 @@ export function postgresRepositorySessions(
           input.updatedAt,
         ],
       );
-      return result.rows[0] === undefined ? undefined : attemptFromRow(result.rows[0]);
+      return decodeOptionalRow(result.rows[0], attemptFromRow);
     },
   };
 }

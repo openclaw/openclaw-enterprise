@@ -3,12 +3,13 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import test, { before } from "node:test";
 import { promisify } from "node:util";
-import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.ts";
+import { availablePort } from "../helpers/available-port.ts";
+import { startupFailureObservation } from "./local-first-agent-stack.mjs";
 
 const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
@@ -205,7 +206,13 @@ process.exit(result.status ?? 1);
           ];
           const stage =
             stages.findLast(([, marker]) => error.stdout?.includes(marker))?.[0] ?? "unknown";
-          const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.`;
+          const startup = startupFailureObservation();
+          startup.write(typeof error.stdout === "string" ? error.stdout : "");
+          const observation = startup.finish(error.code, error.signal, error.killed);
+          const attribution = observation
+            ? ` primary-stage ${observation.primaryStage}, cleanup-failed ${observation.cleanupFailed}, parent-context-done ${observation.parentContextDone}.`
+            : "";
+          const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.${attribution}`;
           assert.ok(
             /Verifying Kubernetes network isolation before configuring gateway trust/.test(
               error.stdout,
@@ -237,6 +244,60 @@ process.exit(result.status ?? 1);
         false,
       );
     },
+  );
+}
+
+export function assertKeycloakSecondPassFailure(error) {
+  const { stdout, stderr, code, signal } = Object.fromEntries(
+    ["stdout", "stderr", "code", "signal"].map((key) => [
+      key,
+      error == null ? undefined : Object.getOwnPropertyDescriptor(error, key)?.value,
+    ]),
+  );
+  const out = typeof stdout === "string" ? stdout : "";
+  const err = typeof stderr === "string" ? stderr : "";
+  const secondPass = "Enabling Keycloak sign-in (second Helm pass)";
+  const expected = [
+    ["Keycloak second Helm pass", out, secondPass],
+    ["injected second Helm pass failure", err, "injected second Helm pass failure"],
+    ["injected owned cluster deletion failure", err, "injected owned cluster deletion failure"],
+  ].find(([, stream, marker]) => !stream.includes(marker));
+  if (!expected) {
+    return true;
+  }
+
+  // Launcher streams can contain credentials with arbitrary delimiters. Publish only
+  // fixed labels, even when the launcher stops before either fault is injected.
+  const stage =
+    [
+      ["cluster creation", "Creating Kubernetes-only k3d cluster"],
+      ["image import", "Importing the controller and PostgreSQL images"],
+      ["network isolation check", "Verifying Kubernetes network isolation"],
+      ["OCE installation", "Installing OCE in Namespace"],
+      ["Keycloak installation", "Installing Keycloak in Namespace"],
+      ["Keycloak discovery", "Waiting for Keycloak discovery"],
+      ["Keycloak second Helm pass", secondPass],
+    ].findLast(([, marker]) => out.includes(marker))?.[0] ?? "unknown";
+  const failedBuild =
+    out.match(
+      /^\[occ-dev-timing\] stage=(controller-build|runtime-build) elapsed_ms=\d+ failed=true$/m,
+    )?.[1] ?? "unknown";
+  const buildError =
+    [
+      ["space", /no space left on device|\bENOSPC\b/i],
+      ["oom", /out of memory|cannot allocate memory|\boom[- ]kill(?:ed|er)?\b/i],
+      ["download", /failed to (?:download|fetch)|download failed/i],
+      ["compile", /\berror TS\d{4}\b|compilation failed|failed to compile/i],
+    ].find(([, pattern]) => pattern.test(err))?.[0] ?? "unknown";
+  const exit = Number.isInteger(code) && code >= 0 && code <= 255 ? code : "unknown";
+  const termination =
+    signal === null
+      ? "none"
+      : typeof signal === "string" && Object.hasOwn(osConstants.signals, signal)
+        ? signal
+        : "unknown";
+  throw new Error(
+    `dev up expected ${expected[0]}; last observed stage=${stage}; exit=${exit} signal=${termination}; failed-build=${failedBuild} build-error=${buildError}.`,
   );
 }
 
@@ -273,7 +334,8 @@ export function registerInstallationKeycloak() {
       const values = JSON.parse(await fixture.read("helm-values.json"));
       assert.equal(values.auth.oidc.enabled, true);
       assert.equal(values.auth.passwordSignIn, "recovery-only");
-      assert.equal(values.agentNativeAdmin.enabled, false);
+      assert.equal(values.agentNativeAdmin.enabled, true);
+      assert.equal(values.agentNativeAdmin.domain, `agents.${fixture.cluster}.oce.localhost`);
       // Probe the actual API after the OIDC upgrade, when the additive policy is active.
       await verifyKeycloakAPIEgress(fixture, state, values);
       const issuer = `https://${fixture.keycloakHost}/realms/oce`;
@@ -384,10 +446,11 @@ export function registerInstallationKeycloak() {
             );
             assert.equal(account.data.userId, adminId);
             const sessionCookie = cookies.find(
-              ({ name, value }) => name.endsWith(".session_token") && value,
+              ({ name, value }) => name === "__Secure-openclaw_occ_shared.session_token" && value,
             );
             assert.ok(sessionCookie);
-            assert.equal(sessionCookie.domain, fixture.consoleHost);
+            // OIDC preserves the shared session scope for the Console and Agent hosts.
+            assert.equal(sessionCookie.domain, `.${fixture.cluster}.oce.localhost`);
             assert.equal(sessionCookie.secure, true);
             assert.equal(sessionCookie.httpOnly, true);
 
@@ -556,19 +619,6 @@ export function registerInstallationKeycloak() {
     },
   );
 
-  // The end of a command's output for a failure message. The results artifact keeps a whole
-  // message only up to 16 KiB, so each stream is bounded to leave room for both.
-  const outputTailLines = 40;
-  const outputTailChars = 6_000;
-  function outputTail(output) {
-    return String(output ?? "")
-      .trimEnd()
-      .split("\n")
-      .slice(-outputTailLines)
-      .join("\n")
-      .slice(-outputTailChars);
-  }
-
   test(
     "dev-up Keycloak second-pass failure retains recovery state until owned cleanup succeeds",
     {
@@ -625,24 +675,7 @@ process.exit(result.status ?? 1);
           ...fixture.environment,
           PATH: `${fixture.root}${delimiter}${fixture.environment.PATH}`,
         }),
-        (error) => {
-          // Finding 1884: dev up once failed before the second pass, and the assertion cut its
-          // stdout and never showed stderr. A mismatch now names the step dev up stopped at.
-          try {
-            assert.match(error.stdout, /Enabling Keycloak sign-in \(second Helm pass\)/);
-            assert.match(error.stderr, /injected second Helm pass failure/);
-            assert.match(error.stderr, /injected owned cluster deletion failure/);
-          } catch (mismatch) {
-            // Node's own message quotes the start of stdout; keep only its first line.
-            throw new Error(
-              `${mismatch.message.split("\n")[0].replace(/ Input:$/, "")} dev up exit ${error.code} signal ${error.signal}.` +
-                `\n--- dev up stdout, last ${outputTailLines} lines ---\n${outputTail(error.stdout)}` +
-                `\n--- dev up stderr, last ${outputTailLines} lines ---\n${outputTail(error.stderr)}`,
-              { cause: mismatch },
-            );
-          }
-          return true;
-        },
+        assertKeycloakSecondPassFailure,
       );
       assert.equal(existsSync(helmMarker), true);
       assert.equal(existsSync(deleteMarker), true);

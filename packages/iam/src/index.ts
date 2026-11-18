@@ -120,8 +120,18 @@ export function createBootstrapAdministratorSeed(
  * create a fresh administrator Role, or grant nothing.
  */
 export type AuthPrincipalSeedOptions =
-  | { readonly roleId: string; readonly grant?: undefined }
+  | {
+      readonly roleId: string;
+      readonly scope?: AccountEnrollmentRole["scope"];
+      readonly grant?: undefined;
+    }
   | { readonly grant: "administrator" | "none"; readonly roleId?: undefined };
+
+/** Operator-selected initial grant for a newly enrolled human account. */
+export interface AccountEnrollmentRole {
+  readonly id: string;
+  readonly scope: "installation" | "all" | { readonly namespaceId: string };
+}
 
 /** IAM owns the Principal plus explicit administrator creation, exact Role binding, or no grant. */
 export function createAuthPrincipalSeed(
@@ -139,7 +149,9 @@ export function createAuthPrincipalSeed(
   // Fail closed: untyped JavaScript callers can omit or misspell the options, and
   // a missing or unknown grant must never fall through to a new administrator.
   const requested = options as
-    { readonly roleId?: unknown; readonly grant?: unknown } | null | undefined;
+    | { readonly roleId?: unknown; readonly grant?: unknown; readonly scope?: unknown }
+    | null
+    | undefined;
   const requestedRoleId = requested?.roleId;
   const grant = requested?.grant;
   if (requestedRoleId !== undefined && grant !== undefined) {
@@ -150,6 +162,20 @@ export function createAuthPrincipalSeed(
   }
   if (requestedRoleId === undefined && grant !== "administrator" && grant !== "none") {
     throw new Error("Auth Principal seeds require a Role id or an explicit grant.");
+  }
+  const requestedScope = requested?.scope;
+  if (
+    requestedScope !== undefined &&
+    (requestedRoleId === undefined ||
+      (requestedScope !== "all" &&
+        requestedScope !== "installation" &&
+        (requestedScope === null ||
+          typeof requestedScope !== "object" ||
+          Object.keys(requestedScope).length !== 1 ||
+          !("namespaceId" in requestedScope) ||
+          !isNonEmptyString(requestedScope.namespaceId))))
+  ) {
+    throw new Error("Auth account Role scope must be installation, all, or a Namespace ID.");
   }
   const existingRoleId = typeof requestedRoleId === "string" ? requestedRoleId : undefined;
 
@@ -206,6 +232,15 @@ export function createAuthPrincipalSeed(
       { action: "read", resourceKind: "agent_revision" },
     ],
   };
+  let scope: Pick<AccessBinding, "namespaceId" | "resourceKind" | "resourceId"> = {};
+  if (existingRoleId !== undefined && requestedScope !== "all") {
+    scope =
+      typeof requestedScope === "object" &&
+      requestedScope !== null &&
+      "namespaceId" in requestedScope
+        ? { namespaceId: requestedScope.namespaceId as string }
+        : { resourceKind: "installation", resourceId: installationId };
+  }
   return {
     principal,
     roles: existingRoleId === undefined ? [administrator] : [],
@@ -215,9 +250,7 @@ export function createAuthPrincipalSeed(
         subjectKind: "identity",
         subjectId: principal.id,
         roleId,
-        ...(existingRoleId === undefined
-          ? {}
-          : { resourceKind: "installation", resourceId: installationId }),
+        ...scope,
       },
     ],
   };
@@ -862,6 +895,15 @@ function bindingScopeMatches(binding: AccessBinding, request: AuthorizationReque
   );
 }
 
+function isDirectAgentAuditBinding(identity: Identity, binding: AccessBinding): boolean {
+  return (
+    identity.kind === "principal" &&
+    binding.subjectKind === "identity" &&
+    binding.namespaceId !== undefined &&
+    binding.resourceKind === "agent"
+  );
+}
+
 function restrictionMatches(restriction: Restriction, request: AuthorizationRequest): boolean {
   return (
     (restriction.namespaceId === undefined ||
@@ -922,6 +964,12 @@ function evaluateValidatedAuthorization(
     ...[...applicableGroupIds].flatMap((groupId) => policy.groupBindings.get(groupId) ?? []),
   ];
   for (const binding of subjectBindings) {
+    if (
+      request.action === "read_audit" &&
+      (request.resource.kind !== "agent" || !isDirectAgentAuditBinding(identity, binding))
+    ) {
+      continue;
+    }
     if (!bindingScopeMatches(binding, request)) {
       continue;
     }
@@ -1022,14 +1070,20 @@ function effectiveGrants(identity: Identity, policy: NativeIAMPolicy): Effective
         namespaceId: [...namespaces][0],
         resourceKind: binding.resourceKind,
         resourceId: binding.resourceId,
-        permissions: role.permissions.filter(
-          (permission) =>
+        permissions: role.permissions.filter((permission) => {
+          if (permission.action === "read_audit") {
+            return (
+              permission.resourceKind === "agent" && isDirectAgentAuditBinding(identity, binding)
+            );
+          }
+          return (
             binding.resourceKind === undefined ||
             permission.resourceKind === binding.resourceKind ||
             // An exact Agent binding also grants these permissions on the Agent's own children.
             (binding.resourceKind === "agent" &&
-              AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === permission.resourceKind)),
-        ),
+              AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === permission.resourceKind))
+          );
+        }),
       });
     }
   }

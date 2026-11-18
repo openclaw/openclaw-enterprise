@@ -4,6 +4,7 @@ import {
   arrangeProductionTopology,
   assertActualModelTurn,
   assertActualPublicGithubRead,
+  assertGatewayWorkspaceReconnect,
   assertRoutedWorkspaceFileReads,
   assertRoutedWorkspaceFilesThroughOcc,
   assertRoutedWorkspaceModelTurn,
@@ -75,6 +76,7 @@ test(
       );
 
       // Replace only the Pod: the stable route and Service must preserve the same workspace.
+      const recoveryStartedAt = Date.now();
       const previousUid = topology.gatewayPod.metadata.uid;
       await kubectl(
         "delete",
@@ -89,6 +91,13 @@ test(
         topology,
         topology.revision.id,
         previousUid,
+      );
+      context.diagnostic(
+        "Replacement Gateway Pod is Ready; waiting for its native workspace connection.",
+      );
+      await assertGatewayWorkspaceReconnect(topology, proof.files.get("AGENTS.md"));
+      context.diagnostic(
+        `Replacement Gateway read the retained workspace through native RPC after ${Date.now() - recoveryStartedAt} ms; checking OCC routing.`,
       );
       const routeAfter = await resource(
         "httproute",

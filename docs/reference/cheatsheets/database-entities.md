@@ -57,6 +57,11 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `harness_auth_credential_source_id`
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
+- `restart_generation`, `restart_domain` (nullable pair defining current
+  [restart continuity](../agents/interrupted-turns.md); cleared on explicit stop)
+- `predecessor_replacement` (nullable JSONB with the predecessor and candidate
+  revision IDs and the `pre-stop` or `stopping` phase). See the
+  [common stop boundary](../agents/planned-replacement.md#common-stop-boundary).
 - `desired_runtime_state`
 - `sandbox_policy_editing`
 - `status`
@@ -76,7 +81,8 @@ See [per-Agent policies](../sandbox-policies.md).
 ### `agent_revisions`
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
-`admitted_spec` includes the explicit v2
+`admitted_spec` includes the optional immutable `restart_continuation` generation/domain
+snapshot and the explicit v2
 [execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
 
 - `id`
@@ -86,10 +92,10 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `backend_id`
 - `gateway_managed_mode`
 - `first_deployment_digest`: nullable SHA-256 intent digest, permitted only on revision 1;
-  binds the Installation, actor, Namespace, Agent, key, and reviewed Configuration tuple.
+  binds the Installation, actor, Namespace, Agent, key, reviewed Configuration tuple, and normalized Harness overrides.
   Private [receipt recovery](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
   metadata, separate from `admitted_spec` and public revision responses.
-- `admitted_spec`
+- `admitted_spec` (includes requested `harness.overrides` and resolved `harness.configuration`)
 - `admitted_at`
 
 ### `workspace_setups`
@@ -140,6 +146,16 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `authentication_states`
+
+Stores OCC's transient [browser OAuth connection attempts](../../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../../flows/credential-source-refresh.md#device-authorization-and-configuration). The `kind` determines the required fields and lifecycle. Human sign-in attempts use `human_authentication_attempts` instead.
+
+- Common: `kind`, `id`, `namespace_id`, `actor_id`, `expires_at`, `binding` (immutable workflow data)
+- `oauth_connection`: `credential_source_id`, `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scope, redirect, and issuer data
+- `device_authorization`: `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, source, Driver, and polling-interval data
+
+OCC deletes an OAuth row when the matching browser callback consumes it. Device polling checks `version` before committing; cancellation and expiry clear the encrypted challenge and provider handle.
+
 ### `connection_templates`
 
 Stores the scope and current version of each OAuth connection template.
@@ -183,24 +199,6 @@ Records the Namespace, consenting principal, approved template version and revoc
 - `created_at`
 - `revocation_requested_by`
 - `revoked_at`
-
-### `connection_sessions`
-
-Stores the private, single-use OAuth attempt for the initiating principal and browser session.
-
-- `state_hash`
-- `namespace_id`
-- `credential_source_id`
-- `pkce_verifier`
-- `selected_scopes`
-- `issuer_required`
-- `session_id`
-- `redirect_uri`
-- `actor_id`
-- `connection_template_id`
-- `connection_template_version`
-- `created_at`
-- `expires_at`
 
 ### `connection_token_custody`
 
@@ -475,6 +473,8 @@ Defines native IAM rules that deny actions on a resource kind or specific resour
 ### `audit_events`
 
 Keeps an append-only record of bootstrap, changes to resources, and authorization denials.
+When Control Plane audit is enabled, it also records covered API requests,
+worker activity, and disclosures of Agent audit records. See the [audit guide](../../guides/topics/audit-log.md).
 
 - `id`
 - `occurred_at`
@@ -503,6 +503,7 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes, Age
 - `available_at`
 - `attempt_count`
 - `claim_token`
+- `audit_attempt_id`
 - `lease_expires_at`
 - `completed_at`
 - `reason_code`
@@ -562,7 +563,7 @@ Stores expiring browser sessions for signed-in users.
 
 Links a user to their sign-in method. Password methods store a password hash;
 identity-only external methods reject password and provider-token storage.
-See [GitHub sign-in](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+See [External sign-in](../authentication/external-sign-in.md#external-sign-in-profile).
 
 - `id`
 - `account_id`
@@ -602,6 +603,17 @@ Binds an ordinary browser session to its admitted account and method versions.
 - `version`
 - `method_version`
 
+### `human_authentication_results`
+
+Holds outstanding external sign-in results by Installation and attempt. Deleting the
+bound session removes its result. The application role can insert, read, and delete rows.
+
+- `installation_id`
+- `attempt_id`
+- `session_id`
+- `provider_id`
+- `expires_at`
+
 ### `human_authentication_recovery`
 
 Retains the fixed existing password recovery administrator for an Installation.
@@ -625,6 +637,24 @@ provider token. Consumed attempts are deleted before exchange.
 - `code_verifier`
 - `created_at`
 - `expires_at`
+
+### `native_browser_intents`
+
+Short-lived, browser-bound [native Agent launches](../agent-native-admin.md#host-only-session-exchange).
+Consumed atomically; deleted with the parent session or revision.
+
+- `id`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `challenge_hash`, `exchange_hash`
+- `created_at`, `expires_at`
+
+### `native_browser_handles`
+
+Hashed Agent access handles dependent on a live parent human session.
+
+- `handle_hash`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `created_at`, `expires_at`
 
 ### `verification`
 
