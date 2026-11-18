@@ -109,7 +109,10 @@ function validPushRefPolicy(pushRef: string): boolean {
   }
 }
 
-/** The binding's identities and scope are well formed and its policy is one exact branch. */
+/**
+ * Validates identities and scope: Git-only bindings allow a terminal wildcard in the push ref,
+ * bindings with a pull request base require a concrete push ref, and scope pins check no push ref.
+ */
 export function validGitHubRequestBinding(binding: GitHubRequestBinding): boolean {
   return (
     [
