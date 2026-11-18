@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import {
   appendFile,
   chmod,
+  copyFile,
   mkdir,
   readdir,
   readFile,
@@ -1227,6 +1228,66 @@ process.exit(97);
     }
   });
 
+  test("preparation refuses malformed manifest policy before creating state", async (t) => {
+    const root = await fixture(t);
+    const scripts = join(root, "scripts");
+    const ci = join(scripts, "ci");
+    await mkdir(ci, { recursive: true });
+    await symlink(join(repositoryRoot, "packages"), join(root, "packages"));
+    await symlink(join(repositoryRoot, "node_modules"), join(root, "node_modules"));
+    await symlink(join(repositoryRoot, "package.json"), join(root, "package.json"));
+    await symlink(join(repositoryRoot, "scripts/lib"), join(scripts, "lib"));
+    // Copy the real entry modules so their repository root points at this owned manifest.
+    for (const entry of await readdir(join(repositoryRoot, "scripts/ci"))) {
+      if (entry === "test-suites.json") {
+        continue;
+      }
+      const source = join(repositoryRoot, "scripts/ci", entry);
+      const target = join(ci, entry);
+      if (["prepare.mjs", "prepare-cli.ts", "prepare-inputs.ts"].includes(entry)) {
+        await copyFile(source, target);
+      } else {
+        await symlink(source, target);
+      }
+    }
+    const manifest = join(ci, "test-suites.json");
+    const statePath = join(root, "state.json");
+    for (const prepare of ["invalid", { requiresPreparedStateForFile: "true" }]) {
+      await writeFile(manifest, JSON.stringify({ lanes: { fixture: { files: [], prepare } } }));
+      const result = await spawnResult(
+        process.execPath,
+        [join(ci, "prepare.mjs"), "--lane", "fixture", "--state", statePath],
+        { env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "" } },
+      );
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stderr,
+        /lanes\.fixture\.prepare(?:\.requiresPreparedStateForFile)? must be/,
+      );
+      await assert.rejects(stat(statePath), { code: "ENOENT" });
+    }
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        lanes: { fixture: { files: [], prepare: { requiresPreparedStateForFile: false } } },
+      }),
+    );
+    const valid = await spawnResult(
+      process.execPath,
+      [
+        join(ci, "prepare.mjs"),
+        "--lane",
+        "fixture",
+        "--file",
+        "fixture.test.ts",
+        "--state",
+        statePath,
+      ],
+      { env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "" } },
+    );
+    assert.equal(valid.status, 0, valid.stderr);
+  });
+
   test("repository credential file preparation extracts the binary only for manifest consumers and cleans it", async (t) => {
     const root = await fixture(t);
     const bin = join(root, "bin");
@@ -1254,20 +1315,38 @@ if (args[0] === "image" && args[1] === "inspect") {
     );
     await writeFile(join(bin, "pnpm"), `#!${process.execPath}\n`, { mode: 0o700 });
     const env = {
-      ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
       OCC_DOCKER_BIN: docker,
       RUNNER_TEMP: root,
+      REPOSITORY_CREDENTIALS_GH_BINARY: "",
     };
-    delete env.REPOSITORY_CREDENTIALS_GH_BINARY;
     // Build commands are controlled peers. The real lane journals its images and the
     // real file preparer decides which manifest files need delivered-binary extraction.
-    const lane = await spawnResult(
-      process.execPath,
-      [preparePath, "--lane", "repository-credentials-container", "--state", statePath],
-      { env },
+    const lane = await runPrepare(
+      ["--lane", "repository-credentials-container", "--state", statePath],
+      env,
     );
     assert.equal(lane.status, 0, lane.stderr);
+    // The standalone CLI cannot retain the extraction callback after it exits.
+    const refused = await runPrepare(
+      [
+        "--lane",
+        "repository-credentials-container",
+        "--state",
+        statePath,
+        "--file",
+        "tests/conformance/repository-credentials-backend-conformance.test.ts",
+        "--github-env",
+        join(root, "missing", "github.env"),
+      ],
+      env,
+    );
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /must be prepared within the test runner/);
+    assert.equal(
+      (await readJsonLines(commandLog)).filter(([command]) => command === "run").length,
+      0,
+    );
     const program = `
 import assert from "node:assert/strict";
 import { stat } from "node:fs/promises";
@@ -1288,7 +1367,7 @@ const sibling = await prepareFile({
 assert.equal(sibling.env.REPOSITORY_CREDENTIALS_GH_BINARY, undefined);
 assert.equal(sibling.cleanup, null);
 `;
-    const prepared = await runProgram(program, statePath, env);
+    const prepared = await runProgram(program, statePath, { ...process.env, ...env });
     assert.equal(prepared.status, 0, prepared.stderr);
     const calls = await readJsonLines(commandLog);
     assert.equal(calls.filter(([command]) => command === "run").length, 1);
@@ -1398,6 +1477,30 @@ assert.equal(sibling.cleanup, null);
     ]);
     assert.equal(cleaned.status, 0, cleaned.stderr);
     await assert.rejects(stat(statePath), { code: "ENOENT" });
+  });
+
+  test("environment export rejects multiline values before appending any assignment", async (t) => {
+    const root = await fixture(t);
+    const githubEnv = join(root, "github.env");
+    const statePath = join(root, "state\nINJECTED=value.json");
+    await writeFile(githubEnv, "CANARY=unchanged\n");
+    const prepared = await runPrepare([
+      "--lane",
+      "checks-baseline-1",
+      "--state",
+      statePath,
+      "--github-env",
+      githubEnv,
+    ]);
+    assert.equal(prepared.status, 1);
+    assert.match(prepared.stderr, /Invalid GitHub environment value/);
+    assert.equal(await readFile(githubEnv, "utf8"), "CANARY=unchanged\n");
+    const cleaned = await spawnResult(process.execPath, [
+      join(repositoryRoot, "scripts/ci/cleanup.ts"),
+      "--state",
+      statePath,
+    ]);
+    assert.equal(cleaned.status, 0, cleaned.stderr);
   });
 
   test("ordinary CI groups require controlled repository coverage and exclude installed live repository writes", async () => {

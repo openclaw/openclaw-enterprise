@@ -90,6 +90,7 @@ import {
   nativeIAMBarrierFile,
   normalizeFile,
   productionUpgradeImages,
+  repositoryCredentialsFileNeedsBinary,
   repositoryRoot,
   requireEnv,
   selectedLaneFile,
@@ -143,7 +144,7 @@ const defaultK3sImage =
  * }} CiState */
 /** @typedef {import("./prepare-inputs.ts").LaneSelection} LaneSelection */
 /** @typedef {{ cleanup: () => Promise<boolean | void>, env: Record<string, string> }} PreparedLane */
-/** @typedef {{ cleanup: (options?: { lockTimeoutMs?: number | undefined }) => Promise<void>, env: Record<string, string>, defaults: Record<string, string> }} PreparedFile */
+/** @typedef {{ cleanup: ((options?: { lockTimeoutMs?: number | undefined }) => Promise<void>) | null, env: Record<string, string>, defaults: Record<string, string> }} PreparedFile */
 
 /** @param {LaneSelection} lane @param {string} message */
 function progress(lane, message) {
@@ -1988,11 +1989,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (state?.lane !== name) {
       throw new Error("Repository credential images require their own lane state.");
     }
-    const registeredFile = laneDefinition(name).files.find(({ path }) => path === relativeFile);
-    if (
-      registeredFile &&
-      !registeredFile.requiredEnv?.includes("REPOSITORY_CREDENTIALS_GH_BINARY")
-    ) {
+    if (!repositoryCredentialsFileNeedsBinary(relativeFile)) {
       return {
         defaults: laneDefaults(name, { ...state.defaults, ...env }),
         env,

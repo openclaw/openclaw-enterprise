@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-18 01:27"
-last_updated_session: "authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef"
+updated: "2026-11-18 02:08"
+last_updated_session: "authoring-run/3d960c94-5e42-4c7d-9cff-d0eb63beceb4"
 ---
 
 # CI resource preparation
@@ -60,12 +60,12 @@ checks, or establish registry health or stall causes.
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
-`scripts/ci/prepare-cli.ts:runPreparationCli` dispatches requests from
-`prepare.mjs`. Lane and file preparation call
-`scripts/ci/prepare-inputs.ts:validateLaneInputsBeforeSideEffects` before
-locking or creating state. It checks selected OpenShell credentials and rejects
-incomplete optional Gateway/Agent image pairs. Runtime preparation imports the
-selected artifact or builds source; controller build selection is independent.
+`scripts/ci/prepare-inputs.ts` rejects malformed manifest preparation objects
+and policy flags at load time. `runPreparationCli` dispatches lane and file
+requests from `prepare.mjs`. Lane and file preparation validate selected
+OpenShell credentials and optional Gateway/Agent image pairs before locking or
+creating state. The CLI validates environment names and rejects CR/LF values
+before appending any assignment. It excludes `NODE_OPTIONS`.
 
 `scripts/ci/image-build-cache.ts:imageBuildArgs` restores read-only caches, including
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
@@ -237,13 +237,12 @@ The Repository Credentials lane writes the service, client, and qualification ID
 and source commit to a mode-0600 receipt. Production Observability builds the
 service for k3d import and verification on each node.
 
-`scripts/ci/prepare.mjs:prepareFileWithState` checks the file's manifest
-requirements before calling `scripts/ci/repository-credentials.ts:prepareRepositoryCredentialsFile`.
-The helper extracts the delivered `gh` in a container with no network and a
-read-only root. It checks the binary's pinned version before returning its path
-for the test environment. Invalid image IDs, source commits, and binary versions
-produce fixed errors without the command output. File cleanup removes the extracted
-binary. Lane cleanup removes its journaled image tags.
+`scripts/ci/prepare.mjs:prepareFileWithState` extracts the delivered `gh`
+only for manifest consumers, using a networkless, read-only container. It checks
+the pinned version before returning the path and cleanup callback. Nonconsumers
+return no callback. The standalone CLI refuses consumers before extraction;
+the runner owns their callback. Lane cleanup removes journaled image tags.
+Invalid images, source commits, or binary versions produce fixed errors.
 
 The suite map owns fixed selection flags, required input names, and the resources each lane needs. Preparation consumes those descriptors instead of maintaining parallel lane lists. External model, ChatGPT and Slack credentials come only from the selected protected environment. Missing selected inputs fail rather than turning the lane into a skipped success.
 
@@ -289,4 +288,5 @@ See [lane verification](../../testing/ci/run-lanes.md).
 
 ## Changelog
 
+- 2026-11-18 02:08: Reject malformed preparation policy and preserve cleanup ownership. (authoring-run/3d960c94-5e42-4c7d-9cff-d0eb63beceb4 - 886eacfe0fce0e18c03a0f01d5f8dc9476efdfc2)
 - 2026-11-18 01:27: Trace input admission and dispatch. (authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)

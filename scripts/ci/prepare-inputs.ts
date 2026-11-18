@@ -66,6 +66,16 @@ function strings(value: unknown, field: string): string[] {
   return value;
 }
 
+function flag(value: unknown, field: string): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`${field} must be a boolean.`);
+  }
+  return value;
+}
+
 function readLane(value: unknown, name: string) {
   const lane = asRecord(value);
   if (!lane) {
@@ -75,8 +85,11 @@ function readLane(value: unknown, name: string) {
   if (!Array.isArray(files)) {
     throw new Error(`lanes.${name}.files must be an array.`);
   }
-  const prepare = asRecord(lane.prepare);
   const field = `lanes.${name}.prepare`;
+  const prepare = lane.prepare === undefined ? undefined : asRecord(lane.prepare);
+  if (lane.prepare !== undefined && !prepare) {
+    throw new Error(`${field} must be an object.`);
+  }
   return {
     env: environment(lane.env, `lanes.${name}.env`),
     files: files.map((entry: unknown) => {
@@ -100,12 +113,15 @@ function readLane(value: unknown, name: string) {
       ),
       selfProvisionedFiles: strings(prepare?.selfProvisionedFiles, `${field}.selfProvisionedFiles`),
       sourceBuildFiles: strings(prepare?.sourceBuildFiles, `${field}.sourceBuildFiles`),
-      nodeBaseImage: prepare?.nodeBaseImage === true,
-      postgres: prepare?.postgres === true,
-      k3d: prepare?.k3d === true,
-      keycloak: prepare?.keycloak === true,
-      codexSeccomp: prepare?.codexSeccomp === true,
-      requiresPreparedStateForFile: prepare?.requiresPreparedStateForFile === true,
+      nodeBaseImage: flag(prepare?.nodeBaseImage, `${field}.nodeBaseImage`),
+      postgres: flag(prepare?.postgres, `${field}.postgres`),
+      k3d: flag(prepare?.k3d, `${field}.k3d`),
+      keycloak: flag(prepare?.keycloak, `${field}.keycloak`),
+      codexSeccomp: flag(prepare?.codexSeccomp, `${field}.codexSeccomp`),
+      requiresPreparedStateForFile: flag(
+        prepare?.requiresPreparedStateForFile,
+        `${field}.requiresPreparedStateForFile`,
+      ),
     },
   };
 }
@@ -117,6 +133,13 @@ const emptyLane = readLane({ files: [] }, "");
 
 export function laneDefinition(name: string) {
   return lanes.get(name) ?? emptyLane;
+}
+
+export function repositoryCredentialsFileNeedsBinary(file: string) {
+  const registered = laneDefinition("repository-credentials-container").files.find(
+    ({ path }) => path === file,
+  );
+  return registered?.requiredEnv.includes("REPOSITORY_CREDENTIALS_GH_BINARY") ?? true;
 }
 
 export function lanePrepare(name: string) {

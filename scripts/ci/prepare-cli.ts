@@ -2,12 +2,12 @@ import { chmod, writeFile } from "node:fs/promises";
 import {
   nativeIAMBarrierFile,
   normalizeFile,
-  type Environment,
+  repositoryCredentialsFileNeedsBinary,
   type PrepareFileOptions,
   type PrepareLaneOptions,
 } from "./prepare-inputs.ts";
 
-type PreparationResult = { env: Environment; defaults?: Environment };
+type PreparationResult = { env: Record<string, string>; defaults?: Record<string, string> };
 type PreparationCommands = {
   prepareFile: (options: PrepareFileOptions) => Promise<PreparationResult>;
   prepareLane: (options: PrepareLaneOptions) => Promise<PreparationResult>;
@@ -44,13 +44,21 @@ function parseArgs(argv: readonly string[]) {
 // The Actions runner refuses NODE_OPTIONS in $GITHUB_ENV, compared without case, and logs an
 // ##[error] for it. A lane's own env, such as the checks lanes' heap limit, needs no export:
 // run-tests.ts sets it on each test process.
-async function appendGithubEnv(path: string | undefined, env: Environment) {
+async function appendGithubEnv(path: string | undefined, env: Record<string, string>) {
   if (!path) {
     return;
   }
   const lines = Object.entries(env)
     .filter(([name]) => name.toUpperCase() !== "NODE_OPTIONS")
-    .map(([name, value]) => `${name}=${value}`);
+    .map(([name, value]) => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+        throw new Error("Invalid GitHub environment name.");
+      }
+      if (/[\r\n]/u.test(value)) {
+        throw new Error(`Invalid GitHub environment value for ${name}.`);
+      }
+      return `${name}=${value}`;
+    });
   if (lines.length === 0) {
     return;
   }
@@ -73,6 +81,15 @@ export async function runPreparationCli(
   ) {
     throw new Error(
       "The selected private PostgreSQL fixture must be prepared within the test runner.",
+    );
+  }
+  if (
+    args.file &&
+    args.lane === "repository-credentials-container" &&
+    repositoryCredentialsFileNeedsBinary(normalizeFile(args.file))
+  ) {
+    throw new Error(
+      "Repository credential binary consumers must be prepared within the test runner.",
     );
   }
   const result = args.file
