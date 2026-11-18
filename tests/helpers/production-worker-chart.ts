@@ -16,7 +16,9 @@ export async function initialUpgradeChart(
 ) {
   const [worker, bootstrap, extra] = extension.split(":");
   assert.ok(
-    extra === undefined && ["mjs", "ts"].includes(worker ?? "") && ["mjs", "ts"].includes(bootstrap ?? ""),
+    extra === undefined &&
+      ["mjs", "ts"].includes(worker ?? "") &&
+      ["mjs", "ts"].includes(bootstrap ?? ""),
     "The incumbent controller must provide exactly one supported worker probe and bootstrap program.",
   );
   if (worker === "ts" && bootstrap === "ts") {
@@ -76,7 +78,11 @@ async function stageHistoricalWorkerChart(
     : deployments;
   const jobs = await readFile(join(source, "templates/jobs.yaml"), "utf8");
   const bootstrap = 'args: ["scripts/bootstrap-installation.ts"]';
-  assert.equal(jobs.split(bootstrap).length, 2, "The trusted chart must define one direct bootstrap program.");
+  assert.equal(
+    jobs.split(bootstrap).length,
+    2,
+    "The trusted chart must define one direct bootstrap program.",
+  );
   const stagedJobs = historicalBootstrap
     ? jobs.replace(bootstrap, 'args: ["scripts/bootstrap-installation.mjs"]')
     : jobs;
