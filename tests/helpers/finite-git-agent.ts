@@ -46,6 +46,17 @@ export async function observeUntil<T>(
 type GitInstallation = Awaited<ReturnType<typeof createOpenShellGitInstallation>>;
 
 export async function deployFiniteAgent(t: TestContext, fixture: GitInstallation) {
+  const admitted = await deployGitAgent(t, fixture, false);
+  const { deadlineWallMs } = admitted;
+  assert.ok(deadlineWallMs !== undefined);
+  return { ...admitted, deadlineWallMs };
+}
+
+export function deployStandingAgent(t: TestContext, fixture: GitInstallation) {
+  return deployGitAgent(t, fixture, true);
+}
+
+async function deployGitAgent(t: TestContext, fixture: GitInstallation, standing: boolean) {
   const {
     request,
     namespace,
@@ -86,8 +97,29 @@ export async function deployFiniteAgent(t: TestContext, fixture: GitInstallation
   const transport = await request("POST", `${path}/runtime-credentials`, {});
   assert.equal(transport.transportConfigured, true);
 
-  // The selected-repository profile grants finite access. Use its actual
-  // admission deadline; neither the application clock nor queue is patched.
+  // Standing approval binds the reviewed exact scope before the deployment can
+  // acquire its renewable Git grant.
+  const approvalId = standing ? randomUUID() : undefined;
+  if (approvalId) {
+    const scopes = await request("GET", `${path}/repository-approval-scopes`);
+    assert.equal(scopes.length, 1);
+    assert.equal(scopes[0].scope.repository, fixture.origin.repository);
+    assert.deepEqual(scopes[0].scope.apiPermissions, { metadata: "read", contents: "write" });
+    await request("PATCH", path, {
+      configurationId: configuration.id,
+      repositoryStandingApproval: {
+        repositoryRef,
+        approvalId,
+        approved: true,
+        duration: "until-removed",
+        expectedScopeFingerprint: scopes[0].scopeFingerprint,
+      },
+    });
+    const approvals = await request("GET", `${path}/repository-approvals`);
+    assert.ok(approvals.some(({ id }: { id: string }) => id === approvalId));
+  }
+
+  // Use the finite grant's actual admission deadline for expiry checks.
   const admissionStartedAt = Date.now();
   const revision = await request("POST", `${path}/deploy`);
   const admissionReturnedAt = Date.now();
@@ -95,13 +127,18 @@ export async function deployFiniteAgent(t: TestContext, fixture: GitInstallation
   assert.equal(revision.harnessAuth.method, "credential_source");
   assert.equal(revision.harnessAuth.sourceId, modelSource.id);
   const deadlineWallMs = revision.repositoryCredentials?.deadlineWallMs;
-  assert.ok(Number.isSafeInteger(deadlineWallMs));
-  assert.ok(deadlineWallMs >= admissionStartedAt + 600_000);
-  assert.ok(deadlineWallMs <= admissionReturnedAt + 600_000);
-  await evidence("finite-git-grant", { revisionId: revision.id, deadlineWallMs });
+  if (!approvalId) {
+    assert.ok(Number.isSafeInteger(deadlineWallMs));
+    assert.ok(deadlineWallMs >= admissionStartedAt + 600_000);
+    assert.ok(deadlineWallMs <= admissionReturnedAt + 600_000);
+    await evidence("finite-git-grant", { revisionId: revision.id, deadlineWallMs });
+  }
   const reportInitialRuntimeFailure =
     (stage: "deployment-observation" | "runtime-identity-read" | "runtime-receipt") =>
     (error: unknown): never => {
+      if (standing) {
+        throw error;
+      }
       try {
         t.diagnostic(
           `openclaw-ci-measurement ${JSON.stringify({
@@ -207,7 +244,7 @@ export async function deployFiniteAgent(t: TestContext, fixture: GitInstallation
     configuration,
     path,
     suffix,
-    deadlineWallMs,
+    deadlineWallMs: typeof deadlineWallMs === "number" ? deadlineWallMs : undefined,
     readExecution,
     original,
     target,

@@ -50,9 +50,13 @@ Configuration response status. This is simulated UI proof, not an IAM grant test
 ## Configuration read failures on tab return
 
 Open **Pages / Agent detail / Recover a Configuration read on tab return** in its
-own tab. Edit the draft without saving, then switch away and back. The Console
-retries the simulated 503 once. Verify the same draft and focus return
-automatically.
+own tab. Choose **Edit Configuration**, make an unsaved edit, and select some
+text in the editor. Scroll until the page header is out of view, then switch to
+another browser tab and return. The fixture holds the automatic retry after a
+simulated 503. After about one second, confirm **Still checking…** appears at the
+bottom of the viewport while the draft is hidden. When the retry completes,
+verify that the unsaved draft, editor focus, text selection, and scroll position
+return and the message disappears. Repeat at a 390 px viewport width.
 
 Repeat with **Pages / Agent detail / Retry an unavailable Configuration on tab
 return**. Both reads return 503. The Agent header and the warning remain

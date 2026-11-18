@@ -61,7 +61,9 @@ export type ProviderExchange =
         ResolvedOidcEnrollmentPolicy,
         "groupIds" | "createAccount" | "policyId"
       > & {
-        readonly profile: { readonly email: string; readonly name: string } | undefined;
+        readonly profile:
+          | { readonly email: string; readonly name: string; readonly emailVerified: boolean }
+          | undefined;
       };
     }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }

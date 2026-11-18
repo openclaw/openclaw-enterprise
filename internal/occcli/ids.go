@@ -45,10 +45,6 @@ func optionalID(arg idArg) idArg {
 	return arg
 }
 
-// uuidV4 is the suffix shape the OCC API accepts after every typed ID prefix
-// (the path parameter patterns in the OpenAPI contract): a lowercase version 4 UUID.
-var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-
 // typedIDShape matches a value that is plainly some typed ID, such as
 // "crs_<uuid>", so a wrong prefix is not called a name (finding D765).
 var typedIDShape = regexp.MustCompile(`^(?i)([a-z]+_)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -110,7 +106,7 @@ func argCountError(command *cobra.Command, got int, args []idArg, namespace stri
 // value without the prefix is plainly a name; the refusal names the lookup
 // command (see lookupFor).
 func (arg idArg) check(value, namespace string) error {
-	if suffix, ok := strings.CutPrefix(value, arg.prefix); ok && uuidV4.MatchString(suffix) {
+	if occclient.IsTypedID(value, arg.prefix) {
 		return nil
 	}
 	if strings.HasPrefix(strings.ToLower(value), arg.prefix) {

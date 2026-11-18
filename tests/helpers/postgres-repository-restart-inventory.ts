@@ -10,7 +10,7 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { createBackendWorkerDrivers } from "./postgres-backend-state.mjs";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
-import { composePostgresDevelopment, createPostgresControllerAuth } from "./password-hasher.mjs";
+import { composePostgresDevelopment, createPostgresControllerAuth } from "./password-hasher.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import type { standingExecutionPlatform } from "./postgres-standing-execution.ts";
@@ -149,6 +149,7 @@ export async function repositoryRestartInventory(
 
   // Register the same selected owner in Compute and API composition. No exchange or
   // repository sender is configured on this read-only API instance.
+  assert.ok(fixture.database.url, "Restart inventory requires its owned PostgreSQL database");
   const app = await composePostgresDevelopment(
     {
       mode: "development",

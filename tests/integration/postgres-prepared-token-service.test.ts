@@ -42,7 +42,7 @@ import {
   EgressSendReceipts,
   type SendAttempt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
-import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
+import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
@@ -52,14 +52,14 @@ import {
 } from "../helpers/github-metadata-exchange.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import {
   startGitHubFixture,
   fixtureAppId,
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
-} from "../fixtures/repository-credentials/github.mjs";
+} from "../fixtures/repository-credentials/github.ts";
 
 const ref = { id: "fixture-artifact-lease", generation: 1 };
 const origin = "https://artifact.example.test";
@@ -337,17 +337,20 @@ test(
         captured,
         ready,
         refused,
-        authorize: () => f.authorize(f.permitRequest(captured, ready)),
+        authorize() {
+          assert.ok(ready, "A prepared send requires material");
+          return f.authorize(f.permitRequest(captured, ready));
+        },
       };
     };
     const revision = f.revision!;
     assert.equal(revision.credentialSources[0].credentialProxyId, f.egress!.id);
     assert.equal(
-      (await select({ target: { path: "/channels/private" } })).refused.code,
+      (await select({ target: { path: "/channels/private" } })).refused?.code,
       f.refusalCode!("DENIED"),
     );
     assert.equal(
-      (await select()).refused.code,
+      (await select()).refused?.code,
       f.refusalCode!("NOT_READY"),
       "cold use cannot prepare material",
     );
@@ -519,12 +522,7 @@ test(
     const key = join(directory, "custody.key");
     const custodyKey = randomBytes(32);
     await writeFile(key, custodyKey, { mode: 0o600 });
-    // The JavaScript fixture forwards these issuer options to its protocol implementation.
-    const startIssuer: (
-      context: TestContext,
-      options: object,
-    ) => ReturnType<typeof startGitHubFixture> = startGitHubFixture;
-    const gh = await startIssuer(t, {
+    const gh = await startGitHubFixture(t, {
       tokenLifetimeMs: 45 * 60_000,
     });
     let lifecycle!: PostgresPreparedGitHubLifecycle;
@@ -744,7 +742,9 @@ test(
     // against the same durable family even though the rejected token is still fresh.
     await due();
     // Revocations of the rejected token: the test's own revocation of `late`, then retirement.
-    const [{ index: rejected }] = gh.issuesOfTokens;
+    const [issued] = gh.issuesOfTokens;
+    assert.ok(issued);
+    const { index: rejected } = issued;
     const revocations = (index = rejected) =>
       gh.trace.filter(
         ({ method, target, tokenIndex }) =>

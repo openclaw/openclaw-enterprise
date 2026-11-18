@@ -8,6 +8,16 @@ This record preserves the dated changes to the protected credential request page
 
 ## Changelog
 
+- 2026-11-11 06:02: Admit native agent messages. (authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2 - 82078dad5edc334f21d3feaed447db6601fa5d31)
+- 2026-11-10 14:47: Encode whole-execution inference in managed OpenShell policy. (authoring-run/50874573-f481-4b68-a77f-07f75f066719 - 98a139592e6808a64aa886d240153ff403608a70)
+
+- 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
+
+- 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
+
+- 2026-11-10 02:40: Withhold selected material split across one reasoning part. (codex/six-nov10-05-summary-index - dcb26d2300091d9124a32e0abb1bf296bfeac86c)
+- 2026-11-12 19:08: Preserve source-free Proxy admission while bypassing it for ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
+
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 
 - 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
@@ -28,11 +38,11 @@ This record preserves the dated changes to the protected credential request page
 
 - 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
 
+- 2026-11-03 04:46: Distinguish retired bundled static admission from retained request and cleanup authority. (authoring-run/128dac9e-ea62-4cfa-9b62-86dda8b2d743 - bf014bd41757057a05caf26efae6b6d8bac9696b)
+
 - 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
-
-- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 - 2026-10-27 15:34: Document the accompanying provider conflict refusal and callback pinning. (authoring-run/9e204161-489f-4c88-9848-c811faa3e6d9 - 0b8d61ffd7b7014274eb92b03a6e646d40e7c4f7)
 
@@ -44,9 +54,13 @@ This record preserves the dated changes to the protected credential request page
 
 - 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
 
+- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
+
 - 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
 
 - 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
+
+- 2026-10-22: Streamline flow; preserve authority and recovery boundaries.
 
 - 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
 
@@ -55,8 +69,6 @@ This record preserves the dated changes to the protected credential request page
 - 2026-10-22 05:21: Preserve the metadata grant digest for equivalent Driver output. (authoring-run/aabacbf5-998a-479d-8903-9f891cd69066 - 1435acf226b887a2cd85b7515b302914605beaef)
 
 - 2026-10-22 05:16: Bind exchange identity independently of Git delivery evidence. (authoring-run/601b0e1c-ade5-431c-aa48-1c6775df430a - d5c0a95fc970e8a63f40746ad2e55ac5216580e0)
-
-- 2026-10-22: Streamline flow; preserve authority and recovery boundaries.
 
 - 2026-10-22 04:16: Enforce delivery settlement policy, operation fences and retained detach confirmation in the accompanying changes. (authoring-run/bcd1284f-0d04-4fc7-92e1-b4d5ac1eeb7f - 1544403a30a747898deaf3cf0935094b7812390d)
 
@@ -80,9 +92,9 @@ This record preserves the dated changes to the protected credential request page
 
 - 2026-10-15 19:23: Unify the read lifetime and exchange owner; detach one request snapshot before verification. (authoring-run/b34da698-7e69-4c1d-a28c-238ed9c7d1d4 - adddcf2c0ce2429fb8fc7b9e503b01a74affdec8)
 
-- 2026-10-15 04:08: Add acknowledged exact dispatch and the pending trusted acceptance integration gate. (authoring-run/77dbaecc-5f2b-4d7c-bd72-178b481d4feb - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
-
 - 2026-10-15 04:09: Bind capture and response to a possession-authenticated exchange; refuse legacy peers and record the remaining supplier gate. (authoring-run/4ac4c430-12aa-4529-a02a-e1f26041eab4 - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
+
+- 2026-10-15 04:08: Add acknowledged exact dispatch and the pending trusted acceptance integration gate. (authoring-run/77dbaecc-5f2b-4d7c-bd72-178b481d4feb - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
 
 - 2026-10-15 04:06: Record the accompanying v2 admission cutoff and refusal before Compute release. (authoring-run/f0b2d2f6-37a8-4c41-b2e8-6c0c61ed8d5a - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
 

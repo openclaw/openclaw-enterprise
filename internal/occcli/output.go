@@ -375,6 +375,16 @@ func (app *application) printUnrevokedServiceAccountDeletion(warnings io.Writer,
 }
 
 func (app *application) printItems(value any, collection bool, columns []column) error {
+	return app.printResourceItems(value, collection, columns, false)
+}
+
+// printBrowsingItems keeps metadata readable while making saved-settings errors visible.
+// Structured output preserves the API's typed error; tables add a column only when needed.
+func (app *application) printBrowsingItems(value any, collection bool, columns []column) error {
+	return app.printResourceItems(value, collection, columns, true)
+}
+
+func (app *application) printResourceItems(value any, collection bool, columns []column, showConfigurationErrors bool) error {
 	if app.output != "table" {
 		return app.printStructured(value)
 	}
@@ -387,6 +397,22 @@ func (app *application) printItems(value any, collection bool, columns []column)
 		}
 		if len(items) == 0 {
 			return app.printEmptyList()
+		}
+	}
+	if showConfigurationErrors {
+		// Validate every row before printing, even after finding a configuration error.
+		hasError := false
+		for _, item := range items {
+			resource, ok := item.(map[string]any)
+			if !ok {
+				return fmt.Errorf("OCC returned an invalid resource")
+			}
+			if _, ok := resource["configurationReadError"].(map[string]any); ok {
+				hasError = true
+			}
+		}
+		if hasError {
+			columns = append(columns, column{title: "CONFIGURATION ERROR", key: "configurationReadError", format: configurationReadErrorText})
 		}
 	}
 	return printTable(app.out, items, columns)
@@ -412,39 +438,6 @@ var emptyListTexts = map[string]string{
 func (app *application) printEmptyList() error {
 	_, err := fmt.Fprintln(app.out, cmp.Or(emptyListTexts[app.commandPath], "No resources found."))
 	return err
-}
-
-// printBrowsingItems keeps metadata readable while making saved-settings errors visible.
-// Structured output preserves the API's typed error; tables add a column only when needed.
-func (app *application) printBrowsingItems(value any, collection bool, columns []column) error {
-	if app.output != "table" {
-		return app.printItems(value, collection, columns)
-	}
-	items := []any{value}
-	if collection {
-		var ok bool
-		items, ok = value.([]any)
-		if !ok {
-			return fmt.Errorf("OCC returned an invalid resource collection")
-		}
-		if len(items) == 0 {
-			return app.printEmptyList()
-		}
-	}
-	hasError := false
-	for _, item := range items {
-		resource, ok := item.(map[string]any)
-		if !ok {
-			return fmt.Errorf("OCC returned an invalid resource")
-		}
-		if _, ok := resource["configurationReadError"].(map[string]any); ok {
-			hasError = true
-		}
-	}
-	if hasError {
-		columns = append(columns, column{title: "CONFIGURATION ERROR", key: "configurationReadError", format: configurationReadErrorText})
-	}
-	return printTable(app.out, items, columns)
 }
 
 func configurationReadErrorText(value any) any {

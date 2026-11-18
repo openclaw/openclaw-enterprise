@@ -10,6 +10,7 @@ import type {
   RepositoryBackend,
   RetireOutcome,
 } from "../../../access/backend-contracts.ts";
+import { sameBinding } from "../../../access/grant-identity.ts";
 import type { RoutePolicy } from "../routes.ts";
 
 type OutcomePayload<T> = T extends OriginalOutcome ? Omit<T, keyof OriginalOutcome> : never;
@@ -22,12 +23,7 @@ type DriverStateDependencies = Readonly<{
 }>;
 
 export function sameAuthority(a: AuthorityIdentity, b: AuthorityIdentity): boolean {
-  return (
-    a.sessionId === b.sessionId &&
-    a.providerInstanceId === b.providerInstanceId &&
-    a.repositoryId === b.repositoryId &&
-    a.grantId === b.grantId
-  );
+  return a.sessionId === b.sessionId && sameBinding(a, b);
 }
 
 interface CredentialRecord {

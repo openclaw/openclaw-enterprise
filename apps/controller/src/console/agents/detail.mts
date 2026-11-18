@@ -495,6 +495,9 @@ const ENTRY_KEY_STEP = "Fix the plugin entry key";
 const CODEX_PLUGIN_STEP = "Let the codex plugin run";
 const TRUSTED_PROXY_STEP = "Fix the Gateway authentication";
 const GATEWAY_PASSWORD_STEP = "Fix the gateway password";
+// The settings that turn on browser chat for an existing Agent.
+const BROWSER_CHAT_GUIDE =
+  "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/deploy/native-admin.md#configure-each-agent";
 // The Configuration step that names each OCC stored-row rule's refusal (configurationRefusal).
 const STORED_RULE_STEPS: Readonly<Record<StoredConfigurationRule, string>> = {
   include: "Remove the $include setting",
@@ -1690,7 +1693,27 @@ export async function renderAgentDetail(
       // One the caller cannot read is not named by its ID (finding D791).
       versionLabel: () =>
         unreadableCurrentLabel() === null ? currentVersionLabel() : "current version",
-      recovery: (status) => {
+      recovery: (availability) => {
+        const { status } = availability;
+        if (
+          status === "unsupported" &&
+          availability.reason === "not-enabled" &&
+          !configurationReadOnly()
+        ) {
+          // Existing Agents turn browser chat on in Configuration JSON; the guide lists the
+          // settings Create Agent's Enable browser chat writes (finding 3168).
+          return element(
+            "span",
+            {},
+            versionLink("Open draft", "draft", "configuration"),
+            " · ",
+            element(
+              "a",
+              { href: BROWSER_CHAT_GUIDE, target: "_blank", rel: "noopener noreferrer" },
+              "Browser chat settings",
+            ),
+          );
+        }
         if (status === "stopped" || status === "unsupported") {
           return versionLink("Open draft", "draft", "configuration");
         }
@@ -1699,6 +1722,7 @@ export async function renderAgentDetail(
           ? versionLink("View deployment", latest.id, "deployment")
           : null;
       },
+      configurationEditable: () => !configurationReadOnly(),
     },
   );
   headerActions.append(nativeAdmin.launch, nativeAdmin.unavailable);
@@ -2935,6 +2959,9 @@ export async function renderAgentDetail(
           const focused = document.activeElement;
           const refreshFocused =
             focused instanceof HTMLButtonElement && focused.parentElement === activityPanel;
+          const summarySelector = ":scope > details > summary";
+          const summaryFocused =
+            focused !== null && focused === activityPanel.querySelector(summarySelector);
           activityPanel.replaceWith(panel);
           activityPanel = panel;
           // The panel's direct button refreshes whichever deployment is now shown.
@@ -2942,6 +2969,8 @@ export async function renderAgentDetail(
             panel
               .querySelector<HTMLButtonElement>(":scope > button")
               ?.focus({ preventScroll: true });
+          } else if (summaryFocused) {
+            panel.querySelector<HTMLElement>(summarySelector)?.focus({ preventScroll: true });
           }
         }
         void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(

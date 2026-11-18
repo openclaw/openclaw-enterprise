@@ -29,7 +29,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
 const DEFAULT_CODEX_PRESET = await shippedPreset("default-codex");

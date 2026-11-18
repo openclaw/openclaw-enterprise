@@ -14,7 +14,7 @@ import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createControllerAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth } from "../helpers/password-hasher.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -25,12 +25,12 @@ import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";
 import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
   serviceKeyOutsideNamespace,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/request-admission-expectations.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 type MutableIAMState = { [K in keyof NativeIAMState]: NativeIAMState[K][number][] };
@@ -98,7 +98,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     agentDomain: "agents.oce.localhost",
     secret: `test-secret-${randomUUID()}`,
     memoryDatabase,
-  };
+  } satisfies Parameters<typeof createControllerAuth>[0];
   const auth = createControllerAuth(authOptions);
   const credentials = { email: "admin@example.invalid", password: `test-password-${randomUUID()}` };
   const account = await auth.createAccount(credentials);
@@ -271,6 +271,43 @@ test("service API keys authenticate scoped automation without replacing sessions
       assert.equal((await request("GET", "/installation")).status, 200);
     },
   );
+
+  await t.test("Agent-capability denials identify the exact Agent collection", async () => {
+    // The foreign Namespace fails service-key scope admission. The key's own Namespace
+    // reaches OCC, where its Role lacks Agent create. Both must name the requested collection.
+    for (const targetNamespaceId of [stringField(tenantB.data, "id"), namespaceId]) {
+      const deniedBefore = auditSink.events.length;
+      const response = await request("GET", `/namespaces/${targetNamespaceId}/agent-capabilities`, {
+        headers,
+      });
+      assert.equal(response.status, 403);
+      assert.equal(stringField(response.error, "code"), "FORBIDDEN");
+      const denials = auditSink.events
+        .slice(deniedBefore)
+        .filter((event) => event.kind === "authorization_denial");
+      assert.equal(denials.length, 1);
+      const denial = denials[0];
+      assert.ok(denial);
+      const resource = { kind: "agent", id: targetNamespaceId, namespaceId: targetNamespaceId };
+      assert.equal(denial.action, "openclaw.namespaces.agent_capabilities.read");
+      assert.equal(denial.actorId, principal.id);
+      assert.equal(denial.details?.actorServiceKeyId, stringField(issued.data, "id"));
+      assert.deepEqual(denial.authorization, {
+        principalId: principal.id,
+        action: "create",
+        resource,
+      });
+      assert.deepEqual(denial.resource, resource);
+      if (targetNamespaceId !== namespaceId) {
+        assert.equal(
+          stringField(response.error, "message"),
+          serviceKeyOutsideNamespace(namespaceId),
+        );
+      } else {
+        assert.equal(record(denial.details?.iamEvidence).identityId, principal.id);
+      }
+    }
+  });
 
   await t.test(
     "audit rows name the service key that acted, apart from its principal's other keys",
@@ -642,7 +679,7 @@ test("service API keys authenticate scoped automation without replacing sessions
 
     // An Installation administrator creates a Namespace ServicePrincipal for a member's CLI.
     // It holds no grant until an AccessBinding names it (proved with PostgreSQL policy in
-    // postgres-service-api-keys.test.mjs).
+    // postgres-service-api-keys.test.ts).
     const principalCreated = await run(
       occCli,
       ["iam", "service-principal", "create", "-o", "json"],

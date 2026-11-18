@@ -36,42 +36,21 @@ this does not establish drift.
 
 ## Clean up preflight resources
 
-One operator cleans up, retaining any freeze. Unconfirmed cleanup blocks progress. After interruption (`SIGHUP`, `SIGINT`, `SIGTERM`), preserve evidence
-and `.upgrade-lock`. Confirm helper/children stopped and reconcile accepted
-operations before cleanup, retry, restoration or unlocking.
-
-`preflight-<slot>-identity.json` records acknowledged `kind`, `name`, `uid`:
-`networkpolicy`/`secret` are dependencies; `api`/`worker`/`migration` are Jobs;
-`-pod` slots identify observed children. Optional policy or interrupted creates can leave fewer records.
-Match kubeconfig digest to `parameters.json`'s `kubeconfigSha256`, and path,
-context, namespace and release to its first four `arguments`. Confirm ownership;
-preserve original records. They establish create identity, not current identity
-or deletion authority.
-
-Labels `app.kubernetes.io/instance=<release>` and
-`app.kubernetes.io/component=upgrade-preflight` only discover startup candidates.
-Migration Jobs retain the initializer's `component=initialization` label.
-Stop and consult the owner for old helpers without records or missing, changed,
-replaced, conflicting or uncertain evidence. Also stop for refused creates, lost
-acknowledgement, successful creates without usable UIDs, or explicitly failed or uncertain
-identity writes even if a file exists. None permits deletion or replay. Leave replacements alone; reconcile unknown
-outcomes without repeating requests.
-If the original is gone, no deletion remains.
-
-Authorized manual deletion requires Kubernetes API enforcement of
-`DeleteOptions.preconditions.uid`: delete the original kind, namespace and name
-only if its UID matches the original record. Reading then deleting by name
-cannot prevent replacement. Foreground-delete owned Jobs first and confirm their
-children are gone before deleting the temporary preflight Secret or NetworkPolicy. Missing
-Job acknowledgements require reconciling possible children; labels alone do not
-establish ownership.
+Follow [preflight cleanup](production-preflight-cleanup.md) to remove recorded
+Jobs and dependencies after an interrupted preflight. Preserve the original
+evidence and `.upgrade-lock`; first confirm the helper, children and accepted
+remote operations have settled. Successful cleanup does not authorize resume,
+unlock the upgrade or establish database state.
 
 ## Resume an unfinished prepared upgrade
 
-Failed migration preflight prevents further shutdown; writers may already be stopped.
-Inspect the current `migration-preflight-resume.*/preflight-migration.log` and
-`preflight-migration-logs.err`. Reconcile unknown creates; retain the original
-evidence, lock and dispatch journal for `--resume`.
+Failed application identity or migration preflight prevents further shutdown and
+Helm submission; writers may already be stopped. Inspect the current
+`upgrade-preflight-resume.*/preflight-{api,worker,migration}.log` and corresponding
+`preflight-*-logs.err`. Reconcile the application connection or migration failure
+and unknown creates; retain the original evidence, lock and dispatch journal for
+`--resume`. Historical `migration-preflight-resume.*` attempts remain valid for
+`--cleanup-preflight` using their original, hash-matching helper checkout.
 
 With `--verify-agent`, inspect `agent-continuity.json` and
 `agent-continuity-after*.json`. The former binds the original revision and workload
@@ -115,6 +94,12 @@ Retain exit-zero `migration.checked` output. [Separate migrations](separate-data
 Attest the checked outcome with `--resume --migration-history-checked`. The helper returns OCC to zero replicas
 and records the next expected revision before retrying. Prefer a reviewed forward
 fix; neither Helm rollback nor the helper reverses committed migrations.
+
+Consider an image-only return when the earlier image can read retained state and
+meets the applicable rollback guidance.
+If the older controller rejects the committed migration history, a return requires
+a compatible recovery point verified as described in [Record the database](upgrade-baseline.md#record-the-database).
+Before reopening traffic, [preserve the migrated database and reconcile accepted and uncertain writes](upgrade-baseline.md#restore-the-retained-candidate-database).
 
 After an unknown Agent dispatch, requests in the same batch may still finish.
 Before resuming, inspect the Agent's revision history, status and audit records.

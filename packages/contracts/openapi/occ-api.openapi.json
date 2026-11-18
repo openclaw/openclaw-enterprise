@@ -1,6 +1,13 @@
 {
   "components": {
     "examples": {
+      "BAD_GATEWAY": {
+        "summary": "BAD_GATEWAY",
+        "value": {
+          "error": { "code": "BAD_GATEWAY", "message": "The Agent request was interrupted." },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
       "CHANNEL_DIRECTORY_RATE_LIMITED": {
         "summary": "CHANNEL_DIRECTORY_RATE_LIMITED",
         "value": {
@@ -28,6 +35,13 @@
             "code": "FORBIDDEN",
             "message": "The caller is not allowed to perform this operation."
           },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
+      "GATEWAY_TIMEOUT": {
+        "summary": "GATEWAY_TIMEOUT",
+        "value": {
+          "error": { "code": "GATEWAY_TIMEOUT", "message": "The runtime request timed out." },
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
@@ -118,6 +132,13 @@
             "code": "RATE_LIMITED",
             "message": "Too many requests. Wait for Retry-After and try again."
           },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
+      "REQUEST_TIMEOUT": {
+        "summary": "REQUEST_TIMEOUT",
+        "value": {
+          "error": { "code": "REQUEST_TIMEOUT", "message": "The request body deadline expired." },
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
@@ -1205,6 +1226,11 @@
                 "type": "array"
               },
               "message": { "maxLength": 256, "minLength": 1, "type": "string" },
+              "reason": {
+                "const": "credential_registration_pending",
+                "description": "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+                "type": "string"
+              },
               "remainingResources": {
                 "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
                 "items": {
@@ -1653,6 +1679,373 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agents/{agentId}/chat": {
+      "post": {
+        "description": "Requires operate permission on the requested Agent.",
+        "operationId": "chatWithAgent",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "messages": [{ "content": "Reply with a short greeting.", "role": "user" }],
+                    "stream": false
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "messages": { "items": {}, "type": "array" },
+                  "model": { "const": "openclaw", "type": "string" },
+                  "stream": { "type": "boolean" },
+                  "user": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["messages"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "choices": [
+                        {
+                          "finish_reason": "stop",
+                          "index": 0,
+                          "message": { "content": "Hello.", "role": "assistant" }
+                        }
+                      ],
+                      "created": 1792411200,
+                      "id": "chatcmpl-example",
+                      "model": "openclaw:main",
+                      "object": "chat.completion"
+                    }
+                  }
+                },
+                "schema": {}
+              },
+              "text/event-stream": {
+                "examples": {
+                  "example": {
+                    "summary": "Native SSE completion",
+                    "value": "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"Hello.\"},\"index\":0}]}\n\ndata: [DONE]\n\n"
+                  }
+                },
+                "schema": { "type": "string" }
+              }
+            },
+            "description": "Native Chat Completions JSON or SSE, without an OCC envelope."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/REQUEST_TIMEOUT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request body deadline expired."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/BAD_GATEWAY" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The Agent request was interrupted."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/GATEWAY_TIMEOUT" } },
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/def-7" },
+                    {
+                      "additionalProperties": true,
+                      "properties": { "error": {} },
+                      "required": ["error"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The runtime request timed out."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Native application error",
+                    "value": {
+                      "error": {
+                        "message": "Invalid completion request.",
+                        "type": "invalid_request_error"
+                      }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": { "error": {} },
+                  "required": ["error"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Native application error; status and body pass through unchanged."
+          }
+        },
+        "summary": "Submit an Agent turn and receive native JSON or SSE",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/api/auth/accounts": {
       "post": {
         "description": "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",
@@ -12651,11 +13044,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -13080,11 +13468,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -14655,11 +15038,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "repositoryAccessRequired": {
-                              "const": true,
-                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
-                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -18926,7 +19304,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -21187,6 +21565,297 @@
             "resourceKind": "sandbox_policy",
             "scope": "requested"
           }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
+      "get": {
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.",
+        "operationId": "listAgentAuditEvents",
+        "parameters": [
+          {
+            "description": "Number of records per page, from 1 to 100. The default is 50.",
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "20"
+              }
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": { "pattern": "^(?:[1-9][0-9]?|100)$", "type": "string" }
+          },
+          {
+            "description": "Continuation from the preceding page for the same Agent and session.",
+            "examples": {
+              "example": {
+                "summary": "Illustrative only: copy an actual cursor from the previous response.",
+                "value": "YXVkaXQtbmV4dC1wYWdl"
+              }
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "events": [
+                          {
+                            "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+                            "event": "api_request",
+                            "id": "aud_123e4567-e89b-42d3-a456-426614174000",
+                            "occurredAt": "2026-10-01T11:30:00.000000Z",
+                            "operationId": "getAgent",
+                            "outcome": "success",
+                            "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+                          }
+                        ],
+                        "nextCursor": null,
+                        "projectionVersion": 1,
+                        "window": {
+                          "end": "2026-10-01T12:00:00.000Z",
+                          "start": "2026-09-30T12:00:00.000Z"
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "events": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actorId": {
+                                "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                "type": "string"
+                              },
+                              "attemptId": {
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "event": {
+                                "anyOf": [
+                                  { "const": "api_request", "type": "string" },
+                                  { "const": "work_queued", "type": "string" },
+                                  { "const": "work_claimed", "type": "string" },
+                                  { "const": "work_deferred", "type": "string" },
+                                  { "const": "work_completed", "type": "string" },
+                                  { "const": "work_result", "type": "string" }
+                                ]
+                              },
+                              "id": {
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "occurredAt": {
+                                "format": "date-time",
+                                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                "type": "string"
+                              },
+                              "operationId": { "const": "getAgent", "type": "string" },
+                              "outcome": {
+                                "anyOf": [
+                                  { "const": "success", "type": "string" },
+                                  { "const": "denied", "type": "string" },
+                                  { "const": "failure", "type": "string" }
+                                ]
+                              },
+                              "requestId": {
+                                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "workId": { "pattern": "^work_[0-9a-f]{64}$", "type": "string" },
+                              "workState": {
+                                "anyOf": [
+                                  { "const": "queued", "type": "string" },
+                                  { "const": "claimed", "type": "string" },
+                                  { "const": "succeeded", "type": "string" },
+                                  { "const": "failed_permanent", "type": "string" },
+                                  { "const": "superseded", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": ["id", "occurredAt", "event", "outcome"],
+                            "type": "object"
+                          },
+                          "maxItems": 100,
+                          "type": "array"
+                        },
+                        "nextCursor": {
+                          "anyOf": [
+                            {
+                              "description": "Continuation from the preceding page for the same Agent and session.",
+                              "maxLength": 1024,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "type": "string"
+                            },
+                            { "type": "null" }
+                          ]
+                        },
+                        "projectionVersion": { "const": 1, "type": "number" },
+                        "window": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "end": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "start": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["start", "end"],
+                          "type": "object"
+                        }
+                      },
+                      "required": ["projectionVersion", "window", "events", "nextCursor"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "List audit metadata for one Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read_audit", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
@@ -26110,6 +26779,10 @@
                         "host": { "type": "string" },
                         "mode": { "enum": ["admin", "chat"], "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
+                        "reason": {
+                          "enum": ["not-enabled", "configuration", "compute"],
+                          "type": "string"
+                        },
                         "sessionMode": {
                           "enum": ["shared-cookie", "host-only-exchange"],
                           "type": "string"
@@ -28478,7 +29151,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -31291,7 +31964,66 @@
               },
               "schema": {
                 "additionalProperties": false,
+                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
                 "properties": {
+                  "additions": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "binary": {
+                          "description": "Absolute path of the executable receiving access.",
+                          "maxLength": 512,
+                          "minLength": 2,
+                          "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                          "title": "Executable path",
+                          "type": "string"
+                        },
+                        "host": {
+                          "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                          "title": "Destination hostname",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                          "title": "Rule ID",
+                          "type": "string"
+                        },
+                        "ports": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "from": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "Start port",
+                                "type": "integer"
+                              },
+                              "to": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "End port",
+                                "type": "integer"
+                              }
+                            },
+                            "required": ["from", "to"],
+                            "type": "object"
+                          },
+                          "maxItems": 16,
+                          "minItems": 1,
+                          "title": "Port ranges",
+                          "type": "array"
+                        }
+                      },
+                      "required": ["id", "binary", "host", "ports"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "title": "Network rules",
+                    "type": "array"
+                  },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
                   "revisionId": {
                     "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -31303,6 +32035,7 @@
               }
             }
           },
+          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
           "required": true
         },
         "responses": {
@@ -31573,7 +32306,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Apply the saved policy to the running Agent revision",
+        "summary": "Queue policy application to the running Agent revision, optionally replacing saved additions",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
@@ -32072,7 +32805,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
         "operationId": "validateAgentSandboxPolicy",
         "parameters": [
           {
@@ -32329,7 +33062,8 @@
         "summary": "Preview Agent network policy admission without saving or applying",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" }
+          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },
@@ -36082,10 +36816,16 @@
                 "examples": {
                   "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
-                "schema": { "$ref": "#/components/schemas/def-7" }
+                "schema": { "allOf": [{ "$ref": "#/components/schemas/def-7" }] }
               }
             },
-            "description": "A required dependency is unavailable."
+            "description": "A required dependency is unavailable.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
+                "schema": { "pattern": "^[1-9][0-9]*$", "type": "string" }
+              }
+            }
           }
         },
         "summary": "Remove an unreferenced credential source from the Credential Gateway",
@@ -37528,7 +38268,8 @@
                                     { "const": "operate", "type": "string" },
                                     { "const": "administer", "type": "string" },
                                     { "const": "read_logs", "type": "string" },
-                                    { "const": "manage_policy", "type": "string" }
+                                    { "const": "manage_policy", "type": "string" },
+                                    { "const": "read_audit", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -37697,7 +38438,8 @@
                             { "const": "operate", "type": "string" },
                             { "const": "administer", "type": "string" },
                             { "const": "read_logs", "type": "string" },
-                            { "const": "manage_policy", "type": "string" }
+                            { "const": "manage_policy", "type": "string" },
+                            { "const": "read_audit", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -37778,7 +38520,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "read_audit", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -38109,7 +38852,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "read_audit", "type": "string" }
                                 ]
                               },
                               "resourceKind": {

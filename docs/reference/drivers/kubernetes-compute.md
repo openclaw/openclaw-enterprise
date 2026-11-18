@@ -36,6 +36,10 @@ SandboxDriver that provisions the Harness and declares networking, filesystem, a
 process containment. Stock OpenShell cannot provide required credential and
 workload-identity projections; Agent deployment with OpenShell remains unsupported.
 
+HTTP chat defaults on for new single-cluster runtime revisions and uses a
+private exact-POST route with trusted-proxy chat authority. Explicit opt-out
+requires a new revision. See [HTTP chat configuration](../agent-http-chat.md#kubernetes-configuration-and-audit).
+
 Operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
@@ -154,10 +158,9 @@ Agent revision cleanup runs even when Compute's ordinary Harness Deployment is a
 and a failed provider Namespace cleanup keeps the Kubernetes namespace.
 Provider-owned Harness removal stays with the provider, so Compute needs no
 Sandbox custom-resource permissions.
-Allow privileged OpenShell init or sidecar containers only through an
-operator-approved RuntimeClass or equivalent admission exemption with a matching
-fail-closed policy ([admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements));
-the Harness container itself remains unprivileged.
+OpenShell workloads retain restricted tenant Pod Security Admission without an
+OCE-configured exemption. OCE leaves runtime selection to Kubernetes and the
+independently managed provider; see [admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements).
 
 A provider-owned dedicated Harness is ready only when exactly one live Pod in
 the resolved namespace carries the Agent ID, Agent revision ID, and `agent` workload-role
@@ -230,7 +233,7 @@ See [authentication](kubernetes-compute/configuration.md#authentication) and
   Native workspace initialization uses `resources.gateway`, including in dedicated
   Harness Pods, because it loads the OpenClaw CLI.
 - For real gateways in either topology, an explicitly selected
-  `runtime.gatewayStorageClassName` for a private disk supporting `10Gi`
+  `runtime.gatewayStorageClassName` for a private disk supporting the configured Gateway capacity
   `ReadWriteOnce` filesystem claims (`local-path` in the disposable k3d suite).
   Check the [gateway disk requirements](kubernetes-compute/storage-and-credentials.md#gateway-storage)
   before selecting a production StorageClass.
@@ -298,8 +301,8 @@ before replacing the controller images.
   restart count and last exit code; `occ agent logs --previous` shows the
   crashed container's output.
 - **Gateway storage is pending or rejected:** Check the configured
-  `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
-  support, worker PVC permissions, and the PVC's exact ownership. Preserve
+  `runtime.gatewayStorageClassName`, available space for the configured Gateway
+  capacity, filesystem support, worker PVC permissions, and the PVC's exact ownership. Preserve
   data when resolving an incompatible or foreign claim; the driver does not
   adopt or convert it.
 - **Dedicated Harness cannot start:** Verify the default StorageClass supports

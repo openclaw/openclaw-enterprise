@@ -14,7 +14,7 @@ server-side apply with exact UID and resource-version checks. Namespace
 setup creates a private `<readiness.serviceName>-jwt-keys` signing Secret, then
 reconciles resources, verifies readiness and health, and creates the Workspace.
 No Agent or model credential is created. Cluster operators must prepare CRDs,
-RuntimeClasses, RBAC and approved images. This mode is incompatible with
+RBAC and approved images. This mode is incompatible with
 operator-owned preprovisioned resources. Its live qualification is tracked in
 [OpenShell coverage](../../../testing/openshell-coverage.md#namespace-bootstrap).
 
