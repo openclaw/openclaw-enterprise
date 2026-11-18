@@ -29,6 +29,8 @@ import type {
 
 import { CredentialWithdrawalRefusedError } from "../../packages/occ/src/index.ts";
 
+const WITHDRAWAL_SANDBOX_INTERVAL_MS = 5_000;
+
 type WorkerFixture = Awaited<ReturnType<typeof setupStandingWorkerDatabase>>;
 // The JavaScript factory accepts a Backend ID; its default null narrows inference.
 type BackendAgentFactory = (
@@ -203,6 +205,7 @@ for (const scenario of [
   "handoff healthy service account unavailable",
 ] as const) {
   const handoff = scenario.startsWith("handoff ");
+  const sandboxCadence = scenario === "handoff healthy";
   const admittedSuccessor = scenario.startsWith("handoff admitted ");
   const exclusiveSuccessor = scenario.startsWith("handoff admitted exclusive successor");
   const backendUnavailable = scenario.includes("backend unavailable");
@@ -276,19 +279,40 @@ for (const scenario of [
         let accountCredentialId: string | undefined;
         // Persist the actual Backend selection and, when selected, its service account
         // before admitting r1. The shared fixture still owns standing Git admission.
-        const authorityFixture = configuredBackend
-          ? {
-              ...f,
-              agent: (label: string, options: Parameters<typeof f.agent>[1]) =>
-                (f.agent as BackendAgentFactory)(label, {
-                  ...options,
-                  backendId: backend.id,
-                  ...(account === undefined
-                    ? {}
-                    : { auth: "secret", serviceAccountId: account.id }),
-                }),
-            }
-          : f;
+        const sandbox = {
+          id: "sandbox-worker-fixture",
+          capability: "sandbox" as const,
+          supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+          implementation: "sandbox-worker-fixture",
+          facets: ["networking"],
+          // A maintenance interval requires a provider-owned Harness; the fixture Compute
+          // owns its workload and never calls the provider.
+          ...(sandboxCadence && {
+            maintenanceIntervalMs: WITHDRAWAL_SANDBOX_INTERVAL_MS,
+            async provisionHarness(): Promise<never> {
+              throw new Error("The fixture Compute does not provision Sandbox Harnesses.");
+            },
+          }),
+          async cleanup() {},
+        };
+        const authorityFixture = {
+          ...f,
+          ...(configuredBackend && {
+            agent: (label: string, options: Parameters<typeof f.agent>[1]) =>
+              (f.agent as BackendAgentFactory)(label, {
+                ...options,
+                backendId: backend.id,
+                ...(account === undefined ? {} : { auth: "secret", serviceAccountId: account.id }),
+              }),
+          }),
+          ...(sandboxCadence && {
+            revision: (
+              agent: Parameters<typeof f.revision>[0],
+              number: number,
+              options: Parameters<typeof f.revision>[2],
+            ) => f.revision(agent, number, { ...options, sandboxDriverId: sandbox.id }),
+          }),
+        };
         const {
           credentials,
           driver,
@@ -300,6 +324,9 @@ for (const scenario of [
           revisionOptions,
           execution,
         } = await setupStandingWorkerAuthority(t, authorityFixture, { nonModelSources: 1 });
+        if (sandboxCadence) {
+          assert.equal(sender.maintenanceIntervalMs, 30_000);
+        }
         type Delivered = Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>;
         const deliveries: Delivered[] = [];
         type WorkerEvent = {
@@ -407,7 +434,7 @@ for (const scenario of [
             created = false;
           },
         };
-        const start = async () => {
+        const start = async (onEvent?: (event: WorkerEvent) => void) => {
           const workerOptions: NonNullable<Parameters<typeof f.start>[1]> & {
             providers: ReturnType<typeof backendDefinition>[];
           } = {
@@ -415,20 +442,13 @@ for (const scenario of [
             emit: (e?: WorkerEvent) => {
               if (e) {
                 events.push(e);
+                onEvent?.(e);
               }
             },
             transformDrivers: (d: { installation: { drivers: object } }) => {
               const gateway = {
                 ...observationGateway(),
                 ...(unavailableGateway && { id: "replacement-gateway" }),
-              };
-              const sandbox = {
-                id: "sandbox-worker-fixture",
-                capability: "sandbox" as const,
-                supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-                implementation: "sandbox-worker-fixture",
-                facets: ["networking"],
-                async cleanup() {},
               };
               return {
                 ...d,
@@ -471,6 +491,35 @@ for (const scenario of [
               stateUnavailable || missingIdentityId !== undefined ? () => faultReads++ : undefined,
             onIamFailure: () => faultReads++,
           });
+        };
+        const runUntilCommitted = async (matches: (event: WorkerEvent) => boolean) => {
+          let completion: { workId: string; drained: Promise<void> } | undefined;
+          await start((event) => {
+            if (
+              completion !== undefined ||
+              event.event !== "worker.completed" ||
+              event.revisionId !== revision.id ||
+              event.workId === undefined ||
+              !matches(event)
+            ) {
+              return;
+            }
+            // The fixture registers the current worker before starting it. Set its stop flag in
+            // the post-commit callback so a delayed observer cannot allow another due claim.
+            const worker = [...f.workers].at(-1);
+            assert.ok(worker);
+            const drained = worker.stopLoop();
+            void drained.catch(() => undefined); // The test awaits the original promise below.
+            completion = { workId: event.workId, drained };
+          });
+          const committed = await waitFor(
+            "worker committed the withdrawal pass",
+            async () => completion,
+            15_000,
+          );
+          await committed.drained;
+          await f.stop();
+          return committed.workId;
         };
         const stopAfterWorkSettles = async () => {
           // A completion event can precede another already-due claim. Wait for both expiry
@@ -539,6 +588,61 @@ for (const scenario of [
           agentId: owner.id,
           revisionId: revision.id,
         };
+        if (sandboxCadence) {
+          const admitted = await f.state.read((v) =>
+            v.revisions.findRevision(ownerRef.namespaceId, ownerRef.agentId, ownerRef.revisionId),
+          );
+          assert.equal(admitted?.sandboxDriverId, sandbox.id);
+          assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+          assert.ok(before.prepares > 0 && before.activations > 0);
+        }
+        const findScheduledSuccessor = async (previousKey: string, producerKey: string) => {
+          // Count all newer maintenance rows for this owner, including any duplicate already run.
+          const { rows } = await f.observerPool.query<{
+            idempotency_key: string;
+            actor_id: string;
+            state: string;
+            attempt_count: number;
+            available_at: Date;
+            created_at: Date;
+            available_after_completion: boolean;
+          }>(
+            `SELECT next.idempotency_key, next.actor_id, next.state, next.attempt_count,
+                    next.available_at, next.created_at,
+                    next.created_at <= producer.completed_at
+                      AND next.available_at > producer.completed_at AS available_after_completion
+               FROM occ.controller_work AS next
+               JOIN occ.controller_work AS prior ON prior.idempotency_key = $5
+               JOIN occ.controller_work AS producer ON producer.idempotency_key = $6
+              WHERE next.namespace_id = $1 AND next.agent_id = $2 AND next.revision_id = $3
+                AND next.idempotency_key LIKE $4 AND next.created_at > prior.created_at`,
+            [
+              ownerRef.namespaceId,
+              ownerRef.agentId,
+              ownerRef.revisionId,
+              `agent_revision:${revision.id}:maintenance:%`,
+              previousKey,
+              producerKey,
+            ],
+          );
+          assert.equal(rows.length, 1, "a withdrawal pass must schedule exactly one successor");
+          const [next] = rows;
+          assert.ok(next);
+          const delayMs = next.available_at.getTime() - next.created_at.getTime();
+          assert.ok(
+            Math.abs(delayMs - WITHDRAWAL_SANDBOX_INTERVAL_MS) < 2_000,
+            `expected ${WITHDRAWAL_SANDBOX_INTERVAL_MS} ms, scheduled ${delayMs} ms`,
+          );
+          assert.equal(next.actor_id, f.actor.id);
+          assert.equal(next.state, "queued");
+          assert.equal(next.attempt_count, 0);
+          assert.equal(
+            next.available_after_completion,
+            true,
+            "the successor must be scheduled before completion and due after it",
+          );
+          return next;
+        };
         const queue = new f.PostgresWorkQueue(f.observerPool, { maxAttempts: 1 });
         const originalMaintenanceKey = await queue.latestRevisionMaintenanceKey(ownerRef);
         assert.ok(originalMaintenanceKey);
@@ -551,21 +655,39 @@ for (const scenario of [
           expectedGeneration: approval.generation,
         });
         events.length = 0;
-        await f.advanceMaintenance(revision);
-        await start();
+        const interrupted = await f.advanceMaintenance(revision);
+        if (sandboxCadence) {
+          assert.deepEqual(
+            interrupted.rows.map((row: { idempotency_key: string }) => row.idempotency_key),
+            [originalMaintenanceKey],
+          );
+        }
+        let firstCleanupKey: string | undefined;
+        if (sandboxCadence) {
+          const cleanupPrefix = "agent_revision:" + revision.id + ":repository_cleanup:";
+          firstCleanupKey = await runUntilCommitted(
+            (event) =>
+              event.code === "REPOSITORY_ACCESS_WITHDRAWN" &&
+              event.workId?.startsWith(cleanupPrefix) === true,
+          );
+        } else {
+          await start();
+        }
         await waitFor("durable Git expiry", async () =>
           (await queue.repositoryExpiryState(ownerRef)) === "expiry" ? true : undefined,
         );
-        await waitFor("first withdrawal committed", async () =>
-          reductions > 0
-            ? events.find(
-                (e) =>
-                  e.code ===
-                  (handoff ? "REPOSITORY_ACCESS_WITHDRAWN" : "REPOSITORY_CLEANUP_PENDING"),
-              )
-            : undefined,
-        );
-        await stopAfterWorkSettles();
+        if (!sandboxCadence) {
+          await waitFor("first withdrawal committed", async () =>
+            reductions > 0
+              ? events.find(
+                  (e) =>
+                    e.code ===
+                    (handoff ? "REPOSITORY_ACCESS_WITHDRAWN" : "REPOSITORY_CLEANUP_PENDING"),
+                )
+              : undefined,
+          );
+          await stopAfterWorkSettles();
+        }
         assert.deepEqual(stopped, []);
         if (recovering || manualReplay || scenario === "optional withdrawn") {
           // An admitted successor has no maintenance owner of its own. Its deployment stays
@@ -716,6 +838,10 @@ for (const scenario of [
           assert.equal(completedCleanup.length, 1);
           assert.equal(completedCleanup[0].state, "succeeded");
           assert.equal(completedCleanup[0].reason_code, "REPOSITORY_ACCESS_WITHDRAWN");
+          if (firstCleanupKey !== undefined) {
+            assert.equal(completedCleanup[0].idempotency_key, firstCleanupKey);
+            assert.equal(completedCleanup[0].attempt_count, 1);
+          }
         }
         let handoffMaintenanceKey: string | undefined;
         events.length = 0;
@@ -731,15 +857,25 @@ for (const scenario of [
           );
           assert.equal(resumed.rowCount, 1);
         }
-        const advanced = await f.advanceMaintenance(revision);
-        if (handoff) {
-          assert.equal(advanced.rowCount, 1, "only the naturally scheduled maintenance is due");
-          const [maintenance] = advanced.rows;
-          assert.ok(maintenance, "expected the scheduled maintenance row");
-          handoffMaintenanceKey = maintenance.idempotency_key;
-          assert.equal(maintenance.actor_id, f.actor.id);
+        // The healthy handoff must resume on the untouched, database-assigned due time.
+        const scheduled =
+          firstCleanupKey === undefined
+            ? undefined
+            : await findScheduledSuccessor(originalMaintenanceKey, firstCleanupKey);
+        if (scheduled !== undefined) {
+          assert.equal(reductions, 1, "the first withdrawal must settle once");
+          handoffMaintenanceKey = scheduled.idempotency_key;
         } else {
-          await advanceRetainedCleanup(f);
+          const advanced = await f.advanceMaintenance(revision);
+          if (handoff) {
+            assert.equal(advanced.rowCount, 1, "only the naturally scheduled maintenance is due");
+            const [maintenance] = advanced.rows;
+            assert.ok(maintenance, "expected the scheduled maintenance row");
+            handoffMaintenanceKey = maintenance.idempotency_key;
+            assert.equal(maintenance.actor_id, f.actor.id);
+          } else {
+            await advanceRetainedCleanup(f);
+          }
         }
         if (releaseSourceClaim !== undefined) {
           assert.equal(
@@ -750,18 +886,24 @@ for (const scenario of [
           await releaseSourceClaim();
           releaseSourceClaim = undefined;
         }
-        await start();
+        if (scheduled === undefined) {
+          await start();
+        } else {
+          await runUntilCommitted((event) => event.workId === scheduled.idempotency_key);
+        }
         if (handoff) {
           assert.ok(completedCleanup);
           assert.ok(handoffMaintenanceKey);
-          await waitFor("scheduled maintenance completes its pass", async () =>
-            events.find(
-              (e) => e.workId === handoffMaintenanceKey && e.event === "worker.completed",
-            ),
-          );
+          if (scheduled === undefined) {
+            await waitFor("scheduled maintenance completes its pass", async () =>
+              events.find(
+                (e) => e.workId === handoffMaintenanceKey && e.event === "worker.completed",
+              ),
+            );
+          }
           const outcome = (
             await f.observerPool.query(
-              "SELECT state, reason_code, claim_token FROM occ.controller_work WHERE idempotency_key=$1",
+              "SELECT state, reason_code, claim_token, actor_id, attempt_count, available_at, completed_at FROM occ.controller_work WHERE idempotency_key=$1",
               [handoffMaintenanceKey],
             )
           ).rows[0];
@@ -787,6 +929,17 @@ for (const scenario of [
           }
           assert.equal(outcome.state, expectedState);
           assert.equal(outcome.claim_token, null);
+          if (scheduled !== undefined) {
+            assert.equal(outcome.actor_id, f.actor.id);
+            assert.equal(outcome.attempt_count, 1);
+            assert.equal(outcome.reason_code, "REPOSITORY_ACCESS_WITHDRAWN");
+            assert.deepEqual(outcome.available_at, scheduled.available_at);
+            assert.ok(
+              outcome.completed_at && outcome.completed_at >= scheduled.available_at,
+              "the original row must complete at or after its natural due time",
+            );
+            await findScheduledSuccessor(scheduled.idempotency_key, scheduled.idempotency_key);
+          }
           assert.deepEqual(
             (
               await f.observerPool.query(
@@ -839,7 +992,9 @@ for (const scenario of [
             [revision.id, revision.id, companionId, companionId].sort(),
           );
         }
-        await stopAfterWorkSettles();
+        if (!sandboxCadence) {
+          await stopAfterWorkSettles();
+        }
         if (!terminal && !handoff) {
           events.length = 0;
           await f.advanceMaintenance(revision);
@@ -905,6 +1060,9 @@ for (const scenario of [
           scenario === "IAM invalid"
         ) {
           assert.equal(reductions, beforeRecovery);
+        } else if (sandboxCadence) {
+          assert.deepEqual(sourceAttempts, [], "expiry must not detach non-model sources");
+          assert.equal(reductions, beforeRecovery + 1);
         } else {
           assert.ok(reductions > beforeRecovery);
         }
