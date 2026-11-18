@@ -828,6 +828,8 @@ export async function loadInstallationConfiguration(options: {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly packageRoot?: string;
   readonly startupConfiguration?: StartupConfigurationSnapshot;
+  /** The Helm preflight mounts the API's public JWT trust bundle. Workers do not. */
+  readonly validateTokenGrantBundle?: boolean;
   /** Real-runtime tests replace the transport or the Driver; never a production path. */
   readonly createOpenShellBackend?: (
     definition: OpenShellBackendDefinition,
@@ -1056,6 +1058,11 @@ async function composeInstallationConfiguration(
 
   requireChartListener(egressAuthority, environment, chartListeners.egressAuthority);
   requireChartTokenGrant(requestTokenGrant, egressAuthority, environment);
+  if (options.validateTokenGrantBundle && requestTokenGrant) {
+    const { validateOpenShellTokenGrantBundle } =
+      await import("../drivers/egress-proxy/openshell-token-grant.ts");
+    await validateOpenShellTokenGrantBundle(requestTokenGrant.bundlePath);
+  }
   requireChartListener(
     repositoryTransportConfiguration?.authority,
     environment,

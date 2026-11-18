@@ -88,6 +88,13 @@ spec:
             items:
               - {key: ca.crt, path: ca.crt}
         {{- end }}
+        {{- if and .Values.egressAuthority.enabled .Values.egressAuthority.tokenGrant.enabled }}
+        - name: token-grant-bundle
+          configMap:
+            name: {{ .Values.egressAuthority.tokenGrant.bundleConfigMapName | quote }}
+            items:
+              - {key: bundle.json, path: bundle.json}
+        {{- end }}
         - name: bootstrap-password-output
           persistentVolumeClaim:
             claimName: {{ .Values.bootstrap.password.claimName | quote }}
@@ -144,6 +151,11 @@ spec:
             {{- if and .Values.preparedGitHub.custodySecretName .Values.preparedGitHub.issuerCaConfigMapName }}
             - name: prepared-github-issuer-ca
               mountPath: /etc/openclaw/prepared-github-issuer
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.egressAuthority.enabled .Values.egressAuthority.tokenGrant.enabled }}
+            - name: token-grant-bundle
+              mountPath: /etc/openclaw/egress/token-grant
               readOnly: true
             {{- end }}
         - name: migration

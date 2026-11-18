@@ -24,6 +24,19 @@ installed image's migration history to be current instead of applying migrations
 Keep database connection and platform authentication settings fixed. A pending-history refusal requires
 investigation, not switching this configuration change back to migration mode.
 
+This procedure requires the chart-owned initialization Job. Before changing or
+creating an Installation Secret, check both the installed release and the proposed
+values. A release that uses `preprovisionedNamespace` omits the Job and cannot use
+`database.upgradeMigration: separate`. Stop if either check fails.
+
+```bash
+set -euo pipefail
+helm get values oce --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
+  --namespace openclaw-system --all --output yaml |
+  yq -e '.preprovisionedNamespace | length == 0' >/dev/null
+yq -e '.preprovisionedNamespace | length == 0' /secure/occ/values.yaml >/dev/null
+```
+
 ## Change a mutable Installation Secret
 
 Run the setup once for each reviewed change. Preserve the original Installation
@@ -53,14 +66,16 @@ cd /secure/src/openclaw-enterprise-installed # checkout of the deployed source r
 OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
 OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
 OCC_CHECKSUM="$(sha256sum /secure/occ/installation.yaml | cut -d ' ' -f 1)"
+OCC_CHECKSUM="$OCC_CHECKSUM" \
+  yq -i '.controlPlane.installationChecksum = strenv(OCC_CHECKSUM) |
+    .database.upgradeMigration = "separate"' /secure/occ/values.yaml
+helm template oce deploy/helm/openclaw-enterprise --is-upgrade \
+  --namespace openclaw-system -f /secure/occ/values.yaml >/dev/null
 jq -n --arg key "$OCC_INSTALLATION_KEY" --rawfile document /secure/occ/installation.yaml \
   '{data: {($key): ($document | @base64)}}' |
   kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
     --namespace openclaw-system patch secret "$OCC_INSTALLATION_SECRET" \
     --type merge --patch-file /dev/stdin
-OCC_CHECKSUM="$OCC_CHECKSUM" \
-  yq -i '.controlPlane.installationChecksum = strenv(OCC_CHECKSUM) |
-    .database.upgradeMigration = "separate"' /secure/occ/values.yaml
 helm upgrade oce deploy/helm/openclaw-enterprise \
   --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
   --namespace openclaw-system -f /secure/occ/values.yaml --wait --timeout 5m
@@ -69,8 +84,8 @@ helm upgrade oce deploy/helm/openclaw-enterprise \
 The new checksum restarts the API and worker so they read the new Installation.
 First, the `installation-check` container of the pre-upgrade initialization Job
 loads the new Installation in the release's controller image, as API startup
-does. It reads the Preset files, Driver packages, repository registry and
-prepared GitHub issuer CA that the Installation names.
+does. It reads the Preset files, Driver packages, repository registry,
+prepared GitHub issuer CA, and public token grant JWT bundle that the Installation names.
 If startup would refuse it, the upgrade fails before migration and the old API
 and worker keep serving. The log names the setting and file:
 

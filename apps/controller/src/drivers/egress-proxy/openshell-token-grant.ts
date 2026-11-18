@@ -102,6 +102,18 @@ async function loadJwtAuthorities(path: string) {
   }
 }
 
+/** Check the API's public trust input without starting its listeners. */
+export async function validateOpenShellTokenGrantBundle(path: string): Promise<void> {
+  try {
+    await loadJwtAuthorities(path);
+  } catch (error) {
+    throw new Error(
+      "The OpenShell token grant JWT trust bundle must be readable and contain a JWT signing authority.",
+      { cause: error },
+    );
+  }
+}
+
 async function readGrant(request: IncomingMessage) {
   if (
     request.headersDistinct["content-type"]?.length !== 1 ||

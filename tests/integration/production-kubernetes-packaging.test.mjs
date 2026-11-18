@@ -4189,7 +4189,8 @@ test(
       await assert.rejects(render({ ...protectedValues, ...override }), diagnostic);
     }
 
-    // Token redemption shares the selected callers and TLS identity; its trust bundle is API-only.
+    // Token redemption shares the selected callers and TLS identity. The API
+    // and the installation check read the public trust bundle.
     const tokenValues = {
       ...protectedValues,
       "egressAuthority.tokenGrant.enabled": "true",
@@ -4220,14 +4221,15 @@ test(
     )) {
       const pod = object.spec.template.spec;
       const api = object.metadata.name === "openclaw-enterprise-api";
+      const check = pod.initContainers?.find(({ name }) => name === "installation-check");
       const volume = pod.volumes?.find(({ name }) => name === "token-grant-bundle");
-      assert.equal(Boolean(volume), api);
-      if (api) {
+      assert.equal(Boolean(volume), api || Boolean(check));
+      if (volume) {
         assert.deepEqual(volume.configMap, {
           name: "supervisor-jwt-bundle",
           items: [{ key: "bundle.json", path: "bundle.json" }],
         });
-        const container = pod.containers.find(({ name }) => name === "api");
+        const container = check ?? pod.containers.find(({ name }) => name === "api");
         assert.deepEqual(
           container.volumeMounts.find(({ name }) => name === "token-grant-bundle"),
           {
@@ -4236,10 +4238,13 @@ test(
             readOnly: true,
           },
         );
-        assert.ok(
-          container.ports.some(
-            ({ name, containerPort }) => name === "token-grant" && containerPort === 9445,
+        assert.equal(
+          Boolean(
+            container.ports?.some(
+              ({ name, containerPort }) => name === "token-grant" && containerPort === 9445,
+            ),
           ),
+          api,
         );
       }
       // The upgrade preflight and both processes must receive the same chart listener expectation.
@@ -4495,6 +4500,16 @@ test(
           ({ kind, metadata }) => kind === "Deployment" && metadata.name === object.metadata.name,
         );
         assert.deepEqual(owned, original.spec.template.spec.volumes.filter(protectedVolume));
+      } else if (pod.initContainers?.some(({ name }) => name === "installation-check")) {
+        assert.deepEqual(owned, [
+          {
+            name: "token-grant-bundle",
+            configMap: {
+              name: "supervisor-jwt-bundle",
+              items: [{ key: "bundle.json", path: "bundle.json" }],
+            },
+          },
+        ]);
       } else {
         assert.deepEqual(owned, []);
       }
@@ -4510,7 +4525,15 @@ test(
           worker: [{ name: "openshell-git", containerPort: 8445 }],
         };
         assert.deepEqual(ports, listeners[container.name] ?? []);
-        if (!["api", "worker"].includes(container.name)) {
+        if (container.name === "installation-check") {
+          assert.deepEqual(container.volumeMounts?.filter(protectedVolume), [
+            {
+              name: "token-grant-bundle",
+              mountPath: "/etc/openclaw/egress/token-grant",
+              readOnly: true,
+            },
+          ]);
+        } else if (!["api", "worker"].includes(container.name)) {
           assert.deepEqual(container.volumeMounts?.filter(protectedVolume) ?? [], []);
         }
       }

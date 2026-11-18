@@ -103,6 +103,17 @@ settle those revisions under an authorized interruption or use the runtime
 replacement workflow. A replacement Worker cannot adopt a protected Git launch,
 even when the same revision also uses request-time model delivery. A new Agent
 deployment reuses an active standing approval when its scope is unchanged.
+
+Enabling the token listener changes the selected Credential Proxy Driver
+reference. Before changing the Installation or stopping Agents for phase 2,
+use the deployment inventory and saved admission records to identify all
+running revisions admitted against that reference. Include
+retained strict model revisions without Git because the repository restart
+inventory covers repository custody. Verify an authorized, supported replacement under the
+reviewed configuration for each affected revision before scheduling an
+interruption. If the inventory is incomplete or a supported replacement is
+unavailable, defer phase 2 and keep the running revisions serving.
+
 Roll out the image and configuration in two phases:
 
 1. Complete the normal [image upgrade](../deploy/production-upgrade.md), keeping
