@@ -3698,25 +3698,34 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     // A Gateway crash leaves the remote executor alive. Its finite command must
     // finish before native recovery can adopt the thread without taking it over.
     const sleepSeconds = label === "gateway-process" ? 90 : 600;
-    const sessionKey = `agent:main:${label}-${randomUUID()}`;
+    let sessionKey = `agent:main:${label}-${randomUUID()}`;
     let ownerProfileId;
-    if (label === "revoked-owner") {
-      const { profile } = await gatewayCall(topology, "users.linkEmail", {
-        email: `restart-owner-${randomUUID()}@example.test`,
-      });
-      ownerProfileId = profile.id;
-      await gatewayCall(topology, "users.setRole", { profileId: ownerProfileId, role: "writer" });
+    if (["owner", "revoked-owner"].includes(label)) {
+      // Create the human principal and its session through the regular authenticated
+      // HTTP chat route. CLI password calls do not establish a human identity.
+      const beforeSessions = await gatewayCall(topology, "sessions.list", { limit: 100 });
       const ready = `OWNER-READY-${randomUUID()}`;
-      await gatewayCall(topology, "chat.send", {
-        sessionKey,
-        idempotencyKey: randomUUID(),
-        message: `Reply with exactly ${ready}. Do not use tools.`,
+      const response = await topology.request("POST", `/agents/${topology.agent.id}/chat`, {
+        user: `recovery-owner-${randomUUID()}`,
+        messages: [{ role: "user", content: `Reply with exactly ${ready}. Do not use tools.` }],
       });
+      assert.equal(response.status, 200, JSON.stringify(response.error));
+      assert.equal(response.choices[0].message.content.trim(), ready);
+      const afterSessions = await gatewayCall(topology, "sessions.list", { limit: 100 });
+      const created = afterSessions.sessions.filter(
+        (session) => !beforeSessions.sessions.some((before) => before.key === session.key),
+      );
+      assert.equal(created.length, 1, "HTTP chat must create one retained human session");
+      sessionKey = created[0].key;
+      assert.equal(created[0].createdActor?.type, "human");
+      ownerProfileId = created[0].createdActor.id;
+      const profiles = await gatewayCall(topology, "users.list", {});
+      assert.ok(
+        profiles.profiles.some((profile) => profile.id === ownerProfileId),
+        "the retained creator must name a registered human profile",
+      );
+      await gatewayCall(topology, "users.setRole", { profileId: ownerProfileId, role: "writer" });
       await assertConversation(topology, sessionKey, ready);
-      await gatewayCall(topology, "sessions.assignOwner", {
-        key: sessionKey,
-        owner: { type: "human", id: ownerProfileId },
-      });
     }
     const nonce = `RECOVERED-${randomUUID()}`;
     const ledger = `/home/node/workspace/${nonce}.txt`;
@@ -3779,6 +3788,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     [cancelled.sessionKey, cancelledHistory],
   ];
   for (const replacement of [
+    "owner",
     "gateway-pod",
     "workload-pods",
     "gateway-process",
@@ -3842,7 +3852,9 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       });
       assert.equal(topology.gatewayPod.metadata.uid, previousUid);
     } else if (
-      ["deployment", "explicit-stop", "revoked-owner", "incompatible"].includes(replacement)
+      ["owner", "deployment", "explicit-stop", "revoked-owner", "incompatible"].includes(
+        replacement,
+      )
     ) {
       if (replacement === "revoked-owner") {
         await gatewayCall(topology, "users.setRole", {
@@ -3922,7 +3934,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         }
       }
       await deployReplacement();
-      if (replacement !== "deployment") {
+      if (!["owner", "deployment"].includes(replacement)) {
         const probeKey = `agent:main:replacement-ready-${randomUUID()}`;
         const probeNonce = `READY-${randomUUID()}`;
         await gatewayCall(topology, "chat.send", {
