@@ -159,6 +159,7 @@
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
+    "tests/integration/first-agent-sandbox-policy.test.ts",
     "tests/integration/staged-signin-proof.test.ts",
     "tests/integration/shared-session-cookie.test.ts",
     "tests/integration/workspace-gateway-host-route.test.ts"
@@ -878,6 +879,17 @@
         "operator forwarder shutdown escalates a stubborn child before returning",
         "operator forwarder shutdown refuses an exited child with an open inherited pipe",
         "forwarder launch failure remains available after confirmed cleanup"
+      ]
+    },
+    {
+      "path": "tests/integration/first-agent-sandbox-policy.test.ts",
+      "expectedTests": [
+        "the installer reads policy through the child port announced on a complete line",
+        "a Sandbox returned after the policy deadline cannot satisfy the assertion",
+        "parent abort reaches an in-flight Sandbox read and rejects its late result",
+        "parent abort during Sandbox retry sleep preserves the abort reason",
+        "the installer reports fixed forward startup errors and closes each child",
+        "policy failure remains the cause when Gateway client cleanup fails"
       ]
     },
     {
