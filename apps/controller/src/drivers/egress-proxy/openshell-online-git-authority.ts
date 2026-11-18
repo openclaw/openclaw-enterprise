@@ -178,7 +178,6 @@ export function createOpenShellOnlineGitAuthority(
         binding,
         deadlineAt: request.deadlineAt,
         signal,
-        expect: "allow",
         // Bind the authenticated mapping and the full inspected view. Do not accept a caller's
         // digest or confuse this normalized-view digest with an exact original-wire commitment.
         requestDigest: () =>
@@ -203,12 +202,12 @@ export function createOpenShellOnlineGitAuthority(
             .update(Buffer.from([0]))
             .update(request.body)
             .digest("hex"),
-        authorize: options.authorizeOnlineRequest,
+        authorize: (q, installed, signal) => options.authorizeOnlineRequest(q, installed, signal),
       });
       if (outcome.kind === "allowed") {
         // The RPC owner checks this exact authority deadline at its final allow callback.
         // A supervisor that has received the allow may finish the request after withdrawal.
-        return { kind: "allow", replyBy: outcome.decision.replyBy };
+        return { kind: "allow", replyBy: outcome.replyBy };
       }
       return deny(outcome.refusal, outcome.operation);
     },

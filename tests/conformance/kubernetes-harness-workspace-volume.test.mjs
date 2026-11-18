@@ -325,7 +325,6 @@ function scratchCompute(bindings) {
     {
       gateway: { workspaceMode: "operator" },
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {

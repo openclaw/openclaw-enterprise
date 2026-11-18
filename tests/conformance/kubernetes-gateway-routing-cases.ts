@@ -46,6 +46,12 @@ import type { createKubernetesClientConfiguration } from "../../apps/controller/
 import { asRecord } from "../../packages/utils/src/objects.ts";
 import { unexpectedNodeEnrollment } from "./kubernetes-namespace-placement-cases.ts";
 
+import {
+  podTemplate,
+  resourceRecord,
+  resourceRecords,
+} from "../helpers/kubernetes-rendered-resources.ts";
+
 type NamespaceAddress = { readonly name: string; readonly plane: "control" | "execution" };
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type NetworkingApi = InstanceType<KubernetesSdk["NetworkingV1Api"]>;
@@ -121,6 +127,146 @@ export function twoClusterOptions() {
     }),
     executionCluster,
   };
+}
+
+export function checkGatewayConfigurationMounts(
+  plainDriver: KubernetesComputeDriver,
+  plainRevision: AgentRevision,
+) {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  const routed = createKubernetesComputeDriver(routedOptions({ runtime }));
+  const privateDriver = createKubernetesComputeDriver(options({ runtime }));
+  const revision = routedRevision(routed);
+  const gateway = asRecord(revision.configuration.gateway);
+  const auth = asRecord(gateway?.auth);
+  const nativeAdmin = routedRevision(routed, {
+    id: "revision-routed-native-admin",
+    configuration: {
+      ...revision.configuration,
+      gateway: {
+        ...gateway,
+        controlUi: { enabled: true, allowedOrigins: ["https://agent-routed.example.internal"] },
+        auth: {
+          ...auth,
+          trustedProxy: {
+            ...asRecord(auth?.trustedProxy),
+            deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
+          },
+        },
+      },
+    },
+  });
+  // Hold the native-admin settings fixed: enabling routing is what permits the writable copy.
+  const privateAdmin: AgentRevision = {
+    ...nativeAdmin,
+    compute: { id: privateDriver.id, implementation: privateDriver.implementation },
+  };
+  const cases = [
+    ["plain gateway", plainDriver, plainRevision, "copied"],
+    ["routed runtime", routed, revision, "mounted"],
+    ["routed native admin", routed, nativeAdmin, "copied"],
+    ["private native admin", privateDriver, privateAdmin, "mounted"],
+  ] as const;
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" } as const;
+  for (const [label, driver, input, source] of cases) {
+    const name = `gateway-${digest(input.agentId)}`;
+    const deployment = driver["deployment"](
+      name,
+      { namespaceId: tenant.id, agentId: input.agentId },
+      namespace,
+      {
+        runtime: "openclaw-enterprise/gateway-fixture:local",
+        workspaceSetup: driver["options"].images.gateway,
+      },
+      name,
+      "gateway",
+      {},
+      "info",
+      driver["gatewayConfiguration"](input, undefined, namespace),
+    );
+    const pod = resourceRecord(podTemplate(deployment).spec, "gateway Pod spec");
+    const [container] = resourceRecords(pod.containers, "gateway containers");
+    const [init] = resourceRecords(pod.initContainers, "gateway init containers");
+    assert.ok(container && init, label);
+    const path =
+      source === "copied" ? "/home/node/.openclaw/openclaw.json" : "/etc/openclaw/openclaw.json";
+    assert.deepEqual(
+      resourceRecords(container.env, "gateway environment").filter(
+        (entry) => entry.name === "OPENCLAW_CONFIG_PATH",
+      ),
+      [{ name: "OPENCLAW_CONFIG_PATH", value: path }],
+      label,
+    );
+    const volume = "openclaw-configuration";
+    const mount = {
+      name: volume,
+      mountPath: source === "copied" ? "/etc/openclaw-managed" : "/etc/openclaw",
+      readOnly: true,
+    };
+    const mounts = (container: Record<string, unknown>) =>
+      resourceRecords(container.volumeMounts, "gateway volume mounts").filter(
+        (entry) => entry.name === volume,
+      );
+    assert.deepEqual(mounts(container), [mount], label);
+    assert.deepEqual(mounts(init), source === "copied" ? [mount] : [], label);
+    const script: unknown = Array.isArray(init.args) ? init.args[0] : undefined;
+    assert.ok(typeof script === "string", label);
+    if (source === "copied") {
+      assert.match(
+        script,
+        /copyFileSync\("\/etc\/openclaw-managed\/openclaw\.json", "\/runtime-state\/home\/\.openclaw\/openclaw\.json"\)/,
+        label,
+      );
+    } else {
+      assert.doesNotMatch(script, /copyFileSync/, label);
+    }
+  }
+}
+
+export async function checkGatewayRefusalsBeforeClusterAccess(
+  configuration: OpenClawConfigurationDocument,
+) {
+  const invalid: readonly [OpenClawConfigurationDocument, RegExp][] = [
+    [{ gateway: { auth: { mode: "oauth" } } }, /trusted-proxy/i],
+    [
+      { gateway: { auth: { mode: "trusted-proxy", unsupportedField: true } } },
+      /gateway\.auth\.unsupportedField is not a supported/i,
+    ],
+    [
+      { gateway: { auth: { identityScopes: { "occ-workspace-files": ["operator.read"] } } } },
+      /identityScopes/i,
+    ],
+    [{ gateway: { trustedProxies: ["10.99.0.0/16"] } }, /gatewayTrustedProxyCidrs/i],
+    [{ gateway: { tls: { enabled: true } } }, /gateway\.tls\.enabled must be omitted or false/i],
+    [
+      {
+        plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } } },
+      },
+      /appServer\.approvalPolicy must not be "untrusted"/,
+    ],
+  ];
+  for (const configure of [options, routedOptions]) {
+    for (const operation of ["prepareRevision", "activateRevision"] as const) {
+      for (const [settings, refusal] of invalid) {
+        const driver = createKubernetesComputeDriver(configure());
+        const candidate = routedRevision(driver, {
+          configuration: { ...configuration, ...settings },
+        });
+        let accessed = false;
+        driver["clients"] = async () => {
+          accessed = true;
+          throw new Error("unexpected cluster access");
+        };
+        const label = `${configure.name}.${operation}: ${refusal.source}`;
+        await assert.rejects(
+          driver[operation](candidate, { ...authContext(candidate), secretEnvironment: [] }),
+          refusal,
+          label,
+        );
+        assert.equal(accessed, false, label);
+      }
+    }
+  }
 }
 
 export function checkNativeGatewayListenerPorts() {

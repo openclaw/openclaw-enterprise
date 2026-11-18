@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { basename, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { teamReviewProof } from "../../tests/fixtures/skipper-team-review-journey.mjs";
+import { record } from "./records.ts";
 
 export const skipperImageScope = "checkout-images-with-synthetic-model-trust-layer";
 const installedTestPath = "tests/integration/skipper-prepared-git-installed.test.mjs";
@@ -46,11 +47,6 @@ export function skipperSelectedFailure(resultText: string) {
   const failed = file.tests.map(record).find((entry) => entry.status === "failed");
   const fileFailure = failed?.error == null ? record(file.fileFailure) : undefined;
   return { error: record(failed?.error ?? fileFailure?.error), fileFailure };
-}
-
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
-  return value as Record<string, unknown>;
 }
 
 /** Publish the passed runner result without copying diagnostics or inventing coverage. */
@@ -146,13 +142,19 @@ export function skipperOperationDiagnostic(value: unknown) {
   ) {
     return undefined;
   }
-  const { operation, exitCode, signal, code, gatewayCategory, httpStatus } = diagnostic;
+  const { operation, exitCode, signal, code, gatewayCategory, httpStatus, gatewayFetchElapsedMs } =
+    diagnostic;
   const gatewayChatPhase = skipperGatewayChatPhases.find(
     (phase) => phase === diagnostic.gatewayChatPhase,
   );
   const { runtimeSignal, modelRequestObservation, gatewayTransportCause, helperEntered } =
     diagnostic;
   const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
+  const timedTransport =
+    gatewayCategory === "transport" &&
+    (gatewayTransportCause === "socket-closed" ||
+      gatewayTransportCause === "connection-reset" ||
+      gatewayTransportCause === "headers-timeout");
   return {
     ...(attributed &&
     gatewayChatPhase === "native-git" &&
@@ -177,13 +179,19 @@ export function skipperOperationDiagnostic(value: unknown) {
       ? { modelRequestObservation }
       : {}),
     ...(operation === "gateway-exec" && helperEntered === true ? { helperEntered } : {}),
+    ...(operation === "gateway-chat" &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    (timedTransport || gatewayCategory === "client-deadline") &&
+    typeof gatewayFetchElapsedMs === "number" &&
+    Number.isInteger(gatewayFetchElapsedMs) &&
+    gatewayFetchElapsedMs >= 0 &&
+    gatewayFetchElapsedMs <= 240_000
+      ? { gatewayFetchElapsedMs }
+      : {}),
     ...(attributed &&
     httpStatus === 0 &&
-    gatewayCategory === "transport" &&
-    typeof gatewayTransportCause === "string" &&
-    ["socket-closed", "connection-reset", "headers-timeout", "other"].includes(
-      gatewayTransportCause,
-    )
+    (timedTransport || (gatewayCategory === "transport" && gatewayTransportCause === "other"))
       ? { gatewayTransportCause }
       : {}),
     ...(attributed &&

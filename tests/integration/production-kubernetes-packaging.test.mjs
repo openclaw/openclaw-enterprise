@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
@@ -1928,6 +1929,50 @@ test("the chart refuses installation names the bootstrap Job refuses", tooling, 
 });
 
 test(
+  "the chart runs the migration selected by each controller image in the same process",
+  tooling,
+  async (t) => {
+    const objects = await resources((await renderProductionChart()).stdout);
+    const migration = findResourceByComponent(
+      objects,
+      "Job",
+      "initialization",
+    ).spec.template.spec.initContainers.find(({ name }) => name === "migration");
+    for (const extension of ["mjs", "ts"]) {
+      const directory = await temporaryDirectory(t, "occ-migration-layout-");
+      await mkdir(join(directory, "scripts"));
+      const entry = `scripts/migrate-production.${extension}`;
+      await writeFile(
+        join(directory, "package.json"),
+        JSON.stringify({
+          type: "module",
+          scripts: { "db:migrate:production": `NODE_ENV=production node ${entry}` },
+        }),
+      );
+      // Each isolated layout contains only its own generation's executable.
+      await writeFile(
+        join(directory, entry),
+        "process.stdout.write(JSON.stringify({pid: process.pid, args: process.argv.slice(2)}));",
+      );
+      const applying = execute(process.execPath, migration.args, { cwd: directory });
+      const applied = await applying;
+      assert.deepEqual(JSON.parse(applied.stdout), {
+        pid: applying.child.pid,
+        args: ["--expect-empty"],
+      });
+      const check = [...migration.args.slice(0, -1), "--check"];
+      const checked = await execute(process.execPath, check, { cwd: directory });
+      assert.deepEqual(JSON.parse(checked.stdout).args, ["--check"]);
+      // Omitting Node's separator must fail before an apply can start.
+      await assert.rejects(
+        execute(process.execPath, [...check.slice(0, -2), "--check"], { cwd: directory }),
+        { code: 9, stdout: "" },
+      );
+    }
+  },
+);
+
+test(
   "the staged sign-in chart preserves the historical worker probes for both Helm operations",
   tooling,
   async (t) => {
@@ -1953,6 +1998,14 @@ test(
       );
       const rendered = await resources(staged.stdout);
       assert.deepEqual(rendered, expected);
+      const job = findResourceByComponent(rendered, "Job", "initialization");
+      const migration = job.spec.template.spec.initContainers.find(
+        ({ name }) => name === "migration",
+      );
+      assert.deepEqual(migration.args, [
+        ...selectedImageMigrationEntry,
+        ...(isUpgrade ? [] : ["--expect-empty"]),
+      ]);
       const worker = findResourceByComponent(
         rendered,
         "Deployment",
@@ -2111,7 +2164,7 @@ test(
     const [bootstrap] = pod.containers;
     assert.equal(check.name, "installation-check");
     assert.equal(migration.name, "migration");
-    assert.deepEqual(migration.args, ["scripts/migrate-production.mjs", "--expect-empty"]);
+    assert.deepEqual(migration.args, [...selectedImageMigrationEntry, "--expect-empty"]);
     assert.equal(bootstrap.name, "bootstrap");
     assert.deepEqual(bootstrap.args, ["scripts/bootstrap-installation.mjs"]);
     assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
@@ -2689,13 +2742,16 @@ test(
       { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
       { "gatewayRouting.remoteNodeCidrs[0]": "12345::/64" },
       { "gatewayRouting.remoteNodeCidrs[0]": "::ffff:999.1.2.3/32" },
+      // A /0 prefix would remove the source restriction on the private listener.
+      { "gatewayRouting.remoteNodeCidrs[0]": "0.0.0.0/0" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "::/0" },
     ]) {
       await assert.rejects(
         render({ ...gatewayRoutingValues, ...override }),
         /gatewayRouting\.remoteNodeCidrs/,
       );
     }
-    for (const cidr of ["10.0.0.1/32", "0.0.0.0/0", "::/64", "::ffff:10.0.0.0/120"]) {
+    for (const cidr of ["10.0.0.1/32", "10.0.0.0/8", "::/64", "::ffff:10.0.0.0/120"]) {
       await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
     }
   },

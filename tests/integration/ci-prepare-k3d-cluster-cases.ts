@@ -5,7 +5,7 @@ import { readFile, rename, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage } from "../../scripts/ci/prepare.ts";
 import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
