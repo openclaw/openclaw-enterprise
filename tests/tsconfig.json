@@ -131,6 +131,7 @@
     "integration/qa-command-evidence-cases.ts",
     "integration/qa-http-chat-cleanup-cases.ts",
     "integration/qa-http-chat-routing-cases.ts",
+    "integration/qa-http-chat-stream-cases.ts",
     "integration/qa-native-tool-evidence-case.ts",
     "integration/kubernetes-compute-provisioning-api-case.ts",
     "integration/kubernetes-plugin-status-observation-cases.ts",
