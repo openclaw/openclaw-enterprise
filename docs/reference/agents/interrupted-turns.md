@@ -9,11 +9,11 @@ Kubernetes and Docker Compute scope that record to the Agent revision with
 `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`. Every deployment creates a new revision
 ID, so only a restart of the same revision resumes a turn.
 
-| The Gateway ended because of | The interrupted turn |
-|---|---|
-| [Stop](deployment.md#stop-and-resume), then a new deployment | Stays stopped. A message queued behind it is cancelled. |
-| A replacement or a deletion | Ends. The user sends the request again. |
-| A rollout during a controller upgrade, a node drain or a Gateway restart of the same revision | Resumes once. |
+| The Gateway ended because of                                                                  | The interrupted turn                                    |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| [Stop](deployment.md#stop-and-resume), then a new deployment                                  | Stays stopped. A message queued behind it is cancelled. |
+| A replacement or a deletion                                                                   | Ends. The user sends the request again.                 |
+| A rollout during a controller upgrade, a node drain or a Gateway restart of the same revision | Resumes once.                                           |
 
 A replacement does not resume the turn because the next revision can carry
 different configuration, policy and credentials.
