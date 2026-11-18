@@ -503,6 +503,25 @@ export async function installProductionHelmControlPlane(
       throw await prepared.diagnose(error);
     }
     const inputs = await retainedInputs();
+    // The CLI injects its attempt ID through --set-string. Future upgrades must
+    // compare against the actual release values, not the pre-dispatch input file.
+    const liveValues: unknown = JSON.parse(
+      await run("helm", [
+        "get",
+        "values",
+        release,
+        "--kubeconfig",
+        selection.kubeconfigPath,
+        "--kube-context",
+        selection.kubernetesContext,
+        "--namespace",
+        system,
+        "--output",
+        "json",
+      ]),
+    );
+    assert.ok(asRecord(liveValues), "Expected installed Helm user values");
+    await writeFile(prepared.valuesPath, JSON.stringify(liveValues), { mode: 0o600 });
     await record("CLI-generated bootstrap, Helm initialization, API and worker ready", {
       namespace: system,
     });
