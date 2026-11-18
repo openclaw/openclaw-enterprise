@@ -71,39 +71,6 @@ index 370a968f401..ec9c43fa037 100644
      /** Original per-input limits, restored only after current source revalidation. */
      queuedInputSources?: Record<
        string,
-diff --git a/src/gateway/session-restart-resume-discovery.ts b/src/gateway/session-restart-resume-discovery.ts
-index 3a4df53d6d8..ccff641455a 100644
---- a/src/gateway/session-restart-resume-discovery.ts
-+++ b/src/gateway/session-restart-resume-discovery.ts
-@@ -1,6 +1,10 @@
- import { getSubagentRunsForRequesterSession } from "../agents/subagents/registry/subagent-registry-memory.js";
- import { readSessionEntrySummariesInWorker } from "../config/sessions/session-entry-read-runtime.js";
- import { listOrphanedSessionPendingInputTargets } from "../config/sessions/session-pending-input-withdrawal.js";
-+import {
-+  isRestartResumeMarkerInScope,
-+  resolveRestartResumeScope,
-+} from "../config/sessions/session-restart-resume-scope.js";
- import { prepareSessionStoreTargetInventory } from "../config/sessions/session-store-target-inventory.js";
- import { prepareSessionStoreTargetInventoryRead } from "../config/sessions/session-store-target-runtime.js";
- import { listConfiguredSessionStoreAgentIds } from "../config/sessions/targets-configured-agents.js";
-@@ -95,10 +99,16 @@ async function prepareRestartStore(
-     return undefined;
-   }
-   let orphaned: PreparedRestartStore["orphaned"] = [];
-+  const scope = resolveRestartResumeScope();
-   try {
-+    // Queued inputs under another scope's marker are settled like a crash's orphans.
-     orphaned = await listOrphanedSessionPendingInputTargets(
-       target,
--      entries.flatMap(({ entry }) => entry.resumeAfterRestart?.queuedInputIds ?? []),
-+      entries.flatMap(({ entry }) =>
-+        entry.resumeAfterRestart && isRestartResumeMarkerInScope(entry.resumeAfterRestart, scope)
-+          ? entry.resumeAfterRestart.queuedInputIds
-+          : [],
-+      ),
-     );
-     signal.throwIfAborted();
-   } catch (error) {
 diff --git a/src/gateway/session-restart-resume.test.ts b/src/gateway/session-restart-resume.test.ts
 index 54a2291f9ff..78eba1521b3 100644
 --- a/src/gateway/session-restart-resume.test.ts
@@ -235,7 +202,7 @@ index 54a2291f9ff..78eba1521b3 100644
 +    }),
 +);
 diff --git a/src/gateway/session-restart-resume.ts b/src/gateway/session-restart-resume.ts
-index f22c0567163..61dfb96e409 100644
+index f22c0567163..53c6fbdd4ed 100644
 --- a/src/gateway/session-restart-resume.ts
 +++ b/src/gateway/session-restart-resume.ts
 @@ -19,6 +19,11 @@ import {
@@ -275,26 +242,28 @@ index f22c0567163..61dfb96e409 100644
        const agentId = parseAgentSessionKey(sessionKey)?.agentId ?? target.agentId;
        let authority: Awaited<ReturnType<typeof prepareSessionSystemTurnAuthority>> | undefined;
        let interrupted = false;
-+      let scopeChanged = false;
++      let scopeChanged: { sessionId: string } | undefined;
        try {
          await waitForAgentInputAdmission(agentId, {
            sessionKey,
-@@ -508,7 +515,13 @@ async function resumeRestartStore(
+@@ -508,7 +515,15 @@ async function resumeRestartStore(
                !hasAgentRunContextExecutionOwner(selected.lifecycleRunId) &&
                (!selected.activeWriterRunId ||
                  !hasAgentRunContextExecutionOwner(selected.activeWriterRunId));
 -            const marker: InternalSessionEntry["resumeAfterRestart"] =
 +            // A marker from another scope belongs to an ended deployment generation, such
-+            // as an explicit stop. Clear it without resuming; discovery left its queued
-+            // inputs to the orphaned-input settlement above.
++            // as an explicit stop. Clear it without resuming; its queued inputs are settled
++            // below, like a crash's.
 +            scopeChanged =
 +              selected.resumeAfterRestart !== undefined &&
-+              !isRestartResumeMarkerInScope(selected.resumeAfterRestart, scope);
++              !isRestartResumeMarkerInScope(selected.resumeAfterRestart, scope)
++                ? { sessionId: selected.sessionId }
++                : undefined;
 +            const recovered: InternalSessionEntry["resumeAfterRestart"] =
                selected.resumeAfterRestart ??
                (parked ||
                (orphanedRun &&
-@@ -525,7 +538,8 @@ async function resumeRestartStore(
+@@ -525,7 +540,8 @@ async function resumeRestartStore(
                  selected.updatedAt >= performance.timeOrigin - LEGACY_RESTART_RESUME_WINDOW_MS)
                  ? { queuedInputIds: [] }
                  : undefined);
@@ -304,7 +273,17 @@ index f22c0567163..61dfb96e409 100644
                return { result: undefined };
              }
              const entry = {
-@@ -565,7 +579,11 @@ async function resumeRestartStore(
+@@ -562,10 +578,21 @@ async function resumeRestartStore(
+           },
+         });
+         if (!resumed) {
++          if (scopeChanged) {
++            // The cleared marker no longer keeps custody of the input queued behind it.
++            await interruptOrphanedSessionPendingInputs(
++              { ...target, sessionKey, sessionId: scopeChanged.sessionId },
++              () => signal.throwIfAborted(),
++            );
++          }
            summary.record(
              agentId,
              sessionKey,

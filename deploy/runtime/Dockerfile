@@ -261,7 +261,7 @@ RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp
 # finding 3347): a turn cut by stop, replacement or deletion must not resume under the
 # next revision. Kubernetes and Docker Compute set the scope to the revision ID.
 COPY deploy/runtime/openclaw-restart-resume-scope.patch /tmp/openclaw-restart-resume-scope.patch
-RUN echo 'a6bdacc4bab1baa4343c3f50246ecc42209095bfe62a6dbbc0770721b3ab0376  /tmp/openclaw-restart-resume-scope.patch' | sha256sum --check --strict \
+RUN echo '329ccd83fad1e4c878f8feb2b335f84c85eddbca4193d9e25d60a2ca00f861b8  /tmp/openclaw-restart-resume-scope.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-restart-resume-scope.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
