@@ -263,6 +263,7 @@ export function openShellEgressConfiguration(
       throw new DependencyUnavailableError("Request-authorized model delivery is unavailable.");
     }
     return immutableCopy({
+      ...(revision.networkEgressMode === "public" && { allow_unconfigured_public_tcp: true }),
       network_policies: artifacts,
       network_middlewares: {
         ...model.middlewares,

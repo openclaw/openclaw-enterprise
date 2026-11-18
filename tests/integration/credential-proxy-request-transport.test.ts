@@ -1,6 +1,13 @@
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  OpenShellCredentialProxyDriver,
+  type OpenShellProxyOptions,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { createOpenAiRequestProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
+import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import { openShellModelRequestPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
 import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
@@ -24,6 +31,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import type {
   CredentialProxyDriver,
+  ProxyWiring,
   RequestCredentialInput,
 } from "../../packages/contracts/src/index.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
@@ -635,6 +643,97 @@ test(
   },
 );
 
+test("public model request wiring preserves the complete source policy and refuses mode drift", async (t) => {
+  const f = await staticEgressFixture(t);
+  const provider = createOpenAiRequestProvider();
+  const { policyReductionVersion: _reduction, ...strictPlan } = f.context.plan;
+  const binding = strictPlan.routes[0]?.binding;
+  assert.ok(binding);
+  const plan = {
+    ...strictPlan,
+    authorization: "online-request" as const,
+    routes: provider.routes(
+      f.source,
+      { ...binding, source: { ...binding.source, provider: provider.ref } },
+      f.revision.harness.configuration,
+    ),
+  };
+  const revision = {
+    ...f.revision,
+    executionAdmission: { mode: "protected" as const, version: 8 as const },
+    networkEgressMode: "public" as const,
+    egressPlan: plan,
+  };
+  assertExecutionAdmission(revision);
+  const options: OpenShellProxyOptions = {
+    middlewareName: "oce-authority",
+    authorityScope: "execution",
+    requestCredentials: {
+      audience: "oce-authority",
+      tokenEndpoint: "https://127.0.0.1:9445/token",
+      grpcEndpoint: "https://127.0.0.1:9444",
+    },
+  };
+  const proxy = new OpenShellCredentialProxyDriver(options, {
+    id: f.egress.id,
+    backend: {
+      id: f.egress.sourceControl.backend.id,
+      drivers: {},
+      client: new OpenShellGateway(
+        { serviceName: "openshell" },
+        { gatewayClient: f.gatewayClient },
+      ),
+    },
+    sandbox: f.sandboxDriver,
+    exchangeAuthority: {
+      host: "127.0.0.1",
+      port: 9444,
+      audience: "oce-authority",
+      issuer: "https://gateway.example.test",
+      keyId: "fixture",
+      certificatePath: "/unused/model-certificate",
+      privateKeyPath: "/unused/model-key",
+      issuerPublicKeyPath: "/unused/model-issuer",
+    },
+    tokenGrant: {
+      endpoint: options.requestCredentials!.tokenEndpoint,
+      port: 9445,
+      trustDomain: "fixture.test",
+      bundlePath: "/unused/model-trust-bundle.json",
+    },
+  });
+  const context = { ...f.context, revision, plan, signal: t.signal };
+  const configured = await proxy.configureRevision(context);
+  // The paired Sandbox returns the complete source policy. Its explicit public
+  // mode must survive Proxy validation even before a supervisor has loaded it.
+  const prepared = {
+    ...configured,
+    configuration: {
+      ...f.attachment.configuration,
+      ...configured.configuration,
+      allow_unconfigured_public_tcp: true,
+    },
+  };
+  f.observed.sandbox = undefined;
+  assert.equal(await proxy.wiringStatus(context, prepared), undefined);
+  assert.equal(configured.configuration.allow_unconfigured_public_tcp, true);
+  const omitted = { ...prepared.configuration };
+  Reflect.deleteProperty(omitted, "allow_unconfigured_public_tcp");
+  for (const configuration of [
+    omitted,
+    { ...prepared.configuration, allow_unconfigured_public_tcp: false },
+  ]) {
+    await assert.rejects(
+      proxy.wiringStatus(context, { ...prepared, configuration }),
+      /changed protected egress routes/,
+    );
+  }
+  const restricted = { ...context, revision: { ...revision, networkEgressMode: undefined } };
+  const restrictedWiring = await proxy.configureRevision(restricted);
+  assert.equal(restrictedWiring.configuration.allow_unconfigured_public_tcp, undefined);
+  await assert.rejects(proxy.wiringStatus(restricted, prepared), /changed protected egress routes/);
+});
+
 test(
   "model request installation survives a material epoch change but fences policy and recipient drift",
   { ...requiresPostgres, timeout: 60_000 },
@@ -647,17 +746,31 @@ test(
     assert.ok("credentialProxy" in f);
     const controller: OpenClawController = f.controller;
     const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
-    const revision = await controller.transact((unit) =>
+    const admitted = await controller.transact((unit) =>
       unit.revisions.findRevision(f.namespace.id, f.agent.id, metadata.id),
     );
-    assert.ok(revision?.egressPlan);
+    assert.ok(admitted?.egressPlan);
+    const revision = { ...admitted, networkEgressMode: "public" as const };
     const context = {
       namespace: f.runtimeNamespace,
       revision,
-      plan: revision.egressPlan,
+      plan: admitted.egressPlan,
       signal: t.signal,
     };
-    const prepared = await f.credentialProxy.configureRevision(context);
+    const configured = await f.credentialProxy.configureRevision(context);
+    // The Sandbox returns the full source policy, including the admitted public
+    // mode and the process/filesystem constraints absent from the Proxy's routes.
+    const prepared: ProxyWiring = {
+      ...configured,
+      configuration: {
+        version: 1,
+        filesystem: { read_only: ["/usr"], read_write: ["/tmp"] },
+        landlock: { compatibility: "hard_requirement" },
+        process: { run_as_user: "1000", run_as_group: "1000" },
+        ...configured.configuration,
+        allow_unconfigured_public_tcp: true,
+      },
+    };
     assert.equal(f.egressOptions.authorityScope, "execution");
     const egressOptions = { ...f.egressOptions, authorityScope: "execution" as const };
     const expected = openShellModelRequestPolicy(context.plan, egressOptions, revision);
@@ -794,6 +907,13 @@ test(
     registration.grpc_endpoint = trustedEndpoint;
     const installation = await f.credentialProxy.wiringStatus(context, prepared);
     assert.ok(installation, "the Driver must first qualify the observed installation");
+    await assert.rejects(
+      f.credentialProxy.wiringStatus(context, {
+        ...prepared,
+        configuration: { ...prepared.configuration, allow_unconfigured_public_tcp: false },
+      }),
+      /changed protected egress routes/,
+    );
     const requestCredentials = f.credentialProxy.requestTimeCredentials;
     assert.ok(requestCredentials);
     const verify = () =>
@@ -846,9 +966,10 @@ test(
     admission.policy_hash = config.policy_hash = "b".repeat(64);
     assert.equal(await verify(), false);
     admission.policy_hash = config.policy_hash = "a".repeat(64);
+    const originalFilesystem = config.policy.filesystem;
     config.policy.filesystem = { read_write: ["/"] };
     assert.equal(await verify(), false, "effective policy content remains fenced");
-    delete config.policy.filesystem;
+    config.policy.filesystem = originalFilesystem;
     const profile = f.profiles.get(expected.provider.profile.id);
     profile.credentials[0].token_grant.audience = "different-binding";
     await assert.rejects(verify, /zero-cache model token grant/);

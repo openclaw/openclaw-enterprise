@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-10
-last_updated_session: authoring-run/18b830fb-bbb7-4b75-b14c-a01437b51c41
+updated: 2026-11-18
+last_updated_session: authoring-run/3ce33251-ef68-40c5-8773-04654aa781ed
 ---
 
 # Authorize model credentials per request
@@ -75,7 +75,16 @@ no stored key, no credential environment mapping and an explicit zero-cache toke
 grant. The guest receives a placeholder. The existing Gateway source owner
 remains metadata; it receives no model-key copy or attachment for this path.
 
-`verifyModelRequestProfile` and `verifyModelRequestPolicy` in that file check the
+`apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
+preserves `allow_unconfigured_public_tcp` when the admitted revision explicitly
+selects public network egress. The paired Sandbox returns the complete source
+policy, including filesystem and process constraints. `wiringStatus` rejects
+a changed public mode or protected route before checking the loaded policy.
+Public egress does not remove the model middleware or independently authorized
+Git delivery.
+
+`verifyModelRequestProfile` and `verifyModelRequestPolicy` in
+`apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts` check the
 provider, token endpoint, audience, mandatory middleware and actual admitted
 policy. Overlapping model routes and a missing required hook refuse release.
 Git has its own provider and disjoint route. Compute releases the Harness only
@@ -241,6 +250,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-18 22:17: Preserve explicit public egress when composing the online model request policy. (authoring-run/3ce33251-ef68-40c5-8773-04654aa781ed - 34ea051e9b1a8b01883cb1542af47ea70e006421)
 
 - 2026-11-10 05:07: Align initial policy versions, carry the database release budget through monotonic timing and order authorization against configured-role changes. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - cf0f7b52125917f76d3ff93c4e99e6b1a6c5dcd9)
 
