@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: In progress
 rfc: ../rfcs/0042-redeployment-continuation.md
 ---
 
@@ -16,47 +16,47 @@ and native OpenClaw recovery. Kubernetes dedicated Codex is the first qualified
 topology. Preserve explicit stop, current authority, retained-state ownership,
 and the refusal to take over active remote execution.
 
-The RFC is Proposed and [submitted as PR #6434](https://github.com/openclaw/openclaw-enterprise/pull/6434). Implementation is in progress; live redeployment qualification and publication remain pending.
+The RFC was submitted for human review before implementation and merged in [PR #6434](https://github.com/openclaw/openclaw-enterprise/pull/6434). [Implementation PR #6442](https://github.com/openclaw/openclaw-enterprise/pull/6442) contains the lifecycle and native recovery changes. Final live qualification, native image checks, and publication remain pending. The RFC decision status remains Proposed.
 
 ## Delivery
 
 ### 1. Submit the contract
 
 - [x] Submit RFC-0042 for human review in PR #6434.
-- [ ] Link the implementation PR.
+- [x] Link the implementation PR #6442.
 - [ ] Resolve any specific architectural or security hold before dependent work.
 
 ### 2. Persist lifecycle ownership
 
-- [ ] Extend the Agent lifecycle repository and PostgreSQL constraints with the
+- [x] Extend the Agent lifecycle repository and PostgreSQL constraints with the
       server-owned generation/domain pair and immutable revision snapshot.
-- [ ] Extend the Compute contract with side-effect-free domain admission.
-- [ ] Update `admitAgentDeployment` in `packages/occ/src/index.ts` to retain or
+- [x] Extend the Compute contract with side-effect-free domain admission.
+- [x] Update `admitAgentDeployment` in `packages/occ/src/index.ts` to retain or
       allocate generations under the existing Agent lock.
-- [ ] End the generation in explicit stop/delete transactions. Fence stale
+- [x] End the generation in explicit stop/delete transactions. Fence stale
       preparation and activation in the regular worker path.
-- [ ] Exercise AC-3 through PostgreSQL transactions and actual worker callers,
+- [x] Exercise AC-3 through PostgreSQL transactions and actual worker callers,
       including consecutive deployments after stop before activation.
 
 ### 3. Integrate the native runtime
 
-- [ ] Project the admitted snapshot through Kubernetes Compute; preserve
+- [x] Project the admitted snapshot through Kubernetes Compute; preserve
       unsupported topology refusal and existing stop/start ownership.
-- [ ] Extend native run ownership persistence and startup recovery so graceful
+- [x] Extend native run ownership persistence and startup recovery so graceful
       markers and crash recovery require the same generation. Reject missing
       generation evidence in managed deployments.
-- [ ] Preserve same-occurrence workspace reconnect, current authority checks,
+- [x] Preserve same-occurrence workspace reconnect, current authority checks,
       cancellation, and passive waiting for a surviving Codex turn.
-- [ ] Register meaningful native regression tests in the image build, including
+- [x] Register meaningful native regression tests in the image build, including
       forced-loss recovery after an ended generation.
 
 ### 4. Qualify the complete workflow
 
-- [ ] Extend the existing dedicated Agent integration case for AC-1, AC-2, AC-4,
+- [x] Extend the existing dedicated Agent integration case for AC-1, AC-2, AC-4,
       and AC-5 with real runtime images and models; no second recovery sender.
-- [ ] Keep the native-child relay proof aligned with observed protocol history.
+- [x] Keep the native-child relay proof aligned with observed protocol history.
       Prove the child performed the command and the Gateway delivered its answer.
-- [ ] Update the interrupted-turn reference, Compute contract, persistence
+- [x] Update the interrupted-turn reference, Compute contract, persistence
       inventory, lifecycle flow, and operator procedures together.
 - [ ] Run proportional source checks, independent review, and native controller
       and runtime checks on AMD64 and ARM64 at the final branch head.
@@ -72,9 +72,26 @@ The RFC is Proposed and [submitted as PR #6434](https://github.com/openclaw/open
 
 ## Verification status
 
-Native generation filtering and private-state preservation: 14 selected cases pass. All 43 PostgreSQL replacement cases pass, including both new generation and stale-worker races (AC-3). Native core and Gateway type checks pass. AC-1, AC-2, AC-4, and AC-5 real-runtime qualification remains in progress. Earlier qualification of native
-restart readiness predates this proposed lifecycle contract and cannot establish
-cross-generation refusal. Missing cluster or credential prerequisites must leave
-the affected acceptance criteria unverified; do not replace them with mocks.
+Source audit at `6ce8147ce28e2636304e215bd20b11e55d3fb586` confirms the lifecycle,
+Compute, worker, and native recovery implementation. The
+[interrupted-turn reference](../../docs/reference/agents/interrupted-turns.md)
+owns current behavior and the [recovery test guide](../../docs/testing/harness-restart-recovery.md)
+owns the live proof and its limits.
+
+Native generation filtering and private-state preservation: 14 selected cases
+pass. All 43 PostgreSQL replacement cases pass, including generation and
+stale-worker races (AC-3). All 236 PostgreSQL migration cases pass, including
+populated historical upgrades and dump/restore. Native core, configuration, and
+Gateway type checks pass. [Required CI at the audited commit](https://github.com/openclaw/openclaw-enterprise/actions/runs/44253949158)
+passes. Independent review found no P0 issues in its selected scope; it did not
+review lower priorities.
+
+AC-1, AC-2, AC-4, and AC-5 full real-runtime qualification remains in progress.
+Partial runs proved compatible redeployment and native restart recovery. The
+native-profile refusal fixture must observe refusal before restoring the shared
+OCC service profile; this is not per-user OCC identity propagation. Provider
+startup failures remain failed runs. The implementation PR records final-head
+proof and publication evidence. Missing prerequisites or partial passes do not
+complete an acceptance criterion.
 
 ## Manual Notes

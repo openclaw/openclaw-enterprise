@@ -3819,7 +3819,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         await connected;
         const { profile } = await client.request("users.self", {});
         ownerProfileId = profile.id;
-        ownerRole = profile.assignedRole;
+        ownerRole = profile.role;
         assert.notEqual(
           ownerProfileId,
           "gateway-owner",
@@ -4122,8 +4122,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
               try {
                 const { profiles } = await gatewayCall(topology, "users.list", {});
                 assert.equal(
-                  profiles.find((profile) => profile.id === interrupted.ownerProfileId)
-                    ?.assignedRole,
+                  profiles.find((profile) => profile.id === interrupted.ownerProfileId)?.role,
                   "reader",
                 );
                 revokedHistory = await assertRefusedWork(replacement, interrupted, queuedNonce);
