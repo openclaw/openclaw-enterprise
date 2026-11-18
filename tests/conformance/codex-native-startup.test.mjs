@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  AGENT_WITH_NODE_ENTRYPOINT,
-  codexLaunchEntrypoint,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { codexLaunchEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
@@ -880,11 +877,11 @@ test("Compute preserves admitted Codex commands and forwards proxy settings on n
       const { command } = fixture.provisions[0].requirements;
       if (legacy) {
         // Retry must replay the entire old command, not merely omit a proxy.
-        const expected = nodeProgramArguments(AGENT_WITH_NODE_ENTRYPOINT);
-        assert.ok(
-          command.slice(7).length === expected.length &&
-            expected.every((part, i) => part === command[7 + i]),
-          "legacy provider command bytes changed",
+        // Full command captured from the same fixture on pre-proxy main (5563280bd8).
+        assert.equal(
+          createHash("sha256").update(JSON.stringify(command)).digest("hex"),
+          "8602532f0647c0882e4a52a3277bda1c5074ec97122765b06d31ae01a72c713c",
+          "a stored Sandbox must keep its admitted command byte for byte",
         );
       }
       const { supervisor, codex } = inspectOpenShellCodexCommand(t, command, {
