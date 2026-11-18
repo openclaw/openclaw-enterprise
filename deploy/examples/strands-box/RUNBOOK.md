@@ -157,6 +157,14 @@ and [Prepare each Namespace](../../../docs/guides/deploy/production-agents.md#pr
 
 **Check:** `request GET "$base"` shows `"status":"ready"`.
 
+If you installed from an earlier head of this branch, its database records the
+packaged Gateway owner migration as `0081`. It is now `0083`, after main's
+`0081` and `0082`, and the Controller refuses that history. Recreate the
+database: `helm uninstall` the release, run
+`DROP DATABASE <database> WITH (FORCE)` as the PostgreSQL superuser, create it
+again with the same owner, grants and schemas, then do this step again with a
+fresh bootstrap claim. Steps 5 to 9 follow for the new Namespace.
+
 ### Step 5. Cluster objects for Box
 
 Not executed as written. `<agent-ns>` is the Kubernetes namespace the
