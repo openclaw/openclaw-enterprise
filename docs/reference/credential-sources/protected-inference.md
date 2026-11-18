@@ -107,6 +107,8 @@ Installation composition when one is configured. Otherwise they use ordinary Gat
 delivery where permitted, or the first strict provider for their type in catalog order.
 Explicit `authorization: "online-request"`
 selects the separate [online model profile](../drivers/credential-proxy.md#online-model-requests).
+Kubernetes Compute admits that source only with a dedicated Codex Harness using
+`openai-responses`. It rejects an unsupported pair before creating an AgentRevision.
 The selected provider ID and generation must identify one registration; duplicates
 return `409` before credential material is read. Multiple distinct providers for
 the same type remain supported. Reordering distinct providers does not change the

@@ -17,6 +17,9 @@ import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 import { validChatRequest, responsesRequestFailure } from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
 import { parseUnambiguousJson } from "../json-members.ts";
+import { openAiRequestProviderRef } from "../openai-request-adapter.ts";
+
+export { openAiRequestProviderRef } from "../openai-request-adapter.ts";
 
 const maximumResponseBytes = 4 * 1024 * 1024;
 
@@ -150,12 +153,6 @@ function protectedResponse(
 export const openAiStaticProviderRef = Object.freeze({
   id: "openai-static-https",
   generation: 3,
-});
-
-/** Exact identity selected by bundled full request-time model composition. */
-export const openAiRequestProviderRef = Object.freeze({
-  id: "openai-online-request",
-  generation: 1,
 });
 
 function openAiSourceType(): CredentialProviderDefinition["sourceType"] {

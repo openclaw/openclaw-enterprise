@@ -897,3 +897,87 @@ test(
     await assert.rejects(verify, /zero-cache model token grant/);
   },
 );
+
+test(
+  "online Responses source refuses unsupported Harness before revision or external effects (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const f = await staticEgressFixture(t, {
+      admitRevision: false,
+      requestCredentials: true,
+      sandboxUserNamespaces: false,
+      offerStrictCapabilities: true,
+      appFactory: postgresApp,
+    });
+    const controller: OpenClawController = f.controller;
+    const root = `/namespaces/${f.namespace.id}`;
+    const configuration = await f.createConfiguration(f.namespace.id, {
+      agents: {
+        defaults: {
+          model: { primary: "openai/fixture-model" },
+          models: { "openai/fixture-model": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+    });
+    const create = async (name: string, protectedSource: boolean) => {
+      const result = await f.request("POST", `${root}/agents`, {
+        body: {
+          name,
+          configurationId: configuration.id,
+          executionMode: "dedicated",
+          ...(protectedSource
+            ? {
+                harnessAuth: { method: "credential_source", sourceId: f.source.id },
+                credentialSources: [{ sourceId: f.source.id }],
+              }
+            : { harnessAuth: { method: "runtime" } }),
+        },
+      });
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      if (protectedSource) {
+        const grant = await f.request("POST", `${root}/iam/access-bindings`, {
+          body: {
+            subjectKind: "identity",
+            subjectId: result.data.servicePrincipalId,
+            roleId: f.grant.roleId,
+            resourceKind: "credential_source",
+            resourceId: f.source.id,
+          },
+        });
+        assert.equal(grant.status, 201, JSON.stringify(grant.body));
+      }
+      return result.data;
+    };
+    const unsupported = await create("unsupported-openclaw", true);
+    const ordinary = await create("ordinary-openclaw", false);
+    const effects = {
+      secret: f.countSecretReads(),
+      gateway: f.gatewayRequests.length,
+      provider: f.providerRequests.length,
+    };
+    const rejected = await f.request("POST", `${root}/agents/${unsupported.id}/deploy`);
+    assert.equal(rejected.status, 409, JSON.stringify(rejected.body));
+    assert.match(rejected.body.error.message, /dedicated Codex.*Responses/i);
+    assert.deepEqual(
+      await controller.transact((unit) =>
+        unit.revisions.listRevisions(f.namespace.id, unsupported.id),
+      ),
+      [],
+    );
+    assert.deepEqual(
+      {
+        secret: f.countSecretReads(),
+        gateway: f.gatewayRequests.length,
+        provider: f.providerRequests.length,
+      },
+      effects,
+      "refusal must precede Secret reads, Proxy registration checks and provider traffic",
+    );
+
+    // The restriction is specific to the online source, not to OpenClaw or Codex generally.
+    const healthy = await f.request("POST", `${root}/agents/${ordinary.id}/deploy`);
+    assert.equal(healthy.status, 202, JSON.stringify(healthy.body));
+    const codex = await f.request("POST", `${root}/agents/${f.agent.id}/deploy`);
+    assert.equal(codex.status, 202, JSON.stringify(codex.body));
+  },
+);

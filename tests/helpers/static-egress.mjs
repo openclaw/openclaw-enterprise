@@ -94,6 +94,8 @@ async function buildStaticEgressFixture(
     serviceTransport,
     admitRevision = true,
     requestCredentials = false,
+    offerStrictCapabilities = false,
+    sandboxUserNamespaces = /** @type {boolean | undefined} */ (undefined),
     resolutionFinished,
     preparedGitHub,
     createPreparedGitHub,
@@ -267,7 +269,7 @@ async function buildStaticEgressFixture(
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
   const gatewayCapabilities = [
     "openshell.supervisor-middleware.contract",
-    ...(requestCredentials ? [] : capabilities),
+    ...(requestCredentials && !offerStrictCapabilities ? [] : capabilities),
   ].sort();
   const profiles = new Map();
   const providers = new Map();
@@ -511,6 +513,9 @@ async function buildStaticEgressFixture(
   if (admissionOnly || requestCredentials) {
     // Exercise startup's retirement selection, not a policy recreated by the fixture.
     const base = createCredentialProxyInstallationConfiguration();
+    if (sandboxUserNamespaces !== undefined) {
+      base.drivers.sandbox.configuration.kubernetes.userNamespaces = sandboxUserNamespaces;
+    }
     if (requestCredentials) {
       const proxy = base.drivers.credential_proxy.configuration;
       Object.assign(proxy.authority, {
@@ -567,6 +572,7 @@ async function buildStaticEgressFixture(
         egress: egressOptions,
         gateway: { workspaceMode: "operator" },
         kubernetes: {
+          ...(sandboxUserNamespaces === undefined ? {} : { userNamespaces: sandboxUserNamespaces }),
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {
             subPath: "workspace",

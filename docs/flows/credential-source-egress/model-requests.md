@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-18
-last_updated_session: authoring-run/eab8bc47-885a-4be4-b367-963db36dfee7
+last_updated_session: authoring-run/f32322c2-cae5-4a31-bb72-c6fcc6e8c62b
 ---
 
 # Authorize model credentials per request
@@ -69,7 +69,10 @@ records `authorization: "online-request"`. `requestCredentialAuthority` uses
 `NativeIAMDriver.usesStateForAuthorization` to require the native policy reader
 for this OCC state, without a custom authorization override. Source creation and
 update reject unsupported authority before reading Secret material; Agent
-admission applies the same restriction. Admission version 8 covers the model
+admission applies the same restriction. Before Proxy planning, Kubernetes Compute's
+`validateHarnessCredentialSources` checks the online provider identity and accepts
+only a dedicated Codex Harness with the saved `openai-responses` protocol. A mismatch
+fails before a revision is saved or Secret material is read. Admission version 8 covers the model
 route; version 9 also requires independently authorized mandatory Git delivery.
 `packages/contracts/src/drivers/credential-proxy/index.ts:assertExecutionAdmission`
 refuses policy reduction for this profile. Binding removal may stop or redeploy
@@ -248,6 +251,7 @@ None.
 
 ## Changelog
 
+- 2026-11-18 05:18: Document the early Compute refusal for unsupported Harness and online Responses source pairs. (authoring-run/f32322c2-cae5-4a31-bb72-c6fcc6e8c62b - b0a2df2413bf72e555fae2ca4be804344c211783)
 - 2026-11-18 05:03: Trace installation-selected new model source admission. (authoring-run/eab8bc47-885a-4be4-b367-963db36dfee7 - b0a2df2413bf72e555fae2ca4be804344c211783)
 
 - 2026-11-10 05:07: Align initial policy versions, carry the database release budget through monotonic timing and order authorization against configured-role changes. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - cf0f7b52125917f76d3ff93c4e99e6b1a6c5dcd9)

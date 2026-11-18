@@ -5,6 +5,8 @@ Responses model while keeping the API key outside the guest. It requires an
 explicit `online-request` source and a qualified OpenShell installation.
 The source implementation is available; it does not establish qualification of
 an installed OpenShell and Codex pair. Complete the checks below before rollout.
+Agent deployment rejects an online source paired with OpenClaw or a Harness that
+does not use the dedicated Codex Responses path before it creates a revision.
 
 This profile checks permission before releasing a credential for each request.
 A request whose credential was already released may finish after withdrawal.
