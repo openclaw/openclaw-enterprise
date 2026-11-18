@@ -90,7 +90,7 @@ export function strandsBoxService(
     spec: {
       selector: labels,
       ports: diagnostic
-        ? [{ name: "readiness", port: STRANDS_STATUS_PORT, targetPort: STRANDS_STATUS_PORT }]
+        ? [{ name: "readiness", port: STRANDS_STATUS_PORT, targetPort: port }]
         : [{ name: "harness", port, targetPort: port }],
       // Only the controller's held-failure read uses the unready route.
       ...(diagnostic ? { publishNotReadyAddresses: true } : {}),
@@ -166,19 +166,11 @@ export function strandsBoxResources(
   ) {
     refuse();
   }
-  const probeKey = transport.valueFrom.secretKeyRef;
   const environment: Record<string, string> = {};
   const secretEnvironment: Record<string, string> = {};
   const volumes: Record<string, unknown>[] = [
     { name: "inputs", configMap: { name } },
-    {
-      name: "probe-auth",
-      secret: {
-        secretName: probeKey.name,
-        items: [{ key: probeKey.key, path: "token" }],
-        defaultMode: 0o440,
-      },
-    },
+    { name: "listener-identity", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } },
     { name: "shared-runtime", emptyDir: { sizeLimit: "4Gi" } },
     { name: "private-home", emptyDir: { sizeLimit: "2Gi" } },
     { name: "box-state", emptyDir: { sizeLimit: "256Mi" } },
@@ -220,9 +212,8 @@ export function strandsBoxResources(
       continue;
     }
     if (entry.name === "APP_SERVER_TOKEN") {
-      // Only the trusted readiness client presents the bearer. Codex accepts
-      // its verifier, as it does on Compute's verifier-delivery path.
-      environment.APP_TOKEN_SHA = transportHash;
+      // The supervisor receives only its verifier. The inner relay generates
+      // an independent credential for its private native hop.
       continue;
     }
     if (entry.name === "APP_TOKEN_SHA") {
@@ -374,6 +365,21 @@ export function strandsBoxResources(
   ];
   const initialize = `const fs=require("node:fs"); for(const path of ${JSON.stringify(roles ? [...PRIVATE, "/node-scratch/home", "/node-scratch/tmp"] : PRIVATE)}) fs.mkdirSync(path,{recursive:true,mode:0o700});\n${harnessWorkspacePreparationScript([...claims.values()].flatMap((claim) => claim.paths))}`;
   const initContainers: Record<string, unknown>[] = [
+    {
+      name: "initialize-listener",
+      image: r.image,
+      command: [
+        "node",
+        "/opt/oce/strands-box/initialize-listener.mjs",
+        `${name}.${context.namespace.name}.svc`,
+        `${name}-status.${context.namespace.name}.svc`,
+      ],
+      env: [{ name: "POD_UID", valueFrom: { fieldRef: { fieldPath: "metadata.uid" } } }],
+      volumeMounts: [{ name: "listener-identity", mountPath: "/run/strands-listener" }],
+      terminationMessagePath: "/dev/termination-log",
+      terminationMessagePolicy: "File",
+      securityContext,
+    },
     {
       name: "prepare-shared-runtime",
       image: r.image,
@@ -547,7 +553,7 @@ mv -T preparing image`,
               podSelector: { matchLabels: options.kubernetes.controlPlanePeer.podLabels },
             },
           ],
-          ports: [{ protocol: "TCP", port: STRANDS_STATUS_PORT }],
+          ports: [{ protocol: "TCP", port }],
         },
       ],
       egress: [
@@ -599,7 +605,7 @@ mv -T preparing image`,
             ...(roles
               ? [{ name: "workspace-outcome", mountPath: "/run/oce-workspace", readOnly: true }]
               : []),
-            { name: "probe-auth", mountPath: "/run/strands-box-probe", readOnly: true },
+            { name: "listener-identity", mountPath: "/run/strands-listener" },
           ],
           securityContext,
           readinessProbe: {
@@ -608,8 +614,7 @@ mv -T preparing image`,
                 "/usr/local/bin/node",
                 "--jitless",
                 "/opt/oce/strands-box/readiness.mjs",
-                "/run/strands-box-probe/token",
-                String(port),
+                "/run/strands-listener/probe.sock",
               ],
             },
             periodSeconds: 5,
