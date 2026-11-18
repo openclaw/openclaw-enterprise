@@ -1,10 +1,10 @@
 # Troubleshoot the platform
 
-Use this page for startup, Kubernetes, control-plane, or multi-Agent failures.
-For one Agent, use
+Troubleshoot startup, Kubernetes, control-plane, or multi-Agent failures.
+For one Agent, see
 [Agent troubleshooting](../topics/agent-troubleshoot.md).
 
-For pnpm and Helm setup issues, see [Troubleshoot local k3d setup](local-setup-troubleshooting.md).
+For pnpm and Helm, see [Troubleshoot local k3d setup](local-setup-troubleshooting.md).
 
 ## Local K3s cannot find the cpuset controller
 
