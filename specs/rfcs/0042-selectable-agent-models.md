@@ -14,12 +14,10 @@ Create Agent writes the default to `agents.defaults.model`. It records the switc
 
 OCC admits catalog entries for explicitly selected model IDs alongside the primary and fallback models it already admits. The selected models must use the same provider and Harness. When an Agent uses a saved provider, each selected ID must occur in its catalog. Deployment saves the selections and their admitted metadata in the Agent revision.
 
-Compute supplies those models to the native runtime. Dedicated OpenClaw checks the metadata and destination of each model it adds to its worker catalog. The Credential Gateway applies the same destination check to each added model. Adding a model cannot widen the credential's destination grant. A wildcard or alias in an advanced policy does not add a provider catalog entry.
-
-When a Credential Proxy protects inference, OCC derives the sender grant from the revision's primary model and its explicitly selected session models. The proxy checks the request body's model ID against that exact list before sending the key. Other models offered by the provider are outside this grant. The selected protocol, destination, operation, and tool restrictions still apply.
+Compute supplies the selected models and their metadata to the native runtime. Dedicated OpenClaw uses this catalog for model selection and session switching. All models backed by the selected credential must use its approved destination. The generic CredentialProxy contract does not require model-ID checks. The existing protected inference profile continues to check its own model grant, which includes the selected session models.
 
 ## Verification
 
 Deploy an Agent with two model IDs on one provider. Check that a new session uses the default, switch to the other model for a turn, and confirm another new session still uses the default. Exercise admission with a model on a different provider, an unselected catalog row and a second model with a conflicting destination. Each should fail before activation.
 
-The [Create Agent form](../../docs/reference/console/create-and-deploy.md) and [Harness model selection](../../docs/reference/harness-execution.md#native-runtime-selection) implement these choices on this branch. Integration covers deployment admission and the credential destination check. A live two-model session switch still needs qualification.
+The [Create Agent form](../../docs/reference/console/create-and-deploy.md) and [Harness model selection](../../docs/reference/harness-execution.md#native-runtime-selection) implement these choices on this branch. Integration covers deployment admission and the credential destination check. A tool-call turn after a session switch still needs qualification.
