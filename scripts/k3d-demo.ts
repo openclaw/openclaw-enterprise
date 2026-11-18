@@ -5,6 +5,8 @@ import {
   assertActualModelTurn,
 } from "../tests/helpers/harness-topology-k3d-real.mjs";
 
+type Cleanup = () => unknown;
+
 const controlUiPort = 18888;
 const consolePort = 18889;
 const demoStatePath = process.env.OCC_K3D_DEMO_STATE;
@@ -12,18 +14,18 @@ const harnessId = process.env.OCC_K3D_HARNESS ?? "codex";
 
 async function main() {
   assert.ok(demoStatePath, "OCC_K3D_DEMO_STATE is required");
-  const cleanups = [];
+  const cleanups: Cleanup[] = [];
   const context = {
-    after: (cleanup) => cleanups.push(cleanup),
-    diagnostic: (message) => process.stderr.write(`[k3d:demo] ${message}\n`),
+    after: (cleanup: Cleanup) => cleanups.push(cleanup),
+    diagnostic: (message: string) => process.stderr.write(`[k3d:demo] ${message}\n`),
   };
-  let stopDemo;
-  const stopping = new Promise((resolve) => {
+  let stopDemo!: () => void;
+  const stopping = new Promise<void>((resolve) => {
     stopDemo = resolve;
   });
   process.once("SIGINT", stopDemo);
   process.once("SIGTERM", stopDemo);
-  let failure;
+  let failure: unknown;
   try {
     assert.ok(harnessId === "codex" || harnessId === "openclaw", "invalid k3d Harness");
     const harnessName = harnessId === "codex" ? "Codex" : "native OpenClaw";
@@ -52,6 +54,14 @@ async function main() {
     assert.equal(topology.controllerUrl, `http://127.0.0.1:${consolePort}`);
     assert.equal(topology.gatewayUrl, `http://127.0.0.1:${controlUiPort}`);
     assert.ok(topology.gatewayPassword, "the demo requires a direct Control UI password");
+    assert.ok(topology.workspaceGateway, "the demo requires a workspace Gateway");
+    assert.ok(
+      typeof topology.agent === "object" &&
+        topology.agent !== null &&
+        "id" in topology.agent &&
+        typeof topology.agent.id === "string",
+      "the demo requires an Agent ID",
+    );
     await topology.workspaceGateway.connect(topology);
 
     process.stderr.write("[k3d:demo] Running a real model turn before exposing the demo.\n");
@@ -99,7 +109,7 @@ async function main() {
     );
 
     await stopping;
-  } catch (error) {
+  } catch (error: unknown) {
     failure = error;
   } finally {
     process.removeListener("SIGINT", stopDemo);
@@ -108,7 +118,7 @@ async function main() {
     for (const cleanup of cleanups) {
       try {
         await cleanup();
-      } catch (error) {
+      } catch (error: unknown) {
         failure =
           failure === undefined
             ? error
@@ -129,7 +139,7 @@ async function main() {
   );
 }
 
-main().catch((error) => {
+main().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });

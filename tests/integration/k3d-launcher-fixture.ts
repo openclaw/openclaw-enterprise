@@ -477,7 +477,7 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
       "tests/integration/harness-topology-k3d-routing-real.test.mjs",
     ]);
   } else {
-    assert.deepEqual(recorded.args, ["scripts/k3d-demo.mjs"]);
+    assert.deepEqual(recorded.args, ["scripts/k3d-demo.ts"]);
   }
   if (action === "test") {
     assert.equal(recorded.demoState, "");
