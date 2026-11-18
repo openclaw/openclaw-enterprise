@@ -40,6 +40,7 @@ function requireFirst<T>(values: readonly T[]): T {
   return value;
 }
 
+// Check the JavaScript fixture's callback result only after its locked operation settles.
 function preparedConnection(
   database: ReturnType<typeof createPreparedStore>,
 ): GitHubPreparationStore {
@@ -47,10 +48,12 @@ function preparedConnection(
   return {
     async readCurrent<T>(familyId: string, select: (row: Family | undefined) => T): Promise<T> {
       let selected: { value: T } | undefined;
-      await connection.readCurrent(familyId, (row: Family | undefined) => {
+      const result: unknown = await connection.readCurrent(familyId, (row: Family | undefined) => {
         selected = { value: select(row) };
+        return selected.value;
       });
       assert.ok(selected, "fixture read selector ran");
+      assert.strictEqual(result, selected.value, "fixture returns the selected value");
       return selected.value;
     },
     async transact<T>(
@@ -58,13 +61,15 @@ function preparedConnection(
       update: (row: Family | undefined, allocateMaterialVersion: () => string) => T,
     ): Promise<T> {
       let updated: { value: T } | undefined;
-      await connection.transact(
+      const result: unknown = await connection.transact(
         familyId,
         (row: Family | undefined, allocateMaterialVersion: () => string) => {
           updated = { value: update(row, allocateMaterialVersion) };
+          return updated.value;
         },
       );
       assert.ok(updated, "fixture transaction callback ran");
+      assert.strictEqual(result, updated.value, "fixture returns the committed value");
       return updated.value;
     },
   };
