@@ -133,21 +133,22 @@ delivered at start does not meet this profile.
   that execution and process before it answers. The principal is the
   [whole admitted execution](../../docs/reference/drivers/credential-proxy.md#registration-and-execution-release),
   siblings included.
-- **GitHub** (`bindRepositoryGit(authority, requests)`, [#6350]). The view passes the request without credentials
-  (TLS-verified target, headers, body up to 4 MiB) and a deadline at most 30 s ahead to `requests.authorize`. OCE
-  reads the material, classifies the request with main's `decideGitHubRequest`
-  (`apps/controller/src/drivers/repo/github/access/protected-requests.ts:164`), authorizes it online, records the use
-  and answers `allow` or `refused` with a reason code that the Agent sees. Under `github_repository`, which stock `gh`
-  needs, OCE refuses Git and REST requests for other repositories and applies no ref or draft rule; the permissions
-  and repository IDs of the mint request bound the rest
+- **GitHub** ([#6350]). The Worker binds the package with `bindRepositoryGit(authority, requests)`. Per held
+  request, the view passes `requests.authorize` (`RepositoryGitRequests`) the confirmed route, the profile, a deadline
+  at most 30 s ahead and the request without credentials (TLS-verified target, headers, body up to 4 MiB). OCE reads
+  the material, decides online with `decideGitHubRequest`
+  (`apps/controller/src/drivers/repo/github/access/protected-requests.ts`), as the bundled route does, and records
+  one possible use. An allow returns the typed `credential` for that request, the use's `exchangeId` and `sendBy`; a
+  refusal, a reason code the Agent sees. There is no exact-dispatch mode: such a recipient gets `route_not_ready`. The
+  package keeps no copy of the rule and gains no access: it already holds the authority. Only a test fixture calls
+  the port so far. Under `github_repository`, which stock `gh` needs, OCE refuses other repositories and applies no
+  ref or draft rule; the mint request's permissions and repository IDs bound the rest
   (`apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts:126-132`).
 - **Model.** The same ask. The Worker reads the key once per request and keeps nothing; the workload holds a
   placeholder. Where the key rests is question 1.
 
 Until question 2 is answered, main's rule holds: OCE allows uses only after the recipient confirms each material
-version (`packages/contracts/src/protected-repository-git.ts:121-124`), which a request-time recipient does without
-holding a value. [#6350] answers one `authorization` header value; the prototype, a typed credential with an
-exchange ID.
+version (`confirmInstall`), which a request-time recipient does without holding a value.
 
 ### Isolation
 
