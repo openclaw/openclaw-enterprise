@@ -25,14 +25,11 @@ import {
   shaPattern,
   type Platform,
 } from "./container-release/metadata.ts";
+import { isRecord } from "./records.ts";
 
 const execute = promisify(execFile);
 const maxMetadataBytes = 64 * 1024;
 const binaryDigest = /^[a-f0-9]{64}$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 async function readReceipt(path: string): Promise<unknown> {
   const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants;

@@ -18,7 +18,7 @@ test("the migration command reports malformed release metadata before connecting
     await symlink(join(repository, path), join(fixture, path));
   }
   for (const path of [
-    "migrate-production.mjs",
+    "migrate-production.ts",
     "migration-history.mjs",
     "migration-history-preflight.ts",
     "migration-catalog.ts",
@@ -71,7 +71,7 @@ test("the migration command reports malformed release metadata before connecting
       join(fixture, "migrations", "meta", "_canonical-history.json"),
       JSON.stringify(scenario.manifest),
     );
-    const result = spawnSync(process.execPath, ["scripts/migrate-production.mjs", "--check"], {
+    const result = spawnSync(process.execPath, ["scripts/migrate-production.ts", "--check"], {
       cwd: fixture,
       env: {
         ...process.env,

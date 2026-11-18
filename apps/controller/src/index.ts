@@ -13,8 +13,6 @@ import {
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
   StaticKeyConnectionTemplateVersionSchema,
-  InferencePrivatePeerInputSchema,
-  InferencePrivatePeerSchema,
   ModelProviderSchema,
   ModelProviderModelSchema,
   CredentialSourceResponse,
@@ -1423,8 +1421,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(OAuthConnectionTemplateVersionSchema);
   app.addSchema(ConnectionTemplateSchema);
   app.addSchema(StaticKeyConnectionTemplateVersionSchema);
-  app.addSchema(InferencePrivatePeerInputSchema);
-  app.addSchema(InferencePrivatePeerSchema);
   app.addSchema(ModelProviderModelSchema);
   app.addSchema(ModelProviderSchema);
   void app.register(swagger, {
@@ -2206,6 +2202,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         requestId: request.id,
         method: request.method,
         routeId: operation.operationId,
+        ...(request.routeOptions.url === undefined ? {} : { route: request.routeOptions.url }),
         requestedScope: {
           installationId,
           ...(typeof params.namespaceId === "string" ? { namespaceId: params.namespaceId } : {}),

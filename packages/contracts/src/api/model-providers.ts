@@ -4,7 +4,8 @@ import { ConnectionTemplateId, ModelProviderId, RequestId } from "./common.ts";
 export const InferenceBaseUrlSchema = Type.String({
   maxLength: 2048,
   pattern: "^https://",
-  description: "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+  description:
+    "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
 });
 export const InferenceProtocolSchema = Type.Union([
   Type.Literal("openai-responses"),

@@ -128,7 +128,6 @@ test("startup composes both OpenShell members from one Backend for static source
     getWorkspace: unexpected,
     createWorkspace: unexpected,
     deleteWorkspace: unexpected,
-    getServiceUrl: unexpected,
     deleteService: unexpected,
     deleteSandbox: unexpected,
     execSandbox: unexpected,

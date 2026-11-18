@@ -447,8 +447,6 @@ export interface OpenShellGatewayClient
     request: OpenShellSandboxDeleteRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse | undefined>;
-  /** The exposed service's URL, or undefined when the endpoint does not exist. */
-  getServiceUrl(request: OpenShellServiceRequest, signal: AbortSignal): Promise<string | undefined>;
   getService(
     workspace: string,
     sandbox: string,
@@ -1849,30 +1847,6 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       }
       throw error;
     }
-  }
-
-  async getServiceUrl(
-    request: OpenShellServiceRequest,
-    signal: AbortSignal,
-  ): Promise<string | undefined> {
-    let response: RecordValue;
-    try {
-      response = await this.unary(
-        "GetService",
-        {
-          sandbox: request.sandbox,
-          name: request.service,
-          workspace_scope: { workspace: request.workspace },
-        },
-        signal,
-      );
-    } catch (error) {
-      if (await this.isStatus(error, "NOT_FOUND")) {
-        return undefined;
-      }
-      throw error;
-    }
-    return normalizeServiceUrl(response.url, this.options.endpoint);
   }
 
   async getService(

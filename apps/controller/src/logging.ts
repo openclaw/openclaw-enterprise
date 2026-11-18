@@ -239,6 +239,10 @@ const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
   ["installationId", INSTALLATION_ID],
   ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
 ]);
+// On authentication events, the ID the API gives a request and answers with (`req_<UUID>`, or
+// `nar_<UUID>` for a native admin check), so a line matches the response a caller saw. Other
+// events keep their own rule for `requestId`.
+const AUTHENTICATION_REQUEST_ID = new RegExp(`^(?:req|nar)_${UUID_V4}$`);
 // A bootstrap attempt names the same Installation, and the administrator Principal and service
 // Principal OCC assigns for it, each kept only in its own format (finding 2246). The auth account
 // and service key IDs come from the auth library, not OCC, so they keep the generic string check.
@@ -250,6 +254,17 @@ const ATTEMPT_IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
 
 function safeIdentifier(format: RegExp, value: unknown): string | undefined {
   return typeof value === "string" && format.test(value) ? value : undefined;
+}
+
+// On authentication events, a route pattern such as `/agents/:agentId/chat`: no query, fragment
+// or percent-encoding. The shape alone cannot tell a pattern from a raw path, so a value with a
+// token shape is dropped too, and anything else that is not a route pattern is dropped.
+const ROUTE_PATTERN = /^\/[A-Za-z0-9_.~:*/{}-]{0,255}$/;
+
+function safeRoute(value: unknown): string | undefined {
+  return typeof value === "string" && ROUTE_PATTERN.test(value) && !resemblesToken(value)
+    ? value
+    : undefined;
 }
 
 function safeCode(value: unknown): string | undefined {
@@ -419,6 +434,13 @@ function sanitizedEvent(
       }
       continue;
     }
+    if (key === "requestId" && eventName.startsWith("authentication.")) {
+      const id = safeIdentifier(AUTHENTICATION_REQUEST_ID, value);
+      if (id !== undefined) {
+        result[key] = id;
+      }
+      continue;
+    }
     const identifier = IDENTIFIER_FIELDS.get(key);
     if (identifier !== undefined) {
       const id = safeIdentifier(identifier, value);
@@ -468,7 +490,9 @@ function sanitizedEvent(
           ? safeIdentifiers(value)
           : key === "presetFile"
             ? safePath(value)
-            : safeScalar(key, value);
+            : key === "route" && eventName.startsWith("authentication.")
+              ? safeRoute(value)
+              : safeScalar(key, value);
     if (safe !== undefined) {
       result[key] = safe;
     }

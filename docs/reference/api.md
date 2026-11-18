@@ -1600,7 +1600,7 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
 | **`data[].current`: Static-key connection template version** | — | — | Fields below apply to this variant. |
-| `data[].current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data[].current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data[].current.createdAt` | `string` | Yes | — |
 | `data[].current.destinations` | `array<object>` | Yes | min items: 1; max items: 1 |
 | `data[].current.destinations[].host` | `string` | Yes | — |
@@ -1608,7 +1608,6 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.destinations[].path` | `string` | Yes | — |
 | `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.mode` | `"static_bearer"` | Yes | — |
-| `data[].current.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data[].current.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
@@ -1691,11 +1690,10 @@ Create an Installation-wide or Namespace-scoped connection template
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `mode` | `"static_bearer"` | Yes | — |
 | `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `privatePeer` | [`Private inference destination`](#schema-private-inference-destination) | No | — |
 | `protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 
 **`mode: "manual"`**
@@ -1795,7 +1793,7 @@ Example request
 | `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | **`data.current`: Static-key connection template version** | — | — | Fields below apply to this variant. |
-| `data.current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data.current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data.current.createdAt` | `string` | Yes | — |
 | `data.current.destinations` | `array<object>` | Yes | min items: 1; max items: 1 |
 | `data.current.destinations[].host` | `string` | Yes | — |
@@ -1803,7 +1801,6 @@ Example request
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.mode` | `"static_bearer"` | Yes | — |
-| `data.current.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data.current.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -2045,7 +2042,7 @@ Get one connection template
 | `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | **`data.current`: Static-key connection template version** | — | — | Fields below apply to this variant. |
-| `data.current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data.current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data.current.createdAt` | `string` | Yes | — |
 | `data.current.destinations` | `array<object>` | Yes | min items: 1; max items: 1 |
 | `data.current.destinations[].host` | `string` | Yes | — |
@@ -2053,7 +2050,6 @@ Get one connection template
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.mode` | `"static_bearer"` | Yes | — |
-| `data.current.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data.current.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -2136,10 +2132,9 @@ Rename a connection template, or create a version with new approved values
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `displayName` | `string` | No | min length: 1; max length: 200 |
 | `mode` | `"static_bearer"` | Yes | — |
-| `privatePeer` | [`Private inference destination`](#schema-private-inference-destination) | No | — |
 | `protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 
 **`mode: "manual"`**
@@ -2234,7 +2229,7 @@ Example request
 | `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | **`data.current`: Static-key connection template version** | — | — | Fields below apply to this variant. |
-| `data.current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data.current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data.current.createdAt` | `string` | Yes | — |
 | `data.current.destinations` | `array<object>` | Yes | min items: 1; max items: 1 |
 | `data.current.destinations[].host` | `string` | Yes | — |
@@ -2242,7 +2237,6 @@ Example request
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.mode` | `"static_bearer"` | Yes | — |
-| `data.current.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data.current.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -2361,7 +2355,7 @@ List connection templates the caller may connect in this Namespace
 | `data[].current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
 | **`data[].current`: Static-key connection template version** | — | — | Fields below apply to this variant. |
-| `data[].current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data[].current.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data[].current.createdAt` | `string` | Yes | — |
 | `data[].current.destinations` | `array<object>` | Yes | min items: 1; max items: 1 |
 | `data[].current.destinations[].host` | `string` | Yes | — |
@@ -2369,7 +2363,6 @@ List connection templates the caller may connect in this Namespace
 | `data[].current.destinations[].path` | `string` | Yes | — |
 | `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.mode` | `"static_bearer"` | Yes | — |
-| `data[].current.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data[].current.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
@@ -3382,7 +3375,7 @@ List Installation model providers
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `array<Model Provider>` | Yes | — |
-| `data[].baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data[].baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data[].connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Installation-wide static-key template matching the provider URL and protocol. |
 | `data[].defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$`; Optional default from the models offered by this provider. |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -3459,7 +3452,7 @@ Create an Installation model provider
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Installation-wide static-key template matching the provider URL and protocol. |
 | `defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$`; Optional default from the models offered by this provider. |
 | `displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -3511,7 +3504,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `Model Provider` | Yes | — |
-| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Installation-wide static-key template matching the provider URL and protocol. |
 | `data.defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$`; Optional default from the models offered by this provider. |
 | `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -3591,7 +3584,7 @@ Read a model provider
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `Model Provider` | Yes | — |
-| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Installation-wide static-key template matching the provider URL and protocol. |
 | `data.defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$`; Optional default from the models offered by this provider. |
 | `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -3662,7 +3655,7 @@ Replace model provider settings if the saved fingerprint matches
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Installation-wide static-key template matching the provider URL and protocol. |
 | `defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$`; Optional default from the models offered by this provider. |
 | `displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -3716,7 +3709,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `Model Provider` | Yes | — |
-| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Installation-wide static-key template matching the provider URL and protocol. |
 | `data.defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$`; Optional default from the models offered by this provider. |
 | `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -3796,7 +3789,7 @@ List the model providers available when creating an Agent
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `array<Model Provider>` | Yes | — |
-| `data[].baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname and a path ending in /v1. |
+| `data[].baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://`; Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1. |
 | `data[].connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Installation-wide static-key template matching the provider URL and protocol. |
 | `data[].defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$`; Optional default from the models offered by this provider. |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -6617,7 +6610,6 @@ Example request
 | `data.harness.mode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.harness.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
-| `data.harness.privateInferencePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data.harness.version` | `string` | Yes | min length: 1 |
 | `data.harnessAuth` | `object or object or object or object` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -9842,7 +9834,6 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].harness.mode` | `"embedded" or "dedicated"` | Yes | — |
 | `data[].harness.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].harness.overrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
-| `data[].harness.privateInferencePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data[].harness.version` | `string` | Yes | min length: 1 |
 | `data[].id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -10755,7 +10746,6 @@ List credential-source metadata, optionally filtered to ready, approved model cr
 | `data[].staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data[].staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `data[].staticKeyGrant.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data[].staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data[].status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data[].status.reason` | `string` | No | max length: 512 |
@@ -10912,7 +10902,6 @@ Example request
 | `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `data.staticKeyGrant.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
@@ -11056,7 +11045,6 @@ Get one credential source and its live Credential Gateway status
 | `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `data.staticKeyGrant.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
@@ -11188,7 +11176,6 @@ Example request
 | `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `data.staticKeyGrant.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
@@ -11291,7 +11278,6 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `data.staticKeyGrant.privatePeer` | [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | No | — |
 | `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
@@ -13764,11 +13750,9 @@ Reusable schema names are referenced by operation request and response tables.
 | `OAuth connection template version` | `object` |
 | `Connection template` | `object` |
 | `Static-key connection template version` | `object` |
-| [`Private inference destination`](#schema-private-inference-destination) | `2 object variants` |
-| [`Approved private inference receiver`](#schema-approved-private-inference-receiver) | `2 object variants` |
 | `Model offered by this provider` | `object` |
-| `PluginApprovers` | `array<object>` |
 | `Model Provider` | `object` |
+| `PluginApprovers` | `array<object>` |
 | `PluginToolPolicy` | `object` |
 | `PluginToolDefaults` | `object` |
 | `PluginDesiredSelection` | `object` |
@@ -13776,45 +13760,3 @@ Reusable schema names are referenced by operation request and response tables.
 | `ErrorResponse` | `object` |
 | `AgentDeploymentDiagnosticsResponse` | `object` |
 | `AgentRuntimeResponse` | `object` |
-
-### Private inference destination
-
-<span id="schema-private-inference-destination"></span>
-
-**`kind: "private_ipv4"`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `address` | `string` | Yes | pattern: `^(?:10\.(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])\.\|172\.(?:1[6-9]\|2[0-9]\|3[01])\.\|192\.168\.)(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])\.(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])$`; One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname. |
-| `kind` | `"private_ipv4"` | Yes | — |
-
-**`kind: "kubernetes_service"`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `kind` | `"kubernetes_service"` | Yes | — |
-| `name` | `string` | Yes | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
-| `namespace` | `string` | Yes | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
-
-### Approved private inference receiver
-
-<span id="schema-approved-private-inference-receiver"></span>
-
-**`kind: "private_ipv4"`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `address` | `string` | Yes | pattern: `^(?:10\.(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])\.\|172\.(?:1[6-9]\|2[0-9]\|3[01])\.\|192\.168\.)(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])\.(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])$`; One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname. |
-| `kind` | `"private_ipv4"` | Yes | — |
-
-**`kind: "kubernetes_service"`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `address` | `string` | Yes | pattern: `^(?:10\.(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])\.\|172\.(?:1[6-9]\|2[0-9]\|3[01])\.\|192\.168\.)(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])\.(?:0\|[1-9][0-9]?\|1[0-9]{2}\|2[0-4][0-9]\|25[0-5])$`; One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname. |
-| `kind` | `"kubernetes_service"` | Yes | — |
-| `name` | `string` | Yes | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
-| `namespace` | `string` | Yes | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
-| `podSelector` | `object<string, string>` | Yes | min properties: 1 |
-| `targetPort` | `integer` | Yes | minimum: 1; maximum: 65535 |
-| `uid` | `string` | Yes | min length: 1 |

@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { isRecord } from "./records.ts";
 
 const matrixLanes = new Set([
   "checks-baseline-1",
@@ -30,10 +31,6 @@ type GateArgs = { needsPath: string; outputPath: string } & (
 );
 
 type JobReceipt = { result: unknown; lanes?: string[] };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function selectedLanes(text: string): string[] {
   const lanes: unknown = JSON.parse(text);
