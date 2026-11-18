@@ -6,7 +6,7 @@ author: freeqaz
 
 # Proposal: Run dedicated Codex Agents in an external Sandbox through the existing Driver contracts
 
-- **ID:** RFC-0040
+- **ID:** RFC-0042
 - **Created:** 2026-11-16
 - **Last updated:** 2026-11-17
 - **RFC PR:** [#6346](https://github.com/openclaw/openclaw-enterprise/pull/6346)
