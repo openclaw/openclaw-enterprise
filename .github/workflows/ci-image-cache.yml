@@ -48,6 +48,7 @@ on:
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
       - scripts/migration-catalog.ts
+      - scripts/migration-history-preflight.ts
       - scripts/production-healthcheck.ts
       - tsconfig.base.json
       - tsconfig.json
