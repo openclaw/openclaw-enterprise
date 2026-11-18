@@ -10,6 +10,11 @@ first.
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1    | `bwrap` fails with `Failed RTM_NEWADDR` or `uid_map` permission errors                                                                      | Ubuntu 24.04 restricts unprivileged user namespaces                                                                                                                          | load the [AppArmor profiles](#apparmor-profiles) ([known gap](KNOWN-GAPS.md#ubuntu-2404-restricts-unprivileged-user-namespaces))              |
 | 1    | Box cannot run programs from its runtime directory                                                                                          | `/run` (or your runtime directory's mount) is `noexec`                                                                                                                       | `sudo mount -o remount,exec /run`, or put `runtimeDir` on an exec mount                                                                       |
+| 1    | `corepack: command not found`                                                                                                               | only `bin/node` was installed                                                                                                                                                | [install corepack too](RUNBOOK-BUILD.md#step-1-node-with-corepack-ran)                                                                        |
+| 2    | `cargo: command not found`                                                                                                                  | no Rust toolchain                                                                                                                                                            | [prerequisites](RUNBOOK-BUILD.md#prerequisites)                                                                                               |
+| 2    | `cp: cannot create directory '/opt/oce-box/compiled-agent/'`                                                                                | the target directory does not exist                                                                                                                                          | `sudo install -d -m 0755 /opt/oce-box/compiled-agent` first                                                                                   |
+| 3    | `pnpm add` of the Driver fails: `ERR_PNPM_FETCH_404`                                                                                        | the package is in no public registry                                                                                                                                         | publish it to your own registry ([build detail](RUNBOOK-BUILD.md#controller-with-the-driver-ran))                                             |
+| 3    | `ERR_PNPM_NO_MATURE_MATCHING_VERSION`                                                                                                       | the workspace accepts registry releases only after seven days                                                                                                                | add the package to `minimumReleaseAgeExclude`                                                                                                 |
 | 1, 9 | host refuses with `noncanonical_path`                                                                                                       | a configured path is a symlink, for example `/usr/local/bin/node` linking into a home directory                                                                              | install real root-owned files at those paths                                                                                                  |
 | 2    | `gh api apps/<app-slug>` returns `404`                                                                                                      | the App is private                                                                                                                                                           | read the App ID on the App's settings page                                                                                                    |
 | 3, 9 | `agent_exec_covers_git` before `startup refused at stage-inputs`                                                                            | an `exec` grant or Codex's `PATH` reaches a `git` other than `/usr/bin/git`                                                                                                  | see [Prepare the host and verify Box](README.md#prepare-the-host-and-verify-box)                                                              |
@@ -89,13 +94,17 @@ profile strands-box <box-dir>/* flags=(unconfined) {
   host on a different node from the Worker and Gateway.
 - Model ids other than the one id the proven runs sent, endpoints with WebSocket transport, and
   public model certificates without an upstream CA bundle.
-- A Controller image built with `pnpm-lock.yaml` regenerated, as
-  [the documented procedure](../../../docs/reference/drivers/selection.md#package-identity-and-factory-exports)
-  requires. The runs added one stage over the stock `runtime` target that
-  copied the unpacked package into
+- An installation running a Controller image built
+  [the documented way](RUNBOOK-BUILD.md#controller-with-the-driver-ran):
+  such an image was built and passed the step 3 import check, but no
+  Agent ran on it. The runs added one stage over the stock `runtime` target
+  that copied the unpacked package into
   `/app/apps/controller/node_modules/@openclaw-enterprise/example-strands-box-driver/`
   and added it to `/app/apps/controller/package.json`, without updating
   `pnpm-lock.yaml`.
+- Steps 1 and 4 to 6 on an empty host: only their build parts and the
+  certificate commands were run as written
+  ([build detail](RUNBOOK-BUILD.md)).
 - Rules on draft state or branch names for `gh` API requests
   ([known gap](KNOWN-GAPS.md#oce-applies-no-draft-or-branch-rule-to-ghs-github-api-requests)):
   the prompt and the App's permissions are the only limits.

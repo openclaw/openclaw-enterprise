@@ -76,14 +76,8 @@ git checkout 956764b58f2c5ccb12bb7048fd1ced3d8ca1b5d4
 cargo build --release --locked -p strands-box -p strands-box-containment
 ```
 
-If that commit is not on the fork yet, the same tree
-(`dfd97bd7d136`) comes from the published branches:
-
-```bash
-git checkout -b demo origin/dogfood/main   # 5ae909afc5
-git merge --no-ff origin/fix/containment-init-signals
-git merge --no-ff origin/fix/shell-stdin-passthrough
-```
+It needs `rustup` and a C toolchain
+([prerequisites](RUNBOOK-BUILD.md#prerequisites)).
 
 Install `strands-box`, `strands-box-sock-alias` and
 `strands-box-contain-trampoline` from `target/release` side by side with a
@@ -93,6 +87,8 @@ fresh `box_dir`, and point the host's `boxBin` at `strands-box`.
 
 - [RUNBOOK.md](RUNBOOK.md): set up and run a valid end-to-end test against
   real GitHub, step by step.
+- [RUNBOOK-BUILD.md](RUNBOOK-BUILD.md): toolchains, build and install
+  commands for the runbook's steps 1 to 6.
 - [KNOWN-GAPS.md](KNOWN-GAPS.md): what an operator must know, and what we ask
   of Box.
 - [VALIDATION.md](VALIDATION.md): what ran where.

@@ -81,51 +81,47 @@ files `0600`, private directories `0700`.
 ```bash
 sudo apt-get install -y git jq curl ca-certificates bubblewrap uidmap openssl python3
 sudo mount -o remount,exec /run        # Box's runtime directory is under /run; until reboot
-sudo install -o root -g root -m 0755 <node-24.22.1>/bin/node /usr/local/bin/node
 sudo install -d -o "$USER" -g "$USER" -m 0700 /home/node
 ```
 
-Install Node 24.22.1 (checksum-verified) and pnpm through `corepack`; run
-`pnpm install --frozen-lockfile` in the OCE checkout on the host. For user
-namespaces see the [known gap](KNOWN-GAPS.md#ubuntu-2404-restricts-unprivileged-user-namespaces)
-and load the [two AppArmor profiles](RUNBOOK-TROUBLESHOOTING.md#apparmor-profiles).
+Install the [prerequisites](RUNBOOK-BUILD.md#prerequisites), Node 24.22.1
+at `/usr/local/bin/node` with corepack, clone this branch and run
+`pnpm install --frozen-lockfile`. For user
+namespaces see the [known gap](KNOWN-GAPS.md#ubuntu-2404-restricts-unprivileged-user-namespaces);
+choose `<box-dir>` (step 2) and load the [two AppArmor profiles](RUNBOOK-TROUBLESHOOTING.md#apparmor-profiles).
 
-**Check:** `bwrap --unshare-all --die-with-parent --ro-bind / / true` exits 0;
+**Check (not executed):** `bwrap --unshare-all --die-with-parent --ro-bind / / true` exits 0;
 `findmnt -no OPTIONS /run` lacks `noexec`; `realpath /usr/local/bin/node` is
 itself.
 
 ### Step 2. Build Box and the host programs
 
-Build and install the three Box programs side by side as in
-[Which Box build](README.md#which-box-build), in a directory the AppArmor
-profile covers. Build the [workspace verifier](workspace-verifier/README.md)
-with `GOARCH=amd64`. From the OCE checkout:
-
-```bash
-pnpm exec tsc -p deploy/examples/strands-box/host/tsconfig.agent.json --outDir <out>
-sudo cp -a <out>/. /opt/oce-box/compiled-agent/ && sudo chown -R root:root /opt/oce-box
-sudo install -D -m 0755 oce-workspace-verifier /opt/demo/verifier/oce-workspace-verifier
-```
-
-Install a released `gh` (the runs used 2.103.2) at `/usr/local/bin/gh`.
+Build the three Box programs ([Which Box build](README.md#which-box-build))
+into `<box-dir>`, the [workspace verifier](workspace-verifier/README.md)
+(`GOARCH=amd64`; keep its SHA-256) and the host helper, and install `gh`
+2.103.2 ([commands](RUNBOOK-BUILD.md#step-2-box-verifier-and-host-helper-ran)).
 
 **Check:** `<box-dir>/strands-box --version` prints `strands-box 0.1.0`.
 
 ### Step 3. Build the images
+
+From the OCE checkout ([commands](RUNBOOK-BUILD.md#step-3-images)):
 
 - **Runtime**: [Build a local runtime image](../../runtime/README.md#build-a-local-runtime-image),
   `--platform linux/amd64`.
 - **Controller with the Driver**: `node deploy/examples/strands-box/driver/build.ts`
   and `pnpm --dir deploy/examples/strands-box/driver pack`, then a Controller
   image with that package as a direct `apps/controller` dependency at `0.1.6`
-  ([package identity](../../../docs/reference/drivers/selection.md#package-identity-and-factory-exports);
-  the runs took a [shortcut](RUNBOOK-TROUBLESHOOTING.md#not-covered)).
-- **Relay**: `docker buildx build --platform linux/amd64 -f deploy/examples/strands-box/ingress/relay.Dockerfile --build-arg NODE_IMAGE=<node:24.22.1-bookworm-slim@sha256:...> deploy/examples/strands-box/ingress`.
+  ([package identity](../../../docs/reference/drivers/selection.md#package-identity-and-factory-exports)).
+  It needs your own registry.
+- **Relay**: [relay.Dockerfile](ingress/relay.Dockerfile) for `linux/amd64`
+  with a `NODE_IMAGE` digest.
 
-Use each by digest. On the host, copy the runtime image's `/app`,
-`/opt/oce/runtime` and `/usr/bin/tini` to the same paths, root-owned. Unpack
-the same image to `/srv/oce-file-node/runtime` (operator-owned, `0700`) as the
-file node's root, with an empty `etc/hosts`. Point Codex at the native binary:
+Get each image into K3s and use it by digest. On the host, copy the runtime
+image's `/app`, `/opt/oce/runtime` and `/usr/bin/tini` to the same paths,
+root-owned. Unpack the same image to `/srv/oce-file-node/runtime`
+(operator-owned, `0700`) as the file node's root, with an empty `etc/hosts`.
+Point Codex at the native binary:
 
 ```bash
 CODEX=$(realpath -e /app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@*-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex)
@@ -139,12 +135,15 @@ exits 0.
 
 ### Step 4. Install K3s, PostgreSQL and OCE
 
-Follow the [production installation](../../../docs/guides/deploy/production-installation.md)
-and [Prepare each Namespace](../../../docs/guides/deploy/production-agents.md#prepare-each-namespace), with:
+Not executed as written. Follow the [production installation](../../../docs/guides/deploy/production-installation.md)
+and [Prepare each Namespace](../../../docs/guides/deploy/production-agents.md#prepare-each-namespace), with
+[what the runs used](RUNBOOK-BUILD.md#step-4-install-not-executed):
 
-- K3s on this host, so the Worker, Gateway and Box host share the node: set
-  `controlPlane.nodeSelector` and Compute's node selectors to it.
-- `worker.replicaCount: 0` until step 7.
+- K3s on this host without its default StorageClass, so the Worker, Gateway
+  and Box host share the node: set `controlPlane.nodeSelector` and Compute's
+  node selectors to it.
+- `worker.replicaCount: 0` once the Namespace is `ready` (its Worker
+  provisions it), until step 7.
 - A Gateway listener above port 1023 (the runs: a ClusterIP Service on
   Envoy's `10443`, its DNS name as `gatewayRouting.hostname`,
   `gatewayRouting.endpointPort: 10443`).
@@ -160,24 +159,27 @@ and [Prepare each Namespace](../../../docs/guides/deploy/production-agents.md#pr
 
 ### Step 5. Cluster objects for Box
 
-In the Agent's Kubernetes namespace `<agent-ns>` (release namespace here
-`oce-system`):
+Not executed as written. `<agent-ns>` is the Kubernetes namespace the
+Worker created for the Namespace (label `openclaw.dev/namespace=<namespace-id>`);
+the release namespace here is `oce-system`
+([objects and commands](RUNBOOK-BUILD.md#step-5-objects-not-executed-except-the-certificates)):
 
-1. The relay [Service](ingress/service.yaml) and the ReplicaSet read Role from
-   [Build and select](driver/README.md#build-and-select). Note the ClusterIP.
+1. In `<agent-ns>`, the relay [Service](ingress/service.yaml) and the
+   ReplicaSet read Role from [Build and select](driver/README.md#build-and-select).
+   Note the ClusterIP.
 2. [model-gateway-rbac.yaml](model-gateway-rbac.yaml) for your release namespace.
 3. A NetworkPolicy in `oce-system` letting Worker Pods
    (`app.kubernetes.io/component: worker`) reach Pods labelled
    `box.openclaw.dev/component: harness-relay` in `<agent-ns>` on TCP 8443.
    The chart's Worker egress is default-deny.
-4. The control directory, local PV and PVC from
+4. In `oce-system`, the control directory, local PV and PVC for
    [the control claim checks](driver/worker-control.md); the runs used
    `runtimeDir` `/run/oce-box/revision`.
 5. From one dedicated CA, a TLS leaf for
    `box-harness.<agent-ns>.svc.cluster.local` and, if the model is privately
    signed, one for `model.example.test`.
 
-**Check:** the control claim checks 1 to 3 pass.
+**Check:** with the Worker at zero, the control claim checks 1 to 3 pass.
 
 ### Step 6. Register the GitHub App
 
@@ -200,7 +202,8 @@ curl -fsS https://api.github.com/meta | jq -c '[.api[], .git[]] | map(select(tes
 ```
 
 Never `kubectl apply` the key (it keeps a copy in the
-`last-applied-configuration` annotation). Helm values:
+`last-applied-configuration` annotation). Helm values, applied with the
+step 7 upgrade (not before step 5's checks):
 
 ```yaml
 repositoryCredentials:
