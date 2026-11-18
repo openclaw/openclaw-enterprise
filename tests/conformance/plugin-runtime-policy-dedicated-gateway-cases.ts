@@ -144,6 +144,8 @@ export function registerDedicatedGatewayCases() {
         "get_goal",
         "create_goal",
         "update_goal",
+        "skills_search",
+        "skills_read",
         "ls",
         "read",
         "write",
