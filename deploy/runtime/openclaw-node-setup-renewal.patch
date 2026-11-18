@@ -14140,7 +14140,7 @@ index 17fb4cebb..39d7be29a 100644
    isAvailable?: (context: OpenClawPluginNodeHostCommandAvailabilityContext) => boolean;
    /** Watch availability; node shutdown awaits the returned cleanup callback. */
 diff --git a/test/node-host-launcher.test.ts b/test/node-host-launcher.test.ts
-index a150587d8..437f653db 100644
+index 4440038..f904037 100644
 --- a/test/node-host-launcher.test.ts
 +++ b/test/node-host-launcher.test.ts
 @@ -1,5 +1,5 @@
@@ -14191,7 +14191,7 @@ index a150587d8..437f653db 100644
      } finally {
        if (child.exitCode === null && child.signalCode === null) {
          child.kill("SIGKILL");
-@@ -342,15 +353,18 @@ describe("managed node launcher", () => {
+@@ -340,15 +351,18 @@ describe("managed node launcher", () => {
    it("runs the stored node service command through a live launcher parent", async () => {
      const f = await fixture(`
  await ready();
@@ -14211,7 +14211,7 @@ index a150587d8..437f653db 100644
        runtime: "node",
        runtimePath: process.execPath,
      });
-@@ -366,24 +380,85 @@ process.exit(0);
+@@ -364,24 +378,87 @@ process.exit(0);
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
@@ -14300,13 +14300,48 @@ index a150587d8..437f653db 100644
    it.each([[["connect"]], [["node", "join"]]])(
      "%j restarts with paired arguments and revokes managed state when the healthy candidate disconnects",
      async (command) => {
++      const pairedRestart =
++        "setNodeHostLauncherRestartArguments(['node', 'run', '--display-name=--help', '--node-id=--version'], {CF_ACCESS_CLIENT_ID: null, CF_ACCESS_CLIENT_SECRET: null})";
        const f = await fixture(`
 -await setNodeHostLauncherRestartArguments(['node', 'run', '--display-name', 'paired']);
-+await setNodeHostLauncherRestartArguments(['node', 'run', '--display-name=--help', '--node-id=--version'], {CF_ACCESS_CLIENT_ID: null, CF_ACCESS_CLIENT_SECRET: null});
++await ${pairedRestart};
  ${requestUpdate}
  `);
        const candidate = await f.release(`
-@@ -409,7 +484,15 @@ setTimeout(async () => {
+@@ -389,17 +466,22 @@ if (!process.env.TEST_CANDIDATE_BOOTSTRAPPED) {
+   await requestNodeHostLauncherBootstrap({ execArgv: [...process.execArgv, '--disable-warning=ExperimentalWarning'], env: {...process.env, TEST_CANDIDATE_BOOTSTRAPPED:'1'} });
+   process.exit(0);
+ }
+-await ready();
+-setTimeout(async () => {
+-  const first = fs.lstatSync(process.env.TEST_CURRENT).mtimeMs;
++const confirmReady = async () => {
+   await ready();
+-  setTimeout(() => {
+-    const state = getManagedNodeHostStatePath() ?? null;
+-    process.disconnect();
+-    report({ argv: process.argv.slice(2), first, second: fs.lstatSync(process.env.TEST_CURRENT).mtimeMs, cwd: process.cwd(), state, disconnectedState: getManagedNodeHostStatePath() ?? null, execArgv: process.execArgv });
+-    process.exit(0);
+-  }, 30);
+-}, 30);
++  // The restart-arguments acknowledgement follows readiness handling on the same IPC channel.
++  await ${pairedRestart};
++};
++const readSelector = () => {
++  const { ino, mtimeNs } = fs.lstatSync(process.env.TEST_CURRENT, { bigint: true });
++  return { inode: String(ino), modified: String(mtimeNs) };
++};
++await confirmReady();
++const first = readSelector();
++await confirmReady();
++const state = getManagedNodeHostStatePath() ?? null;
++process.disconnect();
++report({ argv: process.argv.slice(2), first, second: readSelector(), cwd: process.cwd(), state, disconnectedState: getManagedNodeHostStatePath() ?? null, execArgv: process.execArgv });
++process.exit(0);
+ `);
+       const result = await completed(
+         f.update(candidate, {}, [...command, "one-use-code", "--profile", "work", "--no-color"]),
+@@ -407,18 +489,167 @@ setTimeout(async () => {
        const lines = jsonLines(result.stdout);
        expect(lines[0]).toMatchObject({ ok: true });
        expect(lines[1]).toMatchObject({
@@ -14323,7 +14358,12 @@ index a150587d8..437f653db 100644
          cwd: f.base,
          state: f.state,
          disconnectedState: null,
-@@ -421,6 +504,147 @@ setTimeout(async () => {
+         execArgv: ["--disable-warning=ExperimentalWarning"],
+       });
+-      expect(lines[1].first).toBe(lines[1].second);
++      expect(lines[1].first).toEqual(lines[1].second);
+       await expectSelection(f.current, candidate.prefix);
+       await expectMissing(f.lock);
      },
    );
  
@@ -14471,7 +14511,7 @@ index a150587d8..437f653db 100644
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
      const f = await fixture();
      const previous = await f.release(
-@@ -504,7 +728,7 @@ if (process.env.TEST_SELECT_ONLY || version === process.env.TEST_VERSION) {
+@@ -502,7 +733,7 @@ if (process.env.TEST_SELECT_ONLY || version === process.env.TEST_VERSION) {
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -14480,7 +14520,7 @@ index a150587d8..437f653db 100644
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -522,6 +746,7 @@ ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving',
+@@ -520,6 +751,7 @@ ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving',
          version,
          state: f.state,
          argv: ["node", "run"],
