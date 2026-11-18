@@ -12,6 +12,9 @@ import {
   AgentRuntimeResponse,
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
+  ModelProviderSchema,
+  ModelProviderModelSchema,
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
@@ -1386,6 +1389,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
+  app.addSchema(ErrorResponse);
+  app.addSchema(AgentDeploymentDiagnosticsResponse);
+  app.addSchema(AgentRuntimeResponse);
+  app.addSchema(AgentRuntimeLogsResponse);
+  app.addSchema(AgentRuntimeCredentialResponse);
+  app.addSchema(SecretResponse);
+  app.addSchema(CredentialSourceResponse);
+  app.addSchema(OAuthConnectionTemplateVersionSchema);
+  app.addSchema(ConnectionTemplateSchema);
+  app.addSchema(StaticKeyConnectionTemplateVersionSchema);
+  app.addSchema(ModelProviderModelSchema);
+  app.addSchema(ModelProviderSchema);
   void app.register(swagger, {
     convertConstToEnum: false,
     openapi: {
@@ -2366,6 +2381,40 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const body = request.body as Record<string, unknown> | undefined;
     if (body !== undefined) {
       validateConfiguration(body);
+    }
+
+    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
+    // Older handlers would otherwise ignore a requested provider or credential destination.
+    if (
+      body?.mode === "static_bearer" &&
+      (operation.operationId === "createConnectionTemplate" ||
+        operation.operationId === "updateConnectionTemplate")
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Static Connection Templates are unavailable on this controller.",
+      );
+    }
+    if (
+      (body &&
+        "modelProviderId" in body &&
+        ["createAgent", "provisionAgent", "validateAgentCreate", "updateAgent"].includes(
+          operation.operationId,
+        )) ||
+      [
+        "listModelProviders",
+        "getModelProvider",
+        "createModelProvider",
+        "updateModelProvider",
+        "listUsableModelProviders",
+      ].includes(operation.operationId)
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Named model providers are unavailable on this controller.",
+      );
     }
 
     if (operation.operationId === "bootstrapInstallation") {
@@ -4800,15 +4849,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   void app.register(async (routes) => {
-    routes.addSchema(ErrorResponse);
-    routes.addSchema(AgentDeploymentDiagnosticsResponse);
-    routes.addSchema(AgentRuntimeResponse);
-    routes.addSchema(AgentRuntimeLogsResponse);
-    routes.addSchema(AgentRuntimeCredentialResponse);
-    routes.addSchema(SecretResponse);
-    routes.addSchema(CredentialSourceResponse);
-    routes.addSchema(OAuthConnectionTemplateVersionSchema);
-    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
