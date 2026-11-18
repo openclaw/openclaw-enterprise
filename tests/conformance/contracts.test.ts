@@ -22,6 +22,7 @@ import {
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
   ConfigurationValidationError,
+  ConnectionTemplateValidationError,
   sandboxNetworkGrantsWithinCeiling,
   validateSandboxNetworkGrants,
   type AgentRevision,
@@ -44,7 +45,10 @@ test("inference URLs preserve canonical private IPv4 destinations and reject uns
     path: "/v1/responses",
   });
   for (const host of ["127.0.0.1", "169.254.169.254", "10.1", "010.77.43.42"]) {
-    assert.throws(() => normalizeInferenceBaseUrl(`https://${host}/v1`));
+    assert.throws(
+      () => normalizeInferenceBaseUrl(`https://${host}/v1`),
+      ConnectionTemplateValidationError,
+    );
   }
 });
 
