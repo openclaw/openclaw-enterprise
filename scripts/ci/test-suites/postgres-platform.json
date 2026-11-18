@@ -642,6 +642,7 @@
         "online request replay horizons and shared quotas survive API restart (PostgreSQL)",
         "Only owned readiness deferral preserves pending model credentials (PostgreSQL)",
         "Pending model authorization and redemption retry an exact busy work row (PostgreSQL)",
+        "Model approval rolls back when the candidate lease expires during activation (PostgreSQL)",
         "online approval expiry is bounded by database time despite issuer clock skew (PostgreSQL)",
         "online release expires on database time while a slow replica reads Secrets (PostgreSQL)",
         "online release serializes configured role revocation with its final Secret read (PostgreSQL)"

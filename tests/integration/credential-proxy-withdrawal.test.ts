@@ -2192,3 +2192,79 @@ test(
     assert.equal(await exchange.resolveRequestCredential(later, t.signal), undefined);
   },
 );
+
+test(
+  "Model approval rolls back when the candidate lease expires during activation (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const { f, revision, exchange, request, pauseNextApprovalCommit } =
+      await requestCredentialFixture(t, { activateRevision: false });
+    const queue = new PostgresWorkQueue(f.pool);
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const claim = await claimIsolatedWork(f.pool, { workId: key });
+    assert.equal(claim?.idempotencyKey, key);
+
+    const input = request();
+    const reservation = pauseNextApprovalCommit("after");
+    let accepted = 0;
+    const pending = exchange.authorizeRequestCredential(input, t.signal, () => {
+      accepted++;
+      return true;
+    });
+    const holder = await f.pool.connect();
+    let settled = false;
+    try {
+      await Promise.race([
+        reservation.reached,
+        pending.then(() => assert.fail("the initial reservation did not commit")),
+      ]);
+      await holder.query("BEGIN");
+      const { rows } = await holder.query("SELECT pg_backend_pid() AS pid");
+      const locked = await holder.query(
+        "SELECT approved FROM occ.request_credential_approvals WHERE request_id=$1 FOR UPDATE",
+        [input.requestId],
+      );
+      assert.deepEqual(locked.rows, [{ approved: false }]);
+      await f.pool.query(
+        "UPDATE occ.controller_work SET lease_expires_at=clock_timestamp()+interval '4 seconds' WHERE idempotency_key=$1",
+        [key],
+      );
+      reservation.release();
+      // Observe the database wait rather than assuming the approval's update started.
+      const waitUntil = async (condition: () => Promise<boolean>) => {
+        const deadline = performance.now() + 6_000;
+        while (!(await condition())) {
+          assert.ok(performance.now() < deadline, "expected PostgreSQL observation timed out");
+          await delay(20, undefined, { signal: t.signal });
+        }
+      };
+      await waitUntil(async () => {
+        const { rows: waits } = await f.pool.query(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting",
+          [rows[0].pid],
+        );
+        return waits[0].waiting;
+      });
+      assert.equal(
+        (await queue.findWork(key))?.leaseActive,
+        true,
+        "activation entered with a live lease",
+      );
+      await waitUntil(async () => (await queue.findWork(key))?.leaseActive === false);
+      assert.ok(Date.now() < Date.parse(input.deadlineAt), "only the work lease expired");
+      await holder.query("ROLLBACK");
+      settled = true;
+    } finally {
+      holder.release(!settled);
+      reservation.release();
+      await pending.catch(() => {});
+    }
+    assert.equal(await pending, undefined);
+    assert.equal(accepted, 0, "transport never accepted a stale approval");
+    const { rows } = await f.pool.query(
+      "SELECT approved, consumed FROM occ.request_credential_approvals WHERE request_id=$1",
+      [input.requestId],
+    );
+    assert.deepEqual(rows, [{ approved: false, consumed: false }]);
+  },
+);

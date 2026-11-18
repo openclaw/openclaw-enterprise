@@ -34,6 +34,7 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   assertReleasedControllerCompatibility,
@@ -1706,8 +1707,9 @@ test(
     assert.equal(await marker(), true);
     await queue.enqueue({ ...owner, actorId, idempotencyKey });
     assert.equal(await marker(), true, "idempotent enqueue preserves current readiness");
-    // The actual app privilege permits transitions, while the database rejects an
-    // authority bit on other work shapes or states, including nullable owner fields.
+    const invalidReadiness = (error) =>
+      error.code === "23514" && error.constraint === "controller_work_readiness_deferred_owner";
+    // These work shapes are valid independently of readiness eligibility.
     for (const rewrite of [
       "state='succeeded', completed_at=now(), reason_code='DONE'",
       "work_kind='provisioning', agent_id=NULL, revision_id=NULL",
@@ -1719,9 +1721,24 @@ test(
         db.migrator.query(`UPDATE occ.controller_work SET ${rewrite} WHERE idempotency_key=$1`, [
           idempotencyKey,
         ]),
-        (error) => error.code === "23514",
+        invalidReadiness,
       );
     }
+    // With both owners NULL the key equality is UNKNOWN, which a CHECK alone accepts.
+    const cleanupKey = repositoryRemovalWorkKey(revisionId);
+    await db.app.query(
+      `INSERT INTO occ.controller_work
+       (idempotency_key,namespace_id,actor_id,available_at,created_at,updated_at)
+       VALUES($1,$2,$3,now()+interval '1 hour',now(),now())`,
+      [cleanupKey, namespaceId, actorId],
+    );
+    await assert.rejects(
+      db.app.query(
+        "UPDATE occ.controller_work SET readiness_deferred=true WHERE idempotency_key=$1",
+        [cleanupKey],
+      ),
+      invalidReadiness,
+    );
     await new Promise((resolve) => setTimeout(resolve, 10));
     const again = await queue.claim();
     assert.ok(again);

@@ -8324,7 +8324,9 @@ export class OpenClawController {
           ) {
             return refuse("approval_refused");
           }
-          if (step.accept() !== true) {
+          // The approval update can wait on its row after the work lease expires.
+          // Throw before accepting so the transaction rolls back the approval.
+          if (!(await candidateCurrent()) || step.accept() !== true) {
             throw new DependencyUnavailableError("Request credential authorization expired.");
           }
           return selected;
