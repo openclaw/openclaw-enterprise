@@ -282,6 +282,14 @@ const cliCredentialPolicies = [googleWorkspaceCredentialPolicy];
 const cliCredentialPolicy = (install: ManagedCliInstall) =>
   cliCredentialPolicies.find(({ packageName }) => packageName === install.packageName);
 
+export function managedCliDeploymentNetworks(install: ManagedCliInstall) {
+  const policy = cliCredentialPolicy(install);
+  if (!policy) {
+    throw new ConfigurationHarnessError("The selected CLI has no reviewed deployment policy.");
+  }
+  return policy.deploymentNetworks(install);
+}
+
 if (
   new Set(managedInstalls.map(({ runtimeName }) => runtimeName)).size !== managedInstalls.length ||
   new Set(managedMcpInstalls.map(({ endpoint }) => `${endpoint.host}:${endpoint.port}`)).size !==

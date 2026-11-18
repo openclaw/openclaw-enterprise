@@ -80,6 +80,7 @@ export interface PluginCredentialConnection {
   readonly sourceRef: CredentialSourceReference;
   readonly projection: BearerCredentialProjection;
   readonly toolIds: readonly string[];
+  /** Invocation requirements eligible to receive this connection's credential. */
   readonly networkRequirementIds: readonly string[];
 }
 
@@ -89,6 +90,7 @@ export interface PluginDeploymentDescription {
   readonly releaseSha256?: string;
   readonly tools: readonly PluginDeploymentTool[];
   readonly workloadRequirements: readonly DeploymentWorkloadRequirement[];
+  /** All required access, including requests that do not use a credential connection. */
   readonly networkRequirements: readonly PluginDeploymentNetworkRequirement[];
   readonly credentials: Readonly<
     Record<string, Readonly<Record<string, PluginCredentialConnection>>>

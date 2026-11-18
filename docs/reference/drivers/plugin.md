@@ -43,12 +43,15 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   [deployment requirements](../../../packages/contracts/src/drivers/plugin/deployment.ts)
   for one admitted catalog identity. The OpenClaw Driver accepts
   `{catalog: "driver", pluginId}`. Its `installation` tools name the Gateway or
-  Harness, the material to install and the selected tools. Network rules identify
-  installation or invocation. Google actions use HTTP methods and exact paths
-  or path subtrees. Public discovery uses exact GET paths and has no credential
-  association. Slack uses MCP methods and selected tool names.
-  Each configured credential names its source, environment, presentation, tool IDs
-  and invocation rule IDs under `credentials[requirement][connection]`.
+  Harness, the material to install and the selected tools. Any plugin can declare
+  network requirements for installation or invocation, with HTTP or MCP request
+  restrictions where needed. Each configured credential names its source,
+  environment, presentation, tool IDs and only the invocation requirement IDs
+  eligible for injection under `credentials[requirement][connection]`. Network
+  requirements not referenced by a credential connection need no credential,
+  including requests to a different path on the same host. Discovery can be
+  public or authenticated. For example, Google public discovery uses separate
+  GET paths without injection, while Slack MCP tool discovery uses its account.
   An empty connection map preserves an unconnected slot. A credentialless plugin
   declares no slots.
 - `credentials` (optional): credential slots for plugins that use an Agent's

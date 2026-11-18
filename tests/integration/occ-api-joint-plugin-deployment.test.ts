@@ -723,7 +723,24 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.deepEqual(record(cleared.data).credentialSources, credentialSources);
   const unconnected = await descriptionFor(googleId);
   assert.deepEqual(unconnected.credentials, { account: {} });
-  assert.deepEqual(unconnected.networkRequirements, []);
+  // A plugin's reviewed network-only requests do not depend on an account connection.
+  assert.ok(unconnected.networkRequirements.length > 0);
+  assert.ok(
+    unconnected.networkRequirements.every(
+      ({ match }) => match.requestPolicy?.type === "http" && match.requestPolicy.method === "GET",
+    ),
+  );
+  assert.ok(
+    unconnected.networkRequirements.some(
+      ({ match }) =>
+        match.host === "gmail.googleapis.com" && match.requestPolicy?.path === "/$discovery/rest",
+    ),
+  );
+  assert.ok(
+    !unconnected.networkRequirements.some(({ id }) =>
+      googleAccount.networkRequirementIds.includes(id),
+    ),
+  );
   const revision = await request(
     "GET",
     `${agentPath}/revisions/${string(record(deployed.data).id)}`,
