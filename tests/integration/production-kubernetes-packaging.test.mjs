@@ -3,7 +3,17 @@ import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -1593,6 +1603,7 @@ esac
           ? `.repositoryCredentials.hostname = ${JSON.stringify(configuredHostname)}`
           : "del(.repositoryCredentials.hostname)",
       );
+      const originalValues = await readFile(liveValues);
       const evidence = join(directory, name);
       await writeFile(probeCalls, "", { mode: 0o600 });
       await writeFile(helmCalls, "", { mode: 0o600 });
@@ -1649,6 +1660,7 @@ esac
           return true;
         },
       );
+      assert.ok((await readFile(liveValues)).equals(originalValues), "protected values changed");
       assert.equal(
         await readFile(probeCalls, "utf8"),
         `${controllerImage}|${brokerImage}|linux/amd64\n`,
@@ -1661,6 +1673,9 @@ esac
       );
       if (!failure) {
         // A failed dry-run has a render but no successful-preparation pointer.
+        await assert.rejects(lstat(join(evidence, "prepared-helm-attempt.json")), {
+          code: "ENOENT",
+        });
         const attempts = await readdir(join(evidence, "helm-attempts"));
         assert.equal(attempts.length, 1);
         const candidate = await resources(
@@ -1673,12 +1688,6 @@ esac
         assert.equal(broker.args[1], `https://${hostname}`);
         assert.ok(
           candidate.some(({ kind, metadata }) => kind === "Service" && metadata.name === "broker"),
-        );
-        const retained = loadYaml(await readFile(liveValues, "utf8"));
-        assert.equal(
-          retained.repositoryCredentials.serviceName,
-          undefined,
-          "dry-run must not mutate protected inputs",
         );
       }
     }

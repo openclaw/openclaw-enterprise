@@ -54,6 +54,7 @@
     "tests/integration/dependency-unavailable-log.test.ts",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.ts",
+    "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.ts",
@@ -422,6 +423,12 @@
     {
       "path": "tests/integration/profile-renderer.test.ts",
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
+    },
+    {
+      "path": "tests/integration/production-keycloak-profile.test.ts",
+      "expectedTests": [
+        "production Keycloak example renders an attached-only pilot through the chart"
+      ]
     },
     {
       "path": "tests/integration/profile-public-github-read.test.mjs",

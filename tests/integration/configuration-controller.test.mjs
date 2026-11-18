@@ -315,11 +315,22 @@ async function request(
   };
 }
 
-async function createSavedConfiguration(context, values) {
+async function createAgentConfiguration(context, values, label) {
   const created = await request(context.app, "POST", context.collection, {
     body: { kind: "agent", values },
   });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(
+    created.status,
+    201,
+    label === undefined
+      ? JSON.stringify(created.body)
+      : `${label}: ${JSON.stringify(created.body)}`,
+  );
+  return created;
+}
+
+async function createSavedConfiguration(context, values) {
+  const created = await createAgentConfiguration(context, values);
   return { created, item: `${context.collection}/${created.body.data.id}` };
 }
 
@@ -586,10 +597,7 @@ async function refusedOnSave(context, values, message, { item, preset = true, se
 
 // Configuration create stores `values` as sent, and a Preset of `presetValues` saves.
 async function acceptedOnSave(context, values, { variables, presetValues = values } = {}) {
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const created = await createAgentConfiguration(context, values);
   assert.deepEqual(created.body.data.values, values);
   const preset = await savePreset(
     context,
@@ -894,10 +902,7 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     }),
     withAgents({ list: [] }),
   ]) {
-    const saved = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values },
-    });
-    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    const saved = await createAgentConfiguration(context, values);
     assert.deepEqual(saved.body.data.values, values);
   }
 });
@@ -1219,10 +1224,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
   ]) {
     await t.test(`saves ${name}`, async () => {
       const label = JSON.stringify(values);
-      const created = await request(context.app, "POST", context.collection, {
-        body: { kind: "agent", values },
-      });
-      assert.equal(created.status, 201, `${label}: ${JSON.stringify(created.body)}`);
+      await createAgentConfiguration(context, values, label);
       await updateSaved(context, agent.item, values, label);
       const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
       assertRefused(deployed, deployMessage, { label });
@@ -1980,19 +1982,12 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       secrets: { defaults: { env: "${ALIAS:-custom}", file: "${FILE_ALIAS}" } },
     },
   ]) {
-    const saved = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values },
-    });
-    assert.equal(saved.status, 201, JSON.stringify(saved.body));
-    const savedItem = `${context.collection}/${saved.body.data.id}`;
+    const { item: savedItem } = await createSavedConfiguration(context, values);
     assert.equal((await request(context.app, "DELETE", savedItem)).status, 204);
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
   // A stored Configuration the password rule now refuses still reads and deletes.
-  const unused = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: valid },
-  });
-  assert.equal(unused.status, 201, JSON.stringify(unused.body));
+  const unused = await createAgentConfiguration(context, valid);
   await writePastOcc(
     configurationDriver,
     unused.body.data.id,
@@ -2443,10 +2438,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
   );
   // Agent save checks the Configuration it selects: a row stored before the rule is refused.
   const [[storedPlugins, storedRefusal]] = refused;
-  const other = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: valid },
-  });
-  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const other = await createAgentConfiguration(context, valid);
   await writePastOcc(context.configurationDriver, other.body.data.id, withPlugins(storedPlugins));
   assertRefused(
     await agentSave(context, agent, other.body.data.id),
@@ -2457,10 +2449,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
     [],
   );
   // An OpenClaw Configuration does not run the codex plugin, so it saves.
-  const openclaw = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: { ...runtimeSelected, plugins: { enabled: false } } },
-  });
-  assert.equal(openclaw.status, 201, JSON.stringify(openclaw.body));
+  await createAgentConfiguration(context, { ...runtimeSelected, plugins: { enabled: false } });
   // Settings the entrypoint starts with save and deploy: the codex plugin's overlay turns a
   // disabled codex entry back on, and an allowlist that names codex in another case keeps it.
   const startable = withPlugins({
@@ -3847,10 +3836,9 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     const env = Object.fromEntries(
       Array.from({ length: 12 }, (_, index) => [`X${index}`, `x://h${"${A:-x}".repeat(170)}`]),
     );
-    const one = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values: { skills: { entries: { x: { env: { X0: env.X0 } } } } } },
+    const one = await createAgentConfiguration(context, {
+      skills: { entries: { x: { env: { X0: env.X0 } } } },
     });
-    assert.equal(one.status, 201, JSON.stringify(one.body));
     await request(context.app, "DELETE", `${context.collection}/${one.body.data.id}`);
     const response = await request(context.app, "POST", context.collection, {
       body: { kind: "agent", values: { skills: { entries: { x: { env } } } } },
@@ -4000,10 +3988,9 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
     const accounts = Object.fromEntries(
       Array.from({ length: 7 }, (_, index) => [`a${index}`, { proxy }]),
     );
-    const one = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values: { channels: { telegram: { accounts: { a0: { proxy } } } } } },
+    await createAgentConfiguration(context, {
+      channels: { telegram: { accounts: { a0: { proxy } } } },
     });
-    assert.equal(one.status, 201, JSON.stringify(one.body));
     await refusedOnSave(
       context,
       { channels: { telegram: { accounts } } },
@@ -4028,23 +4015,15 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
       { proxy: { proxyUrl: "http://${HOST:-u:pw@proxy}:3128" } },
       userinfo("/proxy/proxyUrl"),
     );
-    const saved = await request(context.app, "POST", context.collection, {
-      body: {
-        kind: "agent",
-        values: { proxy: { proxyUrl: "http://${HOST:-proxy}:${PORT:-3128}" } },
-      },
+    await createAgentConfiguration(context, {
+      proxy: { proxyUrl: "http://${HOST:-proxy}:${PORT:-3128}" },
     });
-    assert.equal(saved.status, 201, JSON.stringify(saved.body));
   });
   // An escaped `$${NAME:-fallback}` is literal text, and costs no rendering.
   await t.test("accepts a URL of escaped fallbacks", async () => {
-    const escaped = await request(context.app, "POST", context.collection, {
-      body: {
-        kind: "agent",
-        values: { proxy: { proxyUrl: `http://proxy:3128/${"$${A:-x}".repeat(800)}` } },
-      },
+    await createAgentConfiguration(context, {
+      proxy: { proxyUrl: `http://proxy:3128/${"$${A:-x}".repeat(800)}` },
     });
-    assert.equal(escaped.status, 201, JSON.stringify(escaped.body));
   });
 });
 
@@ -4405,10 +4384,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     "${MODEL_BASE_URL}/v1",
     "${MODEL_URL:-https://models.example.test}/v1",
   ]) {
-    const response = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values: gateway({ baseUrl: value }) },
-    });
-    assert.equal(response.status, 201, `${value}: ${JSON.stringify(response.body)}`);
+    await createAgentConfiguration(context, gateway({ baseUrl: value }), value);
   }
   const filled = await launch({
     h: "models.example.test",
