@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-18"
-last_updated_session: "authoring-run/049ea467-b4fd-42d2-813a-b0721126ef70"
+last_updated_session: "authoring-run/583f9a7a-3375-4446-852d-2dc671c1b88c"
 ---
 
 # Production image upgrade flow
@@ -13,6 +13,7 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 ## Entry Points
 
 - Run `scripts/upgrade-production-images` with reviewed inputs.
+- Stderr phases are advisory; `--verbose` shows native output.
 - Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
@@ -23,16 +24,16 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 
 ```mermaid
 graph TD
-    A["Validate inputs and inventory"] --> RR{"Repository assessment<br/>permits retention?"}
+    A["Validate inputs/inventory"] --> RR{"Repository retention permitted?"}
     RR -->|"No or unknown"| X["Retain recovery evidence"]
-    RR -->|"Yes or replacement"| HS{"Harness settings saved<br/>or runtime replacement?"}
+    RR -->|"Yes or replacement"| HS{"Saved Harness settings<br/>or replacement?"}
     HS -->|No| X
     HS -->|Yes| DB["Validate compatibility receipt"]
     DB --> Q{"Repository broker enabled?"}
     Q -->|Yes| P["Check image protocol and node architectures"]
     Q -->|No| B["Run startup/migration Jobs"]
     P --> B
-    B --> V{"Startup, history and cleanup confirmed?"}
+    B --> V{"Startup/history/cleanup confirmed?"}
     V -->|No| X
     V -->|Yes| R{"Preflight only?"}
     R -->|Yes| S["Exit unprepared"]
@@ -47,7 +48,7 @@ graph TD
     VQ -->|No| X
     VQ -->|Yes| RI{"Worker stopped or<br/>fresh inventory unchanged?"}
     RI -->|No| X
-    RI -->|Yes| E["Stop remaining writer Pods"]
+    RI -->|Yes| E["Stop writer Pods"]
     E --> DBP{"Separate database deployment?"}
     DBP -->|Yes| PAUSE["Pause for migration/history check"]
     PAUSE -->|Resume with checked history| F["Select Installation and run Helm hook"]
@@ -79,28 +80,27 @@ graph TD
 `scripts/upgrade-production-images:prepare_upgrade`
 
 Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.md),
-mismatched `HEAD`/`--source-revision`, chart edits/symlinks and internal evidence/baseline
-aliases before access. Other edits/image provenance are unchecked.
+mismatched `HEAD`/`--source-revision`, chart edits/symlinks and evidence/baseline aliases before access.
+Other edits/image provenance are unchecked.
 
-`yq -r` tests for nonempty `preprovisionedNamespace`. Continue on success
-with one `false`; otherwise refuse before access (`preprovisioned-namespace.err`).
+`preprovisionedNamespace` must yield one `false` before access
+(`preprovisioned-namespace.err`).
 
-Resume locks evidence paths/devices/inodes/aliases and runtime dispatch journals.
+Resume locks evidence paths/devices/inodes/aliases and dispatch journals.
 
-`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings and validates candidates.
-Invalid inputs/unwritable evidence cause `Cannot compare upgrade YAML`.
-Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
-and array-wrapping one registration.
-Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
-live comparison stays exact. Immutable reference switches require string keys.
-Startup validates controllers; broker checks only references.
+`matches_yaml` validates candidates and compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings.
+Invalid inputs or unwritable evidence yield `Cannot compare upgrade YAML`.
+Projections/`cmp` allow Slack directory proxy, curated Codex PluginDriver selection
+and wrapping one registration. `agentNativeAdmin.sharedCookieDomain` is removed only
+from baseline projection; live comparison stays exact. Immutable switches require string keys.
+Startup validates controllers; broker checks references only.
 
-`read_restart_inventory` validates complete authorized inventory ownership, IDs and selection states. Retained running revisions require accepted
+`read_restart_inventory` validates complete authorized inventory ownership, IDs and selections. Retained running revisions require accepted
 [restart disposition](../reference/repository-credentials/worker-replacement.md).
 Controller-only `occ agent revision AGENT_ID REVISION_ID` requires one owned
-revision with object-valued Harness settings; retain IDs and validation outcome.
-Drafts cannot substitute. Runtime upgrades record replacements; draft validation requires image
-support/size compliance. Quiescence is nonatomic; repository continuity is unverified.
+revision with object-valued Harness settings; retain IDs and outcome. Drafts cannot substitute.
+Runtime upgrades record replacements; draft validation requires image/size support.
+Quiescence is nonatomic; repository continuity is unverified.
 
 `OpenClawController.deploymentInventorySnapshot` batches exact deployment work
 lookups in one State snapshot. Missing or mismatched work refuses inventory.
@@ -113,11 +113,11 @@ Changes refuse inventory. Owner failures yield `unknown`.
 Refuse nonterminal deployments. Runtime upgrades require baseline versions/ready Namespaces. Exclude stopped/deleting
 Agents; allow pending repository cleanup.
 
-`prepare_upgrade` copies PostgreSQL's `run` result. Before preflight,
+`prepare_upgrade` copies PostgreSQL's `run` result.
 `validate_controller_compatibility` calls `scripts/upgrade-evidence.py:validate_compatibility`
-to check runner/file consistency, data/IAM success, cleanup and both image digests.
-Hashes bind resume, not authenticity or image source.
-This permits neither online migration nor rollback; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
+before preflight: check runner/file consistency, data/IAM success, cleanup and both image digests.
+Hashes bind resume, not authenticity or image source. Online migration and rollback remain
+unqualified; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
 
 `verify_agent_continuity` requires Agent read/operate, active AgentRevision read
 and runtime inspection. Agent reads bracket explicit-revision runtime reads,
@@ -394,7 +394,11 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-18 10:13: Preserve progress output and batched inventory reads. (authoring-run/583f9a7a-3375-4446-852d-2dc671c1b88c - 2fd6ef95c30345f242d260cd513c6a36ae3ba805)
+
 - 2026-11-18 08:31: Trace the batched deployment work lookup and its refusal. (authoring-run/049ea467-b4fd-42d2-813a-b0721126ef70 - a1cdbddc6cfb49781cb0a6337aba3aa9a729e798)
+
+- 2026-11-18 05:39: Trace progress output. (authoring-run/19a81e0c-0cb0-48eb-828d-e65e72b6c576 - 8cbb31a6893016f3aa74be9471fce69d3dbc60e7)
 
 - 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
 

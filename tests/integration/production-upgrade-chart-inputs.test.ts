@@ -226,7 +226,7 @@ test("production upgrades check the stock chart before recording evidence or con
         code: 1,
         stdout: "",
         stderr:
-          "upgrade-production-images: cannot inspect preprovisioned Namespace values; see preprovisioned-namespace.err in the evidence directory.\n",
+          /(?:^|\n)upgrade-production-images: cannot inspect preprovisioned Namespace values; see preprovisioned-namespace\.err in the evidence directory\.\n$/u,
       });
       assert.deepEqual(await commandCalls(callLog), []);
       const errors = await readFile(join(evidence, "preprovisioned-namespace.err"), "utf8");
