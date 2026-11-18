@@ -1110,8 +1110,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
               ? {}
               : { log: authLibraryLog(options.onOperationalEvent) }),
           },
-          // As in the guarded profile: the router would print an unclassified exception to the
-          // console; thrown, runPrivateEndpoint logs it as one structured line instead.
+          // As in the guarded profile, so the router never prints an unclassified exception to
+          // the console. Nothing on this profile calls the router today, so it changes no response.
           onAPIError: { throw: true },
         }
       : {
