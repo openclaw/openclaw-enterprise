@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import type { TestContext } from "node:test";
-import type { GatewayProbeInvocation } from "../fixtures/runtime-gateway-probe.cts";
+import type { GatewayProbeInvocation } from "../fixtures/runtime-gateway-probe.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { image } from "../helpers/runtime-image-startup.ts";
 
@@ -14,7 +14,7 @@ export async function verifyRuntimeGatewayProbeCleanup(
   const containerName = `oce-runtime-gateway-probe-${randomBytes(6).toString("hex")}`;
   t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
   const source = await readFile(
-    new URL("../fixtures/runtime-gateway-probe.cts", import.meta.url),
+    new URL("../fixtures/runtime-gateway-probe.ts", import.meta.url),
     "utf8",
   );
   const invocation: GatewayProbeInvocation = ["fixture", pluginRuntimeHelpers];

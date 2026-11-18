@@ -1,3 +1,4 @@
+import type { EventEmitter } from "node:events";
 import type { AddressInfo } from "node:net";
 
 export type GatewayProbeInvocation = [fixture: "fixture", pluginRuntimeHelpers: string];
@@ -9,9 +10,8 @@ interface ProbeSocket {
   send(data: string): void;
   terminate(): void;
 }
-interface ProbeServer {
-  once(event: string | symbol, listener: (...args: unknown[]) => void): this;
-  on(event: "connection", listener: (socket: ProbeSocket) => void): void;
+interface ProbeServer extends EventEmitter {
+  on(event: "connection", listener: (socket: ProbeSocket) => void): this;
   address(): AddressInfo | string | null;
   clients: Set<ProbeSocket>;
   close(callback: (error?: Error) => void): void;
@@ -20,9 +20,12 @@ type WebSocketModule = {
   WebSocketServer: new (options: { host: string; port: number }) => ProbeServer;
 };
 
-const assert: typeof import("node:assert/strict") = require("node:assert/strict");
-const { once }: typeof import("node:events") = require("node:events");
-const { mkdtempSync, writeFileSync, readFileSync }: typeof import("node:fs") = require("node:fs");
+const assert: typeof import("node:assert/strict") = process.getBuiltinModule("node:assert/strict");
+const { once } = process.getBuiltinModule("node:events");
+const { mkdtempSync, writeFileSync, readFileSync } = process.getBuiltinModule("node:fs");
+const requireModule: (name: string) => unknown = process
+  .getBuiltinModule("node:module")
+  .createRequire(process.cwd() + "/[eval]");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -50,7 +53,7 @@ function assertProbeResult(value: unknown): asserts value is ProbeResult {
   assert.ok(typeof value.code === "string", "failed probe must report a code");
 }
 
-const webSocketModule: unknown = require("ws");
+const webSocketModule = requireModule("ws");
 requireWebSocketModule(webSocketModule);
 const { WebSocketServer } = webSocketModule;
 
@@ -124,7 +127,9 @@ const { WebSocketServer } = webSocketModule;
   // Load the exact generated helper, including its public-SDK resolution path.
   const helpers = process.argv[2];
   assert.ok(typeof helpers === "string", "generated Gateway helper source is required");
-  const loaded: unknown = new Function("require", helpers + "\nreturn callNativeGateway;")(require);
+  const loaded: unknown = new Function("require", helpers + "\nreturn callNativeGateway;")(
+    requireModule,
+  );
   assert.ok(typeof loaded === "function", "generated helper must expose callNativeGateway");
   const callNativeGateway = loaded;
   async function probe(
