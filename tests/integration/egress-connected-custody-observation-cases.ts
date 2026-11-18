@@ -11,7 +11,7 @@ import {
 } from "../helpers/egress-connected-failure.ts";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { isArray, isRecord, parseJson } from "../helpers/egress-observation-values.ts";
-import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.ts";
 
 type FailureDiagnostic = Parameters<NonNullable<Parameters<typeof safeConnectedFailure>[2]>>[0];
 
@@ -170,7 +170,7 @@ export async function verifyCustodyFailures(t: TestContext) {
     },
   );
   await t.test("multiline failure messages cannot choose the reported source frame", async () => {
-    const spoofed = "egress-supplier-custody-transitions.mjs:12345:1234";
+    const spoofed = "egress-supplier-custody-transitions.ts:12345:1234";
     for (const kind of ["operation", "assertion"]) {
       const custody = createCustodyTransitions({
         workspace: "workspace",
@@ -196,7 +196,7 @@ export async function verifyCustodyFailures(t: TestContext) {
       }
       assert.ok(failure instanceof Error);
       const safe = await safeConnectedFailure(failure, "turn-result");
-      assert.match(safe.message, /egress-supplier-custody-transitions\.mjs:\d+:\d+/);
+      assert.match(safe.message, /egress-supplier-custody-transitions\.ts:\d+:\d+/);
       assert.equal(safe.message.includes(spoofed), false);
       assert.equal(safe.message.includes(marker), false);
     }

@@ -170,7 +170,7 @@ type PrivateMethods = {
     name: string,
     ownership: Ownership,
     target: NamespaceTarget,
-    image: string,
+    images: Readonly<{ runtime: string; workspaceSetup: string }>,
     serviceAccount: string,
     role: "gateway",
     environment: Readonly<Record<string, string>>,

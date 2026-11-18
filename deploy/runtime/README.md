@@ -14,8 +14,9 @@ network policy.
 The Dockerfile uses a verified public OpenClaw archive, its pinned package
 manager, frozen lockfile, and upstream Docker assembly. A registry mirror
 requires [separate Corepack and pnpm build secrets](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
-Both Codex entrypoints use stock Codex `0.164.0` from the frozen lockfile
-without dependency downgrades or binary patches. Verify native startup and
+Both Codex entrypoints use stock Codex `0.164.0`, unpatched;
+`stock-codex-0.164.0-dependency-pin.patch` holds the lockfile there and sets
+`CODEX_APP_SERVER_VERSION` and `OPENAI_CODEX_CLIENT_VERSION` back to it while OpenClaw bundles 0.169.0. Verify native startup and
 sandbox behavior with the image's seccomp rules. Codex and Slack come from the same source, whose
 restricted workspace-node commands and persistent device identity support
 split storage. That contract requires a newer source than `2026.9.5`.
@@ -27,8 +28,8 @@ The tool policy limits model turns in both modes. When a child spawns, OpenClaw
 waits for placement started by session creation and rechecks the parent's
 authority before dispatch. The source also preserves shared host-module links
 during plugin capture and handles bundled WebAssembly and directory assets.
-Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or
-an equivalent implementation is available upstream, the build applies its
+Until upstream ships [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724)
+or an equivalent, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
@@ -36,35 +37,31 @@ The selected source preserves `on-request` when plugins use MCP elicitation,
 reconnects `connect --ephemeral` with saved device credentials after its setup
 code expires, and retains the original caller's authority while required-worker
 placement continues after session creation is acknowledged. Scope, role, and
-profile revocation still stop dispatch. The OpenClaw build stage applies the
-checksum-verified `openclaw-required-worker-authority-regression.patch`
-and runs the real Gateway public-RPC cases without network access. The cases
-cover placement before and after acknowledgement, disconnect, and committed
-role, scope, and profile revocation.
+profile revocation still stop dispatch. The build applies
+`openclaw-required-worker-authority-regression.patch` and runs its Gateway
+public-RPC cases offline: placement before and after acknowledgement,
+disconnect, and committed role, scope, and profile revocation.
 [OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds an opt-in wait for admitted work and final writes.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
-after the Control UI's access is refused. Remove each when the pinned OpenClaw
-does the same.
+after the Control UI's access is refused. Remove each once upstream matches.
 `openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
-private Linux PID namespace stopped recover only Gateway records from that
-namespace. OC still compares its lock fingerprint before recovery. An
-unattributed owner requires operator confirmation.
-OpenClaw normalizes newly created owner-only Linux directories that inherit
-setgid and reports invalid plugin settings during startup. The build runs the
-upstream private-store regressions.
-`openclaw-native-turn-settlement.patch` carries [upstream #185180](https://github.com/openclaw/openclaw/pull/185180).
-When Codex releases a long-running turn, the Gateway gives final delivery its normal progress window.
+private Linux PID namespace stopped recover its Gateway records, or, inside it,
+any record whose PID is dead. OC compares its lock fingerprint first.
+Unattributed owners need operator confirmation.
+The [restart recovery bridge](../../docs/flows/harness-restart-recovery.md) waits for workspace reconnection and surviving Codex work before continuing.
+The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
+final delivery retains its progress window after a long Codex turn.
 
 `openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
 or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
-and pairing recovery. Remove this bridge when the selected source provides that contract.
-Provenance `patches` maps every patch the Dockerfile applies, in order, to its
-SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
-against the Dockerfile.
+and pairing recovery. Remove this bridge once the source provides that contract.
+OpenClaw resumes turns only under the same `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE` (#201186).
+Provenance `patches` records each patch's SHA-256 in order; tests compare
+`scripts/build-runtime-assets.ts` with the Dockerfile.
 
 Dedicated Gateways require the supporting source recorded in this recipe and
 validate their effective native configuration before starting. The required
@@ -105,7 +102,7 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The upstream package version is `2026.10.10`. Identify the custom build by
+The upstream package version is `2026.11.5`. Identify the custom build by
 `/opt/oce/runtime/provenance.json`. It records
 the source commit, archive, patch and lockfile hashes, package manager, plugins,
 architecture, Codex package identity, and SHA-256 of `contents.json`. That file
@@ -153,6 +150,8 @@ automatically. [Local checkout tests](../../docs/testing/openshell.md) use their
 
 Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
 
+See the [JIT-free ARM64 Harness](code-mode/README.md).
+
 ## Build a local runtime image
 
 For paired builds, see [QA prebuilds and caching](../../docs/testing/ci/qa-advisory.md#prebuild-local-qa-images).
@@ -164,6 +163,10 @@ docker build -f deploy/runtime/Dockerfile \
   --tag openclaw-enterprise-runtime:quickstart \
   .
 ```
+
+Corepack or pnpm certificate errors: use
+[`build-ca`](../../docs/guides/deploy/production-installation-preparation.md#build-and-publish-production-images);
+verify TLS. Image registries use builder trust.
 
 Set `OCC_DOCKER_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart` for the
 Compose quickstart. The Docker Compute Driver uses the same image for embedded
@@ -187,7 +190,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/513c12703ad9a9161cc123e0b8ed4ecb811aa6b3/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
@@ -320,7 +323,7 @@ Then run the runtime startup smoke from the repository root with host Node.js
 [Image and Helm tests](../../docs/testing/docker.md#runtime-image-startup-test-environment):
 
 ```bash
-node scripts/ci/prepare.mjs --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
+node scripts/ci/prepare.ts --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
 set -a
 . /tmp/images-runtime-startup.env
 set +a

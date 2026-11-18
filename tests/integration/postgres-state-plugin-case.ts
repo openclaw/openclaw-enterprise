@@ -9,6 +9,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import {
   adminEmail,
   createDurableController,
@@ -217,26 +218,7 @@ export async function persistPluginState(context: TestContext): Promise<void> {
       source: { kind: "secret", namespaceId: namespace.id, id: harnessSecret.id },
     },
   });
-  const harnessRoleId = `role-${randomUUID()}`;
-  await pool.query(
-    "INSERT INTO occ.iam_roles(id, namespace_id, name, permissions) VALUES($1, $2, $3, $4::jsonb)",
-    [
-      harnessRoleId,
-      namespace.id,
-      "Harness Secret consumer",
-      JSON.stringify([{ action: "operate", resourceKind: "secret" }]),
-    ],
-  );
-  await pool.query(
-    "INSERT INTO occ.iam_access_bindings(id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id) VALUES($1, $2, $3, $4, 'secret', $5)",
-    [
-      `binding-${randomUUID()}`,
-      namespace.id,
-      agent.servicePrincipalId,
-      harnessRoleId,
-      harnessSecret.id,
-    ],
-  );
+  await grantAgentSecretOperate(pool, agent, harnessSecret.id);
   const revision = await controller.deployAgent(
     principalId,
     { namespaceId: namespace.id, agentId: agent.id },

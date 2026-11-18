@@ -260,7 +260,8 @@ export async function runWritableGatewayRestart(t: TestContext) {
     initScript,
     /copyFileSync\("\/etc\/openclaw-managed\/openclaw.json", "\/runtime-state\/home\/\.openclaw\/openclaw.json"\)/,
   );
-  async function startPodCopy(label: string) {
+  // `seed` writes to the new Pod-local home after the init container and before the Gateway.
+  async function startPodCopy(label: string, seed?: (volume: string) => Promise<void>) {
     const volume = `${owner}-${label}`;
     await runDocker(["volume", "create", "--label", `oce.proof.owner=${owner}`, volume]);
     cleanup.push(() => runDocker(["volume", "rm", volume]));
@@ -305,6 +306,7 @@ export async function runWritableGatewayRestart(t: TestContext) {
       "-e",
       initScript,
     ]);
+    await seed?.(volume);
     const result = await runGatewaySmoke(scope, "codex", {
       configurationPath: "/home/node/.openclaw/openclaw.json",
       entrypoint: GATEWAY_RUNTIME_ENTRYPOINT,
@@ -508,8 +510,12 @@ export async function runWritableGatewayRestart(t: TestContext) {
   // Polls the wrapper's own status port until it publishes a held failure; a hold keeps
   // the container running. The deadline is checked after each poll, so the last poll
   // happens at or past it.
-  async function waitHeld(name: string, label: string): Promise<HeldState | undefined> {
-    const heldDeadline = Date.now() + 60_000;
+  async function waitHeld(
+    name: string,
+    label: string,
+    timeoutMs = 60_000,
+  ): Promise<HeldState | undefined> {
+    const heldDeadline = Date.now() + timeoutMs;
     let observedHold: HeldState | undefined;
     for (;;) {
       const observed = await inspectContainer(name);
@@ -599,6 +605,70 @@ export async function runWritableGatewayRestart(t: TestContext) {
     /still holds the Gateway state lock.*OpenClaw reported: cannot verify Gateway ownership/,
   );
   assert.doesNotMatch(lockLogs.stderr + lockLogs.stdout, /required tool policy/);
+  // A force-deleted Gateway Pod (finding 3288). Its successor has a fresh Pod-local home, so
+  // none of the killed Gateway's lock files, but the same private state claim: the `state`
+  // directory, whose database keeps the killed Gateway's owner lease. `config validate` does
+  // not read that lease, so OpenClaw's own start meets it, waits 95 s and exits 1. The wrapper
+  // must hold that refusal as gateway-state-lock after a read-only inspection, and must not
+  // recover the lease: only an operator who proved the holder stopped may.
+  const leaseOnly = await startPodCopy("home-3", async (volume) => {
+    await runDocker([
+      "run",
+      "--rm",
+      "--pull=never",
+      "--network",
+      "none",
+      "--user",
+      "1000:1000",
+      "--volume",
+      `${replacement.volume}:/from:ro`,
+      "--volume",
+      `${volume}:/to`,
+      "--entrypoint",
+      "node",
+      image,
+      "-e",
+      'const fs=require("node:fs");fs.cpSync("/from/.openclaw/state","/to/.openclaw/state",{recursive:true});fs.chmodSync("/to/.openclaw/state",0o700);',
+    ]);
+  });
+  const leaseHeld = await waitHeld(leaseOnly.containerName, "an unverifiable owner lease", 240_000);
+  assert.equal(leaseHeld?.failure?.check, "gateway-state-lock", JSON.stringify(leaseHeld));
+  assert.ok(leaseHeld?.failure);
+  assert.equal(leaseHeld.failure.code, "UNAVAILABLE");
+  assert.notEqual(leaseHeld.ready, 200);
+  const leaseLogs = await runDocker(["logs", leaseOnly.containerName]);
+  const leaseText = leaseLogs.stderr + leaseLogs.stdout;
+  // OpenClaw's own start met the lease, after the tool policy step's validation passed; it
+  // exited after its wait, and the wrapper names the lock and OpenClaw's holder description.
+  assert.match(
+    leaseText,
+    /Waiting up to \d+ seconds for the previous Gateway to release state.*cannot verify Gateway ownership/,
+  );
+  assert.match(
+    leaseText,
+    /still holds the Gateway state lock.*OpenClaw reported: .*holder \d+ at [^ ]+\/pid-ns \d+/,
+  );
+  // The wrapper logs no confirmation, and the lease is still there: it only inspected.
+  assert.doesNotMatch(leaseText, /recover-lock --confirm [0-9a-f]{64}/);
+  const leaseInspection = (
+    await runDocker([
+      "exec",
+      leaseOnly.containerName,
+      "node",
+      "/app/openclaw.mjs",
+      "gateway",
+      "recover-lock",
+      "--json",
+    ])
+  ).stdout;
+  const leaseReport = requireRecord(
+    JSON.parse(leaseInspection.slice(leaseInspection.indexOf("{"))),
+    "lock inspection",
+  );
+  assert.equal(leaseReport.present, true, leaseInspection);
+  // `occ agent stop`, the first recovery step, ends the hold.
+  await runDocker(["stop", "--time", "60", leaseOnly.containerName], { timeout: 90_000 });
+  assert.equal((await inspectContainer(leaseOnly.containerName)).State.ExitCode, 0);
   // The peer bridge record survives container restarts in its Pod. An unreadable one
   // (here truncated, as an unsynced write after node power loss could leave it) must hold
   // the wrapper unready with its cause reported, not crash-loop on a bare SyntaxError.
@@ -648,6 +718,7 @@ export async function runWritableGatewayRestart(t: TestContext) {
       explicitBridgeRefused: stopped.State.ExitCode,
       freshCopyRestored: fresh.prefix === undefined,
       staleLockHeld: lockHeld.failure.check,
+      ownerLeaseHeld: leaseHeld.failure.check,
       unreadableRecordHeld: held.failure.check,
       heldStopMs,
     }),

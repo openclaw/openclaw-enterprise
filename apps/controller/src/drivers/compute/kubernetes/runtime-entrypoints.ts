@@ -7,6 +7,11 @@ import {
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
+import {
+  EXITED_OPENCLAW_STATE_RELEASE,
+  OPENCLAW_STATE_LOCK_INSPECTION,
+  unverifiableStateLockLine,
+} from "../embedded-gateway-owner.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
@@ -2663,8 +2668,10 @@ ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
-${openClawStateMigrationHelper("Gateway", "restart the Pod")}
+${openClawStateMigrationHelper("Gateway", "restart the Pod", { releaseExitedState: true })}
 ${OPENCLAW_CONFIG_ISSUE_HELPER}
+${EXITED_OPENCLAW_STATE_RELEASE}
+${OPENCLAW_STATE_LOCK_INSPECTION}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -3101,11 +3108,29 @@ function assertHotApplicableChange(previous, next) {
 
 // OpenClaw watches the config file: replace it whole so it never reads a partial write.
 function replaceOpenClawConfig(config) {
-  const { renameSync } = require("node:fs");
+  const { closeSync, openSync, renameSync } = require("node:fs");
   const target = writableOpenClawConfigPath();
   const staged = target + ".workspace-node-" + process.pid;
-  pluginWriteFileSync(staged, JSON.stringify(config), { mode: 0o600 });
-  renameSync(staged, target);
+  const contents = JSON.stringify(config);
+  const fd = openSync(staged, "w", 0o600);
+  let closeAttempted = false;
+  try {
+    pluginWriteFileSync(fd, contents);
+    // A failed close cannot safely be retried.
+    closeAttempted = true;
+    closeSync(fd);
+    renameSync(staged, target);
+  } catch (error) {
+    if (!closeAttempted) {
+      try { closeSync(fd); } catch {}
+    }
+    try {
+      pluginRmSync(staged, { force: true });
+    } catch {
+      // Preserve the first error if cleanup also fails.
+    }
+    throw error;
+  }
   process.env.OPENCLAW_CONFIG_PATH = target;
 }
 
@@ -3349,7 +3374,10 @@ function gatewayEnvironment() {
   }
 }
 
-let gatewayConfigurationHeld = false;
+// Set while the wrapper holds a startup failure of its native Gateway; the polls stop.
+let gatewayStartupHeld = false;
+// Set when OpenClaw kept the records of the native Gateway that last exited (finding 3310).
+let exitedGatewayStateKept = false;
 
 // OpenClaw exits at startup (status 78) when any setting fails its schema, including a plugin
 // entry's config when that plugin is disabled or denied (finding 3043; the runtime image carries
@@ -3358,8 +3386,8 @@ let gatewayConfigurationHeld = false;
 // served exits non-zero, OpenClaw's own validator checks the same configuration. An invalid
 // one is held as check gateway-config, which ends the deployment at once, and the log names
 // the settings. Any other exit, or a validator that prints no report (it failed or timed
-// out), restarts the container as before, as does a Gateway with no Compute status port to
-// serve the hold on.
+// out), restarts the container as before (or holds the Gateway state lock, below), as does a
+// Gateway with no Compute status port to serve the hold on.
 function holdInvalidGatewayConfiguration(code, signal) {
   if (runtimeStatusPort() === undefined) return false;
   const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
@@ -3373,12 +3401,46 @@ function holdInvalidGatewayConfiguration(code, signal) {
     return false;
   }
   if (report?.valid !== false) return false;
-  gatewayConfigurationHeld = true;
+  gatewayStartupHeld = true;
   publishRuntimeFailure("gateway-config", "UNAVAILABLE");
   console.error(invalidOpenClawConfigurationLine(
     "The OpenClaw Gateway exited (" + (signal ?? "exit-" + code) + ") before it served", report.issues,
   ));
   setInterval(() => {}, 3600000);
+  return true;
+}
+
+// OpenClaw's own start can refuse the Gateway state lock after config validate passed: the
+// owner lease of a Gateway this container cannot verify stopped, such as one in a force-deleted
+// Pod, is not what validate reads. OpenClaw waits up to 95 s, logs the holder and exits 1, and
+// each container restart repeats that (finding 3288). So after a Gateway that never served
+// exits 1, the wrapper runs OpenClaw's lock inspection (OPENCLAW_STATE_LOCK_INSPECTION), which
+// changes nothing. Holders that the exit release above left are held as
+// check gateway-state-lock with the tool policy step's log line. The wrapper never recovers a
+// lock it cannot prove stopped; an operator does. A held wrapper inspects again every 5
+// minutes: once no holder remains, it restarts its container on purpose and the next start
+// takes the lock. An inspection that fails, or finds no holder, exits 1 as before.
+const GATEWAY_STATE_LOCK_RECHECK_MS = 300_000;
+function holdGatewayStateLock(code) {
+  if (runtimeStatusPort() === undefined) return false;
+  const holders = openClawStateLockHolders(gatewayEnvironment());
+  if (holders === undefined || holders.length === 0) return false;
+  gatewayStartupHeld = true;
+  holdGatewayToolPolicyFailure(new GatewayStateLockError(holders.join(" ")));
+  const recheck = setInterval(() => {
+    if (gatewayTerminating) return;
+    // A failed exit release (it timed out, or a foreign record made OpenClaw keep every lock)
+    // would otherwise hold the child's own records for ever. This namespace still lives, so the
+    // release can still prove the child dead; a retry runs at most 60 s, the inspection 30 s.
+    if (exitedGatewayStateKept) {
+      exitedGatewayStateKept = !releaseExitedOpenClawState(gatewayEnvironment());
+    }
+    const current = openClawStateLockHolders(gatewayEnvironment());
+    if (current !== undefined && current.length > 0) return;
+    clearInterval(recheck);
+    if (current === undefined) process.exit(code);
+    else stopContainer("GATEWAY_STATE_LOCK_RELEASED");
+  }, GATEWAY_STATE_LOCK_RECHECK_MS);
   return true;
 }
 
@@ -3393,7 +3455,12 @@ function startGatewayProcess() {
   gatewayGeneration++;
   childExited = new Promise((resolve) => {
     spawned.on("exit", (code, signal) => {
-      if (spawned === child) childRunning = false;
+      if (spawned === child) {
+        childRunning = false;
+        // Before the wrapper exits or starts another Gateway (finding 3257). A clean exit
+        // (status 0) released them.
+        exitedGatewayStateKept = code !== 0 && !releaseExitedOpenClawState(gatewayEnvironment());
+      }
       resolve();
       if (stoppingContainer) {
         process.exit(DELIBERATE_RESTART_EXIT_STATUS);
@@ -3401,6 +3468,9 @@ function startGatewayProcess() {
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
         if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
+          return;
+        }
+        if (!gatewayTerminating && !gatewayServed && code === 1 && holdGatewayStateLock(code)) {
           return;
         }
         // A native exit never passes as a deliberate restart, which Compute does not count
@@ -3564,7 +3634,7 @@ if (workspaceNodeBindingPath !== undefined) {
     }
   };
   const workspaceNodePoll = setInterval(async () => {
-    if (pollInFlight || respawning || gatewayConfigurationHeld) return;
+    if (pollInFlight || respawning || gatewayStartupHeld) return;
     pollInFlight = true;
     try {
       await pollWorkspaceNode();
@@ -3708,7 +3778,7 @@ if (followsPeerStatus) {
     }
   };
   const peerStatusPoll = setInterval(async () => {
-    if (pollInFlight || respawning || stoppingContainer || gatewayConfigurationHeld) return;
+    if (pollInFlight || respawning || stoppingContainer || gatewayStartupHeld) return;
     pollInFlight = true;
     try {
       let current;
@@ -4099,16 +4169,27 @@ const OPENSHELL_PAT_RECOVERY = String.raw`
     let deniedUpgrade;
 `;
 
+// A Sandbox whose egress is an explicit proxy (no direct route; the proxy named in the
+// Harness environment) can reach the model only through it, so the authentication probe of
+// a program rendered with explicitProxy keeps the standard proxy settings when they are set
+// and non-empty. Nothing else of the Harness environment reaches the probe, and the values
+// are never logged. A transparent egress sets none of them.
+const EXPLICIT_PROXY_PROBE_ENVIRONMENT =
+  ', "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"';
+
 // Nested Codex children use their own plugin lifecycle. Keep standalone commands
 // stable while omitting the unused native installer from the bounded supervisor.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
+// explicitProxy also carries the standard proxy settings into the authentication probe
+// (see EXPLICIT_PROXY_PROBE_ENVIRONMENT); without it the program renders its existing bytes.
 function agentRuntimeEntrypoint({
   protected: disableUnboundedConnectionRetries = false,
   computeOwned = false,
   withNode = false,
   patRecovery = false,
   boxHttps = false,
+  explicitProxy = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4523,7 +4604,7 @@ ${boxHttps ? "      ...httpsProviderArguments,\n" : ""}${disableUnboundedConnect
         CODEX_HOME: process.env.CODEX_HOME,
         RUST_LOG: "error",
         ...Object.fromEntries(
-          ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+          ["SSL_CERT_FILE", "SSL_CERT_DIR"${explicitProxy ? EXPLICIT_PROXY_PROBE_ENVIRONMENT : ""}]
             .filter((name) => typeof process.env[name] === "string" && process.env[name].length > 0)
             .map((name) => [name, process.env[name]]),
         ),
@@ -4954,7 +5035,9 @@ const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
-${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
+${openClawStateMigrationHelper("Harness", "deploy the Agent again", { releaseExitedState: true })}
+${EXITED_OPENCLAW_STATE_RELEASE}
+${OPENCLAW_STATE_LOCK_INSPECTION}
 // The Codex child serves this container's runtime status, and it starts only after the
 // node state is current and the workspace is initialized. A failure before then is held
 // here with the named step in the log and its check served in Codex's place.
@@ -5087,6 +5170,19 @@ function workspaceBaselineReport(path) {
   return (summary === "" ? "reported no error message" : "reported: " + summary) +
     (settings.length > 0 ? " (invalid settings: " + settings.join(", ") + ")." : ".");
 }
+// Doctor and native setup take the node state's owner lock, which every later revision's
+// Harness on the workspace claim needs. When OpenClaw refuses a holder it cannot verify
+// stopped, such as a Pod killed while it held the lock, a failed step is held as check
+// gateway-state-lock, the Gateway's, with OpenClaw's holders in the log (findings 3288,
+// 3345). The Harness never recovers a lock it cannot prove stopped; an operator does.
+function holdUnverifiableStateLock(check) {
+  const holders = openClawStateLockHolders(nodeEnv);
+  if (holders?.length > 0) {
+    console.error(${JSON.stringify(unverifiableStateLockLine("Harness"))} + holders.join(" "));
+    check = "gateway-state-lock";
+  }
+  holdStartupFailure(check, "UNAVAILABLE");
+}
 // The node state on the Agent's workspace claim outlives runtime image upgrades.
 // Native setup and both children open it, so Doctor migrates it first, with the
 // node's environment only: no model credential reaches Doctor. A failure holds
@@ -5094,7 +5190,7 @@ function workspaceBaselineReport(path) {
 (async () => {
 const outdatedDatabases = outdatedOpenClawDatabases(state);
 if ((outdatedDatabases.length > 0 || openClawMaintenancePending(state)) && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
-  ${role === "file-node" ? 'publishWorkspaceOutcome("state-migration");\n  ' : ""}holdStartupFailure("state-migration", "UNAVAILABLE");
+  ${role === "file-node" ? 'publishWorkspaceOutcome("state-migration");\n  ' : ""}holdUnverifiableStateLock("state-migration");
   return;
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
@@ -5126,6 +5222,8 @@ try {
   closeSync(baselineResult);
   closeSync(baselineOutput);
 }
+// A setup that started and did not exit 0, such as one killed, may leave its records.
+if (!baseline.error && baseline.status !== 0) releaseExitedOpenClawState(nodeEnv);
 if (baseline.terminating) process.exit(0);
 try {
   for (const line of workspaceBaselineOutput(baselineOutputPath, true).split("\n")) {
@@ -5143,7 +5241,7 @@ if (baseline.error || baseline.status !== 0) {
       ") " + workspaceBaselineReport(baselineResultPath) +
       " Codex was not started. Fix the cause, then deploy the Agent again.",
   );
-  ${role === "file-node" ? 'publishWorkspaceOutcome("workspace-baseline");\n  ' : ""}holdStartupFailure("workspace-baseline", "UNAVAILABLE");
+  ${role === "file-node" ? 'publishWorkspaceOutcome("workspace-baseline");\n  ' : ""}holdUnverifiableStateLock("workspace-baseline");
   return;
 }
 logStartupPhase("workspace-baseline", baselineStartedAt);
@@ -5443,9 +5541,10 @@ const protectedProviderCodexArguments = nodeProgramArguments(protectedProviderCo
 // Only split the exact provider launcher Compute rendered. An unknown or customized
 // command must never silently lose its initialization or gain a companion process.
 export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifier: string) {
+  const args = nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, explicitProxy: true }));
   const expected = [
     ...RUNTIME_WRAPPER_COMMAND,
-    ...nodeProgramArguments(setupVerifier + agentWithNodeEntrypoint(providerCodexArguments, true)),
+    ...nodeProgramArguments(setupVerifier + agentWithNodeEntrypoint(args, true)),
   ];
   if (command.length !== expected.length || expected.some((part, i) => part !== command[i])) {
     return undefined;
@@ -5457,7 +5556,7 @@ export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifie
       ...nodeProgramArguments(
         setupVerifier +
           agentWithNodeEntrypoint(
-            nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, boxHttps: true })),
+            nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, boxHttps: true, explicitProxy: true })),
             true,
             "codex",
           ),
@@ -5484,6 +5583,7 @@ export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypo
 );
 
 let patEntrypoint: string | undefined;
+const explicitProxyLaunches = new Map<string, string>();
 let compactPatLaunch: string | undefined;
 let compactProviderLaunch: string | undefined;
 let compactProtectedLaunch: string | undefined;
@@ -5499,6 +5599,12 @@ export interface CodexLaunch {
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
   readonly strandsBox?: boolean;
+  /**
+   * A provider-owned launch whose Sandbox may name an explicit egress proxy in the Harness
+   * environment: its authentication probe keeps the standard proxy settings. OpenShell's
+   * egress is transparent, and its admitted commands keep their bytes.
+   */
+  readonly explicitProxy?: boolean;
 }
 
 export function codexLaunchEntrypoint(
@@ -5509,6 +5615,7 @@ export function codexLaunchEntrypoint(
     withNode,
     workspaceSetup,
     strandsBox,
+    explicitProxy,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
   if (!providerOwned) {
@@ -5518,6 +5625,22 @@ export function codexLaunchEntrypoint(
         : COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
     }
     return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (explicitProxy && openShellProgram === undefined) {
+    const key = `${protectedLaunch}:${Boolean(withNode)}:${Boolean(strandsBox)}`;
+    const cached = explicitProxyLaunches.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const child = agentRuntimeEntrypoint({
+      protected: protectedLaunch,
+      withNode: Boolean(withNode),
+      explicitProxy: true,
+      boxHttps: Boolean(strandsBox && !withNode),
+    });
+    const program = withNode ? agentWithNodeEntrypoint(nodeProgramArguments(child), strandsBox) : child;
+    explicitProxyLaunches.set(key, program);
+    return program;
   }
   if (!protectedLaunch && openShellProgram === "pat") {
     if (withNode) {
@@ -5555,7 +5678,8 @@ ${MANAGED_INSTALL_HELPERS}
 ${MANAGED_PLUGIN_CREDENTIAL_HELPER}
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
-${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
+${openClawStateMigrationHelper("Native worker", "deploy the Agent again", { releaseExitedState: true })}
+${EXITED_OPENCLAW_STATE_RELEASE}
 
 // A held failure (the model check, or the node state migration) is served on the
 // Compute status port beside readiness, or, for a provider-owned worker (APP_TOKEN_SHA

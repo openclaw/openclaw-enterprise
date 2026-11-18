@@ -72,6 +72,7 @@ import {
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForSettledFetches } from "./console-fetch-accounting.ts";
+import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 import { normalizeProvisioningConfiguration } from "../../packages/occ/src/agent-provisioning.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
@@ -1511,7 +1512,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   });
   await search.fill("slow");
   await page.clock.runFor(300);
-  await searchStarted.promise;
+  await within(searchStarted.promise, "the held upstream plugin search");
   await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
   assert.equal(
     await dialog
@@ -1544,7 +1545,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
 
   // Selecting a plugin loads its tools; a rejected upstream body stays private and is retryable.
   await calendar.click();
-  await detailStarted.promise;
+  await within(detailStarted.promise, "the held upstream plugin detail read");
   await dialog.getByRole("status").filter({ hasText: "Loading tools…" }).waitFor();
   assert.equal(await dialog.getByText(/^Tool list unavailable\./).count(), 0);
   assert.equal(
@@ -1645,7 +1646,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   });
   await token.fill("at-browser-plugin-one");
   await page.clock.runFor(300);
-  await listStarted.promise;
+  await within(listStarted.promise, "the held upstream plugin list read");
   assert.equal(await dialog.isVisible(), false);
   await token.fill("at-browser-plugin-two");
   await stalePrefetchCanceled;
@@ -2033,6 +2034,213 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   assert.equal(saved.data.values.agents.defaults.model, "openai/gpt-5.1");
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
 });
+
+test("Harness switches preserve unrestricted and explicit native plugin allowlists through Agent creation", async (t) => {
+  for (const allow of [undefined, [], ["knowledge"], ["knowledge", "codex"], ["codex"]]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Native plugin settings", { ready: true });
+    const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "preset-model-key");
+    const harnessAuth = { method: "api_key", source: secret.ref };
+    const base = nativeValues("preserved-native-plugin");
+    const values = {
+      ...base,
+      plugins: {
+        ...base.plugins,
+        deny: ["blocked-plugin"],
+        ...(allow === undefined ? {} : { allow }),
+      },
+    };
+    const preset = await createPreset(fixture, namespace.id, {
+      name: "Native plugins",
+      template: {
+        agent: { name: "Native plugin Agent", executionMode: "embedded", harnessAuth },
+        configuration: { values },
+      },
+    });
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+
+    // Harness wiring changes must neither grant plugins nor erase an authored restriction.
+    await harness.selectOption("codex");
+    const dedicated = JSON.parse(await configuration.inputValue());
+    assert.deepEqual(dedicated.plugins.allow, allow);
+    assert.deepEqual(dedicated.plugins.deny, values.plugins.deny);
+    assert.deepEqual(dedicated.plugins.entries.knowledge, values.plugins.entries.knowledge);
+    assert.equal(dedicated.plugins.entries.codex.enabled, true);
+    await harness.selectOption("openclaw");
+    assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
+
+    // Save through the ordinary Agent form and read its owned Configuration back from the API.
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
+    assert.equal(created.executionMode, "embedded");
+    assert.deepEqual(created.harnessAuth, harnessAuth);
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.data.values.plugins, values.plugins);
+  }
+});
+
+test("Default Codex policy survives Harness switches, explicit edits and restored drafts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Codex policy round-trip", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const starter = await defaultPresetSummary(fixture, namespace.id);
+  // Explicit Preset selection supports restored drafts; the starter shortcut deliberately discards them.
+  await page.getByLabel("Preset template", { exact: true }).selectOption(starter.id);
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const harness = page.getByLabel("Harness", { exact: true });
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await harness.selectOption("openclaw");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await harness.selectOption("codex");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+
+  // An operator's explicit unrestricted policy replaces the preset restriction, even after navigation.
+  const edited = JSON.parse(await configuration.inputValue());
+  edited.plugins.allow = [];
+  await openAdvancedSettings(page);
+  await configuration.fill(JSON.stringify(edited));
+  await page.goBack();
+  await page.goForward();
+  await openAdvancedSettings(page);
+  await harness.selectOption("openclaw");
+  await harness.selectOption("codex");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, []);
+});
+
+for (const finalHarness of ["openclaw", "codex"] as const) {
+  test(`A disabled Codex entry survives Harness switches and saves on ${finalHarness}`, async (t) => {
+    if (!nativeBrowserSupported(t)) {
+      return;
+    }
+    const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
+      agentProvisioning: false,
+      filesystemConfiguration: true,
+      nativeAdminGatewayApiKey: async () => "synthetic-native-admin-gateway-key",
+      agentGatewayManagedMode: false,
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Disabled Codex entry", { ready: true });
+    const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+    const base = nativeValues("disabled-codex-entry");
+    const entry =
+      finalHarness === "openclaw"
+        ? { enabled: false }
+        : { enabled: false, config: { appServer: { sandbox: "workspace-write" } } };
+    const plugins = {
+      ...base.plugins,
+      allow: ["codex"],
+      entries: { ...base.plugins.entries, codex: entry },
+    };
+    const preset = await createPreset(fixture, namespace.id, {
+      name: "Disabled Codex entry",
+      template: {
+        agent: {
+          name: "Disabled entry Agent",
+          executionMode: "embedded",
+          harnessAuth: { method: "api_key", source: secret.ref },
+        },
+        configuration: { values: { ...base, plugins } },
+      },
+    });
+    const { page } = await newPage(t, fixture, browserOptions);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+    await harness.selectOption("codex");
+    if (finalHarness === "openclaw") {
+      // Settle the initial model catalog before editing an unfinished Configuration.
+      await settlePageRequests(page);
+      const dedicated = JSON.parse(await configuration.inputValue());
+      assert.deepEqual(dedicated.plugins.entries.codex, {
+        enabled: false,
+        config: {
+          appServer: {
+            mode: "guardian",
+            approvalPolicy: "on-request",
+            transport: "websocket",
+            sandbox: "read-only",
+            url: "${APP_SERVER_URL}",
+            authToken: "${APP_SERVER_TOKEN}",
+          },
+        },
+      });
+      const native = JSON.stringify({ ...dedicated, agents: base.agents, models: base.models });
+      const replaceEditorText = (value: string) =>
+        configuration.evaluate((input, text) => {
+          (input as HTMLTextAreaElement).value = text;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }, value);
+      const incomplete = JSON.stringify(dedicated).slice(0, -1);
+      await replaceEditorText(incomplete);
+      assert.equal(await configuration.inputValue(), incomplete);
+      await harness.selectOption("openclaw");
+      assert.equal(await configuration.inputValue(), incomplete);
+      await replaceEditorText(native);
+      assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, plugins);
+      assert.equal(await harness.inputValue(), "openclaw");
+      await harness.selectOption("codex");
+      const edited = JSON.parse(await configuration.inputValue());
+      delete edited.plugins.entries.codex;
+      await replaceEditorText(JSON.stringify(edited));
+      await harness.selectOption("openclaw");
+      assert.equal(JSON.parse(await configuration.inputValue()).plugins.entries.codex, undefined);
+    } else {
+      await harness.selectOption("openclaw");
+      assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, plugins);
+      await harness.selectOption("codex");
+    }
+    const configurationBeforeSave = await configuration.inputValue();
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
+    assert.equal(created.executionMode, finalHarness === "openclaw" ? "embedded" : "dedicated");
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    const expected =
+      finalHarness === "openclaw"
+        ? undefined
+        : {
+            enabled: false,
+            config: {
+              appServer: {
+                mode: "guardian",
+                approvalPolicy: "on-request",
+                transport: "websocket",
+                url: "${APP_SERVER_URL}",
+                authToken: "${APP_SERVER_TOKEN}",
+                sandbox: "workspace-write",
+              },
+            },
+          };
+    const expectedEntries: Record<string, unknown> = { ...plugins.entries };
+    if (expected === undefined) {
+      delete expectedEntries.codex;
+    } else {
+      expectedEntries.codex = expected;
+    }
+    assert.deepEqual(saved.data.values.plugins, { ...plugins, entries: expectedEntries });
+    assert.deepEqual(JSON.parse(configurationBeforeSave).plugins, saved.data.values.plugins);
+  });
+}
 
 test("Dedicated OpenClaw Presets preserve custom provider transport across execution mode changes", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
@@ -3740,7 +3948,7 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
       response.request().method() === "POST",
   );
   await save.click();
-  await submitStarted.promise;
+  await within(submitStarted.promise, "the held create request");
   // A prefetch due during submission must resume after the real duplicate-name rejection.
   await page.clock.runFor(300);
   const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
@@ -4059,7 +4267,7 @@ test("a default shortcut restored after a pending Preset read keeps its form", a
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-  await observed;
+  await within(observed, "the held starter Preset read");
   await page.getByRole("link", { name: "← Agents" }).click();
   releaseRead();
   await page.unroute(presetPath);

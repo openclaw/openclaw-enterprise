@@ -12,10 +12,7 @@ import {
   k3dHostMetrics,
 } from "./k3d-preparation-diagnostics.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
-import {
-  prepareOpenShellClusterBootstrap,
-  prepareOpenShellPodSecurityAdmission,
-} from "./openshell.ts";
+import { prepareOpenShellClusterBootstrap } from "./openshell.ts";
 import { commandAvailable, execFile, type PreparationChild } from "./prepare-command.ts";
 import { ownedName } from "./resource-names.ts";
 
@@ -65,11 +62,6 @@ export type K3dCluster = PreparationResource & {
   nodeImage?: string;
   disabledK3sAddons?: readonly string[];
   kubectl?: string;
-  runtimeClass?: string;
-  runtimeHandler?: string;
-  podSecurityAdmissionConfig?: string;
-  podSecurityAdmissionContainerPath?: string;
-  podSecurityAdmissionK3dArgs?: string[];
   kubernetesVersion?: string;
   pluginStatusProxyCidrs?: string;
 };
@@ -134,16 +126,10 @@ function isK3dCluster(value: unknown): value is K3dCluster {
     [
       resource.nodeImage,
       resource.kubectl,
-      resource.runtimeClass,
-      resource.runtimeHandler,
-      resource.podSecurityAdmissionConfig,
-      resource.podSecurityAdmissionContainerPath,
       resource.kubernetesVersion,
       resource.pluginStatusProxyCidrs,
     ].every((field) => field === undefined || typeof field === "string") &&
-    (resource.disabledK3sAddons === undefined || isStringList(resource.disabledK3sAddons)) &&
-    (resource.podSecurityAdmissionK3dArgs === undefined ||
-      isStringList(resource.podSecurityAdmissionK3dArgs))
+    (resource.disabledK3sAddons === undefined || isStringList(resource.disabledK3sAddons))
   );
 }
 
@@ -238,15 +224,6 @@ export function createK3dPreparation({
       });
       resource.nodeImage = bootstrap.k3sImage;
       resource.kubectl = bootstrap.kubectl;
-      resource.runtimeClass = bootstrap.runtimeClass;
-      resource.runtimeHandler = bootstrap.runtimeHandler;
-      const podSecurityAdmission = await prepareOpenShellPodSecurityAdmission({
-        directory,
-        runtimeClass: bootstrap.runtimeClass,
-      });
-      resource.podSecurityAdmissionConfig = podSecurityAdmission.path;
-      resource.podSecurityAdmissionContainerPath = podSecurityAdmission.containerPath;
-      resource.podSecurityAdmissionK3dArgs = podSecurityAdmission.k3dArgs;
       await writeState(statePath, state);
     }
     try {
@@ -258,7 +235,6 @@ export function createK3dPreparation({
         "create",
         cluster,
         ...(resource.nodeImage ? ["--image", resource.nodeImage] : []),
-        ...(resource.podSecurityAdmissionK3dArgs ?? []),
         "--servers",
         "1",
         "--agents",

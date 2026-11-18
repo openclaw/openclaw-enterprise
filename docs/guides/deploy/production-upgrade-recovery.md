@@ -86,10 +86,9 @@ history, then finish verification separately.
 
 Never start old writers against a migrated database. For a retry within the recorded pair, wait
 until the initialization Job and Pods are terminal. Run the **candidate controller
-image** with `node scripts/migrate-production.mjs --check` against the retained
-database, with its migrator credential and required CA. The Kubernetes
-[maintenance procedure](auth-maintenance.md#run-the-command) supplies these: set
-`CONTROLLER_IMAGE` and args `["scripts/migrate-production.mjs","--check"]`.
+image** with the [selected-image read-only check](separate-database-upgrade.md#run-a-selected-image-migration)
+against the retained database. Use its migrator credential and required CA. The
+Kubernetes maintenance Job must select the same candidate image.
 Retain exit-zero `migration.checked` output. [Separate migrations](separate-database-upgrade.md) require `--require-current`.
 Attest the checked outcome with `--resume --migration-history-checked`. The helper returns OCC to zero replicas
 and records the next expected revision before retrying. Prefer a reviewed forward
@@ -282,6 +281,20 @@ keeping baseline files matched to live state.
 | A `presets.files` Preset `name` with leading or trailing Unicode spaces (such as U+00A0), U+2028, U+2029 or C1 control characters                                                 | Correct the `name` in the file, or remove the entry. Startup adds a Preset with the corrected name; delete any saved copy with the old name you no longer need.                                                 |
 | A Backend `id` with a C1 control character (U+0080 to U+009F)                                                                                                                     | Rename the Backend. No Agent can store such an ID, but ServiceAccounts created through that Backend keep it in a binding that cannot change: delete them before the rename and recreate them after the upgrade. |
 | With `requireImmutableDigest: true`, an upper-case `gateway` or `agent` digest in the Installation's `drivers.compute.configuration.images`, such as `@sha256:ABC…` or `@SHA256:` | Write `sha256` and the hex digits in lower case; the digest is the same.                                                                                                                                        |
+
+### OpenShell RuntimeClass refusal
+
+For `UNKNOWN_FIELD` at `/kubernetes` or `/kubernetes/agentResourceOverrides/<index>`, inspect
+`drivers.sandbox.configuration.kubernetes` for retired `runtimeClassName` or
+`agentResourceOverrides[].runtimeClassName` settings. Record each Agent's intended
+runtime and placement. Arrange runtime selection with Kubernetes and independently
+managed OpenShell; see the
+[OpenShell Sandbox reference](../../reference/drivers/openshell-sandbox.md#configuration).
+Preserve CPU and memory overrides; verify scheduling and rendered resource requests
+and limits before replacement. Remove keys through a reviewed Installation transition.
+Stop and consult the release owner if the installed controller requires a key or
+the image helper refuses its removal as protected. Do not delete configuration
+blindly or alter running workloads to clear preflight.
 
 ## Roll back across human sign-in
 

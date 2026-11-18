@@ -12,7 +12,7 @@ import {
   type Stats,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { isObject } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 
 export type Case2Directory = {
   path: string;
@@ -104,7 +104,7 @@ export function removeK3dCase2Directory(directory: Case2Directory): void {
       try {
         unlinkSync(`/proc/self/fd/${directory.fd}/${name}`);
       } catch (error) {
-        if (!isObject(error) || error.code !== "ENOENT") {
+        if (!isRecord(error) || error.code !== "ENOENT") {
           throw error;
         }
       }
@@ -167,7 +167,7 @@ export function readK3dCase2Phase(directory: Case2Directory) {
         return undefined;
       }
       const row: unknown = JSON.parse(bytes.subarray(0, count).toString("utf8"));
-      if (!isObject(row) || Object.keys(row).length !== 7) {
+      if (!isRecord(row) || Object.keys(row).length !== 7) {
         return undefined;
       }
       const { version, caseId, setupEntered, setupCompleted, bodyEntered, firstError, teardown } =

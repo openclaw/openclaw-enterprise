@@ -835,6 +835,22 @@ export async function loadInstallationConfiguration(options: {
     backend: Backend<OpenShellGateway> | undefined,
   ) => SandboxDriver;
 }): Promise<InstallationRuntimeDrivers | undefined> {
+  // The loader owns an installed package's registration until the complete Driver bundle returns.
+  const loaded: { externalOwner?: InstalledDriver } = {};
+  try {
+    return await composeInstallationConfiguration(options, loaded);
+  } catch (error) {
+    // Any later refusal, such as Compute requiring the enrollment contract, closes the package so
+    // a refused startup can exit. A failed close does not replace the refusal.
+    await loaded.externalOwner?.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function composeInstallationConfiguration(
+  options: Parameters<typeof loadInstallationConfiguration>[0],
+  loaded: { externalOwner?: InstalledDriver },
+): Promise<InstallationRuntimeDrivers | undefined> {
   const environment = options.environment ?? process.env;
   if (environment.OCC_INSTALLATION_ID !== undefined) {
     throw new Error("OCC_INSTALLATION_ID is unsupported; the Installation is a singleton.");
@@ -1502,11 +1518,12 @@ export async function loadInstallationConfiguration(options: {
           ) as SandboxDriver,
         };
       }
-      const owner = createExternalProtectedDriver(
+      const owner = await createExternalProtectedDriver(
         sandboxPackage.module,
         sandbox,
         repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
       );
+      loaded.externalOwner = owner;
       return { sandboxDriver: owner.require("sandbox"), protectedDriver: owner };
     }
     const { createOpenShellCapabilities } =

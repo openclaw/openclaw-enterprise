@@ -5,6 +5,7 @@
 // API and worker do at startup, and checks migration compatibility against the database.
 import { readFileSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
+import { migrationEntry } from "./lib/selected-image-migration.ts";
 
 // Printed before the image's own message when Compute preflight stops startup:
 // a refusal is the Driver's ConfigurationFailure (such as split-layout storage);
@@ -37,10 +38,17 @@ const identityCheck = `
 let identityPool;
 let identityClient;
 let identityMismatch = false;
+// True while the Pod opens its connection: a failure or the deadline then means the database
+// was not reached (or refused the session), not that its contents are wrong. A dropped
+// connection, such as egress that does not admit the database address, otherwise looks
+// exactly like an unreadable Installation table (finding 3255).
+let identityConnecting = false;
 const identityFailure = () => {
   process.stderr.write(identityMismatch
     ? "Candidate application database does not identify the incumbent Installation.\\n"
-    : "Candidate application database Installation identity could not be verified.\\n");
+    : identityConnecting
+      ? "Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database. Check that PostgreSQL is running and that the chart's database egress (database.cidrs) admits its current address; a refused sign-in or a failed TLS handshake also stops here.\\n"
+      : "Candidate application database Installation identity could not be verified.\\n");
   process.exit(1);
 };
 // Older pool helpers do not honor every timeout option. Bound the whole operation,
@@ -57,7 +65,9 @@ try {
   }
   const { createPostgresPool } = await import("/app/packages/occ/src/state/postgres-pool.ts");
   identityPool = await createPostgresPool(process.env.OCC_DATABASE_URL, { max: 1 });
+  identityConnecting = true;
   identityClient = await identityPool.connect();
+  identityConnecting = false;
   identityClient.on("error", identityFailure);
   // BEGIN precedes all reads, even if the supplied role normally has write access.
   await identityClient.query("BEGIN READ ONLY");
@@ -708,9 +718,24 @@ function migrationJob(
   if (podLabels != null && !isLabelMap(podLabels)) {
     fail("the rendered initialization Job contains invalid Pod labels.");
   }
-  const container: Container = selectFields(preflightContainer(migration), containerFields);
+  const initializer = preflightContainer(migration);
+  const { command, args } = initializer;
+  if (
+    command !== undefined &&
+    (!Array.isArray(command) || command.length !== 1 || command[0] !== "node")
+  ) {
+    fail("the initialization Job contains an invalid migration command.");
+  }
+  if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  const entry = migrationEntry(args);
+  if (!entry) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  const container: Container = selectFields(initializer, containerFields);
   container.command = ["node"];
-  container.args = ["scripts/migrate-production.mjs", "--check"];
+  container.args = [...entry, "--check"];
   const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
   return {
     apiVersion: "batch/v1",

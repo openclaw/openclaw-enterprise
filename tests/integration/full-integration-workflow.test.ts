@@ -925,10 +925,10 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.deepEqual(
     qaSelection.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
     [
-      { cell: "compose/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
-      { cell: "compose/Codex", scenarios: ["console-secrets", "agent-audit"] },
-      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
-      { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
+      { cell: "compose/OpenClaw", scenarios: ["http-chat", "model-ui", "console-secrets"] },
+      { cell: "compose/Codex", scenarios: ["http-chat", "console-secrets", "agent-audit"] },
+      { cell: "kubernetes/OpenClaw", scenarios: ["http-chat", "model-ui", "console-secrets"] },
+      { cell: "kubernetes/Codex", scenarios: ["http-chat", "console-secrets"] },
     ],
   );
   assert.equal(qaSelection.exclusions.length, 2);

@@ -53,6 +53,14 @@ export class AuthorizationDeniedError extends Error {
   }
 }
 
+/** Keep IAM evidence while concealing a resource the caller cannot read or operate. */
+export class HiddenResourceAuthorizationDeniedError extends AuthorizationDeniedError {
+  constructor(denial: AuthorizationDeniedError) {
+    super(denial.message, denial.evidence, denial.authorization, denial.checkedPrincipalId);
+    this.name = "HiddenResourceAuthorizationDeniedError";
+  }
+}
+
 /**
  * The caller's own denial where the named grant needs a reason to make sense: an Agent update
  * checks the grant on the Agent's current Harness authentication even when it replaces it
@@ -393,6 +401,14 @@ export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ScopeViolationError";
+  }
+}
+
+/** A password proof no longer belongs to the current recovery designation. */
+export class RecoveryPasswordPolicyError extends ScopeViolationError {
+  constructor() {
+    super("The password is not eligible for sign-in.");
+    this.name = "RecoveryPasswordPolicyError";
   }
 }
 

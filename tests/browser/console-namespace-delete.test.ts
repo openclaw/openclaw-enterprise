@@ -9,6 +9,7 @@ import { restrict } from "../helpers/iam-grants.ts";
 import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { callbackGate } from "../helpers/wait-for.ts";
 import {
   apiRequests,
   fileBrowser,
@@ -560,27 +561,28 @@ for (const outcome of [
     assert.equal((await accepted).status(), 202);
     const retry = page.getByRole("button", { name: "Request deletion again", exact: true });
     await retry.waitFor();
-    const started = Promise.withResolvers<void>();
+    const started = callbackGate("the held background deletion poll");
     const release = Promise.withResolvers<void>();
     t.after(() => release.resolve());
     await page.route(
       url,
-      async (route) => {
-        assert.equal(route.request().method(), "GET");
-        started.resolve();
-        await release.promise;
-        if (outcome === "still deleting") {
-          await route.continue();
-        } else if (outcome === "access ended") {
-          await route.fulfill(apiErrorResponse(403, "FORBIDDEN", "Access denied"));
-        } else {
-          await route.fulfill(proxyErrorResponse(503));
-        }
-      },
+      (route) =>
+        started.run(async () => {
+          assert.equal(route.request().method(), "GET");
+          started.resolve();
+          await release.promise;
+          if (outcome === "still deleting") {
+            await route.continue();
+          } else if (outcome === "access ended") {
+            await route.fulfill(apiErrorResponse(403, "FORBIDDEN", "Access denied"));
+          } else {
+            await route.fulfill(proxyErrorResponse(503));
+          }
+        }),
       { times: 1 },
     );
     // The normal background poll is already running when the operator opens retry.
-    await started.promise;
+    await started.reached();
     await retry.click();
     const dialog = page.getByRole("dialog", {
       name: "Retry deletion of Observed cleanup?",

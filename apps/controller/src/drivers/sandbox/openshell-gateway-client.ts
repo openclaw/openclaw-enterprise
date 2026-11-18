@@ -447,8 +447,6 @@ export interface OpenShellGatewayClient
     request: OpenShellSandboxDeleteRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse | undefined>;
-  /** The exposed service's URL, or undefined when the endpoint does not exist. */
-  getServiceUrl(request: OpenShellServiceRequest, signal: AbortSignal): Promise<string | undefined>;
   getService(
     workspace: string,
     sandbox: string,
@@ -671,6 +669,13 @@ function gatewayRequestFailureMessage(
   error: unknown,
 ): string {
   const grpcStatus = rawStatusCode(error);
+  if (method === "UpdateConfig" && grpcStatus === 10) {
+    const reason =
+      openShellErrorReason(error, grpcStatus) === "RESOURCE_VERSION_CONFLICT"
+        ? "RESOURCE_VERSION_CONFLICT"
+        : "UNKNOWN";
+    return `OpenShell UpdateConfig failed with gRPC status 10 (reason ${reason}).`;
+  }
   // A failure without a gRPC status (a local client error) keeps only its class: its message
   // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
   const detail =
@@ -1842,30 +1847,6 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       }
       throw error;
     }
-  }
-
-  async getServiceUrl(
-    request: OpenShellServiceRequest,
-    signal: AbortSignal,
-  ): Promise<string | undefined> {
-    let response: RecordValue;
-    try {
-      response = await this.unary(
-        "GetService",
-        {
-          sandbox: request.sandbox,
-          name: request.service,
-          workspace_scope: { workspace: request.workspace },
-        },
-        signal,
-      );
-    } catch (error) {
-      if (await this.isStatus(error, "NOT_FOUND")) {
-        return undefined;
-      }
-      throw error;
-    }
-    return normalizeServiceUrl(response.url, this.options.endpoint);
   }
 
   async getService(

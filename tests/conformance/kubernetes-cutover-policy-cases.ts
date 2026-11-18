@@ -19,12 +19,24 @@ import {
   openShellPolicySandbox,
 } from "../helpers/kubernetes-openshell-network-policy.ts";
 import {
+  firstPeerSelector,
+  matchLabels,
+  observedResource,
+  podSelector,
+  policyRules,
+  renderedPolicies,
+  resourceRecord,
+  resourceRecords,
+  selectorMatches,
+  serviceSelector,
+  templateLabels,
+} from "../helpers/kubernetes-rendered-resources.ts";
+import {
   authContext,
   digest,
   options,
   routedOptions,
   routedRevision,
-  selectorMatches,
   tenant,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
@@ -34,17 +46,7 @@ import {
   ORDINARY_PROFILE,
   ORDINARY_PROFILE_LABEL,
   computeDriver,
-  firstPeerSelector,
-  matchLabels,
-  observedResource,
-  podSelector,
-  policyRules,
   prepareUntilReady,
-  renderedPolicies,
-  resourceRecord,
-  resourceRecords,
-  serviceSelector,
-  templateLabels,
 } from "./kubernetes-network-profile-cases.ts";
 
 function openShellNetworkSandbox(
@@ -75,7 +77,11 @@ export async function checkOpenShellSupervisorGatewayIsolation() {
           "openshell.ai/boundary-role": "supervisor",
         }
       : undefined;
-  const installation = () => options(openShellPolicyOptions(options().network));
+  const installation = () => {
+    const configured = options();
+    const additions = openShellPolicyOptions();
+    return options({ ...additions, network: { ...configured.network, ...additions.network } });
+  };
   const driver = new KubernetesComputeDriver(installation(), {
     sandboxDriver: openShellNetworkSandbox({
       async workspaceNodePeerLabels(context) {

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-11
-last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
+updated: 2026-11-18
+last_updated_session: authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6
 ---
 
 # Harness Execution Topology Flow
@@ -135,7 +135,7 @@ retains legacy combined sources for older Pods and copies their password before
 new templates reference the separate source. Concurrent creation adopts only an
 exact-owned, identical password; foreign or conflicting sources fail.
 [Namespaces and isolation](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
-owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
+owns qualified DNS and exact NetworkPolicy/Service selectors. In namespace routing mode, Compute waits for the candidate Harness peer before Gateway cutover. Harness selectors
 include version and network profile; Gateway selectors omit version for stability.
 `deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
 before rendering NetworkPolicies. Values must be strings or native null; type
@@ -221,7 +221,14 @@ Compute records inference launch settings in new protected Codex revisions. The 
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
 original retry settings.
 
-For custom endpoints, `gatewayConfigurationDocument` calls
+For a new dedicated Codex revision on a provider-owned Sandbox other than OpenShell,
+Kubernetes Compute also records which probe command to use. That probe inherits the
+Harness's nonempty `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings in either case, just
+as the serving Codex process already did. Codex decides how to use them; the Sandbox
+still enforces egress. Retrying a revision admitted before this change reuses its
+original command. Deploy a new revision to pick up the fix.
+
+For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
 to clone the admitted document and qualify chat selections checked by
 `configuration-rules.ts:rewriteModelSelections`, including allowlists,
@@ -259,7 +266,12 @@ activation retries, then one status read per retry. That wait and the pairing wa
 early when other Work is claimable.
 
 On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
-removal before stopping the Harness, allowing active work to finish. Idle
+removal before stopping the Harness. The Gateway's graceful shutdown aborts
+active turns and records them for restart recovery under its
+`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, the continuation generation. Only a
+Gateway of the same generation resumes them; a stop, an incompatible deployment
+or deletion ends the generation
+([interrupted turns](../reference/agents/interrupted-turns.md)). Idle
 Gateways and pre-start wrappers exit promptly. Forced termination requires proof
 the previous owner stopped before retained state can be reused.
 [Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
@@ -351,34 +363,8 @@ removal.
 
 ## Changelog
 
-- 2026-11-14 12:21: Trace active Sandbox maintenance. (authoring-run/dce9f5be-2cf2-41aa-8215-c338ffa2e285 - a411a7eba68705e57330acfd2057083c367cbd9d)
+- 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
 
-- 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
-
-- 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
-
-- 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
-
-- 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
-
-- 2026-11-05 13:08: Trace safe temporary SQLite staging before node startup. (authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128 - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
-
-- 2026-11-04 23:04: Require Compute-owned Codex RPC readiness. (authoring-run/5cb8a94e-e57d-47d0-b87e-890ea5b3f40e - 381845c12d3694fc19f836786831bb98cbe2c3e1)
-
-- 2026-11-03 18:15: Trace provider guards. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
-
-- 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
-
-- 2026-10-31 03:41: Observe catalog pipe writes and reply counts. (authoring-run/afb5c72a-ef2b-4983-990c-427173225f65 - fbe295286b26132acf6330c87710231324afd5b1)
-
-- 2026-10-31 02:28: Trace continuity comparisons and wrapper exits. (authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e - 4dc71d4678df0f9dc49bcbeaa654819d76e3ebb0)
-
-- 2026-10-29 18:43: Trace the explicit custom-provider standalone search declaration and protected-tool exclusion. (authoring-run/be4eda1a-8676-415e-9999-ffcfe3f9bd17 - 35569940c)
-
-- 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
-
-- 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
-
-- 2026-10-23 15:51: Rebase the native endpoint trace onto current lifecycle behavior; preserve older entries in linked history. (agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68 - 0b326680a7a388de9331c2ae9f0a7cadf2788fe7)
+- 2026-11-17 23:51: A turn cut by stop, replacement or deletion does not resume; the Gateway's restart recovery is scoped to its revision. (finding 3347)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.

@@ -223,6 +223,7 @@ export async function composeProduction(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(config.drivers.installation),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
@@ -381,7 +382,7 @@ export async function composeProduction(
         enabled: config.agentRuntimeLogsEnabled !== false,
         cursorSecret: config.authSecret,
       },
-      ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
+      ...(config.gatewayApiKeyPath !== undefined
         ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),

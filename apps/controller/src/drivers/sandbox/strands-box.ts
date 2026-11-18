@@ -1,5 +1,5 @@
+import { gatewayRoutingHostname } from "../compute/kubernetes/gateway-routing-hostname.ts";
 import {
-  gatewayRoutingHostname,
   type KubernetesGatewayRoutingOptions,
   type KubernetesWorkloadPeer,
 } from "../compute/kubernetes/index.ts";

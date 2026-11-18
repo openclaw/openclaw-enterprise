@@ -122,7 +122,6 @@ function productionInstallation(adminKeyPath) {
             workspaceMode: "operator",
           },
           kubernetes: {
-            runtimeClassName: "openshell",
             serviceAccount: { mode: "gatewayConfigured" },
             sandboxDataMount: {
               subPath: "sandboxes",
