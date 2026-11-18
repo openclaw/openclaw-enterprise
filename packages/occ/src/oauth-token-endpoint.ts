@@ -141,13 +141,8 @@ export async function requestOAuthTokens(
 export function refreshPinnedOAuthGrant(
   grant: Pick<
     OAuthConnectionGrant & OAuthConnectionRegistration,
-    | "tokenUrl"
-    | "refreshToken"
-    | "clientId"
-    | "tokenEndpointAuthMethod"
-    | "resource"
-    | "grantedScopes"
-  >,
+    "tokenUrl" | "clientId" | "tokenEndpointAuthMethod" | "resource" | "grantedScopes"
+  > & { readonly refreshToken: string },
   signal: AbortSignal,
   clientSecret: string | undefined,
 ) {

@@ -75,14 +75,11 @@ export async function exchangeAuthorizationCode(
     clientSecret,
     signal,
   );
-  if (!tokens.refreshToken) {
-    throw new BrowserAuthorizationError("no_refresh_token", "fix_configuration");
-  }
   return {
     requestedScopes: request.scopes,
     grantedScopes: tokens.grantedScopes,
     accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
+    ...(tokens.refreshToken === undefined ? {} : { refreshToken: tokens.refreshToken }),
     expiresAt: tokens.expiresAt,
   };
 }

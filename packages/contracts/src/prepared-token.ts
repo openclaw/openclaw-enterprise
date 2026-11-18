@@ -191,13 +191,13 @@ export interface OAuthConnectionGrant extends ResolvedToken {
   readonly requestedScopes: readonly string[];
   /** Scopes the provider granted. An empty list means no scopes were reported or requested. */
   readonly grantedScopes: readonly string[];
-  readonly refreshToken: string;
+  readonly refreshToken?: string;
 }
 
 /** The only credential the trusted delivery path may install, with a deadline for its use. */
 export interface OAuthConnectionAccessToken extends ResolvedToken {
   readonly grantedScopes: readonly string[];
-  readonly nextRefreshAt: string;
+  readonly nextRefreshAt?: string;
   readonly version: string;
 }
 
