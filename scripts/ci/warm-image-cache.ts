@@ -31,7 +31,7 @@ async function warmImageCache({
     assertNodeBaseImage(nodeBaseImage);
   }
 
-  const { prepareImageCacheBuilds } = await import("./prepare.mjs");
+  const { prepareImageCacheBuilds } = await import("./prepare.ts");
   const builds = await prepareImageCacheBuilds(statePath);
   const started = performance.now();
   // Both roles own engine tags. Wait for both before the workflow can clean up,

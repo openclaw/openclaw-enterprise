@@ -45,7 +45,9 @@
       "path": "tests/integration/runtime-image-node-state-lock.test.ts",
       "expectedTests": [
         "a Harness Pod stopped during native setup leaves the node state to the next Pod",
-        "a Harness Pod whose native setup still holds the node state keeps the next Pod out"
+        "a Harness Pod whose native setup still holds the node state keeps the next Pod out",
+        "a Harness Pod stopped during Doctor leaves the node state to the next Pod",
+        "a Harness Pod killed during Doctor holds the next Pod on the named state lock"
       ]
     },
     {

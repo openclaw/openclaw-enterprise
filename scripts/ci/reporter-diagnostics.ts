@@ -1,4 +1,5 @@
 import { skipperOperationDiagnostic } from "./skipper-release.ts";
+import { isRecord } from "./records.ts";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -97,10 +98,6 @@ type ProbeDiagnosticFields = {
   probeStage?: string;
 } & Partial<Record<(typeof probeBooleanFields)[number], boolean>> &
   Partial<Record<(typeof probeDurationFields)[number], number | null | undefined>>;
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function optionalProperty(value: unknown, key: string): unknown {
   if (value == null) {

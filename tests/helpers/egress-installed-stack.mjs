@@ -92,7 +92,6 @@ export async function arrangeRealPrerequisites(t, progress, inputsPath, profile 
     openShellGatewayImage: input.images.openShellGateway,
     openShellSandboxImage: input.images.sandbox,
     openShellSupervisorImage: input.images.supervisor,
-    openShellRuntimeClass: input.runtimeClass,
     commandTimeoutMs: 120_000,
     signal: t.signal,
   });

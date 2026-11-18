@@ -1,4 +1,5 @@
 import { isCodexCatalogSource } from "./catalog-source.ts";
+import { describeManagedDeployment } from "./managed-deployment.ts";
 import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
@@ -22,6 +23,7 @@ import {
   type PluginDiscoveryAuthentication,
   type PluginDriver,
   type PluginDesiredState,
+  type PluginDeploymentContract,
   type PluginApprovers,
   type PluginPolicyCapabilities,
   type PluginDriverContext,
@@ -37,6 +39,7 @@ import {
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
 import {
+  describeNativeOpenClawDeployment,
   hasAliasedSelections,
   openClawCatalogEntries,
   openClawManagedPluginIds,
@@ -403,7 +406,20 @@ function splitOpenClawSelections(selections: PluginDesiredState) {
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   readonly harnessId = "openclaw" as const;
   readonly discoveryCredential = "none" as const;
-  readonly credentials = managedPluginCredentials;
+  readonly credentials = managedPluginCredentials(this);
+
+  async describeDeployment(input: Parameters<PluginDeploymentContract["describeDeployment"]>[0]) {
+    if (input.plugin.catalog !== "driver") {
+      throw new ConfigurationHarnessError(
+        "OpenClaw deployment requires a Driver catalog selection.",
+      );
+    }
+    const install = managedInstalls.find(({ id }) => id === input.plugin.pluginId);
+    return install
+      ? describeManagedDeployment(install, input)
+      : describeNativeOpenClawDeployment(input);
+  }
+
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
     policyScopeByPlugin: Object.fromEntries(

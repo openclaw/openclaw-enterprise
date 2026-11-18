@@ -40,7 +40,11 @@ import {
   requireRecoveryPreflight,
   type RecoveryState,
 } from "../helpers/production-upgrade-recovery-state.ts";
-import { runtime, skipWithoutHelm } from "../helpers/production-upgrade-recovery-tools.ts";
+import {
+  runtime,
+  skipWithoutHelm,
+  upgradeDiagnosticLines,
+} from "../helpers/production-upgrade-recovery-tools.ts";
 import {
   createDoctorPodFixture,
   embeddedDoctorNamespace,
@@ -763,8 +767,9 @@ export function registerWriterHandoffCases({
       const prefix = join(f.evidence, "dispatch/ns_test--agt_test");
       assert.doesNotMatch(failure.stderr, /agt_ok/);
       assert.equal(existsSync(join(f.evidence, "dispatch/ns_test--agt_ok.json")), true);
+      const diagnostic = upgradeDiagnosticLines(failure.stderr);
       if (!refusal) {
-        assert.deepEqual(failure.stderr.trimEnd().split("\n"), [
+        assert.deepEqual(diagnostic, [
           `upgrade-production-images: at least one Agent deployment outcome is unknown; inspect ${join(f.evidence, "dispatch")} and reconcile it before resuming:`,
           '  - Agent agt_test "Mail triage" in Namespace ns_test',
         ]);
@@ -774,7 +779,7 @@ export function registerWriterHandoffCases({
         return;
       }
       assert.deepEqual(
-        failure.stderr.trimEnd().split("\n"),
+        diagnostic,
         keyRefused
           ? [
               `upgrade-production-images: OCC rejected the service key in ${join(f.directory, "key")}, so it did not deploy 1 recorded Agent(s) and saved no revision for them:`,

@@ -29,11 +29,13 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - scripts/*.mjs
+      - scripts/migrate-production.ts
       - scripts/auth-maintain.ts
       - scripts/build-repository-credentials.ts
       - scripts/build-runtime-assets.ts
       - scripts/ci/download-pinned.sh
-      - scripts/ci/prepare.mjs
+      - scripts/ci/prepare.ts
+      - scripts/ci/prepare-inputs.ts
       - scripts/ci/warm-image-cache.ts
       - scripts/ci/prepare-command.ts
       - scripts/ci/image-build-cache.ts
@@ -46,6 +48,7 @@ on:
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
       - scripts/migration-catalog.ts
+      - scripts/migration-history-preflight.ts
       - scripts/production-healthcheck.ts
       - tsconfig.base.json
       - tsconfig.json

@@ -41,6 +41,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	sandboxDriver, controlPlane := profile.SandboxDriver, profile.ControlPlane
+	verificationMode := r.setting("OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE", "workspace-write")
+	if verificationMode != "workspace-write" && verificationMode != "danger-full-access" {
+		return fmt.Errorf("invalid OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE")
+	}
+	if verificationMode == "danger-full-access" && sandboxDriver != "none" {
+		return fmt.Errorf("container-only Codex verification requires Sandbox Driver none")
+	}
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
@@ -321,11 +328,6 @@ func Up(ctx context.Context, opts Options) (result error) {
 		clusterArgs = append(clusterArgs, resolverArgs...)
 		if sandboxDriver == "openshell" {
 			clusterImage = openShellK3sImage
-			admissionPath, err := prepareOpenShellAdmission(directory)
-			if err != nil {
-				return err
-			}
-			clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
 		}
 		clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
 		if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
