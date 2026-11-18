@@ -87,7 +87,9 @@ loads the new Installation in the release's controller image, as API startup
 does. It reads the Preset files, Driver packages, repository registry,
 prepared GitHub issuer CA, and public token grant JWT bundle that the Installation names.
 If startup would refuse it, the upgrade fails before migration and the old API
-and worker keep serving. The log names the setting and file:
+and worker keep serving. If Kubernetes cannot mount a ConfigMap or key, check
+the initialization Pod's events. If the check starts and rejects a file, its
+log names the setting and file:
 
 ```bash
 kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
