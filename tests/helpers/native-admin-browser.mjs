@@ -15,7 +15,10 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 
 import { runControllerProbe } from "./envoy-workspace-gateway.mjs";
-import { observeLegacyBrowserGrant } from "./native-profile-legacy-grant.ts";
+import {
+  legacyPairingMetadata,
+  observeLegacyBrowserPairing,
+} from "./native-profile-legacy-grant.ts";
 import { createKubernetesClient, explicitK3dSelection } from "./kubernetes-real.ts";
 
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -1147,7 +1150,7 @@ async function delegationSecret(topology) {
 function boundaryProbe(
   topology,
   key,
-  { browser = true, authenticated = true, readProfile = true, native } = {},
+  { browser = true, authenticated = true, readProfile = true } = {},
 ) {
   const routing = topology.workspaceGateway.routing;
   const authority = routing.endpointPort
@@ -1158,7 +1161,6 @@ function boundaryProbe(
     url: `wss://${authority}${browser ? "/native-browser" : ""}/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
     ...(authenticated ? { apiKey: topology.workspaceGateway.apiKey } : {}),
     readProfile,
-    ...(native === undefined ? {} : { native }),
     extraHeaders: {
       "x-occ-identity": "oce:v1:" + "a".repeat(64),
       "x-openclaw-scopes": "operator.admin",
@@ -2033,22 +2035,18 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       previousPod.spec.containers.find(({ name }) => name === "gateway").image,
       upgrade.baseline.runtime,
     );
-    const grantScope = {
-      namespace: topology.gatewayPlacement,
-      name: previousPod.metadata.name,
-      uid: previousPod.metadata.uid,
-      agentId: created.data.id,
-      revisionId: deployed.data.id,
-      port: previousPod.spec.containers
-        .find(({ name }) => name === "gateway")
-        .ports.find(({ name }) => name === "http").containerPort,
-    };
-    const oldGrant = await observeLegacyBrowserGrant({
+    // Read the supported redacted list through the old real browser session.
+    // No signing storage, native database, or reusable credential is exported.
+    const oldPairing = await observeLegacyBrowserPairing({
       page: ownerNativePage,
       sent: ownerConnectFrames,
       received: ownerFrames,
       origin: ownerStatus.data.origin,
-      scope: grantScope,
+      readPairingList: async () => {
+        const listed = await nativeRpc(ownerNativePage, "device.pair.list");
+        assert.equal(listed.response.ok, true);
+        return listed.response.payload;
+      },
     });
     const claims = previousPod.spec.volumes
       .filter((volume) => volume.persistentVolumeClaim)
@@ -2068,7 +2066,6 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
     assert.equal(identity.rows.length, 1);
     await ownerNativePage.close();
     await legacyPage.close();
-    await oldGrant.proveBeforeCutover(grantScope, context);
     await waitFor("old controller work to settle before replacing both writers", async () => {
       const queued = await topology.observerPool.query(
         "SELECT count(*) AS pending FROM occ.controller_work WHERE state IN ('queued','claimed')",
@@ -2180,7 +2177,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       })),
       history,
       sharedProfileId: sharedOwner.response.payload.profile.id,
-      oldGrant,
+      oldPairing,
     };
   }
   const ownerProfile = await nativeProfile(ownerNativePage, "operator.admin");
@@ -2218,11 +2215,12 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
         "historical sender attribution must not be reassigned during upgrade",
       );
     }
-    const owned = { ...topology, agent: created.data, revision: deployed.data };
-    // Observe handshake refusal itself; a later profile-RPC rejection must not
-    // masquerade as rejection of the valid legacy device credential.
-    await legacy.oldGrant.assertReplayRefused((native) =>
-      boundaryProbe(owned, undefined, { native, readProfile: false }),
+    const listedPairings = await nativeRpc(ownerNativePage, "device.pair.list");
+    assert.equal(listedPairings.response.ok, true);
+    assert.deepEqual(
+      legacyPairingMetadata(legacy.oldPairing, listedPairings.response.payload),
+      legacy.oldPairing,
+      "the same browser pairing identity and original approval metadata survive upgrade",
     );
   }
   const ownerMarker = `oidc-owner-${randomUUID()}`;
@@ -2492,7 +2490,8 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       ownerProfile.id,
     );
     // Strictly selected public build/Pod custody and successful predicates only.
-    // Never serialize the legacy object: it also holds a real device credential.
+    // Pairing evidence is public metadata only; retain completed predicates,
+    // not device-list response bodies or conversation contents.
     for (const pod of legacy.runtime) {
       assert.match(pod.imageID, /sha256:[a-f0-9]{64}$/);
     }
@@ -2500,8 +2499,9 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       join(media, "native-profile-upgrade-receipt.json"),
       JSON.stringify(
         {
-          version: 1,
+          version: 2,
           kind: "native-profile-installation-upgrade",
+          limits: { sameOldBearerReplayAttempted: false },
           baseline: upgrade.sourceReceipt,
           candidateRevision: upgrade.candidateRevision,
           candidateSource: upgrade.candidateSource,
@@ -2519,8 +2519,11 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
             retainedHistoryAttribution: true,
             distinctProfiles: true,
             newAttributedModelTurns: true,
-            ...legacy.oldGrant.completedChecks(),
-            oldCredentialRefused: true,
+            legacyHelloTokenOmitted: true,
+            ownedRedactedPairingObserved: true,
+            originalPairingMetadataRetained: true,
+            legacyRevisionBrowserAccessRefused: true,
+            missingDelegationSecretRefused: true,
             selectiveWithdrawal: true,
             regrantProfileStable: true,
           },
@@ -2531,7 +2534,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       { mode: 0o600 },
     );
     context.diagnostic(
-      "Old-image bootstrap and shared-profile negative control, stopped old API/Worker, candidate migration/rollout, same-Agent normal redeploy, retained PVC/history, distinct new attribution, credential refusal and selective withdrawal/regrant completed.",
+      "Old-image bootstrap and shared-profile UI evidence, redacted pairing continuity, stopped old API/Worker, candidate migration/rollout, same-Agent normal redeploy, retained PVC/history, distinct new attribution, fail-closed browser access and selective withdrawal/regrant completed. No old bearer was exported or replayed.",
     );
   }
   await nativePage.screenshot({ path: join(media, "oidc-operator-chat.png"), fullPage: true });

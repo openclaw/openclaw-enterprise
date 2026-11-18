@@ -103,33 +103,31 @@ test does not patch its saved authentication or invent new human ownership.
 Assertions retain Installation, account, Principal, Agent service-Principal, and
 Gateway PVC identities. Historical shared creator/sender records remain unchanged.
 Fresh owner/operator model turns require distinct profiles and exact scopes.
-Reconnect, Pod replacement, selective withdrawal/regrant, and replay of the old
-server-persisted paired-device grant exercise the upgraded authorization boundary.
+Reconnect, Pod replacement, selective withdrawal/regrant, and the existing
+administration and sibling-Agent refusals exercise the upgraded browser boundary.
 The old trusted-proxy Control UI hello must succeed as operator and omit a device
-token. The fixture binds its signed connect to its existing browser signing key
-and reads only that device’s existing autoapproved operator grant from the old
-Gateway’s database. It does not approve, rotate, or create a grant.
+token. The fixture correlates the actual page, socket, signed connect, and
+successful hello. Through the authenticated browser, it reads `device.pair.list`
+and matches that device’s public key, client, trusted-proxy approval, and active
+operator/admin token summary. It checks the same public identity and original
+approval timestamps after upgrade. Missing or mismatched metadata fails the case.
+Native list responses redact bearer tokens and internal approved scopes; Control
+UI pairing does not persist a browser-origin field.
 
-Before cutover, the fixture uses the controller-owned public Gateway SDK on the
-test host. An existing loopback-only Kubernetes port-forward targets the exact
-old Gateway Pod and its observed listener port. The client presents the same key,
-client metadata and browser Origin, without proxy identity headers. The fixture
-checks Pod identity before and after opening the tunnel, registers cleanup on
-acquisition, and stops the clients and tunnel on success or failure. An invalid token must fail; the real grant must authenticate
-as device-token operator.admin and complete a read-only health RPC. The stored
-grant must still be active and unchanged after this normal authentication.
-After upgrade, the same key signs a fresh challenge and replays that grant
-without the new delegation key; the browser boundary must refuse it.
+The fixture does not read signing-key storage or the native database, export a
+device credential, or replay the same old bearer. Pairing metadata demonstrates
+retained approval, not bearer usability. Fail-closed proof comes from the actual
+retained-revision browser refusal before normal redeploy, operator administration
+and sibling isolation, live selective withdrawal, and delegation-Secret outage
+and recovery. These observations do not claim equivalence to an old-bearer replay.
+Existing native listener tests separately own elevated-device and alternate-auth
+regressions; this software-upgrade case does not replace their qualification.
 
-Native Control UI pairing does not persist a browser-origin binding; that field
-is reserved for browser-copilot clients. These checks retain the observed Origin
-on both authenticated probes, not an invented origin field in the paired row.
-The key and token stay in private test memory and subprocess stdin; errors and
-receipts expose only fixed outcomes. SDK credential storage callbacks are
-configured to read and write no shared credential store. The retained
-`native-profile-upgrade-receipt.json` contains only fixed source metadata, image
-references, Pod/PVC identifiers, and completed check predicates. Screenshots and
-recordings begin after sign-in; credentials and raw transcripts are not receipts.
+The version2 `native-profile-upgrade-receipt.json` states this replay limit. It
+contains only fixed source metadata, image references, Pod/PVC identifiers, and
+completed check predicates, not pairing responses or conversation contents.
+Screenshots and recordings begin after sign-in; credentials and raw transcripts
+are not receipts.
 
 This proves the real in-cluster production-entrypoint installation transition,
 not a Helm installation/upgrade, release publication, or a different native pin.
