@@ -3,7 +3,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isObject } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 
 const ghVersion = "2.103.2";
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/;
@@ -44,7 +44,7 @@ interface QualificationImages {
 }
 
 function commandStdout(result: unknown, errorMessage: string): string {
-  if (!isObject(result) || typeof result.stdout !== "string") {
+  if (!isRecord(result) || typeof result.stdout !== "string") {
     throw new Error(errorMessage);
   }
   return result.stdout;
