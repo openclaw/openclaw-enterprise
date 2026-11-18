@@ -66,7 +66,7 @@ test("protected execution cannot acquire the anonymous reader or use it as a fal
   };
   assert.match(
     present(f.driver.admitRevision(protectedRevision)),
-    /^model-provider:v1:[a-f0-9]{64}:$/,
+    /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:$/,
   );
   assert.throws(
     () =>

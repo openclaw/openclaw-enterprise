@@ -480,7 +480,10 @@ export async function checkStopPreservesReplacement(
         async listNamespacedPod() {
           return { items: [] };
         },
-        async readNamespacedService() {
+        async readNamespacedService({ name }: ReadDeployment) {
+          if (name !== service.metadata.name) {
+            throw stopResourceNotFound();
+          }
           return read("Service");
         },
         async readNamespacedServiceAccount() {

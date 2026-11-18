@@ -50,6 +50,7 @@ kind: reference/driver
   - [`describePrepareRevisionFailure`](#method-describe-prepare-revision-failure)
   - [`getGatewayEndpoint`](#method-get-gateway-endpoint)
   - [`getGatewayChatEndpoint`](#method-get-gateway-chat-endpoint)
+  - [`getChatCompletionsEndpoint`](#method-get-chat-completions-endpoint)
   - [`getAgentRuntimeCredentialStatus`](#method-get-agent-runtime-credential-status)
   - [`provisionAgentRuntimeCredentials`](#method-provision-agent-runtime-credentials)
   - [`deleteAgentRuntimeCredentials`](#method-delete-agent-runtime-credentials)
@@ -130,6 +131,7 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
 | <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private WSS address for workspace-file access and native administration, or `undefined`.                                                                                                                                                                                                                                                                  |
 | <a id="method-get-gateway-chat-endpoint"></a>`getGatewayChatEndpoint`                                                | Optional    | Revision's WSS chat endpoint and equivalent HTTPS UI. Enforce [`operator.sessions.write`](../agent-native-admin.md#native-authority-and-drift) across HTTP, WebSocket, and device grants. Omission/`undefined` means unsupported; never fall back to `getGatewayEndpoint`.                                                                                |
+| <a id="method-get-chat-completions-endpoint"></a>`getChatCompletionsEndpoint`                                        | Optional    | [HTTP completions](../agent-http-chat.md).                                                                                                                                                                                                                                                                                                                |
 | <a id="method-get-agent-runtime-credential-status"></a>`getAgentRuntimeCredentialStatus`                             | Optional    | Report whether the Agent's generated transport credentials are stored. Missing support prevents the status read.                                                                                                                                                                                                                                          |
 | <a id="method-provision-agent-runtime-credentials"></a>`provisionAgentRuntimeCredentials`                            | Optional    | Create initial transport credentials for the approved Agent. Missing support prevents provisioning.                                                                                                                                                                                                                                                       |
 | <a id="method-delete-agent-runtime-credentials"></a>`deleteAgentRuntimeCredentials`                                  | Optional    | Remove Agent-owned credentials after revision retirement. A Driver that provisions them but omits deletion fails Agent deletion permanently.                                                                                                                                                                                                              |
@@ -150,8 +152,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 
 ### Model discovery
 
-For model discovery, OCC checks Agent creation permission in the Namespace.
-The bundled Docker and Kubernetes [model discovery client](../../../apps/controller/src/drivers/compute/model-discovery.ts)
+Model discovery requires Namespace-scoped Agent creation permission.
+The Docker and Kubernetes [model discovery client](../../../apps/controller/src/drivers/compute/model-discovery.ts)
 uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 10,000 model IDs. It refuses redirects. See [model discovery and API egress](../console/create-and-deploy.md#create-an-agent).
 
@@ -159,7 +161,7 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Namespace results follow the [shared lifecycle contract](namespace-lifecycle.md).
+Namespace results follow the [lifecycle contract](namespace-lifecycle.md).
 Worker-log failure reasons allow up to 256 characters: letters, digits, spaces, and
 `. _ : / @ -`. Exclude provider output and other tenants' values.
 

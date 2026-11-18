@@ -64,6 +64,7 @@ import {
 } from "./console-fetch-accounting.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
+import { callbackGate, within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];
@@ -1227,7 +1228,7 @@ test("a rejected cursor starts one new view and later restarts wait for it", asy
     await route.continue();
   });
   await page.getByRole("button", { name: "Follow" }).click();
-  await held.promise;
+  await within(held.promise, "the replacement view's held log read");
   // A restart while the replacement read is in flight waits for it.
   computeDriver.state.lines = [line(1, "first view line"), line(2, "debug floor line")];
   const readsWhileHeld = logRequests(requests, revisionId).length;
@@ -1983,8 +1984,7 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   // is answered only after this page's Stop.
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));
-  let markHeld!: () => void;
-  const held = new Promise<void>((resolve) => (markHeld = resolve));
+  const held = callbackGate("the held Agent read");
   let holding = true;
   await page.route(`${fixture.origin}${agentPath}`, async (route) => {
     if (!holding || route.request().method() !== "GET") {
@@ -1992,15 +1992,17 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
       return;
     }
     holding = false;
-    const response = await route.fetch();
-    markHeld();
-    await released;
-    await route.fulfill({ response });
+    await held.run(async () => {
+      const response = await route.fetch();
+      held.resolve();
+      await released;
+      await route.fulfill({ response });
+    });
   });
   const agentReads = await settledFetches(page, agentPath);
   await new Promise((resolve) => setTimeout(resolve, 500));
   await page.clock.runFor(10_000);
-  await held;
+  await held.reached();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.click();
   await page
@@ -2294,8 +2296,7 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
   // answered only after the poll below.
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));
-  let markHeld!: () => void;
-  const held = new Promise<void>((resolve) => (markHeld = resolve));
+  const held = callbackGate("the held Agent read");
   let holding = true;
   await page.route(`${logs.fixture.origin}${agentPath}`, async (route) => {
     if (!holding || route.request().method() !== "GET") {
@@ -2303,13 +2304,15 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
       return;
     }
     holding = false;
-    const response = await route.fetch();
-    markHeld();
-    await released;
-    await route.fulfill({ response });
+    await held.run(async () => {
+      const response = await route.fetch();
+      held.resolve();
+      await released;
+      await route.fulfill({ response });
+    });
   });
   await refocus(page);
-  await held;
+  await held.reached();
 
   // Another session stops the Agent, and the next poll shows it.
   await stopElsewhere();

@@ -52,6 +52,7 @@
     "resolveJsonModule": true
   },
   "include": [
+    "../eslint.config.ts",
     "*.ts",
     "ci/**/*.ts",
     "lib/**/*.ts",
