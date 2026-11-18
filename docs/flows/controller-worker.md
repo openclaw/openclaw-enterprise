@@ -207,9 +207,19 @@ yielded stops. Other waits ignore them except for predecessor stops.
 
 An overdue Gateway drain continues while `ControllerWorker.renewWaitingPredecessor`
 claims one due [renewal](../reference/agents/planned-replacement.md#bounded-predecessor-completion)
-at a time. The worker rechecks authorization. PostgreSQL checks the
-claim, predecessor, candidate, process identity, and cutoff before renewal or
-committing `stopping`. Ordinary dispatch resumes physical stop and preparation.
+at a time. Before requesting suspension, Kubernetes Compute checks that the Gateway
+Service routes only to one Pod of the predecessor revision. The connected Gateway
+must also report that Pod's hostname, so stale routing cannot direct the suspension
+to a different revision. If either check fails, the ordinary revision-scoped stop
+remains in charge. Before committing the
+first stop, the worker rechecks the candidate's deploy authority and backend binding.
+PostgreSQL checks the claim, predecessor, candidate, process identity, and cutoff.
+
+A committed stop still finishes if the candidate loses access. After the stop, the
+worker resolves credentials again before preparing the candidate. If a newer
+candidate took over, the old one cannot publish itself as active. Only time the
+candidate actually spent in the original completion window is excluded from its
+convergence deadline.
 
 Before shutdown or retirement, including stopped-version recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
@@ -261,7 +271,10 @@ After preparation, `activationOrder: beforeCommit` activates before the database
 pointer changes; otherwise an implemented activation stage runs, in development
 and production, after the claim-protected compare-and-set of
 `Agent.activeRevisionId`, and the first dedicated version stays inactive until
-commit. A changed pointer causes `ACTIVE_REVISION_CHANGED` and retry.
+commit. A changed pointer causes `ACTIVE_REVISION_CHANGED` and retry. Under the
+same lock, the worker defers activation if the serving version's replacement
+record names a later admitted version. An older record left by a refused deploy
+does not block a newer version that can start without stopping its predecessor.
 
 Committing `Agent.activeRevisionId` records selection. A v5 `online-request` or
 v6 `request-hook-observed` hold for Git material leaves the original work queued

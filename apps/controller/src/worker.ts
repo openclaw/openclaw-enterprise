@@ -256,6 +256,35 @@ function isCandidateDeployment(claim: ClaimedWork): boolean {
   return claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`;
 }
 
+// Only exclusive admissions necessarily retarget the record. A later, nonexclusive
+// deployment can legitimately encounter the record of an older, refused candidate.
+async function hasNewerRecordedReplacement(
+  view: PlatformReadView,
+  activeRevisionId: string | undefined,
+  revision: Readonly<AgentRevision>,
+): Promise<boolean> {
+  const replacement = await view.agents.findPredecessorReplacement(
+    revision.namespaceId,
+    revision.agentId,
+  );
+  if (
+    replacement === undefined ||
+    replacement.predecessorRevisionId !== activeRevisionId ||
+    replacement.candidateRevisionId === revision.id
+  ) {
+    return false;
+  }
+  const revisions = await view.revisions.listRevisionMetadata(
+    revision.namespaceId,
+    revision.agentId,
+  );
+  const selected = revisions.find(({ id }) => id === replacement.candidateRevisionId);
+  if (selected === undefined) {
+    throw new PersistedStateInvalidError("The recorded replacement revision is missing.");
+  }
+  return selected.revision > revision.revision;
+}
+
 function isCommittedPredecessorStop(
   replacement: Readonly<PredecessorReplacement> | undefined,
   candidateRevisionId: string,
@@ -1736,9 +1765,14 @@ export class ControllerWorker {
       return age;
     }
     const created = claim.createdAt.getTime();
-    const end = wait.stoppingAt === undefined ? created + age : Date.parse(wait.stoppingAt);
-    const overlap = Math.max(0, end - Math.max(created, Date.parse(wait.completionStartedAt)));
-    return Math.max(0, age - Math.min(PLANNED_COMPLETION_WAIT_MS, overlap));
+    const start = Date.parse(wait.completionStartedAt);
+    const now = created + age;
+    const end = Math.min(
+      now,
+      start + PLANNED_COMPLETION_WAIT_MS,
+      wait.stoppingAt === undefined ? now : Date.parse(wait.stoppingAt),
+    );
+    return age - Math.max(0, end - Math.max(created, start));
   }
 
   /** Report loop progress without ever delaying the loop; see `onProgress`. */
@@ -2188,6 +2222,16 @@ export class ControllerWorker {
       if (predecessor !== undefined && predecessor.revision < revision.revision) {
         // A waiting pass never starts a stop sweep or prepares the candidate.
         await this.waitForPlannedCompletion(claim, predecessor, revision);
+        const replacement = this.completionWaits.get(claim);
+        if (
+          isCandidateDeployment(claim) &&
+          !(
+            replacement?.predecessorRevisionId === predecessor.id &&
+            replacement.phase === "stopping"
+          )
+        ) {
+          await this.recheckPreparationAuthority(claim, revision);
+        }
         await this.recordPredecessorStop(claim, predecessor);
       }
       earlier = await this.state.read(async (view) =>
@@ -2198,6 +2242,11 @@ export class ControllerWorker {
       await this.stopPredecessors(claim, earlier);
       if (earlier.length !== 0 && isCandidateDeployment(claim)) {
         await this.recheckPreparationAuthority(claim, revision);
+        const refreshed = await this.resolveRevisionSecretContext(revision);
+        if ("result" in refreshed) {
+          throw new RevisionPreparationBlocked(refreshed.result);
+        }
+        context = refreshed.context;
       }
     }
     try {
@@ -2369,6 +2418,7 @@ export class ControllerWorker {
               )
             )?.executionIdentity === identity,
           commitStopping: async (identity) => {
+            await this.recheckPreparationAuthority(claim, candidate);
             if (
               (await this.recordPredecessorStop(claim, previous, identity, completionWindowMs)) ===
               undefined
@@ -2379,7 +2429,7 @@ export class ControllerWorker {
         }),
       );
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
+      if (error instanceof WorkClaimLostError || error instanceof RevisionPreparationBlocked) {
         throw error;
       }
       if (expired()) {
@@ -2482,21 +2532,24 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
-    // Stopping predecessors may take minutes. Use the current owner and grant at
-    // the boundary before creating the candidate's runtime.
-    const { namespace, agent } = await this.state.read(async (view) => ({
-      namespace: await view.namespaces.findNamespace(revision.namespaceId),
-      agent: await view.agents.findAgent(revision.namespaceId, revision.agentId),
-    }));
+    const { namespace, agent, superseded } = await this.state.read(async (view) => {
+      const namespace = await view.namespaces.findNamespace(revision.namespaceId);
+      const agent = await view.agents.findAgent(revision.namespaceId, revision.agentId);
+      const superseded = await hasNewerRecordedReplacement(view, agent?.activeRevisionId, revision);
+      return { namespace, agent, superseded };
+    });
     if (
       namespace?.status !== "ready" ||
       agent?.status !== "active" ||
       agent.desiredRuntimeState !== "running" ||
-      agent.servicePrincipalId !== revision.servicePrincipalId
+      agent.servicePrincipalId !== revision.servicePrincipalId ||
+      superseded
     ) {
       throw new RevisionPreparationBlocked();
     }
-    const denied = await this.authorizeRevision(claim, agent, revision);
+    const denied =
+      (await this.authorizeRevision(claim, agent, revision)) ??
+      (await this.resolveRevisionBackend(revision));
     if (denied !== undefined) {
       throw new RevisionPreparationBlocked(denied);
     }
@@ -6325,6 +6378,9 @@ export class ControllerWorker {
       claimLost = error instanceof WorkClaimLostError;
       if (error instanceof PredecessorCompletionWaitingError) {
         code = "PREDECESSOR_COMPLETION_WAITING";
+      } else if (error instanceof RevisionPreparationBlocked) {
+        // Ordinary dispatch publishes the current refusal under its own claim.
+        delayMs = 1;
       } else if (!(error instanceof RepositoryCredentialAuthorityError)) {
         throw error;
       }
@@ -6713,6 +6769,7 @@ export class ControllerWorker {
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
+    let replacementRetargeted = false;
     let committedOutcome: WorkOutcome =
       resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
         ? "permanent"
@@ -6759,6 +6816,13 @@ export class ControllerWorker {
         }
         if (current.desiredRuntimeState !== "running") {
           stoppedCandidate = resolved.revision;
+          return;
+        }
+        if (await hasNewerRecordedReplacement(unit, current.activeRevisionId, resolved.revision)) {
+          // Admission changed the candidate while Compute was preparing it. Dispatch will
+          // retire the superseded runtime; never publish it, even briefly.
+          await queue.defer(claim, { code: "PREDECESSOR_STOP_RETARGETED" }, { delayMs: 1 });
+          replacementRetargeted = true;
           return;
         }
         const activeAgent = await unit.agents.compareAndSetActiveRevision(
@@ -6838,6 +6902,10 @@ export class ControllerWorker {
         });
       }
     }, this.queueOptions);
+    if (replacementRetargeted) {
+      this.passOutcome = "pending";
+      return;
+    }
     if (stoppedCandidate !== undefined) {
       await this.closeRevisionCredentials(claim, stoppedCandidate);
       try {

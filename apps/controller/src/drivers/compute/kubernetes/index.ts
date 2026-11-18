@@ -12995,7 +12995,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     namespace: KubernetesNamespaceAddress,
     preparingRevisionId?: string,
   ): Promise<boolean> {
-    const clients = await this.clients(namespace.plane);
     const deployment = await this.getOwned("Deployment", gatewayName, namespace, ownership);
     if (deployment === undefined) {
       return false;
@@ -13016,15 +13015,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (service === undefined) {
       return false;
     }
-    const slices = asRecord(
-      await this.request(() =>
-        clients.discovery.listNamespacedEndpointSlice({
-          namespace: namespace.name,
-          labelSelector: `kubernetes.io/service-name=${gatewayName}`,
-          timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
-        }),
-      ),
-    );
+    const slices = await this.gatewayEndpointSlices(gatewayName, namespace);
     const items = Array.isArray(slices?.items) ? slices.items : [];
     return items.some((item) => {
       const slice = asRecord(item);
@@ -13054,6 +13045,89 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         )
       );
     });
+  }
+
+  private async gatewayEndpointSlices(gatewayName: string, namespace: KubernetesNamespaceAddress) {
+    const clients = await this.clients(namespace.plane);
+    return asRecord(
+      await this.request(() =>
+        clients.discovery.listNamespacedEndpointSlice({
+          namespace: namespace.name,
+          labelSelector: `kubernetes.io/service-name=${gatewayName}`,
+          timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
+        }),
+      ),
+    );
+  }
+
+  /** Return the single predecessor Pod the Agent-wide Gateway Service can send this connection to. */
+  private async completionGatewayPod(
+    revision: AgentRevision,
+  ): Promise<{ readonly uid: string; readonly name: string } | undefined> {
+    const placement = await this.resolveNamespace(revision.namespaceId);
+    const namespace = this.gatewayNamespace(revision, placement.name);
+    const name = this.gatewayRouteName(revision.agentId);
+    const service = await this.getOwned("Service", name, namespace, {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+    });
+    if (!isNonEmptyString(service?.metadata.uid)) {
+      return undefined;
+    }
+    const pods = await this.revisionPods(revision, namespace, "gateway");
+    const pod = pods.length === 1 ? asRecord(pods[0]?.metadata) : undefined;
+    if (
+      !isNonEmptyString(pod?.uid) ||
+      !isNonEmptyString(pod?.name) ||
+      pod.deletionTimestamp !== undefined
+    ) {
+      return undefined;
+    }
+    const slices = await this.gatewayEndpointSlices(name, namespace);
+    const page = asRecord(slices?.metadata);
+    if (
+      !Array.isArray(slices?.items) ||
+      page?.continue ||
+      page?._continue ||
+      (page?.remainingItemCount !== undefined && page.remainingItemCount !== 0)
+    ) {
+      return undefined;
+    }
+    let ready = false;
+    for (const item of slices.items) {
+      const slice = asRecord(item);
+      const metadata = asRecord(slice?.metadata);
+      const owners = metadata?.ownerReferences;
+      if (
+        asRecord(metadata?.labels)?.["kubernetes.io/service-name"] !== name ||
+        !Array.isArray(owners) ||
+        !owners.some((value) => {
+          const owner = asRecord(value);
+          return (
+            owner?.kind === "Service" && owner.name === name && owner.uid === service.metadata.uid
+          );
+        }) ||
+        !Array.isArray(slice?.endpoints)
+      ) {
+        return undefined;
+      }
+      for (const value of slice.endpoints) {
+        const endpoint = asRecord(value);
+        const target = asRecord(endpoint?.targetRef);
+        // Even a draining endpoint can carry an established connection. Do not accept
+        // a mixed rollout merely because one endpoint is currently marked Ready.
+        if (
+          target?.kind !== "Pod" ||
+          target.namespace !== namespace.name ||
+          target.name !== pod.name ||
+          target.uid !== pod.uid
+        ) {
+          return undefined;
+        }
+        ready ||= asRecord(endpoint?.conditions)?.ready === true;
+      }
+    }
+    return ready ? { uid: pod.uid, name: pod.name } : undefined;
   }
 
   private deploymentReady(deployment: ManagedKubernetesObject, requireProfile = true): boolean {
@@ -14958,10 +15032,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (endpoint === undefined) {
       return "unsupported";
     }
+    const pod = await this.completionGatewayPod(predecessor);
+    if (pod === undefined) {
+      return "runtime-changed";
+    }
     return this.predecessorCompletion.observe(
       endpoint,
       `planned-replacement:${predecessor.id}`,
-      context,
+      {
+        ...context,
+        expectedHostname: pod.name,
+        // system.info has now answered on the socket used for suspension. Confirm
+        // the same sole backend before recording that process as the predecessor.
+        recordExecutionIdentity: async (identity) =>
+          (await this.completionGatewayPod(predecessor))?.uid === pod.uid &&
+          context.recordExecutionIdentity(identity),
+      },
       currentComputeAbortSignal() ?? AbortSignal.timeout(15_000),
     );
   }

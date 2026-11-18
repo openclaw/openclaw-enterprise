@@ -199,7 +199,13 @@ function completionConnection({ status = "ready", info = {}, handoffFails = fals
     async request(method, params) {
       calls.push({ method, params });
       if (method === "system.info") {
-        return { deferredStopHandoff: true, pid: 12, processInstanceId: "epoch-a", ...info };
+        return {
+          deferredStopHandoff: true,
+          hostname: "serving-pod",
+          pid: 12,
+          processInstanceId: "epoch-a",
+          ...info,
+        };
       }
       if (method === "gateway.suspend.prepare") {
         return { status, suspensionId: "lease-a" };
@@ -214,6 +220,7 @@ function completionConnection({ status = "ready", info = {}, handoffFails = fals
     },
   };
   const context = {
+    expectedHostname: "serving-pod",
     deadlineAtMs: Date.now() + 30_000,
     async recordExecutionIdentity(identity) {
       calls.push({ method: "record-identity", identity });
@@ -281,6 +288,25 @@ test("completion commits the common stop boundary before fencing the exact proce
     commit: true,
     deferExit: true,
   });
+});
+
+test("a stale Gateway route cannot suspend the wrong Pod even when Kubernetes still reports the predecessor", async () => {
+  const { completePredecessorOnConnection } =
+    await import("../../apps/controller/src/gateway/predecessor-completion.ts");
+  for (const hostname of ["another-pod", undefined]) {
+    const fixture = completionConnection({ info: { hostname } });
+    const result = await completePredecessorOnConnection(
+      fixture.client,
+      "revision-a",
+      fixture.context,
+      AbortSignal.timeout(1000),
+    );
+    assert.equal(result, "runtime-changed");
+    assert.deepEqual(
+      fixture.calls.map(({ method }) => method),
+      ["system.info"],
+    );
+  }
 });
 
 test("unsupported and changed executions cannot borrow a completion handoff", async () => {

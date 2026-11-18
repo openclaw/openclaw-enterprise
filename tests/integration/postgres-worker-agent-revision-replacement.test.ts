@@ -15,7 +15,12 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import {
+  backendDefinition,
+  createAccessTokenServiceAccount,
+  requiresPostgres,
+  seedBackendBinding,
+} from "../helpers/postgres-backend-state.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
@@ -82,7 +87,7 @@ type ReplacementFixture = Pick<
     token: string,
   ): Promise<{ rowCount: number | null }>;
   deploymentStatus(owner: AgentIdentity, candidate: AgentIdentity): Promise<DeploymentStatusResult>;
-  start: Parameters<typeof startRefusedCandidate>[0]["start"];
+  start: RevisionFixture["start"];
 };
 
 type FixtureFactory = ReturnType<typeof createWorkerRevisionFixtures>;
@@ -2023,6 +2028,241 @@ for (const recovery of [
   );
 }
 
+for (const outcome of ["ready", "unsupported"] as const) {
+  revisionTest(
+    `revoking only the candidate actor during completion prevents the first stop (${outcome})`,
+    async (fixture) => {
+      const owner = await fixture.agent("handoff-denial", { executionMode: "dedicated" });
+      const driver = countingExclusiveCompute(fixture);
+      const requester = `candidate-${randomUUID()}`;
+      await fixture.copyActorGrants(requester);
+      await fixture.start(driver.compute);
+      const previous = await fixture.revision(owner, 1);
+      await fixture.work(previous, "succeeded");
+      await fixture.stop();
+      const candidate = await fixture.revision(owner, 2, { actorId: requester });
+      await recordPlannedReplacement(fixture, owner, previous, candidate);
+      let handedOff = false;
+      driver.compute.canWaitForPredecessorCompletion = () => true;
+      driver.compute.waitForPredecessorCompletion = async (_revision, context) => {
+        assert.ok(await context.recordExecutionIdentity("serving"));
+        const removed = await fixture.observerPool.query(
+          "DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1",
+          [requester],
+        );
+        assert.ok(Number(removed.rowCount) > 0);
+        if (outcome === "ready") {
+          await context.commitStopping("serving");
+          handedOff = true;
+        }
+        return outcome;
+      };
+      await fixture.start(driver.compute);
+      await assertWorkEnds(fixture, candidate, "failed_permanent", "AUTHORIZATION_DENIED");
+      const record = await fixture.state.read((view) =>
+        view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
+      );
+      assert.equal(record?.phase, "pre-stop");
+      assert.equal(handedOff, false);
+      assert.equal(driver.count(previous), 0);
+      assert.equal(driver.preparations(candidate), 0);
+      const denials = await fixture.observerPool.query(
+        `SELECT actor_id FROM occ.audit_events WHERE namespace_id = $1 AND resource_id = $2
+         AND kind = 'authorization_denial' AND action = 'openclaw.agents.deploy'`,
+        [fixture.namespace.id, owner.id],
+      );
+      assert.deepEqual(denials.rows, [{ actor_id: requester }]);
+    },
+  );
+}
+
+revisionTest(
+  "revoking the issued Service Account credential during a predecessor stop refuses candidate preparation",
+  async (fixture) => {
+    const provider = backendDefinition();
+    const account = await createAccessTokenServiceAccount(
+      fixture.state,
+      fixture.namespace.id,
+      "stop-binding",
+    );
+    await seedBackendBinding(fixture.observerPool, account);
+    const owner = await fixture.agent("stop-binding", {
+      executionMode: "dedicated",
+      serviceAccountId: account.id,
+      backendId: provider.id,
+    });
+    const driver = countingExclusiveCompute(fixture);
+    await fixture.start(driver.compute, { providers: [provider] });
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    // The same stop/prepare path succeeds while the binding is unchanged.
+    const second = await fixture.revision(owner, 2);
+    await fixture.work(second, "succeeded");
+    const stop = driver.compute.stopRevision.bind(driver.compute);
+    driver.compute.stopRevision = async (revision) => {
+      await stop(revision);
+      if (revision.id === second.id) {
+        const revoked = await fixture.observerPool.query(
+          `UPDATE occ.service_account_driver_bindings SET external_credential_id = NULL
+           WHERE namespace_id = $1 AND service_account_id = $2 AND external_credential_id IS NOT NULL`,
+          [fixture.namespace.id, account.id],
+        );
+        assert.equal(revoked.rowCount, 1);
+      }
+    };
+    const third = await fixture.revision(owner, 3);
+    await assertWorkEnds(fixture, third, "failed_permanent", "SERVICE_ACCOUNT_BACKEND_MISMATCH");
+    assert.ok(driver.count(second) > 0);
+    assert.equal(driver.preparations(third), 0);
+  },
+);
+
+revisionTest(
+  "a replacement reassigned during predecessor stop never prepares the overtaken candidate",
+  async (fixture) => {
+    const owner = await fixture.agent("retarget-stop", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    await fixture.start(driver.compute);
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const second = await fixture.revision(owner, 2);
+    await recordPlannedReplacement(fixture, owner, first, second);
+    let newer: AdmittedRevision | undefined;
+    const stop = driver.compute.stopRevision.bind(driver.compute);
+    driver.compute.stopRevision = async (revision) => {
+      if (revision.id === first.id && newer === undefined) {
+        newer = await fixture.revision(owner, 3);
+        await recordPlannedReplacement(fixture, owner, first, newer);
+      }
+      await stop(revision);
+    };
+    await fixture.start(driver.compute);
+    const third = await waitFor("replacement admitted during physical stop", () => newer);
+    await waitForWorkStateDue(fixture, third, "succeeded");
+    assert.equal(driver.preparations(second), 0);
+    assert.equal(await activeRevisionId(fixture, owner), third.id);
+    const history = await fixture.observerPool.query(
+      `SELECT resource_id FROM occ.audit_events WHERE resource_id = $1
+       AND action = 'openclaw.agents.lifecycle.activate'`,
+      [second.id],
+    );
+    assert.deepEqual(history.rows, []);
+  },
+);
+
+// Use OCC admission here: unlike a fixture-inserted revision, a real deployment decides
+// whether it needs to retarget the serving revision's replacement record.
+async function replacementAdmission(fixture: ReplacementFixture, compute: ComputeDriver) {
+  fixture.controller.registerDriver(compute);
+  fixture.controller.selectDriver("compute", compute.id);
+  const owner = await fixture.agent("replacement-admission", { executionMode: "dedicated" });
+  const target = { namespaceId: fixture.namespace.id, agentId: owner.id };
+  const configure = async (executionMode: "dedicated" | "embedded") => {
+    const configuration = await fixture.controller.createConfiguration(fixture.actor.id, {
+      namespaceId: target.namespaceId,
+      kind: "agent",
+      values: createHarnessConfiguration(
+        executionMode === "dedicated" ? "codex" : "openclaw",
+        "gpt-4.1",
+      ),
+    });
+    await fixture.controller.updateAgent(fixture.actor.id, {
+      ...target,
+      configurationId: configuration.id,
+      gatewayManagedMode: false,
+      executionMode,
+    });
+  };
+  const admit = async (actorId = fixture.actor.id) => {
+    const revision = await fixture.controller.deployAgent(actorId, target, resolveApprovedHarness);
+    return { ...revision, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+  };
+  const record = () =>
+    fixture.state.read((view) =>
+      view.agents.findPredecessorReplacement(target.namespaceId, target.agentId),
+    );
+  await configure("dedicated");
+  const first = await admit();
+  await fixture.start(compute);
+  await fixture.work(first, "succeeded");
+  await fixture.stop();
+  return { owner, first, configure, admit, record };
+}
+
+revisionTest(
+  "an embedded deployment activates despite an older refused dedicated replacement record",
+  async (fixture) => {
+    const compute: ComputeDriver = {
+      ...fixture.compute,
+      id: "compute-stale-replacement",
+      requiresStoppedPredecessors,
+    };
+    const { owner, first, configure, admit, record } = await replacementAdmission(fixture, compute);
+    const requester = `candidate-${randomUUID()}`;
+    await fixture.copyActorGrants(requester);
+    const refused = await admit(requester);
+    assert.equal(refused.harness.mode, "dedicated");
+    const revoked = await fixture.observerPool.query(
+      "DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1",
+      [requester],
+    );
+    assert.ok(Number(revoked.rowCount) > 0);
+    await fixture.start(compute);
+    await assertWorkEnds(fixture, refused, "failed_permanent", "AUTHORIZATION_DENIED");
+    await fixture.stop();
+    assert.equal(await activeRevisionId(fixture, owner), first.id);
+
+    await configure("embedded");
+    const embedded = await admit();
+    assert.equal(embedded.harness.mode, "embedded");
+    const retained = await record();
+    assert.equal(retained?.predecessorRevisionId, first.id);
+    assert.equal(retained?.candidateRevisionId, refused.id);
+    assert.equal(retained?.phase, "pre-stop");
+    await fixture.start(compute);
+    await fixture.work(embedded, "succeeded");
+    assert.equal(await activeRevisionId(fixture, owner), embedded.id);
+  },
+);
+
+revisionTest(
+  "a newer exclusive deployment admitted during preparation blocks the prepared version's activation",
+  async (fixture) => {
+    const compute: ComputeDriver = {
+      ...fixture.compute,
+      id: "compute-retarget-at-activation",
+      requiresStoppedPredecessors,
+    };
+    const { owner, first, admit, record } = await replacementAdmission(fixture, compute);
+    const preparing = await admit();
+    let newer: Awaited<ReturnType<typeof admit>> | undefined;
+    let pointerBeforeNewerPrepare: string | null | undefined;
+    compute.prepareRevision = async (revision, context) => {
+      const ready = await fixture.compute.prepareRevision(revision, context);
+      if (revision.id === preparing.id && newer === undefined) {
+        assert.equal(ready.ready, true);
+        newer = await admit();
+        assert.equal((await record())?.candidateRevisionId, newer.id);
+      } else if (revision.id === newer?.id) {
+        pointerBeforeNewerPrepare = await activeRevisionId(fixture, owner);
+      }
+      return ready;
+    };
+    await fixture.start(compute);
+    const selected = await waitFor("newer admission during preparation", () => newer);
+    await waitForWorkStateDue(fixture, selected, "succeeded");
+    assert.equal(pointerBeforeNewerPrepare, first.id);
+    assert.equal(await activeRevisionId(fixture, owner), selected.id);
+    const activations = await fixture.observerPool.query(
+      `SELECT resource_id FROM occ.audit_events WHERE resource_id IN ($1, $2)
+       AND action = 'openclaw.agents.lifecycle.activate'`,
+      [preparing.id, selected.id],
+    );
+    assert.deepEqual(activations.rows, [{ resource_id: selected.id }]);
+  },
+);
+
 revisionTest(
   "a published replacement keeps a deploy denial discovered during its recovery sweep",
   async (fixture) => {
@@ -2246,6 +2486,33 @@ revisionTest(
       ),
       false,
     );
+  },
+);
+
+revisionTest(
+  "a candidate admitted after the fixed completion cutoff gets no convergence credit",
+  async (fixture) => {
+    const owner = await fixture.agent("late-candidate", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture, {
+      ready: (revision) => revision.revision === 1,
+    });
+    await fixture.start(driver.compute);
+    const previous = await fixture.revision(owner, 1);
+    await fixture.work(previous, "succeeded");
+    await fixture.stop();
+    const late = await fixture.revision(owner, 2, { workAge: "5 minutes" });
+    await recordPlannedReplacement(fixture, owner, previous, late);
+    await fixture.observerPool.query(
+      `UPDATE occ.agents SET predecessor_replacement = predecessor_replacement ||
+       jsonb_build_object('completionStartedAt', clock_timestamp() - interval '40 minutes',
+                          'startedAt', clock_timestamp() - interval '40 minutes')
+       WHERE namespace_id = $1 AND id = $2`,
+      [fixture.namespace.id, owner.id],
+    );
+    await fixture.start(driver.compute, { convergenceTimeoutMs: 60_000 });
+    await assertWorkEnds(fixture, late, "failed_permanent", "CONVERGENCE_DEADLINE_EXCEEDED");
+    assert.ok(driver.count(previous) > 0);
+    assert.ok(driver.preparations(late) > 0);
   },
 );
 

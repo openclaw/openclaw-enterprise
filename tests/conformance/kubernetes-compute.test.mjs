@@ -971,6 +971,85 @@ test("only compatible admitted image changes qualify for completion waiting", ()
   assert.equal(otherDriver.canWaitForPredecessorCompletion(fixture.revision, candidate), false);
 });
 
+test("predecessor suspension requires the same sole serving Gateway Pod before and after connecting", async () => {
+  const { driver, clients, revision, gatewayName, gatewayNamespace, save } =
+    dedicatedFirstDeployFixture();
+  const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+  const service = driver.manifest("v1", "Service", gatewayName, ownership, {
+    name: gatewayNamespace,
+    plane: "control",
+  });
+  service.metadata.uid = "service-uid";
+  save(service);
+  const target = { kind: "Pod", name: "gateway-pod", namespace: gatewayNamespace, uid: "pod-uid" };
+  const foreign = { ...target, name: "other-pod", uid: "other-uid" };
+  let targets = [target, foreign];
+  clients.core.listNamespacedPod = async () => ({
+    items: [
+      {
+        metadata: {
+          name: target.name,
+          namespace: gatewayNamespace,
+          uid: target.uid,
+          labels: {
+            "openclaw.dev/agent": revision.agentId,
+            "openclaw.dev/namespace": revision.namespaceId,
+            "openclaw.dev/revision": revision.id,
+            "openclaw.dev/workload-role": "gateway",
+          },
+        },
+      },
+    ],
+  });
+  clients.discovery.listNamespacedEndpointSlice = async () => ({
+    items: [
+      {
+        metadata: {
+          labels: { "kubernetes.io/service-name": gatewayName },
+          ownerReferences: [{ kind: "Service", name: gatewayName, uid: service.metadata.uid }],
+        },
+        endpoints: targets.map((targetRef) => ({ targetRef, conditions: { ready: true } })),
+      },
+    ],
+  });
+  let suspends = 0;
+  let commits = 0;
+  let changeOnConnect = false;
+  driver.predecessorCompletion = {
+    async observe(_url, _id, context) {
+      assert.equal(context.expectedHostname, target.name);
+      if (changeOnConnect) {
+        targets = [foreign];
+      }
+      if (!(await context.recordExecutionIdentity("same-process"))) {
+        return "runtime-changed";
+      }
+      suspends++;
+      await context.commitStopping("same-process");
+      return "ready";
+    },
+  };
+  const observe = () =>
+    driver.waitForPredecessorCompletion(revision, {
+      deadlineAtMs: Date.now() + 60_000,
+      recordExecutionIdentity: async () => true,
+      commitStopping: async () => {
+        commits++;
+      },
+    });
+  assert.equal(await observe(), "runtime-changed", "mixed revisions");
+  targets = [foreign];
+  assert.equal(await observe(), "runtime-changed", "only foreign revision");
+  targets = [target];
+  changeOnConnect = true;
+  assert.equal(await observe(), "runtime-changed", "route changed while connecting");
+  assert.deepEqual([suspends, commits], [0, 0]);
+  targets = [target];
+  changeOnConnect = false;
+  assert.equal(await observe(), "ready");
+  assert.deepEqual([suspends, commits], [1, 1]);
+});
+
 test("invalid runtime snapshots cannot fall back to current images", async () => {
   for (const runtimeInputs of ["planned-runtime:v2:{}", "planned-runtime:v1:{}", "malformed"]) {
     const fixture = dedicatedFirstDeployFixture();
