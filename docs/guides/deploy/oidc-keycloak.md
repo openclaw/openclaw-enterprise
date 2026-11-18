@@ -145,9 +145,7 @@ helm template oce deploy/helm/openclaw-enterprise --namespace openclaw-system \
 
 Copy the JSON to a protected operator input file and replace every site value.
 Copy the issuer and endpoints from Keycloak's discovery document; OCE does not
-fetch it. Create the dedicated `occ-oidc-login` Secret from protected client ID
-and secret files as described in [Configure the chart](oidc-sign-in.md#configure-the-chart).
-The JSON stores Secret names and keys, never credentials. Keep the rendered
+fetch it. The JSON stores Secret names and keys, never credentials. Keep the rendered
 `values.yaml`, `installation.yaml`, and checksum together. Review the
 preflight prerequisites, including the
 actual ingress proxy CIDRs, database CA, storage class, DNS, and routing.
@@ -170,12 +168,27 @@ actual ingress proxy CIDRs, database CA, storage class, DNS, and routing.
 
 2. Verify the recovery administrator's password sign-in and read its actual
    `data.user.id` from `GET /api/auth/session`. Add that ID and the reviewed
-   OIDC block to the operator input and rerender. Follow
+   OIDC block to the operator input and rerender. After bootstrap creates the
+   namespace, use the same verified kubeconfig and context to confirm the target
+   and create the dedicated OIDC Secret from protected files:
+
+   ```bash
+   set -euo pipefail
+   kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
+     get namespace openclaw-system
+   kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
+     --namespace openclaw-system create secret generic occ-oidc-login \
+     --from-file=client-id=/secure/occ/oidc-client-id \
+     --from-file=client-secret=/secure/occ/oidc-client-secret
+   ```
+
+   Follow
    [external sign-in activation](production-installation.md#enable-external-browser-sign-in):
    close general ingress, stop every writer, run
    `activate --recovery-user <userId> --writers-stopped`, verify `status`,
    and upgrade the existing release with the reviewed rendered pair and
    initialization hooks enabled. Keep ingress restricted through steps 3 and 4.
+
 3. For a new pilot, [add the person](../topics/iam.md#add-a-person) and grant
    the intended OCE access first. Keep existing pilots' original accounts and
    grants. As a human Installation administrator, read each pilot's current account,
@@ -212,15 +225,20 @@ Confirm that the migrator connection selects the installed database and set
 `EXPECTED_HISTORY` to the expected candidate history for the
 [recorded previous release](upgrade-baseline.md#record-the-database). Run the
 candidate image check and compare its result. Set `DATABASE_CA_FILE` to the
-approved CA file on the operator host; the connection URL's `sslrootcert` must
-name its container path `/etc/openclaw/database-ca/ca.pem`. Adjust both paths
-together if the deployment uses another mount:
+approved public database CA file on the operator host. Keep the original file
+protected; the image runs as `node` and cannot read its mode `0600` bind mount.
+Stage a readable copy in a mode `0700` directory under the protected operator
+directory. Keep `sslmode=verify-full` and set the connection URL's `sslrootcert`
+to `/etc/openclaw/database-ca/ca.pem`:
 
 ```bash
 set -euo pipefail
 umask 077
+MIGRATION_CA_DIR="$(mktemp -d "${OCC_INPUT_DIRECTORY:?}/migration-ca.XXXXXXXX")"
+chmod 700 "$MIGRATION_CA_DIR"
+install -m 0444 -- "${DATABASE_CA_FILE:?}" "$MIGRATION_CA_DIR/ca.pem"
 docker run --rm --env NODE_ENV=production --env OCC_MIGRATION_DATABASE_URL \
-  --mount "type=bind,src=${DATABASE_CA_FILE:?},dst=/etc/openclaw/database-ca/ca.pem,readonly" \
+  --mount "type=bind,src=${MIGRATION_CA_DIR:?}/ca.pem,dst=/etc/openclaw/database-ca/ca.pem,readonly" \
   "$CONTROLLER_IMAGE" -e "${MIGRATION_PROGRAM:?}" -- --check > migration-check.json
 jq -e --arg expected "${EXPECTED_HISTORY:?}" \
   '.event == "migration.checked" and .history == $expected and .history != "empty"' \
@@ -241,13 +259,16 @@ the same selected image and program, then require completed history:
 set -euo pipefail
 umask 077
 docker run --rm --env NODE_ENV=production --env OCC_MIGRATION_DATABASE_URL \
-  --mount "type=bind,src=${DATABASE_CA_FILE:?},dst=/etc/openclaw/database-ca/ca.pem,readonly" \
+  --mount "type=bind,src=${MIGRATION_CA_DIR:?}/ca.pem,dst=/etc/openclaw/database-ca/ca.pem,readonly" \
   "$CONTROLLER_IMAGE" -e "${MIGRATION_PROGRAM:?}" --
 docker run --rm --env NODE_ENV=production --env OCC_MIGRATION_DATABASE_URL \
-  --mount "type=bind,src=${DATABASE_CA_FILE:?},dst=/etc/openclaw/database-ca/ca.pem,readonly" \
+  --mount "type=bind,src=${MIGRATION_CA_DIR:?}/ca.pem,dst=/etc/openclaw/database-ca/ca.pem,readonly" \
   "$CONTROLLER_IMAGE" -e "${MIGRATION_PROGRAM:?}" -- --require-current > migration-current.json
 jq -e '.event == "migration.checked" and .history == "completed"' migration-current.json
 ```
+
+After the last selected-image command, remove the staged public CA copy with
+`rm -- "$MIGRATION_CA_DIR/ca.pem"` and `rmdir -- "$MIGRATION_CA_DIR"`.
 
 Before service replacement, [resume the original upgrade](separate-database-upgrade.md#deploy-the-database).
 On an uncertain outcome, keep writers stopped,
@@ -264,12 +285,19 @@ the same admission, recovery, migration, and verification requirements.
 
 ## Optional GitHub broker
 
-If Keycloak brokers GitHub, create a separate OAuth application for the broker.
-Register Keycloak's displayed broker redirect URI, for example
-`https://sso.example.com/realms/acme/broker/github/endpoint`; the OCE client
+If Keycloak brokers GitHub, register its displayed broker redirect URI, for
+example `https://sso.example.com/realms/acme/broker/github/endpoint`. For an
+existing GitHub App, append that URI while preserving the original callback as
+the first entry. GitHub Apps support up to ten callbacks; the broker must send
+an explicit `redirect_uri` to select its callback. Without it, GitHub uses the
+first callback. See [GitHub App callback URLs](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/about-the-user-authorization-callback-url).
+Qualify that the selected Keycloak broker works with the GitHub App and sends
+the required URI before cutover; this interoperability is not verified by CI.
+Alternatively, register a separate GitHub OAuth application for the broker;
+do not assume an existing OAuth application's callback can be extended. Preserve
+existing callbacks and credentials for their current consumers. The OCE client
 still uses `https://console.oce.example.com/api/auth/providers/oidc/callback`.
-Preserve any existing application's callback and credentials for its current
-consumers. Do not enable email-based automatic linking or Keycloak's
+Do not enable email-based automatic linking or Keycloak's
 `Automatically Set Existing User` flow. A GitHub login alone does not prove
 organization or team eligibility: govern the signed group claim and measure
 removal freshness, including reused broker sessions, before cutover. See the
