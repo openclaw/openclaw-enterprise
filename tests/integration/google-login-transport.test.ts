@@ -67,10 +67,7 @@ function idToken(state = callbackState, overrides: Record<string, unknown> = {})
 function loginFixture(
   state: LoginFixtureOptions["state"] = {},
   providers: LoginFixtureOptions["providers"] = {},
-  options: Pick<
-    LoginFixtureOptions,
-    "providerDeadlineMs" | "recoveryEmail" | "trustedClientAddress"
-  > = {},
+  options: Pick<LoginFixtureOptions, "providerDeadlineMs" | "trustedClientAddress"> = {},
 ) {
   return createLoginFixture({
     provider: "google",
