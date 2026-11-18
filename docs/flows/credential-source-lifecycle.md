@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-18
-last_updated_session: authoring-run/37e75cb4-4947-44ab-8be4-6a3f6726be01
+last_updated_session: authoring-run/deb16d3b-e25e-4b06-b8b5-fa14f7121a08
 ---
 
 # Credential source lifecycle Flow
@@ -101,18 +101,15 @@ OAuth and plugin enrollment are ineligible for that exception. Prepared and
 credential-free types use their Proxy owner; protected static admission reads the
 live Secret without a Gateway copy.
 
-`packages/occ/src/index.ts:newSourceAdmission` applies the Installation's exact
-new-source default when authorization is omitted. Otherwise it uses explicit profile
-or ordinary Gateway/strict admission rules. `packages/occ/src/index.ts:staticEgressProvider`
-resolves the exact reference; duplicate registrations return `409` before Secret
-reads. Updates retain that reference. Admission rechecks provider identity and callbacks
-around material resolution.
+`packages/occ/src/index.ts:newSourceAdmission` permits configured ordinary Gateway
+delivery. Otherwise `staticEgressProvider` selects the external Driver’s first matching
+provider. A bundled owner with retirement policy requires one eligible provider for the
+type; missing or ambiguous choices refuse before Secret reads. Updates resolve the exact
+admitted reference. Admission rechecks the provider and callbacks around material resolution.
 
-`packages/occ/src/index.ts:credentialSourceAuthorization` projects the recorded live
-model profile on create, GET and list. It validates the persisted provider reference
-against the selected Proxy registration, source lifecycle, backend, sender and resolver.
-Invalid registrations report `unavailable`; metadata reads remain usable. The current
-default and running Sandbox enforcement are not part of this observation.
+`packages/occ/src/index.ts:credentialSourceProtection` reports live model protection
+on create, GET and list. It checks the exact provider, lifecycle, backend, sender and
+resolver. Invalid registrations report `unavailable`; readback does not attest running enforcement.
 
 ### 2. Read Secret values
 
@@ -374,6 +371,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 06:42: Remove source-create protection selection and report admitted provider protection. (authoring-run/deb16d3b-e25e-4b06-b8b5-fa14f7121a08 - 73a9c6467899a076dc9e0a5f8162fcf4f2af0cf6)
 
 - 2026-11-18 05:30: Expose the recorded live model authorization profile in source metadata. (authoring-run/37e75cb4-4947-44ab-8be4-6a3f6726be01 - 514390283e7f2a3638eeee5427846e8215556c84)
 

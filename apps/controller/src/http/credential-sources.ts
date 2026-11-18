@@ -59,9 +59,6 @@ export const credentialSourceHandlers = {
         namespaceId,
         name: body?.name as string,
         type: body?.type as string,
-        ...(body?.authorization === undefined
-          ? {}
-          : { authorization: body.authorization as "online-request" }),
         ...(body?.config === undefined ? {} : { config: body.config as Record<string, string> }),
         ...(body?.secrets === undefined
           ? {}

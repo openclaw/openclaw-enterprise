@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-18
-last_updated_session: authoring-run/f32322c2-cae5-4a31-bb72-c6fcc6e8c62b
+last_updated_session: authoring-run/deb16d3b-e25e-4b06-b8b5-fa14f7121a08
 ---
 
 # Authorize model credentials per request
@@ -19,10 +19,10 @@ defines the guarantee. Existing strict exchanges retain their
 
 ## Entry Points
 
-- `packages/occ/src/index.ts:createCredentialSource` resolves an explicit profile or
-  the exact new-model-source default pinned by installation composition. Without a default,
-  ordinary Gateway or strict admission applies. The bundled full request-time configuration
-  selects the online OpenAI provider and [refuses new strict OpenAI sources](../../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
+- `packages/occ/src/index.ts:createCredentialSource` selects the eligible provider from
+  the installed owner’s policy and matching source type. Ordinary Gateway and external
+  strict admission retain their existing behavior. The bundled request-time configuration
+  makes the request provider eligible and [refuses new strict OpenAI sources](../../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 - `packages/occ/src/index.ts:admitProxyPlan` records the selected profile, source,
   grant and execution. The operator and Agent need source `operate` permission.
 - `apps/controller/src/drivers/egress-proxy/openshell-request-credential.ts:authorizeOpenShellRequest`
@@ -53,16 +53,15 @@ response for OCC inspection or authorize an exact upstream dispatch.
 
 ## Execution Trace
 
-### 1. Save and install the explicit profile
+### 1. Admit and install the provider
 
-`apps/controller/src/composition/installation-config.ts` supplies the exact provider ref
-to `InstalledDriver` when the full request-time model configuration is enabled. That
-configuration is already part of the registration identity, so selecting the derived default
-does not change existing Driver references. `packages/occ/src/index.ts:newSourceAdmission`
-uses the same resolution for the capability catalog and source creation. The catalog checks
-configuration and capability presence without probing the enforcement transport. Missing or
-ambiguous defaults and unavailable enforcement refuse creation before Secret reads or source writes;
-they never select an ordinary or strict provider. Updates retain the exact provider ID and
+`apps/controller/src/composition/installation-config.ts` retires the strict provider for
+new uses. Full request-time model configuration registers the request provider.
+`packages/occ/src/index.ts:newSourceAdmission` uses the same resolution for the capability
+catalog and source creation. When a matching provider is retired, exactly one eligible
+provider must remain. The catalog checks configuration and capability presence without
+probing the enforcement transport. Missing or ambiguous choices and unavailable
+enforcement refuse creation before Secret reads or source writes; they never fall back. Updates retain the exact provider ID and
 generation. The bundled adapter registers `openai-online-request`, generation 1,
 separately from the strict provider. `admitProxyPlan` rejects mixed profiles and
 records `authorization: "online-request"`. `requestCredentialAuthority` uses
@@ -250,6 +249,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-18 06:42: Select new model sources through installed provider eligibility. (authoring-run/deb16d3b-e25e-4b06-b8b5-fa14f7121a08 - 73a9c6467899a076dc9e0a5f8162fcf4f2af0cf6)
 
 - 2026-11-18 05:18: Document the early Compute refusal for unsupported Harness and online Responses source pairs. (authoring-run/f32322c2-cae5-4a31-bb72-c6fcc6e8c62b - b0a2df2413bf72e555fae2ca4be804344c211783)
 - 2026-11-18 05:03: Trace installation-selected new model source admission. (authoring-run/eab8bc47-885a-4be4-b367-963db36dfee7 - b0a2df2413bf72e555fae2ca4be804344c211783)

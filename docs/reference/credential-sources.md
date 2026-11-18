@@ -66,16 +66,15 @@ The `201` response includes the `cs_` source ID, binding `ref` and status. Bind 
   a static Harness model type and the bundled Proxy handling only Git. Refresh, device
   authorization and ChatGPT OAuth are ineligible. Other registrations require protected
   admission. Explicit live adoption preserves ownership.
-- For a new eligible model source, omitted `authorization` uses the exact default
-  selected by Installation composition, if present. Full request-time OpenShell model
-  configuration selects the online OpenAI provider. Otherwise ordinary Gateway or strict
-  admission applies. Missing or ambiguous defaults and unavailable enforcement refuse
-  creation before Secret reads; existing sources retain their selected provider.
-  Create, GET, and list responses report a protected live model source's recorded
-  profile in `egress.authorization`: `exact-dispatch`, `online-request`, or
-  `unavailable` when its exact admitted registration cannot be validated. Ordinary
-  Gateway sources omit `egress`; other protected source lifecycles do not claim a
-  model profile. The value does not attest running Sandbox enforcement.
+- Create a source with `name`, `type`, `config`, and `secrets`. The Installation
+  selects the provider; the request does not select a protection mode. Where the
+  bundled Driver retires a provider for this type, exactly one eligible matching
+  provider must remain. Missing or ambiguous choices and unavailable enforcement
+  refuse creation before Secret reads. Existing sources retain their provider.
+  Create, GET, and list responses report live model protection in
+  `egress.protection`: `request-time`, `exact-dispatch`, or `unavailable` when the
+  exact admitted registration cannot be validated. Ordinary Gateway sources omit
+  `egress`. This value does not attest running Sandbox enforcement.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`. Custom authorization must match the

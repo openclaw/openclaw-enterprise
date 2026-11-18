@@ -30,7 +30,7 @@ Kubernetes namespace.
 Choose the model delivery profile before creating a source.
 
 - **Combined model and Git through Proxy (v9).** Follow [per-request model setup](../credential-proxy/model-requests.md)
-  for trust, Proxy configuration, and an explicit `online-request` model source. Keep the
+  for trust, Proxy configuration, and a model source with request-time protection. Keep the
   Credential Gateway selected for source metadata. Continue with repository configuration
   below and preserve the model authority and token-grant settings.
 - **Git-only Proxy with a Gateway model source.** For a fresh local k3d installation, start

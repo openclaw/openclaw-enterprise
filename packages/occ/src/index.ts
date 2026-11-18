@@ -1161,7 +1161,6 @@ export type CreateOAuthClientInput = Pick<
 };
 type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
-  readonly authorization?: "online-request";
   readonly namespaceId: string;
   readonly name: string;
   readonly type: string;
@@ -8862,22 +8861,34 @@ export class OpenClawController {
     });
   }
 
-  private staticEgressProvider(
-    type: string,
-    previous?: EgressRef,
-    authorization?: "online-request",
-  ) {
+  private staticEgressProvider(type: string, previous?: EgressRef) {
     const driver = this.selectedDriver("credential_proxy");
     const owner = this.selections.get("credential_proxy")?.owner;
     const control = driver.sourceControl;
-    // Updates preserve their exact registration; absent an installed choice, new sources use strict.
+    // Retained sources resolve their exact registration. New uses require one eligible match.
     const resolve = () => {
-      const ref =
-        previous ??
-        control.providers.find(
-          (entry) => entry.sourceType.type === type && entry.authorization === authorization,
-        )?.ref;
-      return ref ? registeredCredentialProvider(control.providers, ref) : undefined;
+      if (previous) {
+        return registeredCredentialProvider(control.providers, previous);
+      }
+      const matching = control.providers.filter((entry) => entry.sourceType.type === type);
+      const retired = matching.find(
+        (entry) => owner?.allowsNewStaticProviderUse(entry.ref) === false,
+      );
+      if (!owner?.hasStaticProviderRetirementPolicy()) {
+        // External Drivers retain their published catalog-order choice.
+        const first = matching[0];
+        return first ? registeredCredentialProvider(control.providers, first.ref) : undefined;
+      }
+      const eligible = matching.filter(
+        (entry) => owner?.allowsNewStaticProviderUse(entry.ref) !== false,
+      );
+      if (eligible.length > 1) {
+        return "ambiguous" as const;
+      }
+      if (eligible.length === 0 && retired) {
+        owner.assertNewStaticProviderUse(retired.ref);
+      }
+      return eligible[0];
     };
     const provider = resolve();
     if (provider === "ambiguous") {
@@ -8911,29 +8922,10 @@ export class OpenClawController {
     return { provider, ref, inject, normalizeConfig, assertCurrent };
   }
 
-  private newSourceAdmission(type: CredentialSourceType, authorization?: "online-request") {
-    const owner = this.selections.has("credential_proxy") ? this.selectedProxyOwner() : undefined;
-    const installedDefault =
-      authorization === undefined ? owner?.newSourceDefault(type.type) : undefined;
-    if (installedDefault) {
-      const selected = this.staticEgressProvider(type.type, installedDefault);
-      if (
-        !selected ||
-        selected.provider.sourceType.type !== type.type ||
-        selected.provider.authorization !== "online-request" ||
-        type.harnessAuth === undefined ||
-        !this.staticSourceLifecycleMatches(type, selected.provider.sourceType)
-      ) {
-        throw new ResourceStateConflictError(
-          "The Installation's selected credential source default is unavailable or ineligible.",
-        );
-      }
-      selected.assertCurrent();
-      return selected;
-    }
-    return authorization !== undefined || !this.ordinaryCredentialGatewayAllowed(type)
-      ? this.staticEgressProvider(type.type, undefined, authorization)
-      : undefined;
+  private newSourceAdmission(type: CredentialSourceType) {
+    return this.ordinaryCredentialGatewayAllowed(type)
+      ? undefined
+      : this.staticEgressProvider(type.type);
   }
 
   private async admitStaticEgressSource(
@@ -9290,10 +9282,6 @@ export class OpenClawController {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
-    if (input.authorization !== undefined && input.authorization !== "online-request") {
-      throw new ScopeViolationError("The credential source authorization profile is invalid.");
-    }
-    const authorization = input.authorization;
     const written = Object.freeze({ ...(input.config ?? {}) });
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
@@ -9317,17 +9305,6 @@ export class OpenClawController {
         throw new NamespaceNotReadyError();
       }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
-      if (
-        authorization &&
-        (protectedType ||
-          type.rotation === "refresh" ||
-          type.deviceAuthorization !== undefined ||
-          !this.selections.has("credential_proxy"))
-      ) {
-        throw new ResourceStateConflictError(
-          "Online request authorization requires a static source and a selected Credential Proxy.",
-        );
-      }
       credentialSourceFieldsMatch(type, "config", written);
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
       // The Driver may return the configuration in the form it uses, such as a normalized URL:
@@ -9345,14 +9322,10 @@ export class OpenClawController {
           "This prepared issuer does not support on-demand rotation. Use a Credential Gateway-owned refresh source instead.",
         );
       }
-      const staticSelection = protectedType
-        ? undefined
-        : this.newSourceAdmission(type, authorization);
+      const staticSelection = protectedType ? undefined : this.newSourceAdmission(type);
       const requiresStaticAdmission =
         !protectedType &&
-        (staticSelection !== undefined ||
-          authorization !== undefined ||
-          !this.ordinaryCredentialGatewayAllowed(type));
+        (staticSelection !== undefined || !this.ordinaryCredentialGatewayAllowed(type));
       if (
         requiresStaticAdmission &&
         !this.staticSourceLifecycleMatches(type, staticSelection?.provider.sourceType)
@@ -9370,11 +9343,6 @@ export class OpenClawController {
         throw new NotImplementedError(
           "agent_device_authorization",
           "Device login requires the selected Credential Refresh Driver's device authorization support.",
-        );
-      }
-      if (authorization && !staticSelection) {
-        throw new ResourceStateConflictError(
-          "The selected Credential Proxy does not support this source's authorization profile.",
         );
       }
       const sourceId = this.nextIdentifier("credential_source");
@@ -18214,10 +18182,10 @@ export class OpenClawController {
     return entry;
   }
 
-  /** Observe the admitted live model registration without selecting a new-source default. */
-  private credentialSourceAuthorization(
+  /** Observe protection from the exact admitted live model registration. */
+  private credentialSourceProtection(
     source: Readonly<CredentialSource>,
-  ): "exact-dispatch" | "online-request" | "unavailable" | undefined {
+  ): "exact-dispatch" | "request-time" | "unavailable" | undefined {
     const egress = source.egress;
     if (egress?.adoption !== "live" || source.ownerCapability !== "credential_gateway") {
       return undefined;
@@ -18252,7 +18220,7 @@ export class OpenClawController {
       if (provider.authorization === undefined) {
         return "exact-dispatch";
       }
-      return provider.authorization === "online-request" ? "online-request" : "unavailable";
+      return provider.authorization === "online-request" ? "request-time" : "unavailable";
     } catch {
       return "unavailable";
     }
@@ -18262,7 +18230,7 @@ export class OpenClawController {
     source: Readonly<CredentialSource>,
     status?: CredentialSourceStatus,
   ): Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }> {
-    const authorization = this.credentialSourceAuthorization(source);
+    const protection = this.credentialSourceProtection(source);
     return Object.freeze({
       id: source.id,
       namespaceId: source.namespaceId,
@@ -18277,7 +18245,7 @@ export class OpenClawController {
             egress: {
               adoption: source.egress.adoption,
               retention: source.egress.retention,
-              ...(authorization === undefined ? {} : { authorization }),
+              ...(protection === undefined ? {} : { protection }),
             },
           }),
       state: source.state,

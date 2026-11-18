@@ -34,7 +34,7 @@ sender actually enforces.
 Use the [upgrade procedure](deploy/credential-proxy-upgrade.md) for an existing
 installation, including when a Gateway source or its owner must remain.
 
-For explicitly selected online model authorization, use
+For request-time model protection, use
 [model request setup](credential-proxy/model-requests.md). It has separate
 identity prerequisites and withdrawal guarantees.
 
@@ -172,9 +172,9 @@ This procedure requires the strict `exact-dispatch` authorization profile and a
 [separately selected Driver](../reference/drivers/selection.md#select-a-protected-sender)
 with qualified static enforcement. The bundled OpenShell Driver refuses new strict
 admission with `409 RESOURCE_CONFLICT`. When full request-time model configuration
-is enabled, it can instead admit a new OpenAI source as `online-request`, even
-when the create request omits `authorization`. That profile does not provide exact
-dispatch or response custody and cannot be changed by an adoption PATCH.
+is enabled, it can instead admit a new OpenAI source with request-time protection.
+That protection does not provide exact dispatch or response custody and cannot be
+changed by an adoption PATCH.
 
 With `jq`, a ready Namespace and an authorized CLI session, obtain whole-execution
 consent before creating a strict live source. Register the `openai` example in
@@ -189,9 +189,9 @@ SOURCE_JSON="$(./bin/occ credential-source get "$SOURCE_ID" -o json)"
 printf '%s\n' "$SOURCE_JSON" | jq '{ownerCapability, egress}'
 ```
 
-- If `egress.authorization` is `exact-dispatch`, the source is already admitted;
+- If `egress.protection` is `exact-dispatch`, the source is already admitted;
   do not adopt it again.
-- If it is `online-request` or `unavailable`, stop. An adoption PATCH cannot
+- If it is `request-time` or `unavailable`, stop. An adoption PATCH cannot
   change an admitted profile, and this procedure cannot deploy it as strict.
 - If `egress` is absent, the source is an ordinary Gateway copy and has no
   protected profile yet. With a selected, qualified strict-capable Driver,
@@ -209,7 +209,7 @@ Before deployment, require the effective recorded strict profile:
 ./bin/occ credential-source get "$SOURCE_ID" -o json | jq -e '
   .ownerCapability == "credential_gateway" and
   .egress.adoption == "live" and .egress.retention == "none" and
-  .egress.authorization == "exact-dispatch"'
+  .egress.protection == "exact-dispatch"'
 ```
 
 Stop if this check fails. Keep the Gateway selected: live adoption does not transfer

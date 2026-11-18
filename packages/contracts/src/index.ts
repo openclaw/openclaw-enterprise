@@ -579,8 +579,8 @@ export type CredentialSource = CredentialSourceOwner & {
 export interface CredentialSourceMetadata {
   readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention"> & {
-    /** Recorded live model profile; unavailable when its exact registration cannot be resolved. */
-    readonly authorization?: "exact-dispatch" | "online-request" | "unavailable";
+    /** Live model protection; unavailable when its exact registration cannot be resolved. */
+    readonly protection?: "exact-dispatch" | "request-time" | "unavailable";
   };
   readonly id: string;
   readonly namespaceId: string;

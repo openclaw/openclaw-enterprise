@@ -2,7 +2,7 @@
 
 Use this path to give a dedicated Codex Agent access to one admitted OpenAI
 Responses model while keeping the API key outside the guest. It requires a source admitted with the
-`online-request` profile and a qualified OpenShell installation.
+`request-time` protection and a qualified OpenShell installation.
 The source implementation is available; it does not establish qualification of
 an installed OpenShell and Codex pair. Complete the checks below before rollout.
 Agent deployment rejects an online source paired with OpenClaw or a Harness that
@@ -145,8 +145,8 @@ Use the built CLI, a ready Namespace, `OCC_URL`, `OCC_NAMESPACE` and a protected
 permissions. Store the authorized API key as a Namespace Secret using
 [Register the key](../deploy/openshell-credential-sources.md#register-the-key),
 then use its `SECRET_REF` to create this source. With the full request-time model
-configuration, omitting `authorization` selects the installed online default. The
-example keeps the profile explicit so the saved request records the operator's choice.
+configuration, the Installation selects the eligible request-time provider. The
+create request contains no protection selector.
 Choose the HTTPS `/v1` destination first: use `https://api.openai.com/v1` for
 OpenAI, or the controlled origin for the acceptance checks below. The key must
 be authorized for that destination. Create the acceptance source with its
@@ -162,14 +162,13 @@ SOURCE_ID="$(./bin/occ credential-source create --file model-source.json -o json
   .type == "openai" and .state == "ready" and
   .ownerCapability == "credential_gateway" and
   .egress.adoption == "live" and .egress.retention == "none" and
-  .egress.authorization == "online-request"'
+  .egress.protection == "request-time"'
 ```
 
-Stop if the profile is `exact-dispatch`, `unavailable`, or absent. The response
-records the admitted profile, not installed enforcement; complete the
+Stop if protection is `exact-dispatch`, `unavailable`, or absent. The response
+reports the admitted provider’s protection, not installed enforcement; complete the
 installed-path checks below. Gateway ownership does not mean it holds the key.
-A source update retains its selected provider and cannot change authorization
-profiles.
+A source update retains its selected provider and cannot change protection.
 
 Follow [create the Agent and grant the source](../deploy/openshell-credential-sources.md#create-the-agent-and-grant-the-source)
 for a dedicated Codex Agent, exact source binding, API-key authentication and

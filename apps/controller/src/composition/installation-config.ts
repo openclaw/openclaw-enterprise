@@ -10,10 +10,7 @@ import {
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import { githubRepositoryConfiguration } from "../drivers/repo/github/installation.ts";
 import type { GitHubRepositoryRegistry } from "../drivers/repo/github/access/registry.ts";
-import {
-  openAiRequestProviderRef,
-  openAiStaticProviderRef,
-} from "../drivers/egress-proxy/openai-provider.ts";
+import { openAiStaticProviderRef } from "../drivers/egress-proxy/openai-provider.ts";
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
 import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
@@ -1534,9 +1531,6 @@ async function composeInstallationConfiguration(
         ...sandbox,
         retiredStaticProviderRefs: [openAiStaticProviderRef],
         repositoryOnly: repositoryTransport !== undefined && egressAuthority === undefined,
-        ...(requestTokenGrant && {
-          newSourceDefaults: [{ type: "openai", provider: openAiRequestProviderRef }],
-        }),
         configuration: {
           sandbox: sandbox.configuration,
           backend: openShellBackend,

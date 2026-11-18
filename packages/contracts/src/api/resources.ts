@@ -706,16 +706,16 @@ export const CredentialSourceSchema = Type.Object(
             Type.Literal("credential_free"),
           ]),
           retention: Type.Literal("none"),
-          authorization: Type.Optional(
+          protection: Type.Optional(
             Type.Union(
               [
                 Type.Literal("exact-dispatch"),
-                Type.Literal("online-request"),
+                Type.Literal("request-time"),
                 Type.Literal("unavailable"),
               ],
               {
                 description:
-                  "Recorded live model authorization profile, resolved from the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement.",
+                  "Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement.",
               },
             ),
           ),

@@ -296,7 +296,7 @@ export interface EgressResponse {
 
 /** Installed trusted provider semantics; callers never supply code or an injection callback. */
 export interface CredentialProviderDefinition {
-  /** Omission retains exact dispatch and response custody; never select this profile implicitly. */
+  /** Installed provider enforcement semantics. Omission retains exact dispatch and response custody; source callers do not select this value. */
   readonly authorization?: "online-request";
   readonly ref: EgressRef;
   readonly schemaVersion: 1;

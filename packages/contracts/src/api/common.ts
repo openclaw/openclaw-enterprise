@@ -432,12 +432,6 @@ export const CreateCredentialSourceBody = Type.Object(
   {
     name: Name,
     type: CredentialSourceType,
-    authorization: Type.Optional(
-      Type.Literal("online-request", {
-        description:
-          "Explicitly select an offered request-authorization profile. When omitted, a new source uses the Installation's exact default for its eligible model type, if configured; otherwise normal Gateway or exact-dispatch admission applies. Existing sources retain their original profile.",
-      }),
-    ),
     config: Type.Optional(CredentialSourceConfig),
     secrets: Type.Optional(CredentialSourceSecrets),
   },

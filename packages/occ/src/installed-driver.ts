@@ -32,7 +32,6 @@ export class InstalledDriver {
   readonly #close: (() => void | Promise<void>) | undefined;
   readonly #retiredStaticProviderRefs: readonly EgressRef[];
   readonly #repositoryOnly: boolean;
-  readonly #newSourceDefaults: readonly { readonly type: string; readonly provider: EgressRef }[];
   #closing: Promise<void> | undefined;
 
   constructor(
@@ -44,11 +43,6 @@ export class InstalledDriver {
       readonly retiredStaticProviderRefs?: readonly EgressRef[];
       /** @internal Set only after bundled repository transport validation. */
       readonly repositoryOnly?: boolean;
-      /** @internal Exact new-source choices derived by composition from the identity-bound configuration. */
-      readonly newSourceDefaults?: readonly {
-        readonly type: string;
-        readonly provider: EgressRef;
-      }[];
     },
     registration: DriverRegistration,
     // Installation composition supplies the configured identity for each capability.
@@ -56,11 +50,6 @@ export class InstalledDriver {
   ) {
     const { id, implementation, configuration } = selection;
     this.#repositoryOnly = selection.repositoryOnly === true;
-    this.#newSourceDefaults = Object.freeze(
-      (selection.newSourceDefaults ?? []).map(({ type, provider }) =>
-        Object.freeze({ type, provider: Object.freeze({ ...provider }) }),
-      ),
-    );
     this.#retiredStaticProviderRefs = Object.freeze(
       (selection.retiredStaticProviderRefs ?? []).map(({ id, generation }) =>
         Object.freeze({ id, generation }),
@@ -143,24 +132,21 @@ export class InstalledDriver {
     return this.#repositoryOnly;
   }
 
-  /** @internal A configured choice cannot fall back when its registration is unavailable. */
-  newSourceDefault(type: string): EgressRef | undefined {
-    const defaults = this.#newSourceDefaults.filter((entry) => entry.type === type);
-    if (defaults.length > 1) {
-      throw new ResourceStateConflictError(
-        "The Installation has ambiguous credential source defaults.",
-      );
-    }
-    return defaults[0]?.provider;
+  /** @internal Bundled retirement policy is stable even if the catalog changes. */
+  hasStaticProviderRetirementPolicy(): boolean {
+    return this.#retiredStaticProviderRefs.length > 0;
+  }
+
+  /** @internal Process-local policy for new uses; retained registrations remain resolvable. */
+  allowsNewStaticProviderUse(ref: EgressRef): boolean {
+    return !this.#retiredStaticProviderRefs.some(
+      (retired) => retired.id === ref.id && retired.generation === ref.generation,
+    );
   }
 
   /** @internal Refuse new static admissions without changing retained provider behavior. */
   assertNewStaticProviderUse(ref: EgressRef): void {
-    if (
-      this.#retiredStaticProviderRefs.some(
-        (retired) => retired.id === ref.id && retired.generation === ref.generation,
-      )
-    ) {
+    if (!this.allowsNewStaticProviderUse(ref)) {
       throw new ResourceStateConflictError(
         "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
       );

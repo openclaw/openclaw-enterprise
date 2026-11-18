@@ -352,7 +352,7 @@ test("protected inference uses real admission, fresh IAM, versioned Secret reads
   assert.deepEqual(f.source.egress, {
     adoption: "live",
     retention: "none",
-    authorization: "exact-dispatch",
+    protection: "exact-dispatch",
   });
   assert.throws(
     () => pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(f.revision)),
@@ -762,7 +762,7 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   assert.deepEqual(adopted.data.egress, {
     adoption: "live",
     retention: "none",
-    authorization: "exact-dispatch",
+    protection: "exact-dispatch",
   });
   assert.deepEqual(
     [...f.providers.values()],

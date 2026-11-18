@@ -691,13 +691,13 @@
                       { "const": "credential_free", "type": "string" }
                     ]
                   },
-                  "authorization": {
+                  "protection": {
                     "anyOf": [
                       { "const": "exact-dispatch", "type": "string" },
-                      { "const": "online-request", "type": "string" },
+                      { "const": "request-time", "type": "string" },
                       { "const": "unavailable", "type": "string" }
                     ],
-                    "description": "Recorded live model authorization profile, resolved from the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement."
+                    "description": "Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement."
                   },
                   "retention": { "const": "none", "type": "string" }
                 },
@@ -36274,13 +36274,13 @@
                                   { "const": "credential_free", "type": "string" }
                                 ]
                               },
-                              "authorization": {
+                              "protection": {
                                 "anyOf": [
                                   { "const": "exact-dispatch", "type": "string" },
-                                  { "const": "online-request", "type": "string" },
+                                  { "const": "request-time", "type": "string" },
                                   { "const": "unavailable", "type": "string" }
                                 ],
-                                "description": "Recorded live model authorization profile, resolved from the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement."
+                                "description": "Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement."
                               },
                               "retention": { "const": "none", "type": "string" }
                             },
@@ -36548,11 +36548,6 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
-                  "authorization": {
-                    "const": "online-request",
-                    "description": "Explicitly select an offered request-authorization profile. When omitted, a new source uses the Installation's exact default for its eligible model type, if configured; otherwise normal Gateway or exact-dispatch admission applies. Existing sources retain their original profile.",
-                    "type": "string"
-                  },
                   "config": {
                     "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
                     "description": "Non-secret source configuration keyed by catalog field name.",

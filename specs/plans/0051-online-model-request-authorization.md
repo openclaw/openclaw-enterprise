@@ -16,8 +16,9 @@ rfc: ../rfcs/0023-egress-proxy-credential-lifecycle/index.md
 A dedicated Codex Agent can send an authorized OpenAI Responses request and use
 protected native Git in the same OpenShell Sandbox. Credential Proxy checks
 current authority before releasing the model key to the trusted supervisor. The
-guest receives a placeholder. Operators select this guarantee explicitly with
-`authorization: "online-request"`; existing strict profiles keep their meaning.
+guest receives a placeholder. Operators create the source with its name, type,
+configuration, and Secret references. The Installation selects the eligible provider;
+source readback reports its protection. Existing strict profiles keep their meaning.
 
 This plan records implemented source and the work still needed to qualify and
 ship it. Its planned status reflects incomplete delivery, not an absence of

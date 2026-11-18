@@ -469,12 +469,12 @@ test(
 );
 
 test(
-  "credential source HTTP metadata retains the admitted model profile across default and registration changes (PostgreSQL)",
+  "credential source HTTP creation and protection readback follow installed policy and exact registrations (PostgreSQL)",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     const fixture = await requestCredentialFixture(t, {
-      installedModelDefault: true,
-      retainStrictBeforeDefault: true,
+      verifyAdmissionPolicy: true,
+      retainStrictBeforePolicy: true,
       includeLegacy: true,
     });
     const { f, owner, retainedStrict, revision } = fixture;
@@ -487,26 +487,22 @@ test(
       undefined,
       "ordinary Gateway source has no protected profile",
     );
-    assert.equal(retainedStrict.egress?.authorization, "exact-dispatch", "strict create response");
-    assert.equal(
-      f.source.egress.authorization,
-      "online-request",
-      "omitted-profile create response",
-    );
+    assert.equal(retainedStrict.egress?.protection, "exact-dispatch", "strict create response");
+    assert.equal(f.source.egress.protection, "request-time", "omitted-profile create response");
     assert.equal(revision.egressPlan?.authorization, "online-request", "Codex stays protected");
     const strict = await f.request("GET", `${path}/${retainedStrict.id}`);
     const online = await f.request("GET", `${path}/${f.source.id}`);
     assert.equal(strict.status, 200, JSON.stringify(strict.body));
     assert.equal(
-      strict.data.egress.authorization,
+      strict.data.egress.protection,
       "exact-dispatch",
       "new default cannot rewrite an existing source",
     );
     assert.equal(online.status, 200, JSON.stringify(online.body));
-    assert.equal(online.data.egress.authorization, "online-request");
+    assert.equal(online.data.egress.protection, "request-time");
     assert.deepEqual(Object.keys(online.data.egress).sort(), [
       "adoption",
-      "authorization",
+      "protection",
       "retention",
     ]);
 
@@ -518,16 +514,16 @@ test(
       const missing = await f.request("GET", `${path}/${f.source.id}`);
       const listed = await f.request("GET", path);
       assert.equal(missing.status, 200, JSON.stringify(missing.body));
-      assert.equal(missing.data.egress.authorization, "unavailable");
+      assert.equal(missing.data.egress.protection, "unavailable");
       assert.equal(listed.status, 200, JSON.stringify(listed.body));
       assert.equal(
-        listed.data.find((entry: { id: string }) => entry.id === f.source.id).egress.authorization,
+        listed.data.find((entry: { id: string }) => entry.id === f.source.id).egress.protection,
         "unavailable",
       );
       providers.unshift(requestProvider, requestProvider);
       const ambiguous = await f.request("GET", `${path}/${f.source.id}`);
       assert.equal(ambiguous.status, 200, JSON.stringify(ambiguous.body));
-      assert.equal(ambiguous.data.egress.authorization, "unavailable");
+      assert.equal(ambiguous.data.egress.protection, "unavailable");
     } finally {
       while (providers[0] === requestProvider) {
         providers.shift();

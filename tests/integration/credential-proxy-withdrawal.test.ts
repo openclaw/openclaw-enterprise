@@ -923,7 +923,7 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     const fixture = await requestCredentialFixture(t, {
-      installedModelDefault: true,
+      verifyAdmissionPolicy: true,
       credentialProxyCapacity: {
         operations: 2,
         authenticatingOperations: 2,
@@ -1340,7 +1340,6 @@ test(
         namespaceId: f.namespace.id,
         name: "unsupported-online-authority",
         type: "openai",
-        authorization: "online-request",
         config: { authorized_base_url: `${revision.egressPlan!.routes[0]!.origin}/v1` },
         secrets: { api_key: f.secret.ref },
       }),
