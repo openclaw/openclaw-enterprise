@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-12
-last_updated_session: authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98
+updated: 2026-11-18
+last_updated_session: authoring-run/427e95c2-8e34-4624-8497-52493b5980f5
 ---
 
 # Service API Keys Flow
@@ -256,6 +256,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 04:25: Trace the request, method, route pattern and operation on auth library refusal and error lines. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
 
 - 2026-11-12 16:13: Trace the audit target for a cross-Namespace Agent capability denial. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
 
