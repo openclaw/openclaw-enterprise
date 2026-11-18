@@ -166,6 +166,8 @@ import {
 } from "./kubernetes-gateway-replacement-cases.ts";
 import {
   checkActivationPolicyNamespace,
+  checkGatewayConfigurationMounts,
+  checkGatewayRefusalsBeforeClusterAccess,
   checkGatewayRoutingNameLimits,
   checkHarnessRoutingHostnames,
   checkHarnessRoutingSettings,
@@ -3970,150 +3972,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.notEqual(derivedOutputs[0].endpoint, derivedOutputs[2].endpoint);
   assert.notDeepEqual(derivedOutputs[0].hostnames, derivedOutputs[2].hostnames);
 
-  function gatewayPodFixture(gatewayDriver, gatewayRevision, gatewayName, gatewayOwnership) {
-    const deployment = gatewayDriver.deployment(
-      gatewayName,
-      gatewayOwnership,
-      { name: namespace, plane: "execution" },
-      {
-        runtime: "openclaw-enterprise/gateway-fixture:local",
-        workspaceSetup: gatewayDriver.options.images.gateway,
-      },
-      gatewayName,
-      "gateway",
-      {},
-      "info",
-      gatewayDriver.gatewayConfiguration(gatewayRevision, undefined, {
-        name: kubernetesNamespaceName(tenant.id),
-        plane: "execution",
-      }),
-    );
-    const pod = deployment.spec.template.spec;
-    return {
-      pod,
-      environment: Object.fromEntries(pod.containers[0].env.map((entry) => [entry.name, entry])),
-    };
-  }
-
-  const { pod: plainPod, environment: plainEnvironment } = gatewayPodFixture(
-    driver,
-    revision,
-    name,
-    ownership,
-  );
-  assert.equal(plainEnvironment.OPENCLAW_CONFIG_PATH.value, "/home/node/.openclaw/openclaw.json");
-  assert.deepEqual(
-    plainPod.containers[0].volumeMounts.find(({ name }) => name === "openclaw-configuration"),
-    { name: "openclaw-configuration", mountPath: "/etc/openclaw-managed", readOnly: true },
-  );
-  assert.equal(plainPod.initContainers[0].args[0].includes("copyFileSync"), true);
-
-  const runtimeDriver = createKubernetesComputeDriver(
-    routedOptions({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-      },
-    }),
-  );
-  const runtimeRevision = routedRevision(runtimeDriver);
-  const runtimeName = `gateway-${digest(runtimeRevision.agentId)}`;
-  const { pod: runtimePod, environment: runtimeEnvironment } = gatewayPodFixture(
-    runtimeDriver,
-    runtimeRevision,
-    runtimeName,
-    { namespaceId: tenant.id, agentId: runtimeRevision.agentId },
-  );
-  assert.equal(runtimeEnvironment.OPENCLAW_CONFIG_PATH.value, "/etc/openclaw/openclaw.json");
-  assert.deepEqual(
-    runtimePod.containers[0].volumeMounts.find(({ name }) => name === "openclaw-configuration"),
-    { name: "openclaw-configuration", mountPath: "/etc/openclaw", readOnly: true },
-  );
-  assert.equal(
-    runtimePod.initContainers[0].volumeMounts.some(({ name }) => name === "openclaw-configuration"),
-    false,
-  );
-  assert.equal(runtimePod.initContainers[0].args[0].includes("copyFileSync"), false);
-
-  const nativeAdminRevision = routedRevision(runtimeDriver, {
-    id: "revision-routed-native-admin",
-    configuration: {
-      ...runtimeRevision.configuration,
-      gateway: {
-        ...runtimeRevision.configuration.gateway,
-        controlUi: {
-          enabled: true,
-          allowedOrigins: ["https://agent-routed.example.internal"],
-        },
-        auth: {
-          ...runtimeRevision.configuration.gateway.auth,
-          trustedProxy: {
-            ...runtimeRevision.configuration.gateway.auth.trustedProxy,
-            deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
-          },
-        },
-      },
-    },
-  });
-  const { pod: nativeAdminPod, environment: nativeAdminEnvironment } = gatewayPodFixture(
-    runtimeDriver,
-    nativeAdminRevision,
-    runtimeName,
-    { namespaceId: tenant.id, agentId: nativeAdminRevision.agentId },
-  );
-  assert.equal(
-    nativeAdminEnvironment.OPENCLAW_CONFIG_PATH.value,
-    "/home/node/.openclaw/openclaw.json",
-  );
-  assert.deepEqual(
-    nativeAdminPod.containers[0].volumeMounts.find(({ name }) => name === "openclaw-configuration"),
-    { name: "openclaw-configuration", mountPath: "/etc/openclaw-managed", readOnly: true },
-  );
-  assert.deepEqual(
-    nativeAdminPod.initContainers[0].volumeMounts.find(
-      ({ name }) => name === "openclaw-configuration",
-    ),
-    { name: "openclaw-configuration", mountPath: "/etc/openclaw-managed", readOnly: true },
-  );
-  assert.match(
-    nativeAdminPod.initContainers[0].args[0],
-    /copyFileSync\("\/etc\/openclaw-managed\/openclaw\.json", "\/runtime-state\/home\/\.openclaw\/openclaw\.json"\)/,
-  );
-
-  const privateRuntimeDriver = createKubernetesComputeDriver(
-    options({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-      },
-    }),
-  );
-  const privateNativeAdminRevision = {
-    ...nativeAdminRevision,
-    compute: { id: privateRuntimeDriver.id, implementation: privateRuntimeDriver.implementation },
-  };
-  const { pod: privateNativeAdminPod, environment: privateNativeAdminEnvironment } =
-    gatewayPodFixture(privateRuntimeDriver, privateNativeAdminRevision, runtimeName, {
-      namespaceId: tenant.id,
-      agentId: privateNativeAdminRevision.agentId,
-    });
-  assert.equal(
-    privateNativeAdminEnvironment.OPENCLAW_CONFIG_PATH.value,
-    "/etc/openclaw/openclaw.json",
-  );
-  assert.deepEqual(
-    privateNativeAdminPod.containers[0].volumeMounts.find(
-      ({ name }) => name === "openclaw-configuration",
-    ),
-    { name: "openclaw-configuration", mountPath: "/etc/openclaw", readOnly: true },
-  );
-  assert.equal(
-    privateNativeAdminPod.initContainers[0].volumeMounts.some(
-      ({ name }) => name === "openclaw-configuration",
-    ),
-    false,
-  );
-  assert.equal(privateNativeAdminPod.initContainers[0].args[0].includes("copyFileSync"), false);
+  checkGatewayConfigurationMounts(driver, revision);
 
   for (const [configuration, expected] of [
     [{ gateway: null }, /setting gateway must be an object/i],
@@ -4172,54 +4031,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     );
   }
 
-  for (const [configuration, expected] of [
-    [{ gateway: { auth: { mode: "oauth" } } }, /trusted-proxy/i],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            unsupportedField: true,
-          },
-        },
-      },
-      /gateway\.auth\.unsupportedField is not a supported/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            identityScopes: { "occ-workspace-files": ["operator.read"] },
-          },
-        },
-      },
-      /identityScopes/i,
-    ],
-    [{ gateway: { trustedProxies: ["10.99.0.0/16"] } }, /gatewayTrustedProxyCidrs/i],
-    [{ gateway: { tls: { enabled: true } } }, /gateway\.tls\.enabled must be omitted or false/i],
-    [
-      {
-        plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } } },
-      },
-      /appServer\.approvalPolicy must not be "untrusted"/,
-    ],
-  ]) {
-    for (const configure of [options, routedOptions]) {
-      for (const operation of ["prepareRevision", "activateRevision"]) {
-        const failClosed = createKubernetesComputeDriver(configure());
-        const invalid = routedRevision(failClosed, {
-          configuration: { ...revision.configuration, ...configuration },
-        });
-        let clusterTouched = false;
-        failClosed.clients = async () => {
-          clusterTouched = true;
-          throw new Error("cluster touched");
-        };
-        await assert.rejects(failClosed[operation](invalid, authContext(invalid)), expected);
-        assert.equal(clusterTouched, false);
-      }
-    }
-  }
+  await checkGatewayRefusalsBeforeClusterAccess(revision.configuration);
 
   const multiProxyDriver = createKubernetesComputeDriver(
     routedOptions({
