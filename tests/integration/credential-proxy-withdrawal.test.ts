@@ -35,10 +35,13 @@ import {
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.ts";
@@ -2054,21 +2057,55 @@ test(
     const prepared = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const codes: string[] = [];
+    const compute = {
+      ...f.controller.selectedDriver("compute"),
+      async prepareRevision(selected: Readonly<AgentRevision>) {
+        assert.equal(selected.id, revision.id);
+        prepared.resolve();
+        await release.promise;
+        throw new Error("controlled preparation interruption");
+      },
+    };
+    const sandbox = owner.require("sandbox");
+    const proxy = owner.require("credential_proxy");
+    const gateway = f.controller.selectedDriver("credential_gateway");
+    const configured = createBackendWorkerDrivers(compute, [], {
+      secretDriver: f.controller.selectedDriver("secret"),
+    });
     const worker = createControllerWorker({
       pool: new pg.Pool({ connectionString: databaseUrl, max: 5 }),
       mode: "development",
-      computeDriver: {
-        ...f.controller.selectedDriver("compute"),
-        async prepareRevision(selected) {
-          assert.equal(selected.id, revision.id);
-          prepared.resolve();
-          await release.promise;
-          throw new Error("controlled preparation interruption");
+      drivers: {
+        ...configured,
+        installation: {
+          ...configured.installation,
+          drivers: {
+            ...configured.installation.drivers,
+            sandbox: {
+              id: sandbox.id,
+              implementation: sandbox.implementation,
+              configuration: {},
+              definition: OpenShellSandboxDriver,
+            },
+            credential_proxy: {
+              id: proxy.id,
+              implementation: proxy.implementation,
+              configuration: {},
+              definition: OpenShellCredentialProxyDriver,
+            },
+            credential_gateway: {
+              id: gateway.id,
+              implementation: gateway.implementation,
+              configuration: {},
+              definition: OpenShellCredentialGatewayDriver,
+            },
+          },
         },
+        protectedDriver: owner,
+        sandboxDriver: sandbox,
+        proxyDriver: proxy,
+        credentialGatewayDriver: gateway,
       },
-      sandboxDriver: owner.require("sandbox"),
-      proxyDriver: owner.require("credential_proxy"),
-      credentialGatewayDriver: f.controller.selectedDriver("credential_gateway"),
       pollIntervalMs: 10,
       leaseDurationMs: 5_000,
       emit(event) {

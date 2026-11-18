@@ -1,6 +1,7 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
+    "lib": ["ES2022", "DOM", "ES2024.Promise"],
     "allowJs": true,
     "composite": false,
     "declaration": false,
@@ -29,6 +30,7 @@
     "resolveJsonModule": true
   },
   "include": [
+    "integration/credential-proxy-withdrawal.test.ts",
     "integration/ci-prepare-advisory-cases.ts",
     "integration/docker-compute-compose-cases.ts",
     "integration/credential-source-endpoint-cases.ts",
