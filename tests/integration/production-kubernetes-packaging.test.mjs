@@ -1028,9 +1028,9 @@ test(
     assert.equal(controller.restartPolicy, "Always");
     assert.deepEqual(
       workerPod.initContainers.map(({ name }) => name),
-      ["worker"],
+      ["prepare-controller-scratch", "worker"],
     );
-    const apiAccess = workerPod.volumes.find(({ name }) => name === "worker-api-access");
+    const apiAccess = workerPod.volumes.find(({ name }) => name === "controller-api-access");
     assert.equal(apiAccess.projected.defaultMode, 0o440);
     assert.deepEqual(apiAccess.projected.sources, [
       { serviceAccountToken: { path: "token", expirationSeconds: 3600 } },
@@ -1044,9 +1044,9 @@ test(
       },
     ]);
     assert.deepEqual(
-      controller.volumeMounts.find(({ name }) => name === "worker-api-access"),
+      controller.volumeMounts.find(({ name }) => name === "controller-api-access"),
       {
-        name: "worker-api-access",
+        name: "controller-api-access",
         mountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
         readOnly: true,
       },
@@ -1063,7 +1063,9 @@ test(
         secretName: "repository-public-ca",
         items: [{ key: "ca.crt", path: "ca.crt" }],
       });
-      for (const container of [...(pod.initContainers ?? []), ...pod.containers]) {
+      for (const container of [...(pod.initContainers ?? []), ...pod.containers].filter(
+        ({ name }) => name !== "prepare-controller-scratch",
+      )) {
         assert.deepEqual(
           container.volumeMounts.find(({ name }) => name === "repository-registry"),
           {

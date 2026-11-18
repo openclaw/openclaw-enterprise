@@ -745,6 +745,8 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
   const reserved = new Set([
     "/etc/openclaw/installation",
     "/run/openclaw-worker",
+    "/tmp",
+    "/var/run/secrets/kubernetes.io/serviceaccount",
     "/var/lib/openclaw/bootstrap",
     "/etc/openclaw/gateway-api-key",
     "/etc/openclaw/gateway-ca",
@@ -753,7 +755,6 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
     for (const path of [
       "/etc/openclaw/repository-registry",
       "/etc/openclaw/repository-ca",
-      "/var/run/secrets/kubernetes.io/serviceaccount",
       "/run/openclaw/repository-control",
       "/etc/openclaw/prepared-repository",
     ]) {

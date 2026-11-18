@@ -165,7 +165,11 @@ test(
         configured.filter((object) => object.metadata?.name !== "openclaw-enterprise-api"),
         original.filter((object) => object.metadata?.name !== "openclaw-enterprise-api"),
       );
-      assert.equal(pod(original, "api").initContainers, undefined);
+      assert.equal(
+        pod(original, "api").initContainers?.some(({ name }) => name === "assemble-api-ca") ??
+          false,
+        false,
+      );
     }
   },
 );

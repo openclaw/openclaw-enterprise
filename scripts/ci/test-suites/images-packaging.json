@@ -28,6 +28,7 @@
     "tests/integration/docker-compute-token-retry.test.ts",
     "tests/integration/workspace-setup-runtime.test.ts",
     "tests/integration/production-kubernetes-packaging.test.mjs",
+    "tests/integration/production-kubernetes-controller-scratch.test.ts",
     "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
     "tests/integration/container-registry-real.test.ts",
@@ -111,6 +112,13 @@
         "Collector exporter ports preserve decimal meaning in Kubernetes YAML",
         "protected OpenShell Git installs without a repository broker and refuses the retired trial",
         "Helm supplies protected Git custody for a separately installed Credential Proxy"
+      ]
+    },
+    {
+      "path": "tests/integration/production-kubernetes-controller-scratch.test.ts",
+      "expectedTests": [
+        "controller Kubernetes client projection excludes auxiliary containers",
+        "controller scratch stays private with read-only API and worker roots"
       ]
     },
     {

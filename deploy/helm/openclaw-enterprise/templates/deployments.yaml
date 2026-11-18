@@ -52,11 +52,9 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: openclaw-enterprise-{{ $component }}
-      {{- if and (eq $component "worker") $repositoryGit }}
       automountServiceAccountToken: false
+      {{- if and (eq $component "worker") $repositoryGit }}
       terminationGracePeriodSeconds: 75
-      {{- else }}
-      automountServiceAccountToken: true
       {{- end }}
       securityContext:
         {{- include "openclaw.podSecurity" $ | nindent 8 }}
@@ -65,6 +63,28 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        - name: controller-api-access
+          projected:
+            defaultMode: 288 # 0440: root and the Pod filesystem group only.
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.namespace
+        - name: controller-scratch
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
         {{- if $.Values.backend.openshell.clientSecretName }}
         - name: openshell-client
           secret:
@@ -144,24 +164,6 @@ spec:
                 path: ca.crt
         {{- end }}
         {{- if eq $component "worker" }}
-        - name: worker-api-access
-          projected:
-            defaultMode: 288 # 0440: root and the Pod filesystem group only.
-            sources:
-              - serviceAccountToken:
-                  path: token
-                  expirationSeconds: 3600
-              - configMap:
-                  name: kube-root-ca.crt
-                  items:
-                    - key: ca.crt
-                      path: ca.crt
-              - downwardAPI:
-                  items:
-                    - path: namespace
-                      fieldRef:
-                        apiVersion: v1
-                        fieldPath: metadata.namespace
         {{- if $repositoryBroker }}
         - name: repository-inputs
           projected:
@@ -277,8 +279,30 @@ spec:
           emptyDir:
             sizeLimit: 1Mi
         {{- end }}
-      {{- if $oidcCa }}
       initContainers:
+        - name: prepare-controller-scratch
+          image: {{ $.Values.images.controller | quote }}
+          command: ["/bin/sh"]
+          args:
+            - -ec
+            - |
+              mkdir -p -m 0700 "$1"
+              chmod 0700 "$1"
+            - prepare-controller-scratch
+            - /scratch/private
+          securityContext:
+            {{- include "openclaw.containerSecurity" $ | nindent 12 }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: controller-scratch
+              mountPath: /scratch
+      {{- if $oidcCa }}
         - name: assemble-api-ca
           image: {{ $.Values.images.controller | quote }}
           command: ["node"]
@@ -326,7 +350,6 @@ spec:
       {{- end }}
       {{- if and (eq $component "worker") $repositoryBroker }}
       # The receipt server must remain available while the broker drains.
-      initContainers:
       {{- else }}
       containers:
       {{- end }}
@@ -491,6 +514,12 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
+            - name: controller-scratch
+              mountPath: /tmp
+              subPath: private
+            - name: controller-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
             {{- if $.Values.backend.openshell.clientSecretName }}
             - name: openshell-client
               mountPath: /etc/openclaw/openshell
@@ -534,9 +563,6 @@ spec:
               readOnly: true
             {{- end }}
             {{- if eq $component "worker" }}
-            - name: worker-api-access
-              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
-              readOnly: true
             {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
             - name: prepared-repository-owner
               mountPath: /etc/openclaw/prepared-repository

@@ -815,6 +815,12 @@ function job(
   }
   const application = preflightContainer(applicationReference);
   const container: Container = selectFields(application, containerFields);
+  // These read-only checks do not run the Deployment's scratch initializer.
+  if (container.volumeMounts) {
+    container.volumeMounts = container.volumeMounts.filter(
+      ({ name }) => name !== "controller-scratch",
+    );
+  }
   // The image entrypoint is node; name it so a chart command cannot change the check.
   container.command = ["node"];
   const volumeReferences = namedReferences(spec.volumes);

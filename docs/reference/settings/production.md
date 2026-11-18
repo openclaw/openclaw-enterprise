@@ -1,28 +1,29 @@
 # Production controller settings
 
-For startup configuration and precedence, see the
-[settings reference](../settings.md).
+See [startup configuration and precedence](../settings.md).
 
 ## Required production controller environment
 
-The production API is internal-only by default. Operators must provision an
-internal Kubernetes `ClusterIP` Service and a default-deny ingress
-`NetworkPolicy` that allows only explicitly approved namespace and Pod
-selectors. Production Helm validates peer label maps. The cluster must enforce
-NetworkPolicies. Do not expose the listener through a `NodePort`,
-`LoadBalancer`, `hostNetwork`, or public endpoint.
+The production API is private by default. Provision a Kubernetes `ClusterIP`
+Service and a default-deny ingress `NetworkPolicy` for explicitly approved
+namespace and Pod selectors only. Helm validates peer label maps. The cluster
+must enforce NetworkPolicies. Keep the listener off `NodePort`, `LoadBalancer`,
+`hostNetwork`, and public endpoints.
 
-The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
-configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
-OpenShift DNS backends after Service address translation. These grants cover
-API, worker, initialization, collector, Slack proxy, Envoy, and observability
-demo workloads.
+Controllers reserve [`/tmp` and the Kubernetes ServiceAccount path](../../flows/production-startup.md#4-start-private-api-and-worker-deployments).
+If `database.caMountPath` uses either path, change it and update the database
+URL's `sslrootcert` in the same upgrade.
+
+Helm allows API, worker, initialization, Collector, Slack proxy, Envoy, and
+observability demo workloads to reach `dns.namespace` and `dns.podLabels` peers
+over UDP/TCP ports `53` and `5353`. Port `5353` supports OpenShift DNS backends
+after Service address translation.
 
 The trusted-operator native admin pilot is the only documented public-ingress
-exception: the console host and Agent wildcard hosts route to OCC through the
-procedure in [Deploy native admin UI access](../../guides/deploy/native-admin.md).
-Envoy and Agent gateway Services remain private, and OCC strips the shared OCE
-session cookie before forwarding to the native gateway.
+exception. Follow [Deploy native admin UI access](../../guides/deploy/native-admin.md)
+to route the console host and Agent wildcard hosts to OCC. Envoy and Agent gateway
+Services stay private. OCC strips the shared OCE session cookie before forwarding
+to the native gateway.
 
 | Variable                                   | Required value or format                                                                                           | Behavior                                                                                                                     |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
