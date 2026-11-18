@@ -5,6 +5,7 @@
     "composite": false,
     "declaration": false,
     "noEmit": true,
+    "incremental": true,
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": false,
     "erasableSyntaxOnly": true,
@@ -28,6 +29,7 @@
     "resolveJsonModule": true
   },
   "include": [
+    "integration/ci-prepare-advisory-cases.ts",
     "integration/docker-compute-compose-cases.ts",
     "integration/credential-source-endpoint-cases.ts",
     "integration/local-first-agent-native-failure-cases.ts",
@@ -131,6 +133,7 @@
     "integration/qa-command-evidence-cases.ts",
     "integration/qa-http-chat-cleanup-cases.ts",
     "integration/qa-http-chat-routing-cases.ts",
+    "integration/qa-http-chat-stream-cases.ts",
     "integration/qa-native-tool-evidence-case.ts",
     "integration/kubernetes-compute-provisioning-api-case.ts",
     "integration/kubernetes-plugin-status-observation-cases.ts",

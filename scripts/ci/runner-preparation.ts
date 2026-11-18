@@ -141,13 +141,13 @@ function isPrepareFile(value: unknown): value is PrepareFile {
 }
 
 export async function loadPrepare(root: string): Promise<PrepareFile | null> {
-  const preparePath = resolve(root, "scripts/ci/prepare.mjs");
+  const preparePath = resolve(root, "scripts/ci/prepare.ts");
   if (!(await exists(preparePath))) {
     return null;
   }
   const module: unknown = await import(pathToFileURL(preparePath).href);
   if (!isObject(module) || !isPrepareFile(module.prepareFile)) {
-    throw new Error("scripts/ci/prepare.mjs must export prepareFile");
+    throw new Error("scripts/ci/prepare.ts must export prepareFile");
   }
   return module.prepareFile;
 }

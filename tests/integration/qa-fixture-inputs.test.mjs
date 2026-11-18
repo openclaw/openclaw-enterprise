@@ -22,6 +22,7 @@ import { registerQaNativeToolEvidenceCase } from "./qa-native-tool-evidence-case
 import { registerQaAgentLifecycleDiagnosticsCases } from "./qa-agent-lifecycle-diagnostics-cases.ts";
 import { registerQaHttpChatCleanupCases } from "./qa-http-chat-cleanup-cases.ts";
 import { registerQaHttpChatRoutingCases } from "./qa-http-chat-routing-cases.ts";
+import { registerQaHttpChatStreamCases } from "./qa-http-chat-stream-cases.ts";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
@@ -768,6 +769,7 @@ registerQaAgentLifecycleDiagnosticsCases();
 
 registerQaHttpChatCleanupCases();
 registerQaHttpChatRoutingCases();
+registerQaHttpChatStreamCases();
 
 test("QA log redaction hides each line of a registered multi-line secret", async () => {
   const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.ts");

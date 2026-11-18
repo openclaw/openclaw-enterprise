@@ -243,7 +243,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '1ebd7e0f3ca32976430c7629a7e91783048940b24355e0fce3748d443d6b6b41  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
@@ -256,6 +256,13 @@ RUN echo 'c3985dc0e7e79c10590be553b59f03a005324e3f06ec49be73f69bd65ea9ea96  /tmp
 COPY deploy/runtime/openclaw-chat-absent-selected-agent.patch /tmp/openclaw-chat-absent-selected-agent.patch
 RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp/openclaw-chat-absent-selected-agent.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-chat-absent-selected-agent.patch
+
+# Remove when the pinned OpenClaw scopes restart resume (upstream change prepared for
+# finding 3347): a turn cut by stop, replacement or deletion must not resume under the
+# next revision. Kubernetes and Docker Compute set the scope to the revision ID.
+COPY deploy/runtime/openclaw-restart-resume-scope.patch /tmp/openclaw-restart-resume-scope.patch
+RUN echo 'da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f  /tmp/openclaw-restart-resume-scope.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-restart-resume-scope.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
@@ -324,6 +331,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
+    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.test.ts \
+    -t "interrupted under scope" \
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.

@@ -212,7 +212,7 @@ export function registerVerifiedRuntimePublicationCase() {
     });
     // Exercise the real preparation CLI, image verification and environment publication.
     // Routing installation and seccomp generation are separate from image selection.
-    const prepareUrl = new URL("../../scripts/ci/prepare.mjs", import.meta.url).href;
+    const prepareUrl = new URL("../../scripts/ci/prepare.ts", import.meta.url).href;
     await writeFile(
       preload,
       `import { registerHooks } from "node:module";

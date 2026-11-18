@@ -10,6 +10,7 @@ import { ConfigurationValidationError as SharedConfigurationValidationError } fr
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { inspect } from "node:util";
@@ -32,6 +33,7 @@ import {
   SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
+import { captureNamespaceHint } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
@@ -2662,6 +2664,147 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
   assert.deepEqual(calls, ["sandbox-cleanup", "sandbox-cleanup", "kubernetes-delete"]);
 });
 
+test("a Namespace deletion refused with HTTP 403 reports the tenant access hint", async () => {
+  const { ApiException } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const deleteWith = (cleanupError) => {
+    const fixture = adoptedNamespaceTeardownFixture();
+    fixture.state.fail["delete ResourceQuota"] = cleanupError;
+    return captureNamespaceHint(() => fixture.teardown());
+  };
+
+  // RBAC is checked before existence, so a Namespace that never received its tenant
+  // RoleBindings cannot clean up and needs a hint naming the missing grant.
+  assert.deepEqual(
+    await deleteWith(new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {})),
+    {
+      observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" },
+      hintCode: "KUBERNETES_TENANT_ACCESS_DENIED",
+    },
+  );
+  // Any other failure keeps the plain observation, so the hint never hides a different cause.
+  assert.deepEqual(await deleteWith(Object.assign(new Error("unavailable"), { statusCode: 503 })), {
+    observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "retryable" },
+  });
+
+  // The Sandbox cleans its tenant resources before Compute deletes anything, so its denial needs the hint too.
+  const { sandboxNamespaceLifecycleBinding } =
+    await import("../../apps/controller/src/composition/namespace-lifecycle.ts");
+  const { reconcileNamespaceLifecycle } =
+    await import("../../packages/occ/src/namespace-lifecycle.ts");
+  const sandboxDeleteWith = (cleanupError) => {
+    const { driver, deleting, state } = adoptedNamespaceTeardownFixture();
+    const sandboxDriver = {
+      id: "sandbox-denied-cleanup",
+      implementation: "test/denied-cleanup",
+      capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+      facets: ["networking"],
+      async cleanup() {
+        throw cleanupError;
+      },
+    };
+    const { hooks } = sandboxNamespaceLifecycleBinding(driver, sandboxDriver);
+    return captureNamespaceHint(async () => {
+      const result = await reconcileNamespaceLifecycle(
+        driver,
+        [{ id: sandboxDriver.id, hooks }],
+        deleting,
+        "deleted",
+        new AbortController().signal,
+        () => {},
+      );
+      assert.ok(!state.calls.some((call) => call.startsWith("delete ")), "Compute never ran");
+      return result;
+    });
+  };
+  assert.deepEqual(
+    await sandboxDeleteWith(new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {})),
+    {
+      observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" },
+      hintCode: "KUBERNETES_TENANT_ACCESS_DENIED",
+    },
+  );
+  assert.deepEqual(
+    await sandboxDeleteWith(Object.assign(new Error("unavailable"), { statusCode: 503 })),
+    { observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "retryable" } },
+  );
+
+  // Tenant RoleBindings cannot authorize the control-plane Gateway namespace, so its denial stays unhinted.
+  const twoCluster = new KubernetesComputeDriver(twoClusterOptions());
+  const gatewayNamespace = twoCluster.gatewayNamespaceManifest({ namespaceId: tenant.id });
+  gatewayNamespace.metadata.uid = "gateway-denied-uid";
+  gatewayNamespace.status = { phase: "Active" };
+  twoCluster.executionApiClients = Promise.resolve({
+    core: {
+      async listNamespace() {
+        return { items: [] };
+      },
+      async readNamespace() {
+        throw Object.assign(new Error("Not found"), { code: 404 });
+      },
+    },
+    objects: {},
+  });
+  twoCluster.apiClients = Promise.resolve({
+    core: {
+      async readNamespace() {
+        return structuredClone(gatewayNamespace);
+      },
+      async deleteNamespace() {
+        throw new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {});
+      },
+    },
+    objects: {},
+  });
+  assert.deepEqual(
+    await captureNamespaceHint(() => twoCluster.deleteNamespace({ ...tenant, status: "deleting" })),
+    { observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" } },
+  );
+});
+
+test("a 403 listing repository material workloads reports the tenant access hint", async () => {
+  const { ApiException } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const fixture = adoptedNamespaceTeardownFixture(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      network: {
+        ...options().network,
+        repositoryCredentials: {
+          namespace: "repository-service",
+          podLabels: { app: "repository" },
+          port: 8443,
+        },
+      },
+    }),
+  );
+  // Teardown lists tenant Pods before it removes repository material, so that LIST needs the hint too.
+  const clients = await fixture.driver.apiClients;
+  clients.core.listNamespacedPod = async () => {
+    throw new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {});
+  };
+  assert.deepEqual(await captureNamespaceHint(() => fixture.teardown()), {
+    observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" },
+    hintCode: "KUBERNETES_TENANT_ACCESS_DENIED",
+  });
+});
+
+test("a 403 reconciling broker ingress policy reports no tenant access hint", async () => {
+  const { ApiException } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const fixture = adoptedNamespaceTeardownFixture();
+  fixture.driver.reconcileRepositoryIngress = async () => {
+    throw new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {});
+  };
+  assert.deepEqual(await captureNamespaceHint(() => fixture.teardown()), {
+    observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" },
+  });
+});
+
 test("explicit existing namespace adoption claims tenant identity only after security checks", async () => {
   const selection = { ...tenant, status: "provisioning", existingNamespace: "customer-support" };
   const prepared = () => ({
@@ -3098,10 +3241,10 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
     objects: {},
   });
   driver.executionApiClients = driver.apiClients;
-  const teardown = () =>
-    driver.deleteNamespace({ ...tenant, status: "deleting", existingNamespace: name });
+  const deleting = { ...tenant, status: "deleting", existingNamespace: name };
+  const teardown = () => driver.deleteNamespace(deleting);
   const remaining = () => [...objects.keys()].sort();
-  return { objects, state, kept, teardown, remaining };
+  return { driver, deleting, objects, state, kept, teardown, remaining };
 }
 
 // Finding 1400: an existing namespace outlives its OCC Namespace, so teardown removes the
@@ -6483,6 +6626,19 @@ async function exerciseEmbeddedReplacement(scenario) {
   const replaced = objects.get(key("Deployment", gatewayName));
   assert.equal(replaced.metadata.annotations["openclaw.dev/agent-revision-id"], replacement.id);
   assert.equal(replaced.spec.strategy.type, "Recreate");
+  // The shared Gateway keeps its state across the replacement, but a turn the predecessor
+  // was cut in resumes only under its own revision's scope (finding 3347).
+  for (const [deployment, revision] of [
+    [predecessor, oldRevision],
+    [replaced, replacement],
+  ]) {
+    assert.equal(
+      deployment.spec.template.spec.containers[0].env.find(
+        ({ name }) => name === "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE",
+      )?.value,
+      revision.id,
+    );
+  }
   for (const [deployment, managed] of [
     [predecessor, predecessorManagedMode],
     [replaced, true],

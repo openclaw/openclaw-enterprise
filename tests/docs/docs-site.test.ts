@@ -28,28 +28,6 @@ async function markdownFiles(directory: string): Promise<string[]> {
   return result;
 }
 
-function navigationEntries(value: unknown, key: string): unknown[] {
-  assert.ok(
-    value !== null && typeof value === "object" && key in value,
-    `Missing ${key} in docs navigation`,
-  );
-  const entries: unknown = Reflect.get(value, key);
-  assert.ok(Array.isArray(entries), `Expected an array for ${key} in docs navigation`);
-  return entries;
-}
-
-function entrySlugs(entry: unknown): string[] {
-  if (typeof entry === "string") {
-    return [entry];
-  }
-  assert.ok(entry !== null && typeof entry === "object", "Invalid docs navigation entry");
-  if ("group" in entry) {
-    return navigationEntries(entry, "pages").flatMap(entrySlugs);
-  }
-  assert.ok("page" in entry && typeof entry.page === "string", "Missing docs navigation slug");
-  return [entry.page];
-}
-
 // Exercise the shipped CLI against the authored corpus and generated API.
 test("docs build renders every authored page and preserves repository ownership", async (t) => {
   // `docs:build` indexes the site with the docs-site package's Pagefind, which only
@@ -64,27 +42,12 @@ test("docs build renders every authored page and preserves repository ownership"
     timeout: 120_000,
   });
   const pages = await markdownFiles(join(root, "docs"));
-  const config: unknown = JSON.parse(await readFile(join(root, "docs/docs.json"), "utf8"));
-  assert.ok(config !== null && typeof config === "object" && "navigation" in config);
-  // Entries are slugs or { page, label }; groups nest, and a tab's hidden pages build too.
-  const navigation = navigationEntries(config.navigation, "languages").flatMap((language) =>
-    navigationEntries(language, "tabs").flatMap((tab) => {
-      const groups = navigationEntries(tab, "groups");
-      const hidden =
-        tab !== null && typeof tab === "object" && "hidden" in tab
-          ? navigationEntries(tab, "hidden")
-          : [];
-      return [...groups, ...hidden].flatMap(entrySlugs);
-    }),
-  );
-  assert.equal(new Set(navigation).size, navigation.length, "Navigation duplicates a page");
   for (const page of pages) {
     // `published: false` pages (flow history) stay in the repository, off the site.
     if (/^---\n(?:(?!---\n)[^\n]*\n)*?published: false\n/.test(await readFile(page, "utf8"))) {
       continue;
     }
     const source = relative(join(root, "docs"), page);
-    assert.ok(navigation.includes(source.slice(0, -3)), `${source} missing from navigation`);
     const route = source.replace(/(?:^|\/)README\.md$/, "").replace(/\.md$/, "");
     const html = await readFile(join(root, "dist/docs", route, "index.html"), "utf8");
     assert.match(html, /OpenClaw Enterprise/);

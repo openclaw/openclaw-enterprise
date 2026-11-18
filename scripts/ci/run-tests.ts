@@ -793,7 +793,7 @@ async function completePhaseChild() {
       if (typeof root !== "string") {
         throw new Error("Invalid lifecycle phase root.");
       }
-      const owner: unknown = await import(pathToFileURL(join(root, "scripts/ci/prepare.mjs")).href);
+      const owner: unknown = await import(pathToFileURL(join(root, "scripts/ci/prepare.ts")).href);
       if (!isObject(owner) || typeof owner.prepareLane !== "function") {
         throw new Error("Invalid lifecycle preparation owner.");
       }

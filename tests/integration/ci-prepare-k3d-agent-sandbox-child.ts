@@ -56,7 +56,7 @@ mock.module("../../scripts/ci/openshell.ts", {
     },
   },
 });
-const { prepareLane } = await import("../../scripts/ci/prepare.mjs");
+const { prepareLane } = await import("../../scripts/ci/prepare.ts");
 try {
   await prepareLane({ lane: "openshell", statePath, file: undefined, cleanupOwner: undefined });
 } catch (error) {

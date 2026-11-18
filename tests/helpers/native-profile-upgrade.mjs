@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { prepareNativeProfileUpgradeDatabase } from "../../scripts/ci/prepare.mjs";
+import { prepareNativeProfileUpgradeDatabase } from "../../scripts/ci/prepare.ts";
 import { withBoundedTeardown } from "./bounded-teardown.ts";
 import { runOidcAgentChatUpgradeScenario } from "./native-admin-browser.mjs";
 

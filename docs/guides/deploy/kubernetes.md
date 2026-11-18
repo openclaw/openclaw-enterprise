@@ -106,7 +106,8 @@ traffic to a Pod outside the configured DNS selectors.
 On OpenShift with OVN-Kubernetes, the CNI applies egress policy after the
 `kubernetes` Service translates port 443 to the API server port, usually 6443.
 Set Helm `cluster.cidrs` to the API server endpoint IPs and `cluster.port` to
-that port. With the default 443, the API and worker fail with
+that port. In a profile input, set `controlPlane.clusterCidrs` and
+`controlPlane.clusterPort`. With the default 443, the API and worker fail with
 `KUBERNETES_API_UNAVAILABLE`. List the endpoints with
 `oc get endpoints kubernetes -n default`.
 

@@ -93,6 +93,12 @@ export async function nativeProfileCandidateSource(repository) {
   };
 }
 
+/**
+ * @template Result
+ * @param {string} repository
+ * @param {(sourceRoot: string, receipt: Awaited<ReturnType<typeof verifyNativeProfileBaseline>>) => Promise<Result>} operation
+ * @returns {Promise<Result>}
+ */
 export async function withNativeProfileBaseline(repository, operation) {
   const run = (args) => execFile("git", args, { cwd: repository, timeoutMs: 120_000 });
   try {

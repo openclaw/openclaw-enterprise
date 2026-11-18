@@ -15,7 +15,7 @@ import {
   nativeAdminOffDenied,
 } from "../helpers/refusal-text.mjs";
 import { grantRole, restrict } from "../helpers/iam-grants.ts";
-import { createControllerAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth } from "../helpers/password-hasher.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { AgentResponse } from "../../packages/contracts/src/api/resources.ts";
