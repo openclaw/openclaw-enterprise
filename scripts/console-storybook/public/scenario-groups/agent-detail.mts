@@ -1292,9 +1292,9 @@ export function createAgentDetailScenarios({
         steps: [
           "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
           "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Check slack_search_public and leave its approval at No approval. Check slack_send_message and choose Ask a human. Review the note that direct scripts bypass Gateway approval.",
+          "Enable slack_search_public and slack_send_message with their tool switches. Open Tool policy for slack_send_message and set Require approval for to Every action. Unsupported approval modes, reviewer selection, and plugin defaults are disabled. Review the note that direct scripts bypass Gateway approval.",
           "Choose Done and Save plugin selections. Open the picker: saved tools and approval choices remain visible as Unavailable until discovery succeeds. Load tools again to confirm the choices.",
-          "Uncheck slack_send_message to remove its approval override, or turn off Enable plugin to clear its managed account and tool policies before saving.",
+          "Disable slack_send_message to remove its approval override, or turn off Enable plugin to clear its managed account and tool policies before saving.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
       },
@@ -1317,8 +1317,8 @@ export function createAgentDetailScenarios({
         description:
           "A previously saved tool and its Ask policy remain visible when MCP discovery fails. The operator can revoke that tool without discovering it again or selecting another account.",
         steps: [
-          "Open Slack and choose Load tools. Inspect slack_send_message, labeled Unavailable, with Ask a human selected after discovery fails.",
-          "Uncheck slack_send_message. Its saved approval policy is removed and the unavailable row disappears. Choose Done and save.",
+          "Open Slack and choose Load tools. Inspect slack_send_message, labeled Unavailable, and open Tool policy to see Require approval for set to Every action.",
+          "Disable slack_send_message. Its saved approval policy is removed and the unavailable row disappears. Choose Done and save.",
         ],
         gap: "The account and discovery failure are simulated. This verifies Console recovery controls.",
       },

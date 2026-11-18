@@ -156,9 +156,10 @@ turns.
 
 In **Pages/Agent detail → Choose tools for a connected Slack account**, select the
 simulated account and load tools. Retry after the simulated permission error.
-Enable a tool, choose **Ask a human**, save, reopen, and verify the selection.
-Disable the tool to remove its approval setting. The displayed note explains that
-Gateway approval does not cover direct credentialed scripts.
+Enable a tool, open **Tool policy**, and set **Require approval for** to **Every
+action**. Confirm unsupported settings are disabled. Save, reopen, and verify the
+selection. Disable the tool to remove its approval setting. The displayed note
+explains that Gateway approval does not cover direct credentialed scripts.
 
 In **Create Agent / Discover plugins with a service account token**, expand
 **Access and credential setup** and inspect its links. Collapse it; at 390×844

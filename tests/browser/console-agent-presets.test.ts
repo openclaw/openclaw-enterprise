@@ -1820,7 +1820,7 @@ test("Agent creation edits Preset plugin policies through the modal and persists
 
   // Codex advertises plugin-wide reviewers only; tool approval still inherits independently.
   const toolReviewer = dialog.getByLabel("app_knowledge/search reviewer", { exact: true });
-  assert.equal(await toolReviewer.count(), 0);
+  assert.equal(await toolReviewer.isDisabled(), true);
   await searchTool.getByRole("button", { name: "Set reviewer for all tools" }).click();
   assert.equal(await reviewer.evaluate((node) => node === node.ownerDocument.activeElement), true);
   await toolApproval.selectOption("none");

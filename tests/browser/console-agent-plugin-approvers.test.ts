@@ -449,11 +449,35 @@ test("Managed MCP tool approval is saved per selected tool and removed when the 
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins" });
   await dialog.getByRole("button", { name: "Slack", exact: true }).click();
-  const checkbox = dialog.getByRole("checkbox", { name: "slack_search_public", exact: true });
-  const approval = dialog.getByRole("combobox", { name: "slack_search_public approval" });
-  assert.equal(await approval.count(), 0);
+  const toolRow = dialog.locator('details.plugin-tool-row[data-tool="slack_search_public"]');
+  const checkbox = toolRow.getByLabel("slack_search_public enabled override", { exact: true });
+  const approval = toolRow.getByLabel("slack_search_public require approval for", { exact: true });
+  async function openToolPolicy() {
+    if (!(await toolRow.evaluate((node: HTMLDetailsElement) => node.open))) {
+      await toolRow.locator("summary").click();
+    }
+  }
+  await openToolPolicy();
+  assert.equal(await approval.isDisabled(), true);
+  assert.equal(await dialog.getByLabel("Slack tools enabled by default").isDisabled(), true);
+  assert.equal(await dialog.getByLabel("Slack default reviewer").isDisabled(), true);
   await checkbox.check();
-  assert.equal(await approval.inputValue(), "none");
+  assert.equal(await approval.isEnabled(), true);
+  assert.deepEqual(
+    await approval
+      .locator("option")
+      .evaluateAll((options: HTMLOptionElement[]) =>
+        options.map(({ value, disabled }) => [value, disabled]),
+      ),
+    [
+      ["", true],
+      ["provider_default", true],
+      ["all_actions", false],
+      ["write_actions", true],
+      ["none", false],
+    ],
+  );
+  assert.equal(await toolRow.getByLabel("slack_search_public reviewer").isDisabled(), true);
   await approval.selectOption("all_actions");
   const input = page.locator("#agent-plugins");
   const selected = record(JSON.parse(await input.inputValue()));
@@ -478,9 +502,10 @@ test("Managed MCP tool approval is saved per selected tool and removed when the 
   const disabled = record(record(JSON.parse(await input.inputValue()))["occ-plugin:slack@1.0.0"]);
   assert.deepEqual(record(disabled.driverPolicy).toolNames, []);
   assert.equal(disabled.tools, undefined);
-  assert.equal(await approval.count(), 0);
+  assert.equal(await toolRow.count(), 0);
   await page.evaluate(() => globalThis.setManagedMcpCatalog("available"));
   await checkbox.check();
+  await openToolPolicy();
   await approval.selectOption("all_actions");
   await dialog
     .getByRole("combobox", { name: "Slack account" })
@@ -495,6 +520,7 @@ test("Managed MCP tool approval is saved per selected tool and removed when the 
     .getByRole("combobox", { name: "Slack account" })
     .selectOption({ label: "Controlled account" });
   await checkbox.check();
+  await openToolPolicy();
   await approval.selectOption("all_actions");
   await page.evaluate(() => globalThis.setManagedMcpBindingAvailability("missing"));
   assert.equal(
