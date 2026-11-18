@@ -25,11 +25,13 @@ flowchart TB
   S -.->|PRE_CREDENTIALS| A["<b>OCC authorization</b><br/>Record create or check edit"]
   A -.->|allow create or verified edit| S
   S -.->|send workload create or update| G["<b>GitHub</b>"]
-  G -.->|trusted response| S
-  S -.->|mandatory PRE_RETURN, 64 KiB| R["<b>Response check</b><br/>Backend parses; OCC settles"]
-  R -.->|durable object binding| D[("<b>Operation and object state</b>")]
+  G -.->|create response| S
+  G -.->|edit response| S
+  S -.->|create only: mandatory PRE_RETURN, 64 KiB| R["<b>Create response check</b><br/>Backend parses;<br/>OCC correlates and settles"]
+  R -.->|append immutable object binding| D[("<b>Operation and object state</b>")]
   R -.->|allow return after settlement| S
-  S -.->|return approved response| W
+  S -.->|return settled create response| W
+  S -.->|return edit under selected response policy| W
   A -.->|authorize fixed edit lookup| B["<b>GitHub Backend</b><br/>Repository read-only credential"]
   B -.->|send control-plane target read| G
   G -.->|canonical target fields| B
