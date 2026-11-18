@@ -73,7 +73,7 @@
     "tests/integration/ci-image-reconciliation.test.ts",
     "tests/conformance/repository-runtime-material.test.ts",
     "tests/integration/repository-credentials-server-timeout.test.ts",
-    "tests/integration/protected-repository-metadata-read.test.mjs",
+    "tests/integration/protected-repository-metadata-read.test.ts",
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
@@ -635,7 +635,7 @@
       "path": "tests/integration/repository-credentials-config.test.ts"
     },
     {
-      "path": "tests/integration/protected-repository-metadata-read.test.mjs"
+      "path": "tests/integration/protected-repository-metadata-read.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-http.test.ts"
