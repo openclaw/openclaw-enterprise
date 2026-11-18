@@ -66,43 +66,15 @@ export function getGroup(manifest: Suites, name: string): string[] {
   return group;
 }
 
-export type WorkflowStep = {
-  id?: string;
-  name?: string;
-  run?: string;
-  uses?: string;
-  if?: string;
-  env?: Record<string, string>;
-  with?: Record<string, unknown>;
-};
+export type WorkflowStep = Record<string, unknown>;
 export type WorkflowJob = Record<string, unknown>;
-export type Workflow = {
-  jobs: Record<string, unknown>;
-  env?: Record<string, string>;
-  concurrency?: { group: string };
-};
-function optionalText(record: Record<string, unknown>, keys: string[]) {
-  return keys.every((key) => record[key] === undefined || typeof record[key] === "string");
-}
+export type Workflow = Record<string, unknown> & { jobs: Record<string, unknown> };
+
 function step(value: unknown): value is WorkflowStep {
-  const record = asRecord(value);
-  return (
-    record !== undefined &&
-    optionalText(record, ["id", "name", "run", "uses", "if"]) &&
-    (record.env === undefined || stringRecord(record.env)) &&
-    (record.with === undefined || asRecord(record.with) !== undefined)
-  );
+  return asRecord(value) !== undefined;
 }
 function workflow(value: unknown): value is Workflow {
-  const record = asRecord(value);
-  const jobs = asRecord(record?.jobs);
-  const concurrency = asRecord(record?.concurrency);
-  return (
-    jobs !== undefined &&
-    (record?.env === undefined || stringRecord(record.env)) &&
-    (record?.concurrency === undefined ||
-      (concurrency !== undefined && typeof concurrency.group === "string"))
-  );
+  return asRecord(asRecord(value)?.jobs) !== undefined;
 }
 export function parseWorkflow(text: string): Workflow {
   const value = loadYaml(text);

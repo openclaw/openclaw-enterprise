@@ -40,6 +40,7 @@ import {
   writeFixtureCommand,
   writePostgresState,
 } from "../helpers/ci-prepare-fixture.ts";
+import { loadYaml } from "../helpers/kubernetes-yaml.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 import { startFakePostgres, type FakePostgresQuery } from "../helpers/fake-postgres-server.ts";
 import type { TestContext } from "node:test";
@@ -1580,7 +1581,7 @@ assert.equal(sibling.cleanup, null);
       );
       assert.equal(owners.length, 1, path);
       const owner = owners[0];
-      assert.ok(owner && browserSetup.if);
+      assert.ok(owner && typeof browserSetup.if === "string" && browserSetup.if);
       const [lane] = owner;
       assert.ok(
         browserSetup.if.split(/\s*\|\|\s*/).includes(`inputs.lane == '${lane}'`),
@@ -1907,14 +1908,25 @@ process.exit(2);
       [".github/workflows/full-integration-execution.yml", "qa-matrix"],
     ]);
     for (const [path, jobName] of workflows) {
-      const workflow = parseWorkflow(await readFile(join(repositoryRoot, path), "utf8"));
-      assert.equal(
-        asRecord(getJob(workflow, jobName).env)?.OCC_DEVELOPMENT_K3S_IMAGE,
-        defaultK3sImage,
-        path,
-      );
-      // Workflow-wide would reach dev-up.test.mjs, which asserts the +v1.35 default.
-      assert.equal(workflow.env?.OCC_DEVELOPMENT_K3S_IMAGE, undefined, path);
+      const source = await readFile(join(repositoryRoot, path), "utf8");
+      const document = asRecord(loadYaml(source));
+      assert.ok(document);
+      // Scalar concurrency is valid workflow syntax and must not affect the image pin checks.
+      for (const text of [
+        source,
+        JSON.stringify({ ...document, concurrency: "full-integration" }),
+      ]) {
+        const workflow = parseWorkflow(text);
+        assert.equal(
+          asRecord(getJob(workflow, jobName).env)?.OCC_DEVELOPMENT_K3S_IMAGE,
+          defaultK3sImage,
+          path,
+        );
+        // Workflow-wide would reach dev-up.test.mjs, which asserts the +v1.35 default.
+        const workflowEnv = workflow.env;
+        assert.ok(workflowEnv === undefined || asRecord(workflowEnv), path);
+        assert.equal(asRecord(workflowEnv)?.OCC_DEVELOPMENT_K3S_IMAGE, undefined, path);
+      }
     }
   });
 

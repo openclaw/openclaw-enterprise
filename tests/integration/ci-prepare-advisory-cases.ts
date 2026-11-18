@@ -146,7 +146,7 @@ export function registerAdvisoryCases(repo: string) {
     const eligibility = getJob(workflow, "eligibility");
     const qa = getJob(workflow, "qa");
     const selector = getSteps(eligibility).find(({ id }) => id === "selection")?.run;
-    assert.ok(selector);
+    assert.ok(typeof selector === "string" && selector);
     const prEnv = "integration-qa-pr";
     const local = getJob(workflow, "local-installation");
     const shard = "${{ matrix.shard }}";
@@ -328,13 +328,14 @@ export function registerAdvisoryCases(repo: string) {
       }
     }
     // Admission and cancellation use the added label, while selection uses all current labels.
+    const concurrencyGroup = asRecord(workflow.concurrency)?.group;
+    assert.ok(typeof concurrencyGroup === "string", "Missing advisory concurrency group");
     for (const label of [keycloak, model, compose, "full-qa", "unrelated"]) {
       const payload = { ...event([keycloak, label]), action: "labeled", label: { name: label } };
       const ctx = context(payload);
       const allowed = label !== "unrelated";
       assert.equal(evaluate(eligibility.if, ctx), allowed);
-      assert.ok(workflow.concurrency);
-      const group = workflow.concurrency.group.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expression) =>
+      const group = concurrencyGroup.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expression) =>
         String(evaluate(expression, ctx)),
       );
       assert.match(group, allowed ? /pr-7/ : /run-123/);
@@ -399,7 +400,7 @@ export function registerAdvisoryCases(repo: string) {
       ["key", " ", 1],
       ["synthetic-key", "synthetic-model", 0],
     ] as const;
-    assert.ok(selected.run);
+    assert.ok(typeof selected.run === "string" && selected.run);
     for (const [index, [key, model, expected]] of cases.entries()) {
       const runRoot = join(root, String(index));
       await mkdir(runRoot);
