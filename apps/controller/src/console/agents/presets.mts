@@ -327,8 +327,8 @@ export function createPresetFields(
   const status = element("p", { className: "hint", role: "status" }, "Loading Presets…");
   const feedback = statusBlock("danger", null, null);
   const inputs = element("div");
-  let starter: Pick<PresetSummary, "id" | "name"> | undefined;
-  // How the next selection change started: "shortcut" applies the starter Preset at once.
+  let defaultId: string | undefined;
+  // How the next selection change started: "shortcut" applies the default Preset at once.
   let origin: "shortcut" | undefined;
   // Whether the reader changed a variable. The form a Preset opens keeps it, so its Cancel asks
   // first; a reload or tab close warns either way (finding 1902).
@@ -338,18 +338,14 @@ export function createPresetFields(
   };
   inputs.addEventListener("input", markTouched);
   inputs.addEventListener("change", markTouched);
-  const chooseHint = () => {
-    if (!starter) {
-      return "Choose a Preset to start.";
-    }
-    return starter.name === "default-codex"
-      ? "Choose a Preset or start with the default Preset."
-      : `Choose a Preset or start with ${starter.name}.`;
-  };
+  // Without default-codex, the hint under the shortcut already says it is not available, so the
+  // status line does not repeat it (finding 2946).
+  const chooseHint = () =>
+    defaultId ? "Choose a Preset or start with the default Preset." : "Choose a Preset.";
   const startDefault = button(
     "Start with default Preset",
     () => {
-      selector.value = starter?.id ?? "";
+      selector.value = defaultId ?? "";
       origin = "shortcut";
       selector.dispatchEvent(new Event("change"));
     },
@@ -840,35 +836,26 @@ export function createPresetFields(
         }
         return { id, name };
       });
-      const readablePresets = presets.sort((left, right) => {
-        const byName = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
-        if (byName !== 0) {
-          return byName;
-        }
-        return left.name < right.name ? -1 : 1;
-      });
       selector.append(
-        ...readablePresets.map((preset) => element("option", { value: preset.id }, preset.name)),
+        ...presets
+          .sort((left, right) =>
+            left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+          )
+          .map((preset) => element("option", { value: preset.id }, preset.name)),
       );
       selector.disabled = false;
-      starter =
-        readablePresets.find((preset) => preset.name === "default-codex") ?? readablePresets[0];
-      if (starter) {
-        if (starter.name !== "default-codex") {
-          startDefault.textContent = `Start with ${starter.name}`;
-        }
-        defaultHint.textContent =
-          starter.name === "default-codex"
-            ? "The default Preset is default-codex."
-            : `The starter Preset is ${starter.name}.`;
-        defaultHint.hidden = false;
+      defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
+      // The hint beside the shortcut names the default Preset, or says that it is not
+      // available, and then describes the unavailable shortcut, which stays in the Tab order
+      // (finding 2937).
+      defaultHint.textContent = defaultId
+        ? "The default Preset is default-codex."
+        : "default-codex is not available to you in this Namespace.";
+      defaultHint.hidden = false;
+      setUnavailable(startDefault, !defaultId, defaultHint);
+      if (defaultId) {
         startDefault.setAttribute("aria-describedby", defaultHint.id);
       }
-      if (!starter) {
-        defaultHint.textContent = "No readable starter Preset is available in this Namespace.";
-        defaultHint.hidden = false;
-      }
-      setUnavailable(startDefault, !starter, defaultHint);
       if (retained && presets.some((preset) => preset.id === retained?.id)) {
         selector.value = retained.id;
         selector.dispatchEvent(new Event("change"));
