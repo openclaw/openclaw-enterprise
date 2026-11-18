@@ -18,7 +18,6 @@ export const unconfiguredGateway = {
   deleteWorkspace: unexpectedRpc("deleteWorkspace"),
   createSandbox: unexpectedRpc("createSandbox"),
   getSandbox: unexpectedRpc("getSandbox"),
-  getServiceUrl: unexpectedRpc("getServiceUrl"),
   getService: unexpectedRpc("getService"),
   deleteService: unexpectedRpc("deleteService"),
   deleteSandbox: unexpectedRpc("deleteSandbox"),
