@@ -58,7 +58,6 @@ export function lockHoldLine(reported = leaseHolder, owner: "Gateway" | "Harness
         " the Gateway state lock, and this container cannot verify that it stopped. It remains" +
         " unready; stop the Agent and recover the lock as the Agent troubleshooting guide" +
         ` describes for an unverifiable state owner. OpenClaw reported: ${reported}`
-    : "The Harness cannot start: an earlier OpenClaw process holds the workspace node's state" +
-        " lock, and this container cannot verify that it stopped. Recover it as the Agent" +
-        ` troubleshooting guide describes. OpenClaw reported: ${reported}`;
+    : "The Harness cannot start: this container cannot verify that the holder of the workspace" +
+        ` node's state lock stopped; see the Agent troubleshooting guide. OpenClaw reported: ${reported}`;
 }

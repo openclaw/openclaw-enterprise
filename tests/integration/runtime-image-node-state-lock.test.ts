@@ -318,7 +318,7 @@ test(
     assert.deepEqual(phaseOutcomes(held.output, "state-migration"), ["failed"], held.output);
     assert.match(
       held.output,
-      /The Harness cannot start: an earlier OpenClaw process holds the workspace node's state lock, .* OpenClaw reported: \S+\/tmp\/openclaw-1000\/state\.[0-9a-f]+\.lock: holder \d+ at [^ ]+\/pid-ns \d+/,
+      /The Harness cannot start: this container cannot verify that the holder of the workspace node's state lock stopped; .* OpenClaw reported: \S+\/tmp\/openclaw-1000\/state\.[0-9a-f]+\.lock: holder \d+ at [^ ]+\/pid-ns \d+/,
     );
     assert.deepEqual(baselineOutcomes(held.output), [], held.output);
     assert.equal(held.running, true, held.output);

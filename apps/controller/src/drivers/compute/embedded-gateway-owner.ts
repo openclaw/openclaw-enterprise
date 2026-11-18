@@ -81,7 +81,7 @@ function releaseExitedOpenClawState(environment, waitMs = 0) {
   for (const deadline = Date.now() + waitMs; ; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)) {
     if (require("node:child_process").spawnSync(process.execPath,
       ["/app/openclaw.mjs", "gateway", "recover-lock", "--terminated-namespace", namespace, "--json"],
-      { env: environment, stdio: ["ignore", "inherit", "inherit"], timeout: 60000 }).status === 0) return true;
+      { env: environment, stdio: "inherit", timeout: 60000 }).status === 0) return true;
     if (Date.now() >= deadline) {
       console.error("OpenClaw kept the exited process's state locks.");
       return false;
@@ -101,7 +101,7 @@ export const OPENCLAW_STATE_LOCK_INSPECTION = String.raw`
 function openClawStateLockHolders(environment) {
   const inspection = require("node:child_process").spawnSync("node", ["/app/openclaw.mjs", "gateway", "recover-lock", "--json"], {
     env: { ...environment, OPENCLAW_CONFIG_READONLY: "1" },
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
+    encoding: "utf8", timeout: 30000,
   });
   try {
     const { present, holders } = JSON.parse(inspection.stdout);
@@ -125,9 +125,8 @@ export function unverifiableStateLockLine(owner: "Gateway" | "Harness"): string 
         " the Gateway state lock, and this container cannot verify that it stopped. It remains" +
         " unready; stop the Agent and recover the lock as the Agent troubleshooting guide" +
         " describes for an unverifiable state owner. OpenClaw reported: "
-    : "The Harness cannot start: an earlier OpenClaw process holds the workspace node's state" +
-        " lock, and this container cannot verify that it stopped. Recover it as the Agent" +
-        " troubleshooting guide describes. OpenClaw reported: ";
+    : "The Harness cannot start: this container cannot verify that the holder of the workspace" +
+        " node's state lock stopped; see the Agent troubleshooting guide. OpenClaw reported: ";
 }
 
 // Run this in a short-lived process. By the time the Gateway can load a plugin
