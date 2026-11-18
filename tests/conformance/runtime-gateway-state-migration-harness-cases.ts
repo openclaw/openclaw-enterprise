@@ -707,10 +707,7 @@ test("Harness releases a native setup that did not exit 0 and never one that did
   for (const [result, ends] of [
     [{ status: null, signal: "SIGKILL" }, ["release", "inspect"]],
     [{ status: 2, signal: null }, ["release", "inspect"]],
-    [
-      { status: null, error: Object.assign(new Error("spawn"), { code: "EACCES" }) },
-      ["inspect"],
-    ],
+    [{ status: null, error: Object.assign(new Error("spawn"), { code: "EACCES" }) }, ["inspect"]],
     [{ status: 0, signal: null }, []],
   ] satisfies Array<[SetupResult, string[]]>) {
     const directory = await workspaceNodeDirectory(t);

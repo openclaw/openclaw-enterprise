@@ -383,7 +383,11 @@ test("Kubernetes state migration releases a Doctor that did not complete before 
   };
   for (const [label, doctor, ends] of [
     ["stopped", stopped, [`release ${STOP_WAIT_MS}`, "exit 0"]],
-    ["killed", (child) => child.emit("close", null, "SIGKILL"), ["release 0", "failure state-migration"]],
+    [
+      "killed",
+      (child) => child.emit("close", null, "SIGKILL"),
+      ["release 0", "failure state-migration"],
+    ],
     ["exited 1", (child) => child.emit("close", 1, null), ["release 0", "failure state-migration"]],
     [
       "refused maintenance",
