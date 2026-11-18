@@ -5,7 +5,7 @@ import {
   ComputeStopYieldedError,
   computeStopShouldYield,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   failingStop,

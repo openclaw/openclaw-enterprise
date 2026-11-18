@@ -10,8 +10,8 @@ import { readJsonLines } from "../helpers/json-lines.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-const prepare = join(root, "scripts/ci/prepare.mjs");
-const cleanup = join(root, "scripts/ci/cleanup.mjs");
+const prepare = join(root, "scripts/ci/prepare.ts");
+const cleanup = join(root, "scripts/ci/cleanup.ts");
 const exporter = join(root, "scripts/ci/export-image-reconciliation.ts");
 
 type ImageResource = { id: string; name: string; status: string };
@@ -98,7 +98,7 @@ test("image lanes use separate cache scopes without exposing credentials or comp
     const result = run(prepare, ["--lane", lane, "--state", statePath], {
       GITHUB_ACTIONS: "true",
       // A main push: lanes only restore there too; main's warm job alone writes
-      // (ci-prepare.test.mjs covers each event).
+      // (ci-prepare-image-cache.test.ts covers each event).
       GITHUB_EVENT_NAME: "push",
       GITHUB_RUN_ID: "12345",
       GITHUB_RUN_ATTEMPT: "2",

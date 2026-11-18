@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { prepareFile } from "../../scripts/ci/prepare.mjs";
+import { prepareFile } from "../../scripts/ci/prepare.ts";
+import { authorizedPrincipal } from "./development-iam-state.ts";
 import {
-  authorizedPrincipal,
   createBackendWorkerDrivers,
   createBackendController,
   ensureInstallation,
   requiresPostgres,
 } from "./postgres-backend-state.mjs";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
 import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
 
@@ -128,7 +128,7 @@ const disposeLimitsMs = {
   "worker stop": 30_000,
   "pool end": 15_000,
   // Waits for the CI state lock, which other files' test databases also take. The drop's lock
-  // wait shares this limit; the drop itself has its own (scripts/ci/cleanup.mjs).
+  // wait shares this limit; the drop itself has its own (scripts/ci/cleanup.ts).
   "drop database": 120_000,
 };
 
@@ -306,6 +306,7 @@ export function createWorkerRevisionFixtures(
    *   leaseDurationMs?: number,
    *   maxAttempts?: number,
    *   onHealthy?: ControllerWorkerOptions["onHealthy"],
+   *   healthClock?: ControllerWorkerOptions["healthClock"],
    *   onProgress?: ControllerWorkerOptions["onProgress"],
    *   metrics?: ControllerWorkerOptions["metrics"],
    *   repoDriver?: RepositoryWorkerDriver,
@@ -322,6 +323,7 @@ export function createWorkerRevisionFixtures(
       leaseDurationMs = 30_000,
       maxAttempts = 5,
       onHealthy,
+      healthClock,
       onProgress,
       metrics,
       repoDriver,
@@ -748,6 +750,10 @@ export function createWorkerRevisionFixtures(
         if (admission !== undefined) {
           candidate.compute = { ...candidate.compute, admission };
         }
+        const runtimeInputs = compute.snapshotRuntimeInputs?.(candidate);
+        if (runtimeInputs !== undefined) {
+          candidate.compute = { ...candidate.compute, runtimeInputs };
+        }
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,
@@ -866,6 +872,7 @@ export function createWorkerRevisionFixtures(
         leaseDurationMs,
         maxAttempts,
         onHealthy,
+        ...(healthClock === undefined ? {} : { healthClock }),
         onProgress,
         ...(drivers === undefined ? { computeDriver } : { drivers }),
         ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),

@@ -6,11 +6,11 @@
   "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/runtime-image-model-probe.test.ts",
-    "tests/integration/runtime-image-native-worker.test.mjs",
+    "tests/integration/runtime-image-native-worker.test.ts",
     "tests/integration/runtime-image-node-state-permissions.test.ts",
     "tests/integration/runtime-image-node-state-lock.test.ts",
-    "tests/integration/runtime-image-state-migration.test.mjs",
-    "tests/integration/runtime-image-native-listener.test.mjs",
+    "tests/integration/runtime-image-state-migration.test.ts",
+    "tests/integration/runtime-image-native-listener.test.ts",
     "tests/integration/runtime-image-codex-local-plugins.test.ts",
     "tests/helpers/workspace-gateway-relay-container.test.ts"
   ],
@@ -22,7 +22,7 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-image-native-worker.test.mjs",
+      "path": "tests/integration/runtime-image-native-worker.test.ts",
       "expectedTests": [
         "the dedicated worker launches the pinned gog on PATH only for the selected release",
         "the dedicated worker loads a different CLI package with its declared credential slot",
@@ -45,20 +45,24 @@
       "path": "tests/integration/runtime-image-node-state-lock.test.ts",
       "expectedTests": [
         "a Harness Pod stopped during native setup leaves the node state to the next Pod",
-        "a Harness Pod whose native setup still holds the node state keeps the next Pod out"
+        "a Harness Pod whose native setup still holds the node state keeps the next Pod out",
+        "a Harness Pod stopped during Doctor leaves the node state to the next Pod",
+        "a Harness Pod killed during Doctor holds the next Pod on the named state lock"
       ]
     },
     {
-      "path": "tests/integration/runtime-image-state-migration.test.mjs",
+      "path": "tests/integration/runtime-image-state-migration.test.ts",
       "expectedTests": [
+        "Gateway replacement retains unfinished maintenance on its database mounts",
         "embedded Gateway restart recovers only its signed Pod owner",
         "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
         "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw",
-        "runtime image migrates an older workspace node's credentials before the dedicated Harness starts"
+        "runtime image migrates an older workspace node's credentials before the dedicated Harness starts",
+        "runtime image migrates an older workspace node's credentials before the dedicated OpenClaw worker connects"
       ]
     },
     {
-      "path": "tests/integration/runtime-image-native-listener.test.mjs",
+      "path": "tests/integration/runtime-image-native-listener.test.ts",
       "expectedTests": [
         "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
         "runtime image Kubernetes admission refuses healthy native listeners that cannot serve Pod-IP traffic",

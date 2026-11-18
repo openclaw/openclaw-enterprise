@@ -18,7 +18,7 @@ import {
   requestThroughProxy,
   startSlackProxy,
 } from "../helpers/slack-proxy.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 const token = "xoxb-fixture";
 

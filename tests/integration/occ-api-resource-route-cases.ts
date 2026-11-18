@@ -1,19 +1,25 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { Check } from "typebox/value";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import type {
-  AgentWire,
-  ConfigurationWire,
+import {
+  type AgentWire,
   ErrorResponse,
-  InstallationWire,
-  NamespaceWire,
-  Permission,
+  type InstallationWire,
+  type NamespaceWire,
+  type Permission,
 } from "../../packages/contracts/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { AGENT_NAME_CONFLICT, NAMESPACE_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   type createInjectedControllerFixture,
+  bootstrapInstallation,
+  checkedInjectedBody,
+  createAgent as createFixtureAgent,
+  createNamespace as createFixtureNamespace,
   createServiceAccount,
   identifier,
   injectedRequest,
@@ -32,15 +38,10 @@ interface Controller {
 
 interface ControllerSetup {
   configuredController(): Promise<Controller>;
-  bootstrap(controller: Controller): Promise<InstallationWire>;
+  bootstrap(controller: Controller, name?: string): Promise<InstallationWire>;
   createNamespace(controller: Controller, name: string): Promise<NamespaceWire>;
   createAgent(controller: Controller, namespaceId: string, name: string): Promise<AgentWire>;
   missingRevisionId: string;
-}
-
-interface InjectedSetup {
-  createInjectedFixture(): Promise<Fixture>;
-  createInjectedConfiguration(fixture: Fixture, namespaceId: string): Promise<ConfigurationWire>;
 }
 
 function resourceId(data: unknown): string {
@@ -220,85 +221,226 @@ export async function runResourceRoutes({
   assert.deepEqual(unchanged.data, { ...installation, capabilities: singleton.data.capabilities });
 }
 
-export async function runBodylessRoutes({
-  createInjectedFixture,
-  createInjectedConfiguration,
-  missingRevisionId,
-}: InjectedSetup & { missingRevisionId: string }) {
-  const fixture = await createInjectedFixture();
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Bodyless-route installation" },
-  });
-  assert.equal(installation.status, 201);
+function assertNameConflict(
+  response: Awaited<ReturnType<typeof injectedRequest>>,
+  message: string,
+) {
+  assertApiError(response, 409, "RESOURCE_CONFLICT");
+  assert(Check(ErrorResponse, response.body));
+  assert.equal(response.body.error.message, message);
+}
 
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "bodyless-route-namespace" },
+export async function checkResourceCreationSchemas(controller: Controller) {
+  const malformedJson = await controller.request("POST", "/installation/bootstrap", {
+    rawBody: "{not-json",
+    headers: { "content-type": "application/json" },
   });
-  assert.equal(namespace.status, 201);
-  const namespaceId = resourceId(namespace.data);
+  assertApiError(malformedJson, 400, "INVALID_REQUEST");
 
-  const configuration = await createInjectedConfiguration(fixture, namespaceId);
-  const agent = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/agents`, {
-    body: { name: "bodyless-route-agent", configurationId: configuration.id },
+  const unsupportedType = await controller.request("POST", "/installation/bootstrap", {
+    rawBody: "name=enterprise",
+    headers: { "content-type": "text/plain" },
   });
-  assert.equal(agent.status, 201);
-  const agentId = resourceId(agent.data);
+  assertApiError(unsupportedType, 415, "UNSUPPORTED_MEDIA_TYPE");
 
-  const { auditSink } = fixture;
+  for (const invalid of [null, [], {}, { name: "" }, { name: "   " }]) {
+    const result = await controller.request("POST", "/installation/bootstrap", { body: invalid });
+    assert.equal(result.status, 400);
+  }
+
+  await bootstrapInstallation(controller);
+
+  for (const invalid of [null, [], {}, { name: "" }, { name: 4 }]) {
+    const result = await controller.request("POST", "/namespaces", {
+      body: invalid,
+    });
+    assert.equal(result.status, 400);
+  }
+
+  const namespace = await createFixtureNamespace(controller, "validated");
+  const duplicateNamespace = await controller.request("POST", "/namespaces", {
+    body: { name: "validated" },
+  });
+  assertNameConflict(duplicateNamespace, NAMESPACE_NAME_CONFLICT);
+
+  const invalidAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "" },
+  });
+  assert.equal(invalidAgent.status, 400);
+
+  const agent = await createFixtureAgent(controller, namespace.id, "valid-agent");
+  const duplicateAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "valid-agent", configurationId: agent.configurationId },
+  });
+  // The caller chose only the name, so the conflict says the name is taken here.
+  assertNameConflict(duplicateAgent, AGENT_NAME_CONFLICT);
+  return { namespace, agent };
+}
+
+export async function checkMalformedResourcePaths(
+  controller: Controller,
+  namespace: NamespaceWire,
+  agent: AgentWire,
+) {
+  const malformedIdentifier = await controller.request("GET", "/namespaces/ns_not-a-uuid");
+  const { error: namespaceError } = checkedInjectedBody(malformedIdentifier, 400, ErrorResponse);
+  // Path-parameter failures name the parameter and its syntax, like body failures name fields.
+  assert.deepEqual(namespaceError.details, [{ path: "/namespaceId", code: "INVALID_FORMAT" }]);
+  assert.match(namespaceError.message, /params \/namespaceId .* expected ns_ /);
+
+  const wrongResourceKind = await controller.request("GET", `/namespaces/${agent.id}`);
+  assert.equal(wrongResourceKind.status, 400);
+
+  const nonV4Agent = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/agt_00000000-0000-0000-0000-000000000000`,
+  );
+  const { error: agentError } = checkedInjectedBody(nonV4Agent, 400, ErrorResponse);
+  assert.deepEqual(agentError.details, [{ path: "/agentId", code: "INVALID_FORMAT" }]);
+
+  // A deployment is addressed by its revision ID, so the message names the rev_ prefix.
+  const malformedDeployment = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deployments/rev_bogus/runtime/logs?source=gateway`,
+  );
+  const { error: deploymentError } = checkedInjectedBody(malformedDeployment, 400, ErrorResponse);
+  assert.deepEqual(deploymentError.details, [{ path: "/deploymentId", code: "INVALID_FORMAT" }]);
+  assert.match(deploymentError.message, /params \/deploymentId .* expected rev_ /);
+}
+
+export async function checkPayloadLimitAndAllowedMethods(
+  controller: Controller,
+  namespace: NamespaceWire,
+  agent: AgentWire,
+) {
+  const oversized = await controller.request("POST", "/namespaces", {
+    body: { name: "x".repeat(64 * 1024) },
+  });
+  assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
+
+  // Keep method order and overlapping literal/parameter paths in the public Allow header.
+  for (const [method, path, allowed] of [
+    ["DELETE", "/namespaces", "POST, GET"],
+    [
+      "OPTIONS",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      "GET, PATCH, DELETE",
+    ],
+    ["OPTIONS", `/namespaces/${namespace.id}/agents/${agent.id}/deploy?ignored=true`, "POST"],
+    ["OPTIONS", `/namespaces/${namespace.id}/agents/provision`, "POST, PATCH, GET, DELETE"],
+  ] as const) {
+    const unsupportedMethod = await controller.request(method, path);
+    assertApiError(unsupportedMethod, 405, "METHOD_NOT_ALLOWED");
+    assert.equal(unsupportedMethod.headers.get("allow"), allowed);
+  }
+}
+
+export async function withValidationBeforeIam(
+  fixture: Fixture,
+  checkResponses: (assertUnchanged: (label?: string) => void) => Promise<void>,
+) {
+  const { iamDriver, auditSink } = fixture;
   assert(auditSink instanceof InMemoryAuditSink);
-  const originalLookup = fixture.iamDriver.lookupIdentity;
-  const originalAuthorize = fixture.iamDriver.authorize;
+  const originalLookup = iamDriver.lookupIdentity;
+  const originalAuthorize = iamDriver.authorize;
   let identityLookups = 0;
   let authorizationChecks = 0;
-  fixture.iamDriver.lookupIdentity = async (...args) => {
+  iamDriver.lookupIdentity = async (...args) => {
     identityLookups += 1;
-    return originalLookup.apply(fixture.iamDriver, args);
+    return originalLookup.apply(iamDriver, args);
   };
-  fixture.iamDriver.authorize = async (...args) => {
+  iamDriver.authorize = async (...args) => {
     authorizationChecks += 1;
-    return originalAuthorize.apply(fixture.iamDriver, args);
+    return originalAuthorize.apply(iamDriver, args);
   };
-  const auditCount = auditSink.events.length;
-  const app = fixture.createApp(fixture.principal, createFastifyApp);
-
   try {
-    for (const [method, url] of [
-      ["GET", "/installation"],
-      ["GET", "/namespaces"],
-      ["GET", `/namespaces/${namespaceId}`],
-      ["GET", `/namespaces/${namespaceId}/service-accounts`],
-      ["GET", `/namespaces/${namespaceId}/agents`],
-      ["GET", `/namespaces/${namespaceId}/agents/${agentId}`],
-      ["GET", `/namespaces/${namespaceId}/agents/${agentId}/revisions`],
-      ["GET", `/namespaces/${namespaceId}/agents/${agentId}/revisions/${missingRevisionId}`],
-      ["POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`],
-      ["POST", `/namespaces/${namespaceId}/agents/${agentId}/stop`],
-    ] as const) {
-      const response = await app.inject({
-        method,
-        url,
-        headers: {
-          ...authenticatedHeaders(app.defaultSession),
-          "content-type": "application/json",
-          host: "console.oce.localhost",
-        },
-        payload: JSON.stringify({ unexpected: "request body" }),
-        remoteAddress: "127.0.0.1",
-      });
-      const body = response.json<ErrorResponse>();
-
-      assert.equal(response.statusCode, 400, url);
-      assert.equal(body.error.code, "INVALID_REQUEST", url);
-      assert.match(body.meta.requestId, identifier("req"));
-      assert.equal(identityLookups, 0, url);
-      assert.equal(authorizationChecks, 0, url);
-      assert.equal(auditSink.events.length, auditCount, url);
-    }
+    const auditCount = auditSink.events.length;
+    await checkResponses((label) => {
+      function assertCount(actual: number, expected: number) {
+        if (label === undefined) {
+          assert.equal(actual, expected);
+        } else {
+          assert.equal(actual, expected, label);
+        }
+      }
+      assertCount(identityLookups, 0);
+      assertCount(authorizationChecks, 0);
+      assertCount(auditSink.events.length, auditCount);
+    });
   } finally {
-    fixture.iamDriver.lookupIdentity = originalLookup;
-    fixture.iamDriver.authorize = originalAuthorize;
-    await app.close();
+    iamDriver.lookupIdentity = originalLookup;
+    iamDriver.authorize = originalAuthorize;
   }
+}
+
+export async function runBodylessRoutes({
+  configuredController,
+  bootstrap,
+  createNamespace,
+  createAgent,
+  missingRevisionId,
+}: ControllerSetup) {
+  const controller = await configuredController();
+  const { fixture } = controller;
+  await bootstrap(controller, "Bodyless-route installation");
+  const { id: namespaceId } = await createNamespace(controller, "bodyless-route-namespace");
+  const { id: agentId } = await createAgent(controller, namespaceId, "bodyless-route-agent");
+
+  let appToClose: ReturnType<typeof createFastifyApp> | undefined;
+  try {
+    await withValidationBeforeIam(fixture, async (assertUnchanged) => {
+      const app = fixture.createApp(fixture.principal, createFastifyApp);
+      appToClose = app;
+      const session = app.defaultSession;
+      assert.ok(session);
+      const headers = authenticatedHeaders(session);
+      for (const [method, url] of [
+        ["GET", "/installation"],
+        ["GET", "/namespaces"],
+        ["GET", `/namespaces/${namespaceId}`],
+        ["GET", `/namespaces/${namespaceId}/service-accounts`],
+        ["GET", `/namespaces/${namespaceId}/agents`],
+        ["GET", `/namespaces/${namespaceId}/agents/${agentId}`],
+        ["GET", `/namespaces/${namespaceId}/agents/${agentId}/revisions`],
+        ["GET", `/namespaces/${namespaceId}/agents/${agentId}/revisions/${missingRevisionId}`],
+        ["POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`],
+        ["POST", `/namespaces/${namespaceId}/agents/${agentId}/stop`],
+      ] as const) {
+        const response = await app.inject({
+          method,
+          url,
+          headers: {
+            ...headers,
+            "content-type": "application/json",
+            host: "console.oce.localhost",
+          },
+          payload: JSON.stringify({ unexpected: "request body" }),
+          remoteAddress: "127.0.0.1",
+        });
+        const body = response.json<ErrorResponse>();
+
+        assert.equal(response.statusCode, 400, url);
+        assert.equal(body.error.code, "INVALID_REQUEST", url);
+        assert.match(body.meta.requestId, identifier("req"));
+        assertUnchanged(url);
+      }
+    });
+  } finally {
+    await appToClose?.close();
+  }
+}
+
+function assertReadError(
+  response: Awaited<ReturnType<typeof injectedRequest>>,
+  status: number,
+  code: ErrorResponse["error"]["code"],
+  label: string,
+): ErrorResponse {
+  assert.equal(response.status, status, label);
+  assert.ok(Check(ErrorResponse, response.body), `${label} must return an error envelope`);
+  assert.equal(response.body.error.code, code, label);
+  assert.equal(response.body.meta.requestId, response.headers.get("x-request-id"), label);
+  return response.body;
 }
 
 export async function runNamespaceIsolation({
@@ -306,10 +448,8 @@ export async function runNamespaceIsolation({
   bootstrap,
   createNamespace,
   createAgent,
-  createInjectedFixture,
-  createInjectedConfiguration,
   missingRevisionId,
-}: ControllerSetup & InjectedSetup) {
+}: ControllerSetup) {
   const controller = await configuredController();
   await bootstrap(controller);
 
@@ -352,34 +492,22 @@ export async function runNamespaceIsolation({
   );
   assert.deepEqual(original.data, []);
 
-  const fixture = await createInjectedFixture();
-  const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "IAM-scoped installation" },
-  });
-  assert.equal(bootstrapped.status, 201);
+  const scopedController = await configuredController();
+  const { fixture } = scopedController;
+  await bootstrap(scopedController, "IAM-scoped installation");
   const initialNamespaces = await injectedRequest(fixture.app, "GET", "/namespaces");
   assert.equal(initialNamespaces.status, 200);
   assert(Array.isArray(initialNamespaces.data));
   assert.equal(initialNamespaces.data.length, 1);
 
-  const tenantA = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "tenant-a" },
-  });
-  const tenantB = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "tenant-b" },
-  });
-  assert.equal(tenantA.status, 201);
-  assert.equal(tenantB.status, 201);
-  const tenantAId = resourceId(tenantA.data);
-  const tenantBId = resourceId(tenantB.data);
+  const tenantA = await createNamespace(scopedController, "tenant-a");
+  const tenantB = await createNamespace(scopedController, "tenant-b");
+  const { id: tenantAId } = tenantA;
+  const { id: tenantBId } = tenantB;
 
   const completeNamespaces = await injectedRequest(fixture.app, "GET", "/namespaces");
   assert.equal(completeNamespaces.status, 200);
-  assert.deepEqual(completeNamespaces.data, [
-    ...initialNamespaces.data,
-    tenantA.data,
-    tenantB.data,
-  ]);
+  assert.deepEqual(completeNamespaces.data, [...initialNamespaces.data, tenantA, tenantB]);
 
   // A failed later IAM decision must discard the already-authorized part of the list.
   // Delegate to Native IAM first so a refusal before the list cannot satisfy this control.
@@ -415,13 +543,10 @@ export async function runNamespaceIsolation({
       assert.equal(authorizedNamespaceIds.length, 1, failureMode);
       assert.equal(failedNamespaceIds.length, 1, failureMode);
       assert.notEqual(failedNamespaceIds[0], authorizedNamespaceIds[0], failureMode);
-      assertApiError(unavailable, 503, "DEPENDENCY_UNAVAILABLE", failureMode);
-      assert.deepEqual(unavailable.body, {
-        error: {
-          code: "DEPENDENCY_UNAVAILABLE",
-          message: "A required platform dependency is unavailable.",
-        },
-        meta: { requestId: unavailable.body?.meta?.requestId },
+      const body = assertReadError(unavailable, 503, "DEPENDENCY_UNAVAILABLE", failureMode);
+      assert.deepEqual(body.error, {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "A required platform dependency is unavailable.",
       });
     } finally {
       fixture.iamDriver.authorize = originalAuthorize;
@@ -431,12 +556,11 @@ export async function runNamespaceIsolation({
     assert.deepEqual(restoredNamespaces.data, completeNamespaces.data, failureMode);
   }
 
-  const tenantBConfiguration = await createInjectedConfiguration(fixture, tenantBId);
-  const ownAgent = await injectedRequest(fixture.app, "POST", `/namespaces/${tenantBId}/agents`, {
-    body: { name: "tenant-b-agent", configurationId: tenantBConfiguration.id },
-  });
-  assert.equal(ownAgent.status, 201);
-  const ownAgentId = resourceId(ownAgent.data);
+  const { id: ownAgentId, configurationId } = await createAgent(
+    scopedController,
+    tenantBId,
+    "tenant-b-agent",
+  );
 
   const { principal: reader } = await fixture.createAuthPrincipal("tenant-b-reader");
   fixture.state.identities.push(reader);
@@ -462,6 +586,9 @@ export async function runNamespaceIsolation({
   assert.equal(visibleNamespaces.status, 200);
   assert(Array.isArray(visibleNamespaces.data));
   assert.deepEqual(visibleNamespaces.data.map(resourceId), [tenantBId]);
+
+  const installationDenied = await injectedRequest(readerApp, "GET", "/installation");
+  assertReadError(installationDenied, 403, "FORBIDDEN", "Namespace reader's Installation read");
 
   const visibleAgent = await injectedRequest(
     readerApp,
@@ -490,15 +617,20 @@ export async function runNamespaceIsolation({
   const revisionReaderApp = fixture.createApp(revisionReader);
   const ownRevisionPath = `/namespaces/${tenantBId}/agents/${ownAgentId}/revisions/${missingRevisionId}`;
 
-  const parentDenied = await injectedRequest(
-    revisionReaderApp,
-    "GET",
-    `/namespaces/${tenantBId}/agents/${ownAgentId}`,
+  // A revision grant lets the reader request a revision without exposing its parent Agent.
+  await assertSameAnswer(
+    async (agentId) => {
+      const path = `/namespaces/${tenantBId}/agents/${agentId}`;
+      const denied = await injectedRequest(revisionReaderApp, "GET", path);
+      assertReadError(denied, 403, "FORBIDDEN", path);
+      return denied;
+    },
+    [ownAgentId, `agt_${randomUUID()}`],
+    { label: "Agent detail for a revision-only reader" },
   );
-  assert.equal(parentDenied.status, 403);
 
   const exactRevision = await injectedRequest(revisionReaderApp, "GET", ownRevisionPath);
-  assertApiError(exactRevision, 404, "NOT_FOUND");
+  assertReadError(exactRevision, 404, "NOT_FOUND", "authorized missing revision");
 
   // The reader holds no grant in tenant A, so the misplaced parent is refused before any
   // lookup, as getAgent does; a 404 here would confirm which Agents tenant A lacks.
@@ -507,17 +639,18 @@ export async function runNamespaceIsolation({
     "GET",
     `/namespaces/${tenantAId}/agents/${ownAgentId}/revisions/${missingRevisionId}`,
   );
-  assert.equal(wrongParent.status, 403);
+  assertReadError(wrongParent, 403, "FORBIDDEN", "revision under another Namespace");
 
   revisionReaderPermissions.length = 0;
   const deniedRevisionApp = fixture.createApp(revisionReader);
   const deniedRevision = await injectedRequest(deniedRevisionApp, "GET", ownRevisionPath);
-  assert.equal(deniedRevision.status, 403);
+  assertReadError(deniedRevision, 403, "FORBIDDEN", "revision read after revocation");
   const { auditSink } = fixture;
   assert(auditSink instanceof InMemoryAuditSink);
   const denialEvent = auditSink.events.at(-1);
   assert(denialEvent);
   assert.equal(denialEvent.kind, "authorization_denial");
+  assert.equal(denialEvent.actorId, revisionReader.id);
   assert.equal(denialEvent.action, "openclaw.agent_revisions.read");
   assert.deepEqual(denialEvent.resource, {
     kind: "agent_revision",
@@ -533,18 +666,27 @@ export async function runNamespaceIsolation({
   const refreshedReaderApp = fixture.createApp(reader);
   const absentNamespaceId = `ns_${randomUUID()}`;
   // An unreadable Namespace must not reveal whether its exact ID exists.
+  await assertSameAnswer(
+    async (namespaceId) => {
+      const path = `/namespaces/${namespaceId}`;
+      const denied = await injectedRequest(refreshedReaderApp, "GET", path);
+      assertReadError(denied, 403, "FORBIDDEN", path);
+      return denied;
+    },
+    [tenantAId, absentNamespaceId],
+    { label: "Namespace detail outside the reader's grant" },
+  );
+
   for (const [method, pathname, options] of [
-    ["GET", `/namespaces/${tenantAId}`],
-    ["GET", `/namespaces/${absentNamespaceId}`],
     ["GET", `/namespaces/${tenantAId}/agents`],
     [
       "POST",
       `/namespaces/${tenantAId}/agents`,
-      { body: { name: "unauthorized-agent", configurationId: tenantBConfiguration.id } },
+      { body: { name: "unauthorized-agent", configurationId } },
     ],
   ] as const) {
     const denied = await injectedRequest(refreshedReaderApp, method, pathname, options);
-    assertApiError(denied, 403, "FORBIDDEN", `${method} ${pathname}`);
+    assertReadError(denied, 403, "FORBIDDEN", `${method} ${pathname}`);
   }
   // The administrator can authorize that same absent ID and reach the real lookup.
   const authorizedAbsent = await injectedRequest(
@@ -552,5 +694,5 @@ export async function runNamespaceIsolation({
     "GET",
     `/namespaces/${absentNamespaceId}`,
   );
-  assertApiError(authorizedAbsent, 404, "NOT_FOUND");
+  assertReadError(authorizedAbsent, 404, "NOT_FOUND", "authorized missing Namespace");
 }

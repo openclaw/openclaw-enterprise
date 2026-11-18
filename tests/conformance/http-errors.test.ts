@@ -9,13 +9,6 @@ import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import {
-  isStaleGeneration,
-  message,
-  namespaceListNeed,
-  PROVISIONING_REFUSAL_CODES,
-  preAdmissionRefusal,
-} from "../../apps/controller/src/console/agents/list.mts";
 import { requestedValues } from "../../apps/controller/src/http/caller-denial.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -83,11 +76,9 @@ import {
   AGENT_DELETING,
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
-  AUTHORIZATION_HEADER_REFUSED,
   callerDenied,
   CONSOLE_ACCESS_DENIED,
   CREDENTIAL_GATEWAY_NOT_CONFIGURED,
-  CREDENTIAL_REQUIRED,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
@@ -99,10 +90,23 @@ import {
   runtimeLogSourceUnavailable,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
-  serviceKeyOutsideNamespace,
   storedCredentialSourceConfig,
   dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+  serviceKeyOutsideNamespace,
+} from "../helpers/request-admission-expectations.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const {
+  isStaleGeneration,
+  message,
+  namespaceListNeed,
+  PROVISIONING_REFUSAL_CODES,
+  preAdmissionRefusal,
+} = await importConsoleModule("agents/list.mjs");
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
 // checked with an error carrying this message.

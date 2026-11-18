@@ -66,11 +66,16 @@
 
 ### Installation
 
+- [`listModelProviders`](../api.md#get-modelproviders): List Installation model providers.
+- [`listUsableModelProviders`](../api.md#get-namespacesnamespaceidmodelproviders): List the model providers available when creating an Agent.
 - [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver accepted startup values and configuration schemas.
 - [`getInstallation`](../api.md#get-installation): Get the singleton Installation.
 - [`getInstallationDeploymentInventory`](../api.md#get-installationdeploymentinventory): Get the complete authorized Agent deployment inventory.
+- [`getModelProvider`](../api.md#get-modelprovidersmodelproviderid): Read a model provider.
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
 - [`bootstrapInstallation`](../api.md#post-installationbootstrap): Bootstrap the singleton Installation.
+- [`createModelProvider`](../api.md#post-modelproviders): Create an Installation model provider.
+- [`updateModelProvider`](../api.md#put-modelprovidersmodelproviderid): Replace model provider settings if the saved fingerprint matches.
 
 ### Namespaces
 
@@ -109,6 +114,7 @@
 - [`updateAgent`](../api.md#patch-namespacesnamespaceidagentsagentid): Replace an exact Namespace-owned Agent's editable draft.
 - [`updateAgentSandboxPolicy`](../api.md#put-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Replace one Agent network policy additions.
 - [`applyAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply): Queue policy application to the running Agent revision, optionally replacing saved additions.
+- [`chatWithAgent`](../api.md#post-agentsagentidchat): Submit an Agent turn and receive native JSON or SSE.
 - [`confirmAgentNativeAdmin`](../api.md#post-namespacesnamespaceidagentsagentidnativeadminconfirm): Confirm a native Agent browser challenge.
 - [`deployAgent`](../api.md#post-namespacesnamespaceidagentsagentiddeploy): Save an Agent revision from the Agent's saved settings.
 - [`deployAgentFirst`](../api.md#post-namespacesnamespaceidagentsagentiddeployfirst): Admit the first deployment of an exact reviewed Configuration; requires Configuration read.

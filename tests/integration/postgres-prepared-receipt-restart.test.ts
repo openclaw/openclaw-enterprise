@@ -22,16 +22,16 @@ import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-dat
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
-import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
+import { sessionAttempt } from "../conformance/repository-sessions.contract.ts";
 import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import {
   createLoopbackServiceConfiguration,
   gatewayRequest,
-} from "../fixtures/repository-credentials/service.mjs";
-import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { relaySockets } from "../helpers/socket-relay.ts";
 
 type Resources = ReturnType<typeof createTestResourceScope>;

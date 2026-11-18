@@ -23,7 +23,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleFixtureClient } from "../helpers/console-fixture-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 
 // Finding 1323: list routes returned every Preset template and revision snapshot (up to 1 MiB
 // each), and revisions are never pruned. Lists now return summaries, and revisions page.
@@ -157,7 +157,7 @@ test("Preset and revision lists return summaries, not the stored documents", asy
   const { state, fixture, namespace, agent, first, revisionsPath, seedRevisions } =
     await listFixture(t, "Heavy lists");
   // Documents of about 0.9 MB. This in-memory run proves response shape and
-  // size; the 64-document timing runs against PostgreSQL in postgres-platform-state.test.mjs.
+  // size; the 64-document timing runs against PostgreSQL in postgres-platform-state.test.ts.
   const large = Object.fromEntries(
     Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"] as const),
   );
@@ -252,7 +252,7 @@ test("Preset and revision lists return summaries, not the stored documents", asy
   });
 
   // The in-memory fixture runs no worker and keeps no deployment records, so every summary
-  // reports none; postgres-agent-provisioning.test.mjs lists a stopped one with its code
+  // reports none; postgres-agent-provisioning.test.ts lists a stopped one with its code
   // (finding 2422).
   assert.deepEqual(
     listedRevisions.data.map(({ deploymentStatus }) => deploymentStatus),

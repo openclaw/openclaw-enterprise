@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-12"
-last_updated_session: "authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb"
+updated: "2026-11-16"
+last_updated_session: "authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d"
 ---
 
 # Agent repository credential flow
@@ -202,26 +202,23 @@ withdrawal. Frozen identities reject session replacement. Transaction locks rema
 ### 4. Deliver and retain one complete runtime generation
 
 `apps/controller/src/drivers/compute/kubernetes/repository-material.ts:repositoryMaterialSpec`
-validates `new | retained` bindings against the version and hashes sorted
-reference/session pairs.
+validates version bindings and hashes sorted reference/session pairs.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-store.ts:RepositoryMaterialStore.prepare`
-checks ownership, contents and deadlines before creating immutable Agent/version-owned
-Secrets. It rechecks deadlines after requests and before creation or return.
-Expiry leaves Secrets for owned cleanup. `RepositoryCredentialLifecycle.repair`
+checks ownership, contents and deadlines before creating immutable Agent/version Secrets.
+It rechecks deadlines after requests and before creation or return. Expiry leaves
+Secrets for cleanup. Missing inventory fails. `RepositoryCredentialLifecycle.repair`
 closes missing retained bindings and retries Compute once after confirmed disposal.
-Missing inventory fails.
 
 `apps/controller/src/drivers/compute/kubernetes/repository-material.ts:repositoryMaterialDeployment`
-mounts Secrets only in the first initializer. Sorted projections prevent
-key-order rollouts. Session replacement still rolls.
+mounts sorted Secrets only in the first initializer. Session replacement causes a rollout.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts:REPOSITORY_MATERIAL_INIT_ENTRYPOINT`
-validates the full projection before writing in-memory mode-0700 directories
-and mode-0600 files. `REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts the private
-subPath at `/run/oce/repository-credentials` outside the fsGroup-writable root and calls
+validates the projection before writing in-memory directories (0700) and files (0600).
+`REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts `/run/oce/repository-credentials`
+outside the fsGroup-writable root and calls
 `apps/controller/src/drivers/repo/github/access/client/native-git.ts:prepareNativeGitConfiguration`
-to check private files and write `gitconfig`. Retry removes only validated
-private `gitconfig`. Both initializers gate startup. The consumer mount is
-read-only. Metadata and gateway bearers stay separate.
+to validate private files and write `gitconfig`. Retry removes only validated
+`gitconfig`. Both initializers gate startup. Consumers get a read-only mount.
+Metadata and gateway bearers stay separate.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.activateRevision`
 replaces consumers whenever material changes, including within a version. Readiness requires
@@ -273,7 +270,7 @@ accepts [CLI metadata](../reference/repository-credentials/protected-openshell-g
 `git-write` `draftScope` excludes the timezone header.
 `installationApiOperation` admits `gh auth status` API-root reads under current
 GitHub API grants. The grant owner authorizes signed requests.
-`apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
+`apps/controller/src/drivers/repo/github/access/protected-requests.ts:validGitHubRequestBinding`
 uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`.
 Draft heads require concrete refs. Receive-pack rejects disallowed refs before approval.
 [Access levels](../reference/repository-credentials/access-levels.md) define the grants.
@@ -343,14 +340,18 @@ without waiting for sessions. `PostgresWorkQueue.completeAgentDeletion`
 calls `occ.finalize_agent_deletion` to atomically detach attempts, delete live rows and audit.
 Unresolved provisioning defers completion without consuming retries.
 
-Compute waits for owned Pods to stop before removing material, preserving Secrets referenced by Pods/current Deployments. Deletion requires ownership and UID preconditions; Routes/Deployments also require resourceVersion. Stop preserves newer resources. Shared cleanup retries partial failure; service restart cannot prove remote revocation.
+Compute waits for owned Pods to stop and preserves Secrets used by Pods or current Deployments.
+Deletion checks ownership and UID. Routes and Deployments also require `resourceVersion`.
+Stop preserves newer resources. Cleanup retries partial failure. Service restart gives no revocation evidence.
 
 ## Debugging and Verification
 
-`occ agent get AGENT_ID --output json` reports `activeRevisionId`. Inspect
-`REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
-`REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
-`REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
+The [worker installation check](../snippets/openshell-quickstart/verify-github-installation.mts)
+sends a signed, bodyless GET after TLS verification. It requires matching IDs,
+rejects replies above 65,536 bytes, and reports only status and connection diagnostics.
+
+Use `occ agent get AGENT_ID --output json` to read `activeRevisionId`.
+Check registry identity and expiry before retry.
 `apps/controller/src/worker.ts:processRepositoryCleanup` logs
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
@@ -358,10 +359,9 @@ Compute waits for owned Pods to stop before removing material, preserving Secret
 and `name-one-repository-ref` require explicit selection. Inspect metadata
 and Pod generation without printing credentials.
 
-[Tests](../testing/repository-credentials.md) distinguish lifecycle, installed-runtime
-and live-provider proof. [Docker/Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
-exclude CNI; console fixtures exclude model, Slack and GitHub execution.
-Verify live PR updates, denial before provider contact and continued chat separately.
+See [repository credential tests](../testing/repository-credentials.md) for installed
+runtime and live provider checks. [Docker and Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
+exclude CNI.
 
 ## Related docs
 
@@ -376,6 +376,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 13:30: Trace the worker-side installation check and reply limits. (authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d - 7a8e52f38b378151c8c08ef1b6dd466ab24834bb)
 
 - 2026-11-12 12:38: Admit GitHub CLI authentication discovery under current API grants. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb5113e006f7aeee9d5e2a04b504232bbead)
 

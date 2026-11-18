@@ -7,8 +7,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
 import type { Browser, Page } from "playwright";
-import { textFromFrame, waitForStockUi } from "../../../tests/helpers/native-ui-chat.mjs";
+import { textFromFrame, waitForStockUi } from "../../../tests/helpers/native-ui-chat.ts";
 import { launchTrustingBrowser } from "../../../tests/helpers/trusted-chromium.ts";
+import { isRecord } from "../records.ts";
 
 // Playwright runs these calls in the stock UI's page context.
 declare const openclawControlUi: {
@@ -26,10 +27,6 @@ type BrowserHistory = {
 
 let stage = "initialize";
 let browser: Browser | undefined;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 async function openAgent(consolePage: Page, origin: string, sessionKey?: string) {
   const [page] = await Promise.all([

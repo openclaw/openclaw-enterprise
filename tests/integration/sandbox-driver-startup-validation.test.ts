@@ -72,6 +72,8 @@ const invalidValue = (path: string, message: string): RefusalDetail[] => [
 test("startup refuses unknown OpenShell settings and invalid Agent resource quantities", async (t) => {
   for (const [change, path] of [
     [(c) => Object.assign(sandboxOf(c).kubernetes, { userNamespace: false }), "/kubernetes"],
+    // Runtime placement belongs to Kubernetes/provider configuration, not OCE.
+    [(c) => Object.assign(sandboxOf(c).kubernetes, { runtimeClassName: "runc" }), "/kubernetes"],
     [
       (c) => Object.assign(sandboxOf(c).kubernetes.serviceAccount, { name: "sandbox" }),
       "/kubernetes/serviceAccount",
@@ -111,7 +113,8 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
     // Quantities are strings: without the type check 512 would parse as a quantity (5 does not).
     { requests: { memory: 512 } },
     { limits: { cpu: "1", "example.com/gpu": "1 Gi" } },
-    { requests: { cpu: "-500m" } },
+    // A negative sub-Nano request rounds to a negative quantity.
+    { requests: { cpu: "-0.00000000001" } },
   ]) {
     const [section] = Object.keys(agentResources);
     await rejectsAtStartup(
@@ -170,13 +173,13 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
   // Control: every known key, and quantities in each spelling the API server accepts, load.
   const accepted = sandboxInstallation();
   Object.assign(sandboxOf(accepted).kubernetes, {
-    // Zero is a valid quantity, and a request needs no limit.
+    // Signed zero is a valid quantity, and a request needs no limit.
     agentResources: {
       requests: {
         cpu: "500m",
         memory: "1Gi",
         "example.com/gpu": "1",
-        "ephemeral-storage": "0",
+        "ephemeral-storage": "-0",
       },
       limits: { cpu: "0.5", memory: "4e9", "example.com/gpu": "1" },
     },
@@ -261,10 +264,10 @@ test("startup refuses invalid or conflicting exact-Agent resource overrides", as
     t,
     (c) => {
       Reflect.set(sandboxOf(c).kubernetes, "agentResourceOverrides", [
-        { ...override, runtimeClassName: "bad/Name" },
+        { ...override, runtimeClassName: "runc" },
       ]);
     },
-    invalidValue(`${path}/0/runtimeClassName`, "Use a Kubernetes RuntimeClass resource name."),
+    structuralRefusal(`${path}/0`, "additionalProperties", "UNKNOWN_FIELD"),
   );
 });
 

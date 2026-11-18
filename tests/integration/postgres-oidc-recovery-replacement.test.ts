@@ -17,7 +17,6 @@ import {
   changeAccount,
   first,
   oidcSignIn,
-  onboarded,
   parseAuthResponse,
   passwordSignIn,
   readAccount,
@@ -29,7 +28,7 @@ import {
   type SignInApp,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
 const secondSubject = "9200002";
 // The production slow lane with shorter floors (250 ms doubling to a 500 ms cap instead of
@@ -84,18 +83,15 @@ test(
     const {
       admin,
       accounts: { second, third, member },
-    } = onboarded(
-      await authOperation("onboard accounts", () =>
-        onboard({
-          remoteAddress: address(),
-          accounts: {
-            second: { email: "replacement-second@example.test", role: "admin" },
-            third: { email: "replacement-third@example.test", role: "admin" },
-            member: { email: "replacement-member@example.test" },
-          },
-        }),
-      ),
-      ["second", "third", "member"],
+    } = await authOperation("onboard accounts", () =>
+      onboard({
+        remoteAddress: address(),
+        accounts: {
+          second: { email: "replacement-second@example.test", role: "admin" },
+          third: { email: "replacement-third@example.test", role: "admin" },
+          member: { email: "replacement-member@example.test" },
+        },
+      }),
     );
     const settings = oidcUpgradeSettings(admin.id);
     const recoveryOnly = {

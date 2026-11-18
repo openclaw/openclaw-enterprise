@@ -133,6 +133,8 @@ one `@` and a dotted domain.
 }
 ```
 
+Optional `controlPlane.clusterPort` sets the Kubernetes API egress port (default 443).
+
 `controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
 `controlPlane.databaseCa.secretName` must be Kubernetes resource names of at
 most 253 characters: the existing GatewayClass that Envoy Gateway serves, the
@@ -215,6 +217,8 @@ existing `recoveryUserId`. Google disables native access; OIDC supports it. To u
 set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
 same-site HTTPS Console and Agent domains.
 
+For Keycloak, start with the [production profile example](oidc-keycloak.md#render-the-production-profile).
+
 Use `controlPlane.oidc.enrollment` for the
 [enrollment policy](../../reference/authentication/team-enrollment.md), including
 admission, initial Role and Group selection. `controlPlane.github` is rejected;
@@ -288,7 +292,7 @@ Run the renderer from the repository root with Node.js satisfying `engines.node`
 admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
-node scripts/render-installation-profile.mjs \
+node scripts/render-installation-profile.ts \
   --profile codex \
   --input .build/profile-inputs/codex.json \
   --out-dir .build/profile-renders/codex

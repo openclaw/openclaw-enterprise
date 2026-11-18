@@ -9,8 +9,8 @@ import {
   explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+} from "../helpers/kubernetes-real.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 // Premise test for delivering late workload inputs through optional volumes.
 // A Pod starts before its optional Secret or ConfigMap exists; the object is created

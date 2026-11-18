@@ -2,52 +2,29 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
-import type {
-  ClientCommand,
-  CredentialClientFixture,
-  StartCredentialClientFixture,
-} from "../fixtures/repository-credentials/clients.ts";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { appFunction } from "../fixtures/repository-credentials/app-functions.ts";
+import { exerciseLiveWorkflow } from "../fixtures/repository-credentials/live-workflow.ts";
+import type { SessionStatus } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import {
   createNativeClientMaterial,
   loadRepositoryClientModule,
 } from "../fixtures/repository-credentials/clients.ts";
-import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
+import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.ts";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import {
-  cleanEnvironment,
-  run as runProcess,
-} from "../fixtures/repository-credentials/process.mjs";
-import {
-  startCredentialServiceFixture as startService,
-  gatewayRequest as requestGateway,
-} from "../fixtures/repository-credentials/service.mjs";
+  startCredentialServiceFixture,
+  gatewayRequest,
+} from "../fixtures/repository-credentials/service-fixture.ts";
 import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.ts";
-import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
+import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 import {
   registerResourceCleanup,
   type ResourceCleanup,
 } from "../fixtures/repository-credentials/cleanup.ts";
 
-type GhFixture = Pick<CredentialClientFixture, "tls" | "github"> &
-  Parameters<typeof exerciseGit>[1] &
-  Parameters<typeof exerciseGh>[0];
-const startCredentialServiceFixture: (
-  ...args: Parameters<StartCredentialClientFixture>
-) => Promise<GhFixture | undefined> = startService;
-
-type GatewayOptions = {
-  method?: string;
-  body?: JsonValue | undefined;
-  headers?: Record<string, string>;
-};
-const gatewayRequest: (
-  fixture: GhFixture,
-  target: string,
-  options?: GatewayOptions,
-) => Promise<{ status: number; body: string }> = requestGateway;
-const run = runProcess as ClientCommand;
 function jsonObject(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Record<string, unknown>;
@@ -70,7 +47,6 @@ test("pinned gh uses selected development token routing for repository, issue an
   const fixture = await startCredentialServiceFixture(t, {
     configuration: { pushRefAllowlist: ["refs/heads/agent-feature", "refs/heads/native-feature"] },
   });
-  assert.ok(fixture);
   const singleHostsPath = join(fixture.clientDirectory, "gh", "hosts.yml");
   const originalSingleHosts = await readFile(singleHostsPath);
   const { client, checkout } = await exerciseGit(t, fixture);
@@ -113,6 +89,7 @@ test("pinned gh uses selected development token routing for repository, issue an
   );
   assert.ok(
     fixture.github.trace.some((entry) => {
+      assert.ok(entry.target);
       const target = new URL(entry.target, "https://api.github.com");
       return (
         target.pathname === "/repos/fixture/repository/issues" && target.searchParams.has("after")
@@ -120,7 +97,7 @@ test("pinned gh uses selected development token routing for repository, issue an
     }),
   );
   assert.equal(
-    fixture.github.trace.some((entry) => entry.target.startsWith("/repositories/")),
+    fixture.github.trace.some((entry) => entry.target?.startsWith("/repositories/")),
     false,
   );
   assert.ok(
@@ -134,7 +111,7 @@ test("pinned gh uses selected development token routing for repository, issue an
   registerResourceCleanup(cleanups, {
     request: async ({ method, path, body }) => {
       const response = await gatewayRequest(fixture, `/${path}`, { method, body });
-      assert.ok(response.status < 400);
+      assert.ok(response.status !== undefined && response.status < 400);
       if (!response.body) {
         return undefined;
       }
@@ -171,14 +148,15 @@ test("pinned gh uses selected development token routing for repository, issue an
   assert.equal(writes.length, 1, "gh must not replay an uncertain pull-request creation");
   assert.ok(writes[0]?.tokenIndex, "the controlled provider must authenticate the write");
   const pulls = fixture.github.pulls;
-  const accepted = [...pulls.values()].filter((pull) => pull.body === marker);
+  const accepted = [...pulls].filter(([, pull]) => pull.body === marker);
   assert.equal(accepted.length, 1, "the provider must accept the marked pull request once");
   const acceptedPull = accepted[0];
   assert.ok(acceptedPull);
-  assert.equal(acceptedPull.draft, true);
+  const [pullNumber, storedPull] = acceptedPull;
+  assert.equal(storedPull.draft, true);
   assert.ok(cleanups[0]);
   await cleanups[0](AbortSignal.timeout(5000));
-  assert.equal(pulls.get(acceptedPull.number)?.state, "closed");
+  assert.equal(pulls.get(pullNumber)?.state, "closed");
   // All fixed runtime paths below live only inside the disposable fixture
   // container. Private HOME configuration proves real child Git is preserved;
   // image-owned system include qualification belongs to the platform tests.
@@ -307,7 +285,7 @@ test("pinned gh uses selected development token routing for repository, issue an
     "/repositories/73/issues",
   ]) {
     const denied = await gatewayRequest(fixture, target);
-    assert.ok(denied.status >= 400);
+    assert.ok(denied.status !== undefined && denied.status >= 400);
   }
   assert.equal(fixture.github.trace.length, before);
   assert.ok(
@@ -322,9 +300,182 @@ test("pinned gh uses selected development token routing for repository, issue an
 
 // The host case runs this entire file in the container, including this fault case.
 if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
+  for (const loseCommentReply of [false, true]) {
+    test(
+      loseCommentReply
+        ? "the shared smoke workflow cleans up after losing an accepted comment reply"
+        : "the shared smoke workflow cleans up after stock Git and gh succeed",
+      async (t) => {
+        // The operator stamps admissions with wall time, so the real socket
+        // and the operator must share the system clock for this case.
+        const createSystemClock = await appFunction(
+          "drivers/repo/access/clock",
+          "createSystemClock",
+        );
+        const fixture = await startCredentialServiceFixture(t, {
+          clock: createSystemClock(),
+          configuration: { pushRefAllowlist: ["refs/heads/credential-smoke/*"] },
+        });
+        const prefix = "/repos/fixture/repository";
+        const keepRef = "refs/heads/credential-smoke/unrelated";
+        const bare = { cwd: fixture.git.bare };
+        const git = (args: string[]) => run("/usr/bin/git", args, bare);
+        const main = await fixture.git.ref("refs/heads/main");
+        await git(["update-ref", keepRef, main]);
+        // The receiving Git repository records committed ref transitions, even
+        // when cleanup deletes the pushed ref before the test can read it.
+        const auditPath = join(fixture.git.bare, "ref-transactions");
+        await writeFile(
+          join(fixture.git.bare, "hooks", "reference-transaction"),
+          '#!/bin/sh\nif [ "$1" = committed ]; then cat >> ref-transactions; fi\n',
+          { mode: 0o755 },
+        );
+
+        const unrelatedIssue = await gatewayRequest(fixture, `${prefix}/issues`, {
+          method: "POST",
+          body: { title: "Unrelated issue", body: "Retain this issue" },
+        });
+        assert.equal(unrelatedIssue.status, 201);
+        const issueNumber = parseJsonObject(unrelatedIssue.body).number;
+        assert.equal(typeof issueNumber, "number");
+        const unrelatedComment = await gatewayRequest(
+          fixture,
+          `${prefix}/issues/${issueNumber}/comments`,
+          { method: "POST", body: { body: "Retain this comment" } },
+        );
+        assert.equal(unrelatedComment.status, 201);
+        const unrelatedPull = await gatewayRequest(fixture, `${prefix}/pulls`, {
+          method: "POST",
+          body: {
+            title: "Unrelated pull",
+            body: "Retain this pull",
+            base: "main",
+            head: "existing-branch",
+          },
+        });
+        assert.equal(unrelatedPull.status, 201);
+        const priorIssues = [...fixture.github.issues.entries()].map((entry) =>
+          structuredClone(entry),
+        );
+        const priorPulls = [...fixture.github.pulls.entries()].map((entry) =>
+          structuredClone(entry),
+        );
+        const priorComments = [...fixture.github.comments.entries()].map((entry) =>
+          structuredClone(entry),
+        );
+        const traceStart = fixture.github.trace.length;
+        const disposed: SessionStatus[] = [];
+        t.after(fixture.service.observeDisposal((status) => disposed.push(status)));
+        if (loseCommentReply) {
+          // All earlier writes complete. The provider records the comment and
+          // then disconnects, leaving the workflow without a comment ID.
+          fixture.github.disconnectAfterMutation(
+            "POST",
+            /^\/repos\/fixture\/repository\/issues\/\d+\/comments$/,
+          );
+        }
+        const work = exerciseLiveWorkflow(t, {
+          socket: fixture.config.gateway.controlSocket,
+          readPublicCa: () => readFile(fixture.tls.certFile),
+        });
+        if (loseCommentReply) {
+          await assert.rejects(work, /^Error: command failed \(exit 1\)$/);
+        } else {
+          await work;
+        }
+
+        const transitions = (await readFile(auditPath, "utf8")).trim().split("\n");
+        assert.equal(transitions.length, 2, "only the run-owned ref may be written");
+        const [addition, deletion] = transitions;
+        assert.ok(addition && deletion);
+        const [zero, commit, ref] = addition.split(" ");
+        assert.ok(commit && ref);
+        assert.match(commit, /^[a-f0-9]{40}$/);
+        assert.equal(zero, "0".repeat(40));
+        assert.match(ref, /^refs\/heads\/credential-smoke\/[a-f0-9]{32}$/);
+        assert.equal(deletion, `${commit} ${zero} ${ref}`);
+        assert.equal(
+          (await git(["show", "-s", "--format=%P%n%s", commit])).stdout.trim(),
+          `${main}\nCredential gateway smoke`,
+        );
+        assert.deepEqual(
+          (await git(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"])).stdout
+            .trim()
+            .split("\n"),
+          [`${keepRef} ${main}`, `refs/heads/existing-branch ${main}`, `refs/heads/main ${main}`],
+        );
+
+        const branch = ref.slice("refs/heads/".length);
+        const [pull] = [...fixture.github.pulls.values()].filter(
+          (value) => value.body === `<!-- ${branch}:pull -->`,
+        );
+        const [issue] = [...fixture.github.issues.values()].filter(
+          (value) => value.body === `<!-- ${branch}:issue -->`,
+        );
+        assert.ok(pull && issue);
+        assert.equal(fixture.github.pulls.size, priorPulls.length + 1);
+        assert.equal(fixture.github.issues.size, priorIssues.length + 1);
+        assert.equal(pull.state, "closed");
+        assert.equal(pull.title, "Credential gateway smoke checked");
+        assert.equal(issue.state, "closed");
+        assert.deepEqual([...fixture.github.comments], priorComments);
+        for (const [number, value] of priorIssues) {
+          assert.deepEqual(fixture.github.issues.get(number), value);
+        }
+        for (const [number, value] of priorPulls) {
+          assert.deepEqual(fixture.github.pulls.get(number), value);
+        }
+        const writes = fixture.github.trace
+          .slice(traceStart)
+          .flatMap(({ method, target, tokenIndex }) => {
+            if (method === "POST" || method === "PATCH" || method === "DELETE") {
+              assert.ok(tokenIndex, "the provider must authenticate each write");
+              return [`${method} ${target}`];
+            }
+            return [];
+          });
+        const [
+          createdPull,
+          updatedPull,
+          createdIssue,
+          createdComment,
+          deletedComment,
+          closedIssue,
+          closedPull,
+        ] = writes;
+        assert.deepEqual(
+          [createdPull, updatedPull, createdIssue, createdComment],
+          [
+            `POST ${prefix}/pulls`,
+            `PATCH ${prefix}/pulls/${pull.number}`,
+            `POST ${prefix}/issues`,
+            `POST ${prefix}/issues/${issue.number}/comments`,
+          ],
+        );
+        assert.ok(deletedComment?.startsWith(`DELETE ${prefix}/issues/comments/`));
+        assert.deepEqual(
+          [closedIssue, closedPull],
+          [`PATCH ${prefix}/issues/${issue.number}`, `PATCH ${prefix}/pulls/${pull.number}`],
+        );
+        assert.equal(writes.length, 7);
+
+        assert.equal(disposed.length, 1, "the work session must dispose before fixture shutdown");
+        const [status] = disposed;
+        assert.ok(status);
+        assert.notEqual(status.sessionId, fixture.opened.session.sessionId);
+        assert.equal(status.state, "DISPOSED");
+        assert.equal(status.activeUses, 0);
+        assert.equal(status.cleanup.active, 0);
+        assert.equal(status.cleanup.pending, 0);
+        assert.equal(status.cleanup.uncertain, 0);
+        assert.equal(status.cleanup.auxiliaryPending, false);
+        assert.deepEqual(fixture.github.errors, []);
+      },
+    );
+  }
+
   test("uncertain API POST, PATCH and DELETE requests are sent once", async (t) => {
     const fixture = await startCredentialServiceFixture(t);
-    assert.ok(fixture);
     const prefix = "/repos/fixture/repository";
     const issued = await gatewayRequest(fixture, `${prefix}/issues`, {
       method: "POST",
@@ -348,7 +499,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
       fixture.github.disconnectAfterMutation(method, target);
       try {
         const response = await gatewayRequest(fixture, target, { method, body });
-        assert.ok(response.status >= 400);
+        assert.ok(response.status !== undefined && response.status >= 400);
       } catch (error) {
         assert.ok(error instanceof Error);
         const code = "code" in error && typeof error.code === "string" ? error.code : error.message;

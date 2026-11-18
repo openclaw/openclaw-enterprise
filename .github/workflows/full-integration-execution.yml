@@ -38,8 +38,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 2
           persist-credentials: false
-      - name: Set up scheduled admission runtime
-        if: github.event_name == 'schedule'
+      - name: Set up preflight runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -49,7 +48,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_LANE: ${{ inputs.lane }}
         run: |
-          node scripts/ci/full-integration-preflight.mjs
+          node scripts/ci/full-integration-preflight.ts
       - name: Prepare fresh lane fallback
         id: fresh-plan
         if: steps.select.outputs.run_all == 'true'
@@ -696,10 +695,10 @@ jobs:
         env:
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
-        run: node scripts/ci/first-agent-smoke.mjs prepared-git-images
+        run: node scripts/ci/first-agent-smoke.ts prepared-git-images
       - name: Record independent checkout image selection
         timeout-minutes: 1
-        run: node scripts/ci/first-agent-smoke.mjs release-selection "$RUNNER_TEMP/skipper-release-selection.json"
+        run: node scripts/ci/first-agent-smoke.ts release-selection "$RUNNER_TEMP/skipper-release-selection.json"
       - name: Prove native private Git and withdrawal on the same installed Agent
         id: installed-skipper-proof
         env:
@@ -723,6 +722,7 @@ jobs:
           SKIPPER_GATEWAY_CHAT_PHASE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_chat_phase }}
           SKIPPER_HTTP_STATUS: ${{ steps.installed-skipper-proof.outputs.skipper_http_status }}
           SKIPPER_GATEWAY_CATEGORY: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_category }}
+          SKIPPER_GATEWAY_FETCH_ELAPSED_MS: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_fetch_elapsed_ms }}
           SKIPPER_GATEWAY_TRANSPORT_CAUSE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_transport_cause }}
           SKIPPER_RUNTIME_SIGNAL: ${{ steps.installed-skipper-proof.outputs.skipper_runtime_signal }}
           SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS: ${{ steps.installed-skipper-proof.outputs.skipper_model_fixture_selected_terminal_success }}
@@ -740,7 +740,7 @@ jobs:
           retention-days: 7
       - name: Qualify installed Skipper image selection
         timeout-minutes: 1
-        run: node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed --release-selection "$RUNNER_TEMP/skipper-release-selection.json" --results-dir "$RUNNER_TEMP/results"
+        run: node scripts/ci/run-tests.ts aggregate skipper-prepared-git-installed --release-selection "$RUNNER_TEMP/skipper-release-selection.json" --results-dir "$RUNNER_TEMP/results"
       # The runner writes only verified test metadata here, after checking proof and cleanup.
       - name: Upload selected test and cleanup outcome
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -855,12 +855,12 @@ jobs:
         if: needs.preflight.outputs.run_all != 'true'
         env:
           SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane }}
-        run: node scripts/ci/run-tests.mjs aggregate "$SELECTED_LANE" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+        run: node scripts/ci/run-tests.ts aggregate "$SELECTED_LANE" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
       - name: Aggregate full suite
         id: aggregate-full
         if: needs.preflight.outputs.run_all == 'true'
         run: >-
-          node scripts/ci/run-tests.mjs aggregate full
+          node scripts/ci/run-tests.ts aggregate full
           --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
           --full-coverage-marker "$RUNNER_TEMP/full-integration-exercised"
       - name: Upload full coverage marker
@@ -887,7 +887,7 @@ jobs:
     env:
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
-      # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs. Job-scoped: dev-up.test.mjs
+      # Keep in step with defaultK3sImage in scripts/ci/prepare.ts. Job-scoped: dev-up.test.mjs
       # in checks-baseline-1 asserts the +v1.35 default.
       OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: all

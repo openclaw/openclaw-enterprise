@@ -16,8 +16,6 @@ import {
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
@@ -35,6 +33,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import {
+  deploymentDetailsOpen,
   deploymentRecordUrl,
   expectDeploymentOutcome,
 } from "./console-deployment-activity-helpers.ts";
@@ -48,12 +47,13 @@ import {
   omitNativeAdminStatusFields,
 } from "./console-agents-test-support.ts";
 import { STOP_REQUESTED, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   registerDeletionAndNavigationCases,
   registerSettingsRefocusAndTabsCases,
   registerSharingCredentialsAndChannelsCases,
 } from "./console-agent-detail-cases.mts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function assertRecord(
   value: unknown,
@@ -370,7 +370,98 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
 });
 
+test("Agent browser access keeps the Open chat label while refreshing", async (t) => {
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
+  const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
+    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    agentGatewayManagedMode: false,
+    computeDriver: nativeAdminComputeDriver(
+      "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent",
+    ),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Browser access", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Workshop Agent", nativeValues("chat-ui"));
+  const previous = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const statusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
+  const initial = await fixture.request("GET", statusPath);
+  assert.equal(initial.status, 200);
+  const initialAccess: unknown = initial.data;
+  assertRecord(initialAccess, "Initial browser access");
+  assert.equal(initialAccess.status, "unsupported");
+  assert.ok(typeof initialAccess.origin === "string");
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeAdminValues("chat-ui", initialAccess.origin),
+  );
+  const active = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+    previous.revision.id,
+  );
+
+  // The operator has chat access and the refresh goes to the real Controller route.
+  restrict(fixture.policy, "administer", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  const { page } = await newPage(t, fixture, browserOptions);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const chatLink = page.getByRole("link", { name: "Open chat", exact: true });
+  await chatLink.waitFor();
+  const destination = await chatLink.getAttribute("href");
+  assert.ok(destination);
+
+  const statusUrl = `${fixture.origin}${statusPath}`;
+  const held = await holdRequests(t, page, statusUrl, { once: true, method: "GET" });
+  const refreshed = page.waitForResponse(
+    (response) => response.url() === statusUrl && response.request().method() === "GET",
+  );
+  const refresh = page.getByRole("button", { name: "Refresh access", exact: true });
+  const isRefreshFocused = () =>
+    refresh.evaluate((node) => node === node.ownerDocument.activeElement);
+  await refresh.focus();
+  await page.keyboard.press("Enter");
+  await held.requested;
+  const pending = page.locator(".agent-ui-unavailable");
+  assert.equal(await pending.isVisible(), true);
+  assert.equal(await pending.getAttribute("aria-disabled"), "true");
+  assert.equal(await page.getByText("Checking access…", { exact: true }).isVisible(), true);
+  assert.equal(await chatLink.isVisible(), false);
+  assert.equal(await page.locator(".agent-ui-launch").getAttribute("href"), null);
+  assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+  assert.equal(await isRefreshFocused(), true);
+  const chatLabelWasVisible = await page
+    .getByRole("button", { name: "Open chat", exact: true })
+    .isVisible();
+  const pendingLabel = await pending.innerText();
+
+  held.release();
+  assert.equal((await refreshed).status(), 200);
+  await chatLink.waitFor();
+  await waitForEnabled(refresh);
+  assert.equal(await chatLink.getAttribute("href"), destination);
+  assert.equal(await pending.isVisible(), false);
+  assert.equal(await isRefreshFocused(), true);
+
+  // Restoring administration re-enables the administrative launch control on the same Agent.
+  fixture.policy.restrictions.length = 0;
+  await page.reload();
+  const adminLink = page.getByRole("link", { name: "Open Agent UI", exact: true });
+  await adminLink.waitFor();
+  assert.ok(await adminLink.getAttribute("href"));
+  assert.equal(chatLabelWasVisible, true, `Pending chat launch displayed "${pendingLabel}"`);
+});
+
 test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   if (!nativeBrowserSupported(t)) {
     return;
   }
@@ -758,6 +849,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
 registerSharingCredentialsAndChannelsCases(detailApp);
 
 test("Deployment activity keeps keyboard focus when refresh discovers a newer version", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Deployment refresh focus", { ready: true });
   const agent = await fixture.createAgent(
@@ -770,8 +862,8 @@ test("Deployment activity keeps keyboard focus when refresh discovers a newer ve
   const { page } = await newPage(t, fixture, {
     context: { viewport: { width: 1440, height: 1000 } },
   });
-  // This controller fixture admits revisions but has no deployment worker. Supply
-  // its supported queued record only for v1; v2's read and all overview calls use the real API.
+  // This fixture admits revisions without recording deployment operations. Supply
+  // the queued record only for v1; later record reads and overview calls use the real API.
   const queued = deploymentStatusResponse(first, { status: "queued" });
   await page.route(firstUrl, (route) => route.fulfill(queued));
   await page.clock.install();
@@ -861,4 +953,44 @@ test("Deployment activity keeps keyboard focus when refresh discovers a newer ve
     true,
     "Refresh deployment keeps focus after the newer record appears",
   );
+
+  // A keyboard reader can move to the disclosure while a refresh is in flight.
+  const summary = activity.locator(":scope > details > summary");
+  const summaryHasFocus = () => summary.evaluate((node) => node === document.activeElement);
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v3"));
+  const third = await fixture.deployAgent(namespace.id, agent.id);
+  const thirdUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, third.id);
+  const heldRefresh = await holdRequests(t, page, secondUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await page.keyboard.press("Enter");
+  const heldRefreshResponse = await heldRefresh.requested;
+  assert.ok(heldRefreshResponse);
+  assert.equal(heldRefreshResponse.status(), 503);
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await summaryHasFocus(), true);
+  if (await deploymentDetailsOpen(page)) {
+    await page.keyboard.press("Enter");
+  }
+  assert.equal(await deploymentDetailsOpen(page), false);
+  const oldSummary = await summary.elementHandle();
+  assert.ok(oldSummary);
+
+  const thirdRecord = page.waitForResponse(
+    (response) => response.url() === thirdUrl && response.request().method() === "GET",
+  );
+  heldRefresh.release();
+  assert.equal((await thirdRecord).status(), 503);
+  await activity
+    .getByText("Most recent visible deployment · v3", { exact: true })
+    .waitFor({ state: "attached" });
+  assert.equal(await oldSummary.evaluate((node) => node.isConnected), false);
+  assert.equal(await summaryHasFocus(), true, "the newer disclosure keeps keyboard focus");
+  assert.equal(await deploymentDetailsOpen(page), true);
+  await page.keyboard.press("Enter");
+  assert.equal(await deploymentDetailsOpen(page), false);
+  await page.keyboard.press("Space");
+  assert.equal(await deploymentDetailsOpen(page), true);
 });

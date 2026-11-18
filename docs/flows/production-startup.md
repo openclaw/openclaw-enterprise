@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-13"
-last_updated_session: "authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9"
 ---
 
 # Production Startup Flow
@@ -124,9 +124,8 @@ Helm. Otherwise it syncs the unknown marker and starts Helm.
 (installs only). Helm's outcome stays separate; final report write errors fail
 the command without changing that outcome or replaying install.
 
-Reported template failures add static [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff),
-including settings for the suffix refusal. Stderr stays in memory (4 MiB); excess is discarded without affecting Helm. Raw diagnostics are never
-printed or saved. Receipt and recovery decisions stay unchanged.
+Template failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
+Helm stderr is bounded to 4 MiB in memory; raw diagnostics are not printed or saved.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
@@ -138,47 +137,41 @@ Jobs during connected installs. Offline rendering cannot check this; lookup
 neither locks names nor verifies database/volume freshness.
 
 `openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
-checks routing, ports and peer labels. Operators supply GatewayClass, CRDs,
-controllers and Secrets. [Disabling routing](../guides/deploy/workspace-routing.md#explicit-opt-out)
-omits its resources/mounts and requires disabling native admin and sandbox routing.
-Database/API ports accept 1–65535 without leading zeros; worker metrics/repository
-ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
-numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
+checks routing, ports and peer labels. See [routing opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
+and [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
-On install and upgrade, `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
-validates Installation offline before migration, bootstrap and API rollout.
-It uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
-and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
-diagnostics, without submitted values, except
-`apps/controller/src/composition/installation-fields.ts:requireChartListener`:
-`CHART_LISTENER_MISMATCH` names ports, hosts or paths refused when
-`OCC_EGRESS_AUTHORITY_PORT`/`OCC_OPENSHELL_GIT_PORT` is set.
+Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
+(generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap and
+API rollout. The migration container evaluates the chart's
+`files/migrate-selected-image.cjs` program. It validates the selected image's
+`db:migrate:production` package command, forwards the exact mode argument, and imports
+that image's migration entry point in the same Node process.
+`formatStartupConfigurationFailure` and `configurationLogDetails` report
+up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
+`OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
+ports, hosts or paths as `CHART_LISTENER_MISMATCH`.
 
-For chart-managed routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
-to the hook, API and worker. `requireChartGatewayRouting` compares the Kubernetes
-Compute Gateway name, Gateway and Envoy namespaces, and effective hostname.
-A mismatch reports the field without its value.
+`openclaw.listenerEnv` passes routing settings to the hook, API and worker.
+`requireChartGatewayRouting` reports mismatched fields without values.
 
-The hook keeps the release name and bounds its suffix to 63 characters. Both
-database containers optionally mount the CA. Helm validates distinct application and
-migration Secret keys against Kubernetes syntax before use. `installation.key`
-and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
-not `.` or a `..` prefix.
+The hook validates its name and distinct database Secret keys; both database containers can mount the CA. See [production settings](../reference/settings/production.md).
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
-`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies receipt
-namespace/release/cluster connection before reading the named Job.
-`initializationEvidence` checks marker, captured UID, chart steps, controller and
-terminal status. Missing UID, replacement, refusal or inconclusive status leaves
-the checkpoint unknown. Doctor separately reports Helm's outcome; plan adds
-read-only recovery. Both check the buffered report's `WriteTo` before returning
-Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and exit `1`.
+`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the receipt
+target before reading the Job. `initializationEvidence` checks its marker, UID, exact chart
+steps, controller and terminal status. A separate-upgrade Job verifies schema before bootstrap.
+Missing, replaced, refused or inconclusive evidence leaves the checkpoint unknown.
+Doctor reports Helm separately; report write errors exit `1`.
 
-`scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
+`scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
 After source verification, all modes reject PostgreSQL before 17 with
 fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access
 ([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
+On SIGINT or SIGTERM, the command uses a second migrator connection to terminate its
+uniquely named database session and waits for cleanup before exit. Listeners ignore repeated signals during cleanup. If the control
+connection fails, the command reports `migration.cancellation-failed` and waits for the
+migration to return.
 Under the advisory lock, the same connection verifies roles and receipts,
 then catalogs and grants against native or reviewed restore digests. Unsupported
 history fails before DDL/bootstrap. After option guards, completed apply
@@ -209,22 +202,22 @@ the Job. Helm failure does not imply database-hook rollback.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
-With [OIDC CA settings](../reference/settings/oidc.md), the API init container
-`deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs` validates and combines
-IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
-`deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
-database TLS not pinned to that CA.
+With [OIDC CA settings](../reference/settings/oidc.md), generated
+[`assemble-api-ca.mjs`](../layout.md#deployment-tooling-and-checks) combines
+validated IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`.
+The `check-api-database-ca.mjs` preload requires the selected CA and DNS hostname
+verification for PostgreSQL.
 
 `apps/controller/src/auth/configuration.ts:validateAuthSecret` rejects short
 secrets before Driver construction or PostgreSQL access. `composeProduction` and
 the auth factory repeat it. Endpoints include `/healthz` and `/readyz`.
 `apps/controller/src/composition/postgres-readiness.ts:createPostgresReadinessCheck`
 shares one application-pool `SELECT 1` per instance across overlapping `GET` and
-implicit `HEAD` probes until PostgreSQL settles. Disconnects cannot release it;
-later probes query afresh.
-The startup probe allows 120 one-second failures; readiness has a one-second
-timeout. Worker exec probes run Node under its CPU limit; 24 five-second startup failures
-allow two minutes.
+implicit `HEAD` probes. The query stays active when probes disconnect. Subsequent
+probes query again once PostgreSQL returns.
+API startup allows 120 one-second failures. API readiness times out after one
+second. [Worker startup](../../scripts/production-healthcheck.ts) allows 24
+five-second failures.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
@@ -247,17 +240,18 @@ listener, metrics, and prepared GitHub owner in order, continuing after a close
 fails, then stops its loop and database. A listener left open would keep the Pod
 running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
 (exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
+Failed startup closes an installed Driver package, refused or loaded, before the
+worker loop owns it, keeping the original error.
 
-Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
-on reviewed control-plane nodes; empty defaults omit it.
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also applies it
-to `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`, keeping the private
-proxy on that pool. Tenant gateway and Agent placement remain Compute-owned.
+When set, `controlPlane.nodeSelector` places the API, worker, migration,
+bootstrap, and private proxy on reviewed control-plane nodes. The
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` template sets
+`EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`. Compute owns tenant
+Gateway and Agent placement.
 
-With `database.caSecretName`, `_helpers.tpl` rejects CA destinations aliasing active
-client mounts, including relative paths, dot segments and trailing slashes. Linux
-otherwise masks startup files. Emitted paths stay unchanged; noncolliding paths
-remain available.
+With `database.caSecretName`, `_helpers.tpl` rejects CA paths that would mask
+active client mounts. It normalizes relative paths, dot segments, and trailing
+slashes for comparison and emits accepted paths as supplied.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
 selects only `api`, `worker`, and `initialization` Pods with the release identity.
@@ -324,22 +318,21 @@ Fresh bootstrap [checks both output paths](../reference/authentication/service-a
 
 `internal/occclient/client.go:Client.GetInstallation`
 
-After Helm readiness, retrieve
-`initial-admin-service-key.json` from protected bootstrap storage through an
-approved reader path into an owner-readable file. A completed Job is
-not an exec endpoint, and the API and worker cannot retrieve this file for the
-operator.
+After Helm readiness, use the approved reader to save
+`initial-admin-service-key.json` from protected bootstrap storage to an
+owner-readable file. A completed Job cannot serve the file via exec. The API and
+worker cannot retrieve it for the operator.
 
-`occ installation get` reads the protected key file
-and displays the Installation. Its `ID` must match the key
-response's `meta.installationId`. The operator records that ID in the Installation
-startup Secret's `openclaw.dev/installation-id` annotation; coordinated upgrades
-use this marker to bind their OCC endpoint to the selected Installation.
-The quickstart's `docs/snippets/openshell-quickstart/operator-session.sh:upgrade_installation`
-checks Helm's deployed revision and API Pod binding, initializes missing annotations,
-patches using UID/resourceVersion preconditions, and sets `controlPlane.installationChecksum`.
-Agent runtime, Gateway WebSocket authentication and model calls remain unproven
-until tenant deployment/TUI procedures run.
+Use `occ installation get` with the service key. The Installation's `ID` must
+match `meta.installationId` from the key response. Its startup Secret annotation
+`openclaw.dev/installation-id` binds upgrades to the selected Installation.
+
+The operator session's `upgrade_installation` checks Helm's deployed revision
+and API Pod binding. The scoped `docs/snippets/openshell-quickstart/request.mts`
+requires a string path that stays under `/namespaces` after URL normalization,
+or a bodyless `GET /installation` to verify the Installation before the patch.
+The shell initializes the missing annotation, patches with UID and
+`resourceVersion` preconditions, and sets `controlPlane.installationChecksum`.
 
 ## Debugging and Verification
 
@@ -352,8 +345,7 @@ until tenant deployment/TUI procedures run.
   inspected; initialization never repairs its ledger.
 - The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
   `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
-- `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
-  Kubernetes to 1.35 or later for support.
+- For `KUBERNETES_VERSION_BELOW_MINIMUM`, upgrade Kubernetes to 1.35 or later.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
   `host` and `port`. Check `cluster.cidrs` and `cluster.port`; restarted
@@ -393,6 +385,18 @@ until tenant deployment/TUI procedures run.
 
 ## Changelog
 
+- 2026-11-18 02:53: Select the migration entry point from each controller image and retain signal handlers through cleanup. (authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9 - 4616630e8ab5edf25de29af948e80c72627af9c4)
+
+- 2026-11-18 02:26: Run the migration entry directly and distinguish separate-upgrade verification. (authoring-run/c3b46e7f-1066-4c87-9808-34e281ccaa98 - 8e8474eec4c7027bb45b5fe470e675e2e3e321cf)
+
+- 2026-11-18 01:53: Reconcile the generated Installation check with the production migration command. (authoring-run/d1d2f3b0-6dbf-4fce-b8d6-94df71d391b8 - 0bd8061ff988a0847541fa3d890f676f1a57a676)
+
+- 2026-11-16 09:47: Document the request helper’s scoped path validation. (authoring-run/04994f45-a986-442f-8747-1595e124325f - b4a03d909a2815bbf6c44eb6e195d4503a59fe70)
+
+- 2026-11-14 17:11: Identify the generated API CA programs and link their TypeScript source layout. (authoring-run/6b781d32-d772-4aed-beb9-1598b28632b4 - 4ecdd59c5a64f217f0b7fafdf7a034e74b890ffc)
+
+- 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
+
 - 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
 
 - 2026-11-13: Document the opt-in check of an existing Installation and its bootstrap administrator. (authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94 - 3c8ee8b97066d1e82a4ba9f95ad6d6f6afea5df8)
@@ -414,11 +418,5 @@ until tenant deployment/TUI procedures run.
 - 2026-11-04 23:30: Check complete handoff reports, including receipt outcomes. (authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a - ce06d47cfb0b4fb29495ad4bc85bb71aa5941975)
 
 - 2026-11-04 23:14: Document report write failures. (authoring-run/58196aeb-45b5-4ea5-850d-e368b48f15f9 - 582236adfbbb392c2247995dde054eef929ca6c1)
-
-- 2026-11-04 23:07: Require the captured UID for original Job completion. (authoring-run/6c8eb7c1-4921-456d-bd96-cf1e8303b58b - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
-
-- 2026-11-04 23:05: Trace durable first-install receipts and read-only attempt reconciliation. (authoring-run/1b2cbf33-0aef-45e7-bac1-2b40f26eeb3e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
-
-- 2026-11-04 22:57: Trace prerequisite diagnosis. (authoring-run/9ad2db0a-6b05-4873-aeda-52d96af2405e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 [Production startup documentation history](production-startup/history.md) preserves the older dated entries.

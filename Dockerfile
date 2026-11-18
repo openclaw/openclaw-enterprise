@@ -83,17 +83,16 @@ COPY --from=console-build --chown=node:node /app/apps/controller/src/console/ind
 COPY --chown=node:node migrations/[0-9]*.sql migrations/
 COPY --chown=node:node migrations/meta/_journal.json migrations/meta/_journal.json
 COPY --chown=node:node migrations/meta/_canonical-history.json migrations/meta/_canonical-history.json
-COPY --chown=node:node scripts/migrate-production.mjs scripts/migrate-production.mjs
+COPY --chown=node:node scripts/migrate-production.ts scripts/migrate-production.ts
 COPY --chown=node:node scripts/migration-history.mjs scripts/migration-history.mjs
 COPY --chown=node:node scripts/migration-catalog.ts scripts/migration-catalog.ts
+COPY --chown=node:node scripts/migration-history-preflight.ts scripts/migration-history-preflight.ts
 COPY --chown=node:node scripts/bootstrap-installation.mjs scripts/bootstrap-installation.mjs
 COPY --chown=node:node scripts/lib/bootstrap-configuration.ts scripts/lib/bootstrap-configuration.ts
-COPY --chown=node:node scripts/auth-maintain.mjs scripts/auth-maintain.mjs
 COPY --chown=node:node scripts/auth-maintain.ts scripts/auth-maintain.ts
-COPY --chown=node:node scripts/lib/auth-maintain-arguments.mjs scripts/lib/auth-maintain-arguments.mjs
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.ts scripts/lib/auth-maintain-arguments.ts
 COPY --chown=node:node deploy/presets deploy/presets
-COPY --chown=node:node scripts/production-healthcheck.mjs scripts/production-healthcheck.mjs
+COPY --chown=node:node scripts/production-healthcheck.ts scripts/production-healthcheck.ts
 # As in the development stage: precompiled route validators and serializers for this image.
 RUN node apps/controller/src/precompile-route-schemas.ts
 

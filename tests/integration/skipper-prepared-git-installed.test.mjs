@@ -1,3 +1,4 @@
+import { isRecord, record } from "../helpers/egress-observation-values.ts";
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -51,7 +52,7 @@ test(
       ordinaryChat,
       sendScript,
     } = await prepareComputeSkipper(t, input, git.repositoryRef);
-    const current = await api("GET", agentPath);
+    const current = record(await api("GET", agentPath));
     assert.equal(current.activeRevisionId, revision.id);
     assert.deepEqual(current.repositoryBindings, [
       { repositoryRef: git.repositoryRef, profile: "git-write" },
@@ -219,7 +220,8 @@ test(
         configurationId: current.configurationId,
         repositoryBindings: [],
       });
-      assert.equal(Object.hasOwn(removed, "repositoryBindings"), false);
+      assert.equal(Object.hasOwn(record(removed), "repositoryBindings"), false);
+      assert.ok(isRecord(removed));
       assert.equal(removed.activeRevisionId, revision.id);
       await witness("/release-discovery", "POST");
       // A diagnostic write must not replace the pending native completion failure.
@@ -251,7 +253,7 @@ test(
       // The previous request crossed withdrawal. Now start a separate authenticated fetch, after
       // observing both the denial and the committed binding change. The prepared-material owner
       // records a use before releasing a provider credential; the origin counts even raw TCP opens.
-      const bound = await api("GET", agentPath);
+      const bound = record(await api("GET", agentPath));
       assert.equal(bound.activeRevisionId, revision.id);
       assert.deepEqual(bound.repositoryBindings ?? [], []);
       // Admission already refused the in-flight upload. Observe the background owner's one

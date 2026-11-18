@@ -16,11 +16,13 @@ import test, { type TestContext } from "node:test";
 import type { Dialog, Locator, Page, Request } from "playwright";
 
 import { normalizePresetTemplate } from "../../packages/contracts/src/presets.ts";
-import type {
-  HarnessAuthBinding,
-  Preset,
-  PresetTemplate,
-  PresetVariable,
+import {
+  WORKSPACE_DEFAULTS,
+  WORKSPACE_DEFAULTS_ID,
+  type HarnessAuthBinding,
+  type Preset,
+  type PresetTemplate,
+  type PresetVariable,
 } from "../../packages/contracts/src/index.ts";
 import type { CreateAgentBody, CreateSecretBody } from "../../packages/contracts/src/api/common.ts";
 import type {
@@ -41,10 +43,6 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import {
-  WORKSPACE_DEFAULTS,
-  WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
 import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   backendFixtures,
@@ -92,8 +90,8 @@ import {
   KUBERNETES_ALLOW_USERS_REFUSAL,
 } from "../helpers/refusal-text.mjs";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
+import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -1513,7 +1511,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   });
   await search.fill("slow");
   await page.clock.runFor(300);
-  await searchStarted.promise;
+  await within(searchStarted.promise, "the held upstream plugin search");
   await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
   assert.equal(
     await dialog
@@ -1546,7 +1544,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
 
   // Selecting a plugin loads its tools; a rejected upstream body stays private and is retryable.
   await calendar.click();
-  await detailStarted.promise;
+  await within(detailStarted.promise, "the held upstream plugin detail read");
   await dialog.getByRole("status").filter({ hasText: "Loading tools…" }).waitFor();
   assert.equal(await dialog.getByText(/^Tool list unavailable\./).count(), 0);
   assert.equal(
@@ -1647,7 +1645,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   });
   await token.fill("at-browser-plugin-one");
   await page.clock.runFor(300);
-  await listStarted.promise;
+  await within(listStarted.promise, "the held upstream plugin list read");
   assert.equal(await dialog.isVisible(), false);
   await token.fill("at-browser-plugin-two");
   await stalePrefetchCanceled;
@@ -3742,7 +3740,7 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
       response.request().method() === "POST",
   );
   await save.click();
-  await submitStarted.promise;
+  await within(submitStarted.promise, "the held create request");
   // A prefetch due during submission must resume after the real duplicate-name rejection.
   await page.clock.runFor(300);
   const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
@@ -4061,7 +4059,7 @@ test("a default shortcut restored after a pending Preset read keeps its form", a
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-  await observed;
+  await within(observed, "the held starter Preset read");
   await page.getByRole("link", { name: "← Agents" }).click();
   releaseRead();
   await page.unroute(presetPath);

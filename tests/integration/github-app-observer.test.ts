@@ -181,14 +181,21 @@ test("GitHub App observer input rejects FIFO private key files without hanging",
   assert.equal(fifo.status, 0, fifo.stderr);
   await chmod(keyPath, 0o600);
 
-  // A blocking FIFO read must fail the test within the subprocess deadline.
+  // The child times only the load call, so a slow runner can delay process
+  // startup without failing the test, while a blocking FIFO open still fails
+  // it at the in-child deadline.
   const result = runLoadObserverInput(f.directory);
   const { error } = result;
   const errorCode = error && "code" in error ? error.code : undefined;
 
-  assert.notEqual(errorCode, "ETIMEDOUT", result.stderr);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /private regular file/);
+  assert.notEqual(errorCode, "ETIMEDOUT", `child did not finish starting: ${result.stderr}`);
+  const report: unknown = JSON.parse(result.stdout);
+  assert.ok(typeof report === "object" && report !== null && "outcome" in report);
+  assert.equal(report.outcome, "rejected", `load did not refuse the FIFO: ${result.stdout}`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok("message" in report && "elapsedMs" in report);
+  assert.match(String(report.message), /private regular file/);
+  assert.ok(typeof report.elapsedMs === "number" && report.elapsedMs < fifoLoadDeadlineMs);
   assert.equal(f.seen.length, 0);
 });
 
@@ -347,22 +354,40 @@ function childEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...env, ...overrides };
 }
 
+// Bounds only the load call inside the child. A FIFO open that blocks never
+// settles, so any finite bound separates refusal from blocking.
+const fifoLoadDeadlineMs = 5000;
+
+// Covers Node startup and the TypeScript helper import on a loaded runner.
+const childStartupDeadlineMs = 60_000;
+
 function runLoadObserverInput(inputDirectory: string) {
   const helper = new URL("../helpers/github-app-observer.ts", import.meta.url).href;
-  return spawnSync(
-    process.execPath,
-    [
-      "--input-type=module",
-      "--eval",
-      `import { loadGitHubAppObserverInput } from ${JSON.stringify(helper)};
-await loadGitHubAppObserverInput(process.env.OBSERVER_INPUT_DIRECTORY, ${JSON.stringify(repository)});`,
-    ],
-    {
-      encoding: "utf8",
-      env: childEnv({ OBSERVER_INPUT_DIRECTORY: inputDirectory }),
-      timeout: 1000,
-    },
-  );
+  // The child reports one JSON line with the load call's elapsed time: "loaded",
+  // "rejected", or "blocked" when the in-child deadline wins. A blocked child
+  // kills itself, because process.exit would wait for the libuv worker thread
+  // stuck in open(2) on the FIFO.
+  const script = `import { writeSync } from "node:fs";
+import { loadGitHubAppObserverInput } from ${JSON.stringify(helper)};
+const deadlineMs = ${fifoLoadDeadlineMs};
+const report = (fields) => writeSync(1, JSON.stringify(fields) + "\\n");
+const deadline = setTimeout(() => {
+  report({ outcome: "blocked", elapsedMs: performance.now() - started });
+  process.kill(process.pid, "SIGKILL");
+}, deadlineMs);
+const started = performance.now();
+try {
+  await loadGitHubAppObserverInput(process.env.OBSERVER_INPUT_DIRECTORY, ${JSON.stringify(repository)});
+  report({ outcome: "loaded", elapsedMs: performance.now() - started });
+} catch (error) {
+  report({ outcome: "rejected", elapsedMs: performance.now() - started, message: String(error?.message) });
+}
+clearTimeout(deadline);`;
+  return spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+    encoding: "utf8",
+    env: childEnv({ OBSERVER_INPUT_DIRECTORY: inputDirectory }),
+    timeout: childStartupDeadlineMs,
+  });
 }
 
 test("GitHub App observer credential helper mints only for valid get operations", async (t) => {

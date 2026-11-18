@@ -32,14 +32,14 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { within } from "../helpers/wait-for.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   persistedDeploymentError,
@@ -80,7 +80,8 @@ import {
   POD_QUOTA_FULL,
   PROVISIONING_NOT_COMPLETED,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -1116,6 +1117,7 @@ test("Dedicated Agent creation keeps the first revision observed after admission
 // waits, Stop and recovery show, instead of holding the form until the deployment ends (plan 35:
 // "progress switches to the exact ordinary deployment view"). It stops polling the job.
 test("Dedicated Agent creation opens the Agent's deployment at handoff", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Open at handoff", { ready: true });
@@ -1314,7 +1316,7 @@ for (const mode of ["unavailable", "refused"] as const) {
 }
 
 // A revision read Restriction can refuse the first deployment to a caller its provisioning job
-// still answers (tests/integration/postgres-agent-provisioning.test.mjs). That caller would find
+// still answers (tests/integration/postgres-agent-provisioning.test.ts). That caller would find
 // nothing on the Deployment tab, so the form keeps following the job, asks once whether the
 // deployment is readable, and opens the Agent when the job succeeds, as before handoff opened it.
 test("Dedicated Agent creation keeps following the job when the first deployment is unreadable", async (t) => {
@@ -1431,7 +1433,7 @@ for (const leave of [false, true]) {
       page.clock.runFor(1_000),
     ]);
     assert.equal(response.status(), 200);
-    await deploymentReads.started.promise;
+    await within(deploymentReads.started.promise, "the stalled deployment read to start");
     const cancelled = page.waitForEvent("requestfailed", {
       predicate: (request) => request === response.request(),
       timeout: 5_000,

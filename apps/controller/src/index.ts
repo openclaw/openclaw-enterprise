@@ -1,3 +1,4 @@
+import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
 import swagger from "@fastify/swagger";
@@ -11,6 +12,9 @@ import {
   AgentRuntimeResponse,
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
+  ModelProviderSchema,
+  ModelProviderModelSchema,
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
@@ -226,6 +230,7 @@ export interface ControllerAppOptions {
   readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
+  /** Private Agent gateway transport credential, shared by native browser and HTTP chat relays. */
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   /**
    * How often a native admin WebSocket rechecks its admission (default 25 s). The server
@@ -1245,10 +1250,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     throw new Error("The native admin WebSocket lease interval must be a positive integer.");
   }
   let publicOrigin: string | undefined;
+  let publicOriginHost: string | undefined;
   if (options.publicOrigin !== undefined) {
     try {
       const parsed = new URL(options.publicOrigin);
       publicOrigin = parsed.origin;
+      publicOriginHost = parsed.host;
       if (
         parsed.username ||
         parsed.password ||
@@ -1382,6 +1389,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
+  app.addSchema(ErrorResponse);
+  app.addSchema(AgentDeploymentDiagnosticsResponse);
+  app.addSchema(AgentRuntimeResponse);
+  app.addSchema(AgentRuntimeLogsResponse);
+  app.addSchema(AgentRuntimeCredentialResponse);
+  app.addSchema(SecretResponse);
+  app.addSchema(CredentialSourceResponse);
+  app.addSchema(OAuthConnectionTemplateVersionSchema);
+  app.addSchema(ConnectionTemplateSchema);
+  app.addSchema(StaticKeyConnectionTemplateVersionSchema);
+  app.addSchema(ModelProviderModelSchema);
+  app.addSchema(ModelProviderSchema);
   void app.register(swagger, {
     convertConstToEnum: false,
     openapi: {
@@ -1829,11 +1848,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       audit.denialObserved = true;
     }
     try {
+      // Chat has no Namespace path input, so it needs the stored Agent target.
+      // Other operations keep the requested audit target, separate from enforcement.
       await options.auditSink.append(
         event(
           operation,
           request,
-          operationTarget(operation, installationId, request.params as Record<string, unknown>),
+          operation.operationId === "chatWithAgent" && authorization !== undefined
+            ? authorization.resource
+            : operationTarget(operation, installationId, request.params as Record<string, unknown>),
           kind,
           context,
           evidence,
@@ -1848,11 +1871,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           return;
         }
       }
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
   }
 
@@ -1879,11 +1898,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         logRequestAuditFailure(request, operation, auditAction(operation, request), error);
         return;
       }
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
   }
 
@@ -1986,7 +2001,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }),
   };
 
+  const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();
   app.addHook("onRequest", async (request, reply) => {
+    if (request.routeOptions.url === "/agents/:agentId/chat") {
+      const timer = setTimeout(() => {
+        if (!reply.sent) {
+          reply.header("connection", "close");
+          reply.raw.once("finish", () => request.raw.destroy());
+          void reply.code(408).send({
+            error: { code: "REQUEST_TIMEOUT", message: "The request body deadline expired." },
+            meta: { requestId: request.id },
+          });
+        }
+      }, 60_000);
+      chatBodyDeadlines.set(request, timer);
+      request.raw.once("end", () => clearTimeout(timer));
+      request.raw.once("aborted", () => clearTimeout(timer));
+    }
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
     if (await nativeAdmin.interceptHttp(request, reply)) {
@@ -2005,6 +2036,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.addHook("onResponse", async (request, reply) => {
+    clearTimeout(chatBodyDeadlines.get(request));
     const startedAt = requestStartedAt.get(request);
     const durationMs =
       startedAt === undefined ? undefined : Number(process.hrtime.bigint() - startedAt) / 1_000_000;
@@ -2147,6 +2179,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         requestId: request.id,
         method: request.method,
         routeId: operation.operationId,
+        ...(request.routeOptions.url === undefined ? {} : { route: request.routeOptions.url }),
         requestedScope: {
           installationId,
           ...(typeof params.namespaceId === "string" ? { namespaceId: params.namespaceId } : {}),
@@ -2179,11 +2212,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         admitted.admittedScope.namespaceId !== params.namespaceId)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     admissions.set(request, admitted);
@@ -2192,11 +2221,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     const admitted = admissions.get(request);
     if (!admitted) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     let selected: IAMDriver;
     let identity;
@@ -2216,11 +2241,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
       );
     } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     if (
@@ -2249,6 +2270,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     contexts.set(request, context);
     if (
       admitted.method === "api_key" &&
+      operation.operationId !== "chatWithAgent" &&
       admitted.admittedScope.namespaceId !== undefined &&
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
@@ -2306,7 +2328,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     operation: OccApiRoute,
   ): Promise<void> {
     const admitted = admissions.get(request);
-    if (controller === undefined || admitted?.method !== "session") {
+    if (
+      operation.operationId === "chatWithAgent" ||
+      controller === undefined ||
+      admitted?.method !== "session"
+    ) {
       return perform(request, reply, operation);
     }
     const { session } = admitted;
@@ -2323,16 +2349,72 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   ): Promise<void> {
     const context = contexts.get(request);
     if (!context) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
+    }
+    if (operation.operationId === "chatWithAgent") {
+      const admission = admissions.get(request);
+      if (controller === undefined || admission === undefined) {
+        throw dependencyUnavailable();
+      }
+      return relayAgentChat({
+        installationId,
+        controller,
+        request,
+        reply,
+        context,
+        admission,
+        factory,
+        auditSink: options.auditSink,
+        gatewayApiKey: options.nativeAdminGatewayApiKey,
+        auditFailure: (error) =>
+          logRequestAuditFailure(request, operation, operation.action, error),
+        reauthenticate: async () => {
+          await admit(request, operation);
+          await resolveIdentity(request, operation);
+          if (contexts.get(request)?.actorId !== context.actorId) {
+            throw dependencyUnavailable();
+          }
+        },
+      });
     }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
     if (body !== undefined) {
       validateConfiguration(body);
+    }
+
+    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
+    // Older handlers would otherwise ignore a requested provider or credential destination.
+    if (
+      body?.mode === "static_bearer" &&
+      (operation.operationId === "createConnectionTemplate" ||
+        operation.operationId === "updateConnectionTemplate")
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Static Connection Templates are unavailable on this controller.",
+      );
+    }
+    if (
+      (body &&
+        "modelProviderId" in body &&
+        ["createAgent", "provisionAgent", "validateAgentCreate", "updateAgent"].includes(
+          operation.operationId,
+        )) ||
+      [
+        "listModelProviders",
+        "getModelProvider",
+        "createModelProvider",
+        "updateModelProvider",
+        "listUsableModelProviders",
+      ].includes(operation.operationId)
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Named model providers are unavailable on this controller.",
+      );
     }
 
     if (operation.operationId === "bootstrapInstallation") {
@@ -2347,11 +2429,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
         );
         if (!options.createController) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         const installation: Installation = {
           id: installationId,
@@ -3428,6 +3506,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       401: { description: "Unauthorized", ...error },
       503: { description: "Service Unavailable", ...error },
     });
+    const resourceErrors = () => ({
+      400: { description: "Bad Request", ...error },
+      403: { description: "Forbidden", ...error },
+      404: { description: "Not Found", ...error },
+      409: { description: "Conflict", ...error },
+    });
     // Every route that reads a body answers an oversized one 413 and a non-JSON one 415.
     const bodyErrors = {
       413: { description: "Payload Too Large", ...error },
@@ -3534,10 +3618,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   },
               creating ? 201 : 200,
             ),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...resourceErrors(),
             ...(creating ? bodyErrors : {}),
           },
         } as DocumentedFastifySchema,
@@ -3879,11 +3960,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       targetUserId?: string,
     ) {
       const admitted = admissions.get(request);
+      const origin = request.headers.origin;
+      const fetchMode = request.headers["sec-fetch-mode"];
+      // A browser GET from the Console omits Origin. Its Fetch Metadata is scoped
+      // to the requested host, so match the configured Console authority as well.
+      const sameOriginBrowserRead =
+        request.method === "GET" &&
+        origin === undefined &&
+        request.headers.host?.toLowerCase() === publicOriginHost &&
+        request.headers["sec-fetch-site"] === "same-origin" &&
+        (fetchMode === "cors" || fetchMode === "same-origin") &&
+        request.headers["sec-fetch-dest"] === "empty";
       if (
         admitted?.method !== "session" ||
         admitted.session.userId !== context.subject ||
         publicOrigin === undefined ||
-        request.headers.origin !== publicOrigin
+        (origin !== publicOrigin && !sameOriginBrowserRead)
       ) {
         throw failure(
           403,
@@ -4023,7 +4115,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: accountReadOperation.operationId,
           summary: accountReadOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.",
+            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4055,10 +4147,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 },
               },
             }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...resourceErrors(),
           },
         },
         onRequest: async (request) => admit(request, accountReadOperation),
@@ -4179,10 +4268,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 required: ["userId"],
                 properties: { userId: { type: "string" } },
               }),
-              400: { description: "Bad Request", ...error },
-              403: { description: "Forbidden", ...error },
-              404: { description: "Not Found", ...error },
-              409: { description: "Conflict", ...error },
+              ...resourceErrors(),
               ...bodyErrors,
             },
           },
@@ -4258,7 +4344,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: recoveryReadOperation.operationId,
           summary: recoveryReadOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.",
+            "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4331,10 +4417,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               required: [...recoveryResponse.required, "changed"],
               properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
             }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...resourceErrors(),
             ...bodyErrors,
           },
         },
@@ -4447,10 +4530,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 created: { type: "boolean" },
               },
             }),
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...resourceErrors(),
           },
         },
         onRequest: async (request) => admit(request, enrolOperation),
@@ -4620,18 +4700,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       async (request, reply) => {
         const context = contexts.get(request);
         if (!context) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         if (options.provisionAuthAccount === undefined) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
 
         const body = request.body as Record<string, unknown> | undefined;
@@ -4777,15 +4849,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   void app.register(async (routes) => {
-    routes.addSchema(ErrorResponse);
-    routes.addSchema(AgentDeploymentDiagnosticsResponse);
-    routes.addSchema(AgentRuntimeResponse);
-    routes.addSchema(AgentRuntimeLogsResponse);
-    routes.addSchema(AgentRuntimeCredentialResponse);
-    routes.addSchema(SecretResponse);
-    routes.addSchema(CredentialSourceResponse);
-    routes.addSchema(OAuthConnectionTemplateVersionSchema);
-    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
@@ -4906,6 +4969,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
+        ...(operation.operationId === "chatWithAgent" ? { bodyLimit: AGENT_CHAT_BODY_LIMIT } : {}),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" ||
@@ -4943,7 +5007,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }
           const unstorable =
             unstorableTextFailure("params", request.params) ??
-            unstorableTextFailure("body", request.body);
+            (operation.operationId === "chatWithAgent"
+              ? undefined
+              : unstorableTextFailure("body", request.body));
           if (unstorable !== undefined) {
             throw unstorable;
           }

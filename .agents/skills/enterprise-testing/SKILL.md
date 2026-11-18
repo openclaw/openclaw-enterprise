@@ -28,7 +28,7 @@ their own scope. Never run `npm run precommit`.
 | Console UI                               | `pnpm test:console-browser` with the prepared browser described in [browser testing](../../../docs/testing/local.md#console-browser-checks).                     |
 | Types, package boundaries, generated API | `pnpm typecheck` (builds packages and checks test types); `pnpm openapi:check` for API changes.                                                                  |
 | Documentation or skills                  | `pnpm docs:check`, relevant links, and `git diff --check`; no runtime tests solely for prose changes.                                                            |
-| CI or test selection                     | `node scripts/ci/run-tests.mjs audit`; inspect [CI ownership](../../../docs/testing/ci.md), and use `actionlint` for workflow edits when available.              |
+| CI or test selection                     | `node scripts/ci/run-tests.ts audit`; inspect [CI ownership](../../../docs/testing/ci.md), and use `actionlint` for workflow edits when available.              |
 
 Run `pnpm check:workspace` and applicable `pnpm format:check` with the installed
 graph. The root formatter does not include `.agents/skills/**/*.md`; inspect

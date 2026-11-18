@@ -26,9 +26,10 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
+import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
@@ -41,7 +42,7 @@ import {
   authenticatedHeaders,
   signInWithEmailPassword as signInThroughTransport,
 } from "../helpers/auth-session.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
@@ -51,10 +52,11 @@ import {
   PostgresPlatformState,
   InstalledDriver,
   OpenClawController,
+  type PostgresPool,
 } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { readPrivateBootstrapOutput } from "../helpers/bootstrap-output.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { createDriver as createProtectedFixture } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 
 const databaseUrl = process.env.OCC_PRODUCTION_WIREUP_DATABASE_URL;
@@ -582,13 +584,15 @@ test(
 
       // Exercise both API builders against PostgreSQL while failures at owned Driver seams
       // verify that shutdown and failed startup still release later owners.
+      const custodyKeyPath = join(passwordDirectory, "cleanup-custody-key");
+      await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
       for (const [mode, failure] of [
         ["production", "shutdown"],
         ["development", "shutdown"],
         ["production", "bind"],
         ["development", "bind"],
         ["production", "routes"],
-      ]) {
+      ] as const) {
         await t.test(`${mode} cleanup after ${failure} failure`, async () => {
           const events: string[] = [];
           const first = mode === "production" ? 0 : new Error("first cleanup failure");
@@ -626,8 +630,9 @@ test(
           );
           const cleanup: { endPool?: () => Promise<void> } = {};
           let poolClosed = false;
-          const preparedGitHub = {
-            async connect(pool: Pool) {
+          class ObservedGitHubLifecycle extends PostgresPreparedGitHubLifecycle {
+            override async connect(pool: PostgresPool) {
+              await super.connect(pool);
               const endPool = pool.end.bind(pool);
               cleanup.endPool = endPool;
               pool.end = async () => {
@@ -635,24 +640,32 @@ test(
                 await endPool();
                 poolClosed = true;
               };
-            },
-            async close() {
+            }
+
+            override async close() {
               events.push("prepared");
+              await super.close();
+            }
+          }
+          const preparedGitHub = new ObservedGitHubLifecycle(custodyKeyPath, {
+            ...runtimeBase.secretDriver,
+            async readCredentialInput() {
+              throw new Error("The cleanup scenario does not issue GitHub tokens.");
             },
-          };
+          });
           const runtime = { ...runtimeBase, protectedDriver, preparedGitHub };
           const config = {
-            mode,
             host: "127.0.0.1",
             databaseUrl,
             authSecret,
             authBaseURL,
             nativeAdmin,
-          };
+          } satisfies Omit<Parameters<typeof composePostgresDevelopment>[0], "mode">;
           const build = () =>
             mode === "production"
               ? composeProduction({
                   ...config,
+                  mode,
                   drivers: runtime,
                   onStartupPhase(phase: ProductionStartupPhase) {
                     if (failure === "routes" && phase === "routes") {
@@ -660,7 +673,7 @@ test(
                     }
                   },
                 })
-              : composePostgresDevelopment(config, runtime);
+              : composePostgresDevelopment({ ...config, mode }, runtime);
           try {
             if (failure === "shutdown") {
               const instance = await build();

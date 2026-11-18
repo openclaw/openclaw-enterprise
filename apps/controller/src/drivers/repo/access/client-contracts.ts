@@ -1,5 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 
+export const controlRequestBodyMaxBytes = 16_384;
+
 export const clientSessionFileMaxBytes = Object.freeze({
   bearer: 256,
   "client.json": 16 * 1024,
@@ -97,8 +99,8 @@ export function isValidGitClientUsernameAndHosts(
  *
  * A deliberate copy of `hasControlCharacter` from `@openclaw-enterprise/utils`. The isolated
  * repository-credentials runtimes never load a workspace package: the build closures in
- * scripts/build-repository-credentials.mjs reject bare specifiers, and
- * scripts/verify-repository-credentials-boundary.mjs has no reviewed import for one. The
+ * scripts/build-repository-credentials.ts reject bare specifiers, and
+ * scripts/verify-repository-credentials-boundary.ts has no reviewed import for one. The
  * utils conformance suite checks that both copies flag exactly the same characters.
  */
 export function hasControlCharacter(value: string): boolean {

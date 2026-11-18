@@ -23,7 +23,7 @@ import {
   pathRequests,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 const grants: SandboxNetworkGrant[] = ["one", "two", "three"].map((name) => ({
   id: `python-${name}`,

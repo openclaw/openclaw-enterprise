@@ -15,6 +15,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import {
+  runPollTick,
   settledFetches,
   trackSettledFetches,
   waitForIdleFetches,
@@ -164,9 +165,7 @@ async function openGatedForm(
   // returns once the page has read the answer, so the next tick is already scheduled.
   const poll = async () => {
     const before = namespaces.reads;
-    const answered = await settledNamespaceReads(page);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, "/namespaces", answered + 1);
+    await runPollTick(page, "/namespaces", 10_000);
     assert.equal(namespaces.reads, before + 1);
   };
   // Ticks that must start no read.
