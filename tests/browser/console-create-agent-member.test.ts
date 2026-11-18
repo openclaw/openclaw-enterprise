@@ -232,18 +232,26 @@ test("a member provisions the default Preset's Agent when the Installation offer
   // This in-memory console fixture cannot queue provisioning work, so the route admits a request
   // that passes the provisioning schema as one queued job. The PostgreSQL member provisioning
   // test proves the API's admission and the worker for a member.
-  const work = provisioningJob(namespace.id, `agent-provisioning:${randomUUID()}`);
+  const work = provisioningJob(namespace.id, `work_${randomUUID()}`);
   const served = await routeProvisioningJob(page, fixture, work, [
     work.job("queued", { phase: "admitted", attemptCount: 0 }),
   ]);
+  const provisionPath = `/namespaces/${namespace.id}/agents/provision`;
+  // Registered before the click, so the route's 202 is in the answers before they are checked.
+  const admitted = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === provisionPath && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await waitForCondition(() => served.submitted === 1, "the member's provisioning request");
+  assert.equal((await admitted).status(), 202);
+  assert.equal(served.submitted, 1);
+  await page.getByText("Provisioning queued…", { exact: true }).waitFor();
   // The provisioning request, which the route answered, was the console's only write: it saved no
   // draft Configuration or Agent and sent no IAM request, since the worker grants the Agent its
   // Secrets.
   assert.deepEqual(
     answers.filter((answer) => !answer.startsWith("GET ") && !answer.includes("/auth/")),
-    [],
+    [`POST ${provisionPath} 202`],
   );
   assert.deepEqual(
     answers.filter((answer) => answer.includes("/iam/")),

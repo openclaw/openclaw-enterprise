@@ -280,11 +280,14 @@ and is refused with `403` otherwise. The worker, the status read, and a retry
 check that grant again, so the work fails with `PROVISIONING_REJECTED` if the
 requester loses it while the request waits.
 
-After it creates the Agent and Configuration, each provisioning step needs Agent
-`read`, `operate`, and `deploy` and Configuration `read` and `update`, which a
-member gets only from the Owner binding. If the Owner Role lacks them, the work
-fails with `PROVISIONING_REJECTED` after it creates the Agent and
-Configuration, and only an administrator can see or delete them.
+After it creates the Agent and Configuration, each provisioning step and the
+status read need Agent `read`, `operate`, and `deploy` and Configuration `read`
+and `update`. The requester's effective permissions decide this: the Owner
+binding and any other Role binding count. If they lack one of these actions,
+the work fails with `PROVISIONING_REJECTED` after it creates the Agent and
+Configuration, and the status read answers `403`. The requester can still read
+or delete the Agent if their permissions include Agent `read` or `delete`.
+Otherwise an administrator must remove what the work created.
 
 ## Current limits
 

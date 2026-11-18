@@ -120,7 +120,9 @@ an Agent requires the Namespace to be `ready`.
 
 The console's **Agents** page and **Create Agent** name a Namespace that is not
 `ready`. A `provisioning` Namespace keeps **Create Agent** for drafts that need no
-new Secret or sign-in. A `failed` or `deleting` Namespace, or a `provisioning` one
+new Secret or sign-in. When the Installation offers guided provisioning, a
+Dedicated Agent is provisioned and deployed when created, so its **Create Agent**
+waits until the Namespace is `ready`; an Embedded draft still saves. A `failed` or `deleting` Namespace, or a `provisioning` one
 with `existingNamespace` (no Configuration until `ready`), disables it with the
 reason. A status change rebuilds a retained Agents or Create Agent view. With no
 URL selection, the console picks a `ready` Namespace first and skips `deleting`
