@@ -97,7 +97,17 @@ export interface PluginDeploymentDescription {
 
 export interface PluginDeploymentContract {
   describeDeployment(input: {
-    readonly pluginId: string;
+    /** Server-admitted catalog identity for this selection. Hosted connector IDs come from the
+     * authenticated release for the Agent's Harness account, even when there are no tool overrides. */
+    readonly plugin:
+      | { readonly catalog: "driver"; readonly pluginId: string }
+      | {
+          readonly catalog: "codex-hosted";
+          readonly pluginId: string;
+          readonly remotePluginId: string;
+          readonly appIds: readonly string[];
+          readonly requiresSkillBundle: boolean;
+        };
     readonly selection: PluginDesiredState[string];
     readonly connections: Readonly<
       Record<string, Readonly<Record<string, CredentialSourceReference>>>

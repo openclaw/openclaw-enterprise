@@ -1,9 +1,31 @@
 import type {
+  CredentialDeploymentConfiguration,
   CredentialInjectionPolicy,
+  CredentialProxyDeploymentContract,
+  DeploymentCredentialBinding,
   NetworkAccessPolicy,
+  PluginDeploymentContract,
   PluginDeploymentNetworkRequirement,
   PluginDeploymentTool,
+  SavedConnection,
+  TokenServiceDriver,
+  VersionedCredential,
 } from "@openclaw-enterprise/contracts";
+
+type DescribeInput = Parameters<PluginDeploymentContract["describeDeployment"]>[0];
+const hostedPlugin = {
+  catalog: "codex-hosted",
+  pluginId: "codex-plugin:documents@openai-curated-remote",
+  remotePluginId: "documents",
+  requiresSkillBundle: false,
+} as const;
+const _defaultOnlySelection = {
+  plugin: { ...hostedPlugin, appIds: ["document-index", "document-reader"] },
+  selection: { enabled: true, toolDefaults: { enabled: true } },
+  connections: {},
+} satisfies DescribeInput;
+// @ts-expect-error A hosted plugin ID alone does not supply its connector mapping.
+const _unmapped: DescribeInput["plugin"] = hostedPlugin;
 
 // A hosted app can rely on its defaults without selecting individual tools or installing a package.
 const hostedApp = {
@@ -68,3 +90,34 @@ const _missingInjectionScope: CredentialInjectionPolicy = {
 };
 // @ts-expect-error Even a previously constructed value cannot supply source admission from a Plugin.
 const _pluginOwnsAdmission: PluginDeploymentNetworkRequirement["match"] = admitted;
+
+type EvaluatorAuthority = NonNullable<DeploymentCredentialBinding["evaluatorAuthority"]>;
+declare const consent: SavedConnection;
+// @ts-expect-error OCC must supply resolved evaluator authority separately from the saved consent.
+const _consentAsAuthority: EvaluatorAuthority = consent;
+
+type ReadVersion = NonNullable<TokenServiceDriver["getPushVersion"]>;
+declare const pushedSource: Parameters<ReadVersion>[0];
+const _nativeVersionRead: Parameters<ReadVersion>[0] = {
+  ...pushedSource,
+  // @ts-expect-error The native owner reports provider readiness through its own delivery path.
+  registration: { delivery: "native", backendRef: {} },
+};
+
+type StatusInput = Parameters<CredentialProxyDeploymentContract["getDeploymentStatus"]>[0];
+declare const target: CredentialDeploymentConfiguration;
+declare const ownerVersion: Awaited<ReturnType<ReadVersion>>;
+if (ownerVersion !== undefined) {
+  const _expected: StatusInput = {
+    ...target,
+    expectedPushVersions: { "work-calendar": ownerVersion },
+  };
+}
+// @ts-expect-error The desired configuration alone cannot identify a missed source update.
+const _withoutOwnerVersions: StatusInput = target;
+declare const material: VersionedCredential;
+const _materialInStatus: StatusInput = {
+  ...target,
+  // @ts-expect-error Readiness takes a nonsecret version identifier for each pushed binding.
+  expectedPushVersions: { "work-calendar": material },
+};
