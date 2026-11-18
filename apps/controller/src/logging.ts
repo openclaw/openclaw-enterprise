@@ -233,11 +233,13 @@ const CODE_FIELDS = new Set([
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 // Identifiers OCC assigns, kept only in their own format: the Installation a bootstrap or
-// maintenance run names, and a Configuration a refused provisioning job left behind.
+// maintenance run names, a Configuration a refused provisioning job left behind, and the ID the
+// API gives a request and answers with (`req_<UUID>`), so a line matches the response a caller saw.
 const INSTALLATION_ID = new RegExp(`^ins_${UUID_V4}$`);
 const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
   ["installationId", INSTALLATION_ID],
   ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
+  ["requestId", new RegExp(`^(?:[a-z]{1,16}_)?${UUID_V4}$`)],
 ]);
 // A bootstrap attempt names the same Installation, and the administrator Principal and service
 // Principal OCC assigns for it, each kept only in its own format (finding 2246). The auth account
@@ -250,6 +252,14 @@ const ATTEMPT_IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
 
 function safeIdentifier(format: RegExp, value: unknown): string | undefined {
   return typeof value === "string" && format.test(value) ? value : undefined;
+}
+
+// A route pattern such as `/agents/:agentId/chat`: no query, fragment or percent-encoding, so
+// it never carries a request's own path values or parameters.
+const ROUTE_PATTERN = /^\/[A-Za-z0-9_.~:*/{}-]{0,255}$/;
+
+function safeRoute(value: unknown): string | undefined {
+  return typeof value === "string" && ROUTE_PATTERN.test(value) ? value : safeScalar("route", value);
 }
 
 function safeCode(value: unknown): string | undefined {
@@ -468,6 +478,8 @@ function sanitizedEvent(
           ? safeIdentifiers(value)
           : key === "presetFile"
             ? safePath(value)
+            : key === "route"
+              ? safeRoute(value)
             : safeScalar(key, value);
     if (safe !== undefined) {
       result[key] = safe;

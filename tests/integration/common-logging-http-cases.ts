@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
-import { authLibraryLog } from "../../apps/controller/src/auth/library-log.ts";
+import {
+  authLibraryFailureEvent,
+  authLibraryLog,
+  withAuthLogContext,
+} from "../../apps/controller/src/auth/library-log.ts";
 import { createFastifyApp, type ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { emitOccLogEvent, type LoggingConfiguration } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -197,6 +201,11 @@ export function registerHttpCases(): void {
     );
     const forged = `occ_${randomBytes(24).toString("hex")}`;
     let revoked = "";
+    let revokedId = "";
+    // Request data a refusal line must never carry: a query string and a browser cookie.
+    const probe = randomBytes(12).toString("hex");
+    const cookie = `session_${randomBytes(12).toString("hex")}`;
+    const answers: { readonly requestId: unknown; readonly error: unknown }[] = [];
     const { lines } = await withLoggingApp("info", false, undefined, async (app, auth) => {
       const issued = await auth.createServiceKey({
         principal: {
@@ -208,13 +217,16 @@ export function registerHttpCases(): void {
       });
       await auth.revokeServiceKey(issued);
       revoked = issued.key;
+      revokedId = issued.id;
       for (const key of [forged, revoked]) {
         const refused = await app.inject({
           method: "GET",
-          url: "/namespaces/ns_00000000-0000-4000-8000-000000000001",
-          headers: { "x-api-key": key },
+          url: `/namespaces/ns_00000000-0000-4000-8000-000000000001?probe=${probe}`,
+          headers: { "x-api-key": key, cookie: `${auth.sessionCookieName}=${cookie}` },
         });
         assert.equal(refused.statusCode, 401, refused.body);
+        const body = asRecord(refused.json<unknown>());
+        answers.push({ requestId: asRecord(body?.meta)?.requestId, error: body?.error });
       }
     });
 
@@ -223,14 +235,26 @@ export function registerHttpCases(): void {
       [0, 0, 0, 0, 0],
       "the auth library must not print to the console",
     );
+    // A revoked key's row is deleted, so the library cannot tell it from a forged one: both
+    // callers get the same answer, and the log does not claim more than the library knows.
+    assert.deepEqual(answers[0]?.error, answers[1]?.error);
     const refusals = lines.filter((line) => line.event === "authentication.request-refused");
+    // Each refusal names the request the caller was answered with, its method and route
+    // pattern, so an operator can match it to the 401 a caller reports.
     assert.deepEqual(
-      refusals.map(({ severity, reasonCode }) => ({ severity, reasonCode })),
-      [
-        { severity: "INFO", reasonCode: "INVALID_API_KEY" },
-        { severity: "INFO", reasonCode: "INVALID_API_KEY" },
-      ],
+      refusals.map(({ time: _time, ...line }) => line),
+      answers.map(({ requestId }) => ({
+        severity: "INFO",
+        service: "occ-api",
+        event: "authentication.request-refused",
+        operation: "verify-api-key",
+        requestId,
+        method: "GET",
+        route: "/namespaces/:namespaceId",
+        reasonCode: "INVALID_API_KEY",
+      })),
     );
+    assert.match(String(answers[0]?.requestId), /^req_[0-9a-f-]{36}$/);
     assert.equal(
       lines.filter((line) => String(line.event).startsWith("authentication.library-")).length,
       0,
@@ -240,9 +264,13 @@ export function registerHttpCases(): void {
       [401, 401],
     );
     const logged = JSON.stringify(lines);
-    assert.ok(revoked.length > 0);
-    assert.equal(logged.includes(forged), false);
-    assert.equal(logged.includes(revoked), false);
+    assert.ok(revoked.length > 0 && revokedId.length > 0);
+    // No key, key prefix beyond the fixed `occ_`, key ID, query string or cookie value.
+    for (const secret of [forged, revoked, forged.slice(0, 12), revoked.slice(0, 12), revokedId]) {
+      assert.equal(logged.includes(secret), false, "no key material is logged");
+    }
+    assert.equal(logged.includes(probe), false, "no query string is logged");
+    assert.equal(logged.includes(cookie), false, "no cookie value is logged");
   });
 
   test("an unexpected auth library error stays a structured ERROR with only its code", () => {
@@ -262,7 +290,98 @@ export function registerHttpCases(): void {
       severity: "ERROR",
       service: "occ-api",
       event: "authentication.library-error",
+      operation: "unattributed",
       reasonCode: "ECONNRESET",
     });
+  });
+
+  test("auth library error lines name the failed operation and request, never the library's text", () => {
+    const { logger, lines } = captureLogs("occ-api", "info");
+    const emit = (event: Readonly<Record<string, unknown>>) => emitOccLogEvent(logger, event);
+    const log = authLibraryLog(emit);
+    const requestId = `req_${randomUUID()}`;
+    // What library messages and errors can carry: an email address, an origin with a query,
+    // a session ID and cookie, and an API key with its ID.
+    const email = `person-${randomBytes(4).toString("hex")}@example.com`;
+    const query = `token=${randomBytes(8).toString("hex")}`;
+    const sessionId = randomBytes(16).toString("hex");
+    const cookie = `__Secure-openclaw_occ_shared.session_token=${sessionId}`;
+    const key = `occ_${randomBytes(24).toString("hex")}`;
+    const keyId = randomBytes(16).toString("hex");
+    const text = `Invalid origin: https://evil.example/?${query} for ${email} ${cookie} ${key} ${keyId}`;
+    class DatabaseError extends Error {
+      readonly code = "57P01";
+    }
+
+    withAuthLogContext(
+      "sign-in-password",
+      { requestId, method: "POST", route: "/auth/sign-in/email" },
+      () => {
+        // A message-only call (Better Auth's origin check and failed session create).
+        log("error", text);
+        // A PostgreSQL error: its SQLSTATE starts with a digit, so it is kept as `code`
+        // and the class name stands in as the reason.
+        log("error", text, new DatabaseError(text), { cookie, email, sessionId, key, keyId });
+        // A code that is not an identifier falls back to the class name.
+        log("error", text, Object.assign(new TypeError(text), { code: `${email} ${query}` }));
+        log("warn", text, text);
+      },
+    );
+    // An exception the router throws to OCE; outside every operation it says so.
+    emit(authLibraryFailureEvent(Object.assign(new Error(text), { body: { message: text } })));
+
+    const scoped = (severity: string, fields: Readonly<Record<string, string>> = {}) => ({
+      severity,
+      service: "occ-api",
+      event:
+        severity === "WARN" ? "authentication.library-warning" : "authentication.library-error",
+      operation: "sign-in-password",
+      requestId,
+      method: "POST",
+      route: "/auth/sign-in/email",
+      ...fields,
+    });
+    assert.deepEqual(
+      lines.map(({ time: _time, ...line }) => line),
+      [
+        scoped("ERROR"),
+        scoped("ERROR", { reasonCode: "DatabaseError", code: "57P01" }),
+        scoped("ERROR", { reasonCode: "TypeError" }),
+        scoped("WARN"),
+        {
+          severity: "ERROR",
+          service: "occ-api",
+          event: "authentication.library-error",
+          operation: "unattributed",
+          reasonCode: "Error",
+        },
+      ],
+    );
+    const logged = JSON.stringify(lines);
+    for (const secret of [email, query, sessionId, cookie, key, key.slice(0, 12), keyId, "evil"]) {
+      assert.equal(logged.includes(secret), false, "no library text or request data is logged");
+    }
+  });
+
+  test("the structured log keeps a request ID and route pattern, not a path with a query", () => {
+    const { logger, lines } = captureLogs("occ-api", "info");
+    const requestId = `req_${randomUUID()}`;
+    emitOccLogEvent(logger, {
+      event: "authentication.request-refused",
+      requestId,
+      route: "/agents/:agentId/chat",
+    });
+    emitOccLogEvent(logger, {
+      event: "authentication.request-refused",
+      requestId: `${requestId}?token=secret`,
+      route: "/agents/a1/chat?token=secret",
+    });
+    assert.deepEqual(
+      lines.map((line) => [line.requestId, line.route]),
+      [
+        [requestId, "/agents/:agentId/chat"],
+        [undefined, undefined],
+      ],
+    );
   });
 }

@@ -148,8 +148,10 @@ deletion returns `503 DEPENDENCY_UNAVAILABLE`, even if Better Auth reports an
 invalid key. Each concurrent verification retains its own failure state. Better
 Auth still owns key hashing, validity, expiry, and revocation decisions. Its log
 calls go to the structured log: a refused key is one INFO
-`authentication.request-refused` line with its `reasonCode`, never the key; other
-library errors log `authentication.library-error` at ERROR.
+`authentication.request-refused` line with its `reasonCode`, `requestId`, method
+and route, never the key; other library errors log `authentication.library-error`
+at ERROR with the failed `operation` and a code or class name, never the library's
+message. A revoked key is deleted, so it logs `INVALID_API_KEY` like an unknown one.
 
 `resolveIdentity` looks up the verified service-principal ID through the selected
 IAM Driver. The controller returns `403` for a missing identity, Agent ownership,

@@ -45,7 +45,13 @@ import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./sessio
 import { sessionAuthority } from "./session-authority.ts";
 import { createServiceKeyVerification } from "./service-key-verification.ts";
 import { passwordSignOut } from "./password-sign-out.ts";
-import { authLibraryLog } from "./library-log.ts";
+import {
+  authLibraryFailureEvent,
+  authLibraryLog,
+  withAuthLogContext,
+  type AuthLibraryOperation,
+  type AuthLogRequest,
+} from "./library-log.ts";
 import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
@@ -820,7 +826,39 @@ function authFailureMessage(error: unknown, status: number, failure: AuthEndpoin
   return failure.refused;
 }
 
+/**
+ * The request an auth library call serves, for its log lines: never the path or query. Reading
+ * it never throws, so logging cannot change an answer.
+ */
+function authLogRequest(request: FastifyRequest): AuthLogRequest | undefined {
+  try {
+    const route = request.routeOptions.url;
+    return {
+      requestId: request.id,
+      method: request.method,
+      ...(route === undefined ? {} : { route }),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+// The curated endpoints runPrivateEndpoint calls, as log operations.
+function privateEndpointOperation(path: string): AuthLibraryOperation {
+  if (path === "/oce/password") {
+    return "sign-in-password";
+  }
+  if (path === "/oce/sign-out") {
+    return "sign-out";
+  }
+  if (path.endsWith("/callback")) {
+    return "provider-callback";
+  }
+  return path.endsWith("/result") ? "provider-result" : "provider-start";
+}
+
 async function sendAuthEndpoint(
+  operation: AuthLibraryOperation,
   request: FastifyRequest,
   reply: FastifyReply,
   run: () => Promise<{
@@ -832,7 +870,7 @@ async function sendAuthEndpoint(
   failureText: AuthEndpointFailure,
 ): Promise<void> {
   try {
-    const result = await run();
+    const result = await withAuthLogContext(operation, authLogRequest(request), run);
     setAuthHeaders(reply, result?.headers);
     reply.status(result?.status ?? 200).send({
       data: data(result?.response ?? null),
@@ -916,12 +954,19 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
     }
 
     const headers = authHeaders(request.headers);
+    const logRequest: AuthLogRequest = {
+      requestId: request.requestId,
+      method: request.method,
+      ...(request.route === undefined ? {} : { route: request.route }),
+    };
     // An explicitly supplied key never falls back to a potentially more privileged cookie.
     if (headers.has(OCC_SERVICE_KEY_HEADER)) {
-      const result = await serviceKeyVerification.verify(() =>
-        this.#auth.api.verifyApiKey({
-          body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
-        }),
+      const result = await withAuthLogContext("verify-api-key", logRequest, () =>
+        serviceKeyVerification.verify(() =>
+          this.#auth.api.verifyApiKey({
+            body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
+          }),
+        ),
       );
       if (!result.valid || !result.key) {
         throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid service API key is required.");
@@ -945,12 +990,14 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
       };
     }
 
-    const session = await this.#auth.api.getSession({
-      headers: sessionHeaders(headers, this.#sessionCookieName),
-      query: { disableCookieCache: true, disableRefresh: true },
-      asResponse: false,
-      returnHeaders: true,
-    });
+    const session = await withAuthLogContext("verify-session", logRequest, () =>
+      this.#auth.api.getSession({
+        headers: sessionHeaders(headers, this.#sessionCookieName),
+        query: { disableCookieCache: true, disableRefresh: true },
+        asResponse: false,
+        returnHeaders: true,
+      }),
+    );
     const response = session && "response" in session ? session.response : session;
     const authenticatedSession = safeAuthenticatedSession(response);
     if (authenticatedSession === undefined) {
@@ -1063,6 +1110,9 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
               ? {}
               : { log: authLibraryLog(options.onOperationalEvent) }),
           },
+          // As in the guarded profile: the router would print an unclassified exception to the
+          // console; thrown, runPrivateEndpoint logs it as one structured line instead.
+          onAPIError: { throw: true },
         }
       : {
           session: {
@@ -1074,7 +1124,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           // Better Call logs an unclassified exception to the console even when the auth
           // logger is disabled, and since Better Auth 1.7.9 `onAPIError.onError` can only
           // observe it. Throwing leaves the router without logging; runPrivateEndpoint owns
-          // the error and answers it as a dependency failure.
+          // the error, logs it as one structured line and answers it as a dependency failure.
           onAPIError: { throw: true },
         }),
     plugins: [
@@ -1356,11 +1406,22 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     });
     let response: Response;
     try {
-      response = await auth.handler(authRequest);
-    } catch {
+      response = await withAuthLogContext(
+        privateEndpointOperation(path),
+        authLogRequest(request),
+        () => auth.handler(authRequest),
+      );
+    } catch (error) {
       // Better Auth answers its own APIErrors; it throws only an error it cannot classify
-      // (onAPIError.throw), such as a database or audit failure. The error itself may hold
-      // dependency detail, so it is not logged or returned.
+      // (onAPIError.throw), such as a database or audit failure. Its message may hold
+      // dependency detail, so only the operation and its code or class name are logged.
+      try {
+        withAuthLogContext(privateEndpointOperation(path), authLogRequest(request), () =>
+          options.onOperationalEvent?.(authLibraryFailureEvent(error)),
+        );
+      } catch {
+        // Logging never changes the answer.
+      }
       throw new AuthDependencyUnavailable();
     }
     if (!response.ok) {
@@ -1396,6 +1457,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     return {
       async start(request: FastifyRequest, reply: FastifyReply): Promise<void> {
         await sendAuthEndpoint(
+          "provider-start",
           request,
           reply,
           () => {
@@ -1441,6 +1503,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       async result(request: FastifyRequest, reply: FastifyReply): Promise<void> {
         reply.header("cache-control", "no-store");
         await sendAuthEndpoint(
+          "provider-result",
           request,
           reply,
           () => {
@@ -1465,6 +1528,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   async function signInEmail(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
+      "sign-in-password",
       request,
       reply,
       async () => {
@@ -1604,6 +1668,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   async function signOut(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
+      "sign-out",
       request,
       reply,
       async () => {
@@ -1648,6 +1713,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   async function session(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
+      "session-check",
       request,
       reply,
       async () => {
@@ -1677,13 +1743,15 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     const headers = sessionHeaders(request.headers, sessionCookieName);
     requireSessionKey(headers, options.secret, undefined);
     const session = safeAuthenticatedSession(
-      await api.getSession({
-        headers,
-        query: { disableCookieCache: true, disableRefresh: true },
-        asResponse: false,
-        returnHeaders: false,
-        returnStatus: false,
-      }),
+      await withAuthLogContext("resolve-session", authLogRequest(request), () =>
+        api.getSession({
+          headers,
+          query: { disableCookieCache: true, disableRefresh: true },
+          asResponse: false,
+          returnHeaders: false,
+          returnStatus: false,
+        }),
+      ),
     );
     if (session !== undefined) {
       requireSessionKey(headers, options.secret, session.id);
@@ -1744,7 +1812,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       // account or session is created for this existing IAM automation identity.
       let created;
       try {
-        created = await api.createApiKey({
+        created = await withAuthLogContext("create-service-key", undefined, () =>
+          api.createApiKey({
           body: {
             configId: SERVICE_KEY_CONFIG,
             userId: principal.id,
@@ -1757,7 +1826,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
                 : { namespaceId: principal.namespaceId }),
             },
           },
-        });
+          }),
+        );
       } catch (error) {
         throw serviceKeyNameRefusal(error) ? new ServiceKeyNameRefused(error) : error;
       }
