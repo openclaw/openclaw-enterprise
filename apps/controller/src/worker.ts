@@ -1321,6 +1321,8 @@ export class ControllerWorker {
   private stopYieldedThisPass = false;
   /** Each claim's work creation instant on this process's monotonic clock; see `workAgeMs`. */
   private readonly workOrigins = new WeakMap<ClaimedWork, number>();
+  private currentClaim: ClaimedWork | undefined;
+  private enablingCandidate: Promise<void> | undefined;
 
   constructor(options: ControllerWorkerOptions) {
     this.metrics = options.metrics;
@@ -1607,6 +1609,12 @@ export class ControllerWorker {
     if (!this.stopping) {
       this.stopping = true;
       this.abort.abort();
+      const claim = this.currentClaim;
+      if (claim !== undefined && isCandidateDeployment(claim)) {
+        // An enable already in flight must settle before shutdown revokes the same claim.
+        await this.enablingCandidate?.catch(() => {});
+        await this.queue.setCandidateAuthorization(claim, false);
+      }
     }
     // Let an in-flight OAuth exchange persist a rotated grant before closing its dependencies.
     await Promise.all([this.loop, this.connectionMaintenance]);
@@ -1662,6 +1670,7 @@ export class ControllerWorker {
           this.claimedPassesSinceSweep += 1;
           this.workOrigins.set(claim, performance.now() - claim.ageMs);
           claimed = claim;
+          this.currentClaim = claim;
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
           this.preparedThisPass = undefined;
@@ -1676,6 +1685,7 @@ export class ControllerWorker {
             if (isCandidateDeployment(claim)) {
               await this.queue.setCandidateAuthorization(claim, false);
             }
+            this.currentClaim = undefined;
             if (!this.stopYieldedThisPass) {
               this.stopYields.settled(claim.idempotencyKey);
             }
@@ -2182,6 +2192,9 @@ export class ControllerWorker {
       return prepared;
     } catch (failure) {
       const error = primaryComputeFailure(failure);
+      if (candidate) {
+        await this.queue.setCandidateAuthorization(claim, false);
+      }
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
@@ -2368,7 +2381,7 @@ export class ControllerWorker {
     await this.recheckRevokedCredentialSources(claim, revision);
     await this.assertRestartContinuation(revision);
     if (candidate) {
-      await this.queue.setCandidateAuthorization(claim, true);
+      await this.authorizeCandidate(claim);
     }
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
@@ -6043,12 +6056,31 @@ export class ControllerWorker {
 
   /** Renews the lease and re-anchors the work's age (`workAgeMs`); false once the claim is lost. */
   private async renewClaim(claim: ClaimedWork): Promise<boolean> {
+    if (this.stopping) {
+      return false;
+    }
     const renewed = await this.queue.heartbeat(claim);
     if (renewed === undefined) {
       return false;
     }
     this.workOrigins.set(claim, performance.now() - renewed.ageMs);
     return true;
+  }
+
+  private async authorizeCandidate(claim: ClaimedWork): Promise<void> {
+    if (this.stopping) {
+      throw new ClaimLeaseLostError("WORKER_STOPPING");
+    }
+    const enabling = this.queue.setCandidateAuthorization(claim, true);
+    this.enablingCandidate = enabling;
+    try {
+      await enabling;
+    } finally {
+      this.enablingCandidate = undefined;
+    }
+    if (this.stopping) {
+      throw new ClaimLeaseLostError("WORKER_STOPPING");
+    }
   }
 
   private async withClaimHeartbeat<T>(

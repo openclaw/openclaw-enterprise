@@ -45,7 +45,7 @@ import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mj
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.ts";
-import { within } from "../helpers/wait-for.ts";
+import { waitFor, within } from "../helpers/wait-for.ts";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
 
 test(
@@ -2153,8 +2153,17 @@ test(
         );
         const reads = f.secretReads;
         const stopping = worker.stopLoop();
-        release.resolve();
-        await stopping;
+        await waitFor(
+          `candidate authorization revocation during held ${phase}`,
+          async () => {
+            const result = await f.pool.query(
+              "SELECT candidate_authorized FROM occ.controller_work WHERE idempotency_key=$1",
+              [key],
+            );
+            return result.rows[0]?.candidate_authorized === false ? true : undefined;
+          },
+          { timeoutMs: 2_000 },
+        );
         const work = await new PostgresWorkQueue(f.pool).findWork(key);
         assert.equal(work?.state, "claimed");
         assert.ok(work?.leaseExpiresAt && work.leaseExpiresAt.getTime() > Date.now());
@@ -2170,6 +2179,8 @@ test(
           { phase, minted: false, redeemed: false, secretReads: 0 },
           "interruption refuses before Secret reads",
         );
+        release.resolve();
+        await stopping;
       } finally {
         release.resolve();
         await worker.stop();
