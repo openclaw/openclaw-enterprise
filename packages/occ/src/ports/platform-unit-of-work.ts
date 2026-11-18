@@ -11,6 +11,7 @@ export function bindPlatformUnitOfWork(
     preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),
     requestCredentialApprovals: bindRepository(repositories.requestCredentialApprovals, lifetime, [
       "insert",
+      "approve",
       "consume",
     ]),
     egressSendReceipts: bindRepository(repositories.egressSendReceipts, lifetime, [

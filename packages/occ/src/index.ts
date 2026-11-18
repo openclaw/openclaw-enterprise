@@ -145,6 +145,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
   accessBindingsTargeting,
@@ -7793,6 +7794,22 @@ export class OpenClawController {
             sender: owner.require("credential_proxy").sourceControl.sender,
             check: (request, signal, release) =>
               this.checkRequestCredential(owner, request, signal, release),
+            approve: (request, accept) =>
+              this.transactReadCommitted(async (state) => {
+                if (
+                  !(await state.requestCredentialApprovals.approve(
+                    request,
+                    owner.ref,
+                    this.timestamp(),
+                  ))
+                ) {
+                  return false;
+                }
+                if (!accept()) {
+                  throw new DependencyUnavailableError("Request credential authorization expired.");
+                }
+                return true;
+              }),
             validate: (source, value) => {
               if (this.selectedProxyOwner() !== owner) {
                 return false;
@@ -8031,8 +8048,30 @@ export class OpenClawController {
     signal: AbortSignal,
     release?: RequestCredentialRelease,
   ): Promise<StaticEgressSource | undefined> {
+    for (;;) {
+      const result = await this.checkRequestCredentialOnce(owner, request, signal, release);
+      if (result !== "quota-busy") {
+        return result;
+      }
+      // Retry the known no-effect contention after the policy transaction releases its
+      // locks. Each attempt re-verifies installation and policy on the original deadline.
+      const remaining = Date.parse(request.deadlineAt) - this.clock().getTime();
+      if (signal.aborted || remaining <= 0) {
+        return undefined;
+      }
+      await delay(Math.min(25, remaining), undefined, { signal });
+    }
+  }
+
+  private async checkRequestCredentialOnce(
+    owner: InstalledDriver,
+    request: RequestCredentialInput | RequestCredentialApproval,
+    signal: AbortSignal,
+    release?: RequestCredentialRelease,
+  ): Promise<StaticEgressSource | "quota-busy" | undefined> {
     if (
       signal.aborted ||
+      Date.parse(request.deadlineAt) <= this.clock().getTime() ||
       this.transactionContext.getStore() ||
       this.selectedProxyOwner() !== owner
     ) {
@@ -8269,7 +8308,7 @@ export class OpenClawController {
         return refuse("stale_configuration");
       }
       if ("http" in request) {
-        const inserted = await state.requestCredentialApprovals.insert(
+        const reservation = await state.requestCredentialApprovals.insert(
           {
             recipientId: request.recipient.id,
             requestId: request.requestId,
@@ -8288,8 +8327,11 @@ export class OpenClawController {
         if (signal.aborted || Date.parse(request.deadlineAt) <= this.clock().getTime()) {
           throw new DependencyUnavailableError("Request credential authorization expired.");
         }
-        if (!inserted) {
-          return refuse("stale_configuration");
+        if (reservation === "busy") {
+          return "quota-busy" as const;
+        }
+        if (reservation === "refused") {
+          return refuse("approval_refused");
         }
       }
       return selected;

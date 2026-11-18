@@ -252,10 +252,8 @@ response transport. See [qualification requirements](../../testing/protected-rep
 
 ### Request-time capacity
 
-Set the OCC [request registry](../../../packages/occ/src/credential-proxy.ts)
-limits with `requestCapacity`, beside any selected Driver's `id` and
-`configuration`. Operations are per API process. Online-model approval ID quotas
-are durable across replicas; strict exchange ID maps remain per process:
+Set `requestCapacity` beside the Driver's `id` and `configuration`. Operations
+and strict exchange IDs are per API process. Online-model ID quotas are shared:
 
 ```yaml
 drivers:
@@ -278,13 +276,11 @@ drivers:
 | `requestIds`               | Request IDs, all Sandboxes            | 8192                      | 131072  | Strict: UUIDv7 creation + 30 s; online model: authenticated replay horizon                                       |
 | `sandboxRequestIds`        | Request IDs, per Sandbox              | A quarter of `requestIds` | 131072  | Same                                                                                                             |
 
-Each value is a count from 1 to its maximum. An omitted share is a quarter of
-its configured pool, rounded down and at least 1. A share above its pool, a
-value out of range, a non-integer or an unknown field stops API and worker
-startup, and the chart's upgrade check, with `DRIVER_CONFIGURATION_INVALID`
-naming the field. Each operation in progress can hold its request body (up to 1
-MiB), about 8 GiB at the `operations` maximum, so size the API Pod's memory
-before raising it. Restart API Pods to apply a change.
+Each value is an integer from 1 to its maximum. Omitted shares default to a
+quarter of their pool, rounded down to at least 1. Oversized shares and unknown
+fields fail startup and upgrade checks with `DRIVER_CONFIGURATION_INVALID`.
+An operation can hold a 1 MiB body, or about 8 GiB at maximum concurrency.
+Size the API Pods accordingly and restart them to apply changes.
 
 An operation slot covers the handle until closure or deadline (at most 30 s)
 and any pending work until settlement. Verified sender and Sandbox identities
@@ -293,9 +289,11 @@ verification. Incomplete HTTPS grants have 32 listener slots and a five-second
 deadline. gRPC verification and complete grants share the authentication lease.
 A canceled final Secret read releases policy locks and retains capacity until settlement.
 
-Online approvals reserve recipient and request IDs past consumption or expiry
-until the verified replay horizon, at most one hour from admission. Database
-time governs retention, admission, and redemption. Quota contention refuses.
+Online reservations retain recipient/request IDs until the authenticated replay
+horizon, even after revision deletion. Database time governs admission,
+retention and redemption. Quota contention retries within the original deadline
+after releasing policy locks. A reservation becomes redeemable only after the
+transport accepts the decision and OCC commits the approval.
 Strict ID maps and operation caps remain per process.
 
 Strict defaults allow about 270 requests/s per process and 68 per Sandbox

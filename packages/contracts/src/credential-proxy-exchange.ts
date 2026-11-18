@@ -61,10 +61,16 @@ export interface CredentialProxyBinding {
 export interface CredentialProxyExchange {
   /** Reserve shared process capacity before transport authentication; release is idempotent. */
   acquireRequestAuthentication?(): (() => void) | undefined;
-  /** Online authorization is distinct from the strict dispatch/response exchange below. */
+  /**
+   * Online authorization is distinct from strict dispatch. Before making a reservation
+   * redeemable, hand the decision to the transport synchronously. A false result leaves
+   * only the replay reservation. After accepting, the transport must not replace an
+   * affirmative result with a denial. Delivery can still be interrupted.
+   */
   authorizeRequestCredential?(
     request: RequestCredentialInput,
     signal: AbortSignal,
+    accept?: () => boolean,
   ): Promise<"credential" | undefined>;
   /** Consume the exact request, binding and authenticated recipient approval once. */
   resolveRequestCredential?(

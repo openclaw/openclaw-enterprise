@@ -34,8 +34,10 @@ defines the guarantee. Existing strict exchanges retain their
 graph TD
   A["Supervisor captures<br/>HTTPS model request"] --> B{"Current route, model<br/>and permission?"}
   B -->|No| X["Refuse credential"]
-  B -->|Yes| C["OCC stores<br/>one-use approval"]
-  C --> D["Supervisor redeems<br/>with JWT-SVID"]
+  B -->|Yes| C["OCC reserves<br/>the replay ID"]
+  C --> K{"Transport accepts<br/>the decision?"}
+  K -->|No| X
+  K -->|Yes| D["Commit approval<br/>then redeem with JWT-SVID"]
   D --> E{"Identity and approval<br/>match?"}
   E -->|No| X
   E -->|Yes| F["Consume approval<br/>and recheck authority"]
@@ -114,7 +116,7 @@ confined to that aggregate epoch can preserve this witness; a mixed observation
 cannot. Model provider/profile and full policy changes remain checked. Missing or changed retained evidence refuses. The API does not recompute
 worker-owned Git custody state.
 
-OCC stores a nonsecret approval in PostgreSQL, correlated with recipient,
+OCC stores a nonsecret reservation in PostgreSQL, correlated with recipient,
 request ID, binding, execution, Driver, policy digest and deadline. It stores no
 request body or key. The stored redemption deadline is the earlier of the
 requested deadline and 30 seconds after the database observes admission. An
@@ -122,16 +124,20 @@ issuer with a fast clock cannot extend that lease. Approval alone does not
 permit release after withdrawal. The verified adapter supplies a separate
 `replayUntilAt`, at least the redemption deadline and at most one hour from
 admission. OpenShell uses the authenticated extension identity's expiry.
-`packages/occ/src/state/request-credential-approvals.ts` retains consumed or
-expired approvals until that horizon, so redemption expiry cannot permit
-reapproval of the same recipient/request ID. Its global and per-recipient ID
-quotas are durable and shared across API replicas. A nonblocking transaction
-advisory lock serializes quota admission; contention refuses instead of waiting
-while holding policy locks. PostgreSQL's `clock_timestamp()` governs pruning,
+`packages/occ/src/state/request-credential-approvals.ts` retains the correlation
+until that horizon, including after cancellation, consumption or revision
+deletion. Only a live revision may obtain or redeem an approval. A nonblocking
+transaction advisory lock serializes durable global and per-recipient quotas.
+On known lock contention, OCC releases the transaction and rechecks policy
+within the original deadline. Exhaustion and replay still refuse.
+PostgreSQL's `clock_timestamp()` governs pruning,
 admission deadlines, the one-hour replay limit and redemption expiry; replica
 clocks cannot shorten shared retention. The in-memory store uses its single-state
-clock. A canceled or expired operation detected after insertion rolls back the
-approval. Online approval consumption
+clock. The committed reservation cannot be redeemed until a second transaction
+takes the middleware's affirmative decision. Cancellation before acceptance
+leaves only the replay reservation. If activation commits after acceptance but
+the connection drops, the response may be lost. Neither side retries that ID.
+Online approval consumption
 and policy checks explicitly use State's `transactReadCommitted`, regardless of
 the connection pool's default isolation. PostgreSQL starts `READ COMMITTED`
 transactions so policy reads and quota counts observe committed changes after

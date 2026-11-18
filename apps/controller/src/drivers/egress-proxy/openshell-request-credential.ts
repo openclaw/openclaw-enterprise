@@ -72,6 +72,7 @@ export async function authorizeOpenShellRequest(
   call.once("cancelled", cancel);
   const timer = setTimeout(cancel, deadline - Date.now()).unref();
   try {
+    let accepted = false;
     const decision = await authorize(
       {
         ...binding,
@@ -82,16 +83,12 @@ export async function authorizeOpenShellRequest(
         http: { target: view.target, headers: view.headers, body: view.body },
       },
       controller.signal,
+      () => {
+        accepted = !controller.signal.aborted && !call.cancelled && Date.now() < deadline;
+        return accepted;
+      },
     );
-    if (
-      Date.now() >= deadline ||
-      call.cancelled ||
-      controller.signal.aborted ||
-      decision !== "credential"
-    ) {
-      return denied;
-    }
-    return { decision: 1 };
+    return decision === "credential" && accepted ? { decision: 1 } : denied;
   } finally {
     clearTimeout(timer);
     call.off("cancelled", cancel);

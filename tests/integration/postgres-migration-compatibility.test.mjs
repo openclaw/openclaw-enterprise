@@ -2627,7 +2627,10 @@ test(
         assert.deepEqual(await run("--require-current"), { ok: true, history: "completed" });
         assert.deepEqual(await run(), { ok: true, history: "completed" });
         assert.deepEqual(await historySnapshot(db), completed);
-        assert.deepEqual((await approvalRows()).rows, populated);
+        assert.deepEqual(
+          (await approvalRows()).rows,
+          populated.map((approval) => ({ ...approval, approved: false })),
+        );
         await assertUpgradedRevisionReadable(db);
         assert.equal(
           (await db.app.query("UPDATE occ.request_credential_approvals SET consumed=true"))
@@ -2637,6 +2640,38 @@ test(
         await assert.rejects(
           db.app.query("UPDATE occ.request_credential_approvals SET binding_id='replacement'"),
           { code: "42501" },
+        );
+        assert.equal(
+          (await db.app.query("DELETE FROM occ.agent_revisions WHERE id=$1", [revision])).rowCount,
+          1,
+        );
+        const retained = (await approvalRows()).rows;
+        assert.deepEqual(
+          retained.map(({ recipient_id, request_id, consumed, replay_until_at }) => [
+            recipient_id,
+            request_id,
+            consumed,
+            replay_until_at,
+          ]),
+          [["recipient", "request", true, populated[0].replay_until_at]],
+        );
+        const nextNamespace = `ns_${randomUUID()}`;
+        const next = await seedCanonicalAgent(db, nextNamespace, {
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: true,
+        });
+        assert.equal(
+          (
+            await db.app.query(
+              `INSERT INTO occ.request_credential_approvals
+                 (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at)
+               SELECT recipient_id,request_id,binding_id,$1,$2,$3,policy_digest,driver_ref,expires_at,replay_until_at
+               FROM occ.request_credential_approvals ON CONFLICT DO NOTHING`,
+              [nextNamespace, next.agent, next.revision],
+            )
+          ).rowCount,
+          0,
         );
       });
     }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { modelRequestProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import type {
   CredentialRevisionContext,
@@ -125,6 +126,49 @@ export function registerSandboxDriverNamespaceProviderCases({
     );
     assert.equal(gatewayClient.workspaces.has(context.namespace.name), true);
     assert.equal(callCount(gatewayClient, "deleteWorkspace"), 0);
+
+    const workspace = context.namespace.name;
+    const revision = "rev_00000000-0000-4000-8000-000000000001";
+    const id = modelRequestProviderName(revision);
+    const owned = workspaceGatewayClient([ownedWorkspace(workspace, context.namespace.id)]);
+    const observed = {
+      name: id,
+      type: id,
+      workspace,
+      profileWorkspace: workspace,
+      resourceVersion: "1",
+      config: {},
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace-id": context.namespace.id,
+        "openclaw.dev/revision-id": revision,
+      },
+    };
+    const replacement = { ...observed, resourceVersion: "2", labels: {} };
+    owned.providers.set(id, observed);
+    owned.profiles.set(id, {
+      id,
+      resourceVersion: "1",
+      annotations: { "openclaw.dev/managed-by": "openclaw-enterprise:fixture" },
+    });
+    const list = owned.listProviders;
+    owned.listProviders = async (...args) => {
+      const snapshot = await list(...args);
+      owned.providers.set(id, replacement);
+      return snapshot;
+    };
+    const reconciliation = openShellDriver(owned);
+    await assert.rejects(reconciliation.cleanup(context), /Reconcile retained request-model/);
+    assert.equal(owned.providers.get(id), replacement);
+    assert.equal(owned.profiles.has(id), true);
+    assert.equal(callCount(owned, "deleteProvider"), 0);
+    assert.equal(callCount(owned, "deleteWorkspace"), 0);
+    owned.listProviders = list;
+    owned.providers.delete(id);
+    await assert.rejects(reconciliation.cleanup(context), /Reconcile retained request-model/);
+    owned.profiles.delete(id);
+    await reconciliation.cleanup(context);
+    assert.equal(owned.workspaces.has(workspace), false);
   });
 
   // OpenShell answers a controller identity it cannot authenticate (UNAUTHENTICATED) or that lacks

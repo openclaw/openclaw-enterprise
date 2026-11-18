@@ -111,6 +111,7 @@ export interface EgressAuthorityPorts {
       signal: AbortSignal,
       release?: RequestCredentialRelease,
     ): Promise<StaticEgressSource | undefined>;
+    approve(request: RequestCredentialInput, accept: () => boolean): Promise<boolean>;
     consume(grant: RequestCredentialGrant): Promise<ConsumedRequestCredentialApproval | undefined>;
     validate(source: StaticEgressSource, value: string): boolean;
     deny(approval: RequestCredentialApproval, code: string): Promise<void>;
@@ -459,6 +460,11 @@ export class CredentialProxy implements CredentialProxyExchange {
       signal: AbortSignal,
       retain: <U>(pending: Promise<U>) => Promise<U>,
     ) => Promise<T | undefined>,
+    finish?: (
+      result: T,
+      ports: NonNullable<EgressAuthorityPorts["requestCredentials"]>,
+      current: () => boolean,
+    ) => Promise<T | undefined>,
   ): Promise<T | undefined> {
     const ports = this.ports.requestCredentials;
     const deadline = Date.parse(deadlineAt);
@@ -486,7 +492,11 @@ export class CredentialProxy implements CredentialProxyExchange {
         charge.holds += 1;
         return pending.finally(() => this.releaseCharge(charge));
       });
-      return lifetime.aborted || this.ports.now() >= deadline ? undefined : result;
+      if (result === undefined) {
+        return undefined;
+      }
+      const current = () => !lifetime.aborted && this.ports.now() < deadline;
+      return finish ? await finish(result, ports, current) : current() ? result : undefined;
     } catch {
       // Ambiguous authority/read outcomes never grant a credential or retry a consumed approval.
       return undefined;
@@ -495,7 +505,11 @@ export class CredentialProxy implements CredentialProxyExchange {
     }
   }
 
-  authorizeRequestCredential(input: RequestCredentialInput, signal: AbortSignal) {
+  authorizeRequestCredential(
+    input: RequestCredentialInput,
+    signal: AbortSignal,
+    accept?: () => boolean,
+  ) {
     if (
       !Number.isFinite(Date.parse(input.replayUntilAt)) ||
       Date.parse(input.replayUntilAt) < Date.parse(input.deadlineAt) ||
@@ -521,6 +535,10 @@ export class CredentialProxy implements CredentialProxyExchange {
       signal,
       async (ports, lifetime) =>
         (await ports.check(request, lifetime)) ? "credential" : undefined,
+      async (decision, ports, current) =>
+        current() && (await ports.approve(request, () => current() && (accept?.() ?? true)))
+          ? decision
+          : undefined,
     );
   }
 

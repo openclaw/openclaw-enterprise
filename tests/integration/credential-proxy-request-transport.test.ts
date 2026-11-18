@@ -321,6 +321,26 @@ test(
     assert.equal((await redeem(input)).status, 403, "an approval is single use");
     assert.equal((await evaluate(input)).decision, 2, "a consumed ID cannot be approved again");
 
+    const late = fixture.request();
+    const committed = fixture.pauseNextApprovalCommit("after");
+    const cancel = new AbortController();
+    const rpc = invoke(client, "EvaluateHttpRequest", wire(late), signed, {
+      signal: cancel.signal,
+    });
+    const canceled = assert.rejects(rpc, { code: 1 });
+    const beforeCancellation = f.secretReads;
+    try {
+      await committed.reached;
+      cancel.abort();
+      await canceled;
+      assert.equal((await redeem(late)).status, 403);
+    } finally {
+      committed.release();
+    }
+    assert.equal((await evaluate(late)).decision, 2);
+    assert.equal((await redeem(late)).status, 403);
+    assert.equal(f.secretReads, beforeCancellation);
+
     // A slow wall clock must not extend the database lease in the HTTP TTL. Hold a
     // real Secret read so returning the original monotonic budget would also fail.
     const shortLease = fixture.request();

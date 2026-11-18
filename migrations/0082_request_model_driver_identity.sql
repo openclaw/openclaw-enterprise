@@ -41,3 +41,11 @@ BEGIN
   END IF;
 END
 $$;
+--> statement-breakpoint
+-- Keep replay correlations across revision deletion. Only a live revision can
+-- obtain or redeem an approval, and a reservation is not redeemable.
+ALTER TABLE occ.request_credential_approvals
+  DROP CONSTRAINT request_credential_approval_revision,
+  ADD COLUMN approved boolean NOT NULL DEFAULT false;
+--> statement-breakpoint
+GRANT UPDATE (approved) ON occ.request_credential_approvals TO occ_app;

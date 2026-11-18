@@ -28,6 +28,11 @@ export interface RequestCredentialApprovalRepository {
     approval: RequestCredentialApproval,
     now: string,
     limits: RequestCredentialApprovalLimits,
+  ): Promise<"reserved" | "busy" | "refused">;
+  approve(
+    approval: RequestCredentialInput,
+    driver: DriverRegistrationRef,
+    now: string,
   ): Promise<boolean>;
   consume(
     grant: RequestCredentialGrant,

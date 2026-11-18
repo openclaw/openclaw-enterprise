@@ -90,6 +90,12 @@ routes, mismatched provider configuration and token grants without explicit
 
 ## Apply to an existing installation
 
+Revision cleanup removes the Sandbox and leaves its credential-free request
+provider and profile for reconciliation. The Gateway deletes by name and cannot
+enforce an instance precondition. Before deleting the Workspace, its operator
+must reconcile these records with provider writers quiesced. OCC refuses
+automatic Workspace deletion while they remain.
+
 Both phases restart the Worker. Before a controller-only image upgrade, use
 [the deployment inventory](../../reference/repository-credentials/worker-replacement.md)
 to identify running revisions that require their original Worker. Stop and

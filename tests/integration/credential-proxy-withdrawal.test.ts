@@ -1321,6 +1321,34 @@ test(
       (await exchange.resolveRequestCredential(grant(canceledInput), signal))?.value,
       "synthetic-key-after-cancel",
     );
+    const lateInput = request();
+    const lateCall = new AbortController();
+    const committed = fixture.pauseNextApprovalCommit("after");
+    const lateDecision = exchange.authorizeRequestCredential(lateInput, lateCall.signal);
+    const readsBeforeLateCancel = f.secretReads;
+    try {
+      await committed.reached;
+      lateCall.abort();
+      assert.equal(
+        await afterRestart.resolveRequestCredential(grant(lateInput), signal),
+        undefined,
+      );
+    } finally {
+      committed.release();
+    }
+    assert.equal(await lateDecision, undefined);
+    assert.equal(await afterRestart.resolveRequestCredential(grant(lateInput), signal), undefined);
+    assert.equal(await afterRestart.authorizeRequestCredential(lateInput, signal), undefined);
+    assert.equal(f.secretReads, readsBeforeLateCancel);
+    assert.deepEqual(
+      (
+        await f.pool.query(
+          "SELECT approved, consumed FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
+          [lateInput.recipient.id, lateInput.requestId],
+        )
+      ).rows,
+      [{ approved: false, consumed: false }],
+    );
     const withdrawal = await f.request(
       "POST",
       `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
@@ -1426,6 +1454,29 @@ test(
     );
     assert.equal(await replica(b).authorizeRequestCredential(b.request(), signal), "credential");
     assert.equal(await replica(c).authorizeRequestCredential(c.request(), signal), "credential");
+
+    // Hold a real reservation open, then observe the other Namespace leaving its
+    // busy transaction. Both requests can proceed while multiple slots remain.
+    const aConcurrent = a.request();
+    const bConcurrent = b.request();
+    const reservation = a.pauseNextApprovalCommit();
+    const contention = b.pauseNextApprovalCommit("busy");
+    t.after(() => reservation.release());
+    t.after(() => contention.release());
+    const approvalA = a.exchange.authorizeRequestCredential(aConcurrent, signal);
+    await reservation.reached;
+    const approvalB = b.exchange.authorizeRequestCredential(bConcurrent, signal);
+    try {
+      assert.equal(
+        await Promise.race([contention.reached.then(() => true), approvalB.then(() => false)]),
+        true,
+        "the unrelated Namespace must leave the busy transaction and retry",
+      );
+    } finally {
+      reservation.release();
+      contention.release();
+    }
+    assert.deepEqual(await Promise.all([approvalA, approvalB]), ["credential", "credential"]);
 
     // Online authorization and redemption select READ COMMITTED independently of a
     // pool's default, so quota and policy reads see commits after lock acquisition.

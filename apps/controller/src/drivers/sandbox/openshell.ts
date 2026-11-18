@@ -4505,26 +4505,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await client.deleteProvider(workspace, provider, context.signal);
         }
       }
-      if (context.revision.egressPlan?.authorization === "online-request") {
-        const name = modelRequestProviderName(context.revision.id);
-        const provider = await refused(() => client.getProvider(workspace, name, context.signal));
-        if (provider) {
-          verifyRuntimeProvider(
-            provider,
-            name,
-            name,
-            runtimeProviderLabels(context.namespace, context.revision),
-            {},
-          );
-          if (provider.workspace !== workspace || provider.profileWorkspace !== workspace) {
-            throw new OpenShellSandboxConfigurationFailure(
-              "Model provider belongs to another Workspace.",
-            );
-          }
-          await client.deleteProvider(workspace, name, context.signal);
-        }
-        await this.deleteRuntimeProfileIfUnused(client, workspace, name, context.signal);
-      }
+      // Request-model registrations contain no credential material. Keep them
+      // for reconciliation: the Gateway's delete RPCs cannot require the instance
+      // we observed. Sandbox removal and policy withdrawal close credential access.
       const git = this.openShellGit;
       const revision = context.revision;
       if (git !== undefined && revision.repositoryCredentials !== undefined) {
@@ -4592,6 +4575,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // Ownership remains the cleanup boundary, and DeleteWorkspace is idempotent.
       verifyWorkspaceOwnership(workspace, context.namespace);
       const providers = await client.listProviders(workspace.name, context.signal);
+      const isRequestModel = (name: string) => /^oce-model-[a-f0-9]{32}$/.test(name);
+      if (
+        providers.some((provider) => isRequestModel(provider.name)) ||
+        (await client.listProviderProfiles(workspace.name, context.signal)).some(
+          (profile) => profile.definition?.scope === "workspace" && isRequestModel(profile.id),
+        )
+      ) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Reconcile retained request-model providers and profiles before deleting this Workspace.",
+        );
+      }
       for (const provider of providers) {
         if (
           Object.values(RUNTIME_PROFILE_IDS).some((id) => provider.type === id) &&
@@ -4600,33 +4594,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ) {
           await client.deleteProvider(workspace.name, provider.name, context.signal);
         }
-      }
-      for (const profile of await client.listProviderProfiles(workspace.name, context.signal)) {
-        if (
-          !/^oce-model-[a-f0-9]{32}$/.test(profile.id) ||
-          !isManagedRuntimeProfile(profile) ||
-          profile.definition?.scope !== "workspace"
-        ) {
-          continue;
-        }
-        const provider = providers.find((item) => item.name === profile.id);
-        if (provider) {
-          if (
-            provider.type !== profile.id ||
-            provider.workspace !== workspace.name ||
-            provider.profileWorkspace !== workspace.name ||
-            provider.labels[OPENSHELL_MANAGED_BY_LABEL] !== OPENSHELL_MANAGED_BY ||
-            provider.labels[OPENSHELL_NAMESPACE_ID_LABEL] !== context.namespace.id ||
-            modelRequestProviderName(provider.labels[RUNTIME_PROVIDER_REVISION_LABEL] ?? "") !==
-              profile.id
-          ) {
-            throw new OpenShellSandboxConfigurationFailure(
-              "Refusing model provider without Namespace ownership.",
-            );
-          }
-          await client.deleteProvider(workspace.name, provider.name, context.signal);
-        }
-        await this.deleteRuntimeProfileIfUnused(client, workspace.name, profile.id, context.signal);
       }
       // Revisions cleaned up before finding 2206's fix left their Git providers behind.
       await deleteOpenShellPreparedGitProviders(client, workspace.name, providers, context.signal);

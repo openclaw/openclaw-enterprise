@@ -351,31 +351,46 @@ export async function requestCredentialFixture(
     grant,
     restartController,
     principalId,
-    pauseNextApprovalCommit() {
+    pauseNextApprovalCommit(stage: "before" | "after" | "busy" = "before") {
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const policyState = state;
       assert.ok(policyState instanceof PostgresPlatformState);
       const original = policyState.transactReadCommitted.bind(policyState);
       let pending = true;
-      policyState.transactReadCommitted = (work) =>
-        original((unit) =>
+      policyState.transactReadCommitted = async (work) => {
+        let reserved = false;
+        const result = await original((unit) =>
           work({
             ...unit,
             requestCredentialApprovals: {
               ...unit.requestCredentialApprovals,
               async insert(...args) {
                 const inserted = await unit.requestCredentialApprovals.insert(...args);
-                if (pending && inserted) {
+                if (pending && inserted === "busy" && stage === "busy") {
                   pending = false;
-                  reached.resolve();
-                  await release.promise;
+                  reserved = true;
+                }
+                if (pending && inserted === "reserved" && stage !== "busy") {
+                  pending = false;
+                  if (stage === "before") {
+                    reached.resolve();
+                    await release.promise;
+                  } else {
+                    reserved = true;
+                  }
                 }
                 return inserted;
               },
             },
           }),
         );
+        if (reserved) {
+          reached.resolve();
+          await release.promise;
+        }
+        return result;
+      };
       return { reached: reached.promise, release: release.resolve };
     },
     pauseFinalPolicyLock() {

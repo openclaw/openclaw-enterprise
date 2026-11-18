@@ -251,9 +251,9 @@ export function createOpenShellEgressAuthority(
             call,
             identity,
             registrationName,
-            (input, signal) => {
+            (input, signal, accept) => {
               release();
-              return authorize(input, signal);
+              return authorize(input, signal, accept);
             },
           );
         } finally {
