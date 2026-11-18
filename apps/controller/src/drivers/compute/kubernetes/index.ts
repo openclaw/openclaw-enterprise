@@ -1442,6 +1442,72 @@ function gatewayRevision(
   return { revision, revisionId };
 }
 
+/**
+ * A revision keeps the images and start-up programs its Deployment was first applied with. The
+ * controller renders those programs, so re-applying a running revision after a controller upgrade
+ * (repository maintenance, activation) would start the new release's script on the revision's
+ * earlier image, which may not support it. The next deployment is a new revision and renders
+ * both afresh, and a missing Deployment is created from the current render. The rest of the
+ * template still follows the current render. A tag the digest policy now refuses is not kept.
+ */
+function keepRevisionPrograms(
+  desired: ManagedKubernetesObject,
+  existing: ManagedKubernetesObject,
+  requireImmutableDigest: boolean,
+): ManagedKubernetesObject {
+  const revisionId = ({ metadata }: ManagedKubernetesObject) =>
+    metadata.annotations?.["openclaw.dev/revision-id"] ??
+    metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION];
+  const podSpec = (object: ManagedKubernetesObject) =>
+    asRecord(asRecord(object.spec?.template)?.spec);
+  const deployed = new Map<unknown, KubernetesRecord>();
+  for (const list of [podSpec(existing)?.containers, podSpec(existing)?.initContainers]) {
+    for (const entry of Array.isArray(list) ? list : []) {
+      const container = asRecord(entry);
+      if (container !== undefined) {
+        deployed.set(container.name, container);
+      }
+    }
+  }
+  const desiredSpec = podSpec(desired);
+  if (
+    desiredSpec === undefined ||
+    revisionId(desired) === undefined ||
+    revisionId(existing) !== revisionId(desired) ||
+    (requireImmutableDigest &&
+      [...deployed.values()].some(
+        ({ image }) => typeof image !== "string" || !IMMUTABLE_IMAGE_DIGEST.test(image),
+      ))
+  ) {
+    return desired;
+  }
+  const keep = (entry: unknown) => {
+    const container: KubernetesRecord = { ...asRecord(entry) };
+    const kept = deployed.get(container.name);
+    if (kept !== undefined) {
+      for (const field of ["image", "command", "args"]) {
+        if (kept[field] === undefined) {
+          delete container[field];
+        } else {
+          container[field] = kept[field];
+        }
+      }
+    }
+    return container;
+  };
+  const spec = { ...desiredSpec };
+  for (const field of ["containers", "initContainers"]) {
+    const list = spec[field];
+    if (Array.isArray(list)) {
+      spec[field] = list.map(keep);
+    }
+  }
+  return {
+    ...desired,
+    spec: { ...desired.spec, template: { ...asRecord(desired.spec?.template), spec } },
+  };
+}
+
 function observeGatewayPreparation(
   gateway: ManagedKubernetesObject<"Deployment">,
   {
@@ -17824,7 +17890,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     const request = {
       name: desired.metadata.name,
-      body: desired,
+      body:
+        desired.kind === "Deployment" && existing !== undefined
+          ? keepRevisionPrograms(desired, existing, this.options.images.requireImmutableDigest)
+          : desired,
       fieldManager: FIELD_MANAGER,
       force: false,
     };
