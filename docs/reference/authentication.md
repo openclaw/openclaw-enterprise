@@ -51,22 +51,21 @@ Better Auth hashes the supplied `bootstrap-admin` key with its service identity,
 Installation metadata and 30-day expiry from registration. No plaintext reaches bootstrap output,
 audit or logs. Ordinary issuance generates keys.
 
-Before Helm installation, precreate `bootstrap.credentials.secretName` in the
-release namespace. `passwordKey` and `serviceKeyKey` default to `admin-password`
-and `admin-service-key`. Only fresh-install bootstrap receives the read-only
-projection; migration, API and worker do not. Upgrades need no Secret. No bootstrap PVC, preparation/reader Pod or Secret API permission is needed.
+[The installer](cli.md#installation-handoff) prepares
+`bootstrap.credentials.secretName` before Helm; direct Helm requires operator-provisioned inputs.
+`passwordKey` and `serviceKeyKey` default to `admin-password` and `admin-service-key`. Only fresh-install bootstrap receives the read-only
+projection; migration, API and worker do not. Upgrades need no Secret. Bootstrap needs no PVC, preparation/reader Pod or Secret API permission.
 Operators retain sources.
 
-`scripts/bootstrap-installation.mjs` runs between migration and API/worker
-startup. Compose uses bootstrap-only input secrets. Setup tools prepare private
-files outside the checkout; `OPENCLAW_DEV_PASSWORD` selects their password, not
-an initializer credential. Direct runs supply both paths.
+Compose supplies bootstrap-only secrets; direct runs provide both paths. Setup tools retain private files outside
+the checkout; [development defaults](settings/development.md) are setup-only.
+Helm install uses bootstrap's `--require-fresh` to refuse existing Installations.
+Ordinary direct runs and upgrades retain verification.
 
-An already-bootstrapped Installation receives no new Namespace, identity, grants,
-key or password. It verifies the administrator without reading credential files.
-Restarting does not replace missing files, expired/revoked keys, removed service
-identities, or removed grants. Use normal issuance/revocation for credential
-recovery and rotation.
+Ordinary reruns verify the administrator without reading inputs or creating
+Namespaces, identities, grants or credentials. They do not restore missing files,
+identities or grants, or renew expired/revoked keys. Recovery and rotation use
+normal issuance/revocation.
 
 Bootstrap makes one attempt. Any error emits `installation.bootstrap-failed`
 with available non-secret attempt IDs, then exits unsuccessfully. Created

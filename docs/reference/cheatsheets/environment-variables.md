@@ -9,13 +9,14 @@ not listed unless they are also documented settings.
 
 ## CLI
 
-Command-line flags override these variables. See the [CLI reference](../cli.md).
+Resource-command flags override connection settings. See the [CLI reference](../cli.md).
 
 - `OCC_URL` — Control Plane HTTP(S) origin; required for resource commands.
 - `OCC_SERVICE_KEY_FILE` — Path to a service-key JSON response; required for resource commands.
 - `OCC_NAMESPACE` — Namespace ID for scoped resource commands.
 - `OCC_CA_BUNDLE` — Additional PEM certificate-authority bundle for HTTPS.
 - `OCC_TIMEOUT_SECONDS` — OCC request or installation handoff timeout in whole seconds; default: `30`.
+- `XDG_STATE_HOME` — Absolute local state root for generated installation recovery inputs; defaults to `$HOME/.local/state`. Keep it outside the checkout.
 
 ## Controller and authentication
 

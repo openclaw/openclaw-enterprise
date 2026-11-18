@@ -31,6 +31,9 @@ function parseCommand(mode, args) {
   if (args.length === 0) {
     return { mode };
   }
+  if (mode === "production" && args.length === 1 && args[0] === "--require-fresh") {
+    return { mode, requireFresh: true };
+  }
   if (
     mode === "production" &&
     args.length === 2 &&
@@ -40,7 +43,7 @@ function parseCommand(mode, args) {
     return { mode, expectedInstallationId: args[1] };
   }
   throw new BootstrapVerificationError(
-    "Usage: node scripts/bootstrap-installation.mjs (production also accepts --verify-existing <incumbent-installation-id>).",
+    "Usage: node scripts/bootstrap-installation.mjs (production also accepts --require-fresh or --verify-existing <incumbent-installation-id>).",
   );
 }
 
@@ -222,7 +225,7 @@ export async function bootstrapInstallation({
   let status = 0;
 
   try {
-    const { mode, expectedInstallationId } = parseCommand(environment.NODE_ENV, args);
+    const { mode, expectedInstallationId, requireFresh } = parseCommand(environment.NODE_ENV, args);
     logging = await loadOperationalLoggingConfiguration({ mode, environment });
     logger = createOccLogger({
       component: "occ-bootstrap",
@@ -243,6 +246,11 @@ export async function bootstrapInstallation({
       return 0;
     }
     const existing = await state.loadInstallation();
+    if (requireFresh && existing !== undefined) {
+      throw new BootstrapVerificationError(
+        "Fresh installation requires a database without an Installation; preserve and reconcile the original attempt.",
+      );
+    }
     let verified = false;
     if (existing !== undefined) {
       try {

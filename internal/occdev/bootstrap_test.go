@@ -13,8 +13,17 @@ import (
 	"testing"
 )
 
+func privateBootstrapDirectory(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
 func TestBootstrapCredentialsArePrivateAndNotOverwritten(t *testing.T) {
-	state := &developmentState{directory: t.TempDir()}
+	state := &developmentState{directory: privateBootstrapDirectory(t)}
 	r := newRunner(Options{Repository: t.TempDir()})
 	r.env["OPENCLAW_DEV_PASSWORD"] = " password with spaces "
 	if err := r.prepareBootstrapCredentials(state); err != nil {
@@ -80,7 +89,7 @@ func TestSetupPasswordTerminators(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRunner(Options{Repository: t.TempDir()})
 			r.env["OPENCLAW_DEV_PASSWORD"] = expected + tc.suffix
-			state := &developmentState{directory: t.TempDir(), DeploymentMode: "k3d"}
+			state := &developmentState{directory: privateBootstrapDirectory(t), DeploymentMode: "k3d"}
 			err := r.prepareBootstrapCredentials(state)
 			if !tc.valid {
 				if err == nil {
@@ -107,7 +116,7 @@ func TestKubernetesBootstrapPasswordDefault(t *testing.T) {
 	for range 2 {
 		r := newRunner(Options{Repository: t.TempDir()})
 		delete(r.env, "OPENCLAW_DEV_PASSWORD")
-		state := &developmentState{directory: t.TempDir(), DeploymentMode: "k3d"}
+		state := &developmentState{directory: privateBootstrapDirectory(t), DeploymentMode: "k3d"}
 		if err := r.prepareBootstrapCredentials(state); err != nil {
 			t.Fatal(err)
 		}
@@ -129,7 +138,7 @@ func TestKubernetesBootstrapPasswordDefault(t *testing.T) {
 func TestBootstrapExportsOnlyAfterInstallationVerification(t *testing.T) {
 	for _, scenario := range []string{"authorized", "rejected", "missing Installation ID"} {
 		t.Run(scenario, func(t *testing.T) {
-			state := &developmentState{directory: t.TempDir()}
+			state := &developmentState{directory: privateBootstrapDirectory(t)}
 			state.KeyPath = filepath.Join(state.directory, "exported.json")
 			r := newRunner(Options{Repository: t.TempDir()})
 			if err := r.prepareBootstrapCredentials(state); err != nil {

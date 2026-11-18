@@ -2,59 +2,34 @@ package occdev
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/openclaw/openclaw-enterprise/internal/bootstrapcredentials"
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 )
 
 // Prepare once per owned setup attempt. Retain inputs for diagnosis; never regenerate on retry.
 func (r *runner) prepareBootstrapCredentials(state *developmentState) error {
-	passwordPath := filepath.Join(state.directory, "initial-admin-password")
-	keyPath := filepath.Join(state.directory, "initial-admin-service-key")
 	password := r.env["OPENCLAW_DEV_PASSWORD"]
-	if password == "" {
+	if password == "" && state.DeploymentMode != "k3d" {
 		password = "openclaw-development-password"
-		if state.DeploymentMode == "k3d" {
-			password = rand.Text()
-		}
 	}
-	// Match the initializer's single optional file terminator; password spaces are significant.
-	if strings.HasSuffix(password, "\r\n") {
-		password = strings.TrimSuffix(password, "\r\n")
-	} else {
-		password = strings.TrimSuffix(password, "\n")
-	}
-	if strings.ContainsAny(password, "\r\n\x00") {
-		return fmt.Errorf("administrator password must not contain NUL or embedded line breaks")
-	}
-	if err := exclusiveWrite(passwordPath, []byte(password), 0600); err != nil {
-		return err
-	}
-	material := make([]byte, 32)
-	if _, err := rand.Read(material); err != nil {
-		return err
-	}
-	key := "occ_" + base64.RawURLEncoding.EncodeToString(material)
-	if err := exclusiveWrite(keyPath, []byte(key), 0600); err != nil {
-		return err
-	}
-	data, err := json.Marshal(map[string]any{"data": map[string]string{"key": key}})
+	inputs, err := bootstrapcredentials.Prepare(state.directory, password)
 	if err != nil {
 		return err
 	}
-	if err := exclusiveWrite(filepath.Join(state.directory, "bootstrap-client-key.json"), data, 0600); err != nil {
-		return err
-	}
+	passwordPath := inputs.PasswordPath
+	keyPath := inputs.ServiceKeyPath
 	if state.DeploymentMode != "k3d" {
-		for name, value := range map[string]string{"mount-admin-password": password, "mount-admin-service-key": key} {
-			if err := exclusiveWrite(filepath.Join(state.directory, name), []byte(value), 0600); err != nil {
+		for name, source := range map[string]string{"mount-admin-password": passwordPath, "mount-admin-service-key": keyPath} {
+			data, err := os.ReadFile(source)
+			if err != nil {
+				return err
+			}
+			if err := exclusiveWrite(filepath.Join(state.directory, name), data, 0600); err != nil {
 				return err
 			}
 		}

@@ -2184,7 +2184,7 @@ test(
     assert.equal(migration.name, "migration");
     assert.deepEqual(migration.args, [...selectedImageMigrationEntry, "--expect-empty"]);
     assert.equal(bootstrap.name, "bootstrap");
-    assert.deepEqual(bootstrap.args, ["scripts/bootstrap-installation.mjs"]);
+    assert.deepEqual(bootstrap.args, ["scripts/bootstrap-installation.mjs", "--require-fresh"]);
     assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
     assert.ok(!migration.env.some(({ name }) => name === "OCC_DATABASE_URL"));
     assert.ok(bootstrap.env.some(({ name }) => name === "OCC_DATABASE_URL"));

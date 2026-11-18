@@ -1118,10 +1118,8 @@ test(
   "production bootstrap of a fresh database takes the full path",
   requiresFailurePostgres,
   async (context) => {
-    const { fresh } = await bootstrapExistingInstallation(
-      context,
-      "fresh-path",
-      runBootstrapScript,
+    const { fresh } = await bootstrapExistingInstallation(context, "fresh-path", (environment) =>
+      runBootstrapScript(environment, ["--require-fresh"]),
     );
     const result = jsonEvent(fresh.stdout, "installation.bootstrapped");
     // The log line names the new Installation too (finding 2245).
@@ -1146,6 +1144,14 @@ test(
     ];
     // Changed sources are not rotation. The existing-Installation path must not read/import them.
     await Promise.all(inputs.map((path) => writeFile(path, "not-a-valid-bootstrap-credential")));
+
+    // A new install must not advertise new generated credentials after merely
+    // verifying an older Installation, even when its source files are invalid.
+    const refused = await runBootstrapScript(environment, ["--require-fresh"]);
+    assert.equal(refused.ok, false);
+    assert.match(refused.stderr, /Fresh installation requires a database without an Installation/);
+    assert.equal(refused.stdout, "");
+    assert.deepEqual(await rowCounts(), counts);
 
     const repeated = await runBootstrapScript(environment);
     assert.equal(repeated.ok, true, repeated.stderr);

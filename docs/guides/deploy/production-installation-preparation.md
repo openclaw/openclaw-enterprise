@@ -322,10 +322,16 @@ only after every check succeeds:
 
 `$KUBECONFIG_FILE` must select the same cluster as `$CONTEXT`.
 
-Generate the bootstrap credentials once, before creating the Secret. This block
-refuses to overwrite existing files; after a failed or uncertain install, keep
-these inputs and [reconcile the attempt](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
-instead of generating replacements. Run it from the matching checkout with Node.js:
+`occ installation install` generates and retains private administrator inputs
+and creates the bootstrap Secret automatically. No external secret manager or
+separate generation command is required. Keep `XDG_STATE_HOME`, if set, absolute
+and outside the checkout; its default is `$HOME/.local/state`.
+
+### Optional: supply bootstrap credentials
+
+Skip this section for automatic setup. For direct Helm installation or
+`--bootstrap-credentials=existing`, prepare the Secret yourself. Generate once
+with Node.js from the matching checkout; existing files are never overwritten:
 
 ```bash
 node --input-type=module <<'JS'
@@ -340,7 +346,21 @@ Retain these files outside the checkout. The password is for human sign-in; the
 service key authenticates automation and expires 30 days after registration.
 See the [input contract](../../reference/authentication.md#installation-and-account-ownership)
 for file validation and retention. An external secret manager can supply the same
-values. Do not put plaintext credentials in Helm values or shell arguments.
+values. Create the configured Secret before installation, using the selected
+context and namespace and the keys resolved by validation:
+
+```bash
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret generic "$BOOTSTRAP_SECRET" \
+  --from-file="$BOOTSTRAP_PASSWORD_KEY=/secure/occ/admin-password" \
+  --from-file="$BOOTSTRAP_SERVICE_KEY_KEY=/secure/occ/admin-service-key"
+```
+
+Select `--bootstrap-credentials=existing` when installing through the CLI.
+After a failed or uncertain create, preserve inputs and reconcile before retrying.
+Do not put plaintext credentials in Helm values or shell arguments.
+
+### Prepare other Secret inputs
 
 Prepare these other Secret input files under `/secure/occ`, each holding one raw value
 without quotes or assignment.

@@ -274,9 +274,35 @@ is not a new OpenShift deployment profile. No genuine Agent/model-turn or
 multi-architecture image evidence is claimed. Keep this plan together because
 its input contract, caller changes and proof describe one installation change.
 
+## Automatic installer follow-up
+
+The approved follow-up integrates local generation into `occ installation install`
+without another setup command. Default generated mode resolves the Secret through
+Helm, checks release and Secret absence, creates private recovery inputs outside
+the receipt, records create dispatch before the API request, and starts Helm only
+after verifying the created Secret. Explicit existing mode preserves deliberately
+provisioned inputs. Secret collisions and uncertain responses never authorize
+replacement or regeneration. No initializer Secret API permission is added.
+
+`internal/bootstrapcredentials/` shares the protected writer with development
+setup. Helm install requires fresh-only bootstrap as well as empty-database
+migration; upgrades keep verification without credential projection. The
+[installer flow](../../docs/flows/installation-preparation.md) and
+[CLI reference](../../docs/reference/cli.md#installation-handoff) own current
+behavior. Production guides and quickstarts remove manual generation from the
+normal path.
+
+Required proof extends existing Go tool-protocol tests, PostgreSQL bootstrap
+coverage, the cluster receipt interruption case, and the current-source
+production TUI/Agent workflow. Historical rehearsal charts retain their supplied
+credential contract. Integration and source checks remain in progress; no new
+live deployment or final-source image qualification is claimed.
+
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-17 17:39: Add automatic local generation through the existing install command. Source: `270c7be633c4c6bcdc262c7d298d37dcaaab9b29` plus accompanying changes; session: `authoring-run/1fb1a0ad-cb02-4500-9594-80a9f5879665`.
 
 - 2026-11-16 10:20 -06:00: Implemented precreated inputs and recorded PostgreSQL,
   setup and OpenShift proof with remaining runtime limits. Source:

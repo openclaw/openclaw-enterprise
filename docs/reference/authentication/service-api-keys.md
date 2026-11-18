@@ -167,6 +167,11 @@ For a local stack started with `occ dev up` or `scripts/dev-up`, use the
 `Service key file` path it prints. The setup tool prepares that file before
 bootstrap; no container extraction is needed.
 
+With automatic `occ installation install`, use `bootstrap-client-key.json` in
+the recovery directory recorded by `bootstrap-secret.json` in the installation
+receipt. The file contains prepared material; authenticate it before treating
+installation access as verified. See [production sign-in](../../guides/deploy/production-installation.md#authenticate-to-the-production-api).
+
 For a manual install, wrap the retained raw key in the CLI's `data.key` envelope.
 This example uses the default production input filename and refuses overwrites:
 

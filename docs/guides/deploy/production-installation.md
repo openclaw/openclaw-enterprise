@@ -120,10 +120,6 @@ including the CA file when configured. Keep the existing auth secret. The server
   fi
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
     create secret generic occ-auth --from-file=secret=/secure/occ/occ-auth-secret || exit 1
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-    create secret generic "$BOOTSTRAP_SECRET" \
-      --from-file="$BOOTSTRAP_PASSWORD_KEY=/secure/occ/admin-password" \
-      --from-file="$BOOTSTRAP_SERVICE_KEY_KEY=/secure/occ/admin-service-key" || exit 1
 )
 ```
 
@@ -186,15 +182,19 @@ Prepare optional Collector Secrets, values, and verification through
 
 <a id="prepare-the-fresh-bootstrap-output-pvc"></a>
 
-### Check the bootstrap credential Secret
+<a id="check-the-bootstrap-credential-secret"></a>
 
-Before installing, confirm that the Secret created above exists in the release
-namespace. An external secret manager can create the same Secret instead.
+### Choose bootstrap credential preparation
 
-```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  get secret "$BOOTSTRAP_SECRET" -o name
-```
+The install command generates protected local inputs and creates the configured
+bootstrap Secret before Helm. The operator needs permission to get and create
+Secrets in the release namespace, in addition to Helm's permissions. An existing
+Secret refuses automatic generation; it is never adopted or overwritten.
+
+For deliberately preprovisioned credentials, use
+`--bootstrap-credentials=existing` with the
+[prepared Secret](production-installation-preparation.md#optional-supply-bootstrap-credentials).
+This is not a recovery shortcut after an uncertain install.
 
 The chart projects its two keys read-only into bootstrap on installation only.
 Migration, API, and worker containers receive neither credential. Upgrades do not
@@ -231,16 +231,19 @@ deployment, or a model turn.
 
 ## Authenticate to the production API
 
-Use the credentials retained before installation. Sign in to the Console with
-`bootstrap.adminEmail` and `/secure/occ/admin-password`. Prepare a private CLI
-JSON file from `/secure/occ/admin-service-key` as described in
-[Retrieve the bootstrap service key](../../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key).
-The JSON contains `data.key`; it is not an issuance response and has no
-Installation ID. This example works on a session copy:
+For generated inputs, the install receipt identifies the private recovery
+directory. Sign in with `bootstrap.adminEmail` and its `initial-admin-password`.
+Its `bootstrap-client-key.json` contains only `data.key`, not issuance metadata
+or an Installation ID. For existing-Secret mode, set `OCC_BOOTSTRAP_KEY_FILE` to
+your [prepared CLI file](../../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key).
+This example authenticates a session copy:
 
 ```bash
 export OCC_URL="${OCC_URL:-https://<internal-occ-host>}"
-export OCC_BOOTSTRAP_KEY_FILE="${OCC_BOOTSTRAP_KEY_FILE:-/secure/occ/initial-admin-service-key.json}"
+if [ -z "${OCC_BOOTSTRAP_KEY_FILE:-}" ]; then
+  BOOTSTRAP_INPUT_DIRECTORY="$(jq -er .inputDirectory "$INSTALL_RECEIPT_DIRECTORY/bootstrap-secret.json")" || exit 1
+  export OCC_BOOTSTRAP_KEY_FILE="$BOOTSTRAP_INPUT_DIRECTORY/bootstrap-client-key.json"
+fi
 umask 077
 prepare_occ_service_key() {
   local working_directory

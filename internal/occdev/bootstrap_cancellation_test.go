@@ -16,7 +16,7 @@ func TestBootstrapAuthorizationStopsWithStartupContext(t *testing.T) {
 		t.Run(controlPlane, func(t *testing.T) {
 			state := &developmentState{
 				Repository: t.TempDir(), ComposeProject: "bootstrap-fixture",
-				PlatformNamespace: "bootstrap-fixture", directory: t.TempDir(),
+				PlatformNamespace: "bootstrap-fixture", directory: privateBootstrapDirectory(t),
 			}
 			state.KeyPath = filepath.Join(state.directory, "exported-key.json")
 			r := newRunner(Options{Repository: state.Repository})

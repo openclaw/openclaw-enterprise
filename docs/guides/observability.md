@@ -177,7 +177,7 @@ For custom Secret names, set
 Do not reuse application Secrets. See [Helm settings](../reference/settings/production.md#production-operational-logging-collection)
 for resource and storage limits.
 
-Before first install, [precreate the bootstrap credential Secret](deploy/production-installation.md#check-the-bootstrap-credential-secret).
+Before first install, [choose bootstrap credential preparation](deploy/production-installation.md#choose-bootstrap-credential-preparation).
 For existing installations, apply reviewed values through the same Helm upgrade. The Collector reads
 `/var/log/pods` read-only and needs `get/list/watch` on Pods across workload
 namespaces. Namespace and node names come from Pod fields; it does not need

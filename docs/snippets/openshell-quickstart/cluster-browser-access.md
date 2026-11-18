@@ -10,22 +10,20 @@ Continue in the same operator shell. The laptop needs OpenSSL, jq and kubectl, p
 
 ### Use the protected initial owner files
 
-After the Helm initialization Job succeeds, prepare the CLI file from the
-retained raw key. No reader Pod or container extraction is needed. This command
-refuses to overwrite an existing CLI file:
+After the Helm initialization Job succeeds, use the private CLI file prepared
+by the installer. No reader Pod, container extraction, or JSON generation is needed.
+For existing-Secret mode, set `OCC_SERVICE_KEY_FILE` to your prepared file first:
 
 ```bash
-export OCC_SERVICE_KEY_FILE="$RUN_DIR/service-key.json"
-OCC_SECRET_DIR="$OCC_SECRET_DIR" node --input-type=module <<'JS'
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-const key = readFileSync(join(process.env.OCC_SECRET_DIR, 'admin-service-key'), 'utf8').replace(/\r?\n$/, '');
-writeFileSync(process.env.OCC_SERVICE_KEY_FILE, JSON.stringify({ data: { key } }), { mode: 0o600, flag: 'wx' });
-JS
+if [ -z "${OCC_SERVICE_KEY_FILE:-}" ]; then
+  BOOTSTRAP_INPUT_DIRECTORY="$(jq -er .inputDirectory "$RUN_DIR/install-receipt/bootstrap-secret.json")" || exit 1
+  export OCC_SERVICE_KEY_FILE="$BOOTSTRAP_INPUT_DIRECTORY/bootstrap-client-key.json"
+fi
 ```
 
-Use `ADMIN_EMAIL` and `$OCC_SECRET_DIR/admin-password` for ordinary Console
-password sign-in. The initial administrator has the required Agent
+Use `ADMIN_EMAIL` and `$BOOTSTRAP_INPUT_DIRECTORY/initial-admin-password` for
+ordinary Console password sign-in. With existing-Secret mode, use your own
+prepared CLI file and corresponding password instead. The initial administrator has the required Agent
 administration access. Other owners need a browser account with `administer`
 permission on this exact Agent. The service key file authenticates operator REST
 calls; the authenticated API response supplies the Installation ID. Retain the

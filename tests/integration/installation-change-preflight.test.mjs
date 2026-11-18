@@ -152,9 +152,15 @@ test(
         ],
       );
       assert.ok(!upgradedBootstrap.env.some(({ name }) => name.endsWith("_INPUT_FILE")));
+      assert.deepEqual(installedBootstrap.args, [
+        "scripts/bootstrap-installation.mjs",
+        "--require-fresh",
+      ]);
+      assert.deepEqual(upgradedBootstrap.args, ["scripts/bootstrap-installation.mjs"]);
       assert.deepEqual(
         {
           ...installedBootstrap,
+          args: upgradedBootstrap.args,
           env: installedBootstrap.env.filter(({ name }) => !name.endsWith("_INPUT_FILE")),
           volumeMounts: installedBootstrap.volumeMounts.filter(
             ({ name }) => name !== "bootstrap-credentials",
