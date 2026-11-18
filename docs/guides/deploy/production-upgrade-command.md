@@ -43,8 +43,11 @@ so it carries the required Installation ID annotation.
 scripts/upgrade-production preflight --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/preflight-1
 ```
 
-The canonical `--preflight-only` flag maps to the `preflight` operation. When
-preflight tells you to omit that flag to deploy, use `upgrade` with fresh evidence.
+The canonical `--preflight-only` flag maps to the `preflight` operation. Change
+the operation, remove only `--preflight-only`, and retain every other original
+expert option after `--` so preflight checks the same candidate. When preflight
+tells you to omit that flag to deploy, use `upgrade` with fresh evidence and the
+same expert options.
 
 Continue only after preflight succeeds and confirms cleanup. Compare the candidate
 manifests and enter the maintenance window. Freeze Helm changes and scaling

@@ -187,12 +187,22 @@ test("canonical operation flags direct operators to usable profiled commands", a
   assert.equal(resume.status, 1);
   assert.match(resume.stderr, /checkout commit does not match --source-revision/);
 
-  const rawPreflight = run("upgrade", f, ["--", "--preflight-only"]);
+  const rawPreflight = run("upgrade", f, [
+    "--",
+    "--candidate-values",
+    privateCandidate,
+    "--preflight-only",
+  ]);
   assert.equal(rawPreflight.status, 2);
   assert.match(
     rawPreflight.stderr,
-    /scripts\/upgrade-production preflight --profile PROFILE --evidence-dir FRESH/,
+    /remove only --preflight-only; retain every other original expert option/,
   );
+  assert.match(
+    rawPreflight.stderr,
+    /scripts\/upgrade-production preflight --profile PROFILE --evidence-dir FRESH -- ORIGINAL_EXPERT_OPTIONS/,
+  );
+  assert.ok(!rawPreflight.stderr.includes(privateCandidate));
 });
 
 test("private profiles reject credentials and target overrides without disclosure", async (t) => {
