@@ -233,14 +233,16 @@ const CODE_FIELDS = new Set([
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 // Identifiers OCC assigns, kept only in their own format: the Installation a bootstrap or
-// maintenance run names, a Configuration a refused provisioning job left behind, and the ID the
-// API gives a request and answers with (`req_<UUID>`), so a line matches the response a caller saw.
+// maintenance run names, and a Configuration a refused provisioning job left behind.
 const INSTALLATION_ID = new RegExp(`^ins_${UUID_V4}$`);
 const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
   ["installationId", INSTALLATION_ID],
   ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
-  ["requestId", new RegExp(`^(?:[a-z]{1,16}_)?${UUID_V4}$`)],
 ]);
+// On authentication events, the ID the API gives a request and answers with (`req_<UUID>`, or
+// `nar_<UUID>` for a native admin check), so a line matches the response a caller saw. Other
+// events keep their own rule for `requestId`.
+const AUTHENTICATION_REQUEST_ID = new RegExp(`^(?:req|nar)_${UUID_V4}$`);
 // A bootstrap attempt names the same Installation, and the administrator Principal and service
 // Principal OCC assigns for it, each kept only in its own format (finding 2246). The auth account
 // and service key IDs come from the auth library, not OCC, so they keep the generic string check.
@@ -254,8 +256,8 @@ function safeIdentifier(format: RegExp, value: unknown): string | undefined {
   return typeof value === "string" && format.test(value) ? value : undefined;
 }
 
-// A route pattern such as `/agents/:agentId/chat`: no query, fragment or percent-encoding, so
-// it never carries a request's own path values or parameters.
+// On authentication events, a route pattern such as `/agents/:agentId/chat`: no query, fragment
+// or percent-encoding, so it never carries a request's own path values or parameters.
 const ROUTE_PATTERN = /^\/[A-Za-z0-9_.~:*/{}-]{0,255}$/;
 
 function safeRoute(value: unknown): string | undefined {
@@ -432,6 +434,13 @@ function sanitizedEvent(
       }
       continue;
     }
+    if (key === "requestId" && eventName.startsWith("authentication.")) {
+      const id = safeIdentifier(AUTHENTICATION_REQUEST_ID, value);
+      if (id !== undefined) {
+        result[key] = id;
+      }
+      continue;
+    }
     const identifier = IDENTIFIER_FIELDS.get(key);
     if (identifier !== undefined) {
       const id = safeIdentifier(identifier, value);
@@ -481,7 +490,7 @@ function sanitizedEvent(
           ? safeIdentifiers(value)
           : key === "presetFile"
             ? safePath(value)
-            : key === "route"
+            : key === "route" && eventName.startsWith("authentication.")
               ? safeRoute(value)
               : safeScalar(key, value);
     if (safe !== undefined) {
