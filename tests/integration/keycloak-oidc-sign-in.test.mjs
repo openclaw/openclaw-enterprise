@@ -74,7 +74,7 @@ test(
 
     // OCE does no runtime discovery: an operator copies these four values into its
     // configuration. Production parsing must accept them as Keycloak publishes them, which
-    // is the endpoint rule (HTTPS, port 443, one DNS host, issuer without a port).
+    // follows the endpoint rules (HTTPS, port 443, DNS hosts, issuer without a port).
     const config = oidcLoginConfiguration({
       OCC_AUTH_OIDC_ISSUER: discovery.issuer,
       OCC_AUTH_OIDC_AUTHORIZATION_URL: discovery.authorization_endpoint,
