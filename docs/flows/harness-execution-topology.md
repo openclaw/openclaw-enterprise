@@ -53,15 +53,6 @@ graph TD
   M --> J
 ```
 
-## Strands Box runtime files
-
-`strandsBoxResources` in `apps/controller/src/drivers/sandbox/strands-box-resources.ts`
-starts an init container that copies the runtime executable, libraries, and application
-files from the selected image into a Pod volume. The supervisor and workload mount
-the same files read-only so Box can verify each object's device and inode across
-the handoff. The workload launcher runs as PID 1 in its own PID namespace. The
-readiness bearer stays in the supervisor container.
-
 ## Execution Trace
 
 ### 1. Freeze Gateway and Harness settings
@@ -105,6 +96,7 @@ The [Docker gateway authentication reference](../reference/drivers/docker-comput
 owns mode and password rules.
 
 Kubernetes supports managed bindings.
+The Strands supervisor and workload share read-only runtime objects (`strandsBoxResources`).
 SSH supports `{ "method": "runtime" }` only for unmanaged embedded OpenClaw: operator
 credentials remain on the host and OCC checks gateway readiness without model
 validation. See the [SSH flow](pr-24-ssh-compute.md).
