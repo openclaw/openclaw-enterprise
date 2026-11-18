@@ -28,6 +28,7 @@
     "slack": "./test-suites/slack.json",
     "openshell": "./test-suites/openshell.json",
     "openshell-linear": "./test-suites/openshell-linear.json",
+    "provider-cutover": "./test-suites/provider-cutover.json",
     "openshell-oauth": "./test-suites/openshell-oauth.json",
     "helper-timeout": "./test-suites/helper-timeout.json",
     "logging-collector": "./test-suites/logging-collector.json",

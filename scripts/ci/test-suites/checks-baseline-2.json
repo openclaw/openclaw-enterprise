@@ -185,7 +185,8 @@
         "Strands disconnected channel releases its pending drain and a fresh channel works",
         "Strands routing keeps explicit connection factories on the provider proxy",
         "a loopback readiness probe retains capacity when all session channels are busy",
-        "a terminal frame flushes queued TCP output"
+        "a terminal frame flushes queued TCP output",
+        "the policy proxy delivers the complete response to a slow reader at EOF"
       ]
     },
     {
