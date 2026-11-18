@@ -174,7 +174,12 @@ test("provider Harness endpoint preparation re-observes the same revision across
     { name: "starting Pod is not ready", pods: [starting], ready: false },
     { name: "ambiguous Pods are not ready", pods: [ready, starting], ready: false },
     { name: "unique ready Pod becomes ready", pods: [ready], ready: true },
-    { name: "Ready back to Starting clears readiness", pods: [starting], ready: false },
+    {
+      name: "maintenance observes a Ready Pod returning to Starting",
+      pods: [starting],
+      ready: false,
+      existingHarnessOnly: true,
+    },
   ];
   // Keep the same Driver and revision: reconciliation must neither cache a false
   // result forever nor retain true after the workload becomes unready again.
@@ -184,10 +189,16 @@ test("provider Harness endpoint preparation re-observes the same revision across
       const endpointsBefore = fixture.endpoints.length;
       const hooksBefore = fixture.hooks.length;
       fixture.observePods(stage.pods);
-      assert.deepEqual(await fixture.prepare(), {
+      const dispatch = stage.existingHarnessOnly
+        ? { ...authContext(fixture.revision), existingHarnessOnly: true }
+        : undefined;
+      assert.deepEqual(await fixture.prepare(undefined, dispatch), {
         ...expectedRevision(fixture),
         ready: stage.ready,
       });
+      const provision = fixture.provisions.at(-1);
+      assert.equal(provision.existingHarnessOnly, stage.existingHarnessOnly);
+      assert.equal(Object.hasOwn(provision.requirements, "existingHarnessOnly"), false);
       assert.deepEqual(fixture.hooks.slice(hooksBefore), ["start"]);
       assert.equal(fixture.provisions.length, provisionsBefore + 1);
       assert.equal(fixture.endpoints.length, endpointsBefore + 1);

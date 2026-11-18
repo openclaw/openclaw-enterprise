@@ -8,7 +8,7 @@ const requiresPostgres = {
   skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
 };
 
-async function setup(context) {
+async function setup(context, { sandboxDriver } = {}) {
   const [
     { Pool },
     { createControllerWorker },
@@ -84,6 +84,9 @@ async function setup(context) {
   await state.transact((unit) => unit.namespaces.createNamespace(namespace));
   const compute = createDevelopmentComputeDriver();
   const configuration = createInstallationDriverConfiguration();
+  if (sandboxDriver) {
+    configuration.drivers.sandbox = { id: sandboxDriver.id };
+  }
   const secretDriver = createTestSecretDriver({ id: configuration.drivers.secret.id });
 
   async function agent() {
@@ -150,6 +153,7 @@ async function setup(context) {
         configuration: {},
       },
       compute: { id: compute.id, implementation: compute.implementation },
+      ...(sandboxDriver && { sandboxDriverId: sandboxDriver.id }),
       executionAdmission: { version: 2, mode: "unprotected" },
       harnessAuth: { ...owner.harnessAuth, secretDriverId: secretDriver.id },
       servicePrincipalId: owner.servicePrincipalId,
@@ -211,6 +215,7 @@ async function setup(context) {
       drivers: {
         installation: configuration,
         computeDriver,
+        ...(sandboxDriver && { sandboxDriver }),
         configurationDriver: createTestConfigurationDriver({
           id: configuration.drivers.configuration.id,
         }),
