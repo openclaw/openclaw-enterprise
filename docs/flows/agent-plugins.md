@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-18
-last_updated_session: authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532
+last_updated_session: authoring-run/19cca54a-1443-4e43-87cd-86a89718b7e4
 ---
 
 # Agent Plugin Deployment Flow
@@ -211,8 +211,9 @@ before startup.
 Dedicated launchers capture the [Gateway tool policy](../reference/configuration.md#gateway-tool-policy)
 from the saved Agent revision before plugin grants. Startup and peer respawn
 enforce it; failures keep the Gateway unready. Changes require deployment replacement
-after affected old work ends. Human permissions stay unchanged. An embedded Gateway
-applies a policy that the Configuration sets without this composition, so Compute checks
+after affected old work ends. Human permissions stay unchanged. The default adds
+Gateway-side read-only `skills_search` and `skills_read` for session-eligible skills.
+Embedded Gateways apply a Configuration-set policy without this composition; Compute checks
 it at Configuration save and deployment admission with the same rules
 (`gateway-tool-policy.ts:validateGatewayToolPolicy`), not on maintenance passes.
 

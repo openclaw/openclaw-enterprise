@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { createSecureContext } from "node:tls";
 import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.mjs";
 import {
   minute,
@@ -303,7 +304,11 @@ export async function signInConsole(
   const origin = new URL(stack.state.browserOrigin);
   assert.equal(origin.protocol, "https:");
   assert.equal(origin.hostname, `console.${stack.state.cluster}.oce.localhost`);
-  const ca = await readFile(join(stack.directory, "browser-ca.crt"));
+  const agent = new HttpsAgent({
+    secureContext: createSecureContext({
+      ca: await readFile(join(stack.directory, "browser-ca.crt")),
+    }),
+  });
   const signIn = "/api/auth/sign-in/email";
   let cookie = "";
   const api: Api = (method, path, body) => {
@@ -318,7 +323,7 @@ export async function signInConsole(
           servername: origin.hostname,
           port: origin.port || 443,
           path: url.pathname + url.search,
-          ca,
+          agent,
           rejectUnauthorized: true,
           method,
           headers: {

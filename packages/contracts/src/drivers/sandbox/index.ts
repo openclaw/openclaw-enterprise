@@ -332,6 +332,10 @@ export interface SandboxDriver extends Driver {
   workspaceNodePeerLabels?(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<Readonly<Record<string, string>> | undefined>;
+  /** Exact labels of this prepared revision's Harness, used for Gateway egress. */
+  harnessPeerLabels?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined>;
   /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */
   cleanup(
     context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },

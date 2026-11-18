@@ -80,15 +80,15 @@ function redact(value: unknown, visited: WeakSet<object>, depth: number): unknow
     return { name: value.name, reason: REDACTED };
   }
 
-  const sanitized: Record<string, unknown> = {};
+  const sanitized: [key: string, value: unknown][] = [];
   for (const [key, entry] of Object.entries(value)) {
     if (UNSAFE_PROPERTY.test(key)) {
       continue;
     }
     const sensitive = SENSITIVE_KEY.test(key) && !SAFE_REFERENCE_KEY.test(key);
-    sanitized[key] = sensitive ? REDACTED : redact(entry, visited, depth + 1);
+    sanitized.push([key, sensitive ? REDACTED : redact(entry, visited, depth + 1)]);
   }
-  return sanitized;
+  return Object.fromEntries(sanitized);
 }
 
 export function redactAuditDetails(value: unknown): unknown {

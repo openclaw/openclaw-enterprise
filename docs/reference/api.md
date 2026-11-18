@@ -6357,7 +6357,7 @@ Example response
       }
     ],
     "nextCursor": null,
-    "projectionVersion": 2,
+    "projectionVersion": 3,
     "window": {
       "end": "2026-10-01T12:00:00.000Z",
       "start": "2026-09-30T12:00:00.000Z"

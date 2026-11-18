@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import test from "node:test";
+import { createSecureContext } from "node:tls";
 import pg from "pg";
 
 import {
@@ -535,21 +536,23 @@ test(
     );
     const address = listener.address();
     assert.ok(address !== null && typeof address !== "string");
+    assert.equal(address.address, "127.0.0.1");
+    const trustedAgent = new HttpsAgent({ secureContext: createSecureContext({ ca: tls.cert }) });
+    t.after(() => trustedAgent.destroy());
     const requestPrivate = (
       method: "GET" | "POST",
       path: string,
-      ca: Buffer | undefined,
+      agent: HttpsAgent | false,
       token?: string,
     ) =>
       new Promise<number | undefined>((resolve, reject) => {
         const request = httpsRequest(
           {
-            host: address.address,
+            host: "127.0.0.1",
             port: address.port,
-            agent: false,
+            agent,
             method,
             path,
-            ca,
             headers: {
               "content-type": "application/json",
               "x-openclaw-runtime-audit-source": "codex",
@@ -566,12 +569,12 @@ test(
         request.end(method === "POST" ? JSON.stringify(replacementReview) : undefined);
       });
     const privatePath = "/internal/runtime-audit";
-    await assert.rejects(requestPrivate("POST", privatePath, undefined), {
+    await assert.rejects(requestPrivate("POST", privatePath, false), {
       code: "DEPTH_ZERO_SELF_SIGNED_CERT",
     });
-    assert.equal(await requestPrivate("GET", auditPath, tls.cert), 404);
-    assert.equal(await requestPrivate("POST", privatePath, tls.cert), 401);
-    assert.equal(await requestPrivate("POST", privatePath, tls.cert, replacementToken), 204);
+    assert.equal(await requestPrivate("GET", auditPath, trustedAgent), 404);
+    assert.equal(await requestPrivate("POST", privatePath, trustedAgent), 401);
+    assert.equal(await requestPrivate("POST", privatePath, trustedAgent, replacementToken), 204);
 
     // The Gateway requests above use no grants file. Only the OpenShell exporter uses one.
     const exporterToken = randomBytes(32).toString("base64url");

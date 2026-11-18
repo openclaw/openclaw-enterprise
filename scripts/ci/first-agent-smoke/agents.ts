@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -238,10 +237,14 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
 }
 
-export async function allowCodexAuditRead(stack: SmokeStack, agent: SmokeAgent) {
+export async function allowCodexAuditRead(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  adminPassword: string,
+) {
   const administrator = await signInConsole(stack, {
     email: "admin@development.openclaw.invalid",
-    password: await readFile(join(stack.directory, "initial-admin-password"), "utf8"),
+    password: adminPassword,
   });
   const reader = {
     email: `smoke-audit-${randomUUID()}@development.openclaw.invalid`,

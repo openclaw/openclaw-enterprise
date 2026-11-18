@@ -93,8 +93,10 @@ async function smoke() {
     }
   }
   const modelDirectory = process.env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY;
+  const adminPassword = randomUUID();
   const environment: NodeJS.ProcessEnv & { OCC_DEVELOPMENT_STATE_DIRECTORY: string } = {
     ...process.env,
+    OPENCLAW_DEV_PASSWORD: adminPassword,
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
     OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
@@ -159,7 +161,7 @@ async function smoke() {
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
     });
     const readCodexAudit = await smokeStep("codex-chat", async () => {
-      const readAudit = await allowCodexAuditRead(stack, codex.agent);
+      const readAudit = await allowCodexAuditRead(stack, codex.agent, adminPassword);
       await chatTurn(stack, codex.agent, codex.revisionId);
       await assertCodexTurnAudit(readAudit, codex.agent, codex.revisionId);
       return readAudit;
