@@ -1398,21 +1398,21 @@ test(
       [{ approved: false, consumed: false }],
     );
     const beforeWithdrawal = request();
-    const saved = fixture.pauseNextApprovalCommit("after");
+    const reservedBeforeWithdrawal = fixture.pauseNextApprovalCommit("after");
     const withdrawnDecision = exchange.authorizeRequestCredential(
       beforeWithdrawal,
       signal,
       () => true,
     );
     try {
-      await saved.reached;
+      await reservedBeforeWithdrawal.reached;
       const withdrawal = await f.request(
         "POST",
         `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
       );
       assert.equal(withdrawal.status, 202, JSON.stringify(withdrawal.body));
     } finally {
-      saved.release();
+      reservedBeforeWithdrawal.release();
     }
     assert.equal(await withdrawnDecision, undefined);
     assert.equal(
