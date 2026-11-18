@@ -196,6 +196,7 @@ test(
     const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       gatewayPassword: true,
+      nativeAdmin: { enabled: true },
     });
     assert.ok(topology.harnessPod, "dedicated production must start a real separate Codex Pod");
     assert.notEqual(topology.gatewayPod.metadata.uid, topology.harnessPod.metadata.uid);
