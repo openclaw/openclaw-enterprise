@@ -877,7 +877,11 @@ test("provider Harness verified endpoint trust is projected before rollout and i
   for (const caPath of [undefined, untrusted.rootCertificatePath]) {
     await assert.rejects(probe(caPath), {
       code: 1,
-      stderr: /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY/,
+      // A different CA with the same issuer name can fail signature verification directly.
+      stderr:
+        caPath === undefined
+          ? /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY/
+          : /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|CERT_SIGNATURE_FAILURE/,
     });
   }
   await assert.rejects(probe(projectedPath, `wss://127.0.0.1:${providerPort}/`), {

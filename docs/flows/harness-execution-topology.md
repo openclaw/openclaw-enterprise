@@ -130,16 +130,9 @@ targets; its storage-role label enables discovery. Two-cluster Gateways retain
 their control-cluster target. Dedicated Gateway and Harness Pods, identities,
 and PVCs remain separate. `deliverGatewaySecrets` validates canonical sources;
 `deliverHarnessAuth` creates selected model/transport projections.
-Transport and Gateway passwords use separate sources across modes. Compute
-retains legacy combined sources for older Pods and copies their password before
-new templates reference the separate source. Concurrent creation adopts only an
-exact-owned, identical password; foreign or conflicting sources fail.
-[Namespaces and isolation](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
-owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
-include version and network profile; Gateway selectors omit version for stability.
-`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
-before rendering NetworkPolicies. Values must be strings or native null; type
-errors identify the setting.
+Compute separates transport and Gateway passwords. It retains combined sources for older Pods and copies the password before switching templates. Concurrent creators accept only an identical password with matching ownership.
+[Namespace routing](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation) defines DNS and exact NetworkPolicy/Service selectors. Compute waits for the candidate Harness peer before namespace-routed Gateway cutover. Harness selectors include version and network profile. Gateway selectors omit version.
+`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps before rendering NetworkPolicies. It names invalid settings and accepts strings or native null.
 `runtime.gatewayNodeSelector` places Gateways and private-state initializers.
 `runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
 Codex initialization for Compute-owned launches; provider commands remain
