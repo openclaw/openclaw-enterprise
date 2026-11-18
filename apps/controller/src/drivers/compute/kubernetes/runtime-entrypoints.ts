@@ -3108,11 +3108,29 @@ function assertHotApplicableChange(previous, next) {
 
 // OpenClaw watches the config file: replace it whole so it never reads a partial write.
 function replaceOpenClawConfig(config) {
-  const { renameSync } = require("node:fs");
+  const { closeSync, openSync, renameSync } = require("node:fs");
   const target = writableOpenClawConfigPath();
   const staged = target + ".workspace-node-" + process.pid;
-  pluginWriteFileSync(staged, JSON.stringify(config), { mode: 0o600 });
-  renameSync(staged, target);
+  const contents = JSON.stringify(config);
+  const fd = openSync(staged, "w", 0o600);
+  let closeAttempted = false;
+  try {
+    pluginWriteFileSync(fd, contents);
+    // A failed close cannot safely be retried.
+    closeAttempted = true;
+    closeSync(fd);
+    renameSync(staged, target);
+  } catch (error) {
+    if (!closeAttempted) {
+      try { closeSync(fd); } catch {}
+    }
+    try {
+      pluginRmSync(staged, { force: true });
+    } catch {
+      // Preserve the first error if cleanup also fails.
+    }
+    throw error;
+  }
   process.env.OPENCLAW_CONFIG_PATH = target;
 }
 
