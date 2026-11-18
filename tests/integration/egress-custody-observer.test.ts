@@ -30,8 +30,7 @@ async function exchange(path: string, first: string, last = ""): Promise<string>
   });
   socket.once("connect", () => {
     if (last) {
-      socket.write(first);
-      socket.end(last);
+      socket.write(first, () => socket.end(last));
     } else {
       socket.end(first);
     }
