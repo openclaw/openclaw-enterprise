@@ -255,6 +255,7 @@ import { discoverHarnessModels } from "../model-discovery.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
   DELIBERATE_RESTART_MESSAGE,
+  GATEWAY_RESTART_RESUME_SCOPE,
   UNEXPLAINED_EXITS_MESSAGE,
 } from "../runtime-startup.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
@@ -1193,7 +1194,6 @@ const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   "OPENCLAW_RUNTIME_STATUS_PORT",
   "OPENCLAW_POD_UID",
 ]);
-const GATEWAY_RESTART_RESUME_SCOPE = "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE";
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
