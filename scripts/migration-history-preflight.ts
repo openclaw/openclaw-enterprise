@@ -15,9 +15,12 @@ type JournalEntry = {
 
 type ManifestEntry = JournalEntry & { sha256: string };
 
+export type MigrationHistory =
+  keyof typeof import("../migrations/meta/_canonical-history.json").catalogs;
+
 export type MigrationManifest = {
   entries: ManifestEntry[];
-  catalogs: Record<string, unknown>;
+  catalogs: Partial<Record<MigrationHistory, string>> & { completed: string };
   initialSchemaStates: { absent: unknown; ownerOnly: unknown };
   ledgerCatalogs: { initialized: string; completed: string };
   compatibleLineages?: { providerCompleted?: { entries: ManifestEntry[] } };
@@ -77,6 +80,8 @@ function isMigrationManifest(value: Record<string, unknown>): value is Migration
   return (
     isManifestEntryList(entries) &&
     isRecord(catalogs) &&
+    typeof catalogs.completed === "string" &&
+    Object.values(catalogs).every((catalog) => typeof catalog === "string") &&
     isRecord(initialSchemaStates) &&
     "absent" in initialSchemaStates &&
     "ownerOnly" in initialSchemaStates &&
@@ -103,11 +108,11 @@ export async function readManifest(
     await readFile(join(directory, "meta/_journal.json"), "utf8"),
   );
   if (!isRecord(manifest) || !Array.isArray(manifest.entries)) {
-    throw new TypeError("Invalid canonical migration manifest.");
+    refuse("the canonical migration manifest is invalid");
   }
   const entries: unknown[] = manifest.entries;
   if (!entries.every(isRecord)) {
-    throw new TypeError("Invalid canonical migration entry.");
+    refuse("a canonical migration entry is invalid");
   }
   const expected = entries.map(({ sha256: _hash, ...entry }) => entry);
   if (
@@ -119,10 +124,7 @@ export async function readManifest(
   ) {
     refuse("the journal differs from the reviewed source manifest");
   }
-  if (!isRecord(manifest.catalogs)) {
-    throw new TypeError("Invalid canonical migration catalog.");
-  }
-  if (typeof manifest.catalogs.completed !== "string") {
+  if (!isRecord(manifest.catalogs) || typeof manifest.catalogs.completed !== "string") {
     refuse("the completed catalog has not been qualified");
   }
   const migrations = readMigrationFiles({ migrationsFolder: directory });
@@ -149,7 +151,7 @@ export async function readManifest(
     previousTimestamp = migration.folderMillis;
   }
   if (!isMigrationManifest(manifest)) {
-    throw new TypeError("Invalid canonical migration manifest.");
+    refuse("the canonical migration manifest is invalid");
   }
   return { manifest, migrations };
 }
@@ -261,11 +263,11 @@ async function requireUnambiguousTerminologyData(client: MigrationSession): Prom
   }
 }
 
-export async function preflight<History extends string>(
+export async function preflight(
   client: MigrationSession,
   manifest: MigrationManifest,
-  classifyReceipts: (receipts: MigrationReceipt[], manifest: MigrationManifest) => History,
-): Promise<History> {
+  classifyReceipts: (receipts: MigrationReceipt[], manifest: MigrationManifest) => MigrationHistory,
+): Promise<MigrationHistory> {
   await requireMigrationRoles(client);
   const ledger = catalogDigest(await migrationCatalog(client, "drizzle"));
   let receipts: MigrationReceipt[] = [];

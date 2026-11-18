@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-11-12
-last_updated_session: authoring-run/a7e18694-91f7-4a70-9555-4ef0ed62d27b
+updated: 2026-11-18
+last_updated_session: authoring-run/9a169618-9c17-48f1-927c-556605a302b2
 ---
 
 # Platform Startup Flow
@@ -89,7 +89,8 @@ terminology history. The append-only compatibility migration converts the
 Provider schema and owned persisted JSON to Backend terminology without
 rewriting applied receipts or terminal provisioning fingerprints. It refuses
 mixed receipt histories, manually edited catalogs, and the older divergent
-credential history before migration DDL. The
+credential history before migration DDL. It also refuses invalid release metadata
+before connecting to PostgreSQL. The
 [migration history reference](../reference/settings/operations.md#migration-history)
 owns the exact supported shapes and recovery boundary. Neither API nor worker
 startup rewrites migration receipts or converts an unsupported database.
@@ -285,6 +286,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 01:13: Record release-metadata refusal before the migration connection. (authoring-run/9a169618-9c17-48f1-927c-556605a302b2 - 254d0a96f86744b23f2394d233f0d7728480e844)
 
 - 2026-11-12 00:19: Give the development image runtime user ownership of the lockfile used by route compiler checks. (authoring-run/a7e18694-91f7-4a70-9555-4ef0ed62d27b - a1e00c855e88f42499d266baeea4dca599e3b227)
 

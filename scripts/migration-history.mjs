@@ -1,3 +1,5 @@
+// @ts-check
+
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
@@ -27,6 +29,7 @@ export class UnsupportedPostgresVersionError extends Error {
 /**
  * @param {import("./migration-history-preflight.ts").MigrationReceipt[]} receipts
  * @param {import("./migration-history-preflight.ts").MigrationManifest} manifest
+ * @returns {import("./migration-history-preflight.ts").MigrationHistory}
  */
 function classifyReceipts(receipts, manifest) {
   const expected = manifest.entries;
@@ -52,6 +55,7 @@ function classifyReceipts(receipts, manifest) {
 /**
  * @param {number} count
  * @param {number} completedCount
+ * @returns {import("./migration-history-preflight.ts").MigrationHistory}
  */
 function catalogAtMigrationCount(count, completedCount) {
   if (count === 0) {
@@ -247,21 +251,23 @@ export async function migrateWithHistory(
     // Check first-install intent while holding the migration lock. A separate --check
     // could observe empty history and then lose a race to another installer.
     if (expectEmpty && history !== "empty") {
-      const error = new Error(
-        "First installation requires empty migration history; this database already has recognized OCE migrations. " +
-          "Preserve the database, inspect the original installation attempt, and use --check to inspect migration history without applying changes.",
+      throw Object.assign(
+        new Error(
+          "First installation requires empty migration history; this database already has recognized OCE migrations. " +
+            "Preserve the database, inspect the original installation attempt, and use --check to inspect migration history without applying changes.",
+        ),
+        { code: "MIGRATION_HISTORY_NOT_EMPTY" },
       );
-      error.code = "MIGRATION_HISTORY_NOT_EMPTY";
-      throw error;
     }
     if (requireCurrent) {
       if (history !== "completed") {
-        const error = new Error(
-          "The separate database deployment has not completed the candidate migration history. " +
-            "Keep writers stopped, reconcile the migration, and retry the service deployment.",
+        throw Object.assign(
+          new Error(
+            "The separate database deployment has not completed the candidate migration history. " +
+              "Keep writers stopped, reconcile the migration, and retry the service deployment.",
+          ),
+          { code: "MIGRATION_HISTORY_PENDING" },
         );
-        error.code = "MIGRATION_HISTORY_PENDING";
-        throw error;
       }
       return history;
     }
