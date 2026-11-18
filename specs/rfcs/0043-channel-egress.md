@@ -55,12 +55,17 @@ enable currently unsupported channel/Harness topologies.
 
 ### Ownership and traffic
 
-Channel Drivers declare destinations. OCC resolves enabled provider IDs to their
-Driver implementations and computes rules for the saved Agent revision.
+Channel Drivers declare destinations. Trusted composition maps each provider ID
+to exactly one installed Channel Driver. Admission and Compute use the same
+resolver; a missing or ambiguous mapping rejects activation. At each deployment,
+OCC resolves the saved revision's enabled providers and derives their current rules.
 Kubernetes Compute allocates listeners, installs rules and NetworkPolicies,
 supplies the Gateway's proxy endpoint, and removes resources through normal
-Agent reconciliation. An enabled provider with no routing implementation is an
-activation error; it cannot inherit Slack's policy.
+Agent reconciliation.
+
+Compute sets the Gateway's `HTTPS_PROXY` directly to its assigned Envoy CONNECT
+listener, for example `http://channel-egress.openclaw-system.svc:10001`.
+Envoy is the proxy; traffic does not pass through the old Slack proxy first.
 
 The installation provisions a dedicated egress Gateway and Envoy fleet. It can
 reuse the Envoy Gateway controller, but must not merge egress Pods with the
@@ -142,16 +147,26 @@ they do not substitute for validating the actual upstream address.
 
 Startup records whether channel egress is configured and available. OCC remains
 running when it is unavailable; attempts to activate affected channels fail
-explicitly. Admission checks availability before accepting deployment, and
-Compute rechecks the exact configuration before starting the channel-enabled
+explicitly. Admission checks are preliminary. Before applying a deployment or
+retry, the worker resolves the current Drivers and derives and validates the
+complete destination set for that revision. Compute uses that set consistently
+through the attempt and checks readiness before starting the channel-enabled
 Gateway. A listening socket or healthy controller alone is insufficient: the
 listener, destination policy, and network grants must be installed.
 
-Compute reserves a port before publishing configuration. Allocation is durable
-and concurrency-safe across workers and restarts, with ownership by namespace,
-Agent, revision, and configuration generation. Unknown ownership or exhaustion
-rejects activation. The implementation plan must define the protected allocation
-record and recovery protocol before coding; a process-local counter is insufficient.
+No separate destination-policy snapshot is persisted. A deployment retry after
+a worker restart or Driver upgrade derives the current rules again, so its
+destination set can differ from admission or a previous attempt. Compute
+reconciles that set for the target revision and recovers its existing bindings
+before allocating a port; it does not change another Agent's policy. Deployed
+Envoy configuration remains installed between attempts.
+
+Compute reserves a port before publishing configuration. Managed Kubernetes
+resources retain recoverable listener ownership, port, and generation, scoped by
+namespace, Agent, and revision. Allocation must be concurrency-safe across workers
+and restarts. Unknown ownership or exhaustion rejects activation. The implementation
+plan must define allocation and recovery using those resources; this does not
+require a new database entity or an independent allocation store.
 
 A replacement revision gets a temporary separate listener if its policy differs.
 Preparing it must not widen the serving revision's access. Only the eligible
@@ -236,16 +251,17 @@ existing contracts' meaning.
 - **API:** no new public endpoint or caller-selected proxy. Existing Agent
   deployment/admission operations expose routing failures through their existing
   error/status mechanisms; saving a draft does not establish channel readiness.
-- **Storage:** no new business entity or database schema is selected here.
-  Desired rules derive from saved revisions and the selected Driver; protected
-  infrastructure allocation records retain listener ownership and generation.
-  Their durable representation remains a required implementation-plan decision.
+- **Storage:** no separate destination-policy snapshot or new database entity.
+  Rules derive from the saved revision and current Drivers on deployment or
+  retry. Managed Kubernetes resources hold generated Envoy configuration and
+  recoverable listener bindings, as described in activation and cleanup.
 - **IAM:** no new user action or resource kind. Existing exact-resource grants
   remain required. Extend worker Kubernetes RBAC only for the managed egress
   resources and allocation records; do not grant Agent service accounts access.
 - **Compute behavior:** channel preparation and cleanup now reconcile per-Agent
-  routing. Failure to provide it rejects channel activation. Internal delivery
-  between composition and Compute must preserve revision and Driver identity.
+  routing. Failure to provide it rejects channel activation. Each attempt retains
+  its resolved Driver identities and derived rules through application; a retry
+  resolves them again.
 
 ### Future workload identity
 
@@ -282,7 +298,9 @@ Gateway version, and real Gateway images. Extend the existing
   activation fails while OCC remains usable. No broad or direct fallback appears.
 - **AC-4 — Lifecycle:** change channel rules during replacement, disable channels,
   delete an Agent, restart workers, and race allocations. Prove revision isolation,
-  termination of revoked tunnels, retry-safe cleanup, and safe port reuse.
+  termination of revoked tunnels, retry-safe cleanup, and safe port reuse. Change
+  a Driver's rules between admission and a deployment retry; verify that the retry
+  derives and enforces the current set without changing another Agent's policy.
 - **AC-5 — Address restrictions:** exercise malformed targets, domain-boundary
   lookalikes, explicit IPs, DNS changes to prohibited addresses, and IPv4/IPv6
   restrictions through real Envoy connections. Unsupported forms fail explicitly.
@@ -301,7 +319,7 @@ and connection termination on the repository's selected Envoy Gateway version
 integration exposes the complete combination. Prefer supported resources; any
 required extension or version change needs explicit review in this RFC.
 
-The networking implementation owner must also propose the allocation record,
+The networking implementation owner must also specify recoverable listener bindings,
 field names, port range, and tested capacity. Count temporary replacement and OCC
 listeners. A full fleet rejects activation; automatic sharding is outside this
 delivery. Record these decisions before implementation begins.
