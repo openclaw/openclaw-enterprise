@@ -17,6 +17,7 @@ interface ConsoleModules {
   "agents/secret-picker.mjs": typeof import("../../apps/controller/src/console/agents/secret-picker.mts");
   "agents/workspace.mjs": typeof import("../../apps/controller/src/console/agents/workspace.mts");
   "api-client.mjs": typeof import("../../apps/controller/src/console/api-client.mts");
+  "channels/shared-ui.mjs": typeof import("../../apps/controller/src/console/channels/shared-ui.mts");
   "channels/slack.mjs": typeof import("../../apps/controller/src/console/channels/slack.mts");
   "namespaces.mjs": typeof import("../../apps/controller/src/console/namespaces.mts");
   "secrets.mjs": typeof import("../../apps/controller/src/console/secrets.mts");

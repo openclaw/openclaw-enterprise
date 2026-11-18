@@ -87,8 +87,6 @@ import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
-const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
-
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type NamespaceFixture = Awaited<ReturnType<ConsoleFixture["createNamespace"]>>;
 type AgentFixture = Awaited<ReturnType<ConsoleFixture["createAgent"]>>;
@@ -217,6 +215,7 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
 });
 
 test("Deployment activity follows pending work until it records a result", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Activity follow", { ready: true });
@@ -264,6 +263,7 @@ test("Deployment activity follows pending work until it records a result", async
 });
 
 test("Deployment activity names retire cleanup as revision cleanup and follows it", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Cleanup follow", { ready: true });
@@ -326,6 +326,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
 // poll (finding 1424). Attempt timing belongs in Deployment activity; only a changed
 // wait message updates the deployment summary.
 test("Deployment polls leave an unchanged summary and status line untouched", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Quiet polls", { ready: true });
@@ -418,6 +419,7 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
 });
 
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Activity restore", { ready: true });

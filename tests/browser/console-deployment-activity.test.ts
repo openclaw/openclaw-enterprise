@@ -24,8 +24,6 @@ import { waitForIdleFetches, trackSettledFetches } from "./console-fetch-account
 import { responseTo } from "./console-action-helpers.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
-const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
-
 // The real controller admits and authorizes the deployment. The fixture has no
 // worker: change only its exact work lookup/lease, then its revision lookup.
 // No route interception supplies a status or conceals a missing controller route.
@@ -298,6 +296,7 @@ test(
   "terminal overview retries explicitly and shares its in-flight read",
   { timeout: 30_000 },
   async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
     const { page } = await newPage(t, fixture);
     await trackSettledFetches(page);
@@ -385,6 +384,7 @@ for (const viewport of [
     `deployment activity preserves reading position and reveals final refusal at ${viewport.width}`,
     { timeout: 60_000 },
     async (t) => {
+      const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
       const { fixture, namespace, agent, revisionId, url, control, unavailableDuring } =
         await deploymentFixture(t);
       const { page } = await newPage(t, fixture, { context: { viewport } });
@@ -722,6 +722,7 @@ for (const viewport of [
 // A failed deploy keeps polling while its retire cleanup is pending. Its cleanup's progress and a
 // recovered read are routine: the reader's fold and focus stay; the cleanup's result reveals.
 test("a pending cleanup after a final outcome keeps the reader's fold until it ends", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { fixture, namespace, agent, revisionId, url, control, unavailableDuring } =
     await deploymentFixture(t);
   control.failed = true;
@@ -806,6 +807,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
 // invalidate that response, not let it restore evidence the reader can no longer read.
 for (const refusal of [403, 404] as const) {
   test(`selected record discards an older success after a real ${refusal}`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
     const { page } = await newPage(t, fixture);
     await trackSettledFetches(page);
@@ -919,6 +921,7 @@ for (const refusal of [403, 404] as const) {
       `selected ${refusal} invalidates activity before late ${delayed}`,
       { timeout: 60_000 },
       async (t) => {
+        const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
         const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
         const member = await fixture.createNamespaceMember(
           "record-reader",
@@ -1080,6 +1083,7 @@ test("a selected historical refusal leaves the latest deployment readable", asyn
 // Its render generation must not erase the subsequently delivered authorization decision.
 for (const refusal of [403, 404] as const) {
   test(`selected ${refusal} survives an earlier activity success`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
     const { page } = await newPage(t, fixture);
     await trackSettledFetches(page);
@@ -1173,6 +1177,7 @@ for (const refusal of [403, 404] as const) {
 // into a success. Both responses come from the real controller before delivery is held.
 for (const delayed of [200, 403] as const) {
   test(`selected success supersedes activity work but honors late ${delayed}`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
     const member = await fixture.createNamespaceMember("recovery-reader", namespace.id, AGENT_READ);
     const { page } = await newPage(t, fixture);
