@@ -1404,14 +1404,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(StaticKeyConnectionTemplateVersionSchema);
   app.addSchema(ModelProviderModelSchema);
   app.addSchema(ModelProviderSchema);
-  const tokenServiceSourceSchemas = {
-    RegisterTokenServiceSourceBody,
-    UpdateTokenServiceSourceBody,
-    TokenServiceSourceMetadata,
-  };
-  for (const schema of Object.values(tokenServiceSourceSchemas)) {
-    app.addSchema(schema);
-  }
+  app.addSchema(RegisterTokenServiceSourceBody);
+  app.addSchema(UpdateTokenServiceSourceBody);
+  app.addSchema(TokenServiceSourceMetadata);
   void app.register(swagger, {
     convertConstToEnum: false,
     refResolver: {
@@ -1419,8 +1414,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         // Standalone contracts have public names. Keep Swagger's names and titles for route schemas.
         if (typeof schema.$id === "string") {
           schema.title ??= schema.$id;
-          if (Object.hasOwn(tokenServiceSourceSchemas, schema.$id)) {
-            return schema.$id;
+          switch (schema.$id) {
+            case "RegisterTokenServiceSourceBody":
+            case "UpdateTokenServiceSourceBody":
+            case "TokenServiceSourceMetadata":
+              return schema.$id;
           }
         }
         return `def-${index}`;

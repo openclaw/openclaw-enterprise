@@ -82,7 +82,7 @@ with `ResourceConflictError` before effects. OCC commits intermediate State befo
 `packages/occ/src/index.ts:createCredentialSource`
 
 OCC checks field names on advertised types during discovery and on the selected type during
-registration. Fastify reports malformed `config` keys at their escaped field paths.
+registration.
 [CRUD routes](../../packages/contracts/src/api/routes.ts) use Secret references.
 [TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts) are standalone OpenAPI components.
 One transaction authorizes `credential_source:create`, locks the ready Namespace,

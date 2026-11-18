@@ -196,7 +196,7 @@
     "schemas": {
       "RegisterTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Proposed registration body for a Namespace credential source. OCC allocates the identity and selects the TokenService Driver. Supply the secret fields required by the source type.",
+        "description": "Proposed registration body for a Namespace credential source. OCC allocates the identity and selects the TokenService Driver. An attached Connection Template supplies its current settings. Supply the secret fields required by the source type.",
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
@@ -209,18 +209,9 @@
             },
             "type": "object"
           },
-          "connectionTemplate": {
-            "additionalProperties": false,
-            "description": "Connection Template version approved by the credential owner.",
-            "properties": {
-              "id": {
-                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                "type": "string"
-              },
-              "version": { "minimum": 1, "type": "integer" }
-            },
-            "required": ["id", "version"],
-            "type": "object"
+          "connectionTemplateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
           },
           "name": {
             "maxLength": 200,
@@ -270,18 +261,9 @@
             },
             "type": "object"
           },
-          "connectionTemplate": {
-            "additionalProperties": false,
-            "description": "Connection Template version approved by the credential owner.",
-            "properties": {
-              "id": {
-                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                "type": "string"
-              },
-              "version": { "minimum": 1, "type": "integer" }
-            },
-            "required": ["id", "version"],
-            "type": "object"
+          "connectionTemplateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
           },
           "delivery": {
             "anyOf": [
@@ -310,7 +292,6 @@
             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
-          "ownerCapability": { "const": "token_service", "type": "string" },
           "ref": {
             "additionalProperties": false,
             "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
@@ -392,17 +373,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "namespaceId",
-          "ref",
-          "name",
-          "type",
-          "config",
-          "state",
-          "ownerCapability",
-          "driverId"
-        ],
+        "required": ["id", "namespaceId", "ref", "name", "type", "config", "state", "driverId"],
         "title": "TokenServiceSourceMetadata",
         "type": "object"
       },
