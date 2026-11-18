@@ -10,7 +10,7 @@ import type {
   NetworkAccessPolicy,
 } from "../../credential-deployment.ts";
 import type { CredentialSourceReference } from "../../index.ts";
-import type { VersionedCredential } from "../token-service/index.ts";
+import type { ResolvedCredential } from "../token-service/index.ts";
 
 export interface CredentialProxyDeploymentContract {
   deployProxy(
@@ -28,10 +28,12 @@ export interface CredentialProxyDeploymentContract {
     },
     signal: AbortSignal,
   ): Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
-  /** Succeeds when no copy exists or the existing delivery resource can use this version. */
+  /** Reject a missing version. Update the existing resource, then observe that every serving copy
+   * for this source can use the pushed version before acknowledging. If no resource exists,
+   * succeed without creating one. */
   pushCredentials(
     sourceRef: CredentialSourceReference,
-    credential: VersionedCredential,
+    credential: ResolvedCredential,
     signal: AbortSignal,
   ): Promise<void>;
   removeDeployment(
@@ -41,6 +43,10 @@ export interface CredentialProxyDeploymentContract {
       | { readonly unboundDeployment: CredentialDeploymentRef },
     signal: AbortSignal,
   ): Promise<void>;
+  /** Observe without reload, repair or upstream user operations. Each pushed binding needs a
+   * serving copy, and every copy serving it on this target must have the expected delivery version.
+   * For native delivery, verify provider readiness for the current effective policy. Both require
+   * the expected configuration. */
   getDeploymentStatus(
     expected: CredentialDeploymentConfiguration,
     signal: AbortSignal,

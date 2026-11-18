@@ -1,11 +1,24 @@
-import type { CredentialSourceReference, PluginDesiredState } from "../../index.ts";
+import type {
+  CredentialSourceReference,
+  PluginDesiredState,
+  PluginToolDefaults,
+  PluginToolPolicy,
+} from "../../index.ts";
 import type {
   BearerCredentialProjection,
-  DeploymentRequestMatch,
   DeploymentWorkloadRequirement,
+  DeploymentRequestMatch,
 } from "../../credential-deployment.ts";
 
 type ConsumerRole = "gateway" | "harness";
+
+/** An explicit native default for all tools would bypass Codex's destructive-tool filter. */
+type CodexAppDefaults =
+  | { readonly toolDefaults?: PluginToolDefaults; readonly destructiveEnabled?: never }
+  | {
+      readonly toolDefaults?: PluginToolDefaults & { readonly enabled?: never };
+      readonly destructiveEnabled: boolean;
+    };
 
 type ToolInstallation =
   | { readonly kind: "image-skill"; readonly path: string; readonly sha256: string }
@@ -36,12 +49,25 @@ type ToolInstallation =
           };
     };
 
-export interface PluginDeploymentTool {
-  readonly id: string;
-  readonly role: ConsumerRole;
-  readonly installation: ToolInstallation;
-  readonly selectedTools: readonly string[];
-}
+export type PluginDeploymentTool =
+  | {
+      readonly kind: "installation";
+      readonly id: string;
+      readonly role: ConsumerRole;
+      readonly installation: ToolInstallation;
+      readonly selectedTools: readonly string[];
+    }
+  | (CodexAppDefaults & {
+      readonly kind: "codex-hosted-app";
+      readonly id: string;
+      readonly role: "harness";
+      readonly installation?: never;
+      /** One connector ID from the admitted catalog. The Harness disables unselected apps. */
+      readonly appId: string;
+      readonly enabled: boolean;
+      /** Resolve each scoped tool ID against this app's authenticated tool inventory. */
+      readonly tools?: Readonly<Record<string, Pick<PluginToolPolicy, "enabled" | "approval">>>;
+    });
 
 export interface PluginDeploymentNetworkRequirement {
   readonly id: string;
@@ -71,7 +97,17 @@ export interface PluginDeploymentDescription {
 
 export interface PluginDeploymentContract {
   describeDeployment(input: {
-    readonly pluginId: string;
+    /** Server-admitted catalog identity for this selection. Hosted connector IDs come from the
+     * authenticated release for the Agent's Harness account, even when there are no tool overrides. */
+    readonly plugin:
+      | { readonly catalog: "driver"; readonly pluginId: string }
+      | {
+          readonly catalog: "codex-hosted";
+          readonly pluginId: string;
+          readonly remotePluginId: string;
+          readonly appIds: readonly string[];
+          readonly requiresSkillBundle: boolean;
+        };
     readonly selection: PluginDesiredState[string];
     readonly connections: Readonly<
       Record<string, Readonly<Record<string, CredentialSourceReference>>>

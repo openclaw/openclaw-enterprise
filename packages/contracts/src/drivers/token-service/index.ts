@@ -41,16 +41,14 @@ export type SourceUpdate =
   | { readonly secret: SecretFields; readonly lifecycleConfig?: SourceLifecycleConfig }
   | { readonly lifecycleConfig: SourceLifecycleConfig; readonly secret?: SecretFields };
 
-export interface UsableCredential {
+export interface ResolvedCredential {
   readonly credential: string;
+  /** Required when the resolved value is pushed to a delivery resource. */
+  readonly version?: string;
   readonly expiresAt?: string;
   /** Trusted account context when the consumer must route an account-scoped request. */
   readonly accountId?: string;
   readonly isFedramp?: boolean;
-}
-
-export interface VersionedCredential extends UsableCredential {
-  readonly version: string;
 }
 
 export interface CredentialRefreshStatus {
@@ -84,10 +82,7 @@ export interface TokenServiceDriver extends Omit<Driver, "capability"> {
   resolveCredential(
     source: RegisteredTokenServiceSource,
     signal: AbortSignal,
-  ): Promise<
-    | (VersionedCredential & { readonly delivery: "push" })
-    | (UsableCredential & { readonly delivery: "native"; readonly version?: string })
-  >;
+  ): Promise<ResolvedCredential>;
   forceRefresh(
     source: RegisteredTokenServiceSource<CredentialSourceReference>,
     signal: AbortSignal,

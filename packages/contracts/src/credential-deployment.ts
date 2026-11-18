@@ -3,16 +3,20 @@ import type { CredentialSourceReference } from "./index.ts";
 import type { RegisteredTokenServiceSource } from "./drivers/token-service/index.ts";
 import type { SandboxNetworkGrant } from "./sandbox-policy.ts";
 
-/** HTTP paths are exact. An evaluator refers to reviewed policy pinned with the revision. */
 export type DeploymentRequestPolicy =
-  | { readonly type: "http"; readonly method: string; readonly path: string }
+  | {
+      readonly type: "http";
+      readonly method: string;
+      /** Match exactly unless the path ends in /**, which includes the base path and descendants. */
+      readonly path: string;
+    }
   | {
       readonly type: "mcp";
+      /** Exact MCP endpoint path. */
       readonly path: string;
       readonly method: string;
       readonly toolName?: string;
-    }
-  | { readonly type: "evaluator"; readonly id: string; readonly digest: string };
+    };
 
 export interface DeploymentRequestMatch extends Pick<
   SandboxNetworkGrant,
@@ -27,6 +31,7 @@ export interface NetworkAccessPolicy {
 
 export interface CredentialInjectionPolicy {
   readonly bindingRef: string;
+  /** Only requests admitted for this binding can receive its credential. */
   readonly allowedRequests: readonly DeploymentRequestMatch[];
 }
 
