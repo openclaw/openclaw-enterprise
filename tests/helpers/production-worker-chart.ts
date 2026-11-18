@@ -6,7 +6,7 @@ import { join } from "node:path";
 export const inspectWorkerProbe = [
   "node",
   "-p",
-  "['production-healthcheck', 'bootstrap-installation'].map(name => ['mjs', 'ts'].filter(ext => require('node:fs').lstatSync('scripts/' + name + '.' + ext, { throwIfNoEntry: false })?.isFile()).join(',')).join(':')",
+  "['mjs', 'ts'].filter(ext => require('node:fs').lstatSync('scripts/production-healthcheck.' + ext, { throwIfNoEntry: false })?.isFile()).join(',')",
 ];
 
 export async function initialUpgradeChart(
@@ -14,14 +14,11 @@ export async function initialUpgradeChart(
   directory: string,
   extension: string,
 ) {
-  const [worker, bootstrap, extra] = extension.split(":");
   assert.ok(
-    extra === undefined &&
-      ["mjs", "ts"].includes(worker ?? "") &&
-      ["mjs", "ts"].includes(bootstrap ?? ""),
-    "The incumbent controller must provide exactly one supported worker probe and bootstrap program.",
+    ["mjs", "ts"].includes(extension),
+    "The incumbent controller must provide exactly one supported worker probe.",
   );
-  if (worker === "ts") {
+  if (extension === "ts") {
     return join(harnessRoot, "deploy/helm/openclaw-enterprise");
   }
   return stageHistoricalWorkerChart(harnessRoot, directory);

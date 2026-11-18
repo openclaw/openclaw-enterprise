@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/af763315-eda8-40fc-bab0-fb23d4f8f175"
+last_updated_session: "authoring-run/44831c47-7cb4-4c79-90ca-e3dce0fcbefe"
 ---
 
 # Production Startup Flow
@@ -143,22 +143,22 @@ to validate `db:migrate:production`, forward the exact mode, and import the imag
 entry in the same Node process. The bootstrap container evaluates
 `files/bootstrap-selected-image.cts` as CommonJS TypeScript. It rejects unsupported
 or non-string `db:bootstrap:production` commands and non-regular files, then
-replaces Node with the selected entry. Doctor matches the selector or retained direct paths.
+replaces Node with the selected entry. Doctor accepts this selector or released direct `.mjs` Jobs.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
-up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
-`OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
+at most 32 fields without values. For `OCC_EGRESS_AUTHORITY_PORT` or
+`OCC_OPENSHELL_GIT_PORT`, `requireChartListener` reports refused
 ports, hosts or paths as `CHART_LISTENER_MISMATCH`.
 
 `openclaw.listenerEnv` passes routing settings to the hook, API and worker.
 `requireChartGatewayRouting` reports mismatched fields without values.
 
-The hook validates its name and distinct database Secret keys; both database containers can mount the CA. See [production settings](../reference/settings/production.md).
+The hook checks its name and distinct Secret keys; database containers can mount the CA ([production settings](../reference/settings/production.md)).
 
-Before reading the Job, [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress)
-`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the receipt target.
-`initializationEvidence` checks marker, UID, exact chart steps, controller and terminal status,
+[Handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress)
+`internal/occcli/installation_doctor.go:installationHandoffCommand` first verifies receipt target.
+`initializationEvidence` checks marker, UID, exact chart steps, controller and terminal status.
 Separate-upgrade Jobs verify schema first.
-Missing, replaced, refused or inconclusive evidence leaves the checkpoint unknown.
+Missing, replaced, refused or inconclusive evidence leaves it unknown.
 Doctor reports Helm separately; write errors exit `1`.
 
 `scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
@@ -381,6 +381,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 07:17: Narrow supported bootstrap Job evidence. (authoring-run/44831c47-7cb4-4c79-90ca-e3dce0fcbefe - 8a3ed4ef091a98e928f708402ef1da58763315c5)
 
 - 2026-11-18 06:35: Type the bootstrap selector and reject malformed scripts. (authoring-run/af763315-eda8-40fc-bab0-fb23d4f8f175 - fa7803bfc18a9ce252ff1093d4fb4b1ebaf7b537)
 
