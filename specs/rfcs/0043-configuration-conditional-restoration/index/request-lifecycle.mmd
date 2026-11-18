@@ -1,0 +1,101 @@
+---
+title: "Proposed Configuration mutation and restoration"
+config:
+  theme: base
+  htmlLabels: false
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 28
+    width: 125
+    height: 60
+    diagramMarginX: 18
+    diagramMarginY: 18
+    boxMargin: 12
+    boxTextMargin: 6
+    messageMargin: 28
+    noteMargin: 12
+    mirrorActors: true
+    wrap: true
+    actorFontFamily: "Arial, sans-serif"
+    noteFontFamily: "Arial, sans-serif"
+    messageFontFamily: "Arial, sans-serif"
+---
+sequenceDiagram
+  actor U as User
+  box rgb(237,243,248) Controller API process
+    participant H as HTTP handler
+    participant O as OCC
+    participant D as Selected Driver
+  end
+  participant P as PostgreSQL State
+  participant S as Native storage
+
+  Note over H,S: 1 · Admit and prepare
+  U->>H: PATCH valid values or DELETE
+  H->>O: Run mutation in transaction
+  O->>O: Authorize the exact resource
+  O->>P: Lock Namespace, then Configuration
+  P-->>O: Locked ownership record
+  O->>O: Check mutation rules under lock
+  O->>D: Prepare exact update or delete
+  D->>S: Capture original and storage identity
+  S-->>D: Native document and identity
+  D-->>O: Opaque receipt and observed identity
+  O->>O: Check original and register undo
+
+  Note over U,S: 2 · Apply and settle
+  Note over O,P: Stage PATCH metadata before apply and DELETE metadata after apply
+  O->>D: Apply once
+  D->>S: Replace or delete only captured original
+  S-->>D: Effect result or unknown response
+  D-->>O: Apply result
+  O-->>H: Mutation result
+  H->>O: Append audit on success
+  O->>P: Settle metadata and audit
+  alt Commit acknowledged
+    P-->>O: Commit confirmed
+    O->>D: Dispose receipt
+    O-->>H: Success
+    H-->>U: PATCH 200 / DELETE 204
+  else COMMIT outcome unknown
+    P-->>O: Outcome unknown
+    O->>D: Dispose receipt
+    O-->>H: Unknown outcome
+    H-->>U: Unknown outcome
+    Note over O,S: No compensation or automatic replay
+  else Known rollback
+    P-->>O: Rollback known
+    Note over U,S: 3 · Recheck ownership and restore conditionally
+    O->>P: Begin fresh transaction and reacquire both locks in order
+    P-->>O: Current record or unavailable
+    alt Ownership missing, changed or unreadable
+      Note over O,D: Stop before any restoration write
+    else Original ownership confirmed
+      O->>D: Settle or restore while both locks are held
+      alt PATCH effect attributed
+        D->>S: Replace only this operation's exact written document
+        S-->>D: Restored, conflict or unresolved
+      else DELETE effect attributed
+        D->>S: Recreate original only if absent
+        S-->>D: Restored, destination occupied or unresolved
+      else Effect unapplied or attribution unproved
+        Note over D,S: No restoration write
+      end
+      D-->>O: Internal disposition
+    end
+    O->>P: End fresh transaction and release locks
+    O->>D: Dispose receipt
+    O-->>H: Request failed
+    H-->>U: Failure even after a proven restore
+  end
