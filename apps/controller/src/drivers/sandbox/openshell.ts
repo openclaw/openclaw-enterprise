@@ -5,6 +5,10 @@ import {
   verifyModelRequestPolicy,
   verifyModelRequestProfile,
 } from "./openshell-model-request-policy.ts";
+import {
+  OpenShellSandboxConfigurationFailure,
+  type OpenShellSandboxDiagnosticCode,
+} from "./openshell-sandbox-errors.ts";
 import { OpenShellGatewayUnavailableError } from "./openshell-gateway-errors.ts";
 import {
   validateNamespaceGatewayResources,
@@ -278,8 +282,6 @@ export interface OpenShellSandboxDriverSelection {
   readonly backend: Backend<OpenShellGateway>;
 }
 
-class OpenShellSandboxConfigurationFailure extends Error {}
-
 function sameConfigurationGeneration(effective: unknown, admitted: unknown): boolean {
   // These proto3 uint64 fields omit zero; the decoder preserves other values as strings.
   // Keep full uint64 precision and never treat malformed, matching values as evidence.
@@ -310,7 +312,12 @@ function matchesConfigurationAdmission(
 
 type NetworkEgressObservation =
   | { readonly state: "applied"; readonly configuration: ConfigurationRecord | undefined }
-  | { readonly state: "pending" | "failed"; readonly message: string };
+  | { readonly state: "pending"; readonly message: string }
+  | {
+      readonly state: "failed";
+      readonly message: string;
+      readonly diagnosticCode: OpenShellSandboxDiagnosticCode;
+    };
 
 async function observeNetworkEgress(
   client: OpenShellGatewayClient,
@@ -329,13 +336,18 @@ async function observeNetworkEgress(
   },
 ): Promise<NetworkEgressObservation> {
   if (status.state === "POLICY_STATUS_FAILED" || status.state === "POLICY_STATUS_SUPERSEDED") {
-    return { state: "failed", message: "OpenShell failed to load the Sandbox network policy." };
+    return {
+      state: "failed",
+      diagnosticCode: "OPENSHELL_POLICY_LOAD_FAILED",
+      message: "OpenShell failed to load the Sandbox network policy.",
+    };
   }
   const loaded = status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version;
   const isPublic = mode === "public";
   if (loaded && (status.policy.allow_unconfigured_public_tcp ?? false) !== isPublic) {
     return {
       state: "failed",
+      diagnosticCode: "OPENSHELL_POLICY_MODE_MISMATCH",
       message: "OpenShell loaded a source policy with a different network egress mode.",
     };
   }
@@ -351,6 +363,7 @@ async function observeNetworkEgress(
   if (!isPublic && (appliedPublic === true || effectivePublic === true)) {
     return {
       state: "failed",
+      diagnosticCode: "OPENSHELL_POLICY_MODE_MISMATCH",
       message: "OpenShell reports public network egress for a restricted Agent revision.",
     };
   }
@@ -368,7 +381,11 @@ async function observeNetworkEgress(
     isNonEmptyString(currentConfig?.configuration_error) ||
     (admissionRefused && currentAdmission && (!readConfig || matchesCurrentConfiguration))
   ) {
-    return { state: "failed", message: "OpenShell refused the Sandbox network policy." };
+    return {
+      state: "failed",
+      diagnosticCode: "OPENSHELL_POLICY_REFUSED",
+      message: "OpenShell refused the Sandbox network policy.",
+    };
   }
   if (!loaded) {
     return {
@@ -378,7 +395,11 @@ async function observeNetworkEgress(
   }
   if (!isPublic) {
     if (readConfig && config === undefined) {
-      return { state: "failed", message: "OpenShell effective configuration is unavailable." };
+      return {
+        state: "failed",
+        diagnosticCode: "OPENSHELL_POLICY_READBACK_UNAVAILABLE",
+        message: "OpenShell effective configuration is unavailable.",
+      };
     }
     return { state: "applied", configuration: config };
   }
@@ -405,7 +426,11 @@ async function observeNetworkEgress(
     matchesCurrentConfiguration
   ) {
     if (appliedPublic === false) {
-      return { state: "failed", message: "OpenShell reports public network egress is inactive." };
+      return {
+        state: "failed",
+        diagnosticCode: "OPENSHELL_PUBLIC_EGRESS_INACTIVE",
+        message: "OpenShell reports public network egress is inactive.",
+      };
     }
     if (appliedPublic === true && effectivePublic === true) {
       return { state: "applied", configuration: currentConfig };
@@ -413,6 +438,7 @@ async function observeNetworkEgress(
   }
   return {
     state: "failed",
+    diagnosticCode: "OPENSHELL_PUBLIC_EGRESS_EVIDENCE_CONFLICT",
     message: "OpenShell reports conflicting evidence for active public network egress.",
   };
 }
@@ -1200,13 +1226,19 @@ function createRequestIds(revisionId: string): readonly string[] {
 }
 
 function validateHarnessServiceUrl(value: unknown): void {
-  const endpoint = nonempty(value, "OpenShell Harness service URL");
+  if (!isNonEmptyString(value)) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell Harness service URL must be a nonempty string.",
+      "OPENSHELL_HARNESS_SERVICE_INVALID",
+    );
+  }
   let parsed: URL;
   try {
-    parsed = new URL(endpoint);
+    parsed = new URL(value);
   } catch {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell returned an invalid Harness service URL.",
+      "OPENSHELL_HARNESS_SERVICE_INVALID",
     );
   }
   if (
@@ -1219,6 +1251,7 @@ function validateHarnessServiceUrl(value: unknown): void {
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell Harness service URL must be an HTTP origin without credentials, query, or fragment.",
+      "OPENSHELL_HARNESS_SERVICE_INVALID",
     );
   }
 }
@@ -3159,6 +3192,7 @@ function verifyExistingSandbox(
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
+      "OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH",
     );
   }
 }
@@ -3674,6 +3708,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         if (!client.getPolicyStatus || !client.getSandboxConfig) {
           throw new OpenShellSandboxConfigurationFailure(
             "OpenShell policy readback is unavailable.",
+            "OPENSHELL_POLICY_READBACK_UNAVAILABLE",
           );
         }
         const request = { workspace, sandbox: sandbox.resourceName };
@@ -3689,6 +3724,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ) {
           throw new OpenShellSandboxConfigurationFailure(
             "OpenShell Sandbox identity changed during policy readback.",
+            "OPENSHELL_SANDBOX_IDENTITY_MISMATCH",
           );
         }
         const status = await client.getPolicyStatus(request, context.signal);
@@ -3702,7 +3738,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           if (observation.state === "pending") {
             throw new SandboxPolicyObservationPendingError(observation.message);
           }
-          throw new OpenShellSandboxConfigurationFailure(observation.message);
+          throw new OpenShellSandboxConfigurationFailure(
+            observation.message,
+            observation.diagnosticCode,
+          );
         }
         configuration = observation.configuration;
       } else {
@@ -3716,6 +3755,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ) {
           throw new OpenShellSandboxConfigurationFailure(
             "OpenShell reports public network egress for a restricted Agent revision.",
+            "OPENSHELL_POLICY_MODE_MISMATCH",
           );
         }
       }
@@ -3929,6 +3969,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         if (created.name !== sandbox.resourceName) {
           throw new OpenShellSandboxConfigurationFailure(
             "OpenShell returned a different Sandbox name than requested.",
+            "OPENSHELL_SANDBOX_IDENTITY_MISMATCH",
           );
         }
         if (exposed) {
@@ -3947,6 +3988,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         } else if (Object.keys(created.serviceUrls).length !== 0) {
           throw new OpenShellSandboxConfigurationFailure(
             "OpenShell exposed an unexpected service for the native OpenClaw Harness.",
+            "OPENSHELL_HARNESS_SERVICE_INVALID",
           );
         }
         if (this.options.startupDelayMs !== undefined) {
@@ -4038,6 +4080,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             : "remove the stale Sandbox before retrying.";
         throw new OpenShellSandboxConfigurationFailure(
           `OpenShell Sandbox ${sandbox.resourceName} exists without its exact bearer-passthrough Harness service; ${recovery}`,
+          "OPENSHELL_HARNESS_SERVICE_INVALID",
         );
       }
       validateHarnessServiceUrl(service.url);
@@ -4454,6 +4497,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           : "";
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell workspace initialization failed${detail}.`,
+        "OPENSHELL_WORKSPACE_INITIALIZATION_FAILED",
       );
     }
     if (exit === WORKSPACE_SETUP_REFUSED_EXIT_STATUS) {
@@ -4470,6 +4514,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell workspace initialization failed (${detail}).`,
+        "OPENSHELL_WORKSPACE_INITIALIZATION_FAILED",
       );
     }
   }
@@ -4623,6 +4668,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         codex
           ? "OpenShell did not expose the exact Codex bearer-passthrough service."
           : "OpenShell did not expose the exact OpenClaw worker bearer-passthrough service.",
+        "OPENSHELL_HARNESS_SERVICE_INVALID",
       );
     }
     return { client, service };

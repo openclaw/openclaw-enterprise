@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { options as kubernetesOptions } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   OpenShellSandboxAlreadyExistsError,
   type OpenShellSandboxCreateRequest,
@@ -127,7 +129,16 @@ export async function verifyPublicEgressSupervisorReadback(): Promise<void> {
   await assert.rejects(driver.provisionHarness(harness), /public network egress is inactive/);
   appliedMode = true;
   configInstance = "replaced-supervisor";
-  await assert.rejects(driver.provisionHarness(harness), /conflicting evidence/);
+  const compute = new KubernetesComputeDriver(kubernetesOptions(), { sandboxDriver: driver });
+  await assert.rejects(driver.provisionHarness(harness), (error: unknown) => {
+    assert.match(String(error), /conflicting evidence/);
+    assert.deepEqual(compute.describePrepareRevisionFailure(error), {
+      code: "OPENSHELL_PUBLIC_EGRESS_EVIDENCE_CONFLICT",
+      stage: "prepare_revision",
+      errorClass: "OpenShellSandboxConfigurationFailure",
+    });
+    return true;
+  });
   configInstance = "supervisor-one";
   assert.equal((await driver.provisionHarness(harness)).revisionId, revision.id);
   assert.equal(creationCount, 1, "policy observation must keep the original Sandbox");
