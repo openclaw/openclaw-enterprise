@@ -61,8 +61,8 @@ auth:
   baseUrl: http://127.0.0.1:3000 # Use the actual published OCC port.
 bootstrap:
   adminEmail: "<existing development administrator email>"
-  password:
-    claimName: bootstrap-password
+  credentials:
+    secretName: occ-bootstrap-credentials
 api:
   clients:
     - namespace: envoy-gateway-system

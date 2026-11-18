@@ -811,7 +811,7 @@ export function rehearsalPlane({
   };
   const claimIdentity = async () =>
     Promise.all(
-      ["postgres-data", "bootstrap-password"].map(async (name) => {
+      ["postgres-data"].map(async (name) => {
         const claim = await get(`pvc/${name}`);
         assert.ok(Check(persistentClaim, claim), `invalid claim ${name}`);
         const { metadata, spec } = claim;

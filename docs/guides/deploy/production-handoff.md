@@ -19,9 +19,13 @@ binary checksum in a separate private handoff record. The receipt's `version` is
 its file-format version, not the OCE release; an unversioned local CLI build can
 print `dev`. Keep this source identity with the receipt without editing its files.
 
-The CLI syncs `intent.json` (target, attempt ID, time and input hashes), writes
-the receipt notice to stdout, then syncs `dispatch.json` before starting Helm
-once. If the notice write returns an error, the command exits unsuccessfully
+The CLI syncs `intent.json` (target, attempt ID, time and input hashes) and prints
+the receipt notice before preparing generated credentials. `bootstrap-secret.json`
+records their private directory and Secret selection, never values. Separate
+Secret dispatch/result records distinguish an unknown create from confirmed UID
+and data. Missing confirmation requires reconciliation, not regenerated inputs
+or another create. Credential files remain separate from the shareable receipt.
+The CLI syncs `dispatch.json` before starting Helm once. If the notice write returns an error, the command exits unsuccessfully
 and names the preserved receipt directory in its error. That error confirms
 that this attempt created no `dispatch.json` and started no Helm install.
 Keep the receipt, repair the stdout destination, and confirm the target is still
@@ -47,6 +51,9 @@ For the shared DNS suffix refusal, the host in `auth.baseUrl` and
 the inputs and render again. Neither a render result nor a missing Job establishes
 cluster effects or authorizes retry; preserve the receipt and reconcile the
 original attempt below.
+
+Handoff reports unconfirmed Secret preparation even without a Job. Read-only `doctor`/`plan` neither open recovery files nor recreate Secrets or authenticate keys. See the
+[installer flow](../../flows/installation-preparation.md).
 
 ## Resume an installation in progress
 
@@ -120,20 +127,19 @@ below.
 
 ## Choose the first workflow
 
-Start with one task and a small group. For example, let an Agent read a
-support queue and draft replies before enabling customer-facing sends. Name the
-business owner, acceptable output quality, response time, cost, and the person
-who handles exceptions. Use test records and a private test channel for the
-initial checks.
+Start with one task and a small group, such as an Agent that reads a support
+queue and drafts replies before customer-facing sends. Name the business owner,
+quality criteria, response time, cost and exception handler. Use test records
+and a private channel.
 
-Confirm that the organization can operate the host infrastructure, database,
-credentials, and integrations before relying on the workflow.
+Confirm infrastructure, database, credential and integration operations before
+relying on the workflow.
 
 ## Assign operating ownership
 
-Record a primary and backup contact, the exact scope they manage, and how to
-reach them when the platform is unavailable. The same person can own several
-areas; each responsibility still needs an explicit handoff.
+Record primary and backup contacts, their scope and how to reach them during
+outages. One person can own several areas, but each responsibility needs an
+explicit handoff.
 
 | Area                   | Decision to record                                                                                        | Owning guidance                                                                                         |
 | ---------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |

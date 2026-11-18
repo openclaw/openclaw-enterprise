@@ -760,8 +760,16 @@ test(
     let nativeNamespace;
     let nativeWork;
     if (selectedSandboxDriver === "openshell") {
+      assert.ok(
+        typeof recorded.installationId === "string" && recorded.installationId.length > 0,
+        "Local Setup must record the authenticated Installation ID",
+      );
       const installation = await requestLocalApi(env.OCC_URL, serviceKey, "GET", "/installation");
-      assert.equal(installation.id, administratorKey.meta.installationId);
+      assert.equal(
+        installation.id,
+        recorded.installationId,
+        "The administrator key must authenticate the recorded Installation",
+      );
       const namespaces = await requestLocalApi(env.OCC_URL, serviceKey, "GET", "/namespaces");
       const defaults = namespaces.filter(({ name }) => name === "default");
       assert.equal(defaults.length, 1, "Local Setup must own exactly one default Namespace");

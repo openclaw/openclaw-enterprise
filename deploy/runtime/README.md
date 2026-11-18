@@ -15,7 +15,8 @@ The Dockerfile uses a verified public OpenClaw archive, its pinned package
 manager, frozen lockfile, and upstream Docker assembly. A registry mirror
 requires [separate Corepack and pnpm build secrets](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 Both Codex entrypoints use stock Codex `0.164.0`, unpatched;
-`stock-codex-0.164.0-dependency-pin.patch` holds the lockfile there while OpenClaw bundles 0.169.0. Verify native startup and
+`stock-codex-0.164.0-dependency-pin.patch` holds the lockfile there and sets
+`CODEX_APP_SERVER_VERSION` and `OPENAI_CODEX_CLIENT_VERSION` back to it while OpenClaw bundles 0.169.0. Verify native startup and
 sandbox behavior with the image's seccomp rules. Codex and Slack come from the same source, whose
 restricted workspace-node commands and persistent device identity support
 split storage. That contract requires a newer source than `2026.9.5`.
@@ -148,6 +149,8 @@ automatically. [Local checkout tests](../../docs/testing/openshell.md) use their
 ## Verify runtime source
 
 Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
+
+See the [JIT-free ARM64 Harness](code-mode/README.md).
 
 ## Build a local runtime image
 

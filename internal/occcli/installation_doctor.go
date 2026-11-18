@@ -67,6 +67,11 @@ func (app *application) installationHandoffCommand(action string) *cobra.Command
 					return err
 				}
 				result = readInstallationAttempt(ctx, frozen, kubeContext, intent, uid)
+				progress, err := installationBootstrapProgress(receipt)
+				if err != nil {
+					return err
+				}
+				fmt.Fprint(out, progress)
 				fmt.Fprintf(out, "Helm outcome: %s.\n", outcome)
 			} else {
 				result = readInitialization(ctx, kubeconfig, kubeContext, namespace, name, release, expectedUID)
@@ -361,7 +366,9 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	case checked && expectedAttempt == "" && migration("--require-current"):
 		hook = "separate upgrade"
 	}
-	if hook == "" || !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") {
+	bootstrap := is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") ||
+		(hook == "install" && is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs", "--require-fresh"))
+	if hook == "" || !bootstrap {
 		return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. Job steps do not match the supported chart."}
 	}
 	state := job.Status.state()

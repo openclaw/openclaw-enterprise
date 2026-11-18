@@ -27,7 +27,7 @@ catalog discovery ready.
 Both profiles enable:
 
 - Native admin UI and private gateway routing.
-- Standard OpenClaw and Standard Codex Preset seeding.
+- Bundled Preset seeding, unless `presets.includeDefaults` is `false`.
 - Kubernetes Compute, Kubernetes Configuration, Kubernetes Secrets, native IAM,
   private metrics, digest-pinned images, DNS policy, trusted proxy CIDRs, and
   plugin-status proxy CIDRs.
@@ -80,6 +80,10 @@ startup; the renderer validates the list but does not read container files. See
 [Preset initialization](../../reference/presets.md#installation-defaults) for path
 resolution and startup validation.
 
+Set `presets.includeDefaults` to `false` (default `true`) to seed only the
+listed files; saved Presets remain. To keep **Start with default Preset**, name
+your starter Preset `default-codex`.
+
 Repository support is optional. When enabled, the renderer wires the broker
 container, GitHub Backend, Repo Driver, and Compute peer. The repository registry
 needs Namespace IDs that only exist after the first bootstrap, so most installs
@@ -108,7 +112,7 @@ one `@` and a dotted domain.
     "controllerImage": "registry.example/openclaw-enterprise/controller@sha256:<64-hex>",
     "authBaseUrl": "https://console.example.internal",
     "adminEmail": "admin@example.invalid",
-    "bootstrapPasswordClaimName": "occ-bootstrap-admin-password",
+    "bootstrapCredentialsSecretName": "occ-bootstrap-credentials",
     "apiClients": [{ "namespace": "operator-tools", "podLabels": { "app": "operator" } }],
     "databaseCidrs": ["10.45.0.12/32"],
     "clusterCidrs": ["10.43.0.1/32"],
@@ -234,7 +238,7 @@ through a shared proxy address. A source-preserving load balancer needs no prese
 
 Client-ID and client-secret Secret keys must differ; an omitted key counts as
 the chart default (`client-id` or `client-secret`).
-As the chart requires, each credential Secret is dedicated: a sign-in
+Each credential Secret is dedicated: `bootstrapCredentialsSecretName`, a sign-in
 `secretName` (default `occ-google-login` or `occ-oidc-login`),
 `gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
 `repository.publicCaSecretName`), the ChatGPT admin Secret (with
@@ -325,7 +329,7 @@ copy it there with mode `0600` first, or render straight into the protected
 directory as the runbook's [profile branch](production-installation.md#recommended-generate-profile-configuration)
 does.
 Skip both configuration-generation branches and continue at the
-[shared bootstrap PVC and configuration checks](production-installation.md#shared-bootstrap-pvc-and-configuration-checks).
+[shared credential and configuration checks](production-installation.md#shared-bootstrap-pvc-and-configuration-checks).
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,
 and authenticated API verification.
 
@@ -337,7 +341,7 @@ writing deployment files. See the [rendering flow](../../flows/installation-prof
 
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and `runtime.gatewayNodeSelector`
 require Kubernetes label keys and label values that are empty or a label name of
-at most 63 characters, matching Helm, bootstrap-volume preparation and Pod
+at most 63 characters, matching Helm and Pod
 admission.
 Preflight rejects invalid placement labels before writing deployment files.
 

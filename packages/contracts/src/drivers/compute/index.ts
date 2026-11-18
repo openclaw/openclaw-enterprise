@@ -53,6 +53,8 @@ export type AgentChatCompletionsResolution =
   | { readonly status: "unsupported" };
 
 export interface ComputeRevisionContext {
+  /** An active provider's maintenance pass may update its existing Harness only. */
+  readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
   /** A fresh read of the still-authorized revision and its exact committed installation. */
