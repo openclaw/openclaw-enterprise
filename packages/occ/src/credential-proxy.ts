@@ -111,7 +111,11 @@ export interface EgressAuthorityPorts {
       signal: AbortSignal,
       release?: RequestCredentialRelease,
     ): Promise<StaticEgressSource | undefined>;
-    approve(request: RequestCredentialInput, accept: () => boolean): Promise<boolean>;
+    approve(
+      request: RequestCredentialInput,
+      signal: AbortSignal,
+      accept: () => boolean,
+    ): Promise<boolean>;
     consume(grant: RequestCredentialGrant): Promise<ConsumedRequestCredentialApproval | undefined>;
     validate(source: StaticEgressSource, value: string): boolean;
     deny(approval: RequestCredentialApproval, code: string): Promise<void>;
@@ -463,6 +467,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     finish?: (
       result: T,
       ports: NonNullable<EgressAuthorityPorts["requestCredentials"]>,
+      signal: AbortSignal,
       current: () => boolean,
     ) => Promise<T | undefined>,
   ): Promise<T | undefined> {
@@ -496,7 +501,11 @@ export class CredentialProxy implements CredentialProxyExchange {
         return undefined;
       }
       const current = () => !lifetime.aborted && this.ports.now() < deadline;
-      return finish ? await finish(result, ports, current) : current() ? result : undefined;
+      return finish
+        ? await finish(result, ports, lifetime, current)
+        : current()
+          ? result
+          : undefined;
     } catch {
       // Ambiguous authority/read outcomes never grant a credential or retry a consumed approval.
       return undefined;
@@ -508,7 +517,7 @@ export class CredentialProxy implements CredentialProxyExchange {
   authorizeRequestCredential(
     input: RequestCredentialInput,
     signal: AbortSignal,
-    accept?: () => boolean,
+    accept: () => boolean,
   ) {
     if (
       !Number.isFinite(Date.parse(input.replayUntilAt)) ||
@@ -535,8 +544,8 @@ export class CredentialProxy implements CredentialProxyExchange {
       signal,
       async (ports, lifetime) =>
         (await ports.check(request, lifetime)) ? "credential" : undefined,
-      async (decision, ports, current) =>
-        current() && (await ports.approve(request, () => current() && (accept?.() ?? true)))
+      async (decision, ports, lifetime, current) =>
+        current() && (await ports.approve(request, lifetime, () => current() && accept()))
           ? decision
           : undefined,
     );

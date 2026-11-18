@@ -4578,8 +4578,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       const isRequestModel = (name: string) => /^oce-model-[a-f0-9]{32}$/.test(name);
       if (
         providers.some((provider) => isRequestModel(provider.name)) ||
-        (await client.listProviderProfiles(workspace.name, context.signal)).some(
-          (profile) => profile.definition?.scope === "workspace" && isRequestModel(profile.id),
+        (await client.listProviderProfiles(workspace.name, context.signal)).some((profile) =>
+          isRequestModel(profile.id),
         )
       ) {
         throw new OpenShellSandboxConfigurationFailure(
@@ -4600,6 +4600,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       for (const profileId of Object.values(RUNTIME_PROFILE_IDS)) {
         await this.deleteRuntimeProfileIfUnused(client, workspace.name, profileId, context.signal);
       }
+      // The Gateway checks members again after marking the Workspace terminating.
+      // Providers and profiles block deletion there, including additions after our listing.
       await client.deleteWorkspace(workspace.name, context.signal);
       if ((await client.getWorkspace(workspace.name, context.signal)) !== undefined) {
         throw new SandboxNamespacePendingError();

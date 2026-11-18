@@ -4309,6 +4309,8 @@ function repositories(
     preparedTokenProof,
     requestCredentialApprovals: memoryRequestCredentialApprovals(
       snapshot.requestCredentialApprovals,
+      async ({ namespaceId, agentId, revisionId }) =>
+        (await revisions.findRevision(namespaceId, agentId, revisionId)) !== undefined,
     ),
     egressSendReceipts: memoryEgressSendReceipts(snapshot.egressSendReceipts),
     provisioning: {

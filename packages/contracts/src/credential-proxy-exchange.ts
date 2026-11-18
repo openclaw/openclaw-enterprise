@@ -70,7 +70,7 @@ export interface CredentialProxyExchange {
   authorizeRequestCredential?(
     request: RequestCredentialInput,
     signal: AbortSignal,
-    accept?: () => boolean,
+    accept: () => boolean,
   ): Promise<"credential" | undefined>;
   /** Consume the exact request, binding and authenticated recipient approval once. */
   resolveRequestCredential?(

@@ -341,6 +341,19 @@ test(
     assert.equal((await redeem(late)).status, 403);
     assert.equal(f.secretReads, beforeCancellation);
 
+    const uncertain = fixture.request();
+    const activation = fixture.pauseNextApprovalCommit("activation-unknown");
+    const outcome = assert.rejects(evaluate(uncertain), { code: 14 });
+    try {
+      await activation.reached;
+    } finally {
+      activation.release();
+    }
+    await outcome;
+    assert.equal((await redeem(uncertain)).status, 200, "a committed decision may be redeemable");
+    assert.equal((await redeem(uncertain)).status, 403);
+    assert.equal((await evaluate(uncertain)).decision, 2, "unknown activation cannot be replayed");
+
     // A slow wall clock must not extend the database lease in the HTTP TTL. Hold a
     // real Secret read so returning the original monotonic budget would also fail.
     const shortLease = fixture.request();

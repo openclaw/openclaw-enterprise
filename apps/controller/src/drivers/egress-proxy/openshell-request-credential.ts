@@ -88,6 +88,10 @@ export async function authorizeOpenShellRequest(
         return accepted;
       },
     );
+    if (accepted && decision !== "credential") {
+      // Activation may have committed. End the RPC without a policy decision.
+      throw new Error("Credential approval activation was not confirmed.");
+    }
     return decision === "credential" && accepted ? { decision: 1 } : denied;
   } finally {
     clearTimeout(timer);

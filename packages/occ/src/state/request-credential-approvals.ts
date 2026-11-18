@@ -15,6 +15,7 @@ export interface StoredRequestCredentialApproval extends RequestCredentialApprov
 
 export function memoryRequestCredentialApprovals(
   records: Map<string, StoredRequestCredentialApproval>,
+  hasRevision: (execution: RequestCredentialApproval["execution"]) => Promise<boolean>,
 ): RequestCredentialApprovalRepository {
   return {
     async insert(approval, now, limits) {
@@ -27,6 +28,7 @@ export function memoryRequestCredentialApprovals(
       if (
         records.has(key) ||
         approval.deadlineAt <= now ||
+        !(await hasRevision(approval.execution)) ||
         records.size >= limits.requestIds ||
         [...records.values()].filter((record) => record.recipientId === approval.recipientId)
           .length >= limits.sandboxRequestIds
@@ -42,7 +44,7 @@ export function memoryRequestCredentialApprovals(
       );
       return "reserved";
     },
-    async approve(request, driver, now) {
+    async approve(request, driver, policyDigest, now) {
       const key = JSON.stringify([request.recipient.id, request.requestId]);
       const approval = records.get(key);
       if (
@@ -50,9 +52,11 @@ export function memoryRequestCredentialApprovals(
         approval.approved ||
         approval.bindingId !== request.bindingId ||
         approval.replayUntilAt !== request.replayUntilAt ||
+        approval.policyDigest !== policyDigest ||
         !isDeepStrictEqual(approval.execution, request.execution) ||
         !isDeepStrictEqual(approval.driver, driver) ||
-        approval.deadlineAt <= now
+        approval.deadlineAt <= now ||
+        !(await hasRevision(approval.execution))
       ) {
         return false;
       }
@@ -68,7 +72,8 @@ export function memoryRequestCredentialApprovals(
         approval.consumed ||
         approval.bindingId !== grant.bindingId ||
         !isDeepStrictEqual(approval.driver, driver) ||
-        approval.deadlineAt <= now
+        approval.deadlineAt <= now ||
+        !(await hasRevision(approval.execution))
       ) {
         return undefined;
       }
@@ -132,12 +137,12 @@ export function postgresRequestCredentialApprovals(
       );
       return result.rowCount === 1 ? "reserved" : "refused";
     },
-    async approve(request, driver, _now) {
+    async approve(request, driver, policyDigest, _now) {
       const result = await client.query(
         `UPDATE occ.request_credential_approvals AS approval SET approved = true
          WHERE recipient_id = $1 AND request_id = $2 AND binding_id = $3 AND driver_ref = $4::jsonb
            AND replay_until_at = $5::timestamptz AND namespace_id = $6 AND agent_id = $7 AND revision_id = $8
-           AND NOT approved AND expires_at > clock_timestamp()
+           AND policy_digest = $9 AND NOT approved AND expires_at > clock_timestamp()
            AND EXISTS (SELECT FROM occ.agent_revisions AS revision WHERE
              (revision.namespace_id, revision.agent_id, revision.id) =
              (approval.namespace_id, approval.agent_id, approval.revision_id))`,
@@ -150,6 +155,7 @@ export function postgresRequestCredentialApprovals(
           request.execution.namespaceId,
           request.execution.agentId,
           request.execution.revisionId,
+          policyDigest,
         ],
       );
       return result.rowCount === 1;

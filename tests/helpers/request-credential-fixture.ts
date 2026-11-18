@@ -16,6 +16,7 @@ import {
   InstalledDriver,
   resolveCredentialProxyCapacity,
   OpenClawController,
+  PostgresCommitOutcomeUnknownError,
   PostgresPlatformState,
   type PlatformStateStore,
   type ControllerOptions,
@@ -351,7 +352,7 @@ export async function requestCredentialFixture(
     grant,
     restartController,
     principalId,
-    pauseNextApprovalCommit(stage: "before" | "after" | "busy" = "before") {
+    pauseNextApprovalCommit(stage: "before" | "after" | "busy" | "activation-unknown" = "before") {
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const policyState = state;
@@ -371,7 +372,11 @@ export async function requestCredentialFixture(
                   pending = false;
                   reserved = true;
                 }
-                if (pending && inserted === "reserved" && stage !== "busy") {
+                if (
+                  pending &&
+                  inserted === "reserved" &&
+                  (stage === "before" || stage === "after")
+                ) {
                   pending = false;
                   if (stage === "before") {
                     reached.resolve();
@@ -382,12 +387,23 @@ export async function requestCredentialFixture(
                 }
                 return inserted;
               },
+              async approve(...args) {
+                const approval = await unit.requestCredentialApprovals.approve(...args);
+                if (pending && approval && stage === "activation-unknown") {
+                  pending = false;
+                  reserved = true;
+                }
+                return approval;
+              },
             },
           }),
         );
         if (reserved) {
           reached.resolve();
           await release.promise;
+          if (stage === "activation-unknown") {
+            throw new PostgresCommitOutcomeUnknownError();
+          }
         }
         return result;
       };

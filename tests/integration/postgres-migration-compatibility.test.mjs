@@ -2632,6 +2632,13 @@ test(
           populated.map((approval) => ({ ...approval, approved: false })),
         );
         await assertUpgradedRevisionReadable(db);
+        await assert.rejects(
+          db.app.query(
+            "UPDATE occ.request_credential_approvals SET consumed=true WHERE NOT consumed",
+          ),
+          { code: "23514", constraint: "request_credential_approval_requires_decision" },
+        );
+        await db.app.query("UPDATE occ.request_credential_approvals SET approved=true");
         assert.equal(
           (await db.app.query("UPDATE occ.request_credential_approvals SET consumed=true"))
             .rowCount,
@@ -2642,7 +2649,8 @@ test(
           { code: "42501" },
         );
         assert.equal(
-          (await db.app.query("DELETE FROM occ.agent_revisions WHERE id=$1", [revision])).rowCount,
+          (await db.migrator.query("DELETE FROM occ.agent_revisions WHERE id=$1", [revision]))
+            .rowCount,
           1,
         );
         const retained = (await approvalRows()).rows;

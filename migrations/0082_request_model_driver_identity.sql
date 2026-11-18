@@ -48,4 +48,9 @@ ALTER TABLE occ.request_credential_approvals
   DROP CONSTRAINT request_credential_approval_revision,
   ADD COLUMN approved boolean NOT NULL DEFAULT false;
 --> statement-breakpoint
+UPDATE occ.request_credential_approvals SET approved = true WHERE consumed;
+--> statement-breakpoint
+ALTER TABLE occ.request_credential_approvals
+  ADD CONSTRAINT request_credential_approval_requires_decision CHECK (approved OR NOT consumed);
+--> statement-breakpoint
 GRANT UPDATE (approved) ON occ.request_credential_approvals TO occ_app;

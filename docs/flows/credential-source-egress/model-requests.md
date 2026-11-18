@@ -132,11 +132,10 @@ On known lock contention, OCC releases the transaction and rechecks policy
 within the original deadline. Exhaustion and replay still refuse.
 PostgreSQL's `clock_timestamp()` governs pruning,
 admission deadlines, the one-hour replay limit and redemption expiry; replica
-clocks cannot shorten shared retention. The in-memory store uses its single-state
-clock. The committed reservation cannot be redeemed until a second transaction
-takes the middleware's affirmative decision. Cancellation before acceptance
-leaves only the replay reservation. If activation commits after acceptance but
-the connection drops, the response may be lost. Neither side retries that ID.
+clocks cannot shorten shared retention. The second transaction rechecks policy
+before promoting the reservation with the middleware's acceptance. Cancellation
+before acceptance leaves only the replay reservation. If the activation commit
+is uncertain after acceptance, the RPC fails without a decision. The ID stays spent.
 Online approval consumption
 and policy checks explicitly use State's `transactReadCommitted`, regardless of
 the connection pool's default isolation. PostgreSQL starts `READ COMMITTED`

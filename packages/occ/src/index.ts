@@ -7794,22 +7794,8 @@ export class OpenClawController {
             sender: owner.require("credential_proxy").sourceControl.sender,
             check: (request, signal, release) =>
               this.checkRequestCredential(owner, request, signal, release),
-            approve: (request, accept) =>
-              this.transactReadCommitted(async (state) => {
-                if (
-                  !(await state.requestCredentialApprovals.approve(
-                    request,
-                    owner.ref,
-                    this.timestamp(),
-                  ))
-                ) {
-                  return false;
-                }
-                if (!accept()) {
-                  throw new DependencyUnavailableError("Request credential authorization expired.");
-                }
-                return true;
-              }),
+            approve: async (request, signal, accept) =>
+              !!(await this.checkRequestCredential(owner, request, signal, { accept })),
             validate: (source, value) => {
               if (this.selectedProxyOwner() !== owner) {
                 return false;
@@ -8046,10 +8032,10 @@ export class OpenClawController {
     owner: InstalledDriver,
     request: RequestCredentialInput | RequestCredentialApproval,
     signal: AbortSignal,
-    release?: RequestCredentialRelease,
+    step?: RequestCredentialRelease | { readonly accept: () => boolean },
   ): Promise<StaticEgressSource | undefined> {
     for (;;) {
-      const result = await this.checkRequestCredentialOnce(owner, request, signal, release);
+      const result = await this.checkRequestCredentialOnce(owner, request, signal, step);
       if (result !== "quota-busy") {
         return result;
       }
@@ -8067,8 +8053,9 @@ export class OpenClawController {
     owner: InstalledDriver,
     request: RequestCredentialInput | RequestCredentialApproval,
     signal: AbortSignal,
-    release?: RequestCredentialRelease,
+    step?: RequestCredentialRelease | { readonly accept: () => boolean },
   ): Promise<StaticEgressSource | "quota-busy" | undefined> {
+    const release = typeof step === "function" ? step : undefined;
     if (
       signal.aborted ||
       Date.parse(request.deadlineAt) <= this.clock().getTime() ||
@@ -8308,6 +8295,22 @@ export class OpenClawController {
         return refuse("stale_configuration");
       }
       if ("http" in request) {
+        if (typeof step === "object") {
+          if (
+            !(await state.requestCredentialApprovals.approve(
+              request,
+              owner.ref,
+              policyDigest,
+              this.timestamp(),
+            ))
+          ) {
+            return refuse("approval_refused");
+          }
+          if (!step.accept()) {
+            throw new DependencyUnavailableError("Request credential authorization expired.");
+          }
+          return selected;
+        }
         const reservation = await state.requestCredentialApprovals.insert(
           {
             recipientId: request.recipient.id,

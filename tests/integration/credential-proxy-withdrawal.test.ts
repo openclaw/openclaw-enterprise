@@ -995,7 +995,10 @@ test(
     }
     const signal = AbortSignal.timeout(50_000);
     const first = request();
-    assert.equal(await exchange.authorizeRequestCredential(first, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(first, signal, () => true),
+      "credential",
+    );
 
     // Reconstruct the controller and repository wrappers: the approval is durable, not a local map.
     const afterRestart = fixture.restartController().createCredentialProxy({
@@ -1020,13 +1023,16 @@ test(
     );
     assert.equal(await exchange.resolveRequestCredential(grant(first), signal), undefined);
     assert.equal(
-      await exchange.authorizeRequestCredential(first, signal),
+      await exchange.authorizeRequestCredential(first, signal, () => true),
       undefined,
       "the consumed request remains a tombstone until expiry",
     );
 
     const bound = request();
-    assert.equal(await exchange.authorizeRequestCredential(bound, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(bound, signal, () => true),
+      "credential",
+    );
     assert.equal(
       await afterRestart.resolveRequestCredential(
         { ...grant(bound), recipientId: randomUUID() },
@@ -1083,7 +1089,10 @@ test(
       }),
     ]) {
       const refused = mutate(request());
-      assert.equal(await exchange.authorizeRequestCredential(refused, signal), undefined);
+      assert.equal(
+        await exchange.authorizeRequestCredential(refused, signal, () => true),
+        undefined,
+      );
       assert.equal(await exchange.resolveRequestCredential(grant(refused), signal), undefined);
     }
     const saved = fixture.installation;
@@ -1092,7 +1101,7 @@ test(
       enforcement: { ...saved.enforcement, policyHash: "b".repeat(64) },
     });
     assert.equal(
-      await exchange.authorizeRequestCredential(request(), signal),
+      await exchange.authorizeRequestCredential(request(), signal, () => true),
       undefined,
       "a recipient that still exists cannot reuse an old installation fence",
     );
@@ -1101,7 +1110,10 @@ test(
 
     // A held real Kubernetes GET contains the old version; a concurrent API update advances storage.
     const rotating = request();
-    assert.equal(await exchange.authorizeRequestCredential(rotating, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(rotating, signal, () => true),
+      "credential",
+    );
     const barrier = f.pauseNextSecretRead();
     t.after(() => barrier.release());
     const resolving = exchange.resolveRequestCredential(grant(rotating), signal);
@@ -1124,7 +1136,10 @@ test(
       "rotation while the first read is held must refuse release",
     );
     const rotated = request();
-    assert.equal(await exchange.authorizeRequestCredential(rotated, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(rotated, signal, () => true),
+      "credential",
+    );
     assert.equal(
       (await exchange.resolveRequestCredential(grant(rotated), signal))?.value,
       "synthetic-key-rotated",
@@ -1135,7 +1150,10 @@ test(
     const lateRotations = [];
     for (const stage of ["second-read", "final-verification"] as const) {
       const input = request();
-      assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+      assert.equal(
+        await exchange.authorizeRequestCredential(input, signal, () => true),
+        "credential",
+      );
       const firstRead = f.pauseNextSecretRead();
       const pending = exchange.resolveRequestCredential(grant(input), signal);
       await firstRead.reached;
@@ -1162,7 +1180,10 @@ test(
       }
       lateRotations.push({ stage, released: (await pending) !== undefined });
       const fresh = request();
-      assert.equal(await exchange.authorizeRequestCredential(fresh, signal), "credential");
+      assert.equal(
+        await exchange.authorizeRequestCredential(fresh, signal, () => true),
+        "credential",
+      );
       assert.equal((await exchange.resolveRequestCredential(grant(fresh), signal))?.value, value);
     }
     assert.deepEqual(lateRotations, [
@@ -1173,7 +1194,10 @@ test(
     // A dependency that ignores cancellation may stay pending, but may not retain the
     // Namespace lock or free its operation slot until its real I/O finally settles.
     const stalled = request();
-    assert.equal(await exchange.authorizeRequestCredential(stalled, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(stalled, signal, () => true),
+      "credential",
+    );
     const pause = fixture.pauseFinalMaterialRead();
     t.after(() => pause.release());
     const cancelled = new AbortController();
@@ -1206,7 +1230,10 @@ test(
 
     // Authorization is checked again after durable approval; deleting the exact grant prevents redemption.
     const revoked = request();
-    assert.equal(await exchange.authorizeRequestCredential(revoked, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(revoked, signal, () => true),
+      "credential",
+    );
     assert.equal(
       (await f.request("DELETE", `/namespaces/${f.namespace.id}/iam/access-bindings/${f.grant.id}`))
         .status,
@@ -1226,7 +1253,10 @@ test(
     });
     assert.equal(restored.status, 201, JSON.stringify(restored.body));
     const withdrawn = request();
-    assert.equal(await exchange.authorizeRequestCredential(withdrawn, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(withdrawn, signal, () => true),
+      "credential",
+    );
     // A native approval cannot cross into an authority whose decision is not fenced
     // by this State. Reject before invoking that external dependency or reading material.
     let externalCalls = 0;
@@ -1246,11 +1276,15 @@ test(
       },
     });
     const unsupported = request();
-    assert.equal(await exchange.authorizeRequestCredential(unsupported, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(unsupported, signal, () => true),
+      "credential",
+    );
     const beforeUnsupported = f.secretReads;
     const unsupportedApproval = await externalExchange.authorizeRequestCredential(
       request(),
       signal,
+      () => true,
     );
     const unsupportedMaterial = await externalExchange.resolveRequestCredential(
       grant(unsupported),
@@ -1269,7 +1303,11 @@ test(
     const canceledCall = new AbortController();
     const inserted = fixture.pauseNextApprovalCommit();
     t.after(() => inserted.release());
-    const canceling = exchange.authorizeRequestCredential(canceledInput, canceledCall.signal);
+    const canceling = exchange.authorizeRequestCredential(
+      canceledInput,
+      canceledCall.signal,
+      () => true,
+    );
     await inserted.reached;
     canceledCall.abort();
     inserted.release();
@@ -1316,7 +1354,10 @@ test(
       /native IAM Driver/,
     );
     assert.equal(f.secretReads, beforeAdmission);
-    assert.equal(await exchange.authorizeRequestCredential(canceledInput, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(canceledInput, signal, () => true),
+      "credential",
+    );
     assert.equal(
       (await exchange.resolveRequestCredential(grant(canceledInput), signal))?.value,
       "synthetic-key-after-cancel",
@@ -1324,7 +1365,11 @@ test(
     const lateInput = request();
     const lateCall = new AbortController();
     const committed = fixture.pauseNextApprovalCommit("after");
-    const lateDecision = exchange.authorizeRequestCredential(lateInput, lateCall.signal);
+    const lateDecision = exchange.authorizeRequestCredential(
+      lateInput,
+      lateCall.signal,
+      () => true,
+    );
     const readsBeforeLateCancel = f.secretReads;
     try {
       await committed.reached;
@@ -1338,7 +1383,10 @@ test(
     }
     assert.equal(await lateDecision, undefined);
     assert.equal(await afterRestart.resolveRequestCredential(grant(lateInput), signal), undefined);
-    assert.equal(await afterRestart.authorizeRequestCredential(lateInput, signal), undefined);
+    assert.equal(
+      await afterRestart.authorizeRequestCredential(lateInput, signal, () => true),
+      undefined,
+    );
     assert.equal(f.secretReads, readsBeforeLateCancel);
     assert.deepEqual(
       (
@@ -1349,13 +1397,33 @@ test(
       ).rows,
       [{ approved: false, consumed: false }],
     );
-    const withdrawal = await f.request(
-      "POST",
-      `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
+    const beforeWithdrawal = request();
+    const saved = fixture.pauseNextApprovalCommit("after");
+    const withdrawnDecision = exchange.authorizeRequestCredential(
+      beforeWithdrawal,
+      signal,
+      () => true,
     );
-    assert.equal(withdrawal.status, 202, JSON.stringify(withdrawal.body));
+    try {
+      await saved.reached;
+      const withdrawal = await f.request(
+        "POST",
+        `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
+      );
+      assert.equal(withdrawal.status, 202, JSON.stringify(withdrawal.body));
+    } finally {
+      saved.release();
+    }
+    assert.equal(await withdrawnDecision, undefined);
+    assert.equal(
+      await exchange.resolveRequestCredential(grant(beforeWithdrawal), signal),
+      undefined,
+    );
     assert.equal(await exchange.resolveRequestCredential(grant(withdrawn), signal), undefined);
-    assert.equal(await exchange.authorizeRequestCredential(request(), signal), undefined);
+    assert.equal(
+      await exchange.authorizeRequestCredential(request(), signal, () => true),
+      undefined,
+    );
     const audit = await f.pool.query(
       "SELECT details FROM occ.audit_events WHERE actor_id = $1 AND action = 'openclaw.egress.authorize'",
       [f.agent.servicePrincipalId],
@@ -1405,7 +1473,10 @@ test(
       deadlineAt: new Date(Date.now() + 1_500).toISOString(),
       replayUntilAt: new Date(horizon).toISOString(),
     };
-    assert.equal(await firstApi.authorizeRequestCredential(first, signal), "credential");
+    assert.equal(
+      await firstApi.authorizeRequestCredential(first, signal, () => true),
+      "credential",
+    );
     assert.equal(
       (await restartedApi.resolveRequestCredential(a.grant(first), signal))?.value,
       "synthetic-key-initial",
@@ -1416,7 +1487,7 @@ test(
     const renewed = { ...first, deadlineAt: new Date(horizon).toISOString() };
     const reads = a.f.secretReads;
     assert.equal(
-      await restartedApi.authorizeRequestCredential(renewed, signal),
+      await restartedApi.authorizeRequestCredential(renewed, signal, () => true),
       undefined,
       "a fresh redemption deadline cannot reopen the same authenticated request",
     );
@@ -1426,17 +1497,20 @@ test(
       deadlineAt: new Date(horizon).toISOString(),
       replayUntilAt: new Date(horizon).toISOString(),
     });
-    assert.equal(await restartedApi.authorizeRequestCredential(request(a), signal), "credential");
     assert.equal(
-      await firstApi.authorizeRequestCredential(request(a), signal),
+      await restartedApi.authorizeRequestCredential(request(a), signal, () => true),
+      "credential",
+    );
+    assert.equal(
+      await firstApi.authorizeRequestCredential(request(a), signal, () => true),
       undefined,
       "consumed and pending IDs share the recipient quota across replicas",
     );
     // Different Namespaces have independent policy locks, so only the durable quota lock
     // prevents both API replicas from taking the final global slot.
     const concurrent = await Promise.all([
-      replica(b).authorizeRequestCredential(request(b), signal),
-      replica(c).authorizeRequestCredential(request(c), signal),
+      replica(b).authorizeRequestCredential(request(b), signal, () => true),
+      replica(c).authorizeRequestCredential(request(c), signal, () => true),
     ]);
     assert.equal(concurrent.filter((result) => result === "credential").length, 1);
     const bounded = await a.f.pool.query(
@@ -1449,11 +1523,21 @@ test(
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, horizon - Date.now() + 30)));
     const next = a.request();
     assert.equal(
-      await replica(a).authorizeRequestCredential({ ...next, requestId: first.requestId }, signal),
+      await replica(a).authorizeRequestCredential(
+        { ...next, requestId: first.requestId },
+        signal,
+        () => true,
+      ),
       "credential",
     );
-    assert.equal(await replica(b).authorizeRequestCredential(b.request(), signal), "credential");
-    assert.equal(await replica(c).authorizeRequestCredential(c.request(), signal), "credential");
+    assert.equal(
+      await replica(b).authorizeRequestCredential(b.request(), signal, () => true),
+      "credential",
+    );
+    assert.equal(
+      await replica(c).authorizeRequestCredential(c.request(), signal, () => true),
+      "credential",
+    );
 
     // Hold a real reservation open, then observe the other Namespace leaving its
     // busy transaction. Both requests can proceed while multiple slots remain.
@@ -1463,9 +1547,9 @@ test(
     const contention = b.pauseNextApprovalCommit("busy");
     t.after(() => reservation.release());
     t.after(() => contention.release());
-    const approvalA = a.exchange.authorizeRequestCredential(aConcurrent, signal);
+    const approvalA = a.exchange.authorizeRequestCredential(aConcurrent, signal, () => true);
     await reservation.reached;
-    const approvalB = b.exchange.authorizeRequestCredential(bConcurrent, signal);
+    const approvalB = b.exchange.authorizeRequestCredential(bConcurrent, signal, () => true);
     try {
       assert.equal(
         await Promise.race([contention.reached.then(() => true), approvalB.then(() => false)]),
@@ -1490,7 +1574,7 @@ test(
     );
     const defaultIsolationInput = snapshot.request();
     assert.equal(
-      await snapshot.exchange.authorizeRequestCredential(defaultIsolationInput, signal),
+      await snapshot.exchange.authorizeRequestCredential(defaultIsolationInput, signal, () => true),
       "credential",
       "online admission must select current-policy isolation instead of the pool default",
     );
@@ -1513,7 +1597,10 @@ test(
       .restartController(undefined, undefined, committedPool)
       .createCredentialProxy(transport);
     const selected = snapshot.request();
-    assert.equal(await committedApi.authorizeRequestCredential(selected, signal), "credential");
+    assert.equal(
+      await committedApi.authorizeRequestCredential(selected, signal, () => true),
+      "credential",
+    );
     const policy = snapshot.pauseFinalPolicyLock();
     t.after(() => policy.release());
     const releasing = snapshot.exchange.resolveRequestCredential(snapshot.grant(selected), signal);
@@ -1541,7 +1628,11 @@ test(
     try {
       await quotaOwner.query("BEGIN");
       await quotaOwner.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
-      const attempt = bApi.authorizeRequestCredential(contended, AbortSignal.timeout(100));
+      const attempt = bApi.authorizeRequestCredential(
+        contended,
+        AbortSignal.timeout(100),
+        () => true,
+      );
       const outcome = await Promise.race([
         attempt,
         new Promise<string>((resolve) => setTimeout(() => resolve("quota wait"), 500)),
@@ -1585,7 +1676,10 @@ test(
       deadlineAt: new Date(databaseNow + 1_000).toISOString(),
       replayUntilAt: new Date(databaseNow + 1_500).toISOString(),
     };
-    assert.equal(await slowApi.authorizeRequestCredential(skewed, signal), "credential");
+    assert.equal(
+      await slowApi.authorizeRequestCredential(skewed, signal, () => true),
+      "credential",
+    );
     assert.equal(
       (await ordinaryApi.resolveRequestCredential(a.grant(skewed), signal))?.value,
       "synthetic-key-initial",
@@ -1595,9 +1689,12 @@ test(
       deadlineAt: new Date(databaseNow + 10_000).toISOString(),
       replayUntilAt: new Date(databaseNow + 20_000).toISOString(),
     };
-    assert.equal(await fastApi.authorizeRequestCredential(fastRequest, signal), "credential");
     assert.equal(
-      await slowApi.authorizeRequestCredential(skewed, signal),
+      await fastApi.authorizeRequestCredential(fastRequest, signal, () => true),
+      "credential",
+    );
+    assert.equal(
+      await slowApi.authorizeRequestCredential(skewed, signal, () => true),
       undefined,
       "fast replica pruning must preserve a still-valid consumed correlation",
     );
@@ -1605,7 +1702,7 @@ test(
       setTimeout(resolve, Math.max(0, databaseNow + 1_550 - Date.now())),
     );
     assert.equal(
-      await slowApi.authorizeRequestCredential(skewed, signal),
+      await slowApi.authorizeRequestCredential(skewed, signal, () => true),
       undefined,
       "the database rejects an expired correlation even when the replica clock lags",
     );
@@ -1613,6 +1710,7 @@ test(
       await ordinaryApi.authorizeRequestCredential(
         { ...a.request(), requestId: skewed.requestId },
         signal,
+        () => true,
       ),
       "credential",
       "fresh authentication can reuse the ID after the database retention horizon",
@@ -1645,7 +1743,10 @@ test(
       replayUntilAt: new Date(Date.now() + 120_000).toISOString(),
     };
     const signal = AbortSignal.timeout(50_000);
-    assert.equal(await fastIssuer.authorizeRequestCredential(input, signal), "credential");
+    assert.equal(
+      await fastIssuer.authorizeRequestCredential(input, signal, () => true),
+      "credential",
+    );
     const observed = await fixture.f.pool.query(
       "SELECT expires_at, replay_until_at, clock_timestamp() AS observed_at FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
       [input.recipient.id, input.requestId],
@@ -1654,7 +1755,10 @@ test(
     assert.ok(row);
     assert.equal(row.replay_until_at.toISOString(), input.replayUntilAt);
     const immediate = { ...input, requestId: randomUUID() };
-    assert.equal(await fastIssuer.authorizeRequestCredential(immediate, signal), "credential");
+    assert.equal(
+      await fastIssuer.authorizeRequestCredential(immediate, signal, () => true),
+      "credential",
+    );
     const immediateGrant = {
       ...fixture.grant(immediate),
       deadlineAt: new Date(Date.now() + 20_000).toISOString(),
@@ -1670,7 +1774,10 @@ test(
 
     // The stored approval must also control release when the caller's grant lasts longer.
     const limited = fixture.request();
-    assert.equal(await fixture.exchange.authorizeRequestCredential(limited, signal), "credential");
+    assert.equal(
+      await fixture.exchange.authorizeRequestCredential(limited, signal, () => true),
+      "credential",
+    );
     const limitedStored = await fixture.f.pool.query(
       "SELECT expires_at FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
       [limited.recipient.id, limited.requestId],
@@ -1703,12 +1810,16 @@ test(
       await fastIssuer.authorizeRequestCredential(
         { ...input, deadlineAt: input.replayUntilAt },
         signal,
+        () => true,
       ),
       undefined,
       "shortening redemption must preserve the original replay tombstone",
     );
     const fresh = fixture.request();
-    assert.equal(await fixture.exchange.authorizeRequestCredential(fresh, signal), "credential");
+    assert.equal(
+      await fixture.exchange.authorizeRequestCredential(fresh, signal, () => true),
+      "credential",
+    );
     assert.equal(
       (await fixture.exchange.resolveRequestCredential(fixture.grant(fresh), signal))?.value,
       "synthetic-key-initial",
@@ -1723,7 +1834,10 @@ test(
     const fixture = await requestCredentialFixture(t);
     const input = { ...fixture.request(), deadlineAt: new Date(Date.now() + 10_000).toISOString() };
     const signal = AbortSignal.timeout(25_000);
-    assert.equal(await fixture.exchange.authorizeRequestCredential(input, signal), "credential");
+    assert.equal(
+      await fixture.exchange.authorizeRequestCredential(input, signal, () => true),
+      "credential",
+    );
     const slow = fixture
       .restartController(undefined, undefined, fixture.f.pool, () => new Date(Date.now() - 1_000))
       .createCredentialProxy({
@@ -1857,7 +1971,10 @@ test(
     );
     const signal = AbortSignal.timeout(12_000);
     const input = request();
-    assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+    assert.equal(
+      await exchange.authorizeRequestCredential(input, signal, () => true),
+      "credential",
+    );
     const held = fixture.pauseFinalMaterialRead();
     t.after(() => held.release());
     const releasing = exchange.resolveRequestCredential(grant(input), signal);
@@ -1900,7 +2017,7 @@ test(
     assert.equal(retained.rows[0].role_id, "role_config_request_model");
     const reads = f.secretReads;
     assert.equal(
-      await exchange.authorizeRequestCredential(request(), signal),
+      await exchange.authorizeRequestCredential(request(), signal, () => true),
       undefined,
       "the next request must observe the configured Role's revoked operate permission",
     );

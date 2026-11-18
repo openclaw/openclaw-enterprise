@@ -32,6 +32,7 @@ export interface RequestCredentialApprovalRepository {
   approve(
     approval: RequestCredentialInput,
     driver: DriverRegistrationRef,
+    policyDigest: string,
     now: string,
   ): Promise<boolean>;
   consume(
