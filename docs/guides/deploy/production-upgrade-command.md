@@ -37,7 +37,7 @@ out of the profile. Set `OCC_URL`, `OCC_SERVICE_KEY_FILE`, and, if needed,
 The optional `occ` field names the matching CLI file; omit it to use `occ` on
 `PATH`.
 
-Review the offline plan. It validates the private profile and shows the selected target, source, rendered directory, and image components without contacting the cluster or writing state.
+Review the offline plan. It validates the private profile, requires an image selection, and checks that the selected source revision matches the checkout. It shows the target and rendered directory without contacting the cluster or writing state. Image references, rendered files, credentials, and cluster access remain unverified.
 
 ```bash
 occ installation upgrade plan --profile /secure/occ/upgrade.json

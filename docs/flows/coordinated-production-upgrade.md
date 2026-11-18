@@ -80,7 +80,7 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`internal/occcli/installation_upgrade.go:installationUpgradeCommand` launches `scripts/upgrade-production:main`. Plan validates profiles offline; status observes private markers without authority. Other operations validate the checkout, then exec `scripts/upgrade-production-images`.
+`internal/occcli/installation_upgrade.go:installationUpgradeCommand` launches `scripts/upgrade-production:main`. Plan checks profile, image selection and source HEAD offline; status observes private markers without authority. Other operations exec `scripts/upgrade-production-images`.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
@@ -365,7 +365,7 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
-- 2026-11-18 10:46: Trace Installation CLI planning, status and handoff. (authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd - e25638747aa5b90d916e20ab278e42ddb3a826d6)
+- 2026-11-18 10:52: Trace Installation CLI planning, status and handoff. (authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd - aeb385b97974a6bd729f58dd73a44d518aec1edc)
 
 - 2026-11-18 10:33: Reconcile profile/inventory traces. (authoring-run/251425f8-895a-4c1e-ac56-e666545f89ab - 98f60a1b965aa7129256c0802b60969519bc8a86)
 

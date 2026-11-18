@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,21 +27,49 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	t.Chdir(repository)
 	directory := t.TempDir()
 	profile := filepath.Join(directory, "profile.json")
-	document, err := json.Marshal(map[string]any{
-		"kubeconfig": "kubeconfig", "context": "reviewed-context", "namespace": "openclaw-system",
-		"release": "oce", "installationDirectory": "rendered", "sourceRevision": strings.Repeat("0", 40),
-		"images": map[string]string{"controller": "registry.example/controller@sha256:" + strings.Repeat("a", 64)},
-	})
+	checkout, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(profile, document, 0o600); err != nil {
-		t.Fatal(err)
+	revision := strings.TrimSpace(string(checkout))
+	images := map[string]string{"controller": "registry.example/controller@sha256:" + strings.Repeat("a", 64)}
+	input := map[string]any{
+		"kubeconfig": "kubeconfig", "context": "reviewed-context", "namespace": "openclaw-system",
+		"release": "oce", "installationDirectory": "rendered", "sourceRevision": revision, "images": images,
 	}
+	writeProfile := func() {
+		t.Helper()
+		document, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(profile, document, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeProfile()
 	plan, diagnostic, err := executeUpgrade("plan", "--profile", profile)
 	if err != nil || diagnostic != "" || !strings.Contains(plan, "reviewed-context") || !strings.Contains(plan, "No cluster contact or writes occurred") {
 		t.Fatalf("plan = %q, diagnostic = %q, error = %v", plan, diagnostic, err)
 	}
+	for _, invalid := range []struct {
+		name, source string
+		images       map[string]string
+	}{
+		{"no image", revision, map[string]string{}},
+		{"malformed source", "malformed", images},
+		{"wrong checkout", strings.Repeat("0", 40), images},
+	} {
+		input["sourceRevision"], input["images"] = invalid.source, invalid.images
+		writeProfile()
+		plan, _, err = executeUpgrade("plan", "--profile", profile)
+		var invalidStatus *ExitStatusError
+		if !errors.As(err, &invalidStatus) || invalidStatus.Code != 2 || plan != "" {
+			t.Fatalf("%s plan = %q, error = %v", invalid.name, plan, err)
+		}
+	}
+	input["sourceRevision"], input["images"] = strings.Repeat("0", 40), images
+	writeProfile()
 
 	// Planning is offline; an actual upgrade reaches the canonical source guard before cluster access.
 	_, diagnostic, err = executeUpgrade("--profile", profile, "--evidence-dir", filepath.Join(directory, "new-evidence"))

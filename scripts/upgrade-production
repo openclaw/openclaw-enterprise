@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -212,13 +213,35 @@ def main():
         return str(candidate if candidate.is_absolute() else base / candidate)
 
     if args.operation == "plan":
-        print(f"Target: context {profile['context']}, namespace {profile['namespace']}, release {profile['release']}")
         revision = profile["sourceRevision"]
-        safe_revision = revision if len(revision) == 40 and all(c in "0123456789abcdef" for c in revision) else "invalid"
-        print(f"Selected source revision: {safe_revision} (not verified by this plan)")
+        if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+            parser.error("source revision must be a full lowercase Git commit SHA")
+        if not profile.get("images"):
+            parser.error("select a controller, broker, or runtime image before planning")
+        environment = os.environ.copy()
+        environment.pop("GIT_DIR", None)
+        environment.pop("GIT_COMMON_DIR", None)
+        environment.update(GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="")
+        git = ["git", "--no-optional-locks", "--no-replace-objects", "--git-dir=.git"]
+        try:
+            root = subprocess.check_output(
+                [*git, "rev-parse", "--show-toplevel"], cwd=checkout, env=environment,
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            head = subprocess.check_output(
+                [*git, "rev-parse", "--verify", "HEAD^{commit}"], cwd=checkout, env=environment,
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            matches = Path(root).samefile(checkout) and head == revision
+        except (OSError, subprocess.CalledProcessError):
+            parser.error("cannot read the reviewed release checkout revision")
+        if not matches:
+            parser.error("checkout commit does not match the profile source revision")
+        print(f"Target: context {profile['context']}, namespace {profile['namespace']}, release {profile['release']}")
+        print(f"Selected source revision: {revision} (matches checkout)")
         print(f"Rendered installation directory: {path(profile['installationDirectory'])}")
-        print("Selected image components: " + (", ".join(profile.get("images", {})) or "none"))
-        print("No cluster contact or writes occurred. Prepare and bind the Installation Secret, then run preflight with fresh evidence.")
+        print("Selected image components: " + ", ".join(profile["images"]))
+        print("No cluster contact or writes occurred. Review production prerequisites before Secret binding or preflight; image references, rendered files, credentials, and cluster access remain unverified.")
         print("Protected configuration changes use the chart-owned operation; authentication changes use stopped authentication maintenance.")
         return
 
