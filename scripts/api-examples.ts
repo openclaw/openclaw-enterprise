@@ -205,6 +205,64 @@ const authAccount = {
 const sessionKey = "example-session-binding-not-a-credential";
 
 const connectionTemplateId = id("ctp");
+const inferenceConnectionTemplateId = "ctp_223e4567-e89b-42d3-a456-426614174000";
+const inferenceConnectionTemplateValues = {
+  mode: "static_bearer",
+  destinations: [
+    { host: "inference.example.com", port: 443, path: "/v1/responses", method: "POST" },
+  ],
+};
+const inferenceConnectionTemplate = {
+  id: inferenceConnectionTemplateId,
+  displayName: "Research inference",
+  createdAt: time,
+  current: {
+    ...inferenceConnectionTemplateValues,
+    templateId: inferenceConnectionTemplateId,
+    version: 1,
+    createdAt: time,
+  },
+};
+const modelProviderSettings = {
+  displayName: "Research inference",
+  baseUrl: "https://inference.example.com/v1",
+  protocol: "openai-responses",
+  models: [{ id: "research-model" }],
+  defaultModelId: "research-model",
+  connectionTemplateId: inferenceConnectionTemplateId,
+};
+const modelProvider = {
+  ...modelProviderSettings,
+  id: id("mpr"),
+  settingsFingerprint: "a".repeat(64),
+};
+const inferenceConfigurationId = "cfg_223e4567-e89b-42d3-a456-426614174000";
+const inferenceModelReference = "codex/research-model";
+const inferenceConfiguration = {
+  ...configuration,
+  agents: {
+    defaults: {
+      model: inferenceModelReference,
+      models: { [inferenceModelReference]: { agentRuntime: { id: "codex" } } },
+    },
+  },
+  models: {
+    providers: {
+      codex: {
+        ...configuration.models.providers.codex,
+        models: [{ id: "research-model", name: "research-model" }],
+      },
+    },
+  },
+};
+const inferenceAgent = {
+  ...agent,
+  id: "agt_223e4567-e89b-42d3-a456-426614174000",
+  name: "Research assistant",
+  configurationId: inferenceConfigurationId,
+  servicePrincipalId: "principal-research-agent",
+  modelProviderId: modelProvider.id,
+};
 const oauthClientId = id("ccr");
 const oauthClientInput = {
   displayName: "Example provider client",
@@ -270,6 +328,7 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  modelProviderId: modelProvider.id,
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
   oauthClientId,
@@ -324,10 +383,14 @@ export const requestExamples = {
   launchAgentNativeAdmin: {},
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
+  createModelProvider: modelProviderSettings,
+  updateModelProvider: {
+    ...modelProviderSettings,
+    expectedSettingsFingerprint: modelProvider.settingsFingerprint,
+  },
   createConnectionTemplate: {
-    ...connectionTemplateInput,
-    namespaceId,
-    displayName: connectionTemplate.displayName,
+    ...inferenceConnectionTemplateValues,
+    displayName: inferenceConnectionTemplate.displayName,
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
   discoverConnectionTemplate: { serverUrl: mcpServerUrl },
@@ -346,9 +409,14 @@ export const requestExamples = {
   },
   bootstrapInstallation: { name: "Engineering" },
   createNamespace: { name: namespace.name },
-  createConfiguration: { kind: "agent", values: configuration },
+  createConfiguration: { kind: "agent", values: inferenceConfiguration },
   updateConfiguration: { expectedGeneration: 1, values: configuration },
-  createAgent: { name: agent.name, configurationId, executionMode: "dedicated", harnessAuth },
+  createAgent: {
+    name: inferenceAgent.name,
+    configurationId: inferenceConfigurationId,
+    modelProviderId: modelProvider.id,
+    executionMode: "dedicated",
+  },
   updateAgent: { configurationId, executionMode: "dedicated", harnessAuth },
   provisionAgent: {
     name: agent.name,
@@ -441,6 +509,11 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  createModelProvider: modelProvider,
+  updateModelProvider: modelProvider,
+  getModelProvider: modelProvider,
+  listModelProviders: [modelProvider],
+  listUsableModelProviders: [modelProvider],
   chatWithAgent: {
     id: "chatcmpl-example",
     object: "chat.completion",
@@ -459,7 +532,7 @@ export const responseExamples = {
   },
   listConnectionTemplates: [connectionTemplate],
   getConnectionTemplate: connectionTemplate,
-  createConnectionTemplate: connectionTemplate,
+  createConnectionTemplate: inferenceConnectionTemplate,
   updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
   discoverConnectionTemplate: discovered,
   listOAuthClients: [oauthClient],
@@ -499,11 +572,11 @@ export const responseExamples = {
   deleteNamespace: { ...namespace, status: "deleting" },
   listAgents: [agent],
   getAgent: agent,
-  createAgent: agent,
+  createAgent: inferenceAgent,
   updateAgent: agent,
   deleteAgent: { ...agent, status: "deleting" },
   stopAgent: agent,
-  createConfiguration: config,
+  createConfiguration: { ...config, id: inferenceConfigurationId, values: inferenceConfiguration },
   getConfiguration: config,
   updateConfiguration: { ...config, generation: 2 },
   deployAgentFirst: {
