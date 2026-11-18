@@ -723,7 +723,7 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
 /** The configured Git transport does not support protected credential-source admission. */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "The selected Credential Proxy registration serves repository Git only. Ordinary model sources can use Credential Gateway. Protected sources require a qualified execution profile; online-request delivery must be enabled and explicitly selected when creating a model source.";
+    "The selected Credential Proxy serves repository Git only. Ordinary models use Credential Gateway. Protected models require a qualified execution profile. Enable and explicitly select online-request when creating a source.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);
