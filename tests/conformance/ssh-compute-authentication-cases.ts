@@ -8,7 +8,7 @@ import {
   type ComputeRevisionContext,
   type OpenClawConfigurationDocument,
 } from "../../packages/contracts/src/index.ts";
-import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.ts";
 import {
   sshGatewayPasswordRefusal,
   unreadableGatewayPasswordRefusal,

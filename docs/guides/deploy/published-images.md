@@ -174,6 +174,35 @@ opens network connections in the same source change that installs it. Use its
 actual path on both architectures. See the
 [optional native tool paths](../../../deploy/runtime/README.md#select-optional-native-tools).
 
+### Select a native archive for a gateway build
+
+For a gateway build that verifies a packaged native runtime index, use an
+authenticated receipt from a successful direct publication run. The entire run
+must have succeeded, including the chart job when one was requested. Set
+`GH_TOKEN` with Actions read access to the Enterprise repository. The native
+archive is retained for one day.
+
+```bash
+node scripts/ci/runtime-download-client-projection.ts publication.json linux/amd64 --native-selection
+```
+
+The command checks the original publication attempt and its successful AMD64
+native smoke job against GitHub Actions metadata. It prints JSON with the parent
+and child image references, config digest, producer identity, and the retained
+artifact's `artifactId`, `artifactName`, and `archiveSha256`.
+[Download the original ZIP by artifact ID](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact),
+save it as `platform.zip`, and [verify the native export](../../release/containers.md#retain-native-export-evidence).
+Keep both JSON outputs. The gateway build uses the ordinary client projection,
+the separate native selection, and the verified ZIP. The checksum in the selection covers
+the Actions ZIP. The checksum in the publication receipt covers the assembled
+image archive.
+
+Keep using the command without the option for the download client projection.
+Normal registry pulls use the published digest references. This option requires
+the original per-platform ZIP and a direct publication receipt with platform
+seals. A recovery receipt records the assembled archives and supplies no
+independent admission for the original native ZIP.
+
 ## Verify after installation
 
 The publication's startup checks do not establish a working Agent on your

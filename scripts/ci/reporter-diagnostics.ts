@@ -359,6 +359,7 @@ function relayNodeDiagnostic(value: unknown) {
 export function projectFailureDiagnostic(
   error: unknown,
   projectNativeFirstAgentProof: NativeProofProjection,
+  nativeChildFailure = false,
 ) {
   const diagnostic = optionalProperty(error, "openclawCiDiagnostic");
   if (!isRecord(diagnostic)) {
@@ -419,6 +420,19 @@ export function projectFailureDiagnostic(
       return { kind, outcome, code };
     }
     return undefined;
+  }
+  if (diagnostic.kind === "topology-native-child") {
+    const keys = Reflect.ownKeys(diagnostic);
+    return nativeChildFailure &&
+      keys.length === 2 &&
+      keys.includes("kind") &&
+      keys.includes("stage") &&
+      includes(
+        ["connect", "initialize", "parent-read", "child-read", "child-completion", "complete"],
+        diagnostic.stage,
+      )
+      ? { kind: "topology-native-child", stage: diagnostic.stage }
+      : undefined;
   }
   if (diagnostic.kind === "native-first-agent-proof") {
     return projectNativeFirstAgentProof(diagnostic.failureStage, diagnostic.worker);

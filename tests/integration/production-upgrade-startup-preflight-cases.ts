@@ -18,9 +18,13 @@ import {
   list,
   requireRecoveryPreflight,
 } from "../helpers/production-upgrade-recovery-state.ts";
-import { controller, newController } from "../helpers/production-upgrade-recovery-tools.ts";
+import {
+  controller,
+  newController,
+  skipWithoutHelm,
+} from "../helpers/production-upgrade-recovery-tools.ts";
 import { registerPreflightCleanupTests } from "../helpers/production-upgrade-preflight-cleanup.ts";
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { registerUpgradePreflightDraftBudgetTest } from "./production-upgrade-preflight-draft-budget.ts";
 
@@ -120,8 +124,7 @@ export function registerStartupPreflightCases({
     "the image-upgrade startup preflight validates the API's mounted theme before stopping writers",
     { concurrency: true },
     async (t) => {
-      if (!realHelm) {
-        t.skip("helm is unavailable to render the real chart");
+      if (skipWithoutHelm(t, realHelm)) {
         return;
       }
       const runs: Promise<void>[] = [];
@@ -206,8 +209,7 @@ export function registerStartupPreflightCases({
   // images no longer ship those files (finding 436). The selected controller image must
   // reject that Installation before quiescence, so the old release keeps serving.
   test("an Installation the selected controller image cannot load stops before any writer stops", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -246,8 +248,7 @@ export function registerStartupPreflightCases({
   });
 
   test("a Driver refusal preserves field diagnostics before upgrade quiescence", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -306,8 +307,7 @@ export function registerStartupPreflightCases({
     ],
   ] as const) {
     test(name, async (t) => {
-      if (!realHelm) {
-        t.skip("helm is unavailable to render the real chart");
+      if (skipWithoutHelm(t, realHelm)) {
         return;
       }
       const f = await fixture(t, {
@@ -346,8 +346,7 @@ export function registerStartupPreflightCases({
   // An OCC that returns no stored name cannot be checked, so the upgrade stops while
   // building the first preflight Pod, before it creates one or stops a writer.
   test("an Installation read without a stored name stops before any preflight Pod", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -461,8 +460,7 @@ export function registerStartupPreflightCases({
   // runs that Compute check with the selected image before quiescence, so the old
   // release keeps serving and the operator is pointed at the documented options.
   test("split-layout Gateway storage stops the startup preflight before any writer stops", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const namespaceId = "ns_split_00000000-0000-4000-8000-000000000001";
@@ -499,8 +497,7 @@ export function registerStartupPreflightCases({
   // A Kubernetes API the preflight Pod cannot use is not a refusal of the release:
   // the helper says so, names the access the Pod had, and still stops first.
   test("a denied Kubernetes API stops the startup preflight as incomplete", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -566,8 +563,7 @@ export function registerStartupPreflightCases({
   // the tenant rules this release needs, so a chart left at the release-era grants
   // stops the upgrade before any writer stops and names the documented step.
   test("a two-cluster execution chart without the new tenant grants stops the startup preflight", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -602,8 +598,7 @@ export function registerStartupPreflightCases({
   });
 
   test("a two-cluster execution chart with the new tenant grants passes the startup preflight", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -643,8 +638,7 @@ export function registerStartupPreflightCases({
   // An execution authorizer that cannot evaluate the reviews leaves the check incomplete:
   // the helper says which kubeconfig and access the Pod needed, and still stops first.
   test("an unevaluated two-cluster tenant grant review stops the startup preflight as incomplete", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -678,8 +672,7 @@ export function registerStartupPreflightCases({
   // With runtime logs off, the release's tenant API role carries no log or Event reads, so
   // the preflight asks only for the rules that release needs.
   test("a two-cluster upgrade with runtime logs off needs no log grants in the execution chart", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -800,9 +793,41 @@ export function registerStartupPreflightCases({
     );
   });
 
+  // A Pod that cannot reach the database is not refused by the Installation: its next step
+  // names the database, the chart's database values and the egress policies. Other
+  // refusals keep pointing at the Installation.
+  test("a database connection refusal names its own inputs, not the Installation", async (t) => {
+    const connection =
+      "Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database. Check that PostgreSQL is running and that the chart's database egress (database.cidrs) admits its current address; a refused sign-in or a failed TLS handshake also stops here.";
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightResults: {
+        api: {
+          phase: "Failed",
+          log: `kubernetes-compute-preflight-passed\nagent-drafts-accepted\n${connection}\n`,
+        },
+        worker: { phase: "Failed", log: "loading drivers\nworker cannot load the Installation\n" },
+      },
+    });
+    await assert.rejects(f.run(), (error) => {
+      const lines = commandStderr(error).split("\n");
+      const api = lines.find((line) => line.includes("cannot start the api"));
+      const worker = lines.find((line) => line.includes("cannot start the worker"));
+      assert.ok(api !== undefined && worker !== undefined, commandStderr(error));
+      assert.ok(api.includes(connection), api);
+      assert.match(
+        api,
+        /No OCC writer was stopped; correct the database, the chart's database values \(database\.cidrs\) or the network policies that admit this Pod's database egress, then start again with a new evidence directory\.$/,
+      );
+      assert.doesNotMatch(api, /correct the Installation/);
+      assert.match(worker, /No OCC writer was stopped; correct the Installation and start again/);
+      return true;
+    });
+    await assertStoppedBeforeWriters(f);
+  });
+
   test("startup preflight retains the failed API CA assembler's guidance", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const guidance =
@@ -955,8 +980,7 @@ export function registerStartupPreflightCases({
   });
 
   test("an Installation the selected controller image loads passes the preflight and upgrades", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     // Truncating this valid release at 26 characters leaves a dot; derived Job
@@ -1120,8 +1144,7 @@ export function registerStartupPreflightCases({
   });
 
   test("preflight-only checks the candidate without preparing or deploying it", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -1153,8 +1176,7 @@ export function registerStartupPreflightCases({
   // the release itself stop before any writer stops, with OCC's deploy message for each Agent.
   for (const preflightOnly of [true, false]) {
     test(`${preflightOnly ? "preflight-only" : "the release"} refuses an Agent draft the selected image would not deploy`, async (t) => {
-      if (!realHelm) {
-        t.skip("helm is unavailable to render the real chart");
+      if (skipWithoutHelm(t, realHelm)) {
         return;
       }
       const f = await fixture(t, {
@@ -1191,8 +1213,7 @@ export function registerStartupPreflightCases({
   // (finding 1549), so the preflight runs them too: a baseUrl the runtime cannot use stops the
   // rehearsal with deploy's message instead of the fleet deploy (finding 2816).
   test("preflight-only refuses a draft's model provider setting that deploy refuses", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -1216,8 +1237,7 @@ export function registerStartupPreflightCases({
   // Run the generated API program with the real resolver. Catalog rows may use full refs or
   // remainders, but each must name a selected primary or fallback, including entry selections.
   test("the release checks saved model catalogs before stopping writers", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     for (const valid of [false, true]) {
@@ -1289,8 +1309,7 @@ export function registerStartupPreflightCases({
   // Shared rules are available, but the resolver capability is not callable.
   // Exercise the generated reporter and the ordinary release's log collector together.
   test("the release refuses an image with an unavailable draft resolver", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {
@@ -1331,8 +1350,7 @@ export function registerStartupPreflightCases({
   // so; the helper warns and the upgrade deploys, so this draft, which a newer image would
   // refuse, is refused only by the deploy.
   test("an image without the draft rules warns, and the upgrade continues", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {

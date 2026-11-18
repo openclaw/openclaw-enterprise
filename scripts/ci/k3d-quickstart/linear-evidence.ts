@@ -126,7 +126,7 @@ const singleTurn =
   userMessages.length === 1 &&
   userMessage !== undefined &&
   promptText(userMessage.content).includes(marker);
-// chat.mjs creates a unique session, sends exactly once and fetches its history.
+// The quickstart chat script creates a unique session, sends exactly once and fetches its history.
 // Only consider rows after that prompt and reject any row attributed to a different run.
 const runMessages = singleTurn
   ? messages.slice(messages.indexOf(userMessage) + 1).filter((m) => {

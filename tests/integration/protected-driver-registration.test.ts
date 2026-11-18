@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
-import test, { afterEach } from "node:test";
+import test, { afterEach, type TestContext } from "node:test";
 import type {
   AgentRevision,
   EgressInstallation,
@@ -46,10 +46,10 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 
 // Every field the OpenShell Git runtime emits reaches the worker log (finding 2244).
@@ -539,7 +539,6 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   const configuration: OpenShellSandboxDriverOptions = {
     gateway: { workspaceMode: "operator" },
     kubernetes: {
-      runtimeClassName: "openshell-sandbox",
       userNamespaces: false,
       serviceAccount: { mode: "gatewayConfigured" },
       sandboxDataMount: { subPath: "workspace", mountPath: "/sandbox/enterprise", readOnly: false },
@@ -880,9 +879,8 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   );
 });
 
-test("repository scope changes invalidate the external Driver identity while a reload preserves it", async (t) => {
-  const id = "repository-delivery-fixture";
-  const { directory } = await protectedDriverPackage(t, id, "repository-git");
+/** A protected repository Installation whose Sandbox and Credential Proxy select the package `id`. */
+async function repositoryDeliveryInstallation(t: TestContext, directory: string, id: string) {
   const { cert } = await harnessTlsFixture(t);
   const certFile = join(directory, "peer.pem");
   await writeFile(certFile, cert);
@@ -925,6 +923,14 @@ test("repository scope changes invalidate the external Driver identity while a r
       credential_proxy: { id, configuration: {} },
     },
   };
+  return { base, certFile, configuration, registry, registryPath };
+}
+
+test("repository scope changes invalidate the external Driver identity while a reload preserves it", async (t) => {
+  const id = "repository-delivery-fixture";
+  const { directory } = await protectedDriverPackage(t, id, "repository-git");
+  const { base, certFile, configuration, registry, registryPath } =
+    await repositoryDeliveryInstallation(t, directory, id);
   const path = join(directory, "installation.json");
   await writeFile(path, JSON.stringify(configuration));
   const load = async () => {
@@ -1147,4 +1153,72 @@ test("repository scope changes invalidate the external Driver identity while a r
     }),
     binding,
   );
+});
+
+test("the loader closes an installed registration that later composition refuses", async (t) => {
+  const id = "refused-repository-fixture";
+  const { directory, entry } = await protectedDriverPackage(t, id, "repository-git");
+  // Each case drops one method from the complete sender and observes the registration's close.
+  await writeFile(
+    join(entry, "refusing.mjs"),
+    [
+      'import { createDriver as createRepositoryDriver } from "./repository-git.mjs";',
+      'export * from "./repository-git.mjs";',
+      'export const probe = { omit: "", failClose: false, closes: 0 };',
+      "export function createDriver(options) {",
+      "  const { sandbox, credential_proxy } = createRepositoryDriver(options).capabilities;",
+      "  const { [probe.omit]: _sandbox, ...kept } = sandbox;",
+      "  const { [probe.omit]: _proxy, ...proxy } = credential_proxy;",
+      "  return {",
+      "    capabilities: { sandbox: kept, credential_proxy: proxy },",
+      "    close() {",
+      "      probe.closes++;",
+      '      if (probe.failClose) throw new Error("close failed");',
+      "    },",
+      "  };",
+      "}",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(entry, "package.json"),
+    JSON.stringify({ name: id, version: "1.0.0", exports: "./refusing.mjs" }),
+  );
+  const { probe } = (await import(join(entry, "refusing.mjs"))) as {
+    probe: { omit: string; failClose: boolean; closes: number };
+  };
+  const { configuration } = await repositoryDeliveryInstallation(t, directory, id);
+  const path = join(directory, "installation.json");
+  await writeFile(path, JSON.stringify(configuration));
+  const load = () =>
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: path },
+      packageRoot: directory,
+    });
+  const enrollment = {
+    name: "DependencyUnavailableError",
+    message: "Protected execution requires the Sandbox enrollment contract.",
+  };
+  // The package passes the factory; Kubernetes Compute then refuses a Sandbox without enrollment.
+  probe.omit = "enrollHarness";
+  await assert.rejects(load(), enrollment);
+  assert.equal(probe.closes, 1, "the refused registration is closed once");
+  probe.failClose = true;
+  await assert.rejects(load(), enrollment, "a failing close keeps the original refusal");
+  assert.equal(probe.closes, 2);
+  probe.failClose = false;
+  // The repository Git transport check after the factory closes it too.
+  probe.omit = "repositoryAccess";
+  await assert.rejects(load(), {
+    name: "DriverSelectionError",
+    message:
+      "Protected repository Git requires the selected Driver's Sandbox access and Credential Proxy transport.",
+  });
+  assert.equal(probe.closes, 3);
+  // A complete registration stays open for its caller, which closes it once.
+  probe.omit = "";
+  const runtime = (await load())!;
+  assert.equal(probe.closes, 3);
+  await Promise.all([runtime.protectedDriver!.close(), runtime.protectedDriver!.close()]);
+  assert.equal(probe.closes, 4);
 });

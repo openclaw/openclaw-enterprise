@@ -27,8 +27,8 @@ The tool policy limits model turns in both modes. When a child spawns, OpenClaw
 waits for placement started by session creation and rechecks the parent's
 authority before dispatch. The source also preserves shared host-module links
 during plugin capture and handles bundled WebAssembly and directory assets.
-Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or
-an equivalent implementation is available upstream, the build applies its
+Until upstream ships [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724)
+or an equivalent, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
@@ -36,31 +36,36 @@ The selected source preserves `on-request` when plugins use MCP elicitation,
 reconnects `connect --ephemeral` with saved device credentials after its setup
 code expires, and retains the original caller's authority while required-worker
 placement continues after session creation is acknowledged. Scope, role, and
-profile revocation still stop dispatch. The OpenClaw build stage applies the
-checksum-verified `openclaw-required-worker-authority-regression.patch`
-and runs the real Gateway public-RPC cases without network access. The cases
-cover placement before and after acknowledgement, disconnect, and committed
-role, scope, and profile revocation.
+profile revocation still stop dispatch. The build applies
+`openclaw-required-worker-authority-regression.patch` and runs its Gateway
+public-RPC cases offline: placement before and after acknowledgement,
+disconnect, and committed role, scope, and profile revocation.
+[OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds an opt-in wait for admitted work and final writes.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
-after the Control UI's access is refused. Remove each when the pinned OpenClaw
-does the same.
+after the Control UI's access is refused. Remove each once upstream does the
+same.
 `openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
-private Linux PID namespace stopped recover only Gateway records from that
-namespace. OC still compares its lock fingerprint before recovery. An
-unattributed owner requires operator confirmation.
+private Linux PID namespace stopped recover its Gateway records, or, inside it,
+any record whose PID is dead. OC compares its lock fingerprint first.
+Unattributed owners need operator confirmation.
 OpenClaw normalizes newly created owner-only Linux directories that inherit
 setgid and reports invalid plugin settings during startup. The build runs the
 upstream private-store regressions.
+The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
+final delivery retains its progress window after a long Codex turn.
+
 `openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
 or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge when the selected source provides that contract.
-Provenance `patches` maps every patch the Dockerfile applies, in order, to its
-SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
-against the Dockerfile.
+The pin includes OpenClaw #197151: chat-only members can start an unused main conversation.
+The #200358 follow-up is still required; `openclaw-chat-absent-selected-agent.patch`
+binds empty-history proof to the selected Agent.
+Provenance `patches` records each patch's SHA-256 in order; tests compare
+`scripts/build-runtime-assets.ts` with the Dockerfile.
 
 Dedicated Gateways require the supporting source recorded in this recipe and
 validate their effective native configuration before starting. The required
@@ -101,7 +106,7 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The upstream package version is `2026.10.10`. Identify the custom build by
+The upstream package version is `2026.11.4`. Identify the custom build by
 `/opt/oce/runtime/provenance.json`. It records
 the source commit, archive, patch and lockfile hashes, package manager, plugins,
 architecture, Codex package identity, and SHA-256 of `contents.json`. That file
@@ -183,7 +188,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/513c12703ad9a9161cc123e0b8ed4ecb811aa6b3/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/b58996d69286d55d1bbbd9b5c03b4ad837baac45/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
@@ -321,17 +326,17 @@ set -a
 . /tmp/images-runtime-startup.env
 set +a
 OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
-  node --test tests/integration/runtime-image-startup.test.mjs \
+  node --test tests/integration/runtime-image-startup.test.ts \
     tests/integration/runtime-image-gateway-workspace.test.ts \
-    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-state-migration.test.ts \
     tests/integration/runtime-image-managed-files.test.ts \
-    tests/integration/runtime-image-native-listener.test.mjs \
+    tests/integration/runtime-image-native-listener.test.ts \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \
     tests/integration/runtime-image-gateway-retained-state.test.ts \
     tests/integration/runtime-image-gateway-peer.test.ts \
-    tests/integration/runtime-image-native-worker.test.mjs
+    tests/integration/runtime-image-native-worker.test.ts
 ```
 
 The smoke starts task-owned containers with the Docker Compute Driver gateway

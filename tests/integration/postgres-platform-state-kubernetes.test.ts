@@ -20,7 +20,7 @@ import type {
   NamespaceResponse,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWork } from "../../packages/occ/src/index.ts";
-import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import {
   adminEmail,
   admitted,

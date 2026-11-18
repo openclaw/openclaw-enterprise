@@ -83,11 +83,9 @@ import {
   AGENT_DELETING,
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
-  AUTHORIZATION_HEADER_REFUSED,
   callerDenied,
   CONSOLE_ACCESS_DENIED,
   CREDENTIAL_GATEWAY_NOT_CONFIGURED,
-  CREDENTIAL_REQUIRED,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
@@ -99,10 +97,14 @@ import {
   runtimeLogSourceUnavailable,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
-  serviceKeyOutsideNamespace,
   storedCredentialSourceConfig,
   dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+  serviceKeyOutsideNamespace,
+} from "../helpers/request-admission-expectations.ts";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
 // checked with an error carrying this message.

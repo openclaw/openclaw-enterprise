@@ -868,7 +868,7 @@ export function checkDirectPatPlacement() {
       "direct-pat",
       ownership,
       { name: namespace, plane: "execution" },
-      "runtime:local",
+      { runtime: "runtime:local", workspaceSetup: options().images.gateway },
       "direct-pat",
       role,
       {},

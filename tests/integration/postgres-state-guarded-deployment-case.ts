@@ -33,7 +33,7 @@ export async function persistGuardedDeployment(context: TestContext) {
     import("../helpers/development.ts"),
     import("../../apps/controller/src/drivers/channel/slack.ts"),
     import("../../apps/controller/src/composition/production-harness.ts"),
-    import("../helpers/postgres-harness-auth.mjs"),
+    import("../helpers/postgres-harness-auth.ts"),
   ]);
   const pool = new Pool({ connectionString: databaseUrl });
   context.after(() => pool.end());

@@ -1146,6 +1146,8 @@ export interface AgentRevision extends Scope {
     readonly implementation: string;
     /** Private, immutable admission state owned by the selected Compute Driver. */
     readonly admission?: string;
+    /** Optional private runtime inputs; separate from authority admission for older readers. */
+    readonly runtimeInputs?: string;
   };
   readonly sandboxDriverId?: string;
   readonly sandboxPolicy?: SandboxPolicySnapshot;
@@ -1546,6 +1548,8 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  AgentChatCompletionsEndpoint,
+  AgentChatCompletionsResolution,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,

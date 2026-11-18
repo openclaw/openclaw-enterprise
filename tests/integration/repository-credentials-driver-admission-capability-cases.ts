@@ -1,18 +1,15 @@
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { run } from "../fixtures/repository-credentials/process.mjs";
-import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
-import {
-  controlledClock,
-  isJsonObject,
-  readJsonObject,
-  startRegistryFixture,
-} from "./repository-credentials-driver-fixture.ts";
+import { run } from "../fixtures/repository-credentials/process.ts";
+import { controlRequest } from "../fixtures/repository-credentials/service-fixture.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
+import { isJsonObject, readJsonObject } from "./repository-credentials-driver-fixture.ts";
 
 const requestControl: (
   socketPath: string,
@@ -77,12 +74,11 @@ export function registerAdmissionCapabilityCases() {
     "controller image probe correlates real Driver calls with an isolated receipt fixture",
     { timeout: 30000 },
     async (t) => {
-      const fixture = await startRegistryFixture(t, {
+      const fixture = await startRegistryCredentialServiceFixture(t, {
         autoOpen: false,
-        clock: { ...controlledClock(), wallNow: Date.now },
+        clock: { ...createControlledClock(), wallNow: Date.now },
         gateway: { listen: "127.0.0.1:0" },
       });
-      assert.ok(fixture);
       const receipts: unknown[] = [];
       let hideReceiptObservation = false;
       const receiptServer = createServer(async (incoming, outgoing) => {

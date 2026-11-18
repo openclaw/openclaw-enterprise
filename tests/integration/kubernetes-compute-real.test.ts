@@ -36,7 +36,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { inlineProbeCommand } from "../helpers/kubernetes-real.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import {
   kubeconfigPath,
   kubernetesContext,

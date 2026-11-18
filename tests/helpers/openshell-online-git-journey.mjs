@@ -10,7 +10,7 @@ import {
   cleanEnvironment,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 const packet = (line) =>
   Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, "0") + line);
@@ -54,7 +54,7 @@ export async function gitCommandBodies(t, pushRef) {
 
 // The stock gateway boundary for the worker expiry regression. The production gRPC client
 // sends every request, including provider bootstrap, credential rotation and conditional detach.
-// openshell-gateway-wire.test.mjs checks that client's encoding against the released schema.
+// openshell-gateway-wire.test.ts checks that client's encoding against the released schema.
 // No Kubernetes, real supervisor, credential or model provider is needed for this test.
 export async function gitExpiryGateway(
   t,

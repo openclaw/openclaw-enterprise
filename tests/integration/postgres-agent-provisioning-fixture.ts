@@ -4,6 +4,18 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import pg from "pg";
+import Type, { type Static, type TObject, type TSchema } from "typebox";
+import { Check } from "typebox/value";
+
+import { JsonValue, Meta, PluginApproversSchema } from "../../packages/contracts/src/api/common.ts";
+import {
+  NamespaceResponse,
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolDefaultsSchema,
+  PluginToolPolicySchema,
+} from "../../packages/contracts/src/api/resources.ts";
 
 import type { PostgresDevelopmentConfig } from "../../apps/controller/src/composition/development-postgres.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
@@ -13,10 +25,13 @@ import {
 } from "../../apps/controller/src/worker.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import type { createTestSecretDriver as runtimeSecretFixture } from "../helpers/secret-driver.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
+import type { createRuntimeComputeDriver as runtimeComputeFixture } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 interface FixtureDrivers {
   computeDriver: InstallationRuntimeDrivers["computeDriver"];
@@ -74,11 +89,11 @@ interface FixtureDependencies {
     credentials: { email: string; password: string },
     options: { origin: string },
   ) => Promise<FixtureSession>;
-  createRuntimeComputeDriver: () => FixtureDrivers["computeDriver"];
+  createRuntimeComputeDriver: typeof runtimeComputeFixture;
   createProvisioningConfigurationDriver: (options: {
     id: string;
   }) => FixtureDrivers["configurationDriver"];
-  createTestSecretDriver: (options: { id: string }) => FixtureDrivers["secretDriver"];
+  createTestSecretDriver: typeof runtimeSecretFixture;
   identifier: (prefix: string) => RegExp;
   claimProvisioningWork: (
     pool: pg.Pool,
@@ -97,6 +112,19 @@ interface RevokedBindingRow {
   resource_id: string | null;
 }
 
+// JSON from Fastify is unknown until a case checks the response it consumes.
+const parseResponseJson: (text: string) => unknown = JSON.parse;
+
+const responseSchemas = {
+  PluginApprovers: PluginApproversSchema,
+  PluginDesiredSelection: PluginDesiredSelectionSchema,
+  PluginDesiredState: PluginDesiredStateSchema,
+  PluginDriverIdentity: PluginDriverIdentitySchema,
+  PluginToolDefaults: PluginToolDefaultsSchema,
+  PluginToolPolicy: PluginToolPolicySchema,
+  SafeJsonValue: JsonValue,
+};
+
 type RequestMethod = "DELETE" | "GET" | "HEAD" | "OPTIONS" | "PATCH" | "POST" | "PUT";
 
 interface RequestOptions {
@@ -104,10 +132,14 @@ interface RequestOptions {
   session?: FixtureSession | string | null;
 }
 
-interface ResponseEnvelope<Data> {
-  meta?: { requestId?: string } | null;
-  data?: Data;
-  error?: unknown;
+type CheckedResponse<Data extends TSchema> = {
+  status: number;
+  data: Static<Data, typeof responseSchemas>;
+  body: { data: Static<Data, typeof responseSchemas>; meta: Static<typeof Meta> };
+};
+
+interface ResponseEnvelope extends Record<string, unknown> {
+  meta: { requestId: string };
 }
 
 interface FixtureNamespace {
@@ -115,9 +147,10 @@ interface FixtureNamespace {
   status: string;
 }
 
-interface SessionData {
-  user: { id: string };
-}
+const sessionResponse = Type.Object({
+  data: Type.Object({ user: Type.Object({ id: Type.String() }) }),
+  meta: Meta,
+});
 
 function installationDrivers({
   computeDriver,
@@ -246,9 +279,15 @@ function holdWorkerStatements(pool: pg.Pool, before: WorkerStatementHook) {
   });
 }
 
-export async function createProvisioningFixture(
+export async function createProvisioningFixture<
+  Compute extends FixtureDrivers["computeDriver"],
+  Secret extends FixtureDrivers["secretDriver"],
+>(
   context: TestContext,
-  options: FixtureOptions,
+  options: Omit<FixtureOptions, "computeDriver" | "secretDriver"> & {
+    computeDriver?: Compute;
+    secretDriver?: Secret;
+  },
   {
     databaseUrl,
     adminEmail,
@@ -332,7 +371,7 @@ export async function createProvisioningFixture(
 
   context.after(async () => {
     for (const binding of revokedBindings) {
-      await pool.query(
+      await pool.query<Record<string, unknown>>(
         `INSERT INTO occ.iam_access_bindings
          (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -370,7 +409,7 @@ export async function createProvisioningFixture(
     }
   });
 
-  async function request<Data = unknown>(
+  async function request(
     method: RequestMethod,
     path: string,
     { body, session: selectedSession = session }: RequestOptions = {},
@@ -389,32 +428,64 @@ export async function createProvisioningFixture(
       ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
     });
     const text = response.body;
-    const payload = text.length === 0 ? undefined : (JSON.parse(text) as ResponseEnvelope<Data>);
-    if (payload !== undefined) {
-      assert.match(payload.meta?.requestId ?? "", identifier("req"));
+    const payload = text.length === 0 ? undefined : parseResponseJson(text);
+    if (payload === undefined) {
+      return { status: response.statusCode, body: undefined };
     }
+    const envelope = asRecord(payload);
+    const meta = asRecord(envelope?.meta);
+    assert.ok(envelope !== undefined && typeof meta?.requestId === "string", text);
+    assert.match(meta.requestId, identifier("req"));
     return {
       status: response.statusCode,
-      body: payload,
-      data: payload?.data,
-      error: payload?.error,
+      body: { ...envelope, meta: { ...meta, requestId: meta.requestId } },
+    };
+  }
+
+  async function requestChecked<Data extends TSchema>(
+    schema: TObject<{ data: Data; meta: typeof Meta }>,
+    method: RequestMethod,
+    path: string,
+    options?: RequestOptions,
+  ): Promise<{
+    status: number;
+    body: { data: Static<Data, typeof responseSchemas>; meta: Static<typeof Meta> };
+    data: Static<Data, typeof responseSchemas>;
+  }> {
+    return readResponse(schema, await request(method, path, options));
+  }
+
+  function readResponse<Data extends TSchema>(
+    schema: TObject<{ data: Data; meta: typeof Meta }>,
+    response: { status: number; body: ResponseEnvelope | undefined },
+  ): CheckedResponse<Data> {
+    const body = response.body;
+    assert.ok(
+      body !== undefined && Check(responseSchemas, schema.properties.data, body.data),
+      `HTTP ${response.status}: ${JSON.stringify(body)}`,
+    );
+    return {
+      status: response.status,
+      body: { ...body, data: body.data },
+      data: body.data,
     };
   }
 
   async function bootstrapNamespace(): Promise<FixtureNamespace> {
-    const namespace = await request<FixtureNamespace>("POST", "/namespaces", {
+    const namespace = await requestChecked(NamespaceResponse, "POST", "/namespaces", {
       body: { name: `agent-provisioning-${randomUUID().slice(0, 8)}` },
     });
     assert.equal(namespace.status, 201, JSON.stringify(namespace.body));
     await startWorker();
     try {
-      return await waitFor(`Namespace ${namespace.data!.id} to become ready`, async () => {
-        const observed = await request<FixtureNamespace>(
+      return await waitFor(`Namespace ${namespace.data.id} to become ready`, async () => {
+        const observed = await requestChecked(
+          NamespaceResponse,
           "GET",
-          `/namespaces/${namespace.data!.id}`,
+          `/namespaces/${namespace.data.id}`,
         );
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        return observed.data!.status === "ready" ? observed.data : undefined;
+        return observed.data.status === "ready" ? observed.data : undefined;
       });
     } finally {
       await stopWorker();
@@ -473,14 +544,14 @@ export async function createProvisioningFixture(
   // The signed-in administrator's Principal, whose subject is its account: a test may add
   // other administrators, so the first better-auth Principal is not necessarily this one.
   async function administratorPrincipalId() {
-    const current = await request<SessionData>("GET", "/api/auth/session");
+    const current = await requestChecked(sessionResponse, "GET", "/api/auth/session");
     assert.equal(current.status, 200, JSON.stringify(current.body));
     const iam = await state.loadNativeIAMState();
     const principals = iam.identities.filter(
       (identity) =>
         identity.kind === "principal" &&
         identity.issuer.endsWith(":better-auth") &&
-        identity.subject === current.data!.user.id,
+        identity.subject === current.data.user.id,
     );
     assert.equal(principals.length, 1, "exactly one Principal must match the signed-in account");
     return principals[0]!.id;
@@ -525,6 +596,8 @@ export async function createProvisioningFixture(
     revokeCurrentPrincipal,
     restartApi,
     request,
+    requestChecked,
+    readResponse,
     secretDriver,
     session,
     startWorker,

@@ -15,7 +15,7 @@ import {
 import type { AuthorizationRequest } from "../../packages/contracts/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import {
   callerDenied,
   EMBEDDED_API_KEY_REQUIRED,

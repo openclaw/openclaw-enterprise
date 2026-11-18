@@ -12,13 +12,11 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
 import type { AlternateDriverObservation } from "../fixtures/repository-credentials/alternate/driver.ts";
-import {
-  requestHead,
-  serviceConfigurationData,
-} from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
+import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
 const config = () => {
   const selected = {
@@ -57,7 +55,7 @@ const head = (clock: Clock): RequestHead => {
   );
   assert.equal(result.contentEncoding, "identity");
   assert.equal(result.framing.kind, "none");
-  return { ...result, contentEncoding: "identity", framing: { ...result.framing, kind: "none" } };
+  return result;
 };
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const send: ExchangeSender = async (_request, context) =>

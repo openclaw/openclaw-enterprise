@@ -11,11 +11,11 @@ import {
 } from "../../apps/controller/src/auth/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
+  AuthorizationDeniedError,
   PostgresHumanAuthentication,
   PostgresPlatformState,
-  type HumanAuthenticationActor,
 } from "../../packages/occ/src/index.ts";
-import { administrativeActor } from "../helpers/administrative-actor.mjs";
+import { administrativeActor } from "../helpers/administrative-actor.ts";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -27,12 +27,6 @@ import {
   requiredOutput,
   type AuthMaintainRunner,
 } from "./auth-maintain-command-cases.ts";
-
-const createAdministrator: (
-  state: PostgresPlatformState,
-  installationId: string,
-  actor: Pick<HumanAuthenticationActor, "userId" | "sessionId" | "principalId">,
-) => HumanAuthenticationActor = administrativeActor;
 
 function sessionRecord(userId: string) {
   return { id: randomUUID(), token: randomBytes(32).toString("hex"), userId };
@@ -307,15 +301,50 @@ export async function runAuthMaintenanceLifecycle(
           sessionId: session.id,
           principalId: snapshot.proof.principalId,
         };
-        const admin = createAdministrator(state, installationId, actor);
+        const admin = administrativeActor(state, installationId, actor);
         const target = await persistence.readAccount(enrolled.id, admin);
-        const moved = await persistence.replaceRecovery(
-          enrolled.id,
-          target.principalId,
-          recoveryUserId,
-          admin,
-          target.version,
+        const replaceRecovery = () =>
+          persistence.replaceRecovery(
+            enrolled.id,
+            target.principalId,
+            recoveryUserId,
+            admin,
+            target.version,
+          );
+
+        const designationBefore = await persistence.recoveryDesignation();
+        assert.equal(designationBefore?.userId, recoveryUserId);
+        const recoveryAudit = () =>
+          pool.query<{ id: string }>(
+            "SELECT id FROM occ.audit_events WHERE action = 'authentication.recovery.replace' ORDER BY id",
+          );
+        const auditBefore = await recoveryAudit();
+        // Remove only the successor's Installation grant. The acting administrator
+        // remains authorized and the successor still has a current password method.
+        const { rows } = await pool.query<{ id: unknown }>(
+          `DELETE FROM occ.iam_access_bindings
+            WHERE identity_subject_id = $1 AND role_id = $2
+              AND resource_kind = 'installation' AND resource_id = $3
+            RETURNING id`,
+          [target.principalId, adminRoleId, installationId],
         );
+        const bindingId = rows[0]?.id;
+        assert.equal(rows.length, 1, "the successor must have exactly one matching grant");
+        assert.ok(typeof bindingId === "string", "the revoked binding must have an ID");
+        try {
+          await assert.rejects(replaceRecovery, AuthorizationDeniedError);
+          assert.deepEqual(await persistence.recoveryDesignation(), designationBefore);
+          assert.deepEqual((await recoveryAudit()).rows, auditBefore.rows);
+        } finally {
+          await pool.query(
+            `INSERT INTO occ.iam_access_bindings
+             (id, identity_subject_id, role_id, resource_kind, resource_id)
+             VALUES ($1, $2, $3, 'installation', $4)`,
+            [bindingId, target.principalId, adminRoleId, installationId],
+          );
+        }
+
+        const moved = await replaceRecovery();
         assert.equal(moved.changed, true);
         return actor;
       });
@@ -345,7 +374,7 @@ export async function runAuthMaintenanceLifecycle(
           installationId,
           betterAuthIssuer(installationId),
         );
-        const admin = createAdministrator(state, installationId, actor);
+        const admin = administrativeActor(state, installationId, actor);
         const target = await persistence.readAccount(recoveryUserId, admin);
         await persistence.replaceRecovery(
           recoveryUserId,
@@ -379,7 +408,7 @@ export async function runAuthMaintenanceLifecycle(
           snapshot.proof,
           sessionRecord(recoveryUserId),
         );
-        const admin = createAdministrator(state, installationId, {
+        const admin = administrativeActor(state, installationId, {
           userId: recoveryUserId,
           sessionId: session.id,
           principalId: snapshot.proof.principalId,
