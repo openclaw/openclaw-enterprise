@@ -505,7 +505,7 @@ for (const [index, { name, fault, missingReceipt, diagnostic }] of ${JSON.string
 `);
   const cleanupPath = join(root, "state/native-child-cleanups");
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     `import { appendFile } from "node:fs/promises";
 export async function prepareFile() {
   return { cleanup: () => appendFile(${JSON.stringify(cleanupPath)}, "cleaned\\n") };

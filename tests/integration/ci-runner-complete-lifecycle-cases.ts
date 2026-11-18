@@ -174,7 +174,7 @@ async function lifecycleFixture(
     { mode: 0o700 },
   );
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     [
       'import { spawn } from "node:child_process";',
       'import { randomBytes } from "node:crypto";',

@@ -195,8 +195,8 @@ export function registerOpenShellAdmissionCases() {
         const resultsPath = join(root, "results/namespace.json");
         await writeRunnerManifest(root, { lanes: { openshell: { ...lane, files: [file] } } });
         await writeFile(
-          join(root, "scripts/ci/prepare.mjs"),
-          `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};`,
+          join(root, "scripts/ci/prepare.ts"),
+          `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.ts")).href)};`,
         );
         // Preserve real metadata and preparation. Only the unstarted model child is
         // inert; a regression still stops at the immutable-image gate before setup.

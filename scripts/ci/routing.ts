@@ -422,7 +422,7 @@ export async function prepareGatewayRouting({
   // a cluster created without it would wait out 180 s per CRD before failing.
   assert.ok(
     !ownedCluster.disabledK3sAddons?.includes("traefik"),
-    "Gateway routing needs K3s's Traefik add-on, which this lane's cluster disables; remove the lane from lanesWithoutK3sAddons in scripts/ci/prepare.mjs.",
+    "Gateway routing needs K3s's Traefik add-on, which this lane's cluster disables; remove the lane from lanesWithoutK3sAddons in scripts/ci/prepare.ts.",
   );
   const directory = join(ownedCluster.directory, "gateway-routing");
   assertInsideDirectory(ownedCluster.directory, directory, "routing artifact directory");

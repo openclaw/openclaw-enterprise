@@ -27,7 +27,7 @@ import {
   registerKeycloakSessionLifecycleCases,
 } from "./keycloak-session-lifecycle-cases.ts";
 
-// Real Keycloak, prepared by scripts/ci/prepare.mjs for the keycloak-oidc lane
+// Real Keycloak, prepared by scripts/ci/prepare.ts for the keycloak-oidc lane
 // (docs/testing/kubernetes.md#keycloak-oidc-tests): it imports tests/fixtures/keycloak/realm-oce.json and serves
 // https://keycloak.oce.localhost on 127.0.0.1:443 under a per-run CA that this process
 // trusts through NODE_EXTRA_CA_CERTS. Nothing here is stubbed: the browser fills Keycloak's

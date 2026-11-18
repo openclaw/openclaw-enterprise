@@ -57,7 +57,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8",
+    sha256: "1ebd7e0f3ca32976430c7629a7e91783048940b24355e0fce3748d443d6b6b41",
   },
   {
     file: "openclaw-planned-completion.patch",
@@ -70,6 +70,10 @@ const appliedPatches: readonly AppliedPatch[] = [
   {
     file: "openclaw-restart-resume-scope.patch",
     sha256: "49d55438e2a1803f1ab5a8847a018b76c4a3025d5bbd0ecad5af2ee52c7d46ff",
+  },
+  {
+    file: "openclaw-restart-harness-readiness.patch",
+    sha256: "0ed9cabbd7dc813ab686cf7b2146ec76b48c5295231739c79dc5ad4019093bd8",
   },
   {
     file: "openclaw-restart-harness-readiness.patch",

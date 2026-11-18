@@ -227,7 +227,7 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
-node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
+node scripts/ci/prepare.ts --lane keycloak-oidc --state "$state" &&
   node scripts/ci/run-tests.ts run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
 node scripts/ci/cleanup.ts --state "$state"
 ```
@@ -279,7 +279,7 @@ For CI-shaped setup, supply `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and
 `NODE_BASE_IMAGE` in the environment. In a GitHub Actions runner, execute:
 
 ```sh
-node scripts/ci/prepare.mjs \
+node scripts/ci/prepare.ts \
   --lane gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --github-env "$GITHUB_ENV" &&
@@ -352,7 +352,7 @@ chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
 
 ```sh
 run_dir="$(mktemp -d)"
-node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --state "$run_dir/state.json" && \
+node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.ts --lane production-tui --state "$run_dir/state.json" && \
   TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
