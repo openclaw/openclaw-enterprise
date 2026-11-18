@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-18"
-last_updated_session: "authoring-run/19a81e0c-0cb0-48eb-828d-e65e72b6c576"
+last_updated_session: "authoring-run/583f9a7a-3375-4446-852d-2dc671c1b88c"
 ---
 
 # Production image upgrade flow
@@ -102,10 +102,13 @@ revision with object-valued Harness settings; retain IDs and outcome. Drafts can
 Runtime upgrades record replacements; draft validation requires image/size support.
 Quiescence is nonatomic; repository continuity is unverified.
 
-`OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`:
-unreadable snapshots yield `unknown`; database/identity errors propagate.
-`getInstallationDeploymentInventory` invokes Compute outside State transactions within ten seconds,
-then rechecks authorized fleet/Driver selections. Drift refuses; owner failures yield `unknown`.
+`OpenClawController.deploymentInventorySnapshot` batches exact deployment work
+lookups in one State snapshot. Missing or mismatched work refuses inventory.
+Credential withdrawal does not count as deployment. `findRevisionForBrowsing`
+yields `unknown` for unreadable snapshots. Database and identity errors propagate.
+`getInstallationDeploymentInventory` invokes Compute outside State transactions
+under one ten-second budget, then rechecks fleet authorization and Driver selections.
+Changes refuse inventory. Owner failures yield `unknown`.
 
 Refuse nonterminal deployments. Runtime upgrades require baseline versions/ready Namespaces. Exclude stopped/deleting
 Agents; allow pending repository cleanup.
@@ -391,16 +394,12 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-18 10:13: Preserve progress output and batched inventory reads. (authoring-run/583f9a7a-3375-4446-852d-2dc671c1b88c - 2fd6ef95c30345f242d260cd513c6a36ae3ba805)
+
+- 2026-11-18 08:31: Trace the batched deployment work lookup and its refusal. (authoring-run/049ea467-b4fd-42d2-813a-b0721126ef70 - a1cdbddc6cfb49781cb0a6337aba3aa9a729e798)
+
 - 2026-11-18 05:39: Trace progress output. (authoring-run/19a81e0c-0cb0-48eb-828d-e65e72b6c576 - 8cbb31a6893016f3aa74be9471fce69d3dbc60e7)
 
 - 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
-
-- 2026-11-14 06:52: Trace the broker exit before socket readiness. (authoring-run/837cd51d-17ce-4c24-ad13-20197e634e9c - ba5b0832956ac3ad93695aab92db952f388ae7da)
-
-- 2026-11-13 17:42: Trace the OpenShell bearer token file check in each writer Job. (authoring-run/01a1d5fb-c244-7162-a7e2-17b48732f5c4 - 1f0bf5cd0a208f362971accbb1850db193f9d4d9)
-
-- 2026-11-13 14:29: Document optional Console entry verification. (authoring-run/a7f1373b-e0ab-4c0e-a622-91d8d3169950 - ef69b58a9e60e68af17f54bb2750fffe28804b9b)
-
-- 2026-11-13 05:08: Exclude terminating Pods when selecting Doctor targets. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - ca6bfc2f0376ee3fd9c5a9a255f7e5f37a454131)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.
