@@ -21,7 +21,7 @@ import {
   type InjectedResponse,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { scryptPasswordHasher } from "../helpers/password-hasher.mjs";
+import { scryptPasswordHasher } from "../helpers/password-hasher.ts";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.ts";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
