@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { Pool } from "pg";
 import type { App, Request, Session } from "./postgres-production-sharing-cases.ts";
@@ -19,16 +19,17 @@ import {
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { createServer } from "node:net";
-import { startApi } from "../../apps/controller/src/api-startup.mjs";
+import { startApi } from "../../apps/controller/src/api-startup.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
+import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
@@ -41,7 +42,7 @@ import {
   authenticatedHeaders,
   signInWithEmailPassword as signInThroughTransport,
 } from "../helpers/auth-session.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
@@ -51,10 +52,11 @@ import {
   PostgresPlatformState,
   InstalledDriver,
   OpenClawController,
+  type PostgresPool,
 } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { readPrivateBootstrapOutput } from "../helpers/bootstrap-output.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { createDriver as createProtectedFixture } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 
 const databaseUrl = process.env.OCC_PRODUCTION_WIREUP_DATABASE_URL;
@@ -107,6 +109,24 @@ async function defaultNamespaceRows(pool: Pool) {
   ).rows;
 }
 
+async function iamPolicySnapshot(pool: Pool) {
+  const result = await pool.query<{ policy: string; audit: string }>(`
+    SELECT jsonb_build_object(
+      'identities', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_identities row),
+      'roles', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_roles row),
+      'groups', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_groups row),
+      'memberships', (SELECT COALESCE(jsonb_agg(row ORDER BY group_id, principal_id), '[]'::jsonb) FROM occ.iam_group_memberships row),
+      'bindings', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_access_bindings row),
+      'restrictions', (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb) FROM occ.iam_restrictions row)
+    )::text AS policy,
+    (SELECT COALESCE(jsonb_agg(row ORDER BY id), '[]'::jsonb)::text
+     FROM occ.audit_events row
+     WHERE kind = 'mutation' AND action LIKE 'openclaw.iam.%') AS audit
+  `);
+  assert.equal(result.rows.length, 1);
+  return result.rows[0]!;
+}
+
 function createPassiveComputeDriver() {
   return createReadyComputeDriver("compute-production-wireup", {
     implementation: "production-wireup-memory-compute",
@@ -156,15 +176,22 @@ function parseLogEvents(stderr: string) {
     .map((line) => record(parsePrivateJson(line, "bootstrap error log")));
 }
 
-type DriverOptions = { includeDefaults?: boolean; files?: string[]; configurationRoot?: string };
+type DriverOptions = {
+  includeDefaults?: boolean;
+  files?: string[];
+  configurationRoot?: string;
+  iam?: Record<string, unknown>;
+};
 
 async function productionDrivers({
   includeDefaults = false,
   files,
   configurationRoot,
+  iam,
 }: DriverOptions = {}): Promise<InstallationRuntimeDrivers> {
   const configuration = {
     ...createInstallationDriverConfiguration(),
+    ...(iam === undefined ? {} : { iam }),
     presets: { includeDefaults, ...(files === undefined ? {} : { files }) },
   };
   configuration.drivers.compute.id = "compute-production-wireup";
@@ -466,15 +493,106 @@ test(
       );
       assert.equal(row(privileges).can_create_schema, false);
 
+      await t.test(
+        "invalid production auth leaves configured IAM policy and audit unchanged",
+        async () => {
+          assert.ok(pool);
+          const roleName = "startup-namespace-reader";
+          const groupName = "startup-readers";
+          const iam = {
+            roles: [{ id: roleName, permissions: ["namespace:read"] }],
+            defaultUserGroups: [],
+            roleBindings: [{ group: groupName, role: roleName, scope: "installation" }],
+          };
+          const before = await iamPolicySnapshot(pool);
+          const config = {
+            mode: "production" as const,
+            host: "127.0.0.1",
+            databaseUrl,
+            authBaseURL,
+            nativeAdmin,
+          };
+          // The existing Installation has no such policy. A refused restart must not
+          // commit it for other API or worker processes sharing this database.
+          await assert.rejects(
+            composeProduction({
+              ...config,
+              authSecret: "insecure",
+              drivers: await productionDrivers({ iam }),
+            }),
+            /OCC_AUTH_SECRET/,
+          );
+          assert.deepEqual(
+            await iamPolicySnapshot(pool),
+            before,
+            "refused startup must preserve every IAM row and IAM mutation audit record",
+          );
+
+          // The same admitted configuration must still apply through the locked writer.
+          const validSecret = randomBytes(32).toString("base64url");
+          const started = await composeProduction({
+            ...config,
+            authSecret: validSecret,
+            drivers: await productionDrivers({ iam }),
+          });
+          await started.close();
+          const roleId = `role_config_${roleName}`;
+          const groupId = `group_config_${groupName}`;
+          const appliedRole = await pool.query<{ permissions: unknown }>(
+            "SELECT permissions FROM occ.iam_roles WHERE id = $1",
+            [roleId],
+          );
+          assert.deepEqual(appliedRole.rows, [
+            { permissions: [{ action: "read", resourceKind: "namespace" }] },
+          ]);
+          const appliedBinding = await pool.query<{ group_subject_id: string; role_id: string }>(
+            "SELECT group_subject_id, role_id FROM occ.iam_access_bindings WHERE group_subject_id = $1 AND role_id = $2",
+            [groupId, roleId],
+          );
+          assert.deepEqual(appliedBinding.rows, [{ group_subject_id: groupId, role_id: roleId }]);
+          const policyAudit = await pool.query<{ action: string }>(
+            `SELECT action FROM occ.audit_events
+           WHERE details->>'reason' = 'installation_configuration'
+             AND (details->>'roleId' = $1 OR details->>'groupId' = $2)
+           ORDER BY action`,
+            [roleId, groupId],
+          );
+          assert.deepEqual(
+            policyAudit.rows.map(({ action }) => action),
+            [
+              "openclaw.iam.access_bindings.create",
+              "openclaw.iam.groups.create",
+              "openclaw.iam.roles.create",
+            ],
+          );
+          const applied = await iamPolicySnapshot(pool);
+          assert.notEqual(applied.policy, before.policy);
+          assert.notEqual(applied.audit, before.audit);
+          const restarted = await composeProduction({
+            ...config,
+            authSecret: validSecret,
+            drivers: await productionDrivers({ iam }),
+          });
+          await restarted.close();
+          assert.deepEqual(
+            await iamPolicySnapshot(pool),
+            applied,
+            "unchanged restart must not rewrite IAM policy",
+          );
+        },
+      );
+
       // Exercise both API builders against PostgreSQL while failures at owned Driver seams
       // verify that shutdown and failed startup still release later owners.
+      const custodyKeyPath = join(passwordDirectory, "cleanup-custody-key");
+      await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
       for (const [mode, failure] of [
         ["production", "shutdown"],
         ["development", "shutdown"],
         ["production", "bind"],
         ["development", "bind"],
         ["production", "routes"],
-      ]) {
+      ] as const) {
         await t.test(`${mode} cleanup after ${failure} failure`, async () => {
           const events: string[] = [];
           const first = mode === "production" ? 0 : new Error("first cleanup failure");
@@ -512,8 +630,9 @@ test(
           );
           const cleanup: { endPool?: () => Promise<void> } = {};
           let poolClosed = false;
-          const preparedGitHub = {
-            async connect(pool: Pool) {
+          class ObservedGitHubLifecycle extends PostgresPreparedGitHubLifecycle {
+            override async connect(pool: PostgresPool) {
+              await super.connect(pool);
               const endPool = pool.end.bind(pool);
               cleanup.endPool = endPool;
               pool.end = async () => {
@@ -521,24 +640,32 @@ test(
                 await endPool();
                 poolClosed = true;
               };
-            },
-            async close() {
+            }
+
+            override async close() {
               events.push("prepared");
+              await super.close();
+            }
+          }
+          const preparedGitHub = new ObservedGitHubLifecycle(custodyKeyPath, {
+            ...runtimeBase.secretDriver,
+            async readCredentialInput() {
+              throw new Error("The cleanup scenario does not issue GitHub tokens.");
             },
-          };
+          });
           const runtime = { ...runtimeBase, protectedDriver, preparedGitHub };
           const config = {
-            mode,
             host: "127.0.0.1",
             databaseUrl,
             authSecret,
             authBaseURL,
             nativeAdmin,
-          };
+          } satisfies Omit<Parameters<typeof composePostgresDevelopment>[0], "mode">;
           const build = () =>
             mode === "production"
               ? composeProduction({
                   ...config,
+                  mode,
                   drivers: runtime,
                   onStartupPhase(phase: ProductionStartupPhase) {
                     if (failure === "routes" && phase === "routes") {
@@ -546,7 +673,7 @@ test(
                     }
                   },
                 })
-              : composePostgresDevelopment(config, runtime);
+              : composePostgresDevelopment({ ...config, mode }, runtime);
           try {
             if (failure === "shutdown") {
               const instance = await build();
@@ -784,6 +911,11 @@ test(
         );
       }
       await assertBootstrapInstallationResponse(authorized);
+      // Production requires an explicit opt-in before it records these HTTP events.
+      const defaultAudit = await pool.query(
+        "SELECT id FROM occ.audit_events WHERE kind = 'api_request'",
+      );
+      assert.equal(defaultAudit.rowCount, 0);
       function requestWithBootstrapKey(path: "/installation" | "/namespaces", init: RequestInit) {
         // The credential belongs only to this disposable loopback Controller.
         const address = new URL(endpoint);
@@ -917,6 +1049,7 @@ test(
       const restart = async (
         drivers: DriverOptions,
         logger?: ReturnType<typeof memoryLog>["logger"],
+        controlPlaneAuditEnabled = false,
       ) => {
         assert.ok(app);
         await app.close();
@@ -927,6 +1060,7 @@ test(
           authSecret,
           authBaseURL,
           nativeAdmin,
+          controlPlaneAuditEnabled,
           drivers: await productionDrivers({
             ...drivers,
             configurationRoot: join(passwordDirectory, "configurations"),
@@ -1278,6 +1412,34 @@ test(
           });
         },
       );
+      await restart({ includeDefaults: true }, apiLog.logger, true);
+      const optedIn = await fetch(`${endpoint}/namespaces/${defaultNamespaceId}`, {
+        headers: authenticatedHeaders(session),
+      });
+      assert.equal(optedIn.status, 200);
+      const optedInBody = record(parsePrivateJson(await optedIn.text(), "Namespace response"));
+      assert.equal(recordId(optedInBody.data), defaultNamespaceId);
+      const requestId = optedIn.headers.get("x-request-id");
+      assert.ok(requestId);
+      const optedInAudit = await pool.query(
+        `SELECT action, resource_kind, resource_id
+         FROM occ.audit_events
+         WHERE kind = 'api_request' AND details->'__occAuditMetadata'->>'requestId' = $1
+         ORDER BY occurred_at, id`,
+        [requestId],
+      );
+      assert.deepEqual(optedInAudit.rows, [
+        {
+          action: "openclaw.api.request.admitted",
+          resource_kind: "installation",
+          resource_id: recordId(row(installation)),
+        },
+        {
+          action: "openclaw.api.request.result",
+          resource_kind: "namespace",
+          resource_id: defaultNamespaceId,
+        },
+      ]);
     } finally {
       if (app !== undefined) {
         await app.close();

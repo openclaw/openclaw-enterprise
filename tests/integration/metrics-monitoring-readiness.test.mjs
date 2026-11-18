@@ -10,7 +10,7 @@ import {
   queryPrometheus,
   waitForMonitoring,
 } from "../helpers/metrics-monitoring-readiness.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 async function loopbackServer(t, respond) {
   const server = createServer(respond);

@@ -46,6 +46,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_CLIENT_IP_HEADER` — Lowercase header carrying the client address, such as `x-real-ip`; required by `generic` only.
 - `OCC_AGENT_NATIVE_ADMIN_ENABLED` — Enables the Agent native admin pilot; default: `false`.
 - `OCC_AGENT_RUNTIME_LOGS_ENABLED` — `false` makes the Agent runtime status and log routes answer `501`; default: `true`. Set by the chart's `agentRuntimeLogs.enabled`.
+- `OCC_CONTROL_PLANE_AUDIT_ENABLED` — Enables durable Control Plane request and worker audit and authorized Agent audit reads. Defaults to `true` in development and `false` in production. Set both processes together with `controlPlaneAudit.enabled` in Helm. See the [audit guide](../../guides/topics/audit-log.md).
 - `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` — `shared-cookie` (default) or guarded OIDC `host-only-exchange`; see [native access](../agent-native-admin.md#host-only-session-exchange).
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required for shared browser sessions even when native access is disabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
@@ -109,6 +110,7 @@ These settings belong to the checkout's development stack. See
 for supported engines, images, and security restrictions.
 
 - `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `kubernetes` (default) or `docker`; the Docker preview cannot deploy Agents.
+- `OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE` — `workspace-write` (default) or explicit `danger-full-access`; controls [workspace-write startup verification](../../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification), without changing Agent presets.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
 - `OCC_DEVELOPMENT_CONTROL_PLANE` — `kubernetes` or `compose`; the default follows the Compute Driver (`kubernetes` on Kubernetes Compute, `compose` on Docker Compute). Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.
@@ -153,7 +155,7 @@ for supported engines, images, and security restrictions.
 
 ### First Agent and local model credentials
 
-These inputs belong to the [local first-Agent helper](../../../scripts/first-agent.mjs).
+These inputs belong to the [local first-Agent helper](../../../scripts/first-agent.ts).
 Use only one of the two credential inputs. In production, use
 [platform Secret bindings](../configuration/secrets.md) instead of setting the
 credential on the controller.

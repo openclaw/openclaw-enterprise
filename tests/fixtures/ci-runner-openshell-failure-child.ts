@@ -3,8 +3,8 @@ import { readFileSync, watch, writeFileSync } from "node:fs";
 import test from "node:test";
 
 const repositoryUrl = readFileSync(new URL("repository-url", import.meta.url), "utf8");
-const { runOpenShellStage }: typeof import("../helpers/openshell-stage.mjs") = await import(
-  new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href
+const { runOpenShellStage }: typeof import("../helpers/openshell-stage.ts") = await import(
+  new URL("tests/helpers/openshell-stage.ts", repositoryUrl).href
 );
 const { boundedTeardown }: typeof import("../helpers/bounded-teardown.ts") = await import(
   new URL("tests/helpers/bounded-teardown.ts", repositoryUrl).href
@@ -46,7 +46,7 @@ test("original failure", async (t) => {
   assert.equal(await runOpenShellStage(t, "installation", async () => 42, "installation"), 42);
 
   // A real source path embedded in a message or custom stack cannot set provenance.
-  const reporterUrl = new URL("scripts/ci/reporter.mjs", repositoryUrl).href;
+  const reporterUrl = new URL("scripts/ci/reporter.ts", repositoryUrl).href;
   const spoof = Object.assign(new Error(canary + "\n    at " + reporterUrl + ":999999:123456"), {
     code: "ETIMEDOUT",
   });

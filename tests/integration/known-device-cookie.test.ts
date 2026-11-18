@@ -7,7 +7,7 @@ import type {
   ControllerAuthOptions,
 } from "../../apps/controller/src/auth/index.ts";
 import type { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.ts";
 import { keyedAdmission } from "../../apps/controller/src/auth/admission.ts";
 import {
   KNOWN_DEVICE_LIFETIME_SECONDS,
@@ -19,7 +19,7 @@ import {
   type KnownDeviceAccountState,
 } from "../../apps/controller/src/auth/known-device.ts";
 import { injectJson as injectFixtureJson } from "../helpers/inject-json.mjs";
-import { within as fixtureWithin } from "../helpers/wait-for.mjs";
+import { within as fixtureWithin } from "../helpers/wait-for.ts";
 
 type App = ReturnType<typeof createFastifyApp>;
 type InjectResponse = Awaited<ReturnType<App["inject"]>>;

@@ -19,7 +19,7 @@ import {
   type InjectedResponse,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { accountProvisioning } from "./postgres-auth-account-provisioning-cases.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson as injectJsonRequest } from "../helpers/inject-json.mjs";
@@ -28,7 +28,7 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
@@ -152,7 +152,7 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-    };
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
     let rejectedStartup = false;
     try {
       app = await composePostgresDevelopment(config, {
@@ -320,7 +320,7 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-    };
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
     await ensureDevelopmentBootstrap(context, {
       databaseUrl,
       email: adminEmail,
@@ -415,7 +415,7 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-    };
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
     await ensureDevelopmentBootstrap(context, {
       databaseUrl,
       email: adminEmail,
@@ -568,7 +568,7 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-    };
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
     await ensureDevelopmentBootstrap(context, {
       databaseUrl,
       email: adminEmail,

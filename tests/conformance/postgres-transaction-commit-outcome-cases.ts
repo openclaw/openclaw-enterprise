@@ -16,7 +16,7 @@ async function assertCommitUnknown(p: ReturnType<typeof protocol>) {
     PostgresCommitOutcomeUnknownError,
   );
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases.at(-1), true);
+  assert.deepEqual(p.releases, [true]);
 }
 
 export function registerInitialTransactionOutcomeCases(): void {
@@ -138,12 +138,7 @@ export function registerCommitCleanupOutcomeCases(): void {
         return { command: "COMMIT", rows: [], rowCount: 0 };
       },
     });
-    await assert.rejects(
-      p.state.transact(async () => 1),
-      PostgresCommitOutcomeUnknownError,
-    );
-    assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-    assert.equal(p.releases.length, 1);
+    await assertCommitUnknown(p);
   });
 
   test("observed client error during release after acknowledged COMMIT remains unknown", async () => {

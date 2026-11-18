@@ -111,7 +111,6 @@ export function registerTransactionClientCases(): void {
     assert.equal(p.calls.length, 2);
     assertInstallationLookup(p.calls);
     assert.deepEqual(p.releases, [true]);
-    assert.equal(p.releases.length, 1);
   });
 
   test("observed client error after a resolved repository query blocks following work", async () => {
@@ -150,7 +149,6 @@ export function registerTransactionClientCases(): void {
     );
     assert.equal(p.calls.length, 2);
     assert.deepEqual(p.releases, [true]);
-    assert.equal(p.releases.length, 1);
   });
 
   test("a healthy repository query still returns before the ordinary COMMIT", async () => {
@@ -163,7 +161,6 @@ export function registerTransactionClientCases(): void {
     assertInstallationLookup(p.calls);
     assert.equal(p.calls[2], "COMMIT");
     assert.deepEqual(p.releases, [false]);
-    assert.equal(p.releases.length, 1);
   });
 }
 

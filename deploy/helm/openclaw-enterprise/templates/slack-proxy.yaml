@@ -17,10 +17,6 @@ spec:
     metadata:
       labels:
         {{- include "openclaw.labels" (dict "root" . "component" "slack-proxy") | nindent 8 }}
-      {{- with .Values.controlPlane.installationChecksum }}
-      annotations:
-        openclaw.dev/installation-checksum: {{ . | quote }}
-      {{- end }}
     spec:
       serviceAccountName: openclaw-enterprise-slack-proxy
       automountServiceAccountToken: false

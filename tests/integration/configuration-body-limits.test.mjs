@@ -5,11 +5,11 @@ import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import {
   assertWriteAuthorizationDenial,
   partialWrite,
-} from "../helpers/partial-write-authorization.mjs";
+} from "../helpers/partial-write-authorization.ts";
 import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
 
 // The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,

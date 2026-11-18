@@ -49,7 +49,7 @@ Some lanes are also selected by [CI](required-checks.md) or
 | [Private Git access and credential withdrawal](../repository-credentials.md#verify-prepared-native-git) | An installed Agent can use private Git; withdrawing its credentials interrupts an authenticated fetch while chat remains available. Uses synthetic model and Git credentials.          | [Installed Skipper private Git and live withdrawal](../../../scripts/ci/test-suites/skipper-prepared-git-installed.json)                       |
 | [Log forwarding and recovery](../local.md#metrics-and-observability-tests)                              | The collector forwards logs and recovers after exporter failures.                                                                                                                      | [Logging Collector](../../../scripts/ci/test-suites/logging-collector.json)                                                                    |
 | [Logs from live model calls](../local.md#kubernetes-observability-acceptance)                           | Embedded and dedicated runtimes emit OpenTelemetry logs during real model calls.                                                                                                       | [k3d OTEL](../../../scripts/ci/test-suites/k3d-otel.json)                                                                                      |
-| [Worker startup deadline](../../../tests/integration/dev-up-timeout.test.mjs)                           | Local Setup waits the full 300-second deadline before failing a worker that is running but not ready.                                                                                  | [Helper Timeout](../../../scripts/ci/test-suites/helper-timeout.json)                                                                          |
+| [Worker startup deadline](../../../tests/integration/dev-up-timeout.test.ts)                            | Local Setup waits the full 300-second deadline before failing a worker that is running but not ready.                                                                                  | [Helper Timeout](../../../scripts/ci/test-suites/helper-timeout.json)                                                                          |
 | [Agent workflows across installations](qa-advisory.md#scenarios)                                        | Selected installation, preset, and scenario combinations.                                                                                                                              | [Shipped Installation QA Matrix](../../../scripts/ci/test-suites/qa-matrix.json)                                                               |
 
 Job links name the execution jobs and open their manifests. GitHub groups these
@@ -137,6 +137,14 @@ with `unknown` for missing or unrecognized values. For a selected structured
 Gateway chat refusal, the receipt includes `gatewayChatPhase` when it can identify
 ordinary chat before private Git (`before-private-git`), a native Git turn
 (`native-git`), or ordinary chat after Git withdrawal (`after-withdrawal`).
+
+For a selected `gateway-exec` failure, the optional `gatewayExec` object contains
+the recorded process `exitCode`, allowlisted `signal`, or allowlisted error `code`.
+`helperEntered: true` means the failed exec returned a matching entry marker from
+its Gateway Node helper. The helper emits the marker before it attempts the
+HTTP request. If the field is absent, helper entry is unknown.
+Missing and invalid fields are omitted. A signal alone leaves the cause of
+termination unknown.
 After a failed runner, the writer uses complete valid ledger rows before the
 first malformed or non-object row. It ignores blank rows and selects the last
 recognized checkpoint for the selected mode, excluding retirement. A missing
@@ -152,7 +160,7 @@ failure receipt is separate from success aggregation and cannot qualify images.
 Cancellation, runner loss or job timeout can prevent its publication. A passing
 proof does not exercise this failure upload.
 
-Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.mjs) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
+Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.ts) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
 
 The `openshell` dispatch runs two OpenShell lanes on separate VMs. Before either
 starts, the protected environment resolves their controller base image and the
@@ -184,8 +192,8 @@ both steps succeeded before `Aggregate full suite` failed.
 
 - [Full Integration workflow](../../../.github/workflows/full-integration.yml): events, approval, preflight, and execution queue admission.
 - [Execution workflow](../../../.github/workflows/full-integration-execution.yml): same-commit revalidation, selectable lanes, dependencies, and aggregate.
-- [Dispatch preflight](../../../scripts/ci/full-integration-preflight.mjs): lane and environment policy.
-- [CI lane planning](../../../scripts/ci/full-integration-reuse.mjs): ordinary CI lane selection and result validation.
+- [Dispatch preflight](../../../scripts/ci/full-integration-preflight.ts): lane and environment policy.
+- [CI lane planning](../../../scripts/ci/full-integration-reuse.ts): ordinary CI lane selection and result validation.
 - [Suite index](../../../scripts/ci/test-suites.json): group membership; exact manifests are linked in Scenarios.
-- [Test runner](../../../scripts/ci/run-tests.mjs): expected-case and result checks.
+- [Test runner](../../../scripts/ci/run-tests.ts): expected-case and result checks.
 - [Lane action](../../../.github/actions/run-ci-lane/action.yml): preparation and cleanup.
