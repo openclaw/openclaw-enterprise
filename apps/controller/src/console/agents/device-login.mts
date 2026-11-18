@@ -222,19 +222,22 @@ export function createDeviceLogin({
     const failure = requestFailure(cause);
     if (failure.status === 401) {
       context.onExpired();
+    } else if (failure.status === 403) {
+      error = deviceLoginDenied(step, agentId !== undefined);
+      if (login && login.status !== "start_unconfirmed") {
+        error += ` Login session ID: ${login.session.id}`;
+      }
     } else {
       error =
-        failure.status === 403
-          ? deviceLoginDenied(step, agentId !== undefined)
-          : failure.status === 410
-            ? "This login expired. Cancel it and start a new login."
-            : failure.status === 501
-              ? // The API names which Driver the Installation lacks (finding 2991).
-                `ChatGPT sign-in is unavailable for this Installation. ${failure.serverMessage ? `${failure.serverMessage} ` : ""}Choose another authentication method.`
-              : !login && failure.status === 503 && failure.code === "DEPENDENCY_UNAVAILABLE"
-                ? // Starting reaches the sign-in service from the API; its reply names the cause.
-                  `Codex sign-in failed. ${failure.serverMessage ?? "A required service is unavailable. Try again."}`
-                : `Codex login could not be completed. ${message(cause)} ${login ? "Cancel this login and sign in again." : "Try signing in again."}`;
+        failure.status === 410
+          ? "This login expired. Cancel it and start a new login."
+          : failure.status === 501
+            ? // The API names which Driver the Installation lacks (finding 2991).
+              `ChatGPT sign-in is unavailable for this Installation. ${failure.serverMessage ? `${failure.serverMessage} ` : ""}Choose another authentication method.`
+            : !login && failure.status === 503 && failure.code === "DEPENDENCY_UNAVAILABLE"
+              ? // Starting reaches the sign-in service from the API; its reply names the cause.
+                `Codex sign-in failed. ${failure.serverMessage ?? "A required service is unavailable. Try again."}`
+              : `Codex login could not be completed. ${message(cause)} ${login ? "Cancel this login and sign in again." : "Try signing in again."}`;
     }
   }
 

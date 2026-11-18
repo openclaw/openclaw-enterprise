@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:
 
 import { ResourceStateConflictError } from "./errors.ts";
 
-/** OCC persists only ciphertext for the private provider handle. */
+/** OCC stores the user challenge and provider handle as separate ciphertexts. */
 export interface DeviceAuthorizationSession {
   readonly actorId: string;
   readonly namespaceId: string;
@@ -14,12 +14,16 @@ export interface DeviceAuthorizationSession {
   readonly phase: "pending" | "polling" | "ready" | "cancelled";
   readonly expiresAt: string;
   readonly nextPollAt: string;
-  readonly authorization: {
-    readonly verificationUrl: string;
-    readonly userCode: string;
-    readonly intervalSeconds: number;
-  };
+  readonly intervalSeconds: number;
+  readonly encryptedChallenge?: string;
   readonly privateState?: string;
+}
+
+export function cancelledDeviceAuthorization(
+  session: DeviceAuthorizationSession,
+): DeviceAuthorizationSession {
+  const { encryptedChallenge: _challenge, privateState: _handle, ...metadata } = session;
+  return { ...metadata, phase: "cancelled" };
 }
 
 export function deviceAuthorizationCipher(secret: string) {
@@ -54,6 +58,7 @@ export function deviceAuthorizationScope(
   installationId: string,
   id: string,
   session: DeviceAuthorizationSession,
+  purpose: "challenge" | "provider_handle",
 ): Buffer {
   return Buffer.from(
     JSON.stringify([
@@ -66,6 +71,7 @@ export function deviceAuthorizationScope(
       session.sourceId,
       session.credentialGatewayId,
       session.credentialRefreshId,
+      purpose,
     ]),
   );
 }

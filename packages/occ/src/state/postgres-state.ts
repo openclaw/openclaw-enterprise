@@ -2741,11 +2741,10 @@ export class PostgresPlatformState implements PlatformStateStore {
             phase: row.phase as DeviceAuthorizationSession["phase"],
             expiresAt: timestamp(row, "expires_at"),
             nextPollAt: timestamp(row, "next_poll_at"),
-            authorization: {
-              verificationUrl: text(row, "verification_url"),
-              userCode: text(row, "user_code"),
-              intervalSeconds: Number(row.interval_seconds),
-            },
+            intervalSeconds: Number(row.interval_seconds),
+            ...(row.encrypted_challenge === null
+              ? {}
+              : { encryptedChallenge: text(row, "encrypted_challenge") }),
             ...(row.private_state === null ? {} : { privateState: text(row, "private_state") }),
           },
         };
@@ -2754,8 +2753,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         await client.query(
           `INSERT INTO occ.device_authorizations
            (namespace_id, id, actor_id, agent_id, harness_id, credential_gateway_id, credential_refresh_id,
-            source_id, verification_url, user_code, interval_seconds, phase, expires_at, next_poll_at, private_state)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+            source_id, encrypted_challenge, interval_seconds, phase, expires_at, next_poll_at, private_state)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
           [
             session.namespaceId,
             id,
@@ -2765,9 +2764,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             session.credentialGatewayId,
             session.credentialRefreshId,
             session.sourceId,
-            session.authorization.verificationUrl,
-            session.authorization.userCode,
-            session.authorization.intervalSeconds,
+            session.encryptedChallenge,
+            session.intervalSeconds,
             session.phase,
             session.expiresAt,
             session.nextPollAt,
@@ -2778,7 +2776,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       replace: async (namespaceId, id, version, session) => {
         const result = await client.query(
           `UPDATE occ.device_authorizations SET version = version + 1, phase = $4, expires_at = $5,
-             next_poll_at = $6, private_state = $7
+             next_poll_at = $6, private_state = $7, encrypted_challenge = $8
            WHERE namespace_id = $1 AND id = $2 AND version = $3`,
           [
             namespaceId,
@@ -2788,6 +2786,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             session.expiresAt,
             session.nextPollAt,
             session.privateState,
+            session.encryptedChallenge,
           ],
         );
         return result.rowCount === 1;
@@ -2798,7 +2797,7 @@ export class PostgresPlatformState implements PlatformStateStore {
              SELECT id FROM occ.device_authorizations WHERE expires_at <= $1 AND phase <> 'cancelled'
              ORDER BY expires_at, id LIMIT $2 FOR UPDATE SKIP LOCKED
            )
-           UPDATE occ.device_authorizations d SET version = d.version + 1, phase = 'cancelled', private_state = NULL
+           UPDATE occ.device_authorizations d SET version = d.version + 1, phase = 'cancelled', private_state = NULL, encrypted_challenge = NULL
            FROM expired WHERE d.id = expired.id`,
           [at, limit],
         );

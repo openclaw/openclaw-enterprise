@@ -128,7 +128,9 @@ Starting requires Agent-create, Secret-create and credential-source-create in th
 Namespace. For an existing Agent, exact Agent `read` and `update` replace
 Agent-create. Only the person who started the login can poll or close it, and
 both actions require `secret:operate` on the session ID. Polling also requires
-`credential_source:operate` on the source.
+`credential_source:operate` on the source. If a poll or cancellation returns `403`,
+give your administrator the login session ID shown in the Console. Keep the
+provider's sign-in code private.
 
 For API clients, the start response includes a `session` handle with `id` and
 `namespaceId`. Use the same device-authorizations route that started the login:
@@ -141,8 +143,8 @@ in credential-source management. Delete an unused source there.
 
 If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
 `503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
-upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
-opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+upstream provider. The paired Refresh Driver owns the provider exchange.
+See [how OCC stores the login session](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
 
 ### Recover an interrupted Codex sign-in
 
@@ -172,9 +174,10 @@ message alone does not tell you whether OCC reached that exchange.
 
 Replace the mounted auth signing Secret through the deployment owner and restart
 the API processes that consume it. Verify fresh human sign-in and authenticated
-API access. Users with a pending Codex device login must restart sign-in because
-OCC derives the device-login encryption key from the auth secret. This change
-does not replace human passwords or runtime provider credentials.
+API access. OCC derives the device-login encryption key from the auth secret.
+After rotation, users must restart pending Codex logins. OCC also loses access
+to the challenge for a completed login, so it cannot return that login's poll
+response again. Existing credential sources and human passwords remain valid.
 
 The initial bootstrap service key expires after 30 days. Preserve authorized
 administrator access and renew automation credentials before expiry. Deleting a

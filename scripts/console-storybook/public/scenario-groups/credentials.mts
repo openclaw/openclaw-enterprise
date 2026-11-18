@@ -86,9 +86,12 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       credentialSourceTypes: deviceLoginSourceTypes,
       deployed: true,
       auth: "oauth",
-      rules: [{ suffix: "/poll", method: "POST", status: 403 }],
+      rules: [
+        { suffix: "/poll", method: "POST", status: 403 },
+        { pathIncludes: "/device-authorizations/", method: "DELETE", status: 403 },
+      ],
       description:
-        "Choose Sign in with OAuth. The simulated start succeeds. When the first poll is refused, Credentials identifies the grants needed to finish this login.",
+        "Choose Sign in with OAuth, wait for the refused poll, then choose Cancel login. Both refusals show the session ID and the grants needed for that action.",
     },
     authOAuthStartTabSwitchRefused: {
       group: "Components/Credentials",

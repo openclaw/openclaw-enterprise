@@ -29,7 +29,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_CONSOLE_THEME_DIRECTORY` — Host directory consumed by the [Compose theme override](../../guides/deploy/console-theme.md#podman-or-docker-compose); not read by the API.
 - `OCC_CONSOLE_THEME_DIR` — Optional absolute directory for the API's public [console theme bundle](../console/theming.md); applied at startup.
 - `OCC_CONFIG_PATH` — Absolute path to trusted Installation YAML; required in production and shared with the worker.
-- `OCC_AUTH_SECRET` — Signs sessions and provides key material for pending device logins. Production requires a high-entropy secret. Development has a local-only fallback.
+- `OCC_AUTH_SECRET` — Signs sessions and provides key material for device-login handles and challenges. Production requires a high-entropy secret. Development has a local-only fallback.
 - `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when Google or OIDC sign-in is enabled.
 - `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy, including `createAccount.requireVerifiedEmail` (default `true`); see [OIDC enrollment](../authentication/team-enrollment.md).

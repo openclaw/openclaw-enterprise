@@ -53,23 +53,28 @@ test(
     async function start() {
       const reply = await first.inject("POST", path, { harnessId: "codex" });
       assert.equal(reply.statusCode, 200, reply.body);
-      const session = reply.json().data.session;
+      const { session, userCode, verificationUrl } = reply.json().data;
       assert.equal(typeof session.id, "string");
       assert.deepEqual(session, { id: session.id, namespaceId });
-      return session.id as string;
+      assert.ok(userCode);
+      assert.ok(verificationUrl);
+      return { id: session.id as string, userCode, verificationUrl };
     }
     async function row(id: string) {
       const result = await first.pool.query(
-        "SELECT phase, private_state, to_jsonb(s)::text AS contents FROM occ.device_authorizations s WHERE namespace_id = $1 AND id = $2",
+        "SELECT phase, private_state, encrypted_challenge, to_jsonb(s)::text AS contents FROM occ.device_authorizations s WHERE namespace_id = $1 AND id = $2",
         [namespaceId, id],
       );
       assert.equal(result.rowCount, 1);
       return result.rows[0];
     }
-    const id = await start();
+    const { id, userCode, verificationUrl } = await start();
     const pending = await row(id);
     assert.equal(pending.phase, "pending");
     assert.ok(pending.private_state);
+    assert.ok(pending.encrypted_challenge);
+    assert.equal(pending.contents.includes(userCode), false);
+    assert.equal(pending.contents.includes(verificationUrl), false);
     assert.equal(pending.contents.includes("device-private-handle-"), false);
     // The session has no ordinary Secret row but remains an exact Secret IAM target.
     const secret = await first.inject("GET", `/namespaces/${namespaceId}/secrets/${id}`);
@@ -102,6 +107,7 @@ test(
       const competing = await first.inject("POST", `${path}/${id}/poll`, {});
       assert.equal(competing.statusCode, 200, competing.body);
       assert.equal(competing.json().data.status, "pending");
+      assert.equal(competing.json().data.userCode, userCode);
       assert.equal(
         gateway.operations.filter((operation) => operation === "pollDeviceAuthorization").length,
         1,
@@ -115,20 +121,29 @@ test(
     const cancelled = await row(id);
     assert.equal(cancelled.phase, "cancelled");
     assert.equal(cancelled.private_state, null);
+    assert.equal(cancelled.encrypted_challenge, null);
 
     // A completed login keeps its source but discards its encrypted provider handle.
     const next = await start();
     await clock.advance(5000);
-    const completed = await second.inject("POST", `${path}/${next}/poll`, {});
+    const completed = await second.inject("POST", `${path}/${next.id}/poll`, {});
     assert.equal(completed.statusCode, 200, completed.body);
     assert.equal(completed.json().data.status, "ready");
-    assert.equal((await row(next)).private_state, null);
+    assert.equal((await row(next.id)).private_state, null);
+    // An authorized ready replay still returns the original challenge after the provider handle is gone.
+    const replay = await first.inject("POST", `${path}/${next.id}/poll`, {});
+    assert.equal(replay.statusCode, 200, replay.body);
+    assert.equal(replay.json().data.status, "ready");
+    assert.equal(replay.json().data.userCode, next.userCode);
+    assert.equal(replay.json().data.verificationUrl, next.verificationUrl);
 
-    const abandoned = await start();
+    const { id: abandoned } = await start();
     await clock.advance(15 * 60 * 1000);
     // Abandon the challenge: the periodic expiry operation must clear private state without a poll.
     await second.controller.expireConnectionSessions(32);
-    assert.equal((await row(abandoned)).private_state, null);
+    const abandonedRow = await row(abandoned);
+    assert.equal(abandonedRow.private_state, null);
+    assert.equal(abandonedRow.encrypted_challenge, null);
     const expired = await second.inject("POST", `${path}/${abandoned}/poll`, {});
     assert.equal(expired.statusCode, 409, expired.body);
     assert.deepEqual(secretDriver.calls, [], "login state must never reach a Secret Driver");

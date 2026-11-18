@@ -2810,8 +2810,7 @@ export const deviceAuthorizations = occSchema.table(
     credentialGatewayId: text("credential_gateway_id").notNull(),
     credentialRefreshId: text("credential_refresh_id").notNull(),
     sourceId: text("source_id").notNull(),
-    verificationUrl: text("verification_url").notNull(),
-    userCode: text("user_code").notNull(),
+    encryptedChallenge: text("encrypted_challenge"),
     intervalSeconds: integer("interval_seconds").notNull(),
     phase: text("phase").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -2830,6 +2829,10 @@ export const deviceAuthorizations = occSchema.table(
     check(
       "device_authorizations_check",
       sql`(${table.phase} IN ('pending','polling')) = (${table.privateState} IS NOT NULL)`,
+    ),
+    check(
+      "device_authorizations_check1",
+      sql`(${table.phase} <> 'cancelled') = (${table.encryptedChallenge} IS NOT NULL)`,
     ),
     index("device_authorizations_expiry")
       .on(table.expiresAt, table.id)

@@ -1,4 +1,7 @@
-import type { DeviceAuthorizationSession } from "../device-authorization.ts";
+import {
+  cancelledDeviceAuthorization,
+  type DeviceAuthorizationSession,
+} from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
@@ -551,7 +554,7 @@ export interface DeviceAuthorizationRepository extends DeviceAuthorizationReadRe
     version: number,
     session: Pick<
       DeviceAuthorizationSession,
-      "phase" | "expiresAt" | "nextPollAt" | "privateState"
+      "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge"
     >,
   ): Promise<boolean>;
   expire(at: string, limit: number): Promise<void>;
@@ -2618,12 +2621,21 @@ function repositories(
       }
       snapshot.deviceAuthorizations.set(id, storedCopy({ version: 1, session }));
     },
-    replace: async (namespaceId, id, version, { phase, expiresAt, nextPollAt, privateState }) => {
+    replace: async (
+      namespaceId,
+      id,
+      version,
+      { phase, expiresAt, nextPollAt, privateState, encryptedChallenge },
+    ) => {
       const current = snapshot.deviceAuthorizations.get(id);
       if (current?.session.namespaceId !== namespaceId || current.version !== version) {
         return false;
       }
-      const { privateState: _previous, ...metadata } = current.session;
+      const {
+        privateState: _handle,
+        encryptedChallenge: _challenge,
+        ...metadata
+      } = current.session;
       snapshot.deviceAuthorizations.set(
         id,
         storedCopy({
@@ -2633,6 +2645,7 @@ function repositories(
             phase,
             expiresAt,
             nextPollAt,
+            ...(encryptedChallenge === undefined ? {} : { encryptedChallenge }),
             ...(privateState === undefined ? {} : { privateState }),
           },
         }),
@@ -2646,10 +2659,9 @@ function repositories(
           break;
         }
         if (session.phase !== "cancelled" && Date.parse(session.expiresAt) <= Date.parse(at)) {
-          const { privateState: _discarded, ...remaining } = session;
           snapshot.deviceAuthorizations.set(
             id,
-            storedCopy({ version: version + 1, session: { ...remaining, phase: "cancelled" } }),
+            storedCopy({ version: version + 1, session: cancelledDeviceAuthorization(session) }),
           );
           expired++;
         }

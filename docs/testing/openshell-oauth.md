@@ -176,9 +176,9 @@ browser case exercises those routes through the actual controls; Storybook is
 separate simulated UI evidence. Neither proves external token refresh or injection.
 
 `tests/integration/postgres-device-authorization.test.ts` exercises device login
-through two API instances sharing PostgreSQL. It checks that OCC can use the
-encrypted state across instances, authorize the session as an exact Secret IAM
-target, and reject a late poll after cancellation. The test supplies a fixture
+through two API instances sharing PostgreSQL. It checks the stored row for
+plaintext login material, polls across instances, authorizes an exact Secret
+IAM grant on the session, and rejects a late poll after cancellation. The test supplies a fixture
 Refresh Driver for the external exchange.
 
 `tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute

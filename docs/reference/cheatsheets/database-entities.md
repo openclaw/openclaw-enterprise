@@ -146,8 +146,8 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 ### `device_authorizations`
 
 Stores [device-login sessions](../../flows/credential-source-refresh.md#device-authorization-and-configuration).
-OCC checks the row version before committing a poll result. The private state
-contains the encrypted Refresh Driver handle until the login completes, closes, or expires.
+OCC checks the row version before committing a poll result. It stores the
+encrypted user code and verification URL separately from the encrypted Refresh Driver handle.
 
 - `id`
 - `namespace_id`
@@ -157,8 +157,7 @@ contains the encrypted Refresh Driver handle until the login completes, closes, 
 - `credential_gateway_id`
 - `credential_refresh_id`
 - `source_id`
-- `verification_url`
-- `user_code`
+- `encrypted_challenge` (user code and verification URL)
 - `interval_seconds`
 - `phase`
 - `expires_at`

@@ -7,22 +7,22 @@ CREATE TABLE occ.device_authorizations (
   credential_gateway_id text NOT NULL,
   credential_refresh_id text NOT NULL,
   source_id text NOT NULL,
-  verification_url text NOT NULL,
-  user_code text NOT NULL,
+  encrypted_challenge text,
   interval_seconds integer NOT NULL CHECK (interval_seconds > 0),
   phase text NOT NULL CHECK (phase IN ('pending', 'polling', 'cancelled', 'ready')),
   expires_at timestamptz NOT NULL,
   next_poll_at timestamptz NOT NULL,
   private_state text,
   version integer NOT NULL DEFAULT 1 CHECK (version > 0),
-  CHECK ((phase IN ('pending', 'polling')) = (private_state IS NOT NULL))
+  CHECK ((phase IN ('pending', 'polling')) = (private_state IS NOT NULL)),
+  CHECK ((phase <> 'cancelled') = (encrypted_challenge IS NOT NULL))
 );
 --> statement-breakpoint
 CREATE INDEX device_authorizations_expiry ON occ.device_authorizations (expires_at, id) WHERE phase <> 'cancelled';
 --> statement-breakpoint
 REVOKE ALL ON occ.device_authorizations FROM PUBLIC, occ_app;
 --> statement-breakpoint
-GRANT SELECT, INSERT, DELETE, UPDATE (phase, expires_at, next_poll_at, private_state, version)
+GRANT SELECT, INSERT, DELETE, UPDATE (phase, expires_at, next_poll_at, private_state, encrypted_challenge, version)
   ON occ.device_authorizations TO occ_app;
 --> statement-breakpoint
 CREATE OR REPLACE FUNCTION occ.resource_belongs_to_namespace(

@@ -33,6 +33,7 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { responseTo } from "./console-action-helpers.ts";
 import { within } from "../helpers/wait-for.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
@@ -1195,18 +1196,29 @@ test("a refused device login on Agent detail names the grants its start, poll an
   // the Console sends after the login's 5 s interval, and its cancel.
   restoreCreate();
   await waitForEnabled(start);
+  const started = responseTo(page, "POST", new URL(loginsPath, fixture.origin).href);
   await start.click();
+  const session = responseData(await (await started).json()).session;
+  assertResourceIdentity(session);
   await page
     .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
     .waitFor();
   revokeAdministratorGrant(fixture, ["operate", "secret"]);
-  await page.getByText(AGENT_DEVICE_LOGIN_POLL_DENIED, { exact: true }).waitFor({
-    timeout: 20_000,
-  });
+  await page
+    .getByText(`${AGENT_DEVICE_LOGIN_POLL_DENIED} Login session ID: ${session.id}`, { exact: true })
+    .waitFor({
+      timeout: 20_000,
+    });
   await page.getByRole("button", { name: "Cancel login", exact: true }).click();
-  await page.getByText(AGENT_DEVICE_LOGIN_CANCEL_DENIED, { exact: true }).waitFor();
-  assert.deepEqual(
-    answers.map((answer) => answer.replace(/\/[^/ ]+(\/poll)? /, "/{login}$1 ")),
-    ["POST  403", "POST  200", "POST /{login}/poll 403", "DELETE /{login} 403"],
-  );
+  await page
+    .getByText(`${AGENT_DEVICE_LOGIN_CANCEL_DENIED} Login session ID: ${session.id}`, {
+      exact: true,
+    })
+    .waitFor();
+  assert.deepEqual(answers, [
+    "POST  403",
+    "POST  200",
+    `POST /${session.id}/poll 403`,
+    `DELETE /${session.id} 403`,
+  ]);
 });
