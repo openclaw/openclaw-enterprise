@@ -108,9 +108,9 @@ denies fresh Git requests and can retire the runtime. Removing either binding ca
 stop or redeploy execution. Installed proof that model-source IAM denial preserves
 authorized Git remains pending.
 
-`authorizeRequestCredential` checks the request and commits a nonsecret,
-single-use approval for the transport's accepted decision. `resolveRequestCredential` authenticates redemption, consumes
-approval and rechecks authority under explicit `READ COMMITTED`. Two outside-lock
+`authorizeRequestCredential` commits the transport's accepted decision as a
+nonsecret single-use approval. `resolveRequestCredential` authenticates redemption, consumes
+approval and rechecks authority in `READ COMMITTED`. Two outside-lock
 Secret observations must match the final read under the Namespace rotation lock;
 external writers are uncoordinated. See the [release boundary](../../flows/credential-source-egress/model-requests.md#3-redeem-once-against-current-authority).
 
