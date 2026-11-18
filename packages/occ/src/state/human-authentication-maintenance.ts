@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { ScopeViolationError } from "../errors.ts";
+import { createHash, randomUUID } from "node:crypto";
+import { ResourceStateConflictError, ScopeViolationError } from "../errors.ts";
 import {
+  attachExternalAuthenticationMethod,
   PostgresHumanAuthentication,
   type HumanAuthenticationActivationHooks,
 } from "./human-authentication.ts";
@@ -40,7 +41,41 @@ export type HumanAuthenticationMaintenanceRefusal =
   | "PRINCIPAL_MISSING"
   | "PASSWORD_METHOD_COUNT"
   | "ALREADY_ENROLLED"
-  | "DISABLED_ACCOUNTS";
+  | "DISABLED_ACCOUNTS"
+  | "OIDC_MAPPING_INVALID"
+  | "OIDC_SOURCE_UNAVAILABLE"
+  | "OIDC_VERSION_CHANGED"
+  | "OIDC_TARGET_CONFLICT"
+  | "OIDC_OPERATION_CONFLICT";
+
+export interface HumanAuthenticationOidcLinkMapping {
+  readonly operationId: string;
+  readonly installationId: string;
+  readonly sourceProviderId: string;
+  readonly oidcProviderId: string;
+  readonly entries: readonly {
+    readonly sourceSubject: string;
+    readonly oidcSubject: string;
+    readonly expectedVersion: number;
+  }[];
+}
+
+interface OidcLinkReceipt {
+  readonly operationId: string;
+  readonly mappingDigest: string;
+  readonly accountCount: number;
+}
+
+type OidcLinkResult =
+  | { readonly status: "ready"; readonly accountCount: number }
+  | ({ readonly status: "applied" | "already-applied" } & OidcLinkReceipt);
+
+const OIDC_LINK_ACTION = "authentication.methods.link-oidc";
+
+function isIdentityKeyPart(value: string): boolean {
+  // An unpaired surrogate would be replaced when encoded for PostgreSQL.
+  return value.length > 0 && !/[\uD800-\uDFFF]/u.test(value) && !value.includes("\0");
+}
 
 /** A stopped-maintenance precondition failed; the transaction rolled back. */
 export class HumanAuthenticationMaintenanceRefusedError extends Error {
@@ -101,19 +136,21 @@ export class PostgresHumanAuthenticationMaintenance {
 
   /** The application role cannot run maintenance; require the owner of the occ schema. */
   async assertSchemaOwner(): Promise<string> {
-    return this.state.transact(async (unit) => {
-      const [row] = await this.query(
-        unit,
-        `SELECT current_user AS role, pg_has_role(current_user, n.nspowner, 'MEMBER') AS owner
-         FROM pg_namespace n WHERE n.nspname = 'occ'`,
+    return this.state.transact((unit) => this.schemaOwner(unit));
+  }
+
+  private async schemaOwner(unit: PlatformUnitOfWork): Promise<string> {
+    const [row] = await this.query(
+      unit,
+      `SELECT current_user AS role, pg_has_role(current_user, n.nspowner, 'MEMBER') AS owner
+       FROM pg_namespace n WHERE n.nspname = 'occ'`,
+    );
+    if (row === undefined || row.owner !== true) {
+      throw new ScopeViolationError(
+        "Authentication maintenance requires the migration role that owns the occ schema.",
       );
-      if (row === undefined || row.owner !== true) {
-        throw new ScopeViolationError(
-          "Authentication maintenance requires the migration role that owns the occ schema.",
-        );
-      }
-      return row.role as string;
-    });
+    }
+    return row.role as string;
   }
 
   private async otherBackends(
@@ -149,9 +186,11 @@ export class PostgresHumanAuthenticationMaintenance {
 
   private async maintain<T>(
     action: string,
-    work: (unit: PlatformUnitOfWork) => Promise<{ result: T; details: Record<string, unknown> }>,
+    work: (unit: PlatformUnitOfWork) => Promise<{ result: T; details?: Record<string, unknown> }>,
+    auditId?: string,
   ): Promise<T> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
+      await this.schemaOwner(unit);
       await this.query(unit, `SET LOCAL lock_timeout = '5s'`);
       const [lock] = await this.query(
         unit,
@@ -163,7 +202,10 @@ export class PostgresHumanAuthenticationMaintenance {
       }
       await this.assertWritersStopped(unit);
       const { result, details } = await work(unit);
-      await this.appendAudit(unit, action, details);
+      if (details !== undefined) {
+        await this.appendAudit(unit, action, details, auditId);
+      }
+      await this.schemaOwner(unit);
       // A client that connected during the operation voids the proof; roll back.
       await this.assertWritersStopped(unit);
       return result;
@@ -174,11 +216,11 @@ export class PostgresHumanAuthenticationMaintenance {
     unit: PlatformUnitOfWork,
     action: string,
     details: Record<string, unknown>,
+    id = `aud_${randomUUID()}`,
   ): Promise<void> {
-    const [role] = await this.query(unit, `SELECT current_user AS role`);
-    const actorId = `maintenance:${role!.role as string}`;
+    const actorId = `maintenance:${await this.schemaOwner(unit)}`;
     await unit.audit.append({
-      id: `aud_${randomUUID()}`,
+      id,
       installationId: this.installationId,
       occurredAt: new Date().toISOString(),
       kind: "mutation",
@@ -287,6 +329,195 @@ export class PostgresHumanAuthenticationMaintenance {
         otherBackends: await this.otherBackends(unit),
       };
     });
+  }
+
+  /** Link existing guarded accounts from a trusted operator mapping while writers are stopped. */
+  async linkOidc(
+    mapping: HumanAuthenticationOidcLinkMapping,
+    { dryRun }: { readonly dryRun: boolean },
+  ): Promise<OidcLinkResult> {
+    const { operationId, installationId, sourceProviderId, oidcProviderId } = mapping;
+    if (
+      installationId !== this.installationId ||
+      !isIdentityKeyPart(sourceProviderId) ||
+      sourceProviderId === "credential" ||
+      sourceProviderId === oidcProviderId ||
+      !/^oidc:[0-9a-f]{64}$/.test(oidcProviderId)
+    ) {
+      throw new HumanAuthenticationMaintenanceRefusedError(
+        "OIDC_MAPPING_INVALID",
+        "The mapping must name this Installation and distinct external source and OIDC provider instances.",
+      );
+    }
+    const sourceSubjects = new Set<string>();
+    const oidcSubjects = new Set<string>();
+    for (const { sourceSubject, oidcSubject } of mapping.entries) {
+      if (
+        !isIdentityKeyPart(sourceSubject) ||
+        sourceSubjects.has(sourceSubject) ||
+        oidcSubjects.has(oidcSubject)
+      ) {
+        throw new HumanAuthenticationMaintenanceRefusedError(
+          "OIDC_MAPPING_INVALID",
+          "Each mapping entry needs a distinct source subject and a distinct OIDC subject.",
+        );
+      }
+      sourceSubjects.add(sourceSubject);
+      oidcSubjects.add(oidcSubject);
+    }
+    // Hash the interpreted mapping in source-subject order so whitespace and row reordering
+    // do not change the operation. Identity details stay out of output and audit.
+    const entries = mapping.entries
+      .map(
+        ({ sourceSubject, oidcSubject, expectedVersion }) =>
+          [sourceSubject, oidcSubject, expectedVersion] as const,
+      )
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    const receipt = {
+      operationId,
+      mappingDigest: createHash("sha256")
+        .update(
+          JSON.stringify([operationId, installationId, sourceProviderId, oidcProviderId, entries]),
+        )
+        .digest("hex"),
+      accountCount: entries.length,
+    };
+    const auditId = `aud_${operationId}`;
+    const inspect = async (unit: PlatformUnitOfWork, lock: boolean) => {
+      const [recorded] = await this.query(
+        unit,
+        `SELECT action, actor_id, kind, outcome, resource_kind, resource_id,
+                details->>'source' AS source, details->>'operationId' AS operation_id,
+                details->>'mappingDigest' AS digest, details->'accountCount' AS account_count
+         FROM occ.audit_events WHERE id = $1`,
+        [auditId],
+      );
+      if (recorded !== undefined) {
+        if (
+          recorded.action !== OIDC_LINK_ACTION ||
+          typeof recorded.actor_id !== "string" ||
+          !recorded.actor_id.startsWith("maintenance:") ||
+          recorded.kind !== "mutation" ||
+          recorded.outcome !== "success" ||
+          recorded.resource_kind !== "installation" ||
+          recorded.resource_id !== installationId ||
+          recorded.source !== "auth-maintain" ||
+          recorded.operation_id !== operationId ||
+          recorded.digest !== receipt.mappingDigest ||
+          recorded.account_count !== receipt.accountCount
+        ) {
+          throw new HumanAuthenticationMaintenanceRefusedError(
+            "OIDC_OPERATION_CONFLICT",
+            "The operation ID already identifies different audit evidence.",
+          );
+        }
+        return { completed: true } as const;
+      }
+      const [recovery] = await this.query(
+        unit,
+        `SELECT 1 FROM occ.human_authentication_recovery WHERE installation_id = $1`,
+        [installationId],
+      );
+      if (recovery === undefined) {
+        throw new HumanAuthenticationMaintenanceRefusedError(
+          "NOT_ACTIVATED",
+          "Human sign-in is not activated for this Installation.",
+        );
+      }
+      const accounts = await this.query(
+        unit,
+        `SELECT account.user_id, account.version, requested.oidc_subject, requested.expected_version,
+                EXISTS (
+                  SELECT 1 FROM occ.account target
+                  WHERE target.provider_id = $2
+                    AND (target.account_id = requested.oidc_subject OR target.user_id = account.user_id)
+                ) AS target_exists
+         FROM unnest($3::text[], $4::text[], $5::integer[])
+              AS requested(source_subject, oidc_subject, expected_version)
+         JOIN occ.account source ON source.provider_id = $1
+              AND source.account_id = requested.source_subject AND source.identity_only
+         JOIN occ.human_authentication_accounts account ON account.user_id = source.user_id
+              AND account.installation_id = $6 AND NOT account.disabled
+         JOIN occ.iam_identities principal ON principal.id = account.principal_id
+              AND principal.kind = 'principal' AND principal.issuer = $7
+              AND principal.subject = account.user_id
+              AND principal.namespace_id IS NULL AND principal.agent_id IS NULL
+         ORDER BY account.user_id
+         ${lock ? "FOR UPDATE OF account FOR SHARE OF source, principal" : ""}`,
+        [
+          sourceProviderId,
+          oidcProviderId,
+          entries.map(([sourceSubject]) => sourceSubject),
+          entries.map(([, subject]) => subject),
+          entries.map(([, , version]) => version),
+          installationId,
+          this.issuer,
+        ],
+      );
+      if (
+        accounts.length !== entries.length ||
+        new Set(accounts.map(({ user_id }) => user_id)).size !== accounts.length
+      ) {
+        throw new HumanAuthenticationMaintenanceRefusedError(
+          "OIDC_SOURCE_UNAVAILABLE",
+          "Each source identity must resolve to a distinct enabled account enrolled in this Installation.",
+        );
+      }
+      if (accounts.some((row) => row.version !== row.expected_version)) {
+        throw new HumanAuthenticationMaintenanceRefusedError(
+          "OIDC_VERSION_CHANGED",
+          "An authentication account version changed. Use a current mapping.",
+        );
+      }
+      if (accounts.some((row) => row.target_exists !== false)) {
+        throw new HumanAuthenticationMaintenanceRefusedError(
+          "OIDC_TARGET_CONFLICT",
+          "An OIDC subject or account already has a method for the target provider.",
+        );
+      }
+      return { completed: false, accounts } as const;
+    };
+
+    if (dryRun) {
+      return this.state.transact(async (unit) => {
+        await this.query(unit, `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+        await this.schemaOwner(unit);
+        const plan = await inspect(unit, false);
+        return plan.completed
+          ? { status: "already-applied", ...receipt }
+          : { status: "ready", accountCount: receipt.accountCount };
+      });
+    }
+    return this.maintain<OidcLinkResult>(
+      OIDC_LINK_ACTION,
+      async (unit) => {
+        const plan = await inspect(unit, true);
+        if (plan.completed) {
+          return { result: { status: "already-applied", ...receipt } };
+        }
+        for (const row of plan.accounts) {
+          try {
+            await attachExternalAuthenticationMethod(
+              this.state,
+              unit,
+              row.user_id as string,
+              oidcProviderId,
+              row.oidc_subject as string,
+            );
+          } catch (error) {
+            if (error instanceof ResourceStateConflictError) {
+              throw new HumanAuthenticationMaintenanceRefusedError(
+                "OIDC_TARGET_CONFLICT",
+                "An OIDC subject is already attached to another authentication method.",
+              );
+            }
+            throw error;
+          }
+        }
+        return { result: { status: "applied", ...receipt }, details: receipt };
+      },
+      auditId,
+    );
   }
 
   /** Repair an account that exists without enrolment in an activated profile. */
