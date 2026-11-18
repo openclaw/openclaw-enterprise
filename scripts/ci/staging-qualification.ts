@@ -675,6 +675,7 @@ function signinBuildInputs(root: string, revision: string) {
     "pnpm-lock.yaml",
     "scripts/build-console-metadata.mjs",
     "scripts/migrate-production.mjs",
+    "scripts/migrate-production.ts",
     "scripts/migration-history.mjs",
     "scripts/migration-catalog.mjs",
     "scripts/migration-catalog.ts",

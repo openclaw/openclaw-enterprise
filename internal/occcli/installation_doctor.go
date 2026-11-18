@@ -331,13 +331,26 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	is := func(cs []container, name string, args ...string) bool {
 		return len(cs) == 1 && cs[0].Name == name && len(cs[0].Command) == 0 && slices.Equal(cs[0].Args, args)
 	}
-	const migrate = "scripts/migrate-production.mjs"
+	// Match the current chart program exactly, while recognizing retained direct-path Jobs.
+	migration := func(flags ...string) bool {
+		if len(init) != 1 || init[0].Name != "migration" || len(init[0].Command) != 0 {
+			return false
+		}
+		a := init[0].Args
+		selected := len(a) == 3+len(flags) && a[0] == "-e" && a[2] == "--" &&
+			fmt.Sprintf("%x", sha256.Sum256([]byte(a[1]))) == "4a6a55d777d238c127c3e0b9d357d87bdcdd91ad9937a2e5460a43e6dd7dd202" &&
+			slices.Equal(a[3:], flags)
+		return selected || is(init, "migration", append([]string{"scripts/migrate-production.ts"}, flags...)...) ||
+			is(init, "migration", append([]string{"scripts/migrate-production.mjs"}, flags...)...)
+	}
 	var hook string
 	switch {
-	case checked && is(init, "migration", migrate, "--expect-empty"):
+	case checked && migration("--expect-empty"):
 		hook = "install"
-	case checked && expectedAttempt == "" && is(init, "migration", migrate):
+	case checked && expectedAttempt == "" && migration():
 		hook = "upgrade"
+	case checked && expectedAttempt == "" && migration("--require-current"):
+		hook = "separate upgrade"
 	}
 	// The current and released charts use exact direct programs. Both forms require
 	// the same checked initialization steps.
@@ -351,7 +364,11 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	case initializationFailed:
 		message = "Initialization Job: failed. Inspect this attempt; migration or bootstrap might already have taken effect."
 	case initializationComplete:
-		message = "Initialization Job (" + hook + " hook): complete. The chart reports migration and bootstrap completed (created or verified existing installation). Current database state and external provisioning are not verified. This Job does not establish Helm release status or whether the API and worker Deployments rolled out and are ready."
+		steps := "migration and bootstrap completed (created or verified existing installation)"
+		if hook == "separate upgrade" {
+			steps = "schema verification and bootstrap completed (created or verified existing installation)"
+		}
+		message = "Initialization Job (" + hook + " hook): complete. The chart reports " + steps + ". Current database state and external provisioning are not verified. This Job does not establish Helm release status or whether the API and worker Deployments rolled out and are ready."
 	}
 	// Helm reuses the name; the UID identifies this Job, not an API attempt.
 	message += fmt.Sprintf("\nObserved Job %s/%s, UID %+q", namespace, name, m.UID)
