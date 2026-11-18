@@ -16,7 +16,7 @@ and native OpenClaw recovery. Kubernetes dedicated Codex is the first qualified
 topology. Preserve explicit stop, current authority, retained-state ownership,
 and the refusal to take over active remote execution.
 
-The RFC was submitted for human review before implementation and merged in [PR #6434](https://github.com/openclaw/openclaw-enterprise/pull/6434). [Implementation PR #6442](https://github.com/openclaw/openclaw-enterprise/pull/6442) contains the lifecycle and native recovery changes. Final live qualification, native image checks, and publication remain pending. The RFC decision status remains Proposed.
+The RFC was submitted for human review before implementation and merged in [PR #6434](https://github.com/openclaw/openclaw-enterprise/pull/6434). [Implementation PR #6442](https://github.com/openclaw/openclaw-enterprise/pull/6442) contains the lifecycle and native recovery changes. Live qualification passes; final native image checks and publication remain pending. The RFC decision status remains Proposed.
 
 ## Delivery
 
@@ -24,7 +24,7 @@ The RFC was submitted for human review before implementation and merged in [PR #
 
 - [x] Submit RFC-0042 for human review in PR #6434.
 - [x] Link the implementation PR #6442.
-- [ ] Resolve any specific architectural or security hold before dependent work.
+- [x] Resolve specific architectural or security holds before dependent work. No human hold was recorded; the reviewed SSH qualification is restored.
 
 ### 2. Persist lifecycle ownership
 
@@ -86,12 +86,22 @@ Gateway type checks pass. [Required CI at the audited commit](https://github.com
 passes. Independent review found no P0 issues in its selected scope; it did not
 review lower priorities.
 
-AC-1, AC-2, AC-4, and AC-5 full real-runtime qualification remains in progress.
-Partial runs proved compatible redeployment and native restart recovery. The
-native-profile refusal fixture must observe refusal before restoring the shared
-OCC service profile; this is not per-user OCC identity propagation. Provider
-startup failures remain failed runs. The implementation PR records final-head
-proof and publication evidence. Missing prerequisites or partial passes do not
-complete an acceptance criterion.
+AC-1, AC-2, AC-4, and AC-5 pass in the complete real ARM64 Kubernetes/model
+suite at `70de51b4a18a47a1f309d88c5869fbb67e2f6b4f`: 6 passed, 0 failed, 0
+skipped. The run uses Helm-installed OCC and PostgreSQL, Codex 0.164.0, and
+gpt-6-astra through the supported HTTPS Responses endpoint. It covers all eight
+recovery/refusal scenarios, completed/cancelled history, native child execution,
+workspace capabilities, retained storage, credential recovery, and topology cutover.
+The local images were built from `6ce8147ce2`; subsequent changes affect only
+qualification fixtures and specification status, not runtime source.
+
+The native-profile control observes refusal before restoring OCC's shared service
+profile. It does not prove per-user OCC identity propagation. History comparison
+preserves transcript content and actor identity while excluding the current
+profile avatar's cache version. Earlier runs using the default provider transport
+failed on rate limits or model-probe timeouts; readiness checks were not weakened.
+Final-head native checks, merge, and image publication are still required. The
+[implementation PR](https://github.com/openclaw/openclaw-enterprise/pull/6442)
+records their run URLs and publication identities.
 
 ## Manual Notes
