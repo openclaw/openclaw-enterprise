@@ -352,8 +352,8 @@ arms one-use denial: `git-write` probes
 `/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`;
 installation-shaped providers, including `github-repository`, probe
 `/oce-observe-request/<nonce>.git/info/refs`. Both use `service=git-upload-pack`.
-The HTTPS launcher sends no credentials. The authority sends every request under either
-probe prefix to the denial handler before binding lookup. Only the exact challenge qualifies.
+The HTTPS launcher sends no credentials. Before binding lookup, the authority's denial handler
+rejects every request under either probe prefix. Only the exact challenge qualifies.
 Observation alone cannot release the Harness.
 
 `attachmentStatus`/`GetSandboxProviderStatus` retries pending/missing status;
@@ -363,7 +363,7 @@ Absence requires `GetWorkspace` and another `GetSandbox`. `cleanupNativeWorkspac
 retires interrupted preparers without a Sandbox, refusing foreign/replaced resources.
 
 Namespace `cleanup` verifies Workspace ownership, removes owned runtime/Git
-providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
+providers/profiles, sends idempotent `DeleteWorkspace`, then removes chart
 resources/NetworkPolicies in reverse order. Lost responses retry terminating
 Workspaces. Managed gateways with no ready Pod or an unavailable transport proceed
 to owned-resource cleanup; provider and authorization refusals still block it.
