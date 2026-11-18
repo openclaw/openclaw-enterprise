@@ -13,7 +13,7 @@ import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitFor, within } from "../helpers/wait-for.mjs";
+import { waitFor, within } from "../helpers/wait-for.ts";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const repository = fileURLToPath(new URL("../..", import.meta.url));

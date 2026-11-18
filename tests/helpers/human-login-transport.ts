@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import type { TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
@@ -16,8 +15,8 @@ import {
 } from "../../apps/controller/src/auth/human-login.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
-import { listen } from "./listen.ts";
-import { waitUntil } from "./wait-for.mjs";
+import type { ProviderHandler } from "./provider-http-transport.ts";
+import { waitUntil } from "./wait-for.ts";
 
 type TransportAuth = Pick<ControllerAuth["auth"], "handler" | "$context">;
 type TransportAuthOptions = Omit<ControllerAuth["auth"]["options"], "plugins"> & {
@@ -53,7 +52,6 @@ assert.ok(hasMemoryAdapter(memoryModule), "Better Auth did not expose its memory
 const { betterAuth } = authModule;
 const { memoryAdapter } = memoryModule;
 
-export type ProviderHandler = (request: IncomingMessage, response: ServerResponse) => unknown;
 export type LoginFixtureOptions = {
   provider: ExternalProviderName;
   providers: Omit<HumanLoginProviders, "recoveryUserId">;
@@ -115,26 +113,6 @@ export async function assertSafeRejects(
     );
     return true;
   });
-}
-
-export function parseAuthorizationUrl(value: string): URL {
-  try {
-    return new URL(value);
-  } catch {
-    throw new Error("Authentication response URL was invalid");
-  }
-}
-
-export async function readProviderRequestBody(request: IncomingMessage): Promise<string> {
-  const chunks: AsyncIterable<unknown> = request;
-  let body = "";
-  for await (const chunk of chunks) {
-    if (typeof chunk !== "string" && !Buffer.isBuffer(chunk)) {
-      throw new Error("Provider request body contained an unsupported chunk");
-    }
-    body += chunk;
-  }
-  return body;
 }
 
 export function createLoginState(): PostgresHumanAuthentication {
@@ -409,45 +387,6 @@ export function cookiePairs(response: Response) {
 
 export async function until(predicate: () => boolean | Promise<boolean>) {
   await waitUntil("the transport observation", predicate, { timeoutMs: 2_000, intervalMs: 10 });
-}
-
-// Sends only the provider's fixed URLs to `target`. Real fetch, cancellation, stream
-// reads, response parsing and redirect handling stay production behavior. Any other
-// destination fails the test, even when the product turns the refused fetch into a
-// provider-unavailable denial.
-export function redirectProviderFetch(
-  t: TestContext,
-  allowedUrls: ReadonlySet<string>,
-  target: string,
-) {
-  const originalFetch = globalThis.fetch;
-  let unexpected = 0;
-  t.mock.method(globalThis, "fetch", (...[input, init]: Parameters<typeof fetch>) => {
-    const url = parseAuthorizationUrl(input instanceof Request ? input.url : String(input));
-    if (!allowedUrls.has(url.href)) {
-      unexpected += 1;
-      throw new Error("Unexpected provider request");
-    }
-    return originalFetch(new URL(url.pathname, target), init);
-  });
-  t.after(() => assert.equal(unexpected, 0, "unexpected provider requests"));
-}
-
-// A loopback HTTP server standing in for the provider. It records each request path
-// and delegates to `handle`, which tests swap per case.
-export async function startProviderServer(t: TestContext, handle: ProviderHandler) {
-  const requests: (string | undefined)[] = [];
-  const server = createServer((request, response) => {
-    requests.push(request.url);
-    handle(request, response);
-  });
-  // Pooled connections outlive each subtest. A subtest that never yields to the event loop
-  // (the 4096-callback admission sweep) stalls every timer. If it runs past the server's
-  // idle timeout (about 6 s), the next fetch is written to a pooled socket before the
-  // overdue server timer destroys it, and fails as a provider outage. Only the client
-  // closes idle connections here.
-  server.keepAliveTimeout = 0;
-  return { requests, port: await listen(t, server) };
 }
 
 // One subtest per [endpoint, step] and framing. The endpoint answers past the provider

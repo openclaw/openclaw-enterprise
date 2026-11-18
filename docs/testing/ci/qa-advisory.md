@@ -29,8 +29,9 @@ or publication gates.
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
-are ineligible. Narrow labels select their union. `full-qa` overrides them and
-runs the default Codex/`console-secrets` cells. The focused Compose job checks
+are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
+`agent-audit` in Compose, and `http-chat` for both presets and placements.
+The focused Compose job checks
 native redeployment and required-worker execution on Kubernetes workloads.
 
 PR runs test the merge commit. New commits replace opted-in runs; unrelated
@@ -66,6 +67,7 @@ for Codex.
 | `scratch-volume`        | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                 |
 | `oidc-agent-chat`       | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
+| `agent-audit`           | Yes (Compose)        | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                        |
 | `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
 | `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |
 | `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                                             |
@@ -75,6 +77,8 @@ for Codex.
 
 [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
 [scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
+
+See [HTTP chat verification](../agent-http-chat.md).
 
 ### Scenario details
 
@@ -187,6 +191,10 @@ Local instructions run the **QA matrix only**. For other suites, follow
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
 
+Select `agent-audit` with `compose` and `Codex`. It uses the standard Codex
+deployment fixture and development audit settings. It requires the usual Codex
+credential file for Agent startup.
+
 Select `oidc-agent-chat` alone with `kubernetes` and `OpenClaw`. It uses the
 `gateway-routing` lane to prepare Keycloak, PostgreSQL, native routing and
 runtime images. Follow the [native browser proof](../native-agent-browser.md)
@@ -271,7 +279,7 @@ qa_status="$(git status --porcelain --untracked-files=all)"
 qa_metadata="$(mktemp -d)"
 qa_prefix="localhost/oce-qa-$(date +%s)-$$"
 qa_node_base="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
-qa_source="$(node scripts/lib/openclaw-source.mjs build-args)"
+qa_source="$(node scripts/lib/openclaw-source.ts build-args)"
 qa_runtime_args=()
 while IFS= read -r argument; do
   qa_runtime_args+=(--build-arg "$argument")
@@ -340,12 +348,9 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 ## Results and limits
 
-Check the tested commit, selected scenarios, failed or skipped tests, and cleanup.
-Missing, filtered, or interrupted tests are not passes. The selection summary
-records the run, attempt and tested SHA. Focused PR runs also verify and record
-the merge ref and ordered base/head parents before starting jobs. Compare the
-leaf result's `sourceSha` with that merge SHA; a passing earlier head is not proof
-of the current composition.
+Check that the selected tests and cleanup passed for the tested commit. The
+selection summary records the run, attempt, and SHA. For focused PR runs, compare
+the result's `sourceSha` with the recorded merge SHA and its base and head commits.
 
 For focused Keycloak, require both manifest cases and their cleanup to pass.
 For OpenClaw, inspect `matrix.json`: one `kubernetes/OpenClaw` cell with only
@@ -364,13 +369,10 @@ exit code or signal. `timed out` identifies deadline expiry. A later `SIGPIPE`
 can follow teardown closing output pipes. Failure detail is redacted and
 command arguments and protected output stay private.
 
-When available, `startup timings` in the failure message names a JSON file in the
-same artifact. It retains the last 64 recognized CLI timing records: stage,
-elapsed milliseconds, and failure status, plus the number of older records omitted.
-These describe completed commands, including commands that failed; they do not
-identify an unfinished command. Durations can overlap, so do not sum them as wall
-time. Unknown or malformed records and other stdout remain private. Commands with
-protected output produce no timing artifact.
+The `startup timings` message names a JSON file with up to 64 recognized CLI
+timings and the number of older records omitted. Each timing gives the stage,
+elapsed milliseconds, and failure status of a finished command. Durations can
+overlap. Protected output, unrecognized records, and other stdout stay private.
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
 because it runs one file; complete advisory OpenShell coverage requires every

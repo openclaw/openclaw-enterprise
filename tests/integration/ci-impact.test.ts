@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnOptions } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -36,7 +37,7 @@ const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.ts");
 const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
 const gate = join(repositoryRoot, "scripts/ci/impact-gate.ts");
-const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runner = join(repositoryRoot, "scripts/ci/run-tests.ts");
 const read = (path: string) => readFileSync(join(repositoryRoot, path), "utf8");
 const policy = readFileSync(selector, "utf8");
 const ciWorkflow = read(".github/workflows/ci.yml");
@@ -837,8 +838,16 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   const consumerBlobs = await f.git("rev-parse", "HEAD:" + storybookWorkflow, "HEAD:" + preparer);
   const knownConsumer =
     consumerBlobs ===
-    "08676f57d84dcdec23bb01aae2ebed6c1882f9f2\n47cc6129264ecdfb5271be15c51441e48e990323";
+    "ad55f3c6ecfb551d76984ffd901abe3dfeb9c170\n47cc6129264ecdfb5271be15c51441e48e990323";
   const mode = knownConsumer ? "candidate" : "broad";
+  const expectedLanes = [
+    "checks-baseline-1",
+    "checks-baseline-2",
+    "checks-browser",
+    "checks-browser-2",
+    "images-packaging",
+  ];
+  const expectedCompanionJobs = knownConsumer ? ["console-storybook.yml/build"] : [];
   const artifact = join(f.dir, "receipt.json");
   assert.match(
     await pnpmImpactOutput(f, {}, ["--summary", artifact]),
@@ -851,26 +860,39 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
     identity: { base: f.base, tested: f.tested, head: f.head },
     mode,
     reason: knownConsumer ? "console_asset_reader" : "unverified_storybook",
-    lanes: [
-      "checks-baseline-1",
-      "checks-baseline-2",
-      "checks-browser",
-      "checks-browser-2",
-      "images-packaging",
-    ],
-    companionJobs: knownConsumer ? ["console-storybook.yml/build"] : [],
+    lanes: expectedLanes,
+    companionJobs: expectedCompanionJobs,
   });
   const jobs = laneTable().filter((row) => receipt.lanes.includes(row.lane));
   assert.equal(jobs.length, receipt.lanes.length);
   assert.match(await f.select(), /^mode=full$/m);
 
-  const unbound = shadowData(await pnpmImpactOutput(f, { GITHUB_RUN_ATTEMPT: "" }, ["--shadow"]));
+  const readShadow = async (input: Fixture, env: NodeJS.ProcessEnv = {}) =>
+    shadowData(await pnpmImpactOutput(input, env, ["--shadow"]));
+  const alongsideAsset = (path: string, content: string) =>
+    fixture(
+      t,
+      (ctx) => {
+        change(ctx);
+        ctx.put(path, content);
+      },
+      initial,
+    );
+  const expectUnverified = async (input: Fixture) => {
+    const shadow = await readShadow(input);
+    assert.equal(shadow.mode, "broad");
+    assert.equal(shadow.reason, "unverified_storybook");
+    assert.deepEqual(shadow.lanes, expectedLanes);
+    assert.deepEqual(shadow.companionJobs, []);
+  };
+
+  const unbound = await readShadow(f, { GITHUB_RUN_ATTEMPT: "" });
   assert.equal(unbound.mode, "broad");
   assert.equal(unbound.reason, "missing_run_identity");
 
   const manifestPath = "scripts/ci/test-suites/images-packaging.json";
   const missing = await fixture(t, change, { ...initial, [manifestPath]: '{"files":[]}' });
-  const incomplete = shadowData(await pnpmImpactOutput(missing, {}, ["--shadow"]));
+  const incomplete = await readShadow(missing);
   assert.equal(incomplete.mode, "broad");
   assert.equal(incomplete.reason, "incomplete_manifest");
   assert.deepEqual(incomplete.lanes, []);
@@ -883,86 +905,50 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
     },
     initial,
   );
-  const mixed = shadowData(await pnpmImpactOutput(other, {}, ["--shadow"]));
+  const mixed = await readShadow(other);
   assert.equal(mixed.mode, "broad");
   assert.equal(mixed.reason, knownConsumer ? "mixed_scope" : "unverified_storybook");
-  assert.deepEqual(mixed.lanes, receipt.lanes);
-  assert.deepEqual(mixed.companionJobs, receipt.companionJobs);
+  assert.deepEqual(mixed.lanes, expectedLanes);
+  assert.deepEqual(mixed.companionJobs, expectedCompanionJobs);
+
+  const workflow = present(initial[storybookWorkflow]);
   for (const [path, content] of [
-    [
-      storybookWorkflow,
-      present(initial[storybookWorkflow]).replace(/^ {2}build:$/m, "  docs-preview:"),
-    ],
+    [storybookWorkflow, workflow.replace(/^ {2}build:$/m, "  docs-preview:")],
     [preparer, "export {};\n"],
-  ]) {
-    const changedConsumer = await fixture(
-      t,
-      (ctx) => {
-        change(ctx);
-        ctx.put(present(path), content);
-      },
-      initial,
-    );
-    const shadow = shadowData(await pnpmImpactOutput(changedConsumer, {}, ["--shadow"]));
-    assert.equal(shadow.reason, "unverified_storybook");
-    assert.equal(shadow.mode, "broad");
-    assert.deepEqual(shadow.lanes, receipt.lanes);
-    assert.deepEqual(shadow.companionJobs, []);
+  ] satisfies [string, string][]) {
+    const changedConsumer = await alongsideAsset(path, content);
+    await expectUnverified(changedConsumer);
   }
   const stale = await fixture(t, change, {
     ...initial,
-    [storybookWorkflow]: present(initial[storybookWorkflow]).replace(
-      '      - "apps/controller/src/console-assets.ts"\n',
-      "",
-    ),
+    [storybookWorkflow]: workflow.replace('      - "apps/controller/src/console-assets.ts"\n', ""),
   });
-  const priorChange = shadowData(await pnpmImpactOutput(stale, {}, ["--shadow"]));
-  assert.equal(priorChange.reason, "unverified_storybook");
-  assert.equal(priorChange.mode, "broad");
-  assert.deepEqual(priorChange.lanes, receipt.lanes);
-  assert.deepEqual(priorChange.companionJobs, []);
+  await expectUnverified(stale);
 
   for (const [path, scripts] of [
     ["package.json", {}],
     [standalone, { build: "tsc --pretty false" }],
   ] satisfies [string, Record<string, string>][]) {
     const redirected = withScripts(present(initial[path]), scripts);
-    const alongside = await fixture(
-      t,
-      (ctx) => {
-        change(ctx);
-        ctx.put(path, redirected);
-      },
-      initial,
-    );
-    const alreadyChanged = await fixture(t, change, { ...initial, [path]: redirected });
-    for (const input of [alongside, alreadyChanged]) {
-      const shadow = shadowData(await pnpmImpactOutput(input, {}, ["--shadow"]));
-      assert.equal(shadow.mode, "broad");
-      assert.deepEqual(shadow.companionJobs, []);
-      assert.equal(shadow.reason, "unverified_storybook");
-      assert.deepEqual(shadow.lanes, receipt.lanes);
-    }
+    const changedAtHead = await alongsideAsset(path, redirected);
+    const changedInBase = await fixture(t, change, { ...initial, [path]: redirected });
+    await expectUnverified(changedAtHead);
+    await expectUnverified(changedInBase);
   }
-  const metadata = await fixture(
-    t,
-    (ctx) => {
-      change(ctx);
-      ctx.put(
-        standalone,
-        JSON.stringify({
-          ...jsonRecord(present(initial[standalone])),
-          description: "Updated description",
-        }),
-      );
-    },
-    initial,
+
+  const metadata = await alongsideAsset(
+    standalone,
+    JSON.stringify({
+      ...jsonRecord(present(initial[standalone])),
+      description: "Updated description",
+    }),
   );
-  const unrelated = shadowData(await pnpmImpactOutput(metadata, {}, ["--shadow"]));
+  const unrelated = await readShadow(metadata);
   assert.equal(unrelated.mode, "broad");
-  assert.deepEqual(unrelated.companionJobs, receipt.companionJobs);
+  assert.deepEqual(unrelated.companionJobs, expectedCompanionJobs);
+
   const shared = await fixture(t, sharedChange, initial);
-  const unmapped = shadowData(await pnpmImpactOutput(shared, {}, ["--shadow"]));
+  const unmapped = await readShadow(shared);
   assert.equal(unmapped.mode, "broad");
   assert.equal(unmapped.reason, "unmapped_scope");
   assert.deepEqual(unmapped.lanes, []);
@@ -1947,7 +1933,7 @@ test("documentation workflow selects documentation checks and omits product test
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
-    /run-ci-lane|run-tests\.mjs\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
+    /run-ci-lane|run-tests\.ts\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
   );
   for (const name of ["pr-safe", "runtime-image-fixture"]) {
     assert.match(job(name), /needs\.impact\.outputs\.mode == 'full'/, name);
@@ -2091,7 +2077,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
   const commands = [
     "bash scripts/ci/setup-tools.sh workflows",
     "actionlint .github/workflows/*.yml",
-    "node scripts/ci/run-tests.mjs audit",
+    "node scripts/ci/run-tests.ts audit",
     ...skipped.flatMap(({ run }) =>
       run === "pnpm lint" ? ["pnpm lint --concurrency 2"] : present(run).split(" && "),
     ),
@@ -2251,11 +2237,11 @@ test("failed lane summary preserves the first unsuccessful step", (t) => {
 test("lane lists outside the lane table name every lane they must", async (t) => {
   const suiteIndex = indexData(read("scripts/ci/test-suites.json"));
   // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
-  // exactly the lanes prepare.mjs restores the BuildKit cache for. A lane missing
+  // exactly the lanes prepare.ts restores the BuildKit cache for. A lane missing
   // from either condition builds its images cold, and nothing fails.
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
   const preparation: unknown = await import(
-    pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
+    pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.ts")).href
   );
   const imageCacheLanes = record(preparation).imageCacheLanes;
   assert.ok(imageCacheLanes instanceof Map);
@@ -3028,7 +3014,7 @@ function laneManifest(
 function suiteFiles(base = policy): Record<string, string> {
   const files: Record<string, string> = {
     "scripts/ci/impact.ts": base,
-    "scripts/ci/prepare.mjs": "export const prepared = true;\n",
+    "scripts/ci/prepare.ts": "export const prepared = true;\n",
     "scripts/ci/test-suites.json": `${JSON.stringify(
       {
         version: 1,
@@ -3084,6 +3070,77 @@ async function suiteFixture(
   const f = await fixture(t, change, { ...suiteFiles(), ...extra }, {}, options);
   return [f, await shallowBootstrap(f)] as const;
 }
+
+test("test graph advisory reports a missing owner alongside a transitive owner hint", async (t) => {
+  const owned = "tests/helpers/owned.ts";
+  const unowned = "tests/helpers/unowned.ts";
+  const intermediate = "tests/helpers/intermediate.ts";
+  const root = "tests/integration/typed.test.ts";
+  const f = await fixture(
+    t,
+    ({ put }) => {
+      put(owned, "export const value = 2;\n");
+      put(unowned, "export const value = 2;\n");
+    },
+    {
+      ...suiteFiles(),
+      "tests/tsconfig.json": JSON.stringify({
+        compilerOptions: { incremental: true, noEmit: true },
+      }),
+      [owned]: "export const value = 1;\n",
+      [unowned]: "export const value = 1;\n",
+      [intermediate]: 'export { value } from "./owned.ts";\n',
+      [root]: 'import "../helpers/intermediate.ts";\n',
+    },
+  );
+  const { put } = repository(f.repo);
+  put(
+    ".build/tests/tsconfig.tsbuildinfo",
+    JSON.stringify({
+      version: "7.0.2",
+      options: { composite: false },
+      fileNames: [owned, unowned, intermediate, root].map((file) => `../../${file}`),
+      fileInfos: Array.from({ length: 4 }, () => "0".repeat(32)),
+      fileIdsList: [[1], [3]],
+      referencedMap: [
+        [3, 1],
+        [4, 2],
+      ],
+    }),
+  );
+  const result = await run(
+    process.execPath,
+    [join(repositoryRoot, "scripts/ci/test-graph-advisory.ts")],
+    {
+      cwd: f.repo,
+      env: {
+        ...process.env,
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_PATH: f.eventPath,
+        GITHUB_SHA: f.tested,
+        GITHUB_RUN_ID: "17",
+        GITHUB_RUN_ATTEMPT: "2",
+        GITHUB_WORKFLOW_SHA: f.tested,
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  const advisory = jsonRecord(result.stdout);
+  assert.deepEqual(advisory.run, { id: "17", attempt: "2", workflow: f.tested });
+  assert.equal(record(advisory.source).tested, f.tested);
+  assert.deepEqual(advisory.hints, {
+    direct: [],
+    compiler: ["checks-baseline-1"],
+    staticFixture: [],
+  });
+  assert.deepEqual(advisory.fallback, [
+    "no_registered_owner",
+    "runtime_edges_unclassified",
+    "unindexed_mjs_roots",
+  ]);
+  assert.equal(advisory.omissions, 0);
+});
 
 test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
   const path = "tests/integration/postgres-a.test.mjs";
@@ -3323,8 +3380,8 @@ test("mixed test and code, tooling, workflow or package changes select full", as
     "ineligible_change",
     [
       "src/app.ts",
-      "scripts/ci/prepare.mjs",
-      "scripts/ci/run-tests.mjs",
+      "scripts/ci/prepare.ts",
+      "scripts/ci/run-tests.ts",
       "scripts/ci/impact-gate.ts",
       ".github/workflows/ci.yml",
       "package.json",
@@ -3389,7 +3446,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     referenced_test: [
       [
         editTest("tests/integration/postgres-b.test.mjs"),
-        { "scripts/ci/prepare.mjs": 'if (file.endsWith("postgres-b.test.mjs")) {}\n' },
+        { "scripts/ci/prepare.ts": 'if (file.endsWith("postgres-b.test.mjs")) {}\n' },
       ],
       [
         editTest("tests/integration/k3d-a.test.mjs"),
@@ -3655,7 +3712,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   const required = job("ci-required");
   assert.match(required, /EXPECTED_LANES: \$\{\{ needs\.impact\.outputs\.lanes \}\}/);
   assert.match(required, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
-  assert.match(required, /run-tests\.mjs aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
+  assert.match(required, /run-tests\.ts aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
   const impact = job("impact");
   for (const [output, step] of [
     ["mode", "select"],
@@ -3709,7 +3766,7 @@ test("tests mode flows through the gate to a source-bound aggregate of only its 
   );
   // Synthetic lanes in a group that also has an unselected lane; the fixture's
   // stand-in prepare module is not a runner preparation hook.
-  rmSync(join(root, "scripts/ci/prepare.mjs"));
+  rmSync(join(root, "scripts/ci/prepare.ts"));
   const group = ["checks-baseline-1", "postgres", "k3d-fixture-state"];
   const { runLane, aggregate } = syntheticLanes(root, f.tested, group, "synthetic-");
   const ran = ["checks-baseline-1", "postgres"];
@@ -3873,7 +3930,7 @@ test("shared runtime consumers omit idle builders and preserve source builders",
   }
 });
 
-test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
+test("full integration selects images and gates runtime artifact consumers", (t) => {
   const workflow = loadYaml(".github/workflows/full-integration-execution.yml");
   type SelectorOutputs = Partial<
     Record<"gateway-image" | "agent-image" | "use-runtime-artifact", string>
@@ -4099,13 +4156,11 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
   }
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.
-  const condition = present(present(workflow.jobs["image-lanes-same-sha"]).if)
-    .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-    .replaceAll("needs.runtime-artifact", 'needs["runtime-artifact"]');
+  const condition = present(present(workflow.jobs["image-lanes-same-sha"]).if);
   for (const producer of ["success", "failure", "cancelled", "skipped"]) {
     for (const runAll of ["true", "false"]) {
       assert.equal(
-        evaluateInContext(condition, {
+        evaluate(condition, {
           cancelled: () => false,
           github: {
             repository: "openclaw/openclaw-enterprise",
@@ -4123,6 +4178,10 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
       );
     }
   }
+});
+
+test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
+  const workflow = loadYaml(".github/workflows/full-integration-execution.yml");
   const script = present(
     present(workflow.jobs["full-aggregate"]).steps.find(
       (step) => step.name === "Write selected job state",
@@ -4212,4 +4271,96 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
     "pr-safe-same-sha": { result: "skipped" },
   });
   assert.deepEqual(Object.keys(targeted).sort(), ["docker-model", "preflight"]);
+});
+
+test("trusted main lint cache trial verifies restored bytes before invoking warm lint", (t) => {
+  const job = present(loadYaml(".github/workflows/lint-cache-trial.yml").jobs.trial);
+  const run = present(job.steps.find((step) => step.id === "warm")?.run);
+  const dir = temporaryDirectorySync(t, "lint-trial-");
+  const cache = join(dir, "seed");
+  const invoked = join(dir, "invoked");
+  const bytes = "clean";
+  writeFileSync(cache, bytes);
+
+  // The marker observes whether the workflow hands the restored file to pnpm.
+  const check = (hit: string, matched: string, expected: boolean) => {
+    rmSync(invoked, { force: true });
+    const result = spawnSync(
+      "bash",
+      ["-e", "-o", "pipefail", "-c", `pnpm() { touch "$INVOKED"; }\n${run}`],
+      {
+        env: {
+          ...process.env,
+          CACHE_FILE: cache,
+          DIGEST: createHash("sha256").update(bytes).digest("hex"),
+          BYTES: String(bytes.length),
+          HIT: hit,
+          MATCHED: matched,
+          EXPECTED: "trial-key",
+          PRIMARY: "trial-key",
+          RESTORE_START: String(Date.now()),
+          GITHUB_OUTPUT: join(dir, "outputs"),
+          INVOKED: invoked,
+        },
+      },
+    );
+    assert.equal(result.status, expected ? 0 : 1);
+    assert.equal(existsSync(invoked), expected);
+  };
+  check("true", "trial-key", true);
+  check("", "", false);
+  check("true", "another-key", false);
+  writeFileSync(cache, "wrong");
+  check("true", "trial-key", false);
+  rmSync(cache);
+  symlinkSync(join(dir, "elsewhere"), cache);
+  writeFileSync(join(dir, "elsewhere"), bytes);
+  check("true", "trial-key", false);
+});
+
+test("lint cache trial requires the lookup-only witness to match the saved seed", (t) => {
+  const steps = present(loadYaml(".github/workflows/lint-cache-trial.yml").jobs.trial).steps;
+  const witness = present(steps.find((step) => step.id === "witness"));
+  const restore = present(steps.find((step) => step.id === "restore"));
+  assert.deepEqual(witness.with, {
+    path: "${{ env.CACHE_FILE }}",
+    key: "${{ steps.trial.outputs.probe }}",
+    "restore-keys": "${{ steps.trial.outputs.key }}",
+    "lookup-only": true,
+  });
+  assert.deepEqual(restore.with, {
+    path: "${{ env.CACHE_FILE }}",
+    key: "${{ steps.trial.outputs.key }}",
+    "fail-on-cache-miss": true,
+  });
+  const run = present(steps.find((step) => step.id === "witnessed")?.run);
+  const dir = temporaryDirectorySync(t, "lint-witness-");
+  const check = (primary: string, hit: string, matched: string) =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", run], {
+      env: {
+        ...process.env,
+        START: String(Date.now()),
+        CACHE_FILE: join(dir, "cache"),
+        GITHUB_OUTPUT: join(dir, "output"),
+        PROBE: "probe",
+        SEED: "seed",
+        PRIMARY: primary,
+        HIT: hit,
+        MATCHED: matched,
+      },
+    }).status;
+  assert.equal(check("probe", "false", "seed"), 0);
+  for (const [primary, hit, matched] of [
+    ["probe", "", ""],
+    ["other", "false", "seed"],
+    ["probe", "true", "probe"],
+    ["probe", "false", "foreign"],
+    ["probe", "", "seed"],
+    ["probe", "False", "seed"],
+    ["", "false", "seed"],
+  ] as const) {
+    assert.equal(check(primary, hit, matched), 1);
+  }
+  writeFileSync(join(dir, "cache"), "unexpected download");
+  assert.equal(check("probe", "false", "seed"), 1);
 });

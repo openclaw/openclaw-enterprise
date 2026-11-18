@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "http-chat": ["OpenClaw", "Codex"],
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
@@ -12,6 +13,7 @@ const scenarioPresets = {
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
+  "agent-audit": ["Codex"],
   "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
@@ -62,10 +64,16 @@ export function selectQaMatrix(env = process.env) {
   }
   const presets = preset === "all" ? ["OpenClaw", "Codex"] : [preset];
   const installations = installation === "all" ? ["compose", "kubernetes"] : [installation];
+  const applies = (scenario, installation, preset) =>
+    scenarioPresets[scenario].includes(preset) &&
+    (scenario !== "agent-audit" || installation === "compose");
   for (const name of scenarios) {
     assert.ok(
-      input === "all" || scenarioPresets[name].some((value) => presets.includes(value)),
-      `${name} is not applicable to selected QA presets`,
+      input === "all" ||
+        installations.some((installation) =>
+          presets.some((preset) => applies(name, installation, preset)),
+        ),
+      `${name} is not applicable to selected QA installations and presets`,
     );
   }
   const cells = installations.flatMap((value) =>
@@ -84,7 +92,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
-          ].includes(scenario) && scenarioPresets[scenario].includes(name),
+          ].includes(scenario) && applies(scenario, value, name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
@@ -98,7 +106,7 @@ export function selectQaMatrix(env = process.env) {
             "harness-overrides",
             "oidc-agent-chat",
           ].includes(scenario) &&
-          scenarioPresets[scenario].includes(name) &&
+          applies(scenario, value, name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
@@ -112,7 +120,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
-          ].includes(scenario) && !scenarioPresets[scenario].includes(name),
+          ].includes(scenario) && !applies(scenario, value, name),
       ),
     })),
   );
@@ -136,11 +144,26 @@ export function selectQaMatrix(env = process.env) {
   );
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
-  const requiredEnv = activePresets.map((name) =>
-    name === "Codex" && !codexSearchConfig
-      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
-      : "OCC_TEST_QA_OPENAI_KEY_FILE",
-  );
+  const requiredEnv = [];
+  for (const name of activePresets) {
+    const selectedScenarios = cells
+      .filter((cell) => cell.preset === name)
+      .flatMap((cell) => cell.scenarios);
+    if (
+      name === "OpenClaw" ||
+      selectedScenarios.some((scenario) => ["http-chat", "codex-search-config"].includes(scenario))
+    ) {
+      if (!requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE")) {
+        requiredEnv.push("OCC_TEST_QA_OPENAI_KEY_FILE");
+      }
+    }
+    if (
+      name === "Codex" &&
+      selectedScenarios.some((scenario) => !["http-chat", "codex-search-config"].includes(scenario))
+    ) {
+      requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
+    }
+  }
   if (oidcAgentChat) {
     requiredEnv.push(
       "OCC_TEST_KUBERNETES_KUBECONFIG",

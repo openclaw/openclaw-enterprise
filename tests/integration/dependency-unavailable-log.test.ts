@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { ConfigurationBackendUnavailableError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -12,13 +13,12 @@ import {
   DependencyUnavailableError,
   RuntimeCredentialsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import { asRecord } from "../../packages/utils/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { grpc } from "../helpers/openshell-grpc-sdk.ts";
+import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
+import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
@@ -72,7 +72,7 @@ function createConfiguration(fixture: Fixture, namespace: NamespaceWire): Promis
 }
 
 function logEvents(lines: readonly unknown[], event: string) {
-  return lines.map(asRecord).filter((line) => line?.event === event);
+  return lines.map(requireLogRecord).filter((line) => line.event === event);
 }
 
 function dependencyWarnings(lines: readonly unknown[]) {
@@ -278,10 +278,7 @@ test("an OpenShell call that fails without a gRPC status keeps only the error cl
   const createCall = t.mock.method(grpc.Channel.prototype, "createCall", () => {
     throw new TypeError(`invalid argument ${CLIENT_TEXT}`);
   });
-  t.after(() => {
-    createCall.mock.restore();
-    return client.close();
-  });
+  t.after(() => client.close());
   await assert.rejects(
     client.getSandbox(
       { name: "sandbox-log", workspace: "workspace-log" },
@@ -296,6 +293,57 @@ test("an OpenShell call that fails without a gRPC status keeps only the error cl
   assert.equal(createCall.mock.callCount(), 1);
   const [call] = createCall.mock.calls;
   assert.equal(call?.arguments[0], "/openshell.v1.OpenShell/GetSandbox");
+  createCall.mock.restore();
+
+  // A real loopback gateway can return a status with unsafe detail. Only the status may escape.
+  const proto = fileURLToPath(
+    new URL(
+      "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+      import.meta.url,
+    ),
+  );
+  const server = new grpc.Server();
+  t.after(() => server.forceShutdown());
+  let received = false;
+  const unavailable: Grpc.handleUnaryCall<object, object> = (_call, callback) => {
+    received = true;
+    callback({ code: grpc.status.UNAVAILABLE, message: CLIENT_TEXT });
+  };
+  server.addService(
+    openShellService(grpc.loadPackageDefinition(loader.loadSync(proto, { keepCase: true }))),
+    { GetSandbox: unavailable },
+  );
+  const port = await new Promise<number>((resolve, reject) => {
+    server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, bound) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(bound);
+      }
+    });
+  });
+  const gateway = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  t.after(() => gateway.close());
+  await assert.rejects(
+    gateway.getSandbox(
+      { name: "sandbox-log", workspace: "workspace-log" },
+      AbortSignal.timeout(2_000),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.deepEqual(error.requestDiagnostic, {
+        method: "GetSandbox",
+        grpcStatus: grpc.status.UNAVAILABLE,
+        validationCategory: "UNKNOWN",
+      });
+      assert.deepEqual(dependencyUnavailableLogFields(error), {
+        errorClass: "OpenShellGatewayRequestFailure",
+        message: "OpenShell GetSandbox failed with gRPC status 14.",
+      });
+      return true;
+    },
+  );
+  assert.equal(received, true);
 });
 
 test("dependency log fields keep only the class and code of a bounded cause chain", () => {

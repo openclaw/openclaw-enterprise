@@ -11,7 +11,7 @@ import {
   readJsonlPayloads,
   selectedCollectorSmoke,
 } from "../helpers/ci-logging.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 test(
   "prepareLogging backend receives real OTLP/HTTP logs and writes JSONL",

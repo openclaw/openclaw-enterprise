@@ -20,7 +20,7 @@ import {
   type TenantReaderApp,
   type TenantRequestOptions,
 } from "../helpers/tenant-reader-app.ts";
-import { bindRole } from "../helpers/iam-grants.mjs";
+import { bindRole } from "../helpers/iam-grants.ts";
 import {
   workspaceVersionStarting,
   workspaceWithoutRunningVersion,

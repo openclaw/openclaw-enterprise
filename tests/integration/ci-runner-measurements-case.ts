@@ -722,7 +722,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     "tests/integration/measurements.test.mjs",
     [
       'import test from "node:test";',
-      `import { runOpenShellStage } from ${JSON.stringify(new URL("../helpers/openshell-stage.mjs", import.meta.url).href)};`,
+      `import { runOpenShellStage } from ${JSON.stringify(new URL("../helpers/openshell-stage.ts", import.meta.url).href)};`,
       'test("measures", async (t) => {',
       '  await runOpenShellStage(t, "scratch-sibling-isolation", async () => {});',
       '  await runOpenShellStage(t, "scratch-queued-actor-revocation", async () => {});',

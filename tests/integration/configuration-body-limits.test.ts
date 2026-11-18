@@ -14,13 +14,13 @@ import type {
   PermissionAction,
   ResourceRef,
 } from "../../packages/contracts/src/index.ts";
-import { ConfigurationSizeError } from "../../packages/occ/src/index.ts";
+import { ConfigurationSizeError, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   assertWriteAuthorizationDenial,
   partialWrite,
-} from "../helpers/partial-write-authorization.mjs";
+} from "../helpers/partial-write-authorization.ts";
 import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
 
 // The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,
@@ -241,7 +241,7 @@ test("Configuration writes refuse a caller without the grant before reading the 
       forbidden[method],
     );
     const auditStart = fixture.auditSink.events.length;
-    const refused: unknown = await partialWrite({
+    const refused = await partialWrite({
       origin: fixture.origin,
       transportOrigin,
       method,
@@ -250,22 +250,9 @@ test("Configuration writes refuse a caller without the grant before reading the 
       declaredBytes,
       bodyPrefix: '{"kind":"agent","values":{"notes":"',
     });
-    assert.notEqual(refused, null, `${method}: the controller waited for the unread body`);
-    assert.ok(
-      typeof refused === "object" &&
-        refused !== null &&
-        "status" in refused &&
-        typeof refused.status === "number" &&
-        "body" in refused,
-      `${method}: expected a response on the unfinished socket`,
-    );
+    assert.ok(refused, `${method}: the controller waited for the unread body`);
     assert.deepEqual(
-      fixture.fixtureResponse(
-        { status: refused.status, body: refused.body },
-        403,
-        ErrorResponse,
-        method,
-      ).error,
+      fixture.fixtureResponse(refused, 403, ErrorResponse, method).error,
       forbidden[method],
     );
     // The refusal keeps its audit row, naming the exact grant the write itself checks.
@@ -286,8 +273,20 @@ test("Configuration writes refuse a caller without the grant before reading the 
 });
 
 test("Configuration writes check the grant again in their transaction after the pre-body check", async (t) => {
-  const { fixture, namespace } = await createFixture(t);
+  let platformState: PlatformStateStore | undefined;
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Configuration body limits", {
+    providers: [],
+    wrapState(state: PlatformStateStore) {
+      platformState = state;
+      return state;
+    },
+  });
   const existing = await fixture.createConfiguration(namespace.id, notes("existing"));
+  assert.ok(platformState);
+  // There is no Configuration collection read route. Observe the real Namespace repository.
+  const configurationIds = await platformState.transact((state) =>
+    state.namespaces.listConfigurationIds(namespace.id),
+  );
   const label = "configuration-writer";
   const member = await fixture.createNamespaceMember(label, namespace.id, [
     ["read", "namespace"],
@@ -321,6 +320,15 @@ test("Configuration writes check the grant again in their transaction after the 
       "FORBIDDEN",
     );
     assert.equal(fixture.policy.bindings.includes(writer), false, method);
+    if (method === "POST") {
+      assert.deepEqual(
+        await platformState.transact((state) =>
+          state.namespaces.listConfigurationIds(namespace.id),
+        ),
+        configurationIds,
+        "the denied POST must not create a Configuration",
+      );
+    }
     fixture.policy.bindings.push(writer);
   }
   assert.equal(check.mock.callCount(), 2);
