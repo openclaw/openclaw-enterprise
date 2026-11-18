@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { text } from "node:stream/consumers";
 import { appModule } from "../fixtures/repository-credentials/runtime.ts";
+import { appFunction } from "../fixtures/repository-credentials/app-functions.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
@@ -13,45 +14,39 @@ import {
   receiveThroughFin,
 } from "../fixtures/repository-credentials/socket-observer.ts";
 
-type RuntimeExports = Pick<
-  typeof import("../../apps/controller/src/drivers/repo/github/access/routes.ts"),
-  "createRoutePolicy"
-> &
-  Pick<
+type RuntimeModules = {
+  "drivers/repo/github/access/routes": Pick<
+    typeof import("../../apps/controller/src/drivers/repo/github/access/routes.ts"),
+    "createRoutePolicy"
+  >;
+  "drivers/repo/access/transport/upstream": Pick<
     typeof import("../../apps/controller/src/drivers/repo/access/transport/upstream.ts"),
     "createUpstreamSender"
-  > &
-  Pick<
+  >;
+  "drivers/repo/access/transport/request": Pick<
     typeof import("../../apps/controller/src/drivers/repo/access/transport/request.ts"),
     "inspectRequestHead"
-  > &
-  Pick<
+  >;
+  "drivers/repo/access/transport/errors": Pick<
     typeof import("../../apps/controller/src/drivers/repo/access/transport/errors.ts"),
     "sendError"
-  > &
-  Pick<
-    typeof import("../../apps/controller/src/drivers/repo/access/clock.ts"),
-    "createSystemClock"
-  > &
-  Pick<
-    typeof import("../../apps/controller/src/drivers/repo/access/configuration.ts"),
-    "validateServiceConfig"
   >;
+};
 
-function assertRuntimeExport<K extends keyof RuntimeExports>(
+function assertRuntimeExport<Path extends keyof RuntimeModules>(
   value: unknown,
-  name: K,
-): asserts value is Pick<RuntimeExports, K> {
+  name: keyof RuntimeModules[Path],
+): asserts value is RuntimeModules[Path] {
   assert.ok(typeof value === "object" && value !== null && name in value);
   assert.equal(typeof Reflect.get(value, name), "function");
 }
 
-async function runtimeExport<K extends keyof RuntimeExports>(
-  path: string,
-  name: K,
-): Promise<RuntimeExports[K]> {
+async function runtimeExport<
+  Path extends keyof RuntimeModules,
+  Name extends keyof RuntimeModules[Path],
+>(path: Path, name: Name): Promise<RuntimeModules[Path][Name]> {
   const value = await appModule(path);
-  assertRuntimeExport(value, name);
+  assertRuntimeExport<Path>(value, name);
   return value[name];
 }
 
@@ -68,8 +63,8 @@ const inspectRequestHead = await runtimeExport(
   "inspectRequestHead",
 );
 const sendError = await runtimeExport("drivers/repo/access/transport/errors", "sendError");
-const createSystemClock = await runtimeExport("drivers/repo/access/clock", "createSystemClock");
-const validateServiceConfig = await runtimeExport(
+const createSystemClock = await appFunction("drivers/repo/access/clock", "createSystemClock");
+const validateServiceConfig = await appFunction(
   "drivers/repo/access/configuration",
   "validateServiceConfig",
 );
@@ -81,7 +76,7 @@ type OriginScenario = {
   benignTrailer?: boolean;
   trailer?: boolean;
 };
-type MetadataCase = { name: string; scenario: OriginScenario; accepted: boolean };
+type MetadataCase = [name: string, scenario: OriginScenario, accepted?: true];
 type ParsedRequest = {
   method: string | undefined;
   target: string | undefined;
@@ -277,71 +272,40 @@ test(
       assert.equal(parsedRequests.length, before);
     });
     const cases: MetadataCase[] = [
-      {
-        name: "valid identity with zero actual trailers",
-        scenario: { body: JSON.stringify(identity) },
-        accepted: true,
-      },
+      ["valid identity with zero actual trailers", { body: JSON.stringify(identity) }, true],
       // GitHub answers with its own spelling; the configured one is released (finding 2239).
-      {
-        name: "GitHub's spelling of the full name",
-        scenario: { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository" }) },
-        accepted: true,
-      },
-      {
-        name: "GitHub's all-caps spelling of the full name",
-        scenario: { body: JSON.stringify({ ...identity, full_name: "FIXTURE/REPOSITORY" }) },
-        accepted: true,
-      },
-      {
-        name: "a declaration alone is not an actual trailer",
-        scenario: { declaration: true },
-        accepted: true,
-      },
-      {
-        name: "undeclared last actual trailer",
-        scenario: { trailer: true, body: JSON.stringify(identity) },
-        accepted: false,
-      },
-      {
-        name: "last actual trailer beyond declaration",
-        scenario: { trailer: true, declaration: true, body: JSON.stringify(identity) },
-        accepted: false,
-      },
-      { name: "non-200 success", scenario: { status: 201 }, accepted: false },
-      {
-        name: "wrong repository id",
-        scenario: { body: JSON.stringify({ ...identity, id: 74 }) },
-        accepted: false,
-      },
-      {
-        name: "string repository id",
-        scenario: { body: JSON.stringify({ ...identity, id: "73" }) },
-        accepted: false,
-      },
-      {
-        name: "wrong full name",
-        scenario: { body: JSON.stringify({ ...identity, full_name: "other/repository" }) },
-        accepted: false,
-      },
-      {
-        name: "full name with a suffix",
-        scenario: { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository.git" }) },
-        accepted: false,
-      },
-      {
-        name: "non-string full name",
-        scenario: { body: JSON.stringify({ ...identity, full_name: null }) },
-        accepted: false,
-      },
-      { name: "malformed JSON", scenario: { body: "{" }, accepted: false },
-      {
-        name: "response byte overflow",
-        scenario: { body: JSON.stringify({ ...identity, extra: "x".repeat(1024) }) },
-        accepted: false,
-      },
+      [
+        "GitHub's spelling of the full name",
+        { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository" }) },
+        true,
+      ],
+      [
+        "GitHub's all-caps spelling of the full name",
+        { body: JSON.stringify({ ...identity, full_name: "FIXTURE/REPOSITORY" }) },
+        true,
+      ],
+      ["a declaration alone is not an actual trailer", { declaration: true }, true],
+      ["undeclared last actual trailer", { trailer: true, body: JSON.stringify(identity) }],
+      [
+        "last actual trailer beyond declaration",
+        { trailer: true, declaration: true, body: JSON.stringify(identity) },
+      ],
+      ["non-200 success", { status: 201 }],
+      ["wrong repository id", { body: JSON.stringify({ ...identity, id: 74 }) }],
+      ["string repository id", { body: JSON.stringify({ ...identity, id: "73" }) }],
+      ["wrong full name", { body: JSON.stringify({ ...identity, full_name: "other/repository" }) }],
+      [
+        "full name with a suffix",
+        { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository.git" }) },
+      ],
+      ["non-string full name", { body: JSON.stringify({ ...identity, full_name: null }) }],
+      ["malformed JSON", { body: "{" }],
+      [
+        "response byte overflow",
+        { body: JSON.stringify({ ...identity, extra: "x".repeat(1024) }) },
+      ],
     ];
-    for (const { name, scenario: value, accepted } of cases) {
+    for (const [name, value, accepted = false] of cases) {
       await t.test(`${name}: exact response through recipient FIN`, async () => {
         scenario = value;
         const index = observed.connections.length;

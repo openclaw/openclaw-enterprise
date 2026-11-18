@@ -33,12 +33,6 @@ type FixtureOptions = GitHubFixtureOptions & {
 type Admission = GitHubPreparationAdmission;
 type Material = TokenMaterial<Admission>;
 type Family = TokenFamily<Admission>;
-type Pause = { entered: Promise<unknown>; release: () => void };
-type PreparedDatabase = {
-  connect(): GitHubPreparationStore;
-  pauseNextCommit(): Pause;
-  failNextCommit(mode: "before" | "after"): void;
-};
 
 function requireFirst<T>(values: readonly T[]): T {
   const value = values[0];
@@ -46,15 +40,34 @@ function requireFirst<T>(values: readonly T[]): T {
   return value;
 }
 
-function assertPreparedDatabase(value: unknown): asserts value is PreparedDatabase {
-  assert.ok(typeof value === "object" && value !== null);
-  assert.ok("connect" in value && typeof value.connect === "function");
-  assert.ok("pauseNextCommit" in value && typeof value.pauseNextCommit === "function");
-  assert.ok("failNextCommit" in value && typeof value.failNextCommit === "function");
-  const connection: unknown = value.connect();
-  assert.ok(typeof connection === "object" && connection !== null);
-  assert.ok("readCurrent" in connection && typeof connection.readCurrent === "function");
-  assert.ok("transact" in connection && typeof connection.transact === "function");
+function preparedConnection(
+  database: ReturnType<typeof createPreparedStore>,
+): GitHubPreparationStore {
+  const connection = database.connect();
+  return {
+    async readCurrent<T>(familyId: string, select: (row: Family | undefined) => T): Promise<T> {
+      let selected: { value: T } | undefined;
+      await connection.readCurrent(familyId, (row: Family | undefined) => {
+        selected = { value: select(row) };
+      });
+      assert.ok(selected, "fixture read selector ran");
+      return selected.value;
+    },
+    async transact<T>(
+      familyId: string,
+      update: (row: Family | undefined, allocateMaterialVersion: () => string) => T,
+    ): Promise<T> {
+      let updated: { value: T } | undefined;
+      await connection.transact(
+        familyId,
+        (row: Family | undefined, allocateMaterialVersion: () => string) => {
+          updated = { value: update(row, allocateMaterialVersion) };
+        },
+      );
+      assert.ok(updated, "fixture transaction callback ran");
+      return updated.value;
+    },
+  };
 }
 
 function withWriteProfile(admission: Admission): Admission {
@@ -108,16 +121,15 @@ async function setup(t: TestContext, options: FixtureOptions = {}) {
       profile: "git-read",
     },
   };
-  const database: unknown = createPreparedStore(admission);
-  assertPreparedDatabase(database);
-  const store = database.connect();
+  const database = createPreparedStore(admission);
+  const store = preparedConnection(database);
   const key = createGitHubKeyOwner({ privateKey: github.privateKey, appId: fixtureAppId, clock });
   t.after(() => key.close());
   let keyReads = 0;
   const owner = (target: Admission = admission, duringKeyLookup?: () => void | Promise<void>) =>
     createGitHubPreparationOwner({
       admission: target,
-      store: database.connect(),
+      store: preparedConnection(database),
       clock,
       apiOrigin: github.origin,
       ca: github.tls.ca,
@@ -378,7 +390,7 @@ test("lost provider reply and cancellation quarantine issuance; no takeover repl
 });
 
 test("warm return waits for commit and rejects withdrawal of already committed material", async (t) => {
-  let gate: Pause | undefined;
+  let gate: ReturnType<ReturnType<typeof createPreparedStore>["pauseNextCommit"]> | undefined;
   const paused = Promise.withResolvers<void>();
   const f = await setup(t, {
     beforeIssueResponse: () => {
@@ -389,6 +401,9 @@ test("warm return waits for commit and rejects withdrawal of already committed m
   const producing = f.run("commit-gated");
   await paused.promise;
   assert.ok(gate);
+  assert.ok(gate.entered instanceof Promise, "fixture commit gate has an entered promise");
+  const release: unknown = gate.release;
+  assert.ok(typeof release === "function", "fixture commit gate can be released");
   await gate.entered;
   let returned = false;
   const reading = f.warm().then((result) => {
@@ -398,7 +413,7 @@ test("warm return waits for commit and rejects withdrawal of already committed m
   // A reader cannot observe a transaction draft, even when the token exists upstream.
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(returned, false);
-  gate.release();
+  release();
   assert.equal(await producing, "committed");
   const result = await reading;
   assert.equal(result.kind, "warm");
@@ -413,7 +428,7 @@ test("warm return waits for commit and rejects withdrawal of already committed m
 
 test("quarantining this attempt during key lookup prevents any GitHub issuance", async (t) => {
   const { admission, database, owner, github, bounds } = await setup(t);
-  const store = database.connect();
+  const store = preparedConnection(database);
   const superseded = owner(admission, async () => {
     await store.transact(admission.familyId, (row) => {
       const attempt = family(row).attempts.find((entry) => entry.id === "withdraw-during-key");
