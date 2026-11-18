@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import {
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
@@ -265,15 +266,24 @@ test(
         { name: "addons.k3s.cattle.io", version: "v1" },
       ],
     };
+    type Plan = typeof config & { serviceDependency?: unknown };
     const configPath = join(dir, "plan.json");
     type Check = {
       id: string;
       status: string;
+      summary?: string;
       limits?: { resource: string; status: string }[];
       stale?: string[];
       missing?: string[];
+      resources?: {
+        kind: string;
+        namespace: string;
+        name: string;
+        uid: string;
+        resourceVersion: string;
+      }[];
     };
-    async function diagnose(plan = config, sensitiveValue?: string) {
+    async function invokeDiagnostic(plan: Plan, sensitiveValues: string[] = []) {
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
@@ -281,12 +291,16 @@ test(
         { encoding: "utf8", timeout: 100_000 },
       );
       assert.equal(result.error, undefined);
-      if (sensitiveValue) {
+      for (const sensitiveValue of sensitiveValues) {
         assert.ok(
           !result.stdout.includes(sensitiveValue) && !result.stderr.includes(sensitiveValue),
-          "diagnostic output exposed a credential",
+          "diagnostic output exposed certificate or credential material",
         );
       }
+      return result;
+    }
+    async function diagnose(plan: Plan = config, sensitiveValues: string[] = []) {
+      const result = await invokeDiagnostic(plan, sensitiveValues);
       assert.ok(!result.stderr, "diagnostic wrote to stderr");
       const report = JSON.parse(result.stdout);
       return {
@@ -311,6 +325,8 @@ test(
     assert.equal(initial.checks.get("controller:kube-system/coredns")?.status, "passed");
     assert.equal(initial.checks.get("crd:addons.k3s.cattle.io")?.status, "passed");
     assert.equal(initial.checks.get("crd:missing.example.test")?.status, "failed");
+    assert.equal(initial.checks.has("service-egress"), false);
+    assert.equal(initial.checks.has("service-tls"), false);
     assert.equal(initial.status, 1);
 
     // ResourceQuota's own controller supplies usage. One slot remains, but the candidate needs two
@@ -346,6 +362,225 @@ test(
     const fits = await diagnose({ ...config, peakAdditional: { jobs: 1, replicaSets: 1 } });
     assert.equal(fits.checks.get("resource-quotas")?.status, "passed");
 
+    // The Service observes a live allocated address and a named target port.
+    // The two policy grants cover the Service and its translated destination independently.
+    const serviceName = "middleware";
+    const policyName = "middleware-egress";
+    const secretName = "middleware-tls";
+    const serverName = "middleware.example.test";
+    const otherName = "other.example.test";
+    const servicePort = 9443;
+    const targetPort = "https";
+    const labels = { app: serviceName };
+    await applyManifest(
+      JSON.stringify({
+        apiVersion: "v1",
+        kind: "Service",
+        metadata: { name: serviceName, namespace },
+        spec: { selector: labels, ports: [{ port: servicePort, targetPort }] },
+      }),
+    );
+    const cidr = `${(await resource("service", serviceName)).spec.clusterIP}/32`;
+    const namespaceSelector = { matchLabels: { "kubernetes.io/metadata.name": namespace } };
+    const podSelector = { matchLabels: labels };
+    const setPolicy = (
+      address: string,
+      peers: { namespaceSelector?: typeof namespaceSelector; podSelector?: typeof podSelector }[],
+    ) =>
+      applyManifest(
+        JSON.stringify({
+          apiVersion: "networking.k8s.io/v1",
+          kind: "NetworkPolicy",
+          metadata: { name: policyName, namespace },
+          spec: {
+            podSelector: { matchLabels: { app: "observer" } },
+            policyTypes: ["Egress"],
+            egress: [
+              {
+                to: [{ ipBlock: { cidr: address } }],
+                ports: [{ protocol: "TCP", port: servicePort }],
+              },
+              { to: peers, ports: [{ protocol: "TCP", port: targetPort }] },
+            ],
+          },
+        }),
+      );
+    await setPolicy("192.0.2.1/32", [{ namespaceSelector, podSelector }]);
+
+    // Issue temporary leaves with the same generated key. Update only the public
+    // certificate after the expired case. Neither certificate nor key belongs in the report.
+    const ca = await certificateAuthority(dir, { caName: "prerequisites-fixture" });
+    const expired = await signedLeaf(dir, ca, {
+      name: "expired",
+      commonName: serverName,
+      subjectAltName: `DNS:${serverName}`,
+      days: -1,
+    });
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "secret",
+      "tls",
+      secretName,
+      `--cert=${expired.certPath}`,
+      `--key=${expired.keyPath}`,
+    );
+    const protectedValues = [
+      expired.key,
+      Buffer.from(expired.key).toString("base64"),
+      "BEGIN PRIVATE KEY",
+      expired.cert,
+      Buffer.from(expired.cert).toString("base64"),
+      "BEGIN CERTIFICATE",
+    ];
+    async function setLeaf(pem: string) {
+      const encoded = Buffer.from(pem).toString("base64");
+      protectedValues.push(pem, encoded);
+      const patch = join(dir, "certificate-patch.json");
+      await writeFile(patch, JSON.stringify({ data: { "tls.crt": encoded } }));
+      await kubectl(
+        "-n",
+        namespace,
+        "patch",
+        "secret",
+        secretName,
+        "--type=merge",
+        "--patch-file",
+        patch,
+      );
+    }
+    const readVersions = () =>
+      Promise.all(
+        (
+          [
+            ["Service", "service", serviceName],
+            ["NetworkPolicy", "networkpolicy", policyName],
+            ["Secret", "secret", secretName],
+          ] as const
+        ).map(async ([kind, resourceKind, name]) => {
+          const output = String(
+            await kubectl(
+              "-n",
+              namespace,
+              "get",
+              resourceKind,
+              name,
+              "--no-headers",
+              "-o",
+              "custom-columns=UID:.metadata.uid,RV:.metadata.resourceVersion",
+            ),
+          );
+          const [uid, resourceVersion] = output.trim().split(/\s+/u);
+          assert.ok(uid && resourceVersion);
+          return { kind, namespace, name, uid, resourceVersion };
+        }),
+      );
+    const dependency = {
+      service: { namespace, name: serviceName, port: servicePort },
+      policy: { namespace, name: policyName },
+      tls: { secretName, serverName },
+    };
+    const dependencyPlan = { ...config, serviceDependency: dependency };
+    const egressOnly = { service: dependency.service, policy: dependency.policy };
+    const typoPlan = { ...config, serviceDependency: { ...egressOnly, tsl: dependency.tls } };
+    const typo = await invokeDiagnostic(typoPlan, protectedValues);
+    assert.equal(typo.status, 2);
+    assert.equal(typo.stdout, "");
+    assert.match(typo.stderr, /serviceDependency accepts only service, policy and tls/u);
+
+    async function checkDependency(plan = dependencyPlan) {
+      const versions = await readVersions();
+      const result = await diagnose(plan, protectedValues);
+      assert.deepEqual(
+        await readVersions(),
+        versions,
+        "the diagnostic must leave all selected objects unchanged",
+      );
+      const egress = result.checks.get("service-egress");
+      const tls = result.checks.get("service-tls");
+      assert.deepEqual(egress?.resources, versions.slice(0, 2));
+      assert.deepEqual(tls?.resources, versions.slice(2));
+      return { egress, tls };
+    }
+    const stale = await checkDependency();
+    assert.equal(stale.egress?.status, "failed");
+    assert.deepEqual(stale.egress?.missing, [`${cidr} TCP/${servicePort}`]);
+    assert.equal(stale.tls?.status, "failed");
+    assert.match(stale.tls?.summary ?? "", /expired/u);
+
+    // Split selectors create two broad peers and do not establish the combined edge.
+    await setPolicy(cidr, [{ namespaceSelector }, { podSelector }]);
+    const replacement = await signedLeaf(dir, ca, {
+      name: "replacement",
+      commonName: serverName,
+      subjectAltName: `DNS:${otherName}`,
+      keyPem: expired.key,
+    });
+    await setLeaf(replacement.cert);
+    const split = await checkDependency();
+    assert.equal(split.egress?.status, "failed");
+    assert.deepEqual(split.egress?.missing, [
+      `${namespace} Service-selected Pods TCP/${targetPort}`,
+    ]);
+    assert.equal(split.tls?.status, "failed");
+    assert.match(split.tls?.summary ?? "", /DNS SAN/u);
+
+    await setPolicy(cidr, [{ namespaceSelector, podSelector }]);
+    const validPlan = {
+      ...dependencyPlan,
+      serviceDependency: { ...dependency, tls: { secretName, serverName: otherName } },
+    };
+    const corrected = await checkDependency(validPlan);
+    assert.equal(corrected.egress?.status, "passed");
+    assert.equal(corrected.tls?.status, "passed");
+    const policyOnly = await diagnose(
+      { ...config, serviceDependency: egressOnly },
+      protectedValues,
+    );
+    assert.equal(policyOnly.checks.get("service-egress")?.status, "passed");
+    assert.equal(policyOnly.checks.has("service-tls"), false);
+
+    const commonNameOnly = await signedLeaf(dir, ca, {
+      name: "common-name-only",
+      commonName: serverName,
+      keyPem: expired.key,
+    });
+    const commonNameLeaf = new X509Certificate(commonNameOnly.cert);
+    assert.equal(commonNameLeaf.subjectAltName, undefined);
+    assert.equal(commonNameLeaf.checkHost(serverName), serverName);
+    await setLeaf(commonNameOnly.cert);
+    const noSan = await checkDependency();
+    assert.equal(noSan.tls?.status, "failed");
+    assert.match(noSan.tls?.summary ?? "", /DNS SAN/u);
+
+    // Keep the SAN and other validity bound intact while corrupting one ASN.1 UTCTime.
+    const leaf = new X509Certificate(replacement.cert);
+    const validityFields = ["validFromDate", "validToDate"] as const;
+    for (const field of validityFields) {
+      const utc = leaf[field].toISOString().slice(2, 19).replace(/\D/g, "") + "Z";
+      const der = Buffer.from(leaf.raw);
+      const fieldBytes = Buffer.concat([Buffer.from([0x17, utc.length]), Buffer.from(utc)]);
+      const offset = der.indexOf(fieldBytes);
+      assert.ok(offset >= 0);
+      assert.equal(der.indexOf(fieldBytes, offset + 1), -1);
+      der.write("13", offset + 4, 2, "ascii");
+      const corrupt = new X509Certificate(der);
+      for (const validityField of validityFields) {
+        assert.equal(Number.isFinite(corrupt[validityField].getTime()), validityField !== field);
+      }
+      assert.equal(corrupt.checkHost(otherName, { subject: "never" }), otherName);
+      const encoded = der
+        .toString("base64")
+        .match(/.{1,64}/g)
+        ?.join("\n");
+      assert.ok(encoded);
+      await setLeaf(`-----BEGIN CERTIFICATE-----\n${encoded}\n-----END CERTIFICATE-----\n`);
+      const result = await checkDependency(validPlan);
+      assert.equal(result.tls?.status, "failed");
+      assert.match(result.tls?.summary ?? "", /unreadable validity window/u);
+    }
+
     // The same real API refuses this identity. A refusal is incomplete evidence,
     // not a negative readiness observation; credentials must never enter output.
     await kubectl("-n", namespace, "create", "serviceaccount", "reader");
@@ -378,18 +613,57 @@ test(
       { mode: 0o600 },
     );
     const denied = await diagnose(
-      { ...config, kubeconfig: deniedConfig, context: "reader" },
-      token,
+      { ...dependencyPlan, kubeconfig: deniedConfig, context: "reader" },
+      [token, ...protectedValues],
     );
     for (const id of [
       "resource-quotas",
       "api-addresses",
       "gateway-class",
       `controller:${namespace}/observer`,
+      "service-egress",
+      "service-tls",
     ]) {
       assert.equal(denied.checks.get(id)?.status, "unknown", id);
     }
     assert.equal(denied.status, 2);
+
+    const missingService = "missing-middleware";
+    const role = "missing-service-reader";
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "role",
+      role,
+      "--verb=get",
+      "--resource=services",
+      `--resource-name=${missingService}`,
+    );
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "rolebinding",
+      role,
+      `--role=${role}`,
+      `--serviceaccount=${namespace}:reader`,
+    );
+    const missing = await diagnose(
+      {
+        ...config,
+        kubeconfig: deniedConfig,
+        context: "reader",
+        serviceDependency: {
+          service: { ...dependency.service, name: missingService },
+          policy: dependency.policy,
+        },
+      },
+      [token, ...protectedValues],
+    );
+    assert.equal(missing.checks.get("service-egress")?.status, "failed");
+    assert.match(missing.checks.get("service-egress")?.summary ?? "", /Service does not exist/u);
+    assert.equal(missing.status, 1);
   },
 );
 

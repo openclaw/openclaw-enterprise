@@ -50,6 +50,36 @@ rollouts. Use zero when the candidate creates none of that object. See
 [Job and ReplicaSet capacity](upgrade-checklist.md#check-job-object-capacity).
 If you omit these counts, a matching quota yields `unknown`.
 
+To check one Service dependency, add a `serviceDependency` object to the plan:
+
+```json
+{
+  "service": { "namespace": "middleware", "name": "gateway", "port": 443 },
+  "policy": { "namespace": "oce-system", "name": "gateway-egress" },
+  "tls": { "secretName": "gateway-tls", "serverName": "gateway.middleware.svc" }
+}
+```
+
+The command reads the named Service and the source NetworkPolicy. It checks for
+two TCP grants in that policy. One must pair the current IPv4 ClusterIP `/32`
+with the selected Service port. The other must pair one peer containing both the
+Service namespace and its Pod labels with the target port, including a named
+target port. A broad address grant or split selectors do not establish those
+exact grants. Verify that the policy's source `spec.podSelector` selects the
+intended calling Pods in the policy's namespace. The check observes destination
+grants in the named policy. It does not check for obsolete or additional grants.
+The report records the observed resource UIDs and resource versions.
+
+Omit `tls` for a policy check alone. Kubernetes `get` on the named Secret
+authorizes reading the entire object, including `tls.key`. Use an identity
+already authorized to read that Secret or ask the certificate owner to run the
+TLS check. The command projects only Secret identity, deletion state, and the
+public `tls.crt` field from `kubectl`. It checks the first certificate's
+validity window and matches `serverName` against its DNS subject alternative
+names. The report contains no certificate or private key bytes. Verify the
+actual served leaf, trust chain, and policy enforcement separately from the
+caller's network.
+
 For EKS, add `eks` with the intended cluster ARN and expected webhook caller
 addresses. AWS CLI must already have authorized credentials:
 
@@ -75,7 +105,8 @@ Use an HTTPS kubeconfig with server verification and a configured credential.
 The operator needs API discovery, named reads of the GatewayClass, Deployments,
 CRDs, namespace and `default/kubernetes` Service, and list access to that
 Service's EndpointSlices and the namespace's ResourceQuotas. The tool uses your
-configured credential plugin when applicable. It does not request Kubernetes Secrets.
+configured credential plugin when applicable. The optional Service dependency
+check needs named `get` access to the resources it selects.
 
 ## Run and interpret the checks
 
@@ -91,15 +122,16 @@ unknown checks. Exit status is `0` when all requested checks passed, `1` when an
 failed, and `2` when none failed but evidence is incomplete, or the plan is invalid.
 A failed check can coexist with unknown checks; inspect the complete report.
 
-| Check                              | What it establishes                                                                                                                                        |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kubernetes API                     | The operator can read the selected Kubernetes API Service with its configured TLS and credentials.                                                         |
-| GatewayClass                       | Its owner matches and `Accepted=True` refers to its current generation.                                                                                    |
-| Required CRDs                      | Each selected CRD is Established, has NamesAccepted, and serves the requested API version.                                                                 |
-| Controllers                        | Every selected Deployment has its intended nonzero replica count updated and available for its observed generation.                                        |
-| API addresses                      | The expected `/32` set matches the current Service and IPv4 EndpointSlice inventory.                                                                       |
-| ResourceQuotas                     | Each Job and ReplicaSet object limit fits reported usage plus the planned peak. A complete list can establish that neither limit exists.                   |
-| EKS identity and webhook addresses | The account, ARN, TLS endpoint and CA identify the intended EKS cluster, and expected webhook `/32`s match the filtered control-plane interface inventory. |
+| Check                              | What it establishes                                                                                                                                              |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kubernetes API                     | The operator can read the selected Kubernetes API Service with its configured TLS and credentials.                                                               |
+| GatewayClass                       | Its owner matches and `Accepted=True` refers to its current generation.                                                                                          |
+| Required CRDs                      | Each selected CRD is Established, has NamesAccepted, and serves the requested API version.                                                                       |
+| Controllers                        | Every selected Deployment has its intended nonzero replica count updated and available for its observed generation.                                              |
+| API addresses                      | The expected `/32` set matches the current Service and IPv4 EndpointSlice inventory.                                                                             |
+| ResourceQuotas                     | Each Job and ReplicaSet object limit fits reported usage plus the planned peak. A complete list can establish that neither limit exists.                         |
+| Service dependency                 | The named policy grants both required TCP edges. With `tls`, the selected public leaf has a current validity window and a matching DNS subject alternative name. |
+| EKS identity and webhook addresses | The account, ARN, TLS endpoint and CA identify the intended EKS cluster, and expected webhook `/32`s match the filtered control-plane interface inventory.       |
 
 `missing` addresses are observed but absent from the plan; `stale` addresses occur
 only in the plan. Reconcile drift through your infrastructure workflow and review

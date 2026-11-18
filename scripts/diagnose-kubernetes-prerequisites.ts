@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseArgs } from "node:util";
+import { isDeepStrictEqual, parseArgs } from "node:util";
 
 type PeakAdditional = { jobs: number; replicaSets: number };
 type DeploymentSelection = { namespace: string; name: string };
 type CrdSelection = { name: string; version: string };
+type ServiceDependency = {
+  service: DeploymentSelection & { port: number };
+  policy: DeploymentSelection;
+  tls?: { secretName: string; serverName: string };
+};
 
 type PlanInput = {
   kubeconfig?: unknown;
@@ -18,6 +24,7 @@ type PlanInput = {
   controllers?: { namespace?: unknown; name?: unknown }[];
   crds?: { name?: unknown; version?: unknown }[];
   apiCidrs?: unknown;
+  serviceDependency?: unknown;
   peakAdditional?: Partial<Record<keyof PeakAdditional, unknown>>;
   eks?: { clusterArn?: unknown; webhookCidrs?: unknown };
 };
@@ -30,6 +37,7 @@ type DiagnosticPlan = {
   controllers: DeploymentSelection[];
   crds: CrdSelection[];
   apiCidrs: string[];
+  serviceDependency: ServiceDependency | undefined;
   peakAdditional: PeakAdditional | undefined;
   eks:
     | {
@@ -44,6 +52,16 @@ type DiagnosticPlan = {
 };
 
 type KubernetesMetadata = { uid?: string; generation?: number; deletionTimestamp?: string };
+type NamedMetadata = KubernetesMetadata & {
+  namespace?: string;
+  name?: string;
+  resourceVersion?: string;
+};
+type ResourceObservation = DeploymentSelection & {
+  kind: "Service" | "NetworkPolicy" | "Secret";
+  uid: string;
+  resourceVersion: string;
+};
 type Condition = { type: string; status: string; observedGeneration?: number };
 
 type KubeConnection = {
@@ -72,8 +90,32 @@ type KubeconfigView = {
 };
 
 type ApiService = {
-  metadata?: { uid?: string; namespace?: string; name?: string };
-  spec: { clusterIP: string; clusterIPs?: string[] };
+  metadata?: NamedMetadata;
+  spec: {
+    type?: string;
+    clusterIP: string;
+    clusterIPs?: string[];
+    selector?: Record<string, string>;
+    ports?: { port: number; protocol?: string; targetPort?: number | string }[];
+  };
+};
+
+type LabelSelector = { matchLabels?: Record<string, string>; matchExpressions?: unknown[] };
+type EgressPeer = {
+  ipBlock?: { cidr: string; except?: string[] };
+  namespaceSelector?: LabelSelector;
+  podSelector?: LabelSelector;
+};
+type NetworkPolicy = {
+  metadata?: NamedMetadata;
+  spec?: {
+    podSelector?: LabelSelector;
+    policyTypes?: string[];
+    egress?: {
+      to?: EgressPeer[];
+      ports?: { protocol?: string; port?: number | string; endPort?: number }[];
+    }[];
+  };
 };
 
 type KubernetesList<T> = { metadata?: { continue?: string }; items: T[] };
@@ -147,6 +189,7 @@ type CheckResult = {
   missing?: string[];
   stale?: string[];
   limits?: QuotaLimit[];
+  resources?: ResourceObservation[];
 };
 
 type CheckReport = CheckResult & { id: string; action?: string };
@@ -161,6 +204,24 @@ type DiagnosticReport = {
 
 class DiagnosticError extends Error {}
 const namePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
+const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?![\s\S])/;
+
+function isDnsName(value: string): boolean {
+  return value.length <= 253 && value.split(".").every((part) => dnsLabel.test(part));
+}
+
+function isObject(value: unknown, fields?: string[]): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (!fields || Object.keys(value).every((key) => fields.includes(key)))
+  );
+}
+
+function isPort(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535;
+}
 
 function requireName(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length > 253 || !namePattern.test(value)) {
@@ -196,6 +257,57 @@ function requirePeakCount(count: unknown): number {
     );
   }
   return count;
+}
+
+function serviceDependency(value: unknown): ServiceDependency | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObject(value, ["service", "policy", "tls"])) {
+    throw new DiagnosticError("serviceDependency accepts only service, policy and tls");
+  }
+  const { service, policy, tls } = value;
+  if (!isObject(service, ["namespace", "name", "port"])) {
+    throw new DiagnosticError("serviceDependency.service must specify namespace, name and port");
+  }
+  if (!isObject(policy, ["namespace", "name"])) {
+    throw new DiagnosticError("serviceDependency.policy must specify namespace and name");
+  }
+  const serviceName = requireName(service.name, "serviceDependency.service.name");
+  const serviceNamespace = requireName(service.namespace, "serviceDependency.service.namespace");
+  const policyName = requireName(policy.name, "serviceDependency.policy.name");
+  const policyNamespace = requireName(policy.namespace, "serviceDependency.policy.namespace");
+  if (
+    ![serviceName, serviceNamespace, policyNamespace].every((name) => dnsLabel.test(name)) ||
+    !isDnsName(policyName)
+  ) {
+    throw new DiagnosticError(
+      "serviceDependency requires valid Service, namespace and NetworkPolicy names",
+    );
+  }
+  if (!isPort(service.port)) {
+    throw new DiagnosticError(
+      "serviceDependency.service.port must be a TCP port from 1 through 65535",
+    );
+  }
+  const selection: ServiceDependency = {
+    service: { namespace: serviceNamespace, name: serviceName, port: service.port },
+    policy: { namespace: policyNamespace, name: policyName },
+  };
+  if (tls !== undefined) {
+    if (!isObject(tls, ["secretName", "serverName"])) {
+      throw new DiagnosticError("serviceDependency.tls must specify secretName and serverName");
+    }
+    const secretName = requireName(tls.secretName, "serviceDependency.tls.secretName");
+    const serverName = typeof tls.serverName === "string" ? tls.serverName.toLowerCase() : "";
+    if (!isDnsName(secretName) || !isDnsName(serverName) || isIP(serverName)) {
+      throw new DiagnosticError(
+        "serviceDependency.tls requires a Secret name and a DNS serverName",
+      );
+    }
+    selection.tls = { secretName, serverName };
+  }
+  return selection;
 }
 
 function validateConfig(value: unknown): DiagnosticPlan {
@@ -257,6 +369,7 @@ function validateConfig(value: unknown): DiagnosticPlan {
     controllers,
     crds,
     apiCidrs,
+    serviceDependency: serviceDependency(config.serviceDependency),
     peakAdditional,
     eks,
   };
@@ -264,7 +377,7 @@ function validateConfig(value: unknown): DiagnosticPlan {
 
 // A credential plugin can inherit its parent's pipes. Bound both the wait and the
 // captured bytes even when the CLI or a descendant never closes those pipes.
-async function jsonCommand<T>(command: string, args: string[], deadline: number): Promise<T> {
+async function commandOutput(command: string, args: string[], deadline: number): Promise<string> {
   const timeout = Math.min(20_000, deadline - performance.now());
   if (timeout <= 0) {
     throw new DiagnosticError("The collection deadline expired.");
@@ -342,11 +455,252 @@ async function jsonCommand<T>(command: string, args: string[], deadline: number)
     }
     throw new DiagnosticError(reason);
   }
-  const output = Buffer.concat(stdout).toString().trim();
+  return Buffer.concat(stdout).toString().trim();
+}
+
+function parseJson<T>(output: string): T {
   // Callers project only the fields they inspect. Keep incomplete or malformed
   // observations subject to each check's existing tests and error handling.
   const parsed: unknown = output ? JSON.parse(output) : null;
   return parsed as T;
+}
+
+async function jsonCommand<T>(command: string, args: string[], deadline: number): Promise<T> {
+  return parseJson<T>(await commandOutput(command, args, deadline));
+}
+
+function observeResource(
+  kind: ResourceObservation["kind"],
+  selection: DeploymentSelection,
+  metadata: NamedMetadata | undefined,
+): ResourceObservation {
+  if (
+    metadata?.namespace !== selection.namespace ||
+    metadata.name !== selection.name ||
+    typeof metadata.uid !== "string" ||
+    metadata.uid.length === 0 ||
+    typeof metadata.resourceVersion !== "string" ||
+    metadata.resourceVersion.length === 0
+  ) {
+    throw new DiagnosticError(
+      "The response lacks the selected resource identity or resourceVersion.",
+    );
+  }
+  return {
+    kind,
+    namespace: selection.namespace,
+    name: selection.name,
+    uid: metadata.uid,
+    resourceVersion: metadata.resourceVersion,
+  };
+}
+
+function exactLabels(selector: LabelSelector | undefined, labels: Record<string, string>): boolean {
+  return (
+    isDeepStrictEqual(selector?.matchLabels, labels) &&
+    (selector?.matchExpressions === undefined || selector.matchExpressions.length === 0)
+  );
+}
+
+async function serviceEgress(
+  selection: ServiceDependency,
+  service: ApiService | null,
+  readPolicy: () => Promise<NetworkPolicy | null>,
+): Promise<CheckResult> {
+  if (service === null) {
+    return { status: "failed", summary: "The selected Service does not exist." };
+  }
+  const resources = [observeResource("Service", selection.service, service.metadata)];
+  if (service.metadata?.deletionTimestamp) {
+    return {
+      status: "failed",
+      summary: "The selected Service is terminating.",
+      resources,
+    };
+  }
+  const spec = service.spec;
+  if (!spec || !Array.isArray(spec.ports)) {
+    throw new DiagnosticError("The response lacks a complete Service spec.");
+  }
+  const addresses = spec.clusterIPs ?? (spec.type === "ExternalName" ? [] : [spec.clusterIP]);
+  if (
+    !Array.isArray(addresses) ||
+    addresses.some(
+      (address) => address !== "None" && (typeof address !== "string" || !isIP(address)),
+    )
+  ) {
+    throw new DiagnosticError("The response lacks a complete Service address inventory.");
+  }
+  const ipv4 = addresses.filter((address) => isIP(address) === 4);
+  const ports = spec.ports.filter(
+    ({ port, protocol = "TCP" }) => port === selection.service.port && protocol === "TCP",
+  );
+  if (
+    ipv4.length !== 1 ||
+    ports.length !== 1 ||
+    !spec.selector ||
+    Object.keys(spec.selector).length === 0
+  ) {
+    return {
+      status: "failed",
+      summary:
+        "The selected Service must have one IPv4 ClusterIP, the selected TCP port and a Pod selector.",
+      resources,
+    };
+  }
+  const { selector } = spec;
+  if (!isObject(selector) || Object.values(selector).some((value) => typeof value !== "string")) {
+    throw new DiagnosticError("The response lacks a valid Service Pod selector.");
+  }
+  const cidr = `${ipv4[0]}/32`;
+  const targetPort = ports[0]?.targetPort ?? selection.service.port;
+  if (!isPort(targetPort) && (typeof targetPort !== "string" || !targetPort.length)) {
+    throw new DiagnosticError("The response lacks a valid Service target port.");
+  }
+  const policy = await readPolicy();
+  if (policy === null) {
+    return {
+      status: "failed",
+      summary: "The selected NetworkPolicy does not exist.",
+      resources,
+    };
+  }
+  resources.push(observeResource("NetworkPolicy", selection.policy, policy.metadata));
+  if (policy.metadata?.deletionTimestamp) {
+    return {
+      status: "failed",
+      summary: "The selected NetworkPolicy is terminating.",
+      resources,
+    };
+  }
+  const policySpec = policy.spec;
+  if (!isObject(policySpec?.podSelector) || !Array.isArray(policySpec.policyTypes)) {
+    throw new DiagnosticError("The response lacks a complete NetworkPolicy spec.");
+  }
+  const rules = policySpec.policyTypes.includes("Egress") ? (policySpec.egress ?? []) : [];
+  if (!Array.isArray(rules)) {
+    throw new DiagnosticError("The response lacks a complete NetworkPolicy egress ruleset.");
+  }
+  // Match each peer and its port inside one rule, as rendered by service_edges.
+  const grants = (port: number | string, matches: (peer: EgressPeer) => boolean) =>
+    rules.some(
+      (rule) =>
+        rule.ports?.some(
+          (entry) =>
+            (entry.protocol ?? "TCP") === "TCP" &&
+            entry.port === port &&
+            (entry.endPort === undefined || entry.endPort === port),
+        ) && rule.to?.some(matches),
+    );
+  const serviceGrant = grants(
+    selection.service.port,
+    (peer) =>
+      peer.ipBlock?.cidr === cidr &&
+      !peer.ipBlock.except?.length &&
+      peer.namespaceSelector === undefined &&
+      peer.podSelector === undefined,
+  );
+  const podGrant = grants(
+    targetPort,
+    (peer) =>
+      peer.ipBlock === undefined &&
+      exactLabels(peer.namespaceSelector, {
+        "kubernetes.io/metadata.name": selection.service.namespace,
+      }) &&
+      exactLabels(peer.podSelector, selector),
+  );
+  const missing = [
+    ...(!serviceGrant ? [`${cidr} TCP/${selection.service.port}`] : []),
+    ...(!podGrant
+      ? [`${selection.service.namespace} Service-selected Pods TCP/${targetPort}`]
+      : []),
+  ];
+  return {
+    status: missing.length ? "failed" : "passed",
+    summary: missing.length
+      ? "The selected NetworkPolicy lacks a required Service egress grant."
+      : "The selected NetworkPolicy has both required Service egress grants.",
+    missing,
+    resources,
+  };
+}
+
+// Project a fixed allowlist at the kubectl printer. Full Secret JSON can include
+// key bytes or client-side apply annotations containing a previous private key.
+const tlsColumns =
+  "NAME:.metadata.name,NS:.metadata.namespace,UID:.metadata.uid,RV:.metadata.resourceVersion,DELETED:.metadata.deletionTimestamp,CERT:.data.tls\\.crt";
+
+function servingCertificate(
+  namespace: string,
+  { secretName, serverName }: NonNullable<ServiceDependency["tls"]>,
+  output: string,
+): CheckResult {
+  if (output === "") {
+    return { status: "failed", summary: "The selected TLS Secret does not exist." };
+  }
+  const fields = output.split(/\s+/u);
+  const [name, observedNamespace, uid, resourceVersion, deletionTimestamp, certificate] = fields;
+  if (
+    fields.length !== 6 ||
+    !name ||
+    !observedNamespace ||
+    !uid ||
+    uid === "<none>" ||
+    !resourceVersion ||
+    resourceVersion === "<none>" ||
+    !certificate
+  ) {
+    throw new DiagnosticError("The response lacks the selected TLS Secret fields.");
+  }
+  const resources = [
+    observeResource(
+      "Secret",
+      { namespace, name: secretName },
+      {
+        namespace: observedNamespace,
+        name,
+        uid,
+        resourceVersion,
+      },
+    ),
+  ];
+  const failure = (summary: string): CheckResult => ({ status: "failed", summary, resources });
+  if (deletionTimestamp !== "<none>") {
+    return failure("The selected TLS Secret is terminating.");
+  }
+  const bytes = Buffer.from(certificate, "base64");
+  const pem = bytes
+    .toString("utf8")
+    .match(/^\s*(-----BEGIN CERTIFICATE-----\s[\s\S]+?-----END CERTIFICATE-----)/u)?.[1];
+  let leaf: X509Certificate;
+  try {
+    if (!pem || bytes.toString("base64") !== certificate) {
+      throw new Error("invalid leaf");
+    }
+    leaf = new X509Certificate(pem);
+  } catch {
+    return failure("The selected TLS Secret lacks a readable X.509 leaf in tls.crt.");
+  }
+  const now = Date.now();
+  const notBefore = leaf.validFromDate.getTime();
+  const notAfter = leaf.validToDate.getTime();
+  if (!Number.isFinite(notBefore) || !Number.isFinite(notAfter)) {
+    return failure("The selected TLS leaf has an unreadable validity window.");
+  }
+  if (now < notBefore) {
+    return failure("The selected TLS leaf is not yet valid.");
+  }
+  if (now > notAfter) {
+    return failure("The selected TLS leaf has expired.");
+  }
+  if (!leaf.checkHost(serverName, { subject: "never", partialWildcards: false })) {
+    return failure("The selected TLS leaf lacks a DNS SAN matching the expected serverName.");
+  }
+  return {
+    status: "passed",
+    summary: "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
+    resources,
+  };
 }
 
 function quantity(value: unknown) {
@@ -403,11 +757,11 @@ async function diagnose(
   let transport: string[] = [];
   const checks: CheckReport[] = [];
   let kubeUnavailable: string | undefined;
-  const kube = <T>(...args: string[]) => {
+  const kubeOutput = (...args: string[]) => {
     if (kubeUnavailable) {
       throw new DiagnosticError(kubeUnavailable);
     }
-    return jsonCommand<T>(
+    return commandOutput(
       "kubectl",
       [
         "--kubeconfig",
@@ -421,6 +775,9 @@ async function diagnose(
       deadline,
     );
   };
+  const kube = async <T>(...args: string[]) => parseJson<T>(await kubeOutput(...args));
+  const getNamed = <T>(kind: string, { namespace, name }: DeploymentSelection) =>
+    kube<T | null>("-n", namespace, "get", kind, name, "--ignore-not-found", "-o", "json");
   async function check(
     id: string,
     action: string,
@@ -746,16 +1103,7 @@ async function diagnose(
       `controller:${controller.namespace}/${controller.name}`,
       "Inspect this Deployment's rollout, Pods and events; restore its intended replicas before installing OCE.",
       async () => {
-        const item = await kube<Deployment | null>(
-          "-n",
-          controller.namespace,
-          "get",
-          "deployments.apps",
-          controller.name,
-          "--ignore-not-found",
-          "-o",
-          "json",
-        );
+        const item = await getNamed<Deployment>("deployments.apps", controller);
         if (item === null) {
           return {
             status: "failed",
@@ -827,6 +1175,44 @@ async function diagnose(
       );
     },
   );
+
+  const dependency = config.serviceDependency;
+  if (dependency) {
+    const { service: selectedService, policy, tls } = dependency;
+    await check(
+      "service-egress",
+      "Reconcile the exact Service /32 and destination Pod grants through the NetworkPolicy owner.",
+      async () => {
+        const observedService = await getNamed<ApiService>("service", selectedService);
+        return serviceEgress(dependency, observedService, () =>
+          getNamed<NetworkPolicy>("networkpolicies.networking.k8s.io", policy),
+        );
+      },
+    );
+    if (tls) {
+      await check(
+        "service-tls",
+        "Verify the selected Secret and renew its serving certificate for the expected serverName through the certificate owner.",
+        async () =>
+          servingCertificate(
+            selectedService.namespace,
+            tls,
+            await kubeOutput(
+              "-n",
+              selectedService.namespace,
+              "get",
+              "secret",
+              tls.secretName,
+              "--ignore-not-found",
+              "--no-headers",
+              "--v=0",
+              "-o",
+              `custom-columns=${tlsColumns}`,
+            ),
+          ),
+      );
+    }
+  }
 
   await check(
     "resource-quotas",
@@ -932,6 +1318,12 @@ async function diagnose(
     limits: [
       "Observations are not atomic and may change immediately.",
       "Address inventory does not verify NetworkPolicy enforcement, webhook admission or Pod connectivity.",
+      ...(config.serviceDependency
+        ? [
+            "Verify the selected NetworkPolicy source Pod selector covers the calling workload.",
+            "Verify policy enforcement, the served TLS leaf and its trust chain separately from the caller's network.",
+          ]
+        : []),
       "Quota observations do not predict chart admission, node capacity or storage availability.",
     ],
   };
@@ -970,7 +1362,7 @@ try {
       if (check.action) {
         process.stdout.write(`  Next: ${check.action}\n`);
       }
-      for (const field of ["missing", "stale", "limits"] as const) {
+      for (const field of ["missing", "stale", "limits", "resources"] as const) {
         if (check[field]?.length) {
           process.stdout.write(`  ${field}: ${JSON.stringify(check[field])}\n`);
         }

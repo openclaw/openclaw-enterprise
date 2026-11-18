@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9"
+last_updated_session: "authoring-run/fd6bab1e-731b-4e93-8d14-0e64f6280246"
 ---
 
 # Production Startup Flow
@@ -85,21 +85,21 @@ The process continues; the next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
-`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` reads CRDs, controllers,
-addresses and object quota headroom. EKS binds account, ARN, endpoint and CA.
+`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` checks controllers, CRDs, addresses,
+quotas, Service grants and public TLS leaves. EKS verifies identity.
 [Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Keep values, Installation YAML and bootstrap PVC outside the checkout. Helm
-selects images, endpoint, Secrets, claim, selectors and egress.
-`openclaw.validate` requires a DNS-1123 release Namespace label (maximum 63 characters).
+Keep and synchronize values and Installation YAML outside the checkout. Helm selects images,
+endpoint, Secrets, claim, selectors and egress. `openclaw.validate` requires a
+DNS-1123 release Namespace label (63 characters maximum).
 Installation YAML selects Drivers, Backends, runtime images, projected identity,
 networking and storage.
 
-File-backed Secrets supply Installation startup, database URLs/optional CA, Better Auth
-signing, and optional ChatGPT administrator credentials. Helm neither synchronizes
-inputs, rewrites Driver configuration, nor infers runtime images.
+File-backed Secrets supply startup Installation, database URLs/optional CA,
+Better Auth signing, and optional ChatGPT administrator credentials. Supply
+Driver configuration and runtime images explicitly.
 
 ### 2. Prepare the fresh bootstrap volume
 
@@ -384,6 +384,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 13:04: Check Service dependencies. (authoring-run/fd6bab1e-731b-4e93-8d14-0e64f6280246 - cb0f0300e53fd639cec1741323c7799a425b6dc9)
 
 - 2026-11-18 02:53: Select the migration entry point from each controller image and retain signal handlers through cleanup. (authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9 - 4616630e8ab5edf25de29af948e80c72627af9c4)
 
