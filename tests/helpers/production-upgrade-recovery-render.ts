@@ -159,7 +159,18 @@ export async function standInChart(
               {
                 name: "bootstrap",
                 image,
-                args: ["scripts/bootstrap-installation.mjs"],
+                args: [
+                  "--input-type=commonjs-typescript",
+                  "-e",
+                  readFileSync(
+                    join(
+                      repository,
+                      "deploy/helm/openclaw-enterprise/files/bootstrap-selected-image.cts",
+                    ),
+                    "utf8",
+                  ),
+                  "--",
+                ],
                 ...(initializationResources ? { resources: initializationResources } : {}),
                 securityContext: { capabilities: { drop: ["ALL"] } },
               },

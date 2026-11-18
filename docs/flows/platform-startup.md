@@ -190,7 +190,7 @@ the `node` user so this startup check can read a lockfile with restrictive permi
 Development with `OCC_DATABASE_URL` instead calls
 [`composePostgresDevelopment`](../../apps/controller/src/composition/development-postgres.ts)
 and loads the initialized Installation and current IAM state. In both modes,
-[`scripts/bootstrap-installation.mjs`](../../scripts/bootstrap-installation.mjs)
+[`scripts/bootstrap-installation.ts`](../../scripts/bootstrap-installation.ts)
 runs before composition; the API and worker fail if that state is absent.
 Credential creation, private delivery, and failure handling belong to
 the [bootstrap flow](local-password-authentication.md).
@@ -288,6 +288,8 @@ execution begins in the adjacent
 ## Changelog
 
 - 2026-11-18 01:13: Record release-metadata refusal before the migration connection. (authoring-run/9a169618-9c17-48f1-927c-556605a302b2 - 254d0a96f86744b23f2394d233f0d7728480e844)
+
+- 2026-11-14 09:29: Point to the TypeScript initializer before API and worker startup. (authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7 - e23d8854d8eec8701c29e4067e7899cb04fff97c)
 
 - 2026-11-12 00:19: Give the development image runtime user ownership of the lockfile used by route compiler checks. (authoring-run/a7e18694-91f7-4a70-9555-4ef0ed62d27b - a1e00c855e88f42499d266baeea4dca599e3b227)
 

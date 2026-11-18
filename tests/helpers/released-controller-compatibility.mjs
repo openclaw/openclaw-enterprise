@@ -13,19 +13,45 @@ const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 const legacyOrigin = "http://127.0.0.1";
 const sharedCookieOrigin = "https://console.oce.localhost";
 const agentDomain = "agents.oce.localhost";
-const bootstrapProgram = "/app/scripts/bootstrap-installation.mjs";
+const bootstrapPrograms = [
+  "scripts/bootstrap-installation.mjs",
+  "scripts/bootstrap-installation.ts",
+];
 const processProgram = "released-controller-process.mts";
 const imageProbe = `
-  import { existsSync, readFileSync } from "node:fs";
+  import { existsSync, lstatSync, readFileSync } from "node:fs";
+  const manifest = JSON.parse(readFileSync("/app/package.json", "utf8"));
+  const program = ${JSON.stringify(bootstrapPrograms)}.find((path) =>
+    manifest?.name === "openclaw-enterprise" &&
+    manifest.scripts?.["db:bootstrap"] === "NODE_ENV=development node " + path &&
+    manifest.scripts?.["db:bootstrap:production"] === "NODE_ENV=production node " + path
+  );
   const configuration = "/app/apps/controller/src/auth/configuration.ts";
   console.log(JSON.stringify({
-    bootstrap: existsSync(${JSON.stringify(bootstrapProgram)}),
-    migration: JSON.parse(readFileSync("/app/package.json", "utf8")).scripts?.["db:migrate:production"],
+    bootstrap: program && lstatSync("/app/" + program, { throwIfNoEntry: false })?.isFile() ? program : null,
+    migration: manifest.scripts?.["db:migrate:production"],
     sharedCookies: existsSync(configuration) &&
       typeof (await import(configuration)).deriveSharedCookieDomain === "function",
   }));
 `;
 const authSecret = "local-compatibility-session-secret-32-bytes";
+
+function normalizedRepositoryDigest(reference) {
+  const match = /^([^@]+)@(sha256:[a-f0-9]{64})$/.exec(reference);
+  if (!match) {
+    return undefined;
+  }
+  const [, name, digest] = match;
+  const tagSeparator = name.lastIndexOf(":");
+  const repository = tagSeparator > name.lastIndexOf("/") ? name.slice(0, tagSeparator) : name;
+  const slash = repository.indexOf("/");
+  const first = slash === -1 ? "" : repository.slice(0, slash);
+  const hasRegistry = first === "localhost" || /[.:A-Z]/.test(first);
+  const registry = hasRegistry && first !== "index.docker.io" ? first : "docker.io";
+  const path = hasRegistry ? repository.slice(slash + 1) : repository;
+  const qualifiedPath = registry === "docker.io" && !path.includes("/") ? `library/${path}` : path;
+  return `${registry}/${qualifiedPath}@${digest}`;
+}
 
 async function withReleasedControllerFixture(t, images, createDatabase, scenario) {
   const owner = `controller-compatibility-${randomUUID()}`;
@@ -46,10 +72,18 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     }
   }
   for (const image of Object.values(images)) {
-    assert.match(image.reference, /@sha256:[a-f0-9]{64}$/);
+    const selectedIdentity = normalizedRepositoryDigest(image.reference);
+    assert.ok(selectedIdentity, "Controller selection must include an immutable SHA-256 digest.");
     assert.match(image.revision, /^[a-f0-9]{40}$/);
     const inspected = JSON.parse((await command(["image", "inspect", image.reference])).stdout);
     assert.equal(inspected.length, 1);
+    // Docker can shorten Docker Hub names and omit the tag in RepoDigests.
+    assert.ok(
+      inspected[0].RepoDigests.some(
+        (value) => normalizedRepositoryDigest(value) === selectedIdentity,
+      ),
+      "Inspected controller digest differs from selection.",
+    );
     assert.equal(inspected[0].Config.Labels["org.opencontainers.image.revision"], image.revision);
   }
   // Select the image's production migration entry and auth inputs before creating the database. Never retry
@@ -88,10 +122,15 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
       OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     });
   }
-  const { bootstrap, OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } = inputsByImage.get(
-    images.released.reference,
+  const {
+    bootstrap: bootstrapProgram,
+    OCC_AUTH_BASE_URL,
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+  } = inputsByImage.get(images.released.reference);
+  assert.ok(
+    bootstrapPrograms.includes(bootstrapProgram),
+    "The released image must declare both Installation bootstrap tasks for the same supported regular file.",
   );
-  assert.equal(bootstrap, true, "The released image must ship the Installation bootstrap command.");
   const db = await createDatabase();
   const migrationUrl = new URL(db.migrationUrl);
   migrationUrl.hostname = "127.0.0.1";
@@ -295,7 +334,7 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     const before = await history();
     assert.ok(before.length > 0);
     await command(
-      args(images.released, bootstrapProgram, {
+      args(images.released, `/app/${bootstrapProgram}`, {
         NODE_ENV: "development",
         OCC_DATABASE_URL: applicationUrl.toString(),
         OCC_AUTH_SECRET: authSecret,
@@ -306,6 +345,7 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
         OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/service-key.json",
       }),
     );
+    t.diagnostic(JSON.stringify({ phase: "released-bootstrap", program: bootstrapProgram }));
     await scenario({
       start,
       migrate,

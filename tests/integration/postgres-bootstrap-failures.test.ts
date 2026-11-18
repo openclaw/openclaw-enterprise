@@ -346,7 +346,7 @@ function developmentEnvironment({
 }
 
 // Most cases run the Job's code in this process (bootstrapInstallationInProcess, the function
-// scripts/bootstrap-installation.mjs runs), which saves a Node start per run. These run the
+// scripts/bootstrap-installation.ts runs), which saves a Node start per run. These run the
 // real script, for its exit status and its output streams: the lost COMMIT acknowledgement
 // (its fault loads with --import), the retained-output refusal, the known failure, the fresh
 // full path and the fast path.

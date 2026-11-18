@@ -352,7 +352,14 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	case checked && expectedAttempt == "" && migration("--require-current"):
 		hook = "separate upgrade"
 	}
-	if hook == "" || !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") {
+	// Match the current selector exactly and retain the released direct-path Job.
+	bootstrap := false
+	if len(p.Containers) == 1 && p.Containers[0].Name == "bootstrap" && len(p.Containers[0].Command) == 0 {
+		a := p.Containers[0].Args
+		bootstrap = len(a) == 4 && a[0] == "--input-type=commonjs-typescript" && a[1] == "-e" && a[3] == "--" &&
+			fmt.Sprintf("%x", sha256.Sum256([]byte(a[2]))) == "ce4b07de4b09a28cad4e27331fa75ae5e4836f77d16f9655c47ca8ab589d6217"
+	}
+	if hook == "" || (!bootstrap && !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs")) {
 		return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. Job steps do not match the supported chart."}
 	}
 	state := job.Status.state()

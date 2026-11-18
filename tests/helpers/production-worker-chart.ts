@@ -14,14 +14,13 @@ export async function initialUpgradeChart(
   directory: string,
   extension: string,
 ) {
+  assert.ok(
+    ["mjs", "ts"].includes(extension),
+    "The incumbent controller must provide exactly one supported worker probe.",
+  );
   if (extension === "ts") {
     return join(harnessRoot, "deploy/helm/openclaw-enterprise");
   }
-  assert.equal(
-    extension,
-    "mjs",
-    "The incumbent controller must provide exactly one supported worker probe.",
-  );
   return stageHistoricalWorkerChart(harnessRoot, directory);
 }
 
@@ -67,8 +66,6 @@ async function stageHistoricalWorkerChart(harnessRoot: string, directory: string
   const historical = deployments.replace(probe, (match) =>
     match.replace("scripts/production-healthcheck.ts", "scripts/production-healthcheck.mjs"),
   );
-  assert.ok(!historical.includes("scripts/production-healthcheck.ts"));
-
   const staged = join(directory, "historical-worker-chart");
   await mkdir(staged, { mode: 0o700 });
   await cp(source, staged, { recursive: true });

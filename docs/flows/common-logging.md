@@ -75,7 +75,7 @@ See the [settings reference](../reference/settings.md) for YAML shape and values
 `apps/controller/src/api-startup.ts:startApi`
 
 Worker (`apps/controller/src/worker.mjs`), bootstrap
-(`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.ts`)
+(`scripts/bootstrap-installation.ts`), and migration (`scripts/migrate-production.ts`)
 use Pino at the selected level. The API disables Fastify request logging.
 Bootstrap and migration separate protocol success output from structured
 failures. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
@@ -345,6 +345,8 @@ covers credentials, supervision, queue storage and backend verification.
 ## Changelog
 
 - 2026-11-18 04:25: Name the exported authentication refusal and library events with their request ID. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
+
+- 2026-11-14 09:29: Update the bootstrap command source pointer. (authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7 - e23d8854d8eec8701c29e4067e7899cb04fff97c)
 
 - 2026-11-13 22:56: Apply the existing credential checks to local scalar strings and Collector diagnostic codes. (authoring-run/ab7d7799-30b2-43fe-8453-86ac8cba698b - afab47b8ff040a1ab6e0fa1c5a211690ab990f32)
 

@@ -71,7 +71,7 @@ export async function runBootstrapInstallation(environment, options = {}) {
   try {
     const result = await run(
       process.execPath,
-      ["scripts/bootstrap-installation.mjs", ...(options.args ?? [])],
+      ["scripts/bootstrap-installation.ts", ...(options.args ?? [])],
       {
         cwd: repository,
         env: environment,
@@ -105,13 +105,13 @@ export function outputSink() {
 }
 
 /**
- * The initialization Job's code (`bootstrapInstallation`, what scripts/bootstrap-installation.mjs
+ * The initialization Job's code (`bootstrapInstallation`, what scripts/bootstrap-installation.ts
  * runs) in this process, with `environment` instead of process.env. It returns the same shape as
  * runBootstrapInstallation: stdout carries the result line, stderr the diagnostics and log events,
  * in the order the Job writes them to its streams.
  */
 export async function bootstrapInstallationInProcess(environment) {
-  const { bootstrapInstallation } = await import("../../scripts/bootstrap-installation.mjs");
+  const { bootstrapInstallation } = await import("../../scripts/bootstrap-installation.ts");
   const stdout = outputSink();
   const stderr = outputSink();
   const status = await bootstrapInstallation({

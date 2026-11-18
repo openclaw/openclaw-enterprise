@@ -26,7 +26,7 @@ test("development packaging isolates bootstrap service key output to the bootstr
   assert.ok(migrate);
   assert.ok(worker);
 
-  assert.deepEqual(bootstrap.command, ["scripts/bootstrap-installation.mjs"]);
+  assert.deepEqual(bootstrap.command, ["scripts/bootstrap-installation.ts"]);
   assert.equal(bootstrap.environment.NODE_ENV, "development");
   assert.equal(
     bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE,

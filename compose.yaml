@@ -73,7 +73,7 @@ services:
       OPENCLAW_DEV_PASSWORD: ${OPENCLAW_DEV_PASSWORD:-openclaw-development-password}
       OPENCLAW_DEV_INSTALLATION_NAME: ${OPENCLAW_DEV_INSTALLATION_NAME:-OpenClaw Local Development}
       OCC_BOOTSTRAP_SERVICE_KEY_FILE: /var/lib/openclaw/bootstrap/initial-admin-service-key.json
-    command: ["scripts/bootstrap-installation.mjs"]
+    command: ["scripts/bootstrap-installation.ts"]
     volumes:
       - occ_bootstrap_data:/var/lib/openclaw/bootstrap
     depends_on:

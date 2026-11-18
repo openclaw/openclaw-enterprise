@@ -44,7 +44,7 @@ initializer removes that duplication and the internal HTTP error boundary.
 
 | Area | Selected owner and source |
 | --- | --- |
-| Initialization | [`scripts/bootstrap-installation.mjs`](../../../scripts/bootstrap-installation.mjs) handles both environment modes, private output, commit, and failure cleanup. |
+| Initialization | [`scripts/bootstrap-installation.mjs`](https://github.com/openclaw/openclaw-enterprise/blob/e23d8854d8eec8701c29e4067e7899cb04fff97c/scripts/bootstrap-installation.mjs) handles both environment modes, private output, commit, and failure cleanup. |
 | API startup | [Development composition](../../../apps/controller/src/composition/development-postgres.ts) and [production composition](../../../apps/controller/src/composition/production.ts) require initialized state. |
 | Identity and keys | [Native IAM](../../../packages/iam/src/index.ts) owns the shared administrator Role and bindings; the [auth wrapper](../../../apps/controller/src/auth/index.ts) owns Better Auth key issuance and verification. |
 | Persistence and delivery | [PostgreSQL transactions](../../../packages/occ/src/state/postgres-state.ts) distinguish unknown COMMIT outcomes; [private output](../../../apps/controller/src/composition/bootstrap-output.ts) protects attempt-owned files. |

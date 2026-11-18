@@ -115,17 +115,15 @@ or PostgreSQL administrator URL.
 
 ### 3. Initialize before starting the API or worker
 
-`compose.yaml:services.bootstrap`, `scripts/bootstrap-installation.mjs`
+`compose.yaml:services.bootstrap`, `scripts/bootstrap-installation.ts`
 
-After migration exits `0`, bootstrap creates administrators, Installation, native
-IAM, audit evidence, service key, and a `provisioning` default Namespace. The
-worker provisions its Docker boundary. Existing Installation state is preserved;
-missing, expired, or revoked keys never trigger reissue.
+After migration, Compose runs `node scripts/bootstrap-installation.ts`
+in development mode. It creates the Installation, administrators, native IAM,
+audit evidence, service key, and a `provisioning` default Namespace. The worker
+provisions the Docker boundary. Reruns preserve state and keys.
 
-Only the initializer mounts `occ_bootstrap_data`; the API and worker load
-committed state after initializer success. The
-[bootstrap flow](../local-password-authentication.md) owns credentials, concurrent
-attempts, and failure recovery.
+Only bootstrap mounts `occ_bootstrap_data`. The API and worker load committed
+state after bootstrap succeeds. See [credential delivery and recovery](../local-password-authentication.md).
 
 ### 4. The API admits only local development traffic
 
@@ -427,6 +425,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 - 2026-11-17 01:37: Remove duplicate full-access probe; retain real Agent qualification. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 
 - 2026-11-16 22:56: Add explicit container-boundary development verification without changing workspace-write defaults. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - ac72edfbf884219d7392f32fd245173dffccf922)
+
+- 2026-11-14 09:29: Trace direct TypeScript bootstrap after migration. (authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7 - e23d8854d8eec8701c29e4067e7899cb04fff97c)
 
 - 2026-11-12 00:24: Correct readiness ownership. (authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291 - 6b44940d40419e4cd9889cf4b0316d95a798be56)
 

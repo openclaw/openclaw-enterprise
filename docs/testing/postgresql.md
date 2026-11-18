@@ -246,8 +246,10 @@ PostgreSQL CI runs its existing cases without an extra skipped test and does not
 qualify released-image compatibility. A failed case means the image pair is not
 qualified, even when the other case passes.
 
-The released image bootstraps and migrates a fresh database with its canonical
-commands. Its real Fastify app, password authentication, Native IAM and worker
+The fixture checks the released image's two bootstrap tasks in
+`/app/package.json` and confirms they select the same supported script. It runs
+that script directly in development mode. The released image also migrates the
+fresh database. Its real Fastify app, password authentication, Native IAM and worker
 perform namespace reads and writes while the candidate migrator runs, then
 repeat after process restart. The candidate starts a saved connection through
 its API. Both controllers must list the same persisted source ID. The released

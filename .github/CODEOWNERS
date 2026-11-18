@@ -45,7 +45,7 @@
 # /packages/audit/ @openclaw/openclaw-secops
 # /packages/contracts/src/secret-bindings.ts @openclaw/openclaw-secops
 # /packages/contracts/src/api/ @openclaw/openclaw-secops
-# /scripts/bootstrap-installation.mjs @openclaw/openclaw-secops
+# /scripts/bootstrap-installation.ts @openclaw/openclaw-secops
 # /scripts/lib/bootstrap-configuration.ts @openclaw/openclaw-secops
 # /scripts/prepare-bootstrap-volume @openclaw/openclaw-secops
 

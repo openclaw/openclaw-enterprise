@@ -1,5 +1,5 @@
 // The initialization Job's settings, read before it opens the database.
-// scripts/bootstrap-installation.mjs reads them from process.env; tests call
+// scripts/bootstrap-installation.ts reads them from process.env; tests call
 // bootstrapConfiguration in process with their own environment.
 import {
   deriveSharedCookieDomain,

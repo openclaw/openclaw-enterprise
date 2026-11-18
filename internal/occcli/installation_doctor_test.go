@@ -33,7 +33,17 @@ func installationCheckArg(t *testing.T) string {
 
 func selectedMigrationArg(t *testing.T) string {
 	t.Helper()
-	program, err := os.ReadFile("../../deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs")
+	return selectedProgramArg(t, "migrate-selected-image.cjs")
+}
+
+func selectedBootstrapArg(t *testing.T) string {
+	t.Helper()
+	return `"--input-type=commonjs-typescript",` + selectedProgramArg(t, "bootstrap-selected-image.cts")
+}
+
+func selectedProgramArg(t *testing.T, name string) string {
+	t.Helper()
+	program, err := os.ReadFile(filepath.Join("../../deploy/helm/openclaw-enterprise/files", name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,13 +68,17 @@ func TestInstallationDoctor(t *testing.T) {
 	checkArg := installationCheckArg(t)
 	alteredCheckArg := strings.TrimSuffix(checkArg, `"`) + ` "`
 	check := installationCheckContainer(checkArg)
-	job := strings.Replace(unchecked, `"initContainers":[`, `"initContainers":[`+check+`,`, 1)
+	const historicalBootstrap = `"scripts/bootstrap-installation.mjs"`
 	const migration = `"scripts/migrate-production.mjs"`
 	const currentMigration = `"scripts/migrate-production.ts"`
 	selectedMigration := selectedMigrationArg(t)
+	selectedBootstrap := selectedBootstrapArg(t)
+	historical := strings.Replace(unchecked, `"initContainers":[`, `"initContainers":[`+check+`,`, 1)
+	job := strings.Replace(strings.Replace(historical, migration, selectedMigration, 1), historicalBootstrap, selectedBootstrap, 1)
 	failed := strings.Replace(strings.Replace(job, `"type":"Complete"`, `"type":"Failed"`, 1), `"succeeded":1`, `"failed":1`, 1)
 	wrongRelease := strings.Replace(job, `io/instance":"demo"`, `io/instance":"other"`, 1)
-	upgrade := strings.Replace(job, migration+`,"--expect-empty"`, migration, 1)
+	upgrade := strings.Replace(job, selectedMigration+`,"--expect-empty"`, selectedMigration, 1)
+	historicalUpgrade := strings.Replace(historical, migration+`,"--expect-empty"`, migration, 1)
 	withSidecar := func(body string) string {
 		return strings.Replace(body, `"initContainers":[{`, `"initContainers":[{"restartPolicy":"Always",`, 1)
 	}
@@ -75,21 +89,29 @@ func TestInstallationDoctor(t *testing.T) {
 		success    bool
 		uid        string
 	}{
-		{"selected-install", 200, strings.Replace(job, migration, selectedMigration, 1), "Initialization Job (install hook): complete", true, ""},
-		{"selected-upgrade", 200, strings.Replace(upgrade, migration, selectedMigration, 1), "upgrade hook): complete", true, ""},
-		{"selected-separate-upgrade", 200, strings.Replace(upgrade, migration, selectedMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
-		{"altered-selected-program", 200, strings.Replace(job, migration, `"-e","process.exit(0)","--"`, 1), "steps do not match", false, ""},
-		{"selected-extra-arg", 200, strings.Replace(job, migration, selectedMigration+`,"unexpected"`, 1), "steps do not match", false, ""},
-		{"typed-install", 200, strings.Replace(job, migration, currentMigration, 1), "Initialization Job (install hook): complete", true, ""},
-		{"typed-upgrade", 200, strings.Replace(upgrade, migration, currentMigration, 1), "upgrade hook): complete", true, ""},
-		{"separate-upgrade", 200, strings.Replace(upgrade, migration, currentMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
-		{"historical-separate-upgrade", 200, strings.Replace(upgrade, migration, migration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
-		{"separate-extra-arg", 200, strings.Replace(upgrade, migration, currentMigration+`,"--require-current","unexpected"`, 1), "steps do not match", false, ""},
-		{"typed-command-override", 200, strings.Replace(job, `"name":"migration","args":[`+migration, `"name":"migration","command":["node"],"args":[`+currentMigration, 1), "steps do not match", false, ""},
-		{"wrong-package-task", 200, strings.Replace(upgrade, migration, `"--run","db:migrate","--"`, 1), "steps do not match", false, ""},
-		{"install", 200, job, "Initialization Job (install hook): complete", true, ""},
+		{"selected-install", 200, job, "Initialization Job (install hook): complete", true, ""},
+		{"altered-selected-bootstrap", 200, strings.Replace(job, selectedBootstrap, `"--input-type=commonjs-typescript","-e","process.exit(0)","--"`, 1), "Initialization: unknown. Job steps do not match", false, ""},
+		{"selected-bootstrap-wrong-input-type", 200, strings.Replace(job, selectedBootstrap, strings.Replace(selectedBootstrap, "commonjs-typescript", "commonjs", 1), 1), "steps do not match", false, ""},
+		{"selected-bootstrap-extra-arg", 200, strings.Replace(job, selectedBootstrap, selectedBootstrap+`,"unexpected"`, 1), "steps do not match", false, ""},
+		{"unreleased-direct-typescript-bootstrap", 200, strings.Replace(job, selectedBootstrap, `"scripts/bootstrap-installation.ts"`, 1), "Initialization: unknown. Job steps do not match", false, ""},
+		{"selected-upgrade", 200, upgrade, "upgrade hook): complete", true, ""},
+		{"selected-separate-upgrade", 200, strings.Replace(upgrade, selectedMigration, selectedMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
+		{"altered-selected-program", 200, strings.Replace(job, selectedMigration, `"-e","process.exit(0)","--"`, 1), "steps do not match", false, ""},
+		{"selected-extra-arg", 200, strings.Replace(job, selectedMigration, selectedMigration+`,"unexpected"`, 1), "steps do not match", false, ""},
+		{"typed-install", 200, strings.Replace(job, selectedMigration, currentMigration, 1), "Initialization Job (install hook): complete", true, ""},
+		{"typed-upgrade", 200, strings.Replace(upgrade, selectedMigration, currentMigration, 1), "upgrade hook): complete", true, ""},
+		{"separate-upgrade", 200, strings.Replace(upgrade, selectedMigration, currentMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
+		{"historical-separate-upgrade", 200, strings.Replace(historicalUpgrade, migration, migration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
+		{"separate-extra-arg", 200, strings.Replace(upgrade, selectedMigration, currentMigration+`,"--require-current","unexpected"`, 1), "steps do not match", false, ""},
+		{"typed-command-override", 200, strings.Replace(job, `"name":"migration","args":[`+selectedMigration, `"name":"migration","command":["node"],"args":[`+currentMigration, 1), "steps do not match", false, ""},
+		{"wrong-package-task", 200, strings.Replace(upgrade, selectedMigration, `"--run","db:migrate","--"`, 1), "steps do not match", false, ""},
 		{"unchecked-upgrade", 200, strings.Replace(unchecked, migration+`,"--expect-empty"`, migration, 1), "steps do not match", false, ""},
-		{"upgrade", 200, upgrade, "upgrade hook): complete", true, ""},
+		{"historical-install", 200, historical, "install hook): complete", true, "id"},
+		{"historical-altered-check", 200, strings.Replace(historical, checkArg, alteredCheckArg, 1), "steps do not match", false, "id"},
+		{"historical-extra-bootstrap-arg", 200, strings.Replace(historical, historicalBootstrap, historicalBootstrap+`,"unexpected"`, 1), "steps do not match", false, "id"},
+		{"wrong-bootstrap-task", 200, strings.Replace(job, selectedBootstrap, `"scripts/bootstrap-installation.js"`, 1), "steps do not match", false, "id"},
+		{"bootstrap-command-override", 200, strings.Replace(job, `{"name":"bootstrap"`, `{"name":"bootstrap","command":["node"]`, 1), "steps do not match", false, "id"},
+		{"extra-bootstrap-container", 200, strings.Replace(job, `"containers":[{`, `"containers":[{"name":"sidecar"},{`, 1), "steps do not match", false, "id"},
 		{"sidecar-migration", 200, strings.Replace(job, `{"name":"migration"`, `{"restartPolicy":"Always","name":"migration"`, 1), "runs an initialization step as a sidecar", false, "id"},
 		{"sidecar-upgrade-check", 200, withSidecar(upgrade), "runs an initialization step as a sidecar", false, "id"},
 		{"wrong-upgrade-check", 200, strings.Replace(upgrade, checkArg, `"process.exit(0)"`, 1), "steps do not match", false, ""},
@@ -101,7 +123,7 @@ func TestInstallationDoctor(t *testing.T) {
 		{"deleting", 200, strings.Replace(job, `"uid":"id"`, `"uid":"id","deletionTimestamp":"now"`, 1), "did not identify", false, "id"},
 		{"external-controller", 200, strings.Replace(job, `"spec":{"template"`, `"spec":{"managedBy":"example.invalid/handoff-readback","template"`, 1), "unsupported Job controller", false, "id"},
 		{"no-condition", 200, strings.Replace(job, "Complete", "SuccessCriteriaMet", 1), "completion not established", false, ""},
-		{"wrong-steps", 200, strings.Replace(job, "migrate-production.mjs", "sensitive-detail", 1), "do not match", false, ""},
+		{"wrong-steps", 200, strings.Replace(job, selectedMigration, `"sensitive-detail"`, 1), "do not match", false, ""},
 		{"missing", 404, `{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","code":404,"message":"jobs.batch \"demo-initialization\" not found"}`, "not found at the selected target", false, ""},
 		{"login", 401, `{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Unauthorized","code":401,"message":"sensitive-detail"}`, "kubectl reported a login problem", false, ""},
 		{"denied", 403, `{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Forbidden","code":403,"message":"sensitive-detail"}`, "kubectl reported a refusal", false, ""},
