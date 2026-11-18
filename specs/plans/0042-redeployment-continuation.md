@@ -1,5 +1,5 @@
 ---
-status: In progress
+status: Completed
 rfc: ../rfcs/0042-redeployment-continuation.md
 ---
 
@@ -16,7 +16,7 @@ and native OpenClaw recovery. Kubernetes dedicated Codex is the first qualified
 topology. Preserve explicit stop, current authority, retained-state ownership,
 and the refusal to take over active remote execution.
 
-The RFC was submitted for human review before implementation and merged in [PR #6434](https://github.com/openclaw/openclaw-enterprise/pull/6434). [Implementation PR #6442](https://github.com/openclaw/openclaw-enterprise/pull/6442) contains the lifecycle and native recovery changes. Live qualification passes; final native image checks and publication remain pending. The RFC decision status remains Proposed.
+The RFC was submitted for human review before implementation and merged in [PR #6434](https://github.com/openclaw/openclaw-enterprise/pull/6434). [Implementation PR #6442](https://github.com/openclaw/openclaw-enterprise/pull/6442) merged the lifecycle and native recovery changes as `749ffa37b566f64f691e752eb502dca2468d41a3`. Live qualification, native image checks, and image publication are complete. The RFC decision status remains Proposed.
 
 ## Delivery
 
@@ -58,16 +58,16 @@ The RFC was submitted for human review before implementation and merged in [PR #
       Prove the child performed the command and the Gateway delivered its answer.
 - [x] Update the interrupted-turn reference, Compute contract, persistence
       inventory, lifecycle flow, and operator procedures together.
-- [ ] Run proportional source checks, independent review, and native controller
+- [x] Run proportional source checks, independent review, and native controller
       and runtime checks on AMD64 and ARM64 at the final branch head.
 
 ### 5. Publish
 
-- [ ] Resolve substantive review findings and merge the RFC and implementation
+- [x] Resolve substantive review findings and merge the RFC and implementation
       in dependency order.
-- [ ] Wait for successful CI on the selected main source, then run the authorized
+- [x] Wait for successful CI on the selected main source, then run the authorized
       image publication workflow. Verify both remote digests against its receipt.
-- [ ] Record source, image identities, qualification evidence, and remaining
+- [x] Record source, image identities, qualification evidence, and remaining
       limits. Passing branch checks does not mean published or deployed.
 
 ## Verification status
@@ -86,8 +86,8 @@ Gateway type checks pass. [Required CI at the audited commit](https://github.com
 passes. Independent review found no P0 issues in its selected scope; it did not
 review lower priorities.
 
-AC-1, AC-2, AC-4, and AC-5 pass in the complete real ARM64 Kubernetes/model
-suite at `70de51b4a18a47a1f309d88c5869fbb67e2f6b4f`: 6 passed, 0 failed, 0
+AC-1, AC-2, AC-4, and AC-5 pass in the complete selected dedicated Codex
+workflow on real ARM64 Kubernetes at `70de51b4a18a47a1f309d88c5869fbb67e2f6b4f`: 6 passed, 0 failed, 0
 skipped. The run uses Helm-installed OCC and PostgreSQL, Codex 0.164.0, and
 gpt-6-astra through the supported HTTPS Responses endpoint. It covers all eight
 recovery/refusal scenarios, completed/cancelled history, native child execution,
@@ -100,8 +100,33 @@ profile. It does not prove per-user OCC identity propagation. History comparison
 preserves transcript content and actor identity while excluding the current
 profile avatar's cache version. Earlier runs using the default provider transport
 failed on rate limits or model-probe timeouts; readiness checks were not weakened.
-Final-head native checks, merge, and image publication are still required. The
-[implementation PR](https://github.com/openclaw/openclaw-enterprise/pull/6442)
-records their run URLs and publication identities.
+[Final-head CI](https://github.com/openclaw/openclaw-enterprise/actions/runs/44260929757)
+and [all six native image jobs](https://github.com/openclaw/openclaw-enterprise/actions/runs/44261211624)
+pass at `e81afe226ffbcf0560bb270a9b7ab6930f209ab2`. All four downloaded platform
+archives passed checksum, source, workflow, build-digest, and OCI-blob verification.
+
+## Published images
+
+[Publication run 44274218008](https://github.com/openclaw/openclaw-enterprise/actions/runs/44274218008)
+published both images from main source `f3822e81efe52c1ed21479d7692481a732f62645`
+after its [successful main-push CI](https://github.com/openclaw/openclaw-enterprise/actions/runs/44273883609).
+The implementation merge also passed [full main CI](https://github.com/openclaw/openclaw-enterprise/actions/runs/44270646287).
+The release rebuilt and tested both native architectures before publication.
+
+| Image | Published index digest |
+| --- | --- |
+| `ghcr.io/openclaw/openclaw-enterprise-controller` | `sha256:0ef1b54503cfe1cc6c0fc6b35fb8af23daff129ea6def13149ca086de913d4b1` |
+| `ghcr.io/openclaw/openclaw-enterprise-runtime` | `sha256:7c9eb490f49d73bb5280aa49845e62cfcc08329d39ddfd668abe3f494a2d07fe` |
+
+Both images received `latest` and immutable tag
+`sha-f3822e81efe52c1ed21479d7692481a732f62645`. An independent registry read verified
+both tags, their index and platform/config digests, and both architectures' source
+labels against the checksum-verified publication receipt.
+
+This publishes images only. No Helm chart was published and no running Installation
+was upgraded. The live model proof above used the recorded local image builds;
+it is not a deployment test of these published bytes. Dedicated replacement still
+has downtime, no automatic rollback, and no exactly-once effects guarantee.
+
 
 ## Manual Notes
