@@ -18,7 +18,7 @@ services:
     build: *development-build
     environment:
       OCC_MIGRATION_DATABASE_URL: postgresql://occ_migrator:occ-migrator-local@postgres:5432/openclaw_enterprise
-    command: ["scripts/migrate-production.mjs"]
+    command: ["scripts/migrate-production.ts"]
     depends_on:
       postgres:
         condition: service_healthy

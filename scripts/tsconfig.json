@@ -52,7 +52,9 @@
     "resolveJsonModule": true
   },
   "include": [
+    "../eslint.config.ts",
     "*.ts",
+    "migration-history.mjs",
     "ci/**/*.ts",
     "lib/**/*.ts",
     "../deploy/helm/src/*.ts",

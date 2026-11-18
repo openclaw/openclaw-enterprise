@@ -8,6 +8,8 @@ This record preserves the dated changes to the controller worker flow. See the [
 
 ## Changelog
 
+- 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
+
 - 2026-11-09 05:35: Stop before claiming. (01a1becb-641e-7b63-9791-01de09b1cda6 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 
 - 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)

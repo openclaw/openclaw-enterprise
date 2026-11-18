@@ -69,7 +69,17 @@ Follow the contract's [request-time exchange ordering](../reference/drivers/cred
 live transport custody, deadlines, response protection and uncertainty requirements.
 
 For prepared repository delivery, implement `bindRepositoryGit` and Sandbox
-`repositoryAccess`. The larger
+`repositoryAccess`. The worker mints an installation token for the admitted scope
+ahead of requests and stores it encrypted. The verified recipient, your sender or a
+trusted host that injects the credential, holds only the installed material version.
+Its request path asks OCC for a fresh decision for every request, refuses when
+material is absent, and keeps no ref rule or draft record. For a ref-scoped
+repository grant, that decision applies the grant's push ref, pull request base and
+draft allowance. The `githubInstallation` preview inherits the App installation's
+access, and the `github-repository` profile relies on GitHub's own branch
+restrictions; see [GitHub access levels](../reference/repository-credentials/access-levels.md#registry-profiles).
+Selected packages run in the worker beside the GitHub App and custody keys;
+operator review of the package is their boundary. The larger
 [non-OpenShell repository fixture](../../tests/fixtures/driver-packages/protected-execution-driver/repository-git.ts)
 stores material in its loopback sender and reads back the attempt and version
 over authenticated HTTPS before confirming. Its capability listener is separate;

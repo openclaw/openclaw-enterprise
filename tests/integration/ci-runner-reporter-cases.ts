@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -162,7 +162,6 @@ export function registerReporterCases() {
   test("run names DOMException and empty-message failures", async (t) => {
     const root = await fixture(t);
     const file = "tests/integration/errors.test.mjs";
-    const resultsPath = join(root, "results/errors.json");
     await writeSingleFileRunnerLane(
       root,
       "errors",
@@ -176,27 +175,39 @@ export function registerReporterCases() {
       ].join("\n"),
     );
 
-    const result = runRunnerSync(laneArgs(root, "errors", "state/errors.jsonl", resultsPath));
-    assert.equal(result.status, 1);
-    const tests = readReportedTests(await readFile(resultsPath, "utf8"));
-    // The stack header names the exception, and the frame skips Node's DOMException constructor.
-    for (const [name, message, line] of [
-      ["timeout", "TimeoutError: The operation was aborted due to timeout", 2],
-      ["abort", "AbortError: This operation was aborted", 3],
-      ["empty", "Error", 4],
+    // Node reports physical source paths even when the CLI receives a checkout alias.
+    const alias = join(root, "checkout-alias");
+    await symlink(root, alias, "dir");
+    for (const [label, checkoutRoot] of [
+      ["direct", root],
+      ["alias", alias],
     ] as const) {
-      const error = runnerRecord(requireTestResult(tests, name).error, "test error");
-      assert.equal(error.message, message);
+      const { statePath, resultsPath } = runnerArtifactPaths(root, label);
+      const result = runRunnerSync(laneArgs(checkoutRoot, "errors", statePath, resultsPath));
+      assert.equal(result.status, 1, result.stderr);
+      const summary = parseRunnerRecord(await readFile(resultsPath, "utf8"), "lane result");
+      const fileResult = firstRunnerRecord(summary.files, "file result");
+      assert.equal(fileResult.cleanup, null);
+      const tests = runnerNamedRows(fileResult.tests, "test results");
+      // The stack header names the exception, and the frame skips Node's DOMException constructor.
+      for (const [name, message, line, throwColumn] of [
+        ["timeout", "TimeoutError: The operation was aborted due to timeout", 2, 31],
+        ["abort", "AbortError: This operation was aborted", 3, 76],
+        ["empty", "Error", 4, 29],
+      ] as const) {
+        const reported = requireTestResult(tests, name);
+        assert.equal(reported.file, file);
+        assert.equal(reported.line, line);
+        assert.equal(reported.column, 1);
+        const error = runnerRecord(reported.error, "test error");
+        assert.equal(error.message, message);
+        assert.equal(error.frame, `at TestContext.<anonymous> (${file}:${line}:${throwColumn})`);
+      }
       assert.match(
-        runnerText(error.frame, "error frame"),
-        new RegExp(`\\(${file.replaceAll(".", "\\.")}:${line}:\\d+\\)$`),
+        result.stderr,
+        /run-tests: failed tests\/integration\/errors\.test\.mjs:2 "timeout": TimeoutError: The operation was aborted due to timeout \(at /,
       );
     }
-    // The job log names the failure too.
-    assert.match(
-      result.stderr,
-      /run-tests: failed tests\/integration\/errors\.test\.mjs:2 "timeout": TimeoutError: The operation was aborted due to timeout \(at /,
-    );
   });
 
   test("policy probe diagnostics preserve first-match failure and omit model content", async (t) => {

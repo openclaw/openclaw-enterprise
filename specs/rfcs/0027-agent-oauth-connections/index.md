@@ -17,7 +17,7 @@ author: mrunalp
   [RFC-0010 personal access](../0010-agent-access.md#access-contract);
   [credential sources](../../../docs/reference/credential-sources.md);
   [per-Agent sandbox policies](../../../docs/reference/sandbox-policies.md);
-  [RFC-0023 Credential Proxy](../0023-egress-proxy-credential-lifecycle/index.md)
+  [RFC-0023](../0023-egress-proxy-credential-lifecycle/index.md) and its [credential ownership amendment](../0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md)
 
 ## Summary
 

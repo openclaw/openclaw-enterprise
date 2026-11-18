@@ -555,7 +555,7 @@ export function validateSuccessResultData(data: unknown): SuccessResultData | un
 }
 
 export function deploymentErrorForWork(
-  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData">>,
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData" | "agentId">>,
 ): DeploymentStatusError | null {
   if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) {
     return null;
@@ -567,7 +567,7 @@ export function deploymentErrorForWork(
       : validateFailureData(code, immutableCopy(work.resultData));
   return Object.freeze({
     code,
-    message: deploymentErrorMessage(code),
+    message: deploymentErrorMessage(code, work.agentId ?? "AGENT_ID"),
     ...(data === undefined ? {} : { data }),
   });
 }
@@ -674,7 +674,7 @@ function completedWithoutActivation(
 // that holds the setting (finding 1393). `deployment-failure-steps.ts` records which kind of
 // step each code leads to, so clients choose their actions without parsing this text: keep the
 // two in step.
-function deploymentErrorMessage(code: string): string {
+function deploymentErrorMessage(code: string, agentId: string): string {
   switch (code) {
     case "CONVERGENCE_DEADLINE_EXCEEDED":
       return "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.";
@@ -702,6 +702,10 @@ function deploymentErrorMessage(code: string): string {
       return "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
+    // The runtime holds unready on check `gateway-state-lock`; its log names the holder. The
+    // record does not say which workload holds, so the text names both log sources.
+    case "RUNTIME_STATE_LOCK_UNVERIFIED":
+      return `Startup check gateway-state-lock failed: the runtime cannot verify that its state lock holder stopped. See it with 'occ agent logs ${agentId} --source gateway' (Harness: --source agent), then follow the troubleshooting guide.`;
     case "EXECUTION_ADMISSION_WITHDRAWN":
       return "This version can no longer run with its admitted access. The controller closed that access and observed the workload stopped. Deploy a new version to use the current installation.";
     case "REVISION_SUPERSEDED":

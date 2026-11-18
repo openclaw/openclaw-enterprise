@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 
-import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 
 type LookupMiss = { lookup: "unavailable" | "other" };
 type ConditionStatus = "True" | "False" | "Unknown" | "other";

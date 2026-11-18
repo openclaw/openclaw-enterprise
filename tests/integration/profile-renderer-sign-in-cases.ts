@@ -360,6 +360,19 @@ export function registerSignInCases(): void {
       tokenUrl: "https://tenant.idp.example.test/oauth/token",
       jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
     };
+    const split = await render(
+      "openclaw",
+      externalSignInInput({
+        google: undefined,
+        oidc: {
+          ...oidc,
+          tokenUrl: "https://oauth2.idp.example.test/token",
+          jwksUrl: "https://www.idp.example.test/oauth2/v3/certs",
+        },
+      }),
+    );
+    assert.equal(split.summary.ok, true, split.preflight.errors.join("\n"));
+    assert.match(split.values, /tokenUrl: https:\/\/oauth2\.idp\.example\.test\/token/);
     for (const [override, message] of [
       [
         { issuer: "http://tenant.idp.example.test/" },
@@ -391,15 +404,15 @@ export function registerSignInCases(): void {
       ]),
       [
         { tokenUrl: "https://tenant.idp.exam\tple.test/oauth/token" },
-        /controlPlane.oidc.tokenUrl must be an https URL on port 443 on the issuer's host/,
+        /controlPlane.oidc.tokenUrl must be an https URL on port 443 with a DNS host name/,
       ],
       [
-        { tokenUrl: "https://other.example.test/token" },
-        /controlPlane.oidc.tokenUrl must be an https URL on port 443 on the issuer's host/,
+        { tokenUrl: "https://169.254.169.254/token" },
+        /controlPlane.oidc.tokenUrl must be an https URL on port 443 with a DNS host name/,
       ],
       [
         { jwksUrl: "https://tenant.idp.example.test:8443/jwks" },
-        /controlPlane.oidc.jwksUrl must be an https URL on port 443 on the issuer's host/,
+        /controlPlane.oidc.jwksUrl must be an https URL on port 443 with a DNS host name/,
       ],
       [
         { authorizationUrl: "https://tenant.idp.example.test/authorize?x=1" },

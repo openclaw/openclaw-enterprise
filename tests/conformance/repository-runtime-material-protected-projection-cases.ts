@@ -101,10 +101,10 @@ test("API-admitted protected credential-free metadata projects no inference tool
   });
   // The API fixture stores the protected plan. Apply the production Compute admission
   // to that revision and check the release gate and projection with the saved tag.
-  const launchTag = "openshell-codex-launch:v1:";
+  const launchTag = "http-chat:v1:openshell-codex-launch:v1:";
   assert.equal(driver.admitRevision(r), launchTag);
-  assert.equal(ordinary.admitRevision(r), undefined);
-  assert.equal(driver.admitRevision({ ...r, sandboxDriverId: "foreign-sandbox" }), undefined);
+  assert.equal(ordinary.admitRevision(r), "http-chat:v1:");
+  assert.equal(driver.admitRevision({ ...r, sandboxDriverId: "foreign-sandbox" }), "http-chat:v1:");
   const tagged = {
     ...r,
     egressPlan: r.egressPlan,

@@ -14,7 +14,7 @@ import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createControllerAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth } from "../helpers/password-hasher.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -98,7 +98,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     agentDomain: "agents.oce.localhost",
     secret: `test-secret-${randomUUID()}`,
     memoryDatabase,
-  };
+  } satisfies Parameters<typeof createControllerAuth>[0];
   const auth = createControllerAuth(authOptions);
   const credentials = { email: "admin@example.invalid", password: `test-password-${randomUUID()}` };
   const account = await auth.createAccount(credentials);
