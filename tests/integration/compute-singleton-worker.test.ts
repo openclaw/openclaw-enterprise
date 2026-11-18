@@ -6,7 +6,7 @@ test("before-commit Compute Drivers must expose an activation operation", async 
     await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
-      import("../helpers/development.mjs"),
+      import("../helpers/development.ts"),
     ]);
   const pool = new Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
   try {
@@ -31,7 +31,7 @@ test("Compute Driver maintenance intervals must be positive safe integers", asyn
     await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
-      import("../helpers/development.mjs"),
+      import("../helpers/development.ts"),
     ]);
   const pool = new Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
   try {
@@ -69,7 +69,7 @@ test("worker timer settings must fit a Node.js timer", async () => {
     "OCC_WORKER_POLL_INTERVAL_MS",
     "OCC_WORKER_LEASE_DURATION_MS",
     "OCC_WORKER_DATABASE_TIMEOUT_MS",
-  ];
+  ] as const;
   for (const name of timers) {
     assert.throws(
       () => workerEnvironmentSettings({ [name]: String(over) }),
@@ -107,7 +107,7 @@ test("worker timer settings must fit a Node.js timer", async () => {
     for (const [option, label] of [
       ["pollIntervalMs", "Worker poll interval"],
       ["leaseDurationMs", "Worker claim lease"],
-    ]) {
+    ] as const) {
       assert.throws(
         () => createControllerWorker({ pool, [option]: over }),
         new RegExp(`${label} must be at most ${MAX_TIMER_DELAY_MS} milliseconds`),
