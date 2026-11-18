@@ -105,10 +105,11 @@ function failureFields(error: Record<string, unknown>): Readonly<Record<string, 
   const reasonCode = candidates.find(
     (code): code is string => typeof code === "string" && SAFE_CODE.test(code),
   );
-  const sqlState =
-    typeof error.code === "string" && SQLSTATE.test(error.code) && !SAFE_CODE.test(error.code)
-      ? error.code
-      : undefined;
+  // The query builder wraps a driver error and keeps it as `cause`.
+  const sqlState = [error.code, errorRecord(error.cause)?.code].find(
+    (code): code is string =>
+      typeof code === "string" && SQLSTATE.test(code) && !SAFE_CODE.test(code),
+  );
   return {
     ...(reasonCode === undefined ? {} : { reasonCode }),
     ...(sqlState === undefined ? {} : { code: sqlState }),

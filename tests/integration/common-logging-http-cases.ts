@@ -311,6 +311,8 @@ export function registerHttpCases(): void {
     class DatabaseError extends Error {
       readonly code = "57P01";
     }
+    // The query builder's wrapper, as the Postgres adapter throws it.
+    class DrizzleQueryError extends Error {}
 
     withAuthLogContext(
       "sign-in-password",
@@ -321,6 +323,7 @@ export function registerHttpCases(): void {
         // A PostgreSQL error: its SQLSTATE starts with a digit, so it is kept as `code`
         // and the class name stands in as the reason.
         log("error", text, new DatabaseError(text), { cookie, email, sessionId, key, keyId });
+        log("error", text, new DrizzleQueryError(text, { cause: new DatabaseError(text) }));
         // A code that is not an identifier falls back to the class name.
         log("error", text, Object.assign(new TypeError(text), { code: `${email} ${query}` }));
         log("warn", text, text);
@@ -345,6 +348,7 @@ export function registerHttpCases(): void {
       [
         scoped("ERROR"),
         scoped("ERROR", { reasonCode: "DatabaseError", code: "57P01" }),
+        scoped("ERROR", { reasonCode: "DrizzleQueryError", code: "57P01" }),
         scoped("ERROR", { reasonCode: "TypeError" }),
         scoped("WARN"),
         {
