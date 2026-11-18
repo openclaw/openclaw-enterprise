@@ -9,7 +9,7 @@ import {
   loadRuntimeArtifact,
   prepareRuntimeArtifactLayout,
 } from "../../scripts/ci/runtime-artifact.ts";
-import { prepareLane } from "../../scripts/ci/prepare.mjs";
+import { prepareLane } from "../../scripts/ci/prepare.ts";
 import { cleanupResourceIds } from "../../scripts/ci/cleanup.ts";
 
 function record(value: unknown): Record<string, unknown> {

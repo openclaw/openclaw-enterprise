@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { prepareRuntimeImageSmoke } from "../../scripts/ci/prepare.mjs";
+import { prepareRuntimeImageSmoke } from "../../scripts/ci/prepare.ts";
 import { digest, fixtureImageCommands, nodeBaseImage } from "../helpers/ci-prepare-fixture.ts";
 
 export function registerNativeTimingCases() {

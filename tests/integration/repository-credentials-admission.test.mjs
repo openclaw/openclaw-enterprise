@@ -84,7 +84,6 @@ function repositorySandbox(registry, id = "repository-admission-openshell", user
     {
       gateway: { workspaceMode: "operator" },
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         ...(userNamespaces === undefined ? {} : { userNamespaces }),
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
@@ -1993,10 +1992,14 @@ test("explicit live adoption still requires a qualified Proxy", async (t) => {
   }
 });
 
-test("the policy worker fails a Driver's named policy refusal at once", async () => {
-  // Finding 2144's live-application backstop: the OpenShell Driver refuses a Git route bypass
-  // before updating the policy. A retry cannot change that, so the worker fails the application
-  // as unsupported instead of retrying until it reports the outcome unconfirmed.
+// Runs one worker pass for a pending application whose provider write is refused by `apply`.
+// `observe` answers the worker's provider reads, calls counted in `applied` for each write.
+async function policyWorkerPass({
+  apply,
+  observe,
+  heartbeat,
+  signal = AbortSignal.timeout(5_000),
+}) {
   const grant = {
     id: "git-direct",
     binary: "/usr/bin/git",
@@ -2052,8 +2055,9 @@ test("the policy worker fails a Driver's named policy refusal at once", async ()
     },
     audit: { append: async () => {} },
   };
+  let heartbeats = 0;
   const queue = {
-    heartbeat: async (claim) => claim,
+    heartbeat: async (claim) => (heartbeat ? heartbeat(++heartbeats, claim) : claim),
     complete: async () => outcomes.push("complete"),
     fail: async (_claim, { code }) => outcomes.push(`fail ${code}`),
     retry: async (_claim, { code }) => outcomes.push(`retry ${code}`),
@@ -2064,16 +2068,12 @@ test("the policy worker fails a Driver's named policy refusal at once", async ()
   // Exercise the registered schema and real admission method before the
   // controlled provider refusal that this worker classification case proves.
   const driver = repositorySandbox(undefined, "sandbox");
-  driver.observeNetworkPolicy = async () => ({
-    resourceVersion: "1",
-    policyVersion: "1",
-    state: "applied",
-    matches: false,
-  });
+  driver.observeNetworkPolicy = async () => observe(applied);
   driver.applyNetworkPolicy = async () => {
     applied++;
-    throw new SandboxNetworkPolicyConflictError("remove network grant git-direct (github.com).");
+    throw apply();
   };
+  let failure;
   const outcome = await reconcileSandboxPolicy(
     {
       configurations,
@@ -2087,7 +2087,7 @@ test("the policy worker fails a Driver's named policy refusal at once", async ()
       iam: { id: "iam", authorize: async () => ({ allowed: true }) },
       installationId: "ins-2144",
       ceiling: [grant],
-      signal: AbortSignal.timeout(5_000),
+      signal,
       maxAttempts: 5,
       deadlineMs: 600_000,
       leaseDurationMs: 30_000,
@@ -2100,10 +2100,166 @@ test("the policy worker fails a Driver's named policy refusal at once", async ()
       attemptCount: 1,
       ageMs: 0,
     },
-  );
+  ).catch((error) => {
+    failure = error;
+  });
+  return { applied, outcome, outcomes, policy, failure };
+}
+
+test("the policy worker fails a Driver's named policy refusal at once", async () => {
+  // Finding 2144's live-application backstop: the OpenShell Driver refuses a Git route bypass
+  // before updating the policy. A retry cannot change that, so the worker fails the application
+  // as unsupported instead of retrying until it reports the outcome unconfirmed.
+  const { applied, outcome, outcomes, policy } = await policyWorkerPass({
+    apply: () =>
+      new SandboxNetworkPolicyConflictError("remove network grant git-direct (github.com)."),
+    observe: () => ({ resourceVersion: "1", policyVersion: "1", state: "applied", matches: false }),
+  });
   assert.equal(applied, 1);
   assert.equal(outcome, "permanent");
   assert.deepEqual(outcomes, ["fail SANDBOX_POLICY_UNSUPPORTED"]);
   assert.equal(policy.application.state, "failed");
   assert.equal(policy.application.reason, "SANDBOX_POLICY_UNSUPPORTED");
+});
+
+test("the policy worker does not dispatch a write at a known stale provider version", async () => {
+  const { applied, outcome, outcomes, policy } = await policyWorkerPass({
+    apply: () => new Error("RESOURCE_VERSION_CONFLICT"),
+    observe: () => ({ resourceVersion: "2", policyVersion: "1", state: "applied", matches: false }),
+  });
+  assert.equal(applied, 0, "a known stale CAS must not consume a provider mutation admission");
+  assert.equal(outcome, "permanent");
+  assert.deepEqual(outcomes, ["fail SANDBOX_POLICY_PROVIDER_FAILED"]);
+  assert.equal(policy.application.reason, "SANDBOX_POLICY_PROVIDER_FAILED");
+});
+
+test("the policy worker fails a write when the provider moves after preflight", async () => {
+  const { applied, outcome, outcomes, policy } = await policyWorkerPass({
+    apply: () => new Error("RESOURCE_VERSION_CONFLICT"),
+    observe: (writes) => ({
+      resourceVersion: writes === 0 ? "1" : "2",
+      policyVersion: "1",
+      state: "applied",
+      matches: false,
+    }),
+  });
+  assert.equal(applied, 1);
+  assert.equal(outcome, "permanent");
+  assert.deepEqual(outcomes, ["fail SANDBOX_POLICY_PROVIDER_FAILED"]);
+  assert.equal(policy.application.reason, "SANDBOX_POLICY_PROVIDER_FAILED");
+});
+
+test("the policy worker retries a refused write while the provider version is unchanged", async () => {
+  // A transient refusal at the pinned version may still succeed later, so the worker retries.
+  const { applied, outcome, outcomes, policy } = await policyWorkerPass({
+    apply: () => new Error("gateway unavailable"),
+    observe: () => ({ resourceVersion: "1", policyVersion: "1", state: "applied", matches: false }),
+  });
+  assert.equal(applied, 1);
+  assert.equal(outcome, "retry");
+  assert.deepEqual(outcomes, ["retry DEPENDENCY_UNAVAILABLE"]);
+  assert.equal(policy.application.state, "pending");
+});
+
+test("the policy worker accepts a write that landed although the response failed", async () => {
+  // The provider applied the policy but the response was lost. The worker confirms it from the
+  // provider's own state, without a second write.
+  const { applied, outcome, outcomes, policy } = await policyWorkerPass({
+    apply: () => new Error("connection reset"),
+    observe: (writes) => ({
+      resourceVersion: writes === 0 ? "1" : "2",
+      policyVersion: "2",
+      state: "applied",
+      matches: writes > 0,
+    }),
+  });
+  assert.equal(applied, 1);
+  assert.equal(outcome, "success");
+  assert.deepEqual(outcomes, ["complete"]);
+  assert.equal(policy.application.state, "applied");
+});
+
+test("the policy worker rolls back when shutdown interrupts the recovery read", async () => {
+  // A replacement worker can still confirm the write, so the pass must not close the application.
+  const shutdown = new AbortController();
+  const { outcomes, policy, failure } = await policyWorkerPass({
+    signal: shutdown.signal,
+    apply: () => new Error("connection reset"),
+    observe: (writes) => {
+      if (writes === 0) {
+        return { resourceVersion: "1", policyVersion: "1", state: "applied", matches: false };
+      }
+      shutdown.abort();
+      throw new Error("read aborted");
+    },
+  });
+  assert.equal(failure?.message, "read aborted");
+  assert.deepEqual(outcomes, []);
+  assert.equal(policy.application.state, "pending");
+});
+
+test("the policy worker rolls back when shutdown starts during a successful recovery read", async () => {
+  const shutdown = new AbortController();
+  const { outcomes, policy, failure } = await policyWorkerPass({
+    signal: shutdown.signal,
+    apply: () => new Error("connection reset"),
+    observe: (writes) => {
+      if (writes > 0) {
+        shutdown.abort(new Error("worker stopped"));
+      }
+      return {
+        resourceVersion: writes > 0 ? "2" : "1",
+        policyVersion: "1",
+        state: "applied",
+        matches: false,
+      };
+    },
+  });
+  assert.equal(failure?.message, "worker stopped");
+  assert.deepEqual(outcomes, []);
+  assert.equal(policy.application.state, "pending");
+});
+
+test("the policy worker rolls back when its lease is lost after the recovery read", async () => {
+  let observations = 0;
+  const { outcomes, policy, failure } = await policyWorkerPass({
+    apply: () => new Error("connection reset"),
+    observe: (writes) => {
+      observations++;
+      return {
+        resourceVersion: writes > 0 ? "2" : "1",
+        policyVersion: "1",
+        state: "applied",
+        matches: false,
+      };
+    },
+    heartbeat: (count, claim) => (count === 5 ? undefined : claim),
+  });
+  assert.equal(observations, 2, "the lease must be checked after the recovery observation");
+  assert.ok(failure, "the pass must discard a recovery result when its lease is lost");
+  assert.deepEqual(outcomes, []);
+  assert.equal(policy.application.state, "pending");
+});
+
+test("the policy worker rolls back when shutdown starts during the recovery heartbeat", async () => {
+  const shutdown = new AbortController();
+  const { outcomes, policy, failure } = await policyWorkerPass({
+    signal: shutdown.signal,
+    apply: () => new Error("connection reset"),
+    observe: (writes) => ({
+      resourceVersion: writes > 0 ? "2" : "1",
+      policyVersion: "1",
+      state: "applied",
+      matches: false,
+    }),
+    heartbeat: (count, claim) => {
+      if (count === 5) {
+        shutdown.abort(new Error("worker stopped during heartbeat"));
+      }
+      return claim;
+    },
+  });
+  assert.equal(failure?.message, "worker stopped during heartbeat");
+  assert.deepEqual(outcomes, []);
+  assert.equal(policy.application.state, "pending");
 });
