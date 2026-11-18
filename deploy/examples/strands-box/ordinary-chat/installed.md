@@ -45,7 +45,7 @@ drivers:
 reference in the installed host's `image` field. A combined image can fill both
 slots if it supplies both runtimes. Never use a Gateway-only image for `agent`.
 To run Box from the selected Harness filesystem, follow
-[the prepared Harness image profile](../README.md#select-a-prepared-harness-image-for-an-installed-host).
+[the prepared Harness image profile](../host/harness-image.md).
 
 Prepare the pinned relay image and build the separate Box host helpers from
 this demo checkout using the

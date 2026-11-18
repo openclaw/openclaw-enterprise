@@ -5,8 +5,7 @@
 OpenClaw Enterprise (OCE) runs a dedicated Codex Agent in
 [Strands Box](https://github.com/strands-agents/box) as a second Sandbox, beside
 OpenShell. The example is an installable Driver package built on OCE's own
-Sandbox and Credential Proxy Driver interfaces; nothing Box-specific is in OCE's
-core. With `protectedRepository` set, the
+Driver interfaces. With `protectedRepository` set, the
 [paired protected registration](driver/README.md#paired-protected-registration)
 gives the Agent one GitHub repository and a model. Box injects the GitHub
 token and the model key at egress, on its own routes, and asks OCE about each
@@ -43,25 +42,25 @@ Not proven:
   (v0.2.3, 2026-11-17, ships Linux ARM64 and macOS only). The native checks in
   [VALIDATION.md](VALIDATION.md) ran on ARM64 with released Box, without OCE's
   protected path.
-- More than one execution per Box host: each host runs one execution, and one
-  host serves one Driver selection.
+- More than one execution at a time: each Box host runs one execution, and
+  one host serves one Driver selection.
 - Any Agent but a dedicated Codex Agent with an OpenAI-compatible API key and at
   most one GitHub repository.
 
 ## Which Box build
 
-The protected path does not run on a released Box. The Box team has the fork
-[`freeqaz/box`](https://github.com/freeqaz/box); its `dogfood/main`
+The protected path does not run on a released Box. The build comes from the
+public fork [`freeqaz/box`](https://github.com/freeqaz/box): its `dogfood/main`
 at `956764b58f2c` is upstream `5ed679f` (the v0.2.3 release commit) with these
 branches merged:
 
-| Fork branch | What it changes in Box | Why OCE needs it | Needed |
-| --- | --- | --- | --- |
-| [`feature/request-credential-source`](https://github.com/freeqaz/box/tree/feature/request-credential-source) | After policy permits a request on a credentialed route, the gateway asks a configured source for the credential, or a refusal | OCE decides each GitHub request and releases the model key per request, so no token sits in `box run` | required |
-| [`fix/containment-init-signals`](https://github.com/freeqaz/box/tree/fix/containment-init-signals) | Seccomp permits `kill` and `rt_sigtimedwait` | OCE starts the Harness under `tini`, which otherwise dies at start | required |
-| [`feature/gateway-upstream-ca-file`](https://github.com/freeqaz/box/tree/feature/gateway-upstream-ca-file) | `[gateway] upstream_ca_file`: one extra CA bundle for upstream TLS | Only for a privately signed model route (host `upstreamCa`) | conditional |
-| [`fix/shell-stdin-passthrough`](https://github.com/freeqaz/box/tree/fix/shell-stdin-passthrough) | A program the Shell starts in its own sandbox reads the command's stdin | Only when Codex runs a native hook inside Box (host `nativeHookRelay`): the hook reads its event on stdin. The pinned OpenClaw registers no pre-tool-use hook by default | conditional |
-| [`fix/locked-mount-flags`](https://github.com/freeqaz/box/tree/fix/locked-mount-flags) (not in the build) | A remount keeps options the user namespace locked | Not needed: keep `box_dir` off a `noexec` mount, or remount `/run` with `exec` | no |
+| Fork branch                                                                                                  | What it changes in Box                                                                                                        | Why OCE needs it                                                                                                                                                         | Needed      |
+| ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
+| [`feature/request-credential-source`](https://github.com/freeqaz/box/tree/feature/request-credential-source) | After policy permits a request on a credentialed route, the gateway asks a configured source for the credential, or a refusal | OCE decides each GitHub request and releases the model key per request, so no token sits in `box run`                                                                    | required    |
+| [`fix/containment-init-signals`](https://github.com/freeqaz/box/tree/fix/containment-init-signals)           | Seccomp permits `kill` and `rt_sigtimedwait`                                                                                  | OCE starts the Harness under `tini`, which otherwise dies at start                                                                                                       | required    |
+| [`feature/gateway-upstream-ca-file`](https://github.com/freeqaz/box/tree/feature/gateway-upstream-ca-file)   | `[gateway] upstream_ca_file`: one extra CA bundle for upstream TLS                                                            | Only for a privately signed model route (host `upstreamCa`)                                                                                                              | conditional |
+| [`fix/shell-stdin-passthrough`](https://github.com/freeqaz/box/tree/fix/shell-stdin-passthrough)             | A program the Shell starts in its own sandbox reads the command's stdin                                                       | Only when Codex runs a native hook inside Box (host `nativeHookRelay`): the hook reads its event on stdin. The pinned OpenClaw registers no pre-tool-use hook by default | conditional |
+| [`fix/locked-mount-flags`](https://github.com/freeqaz/box/tree/fix/locked-mount-flags) (not in the build)    | A remount keeps options the user namespace locked                                                                             | Not needed: keep `box_dir` off a `noexec` mount, or remount `/run` with `exec`                                                                                           | no          |
 
 On Linux x86-64, upstream Box's experimental support is enough; the host sets
 `EXPERIMENTAL_X86_SUPPORT=TRUE` for `box run`. On ARM64 it is not needed.
@@ -133,93 +132,9 @@ pnpm exec tsc -p deploy/examples/strands-box/host/tsconfig.agent.json \
   --outDir "$AGENT_BUILD_DIR"
 ```
 
-### Select a prepared Harness image for an installed host
-
-An installed control host can opt in by setting `harnessImageReceipt` to the
-absolute path of the original operator's root-owned, read-only JSON receipt.
-This optional profile was not part of the [proven runs](#what-was-proven).
-Use this profile only on a dedicated Linux ARM64 carrier running as UID/GID 1000. Prepare the active read-only root of that carrier from the exact approved
-OCI image. Verify its manifest, config, layers, and materialized files before
-issuing the receipt. Keep that root and its mount in place through retirement.
-The installed host uses the stock Box process to launch the workload from the
-canonical paths in that view.
-
-The receipt binds the selected image to the current boot and launch command.
-
-| Field                       | Value                                                                                                                                                                                               |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mode`                      | `dedicated-read-only-root-v3`                                                                                                                                                                       |
-| `image`                     | The full installed image reference including the exact manifest digest                                                                                                                              |
-| `bootId`, `mountId`, `root` | The current Linux boot ID, mount ID of `/`, and its decimal-string `dev` and `ino`                                                                                                                  |
-| `proc`                      | The original kernel procfs mount's decimal-string `mountId`, `dev`, and `ino` in the Host's namespace                                                                                               |
-| `commandSha256`             | SHA-256 of the JSON array of the producer's actual standalone Harness argv, after any separately approved file-node split                                                                           |
-| `files`                     | The SHA-256 of each image file under keys `node`, `codex`, `tini`, and `openclaw`, for `/usr/local/bin/node`, `/opt/oce/runtime/codex/codex`, `/usr/bin/tini`, and `/app/openclaw.mjs` respectively |
-
-Issue the receipt from the same boot and mount view that will start the
-control server. Place it under root-owned directories that the operator account
-cannot modify. Keep the released Box and its helpers outside the image
-runtime paths granted to the workload. The supported carrier uses the pinned
-ARM64 Box v0.2.2 binaries and their pinned Debian loader and libraries. Keep
-`/tmp` on a separate writable filesystem for Box's mount setup, and supply the
-existing private owner state, workspace mounts, and separate file-node root
-through the normal installation procedure. Mounts must leave the image
-runtime paths and their backing filesystem read-only for the installed host.
-
-In the receipt's `files` map, also pin the compiled agent's `box-agent.js`,
-`transport.js`, and `diagnostics.js` as `agentEntry`, `agentTransport`, and
-`agentDiagnostics`. Pin the static ARM64 `harness-proc` verifier as
-`procVerifier` and install it beside the compiled agent. Keep the released Box directory and the compiled agent
-directory in root-owned, read-only locations. They can share the prepared
-carrier root or use separately prepared read-only mounts. The Host refuses
-mount changes or overlays inside these directories. Just before starting Box,
-it rechecks the original file identities and hashes and the approved split
-file. A separate file node waits until Box has passed that check and started.
-
-The original operator must establish the carrier's boot and PID 1 custody
-before issuing the receipt. Use the original kernel procfs mounted for the
-Host's PID and mount namespaces. Keep it in place through retirement, with no
-binds over the Host's mount inventory, the procfs `self` path, or the boot ID.
-Build the fixed verifier from `deploy/examples/strands-box/harness-proc` with
-`CGO_ENABLED=0` for Linux ARM64. In a shell in the same trusted namespace,
-run the verified binary with its file descriptor 3 opened on `/proc`
-(`harness-proc 3</proc`). Use its `proc` and `bootId` fields and keep the
-mount inventory private. The Host holds its original procfs descriptor and
-checks the active mount against it. The kernel must support `openat2` for
-the verifier to read the exact files without crossing another mount. The
-verifier opens the files itself inside that namespace. The original boot
-and PID 1 custody still come from the operator.
-
-For a separate file node, commit to the exact combined-to-standalone command
-pair before accepting a Worker admission. This profile recognizes only the pair
-that the Compute in this checkout renders. `host/installed-harness-image.ts`
-pins both digests, and `tests/conformance/strands-box-harness-image.test.ts`
-fails when Compute changes either program, so a Compute change needs a reviewed
-re-pin. In this checkout, generate the standalone argv:
-
-```ts
-[...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM)];
-```
-
-Put the JSON array in root-owned, read-only `harness-split-argv.json` beside the
-built agent. Pin that array's digest in the receipt. The Worker still sends and
-authorizes the original combined command. The installed host checks the exact
-combined program and selects the matching standalone program only after the
-separate file node inputs have passed admission.
-
-The installed host accepts Compute's stock `PATH`. The image must supply a
-symlink at `/app/node_modules/.bin/codex` to its native binary at
-`/opt/oce/runtime/codex/codex`. Box's existing read grant for `/app` carries the
-symlink, and its existing executable grant carries the target. The image must
-leave the directories before `/usr/local/bin` free of alternate Node binaries.
-
-```text
-/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-```
-
-The installed host checks the selected mount, runtime files, executed argv,
-and admitted `PATH`. A writable root, a different standalone command, or a
-substituted executable is refused before Box and the file node are started.
-The existing profile applies when the receipt setting is absent.
+An installed host can instead run the Harness from a prepared read-only image
+root; see the optional [prepared Harness image profile](host/harness-image.md),
+which was not part of the [proven runs](#what-was-proven).
 
 Codex must find no `git` or `gh` by name. Before Box starts, the host refuses
 an exec grant covering either one, and an admitted `PATH` entry that is empty
