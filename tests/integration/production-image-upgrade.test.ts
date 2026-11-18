@@ -703,6 +703,9 @@ if [[ -n "\${POD_READ_FIXTURE:-}" && "\${!#}" == */status/*.pods*.json ]]; then
     : >"$POD_READ_FIXTURE/ready-predicate-succeeded"
     PATH="$ORIGINAL_TOOL_PATH" exec sleep "$((POD_TIMEOUT_SECONDS + 1))"
   fi
+  if [[ "$POD_READ_MODE" == late-baseline && "$2" == *'as $role'* ]]; then
+    PATH="$ORIGINAL_TOOL_PATH" sleep "$((POD_TIMEOUT_SECONDS + 1))"
+  fi
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 if [[ -n "\${POD_READ_FIXTURE:-}" ]]; then
@@ -869,6 +872,17 @@ case "$*" in
       ) &
       wait "$!"
     elif [[ -n "\${POD_READ_FIXTURE:-}" ]]; then
+      if [[ "$POD_READ_MODE" == exited-kubectl ]]; then
+        (
+          : >"$POD_READ_FIXTURE/orphan-started"
+          PATH="$ORIGINAL_TOOL_PATH" sleep 5
+          echo 'late output'
+          : >"$POD_READ_FIXTURE/orphan-finished"
+        ) &
+        while [[ ! -f "$POD_READ_FIXTURE/orphan-started" ]]; do
+          PATH="$ORIGINAL_TOOL_PATH" sleep 0.01
+        done
+      fi
       cat "$POD_READ_FIXTURE/ready.json"
     else
       printf '%s\\n' '{"items":[]}'
@@ -1146,7 +1160,7 @@ esac
   const runPodRead = (
     evidence: string,
     log: string,
-    mode: "prompt" | "hung-kubectl" | "late-ready",
+    mode: "prompt" | "hung-kubectl" | "exited-kubectl" | "late-ready" | "late-baseline",
   ) =>
     execute(
       upgradeScript,
@@ -1205,6 +1219,26 @@ esac
     await assertPodReadRefused(evidence, log);
   });
 
+  await t.test("a late Pod baseline stops before publishing a Doctor target", async () => {
+    const evidence = join(directory, "late-baseline-evidence");
+    const log = join(directory, "late-baseline-commands.log");
+    await assert.rejects(
+      runPodRead(evidence, log, "late-baseline"),
+      /Agent agt_test revision Pods did not become ready before the upgrade timeout/u,
+    );
+    await assertPodReadRefused(evidence, log);
+  });
+
+  await t.test("an exited kubectl cannot leave a writer on the Pod snapshot", async () => {
+    const evidence = join(directory, "exited-kubectl-evidence");
+    await runPodRead(evidence, join(directory, "exited-kubectl.log"), "exited-kubectl");
+    await stat(join(podReadFixture, "orphan-started"));
+    await delay(5000);
+    await assert.rejects(stat(join(podReadFixture, "orphan-finished")), { code: "ENOENT" });
+    const snapshot = join(evidence, "status", "ns_test--agt_test--rev_candidate.pods.json");
+    assert.deepEqual(parseJson(await readFile(snapshot, "utf8")), { items: readyPods });
+  });
+
   await t.test(
     "a delayed Ready Pod read stops before Doctor and kills the read's child",
     async () => {
@@ -1226,12 +1260,13 @@ esac
     "a stalled optional Agent read preserves terminal deployment observations",
     async (t) => {
       const namespaceId = `ns_${randomUUID()}`;
-      const fleet = ["failed", "succeeded"].map((status) => ({
+      const makeDeployment = (status: string) => ({
         agentId: `agt_${randomUUID()}`,
         deploymentId: `rev_${randomUUID()}`,
         namespaceId,
         status,
-      }));
+      });
+      const fleet = [makeDeployment("failed"), makeDeployment("succeeded")] as const;
       const inventory = {
         installationId: environment.CLUSTER_INSTALLATION_ID,
         namespaces: [
@@ -1272,13 +1307,27 @@ esac`,
         ({ deploymentId }, i) => `${agentPaths[i]}/deployments/${deploymentId}`,
       );
       const requests: string[] = [];
-      const server = createServer(tls, (request, response) => {
+      const currentAgent = { desiredRuntimeState: "running", activeRevisionId: "rev_test" };
+      let refuseFirstDeployment = false;
+      let slowStandaloneEnrichment = true;
+      const server = createServer(tls, async (request, response) => {
         const path = request.url ?? "";
         requests.push(`${request.method} ${path}`);
+        if (refuseFirstDeployment && path === deploymentPaths[0]) {
+          response.writeHead(403).end();
+          return;
+        }
         if (path === agentPaths[0]) {
           return; // Leave only the first Agent lookup pending until the client closes it.
         }
-        const data = path === agentPaths[1] ? {} : fleet[deploymentPaths.indexOf(path)];
+        if (slowStandaloneEnrichment && path === agentPaths[1]) {
+          await delay(1500);
+        }
+        if (path === deploymentPaths[0]) {
+          // Longer than the optional lookup budget, well inside the fleet deadline.
+          await delay(1500);
+        }
+        const data = path === agentPaths[1] ? currentAgent : fleet[deploymentPaths.indexOf(path)];
         if (data === undefined) {
           response.writeHead(404).end();
           return;
@@ -1291,24 +1340,42 @@ esac`,
       const evidence = join(directory, "terminal-status-evidence");
       const key = join(directory, "loopback-key");
       await writeFile(key, JSON.stringify({ data: { key: randomUUID() } }), { mode: 0o600 });
-      await assert.rejects(
+      const occEnv = {
+        ...runtimeOptions.env,
+        NATIVE_OCC: cli,
+        OCC_URL: `https://127.0.0.1:${port}`,
+        OCC_CA_BUNDLE: tls.certPath,
+        OCC_SERVICE_KEY_FILE: key,
+        OCC_TIMEOUT_SECONDS: "30",
+      };
+      // Standalone callers still get enrichment that takes longer than one second.
+      const standalone = await execute(
+        cli,
+        [
+          "--output",
+          "json",
+          "--namespace",
+          namespaceId,
+          "agent",
+          "deployment-status",
+          fleet[1].agentId,
+          fleet[1].deploymentId,
+        ],
+        { cwd: repository, env: occEnv },
+      );
+      assert.deepEqual(parseJson(standalone.stdout), { ...fleet[1], currentAgent });
+      assert.deepEqual(requests.splice(0), [`GET ${deploymentPaths[1]}`, `GET ${agentPaths[1]}`]);
+      slowStandaloneEnrichment = false;
+      const observe = (destination: string) =>
         execute(
           upgradeScript,
-          [...upgradeArguments(evidence, ["runtime"]), "--timeout-seconds", "8"],
+          [...upgradeArguments(destination, ["runtime"]), "--timeout-seconds", "8"],
           {
             cwd: repository,
-            env: {
-              ...runtimeOptions.env,
-              NATIVE_OCC: cli,
-              OCC_URL: `https://127.0.0.1:${port}`,
-              OCC_CA_BUNDLE: tls.certPath,
-              OCC_SERVICE_KEY_FILE: key,
-              OCC_TIMEOUT_SECONDS: "1",
-            },
+            env: occEnv,
           },
-        ),
-        /at least one Agent deployment failed/u,
-      );
+        );
+      await assert.rejects(observe(evidence), /at least one Agent deployment failed/u);
       assert.deepEqual(
         requests,
         fleet.flatMap((_, i) => [`GET ${deploymentPaths[i]}`, `GET ${agentPaths[i]}`]),
@@ -1318,9 +1385,32 @@ esac`,
           [namespaceId, deployment.agentId, deployment.deploymentId].join("--") + ".json";
         assert.deepEqual(
           parseJson(await readFile(join(evidence, "status", name), "utf8")),
-          deployment,
+          deployment.agentId === fleet[1].agentId ? { ...deployment, currentAgent } : deployment,
         );
       }
+
+      // An unreadable deployment stays unknown; still collect its neighbor's evidence.
+      requests.length = 0;
+      refuseFirstDeployment = true;
+      const unknown = join(directory, "unknown-status-evidence");
+      await assert.rejects(observe(unknown), /could not verify all Agent deployment statuses/u);
+      assert.deepEqual(requests, [
+        `GET ${deploymentPaths[0]}`,
+        `GET ${deploymentPaths[1]}`,
+        `GET ${agentPaths[1]}`,
+      ]);
+      const snapshot = (index: 0 | 1) =>
+        join(
+          unknown,
+          "status",
+          `${namespaceId}--${fleet[index].agentId}--${fleet[index].deploymentId}.json`,
+        );
+      await assert.rejects(stat(snapshot(0)), { code: "ENOENT" });
+      assert.deepEqual(parseJson(await readFile(snapshot(1), "utf8")), {
+        ...fleet[1],
+        currentAgent,
+      });
+      await assert.rejects(stat(join(unknown, "completed")), { code: "ENOENT" });
     },
   );
 });

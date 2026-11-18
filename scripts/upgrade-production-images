@@ -769,6 +769,15 @@ for command in cmp helm jq kubectl mktemp node yq; do
   require_command "$command"
 done
 [[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
+# Verify that we can observe a child exit without releasing its PID before any upgrade effects.
+python3 - <<'PYTHON' || die "replacement reads require Python with POSIX waitid(WNOWAIT) support."
+import os
+
+try:
+    os.waitid(os.P_PID, os.getpid(), os.WEXITED | os.WNOWAIT | os.WNOHANG)
+except ChildProcessError:
+    pass  # The syscall is available; this process is not its own child.
+PYTHON
 
 umask 077
 if ((resume == 0)); then
@@ -2460,29 +2469,45 @@ import os
 import signal
 import subprocess
 import sys
+import time
+
+
+interrupted = 0
 
 
 def interrupt(signum, _frame):
-    raise SystemExit(128 + signum)
+    global interrupted
+    interrupted = 128 + signum
 
 
 for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(signum, interrupt)
-
+# Even if inherited as ignored, our leader must remain waitable until we reap it.
+signal.signal(signal.SIGCHLD, signal.SIG_DFL)
 seconds, message, *command = sys.argv[1:]
+deadline = time.monotonic() + int(seconds)
 process = subprocess.Popen(command, stdin=subprocess.DEVNULL, start_new_session=True)
+timed_out = False
 try:
-    status = process.wait(timeout=int(seconds))
-except subprocess.TimeoutExpired:
-    print(f"upgrade-production-images: {message}", file=sys.stderr)
-    status = 1
+    while not interrupted:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            print(f"upgrade-production-images: {message}", file=sys.stderr)
+            break
+        if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
+            break
+        time.sleep(min(remaining, 0.02))
 finally:
-    if process.returncode is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+    # The unreaped session leader pins this group ID, even if only a helper
+    # still has our output open. Signal the group before releasing that ID.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        status = process.wait()
+status = interrupted or (1 if timed_out else status)
 sys.exit(status if status >= 0 else 128 - status)
 PYTHON
 }
@@ -2501,7 +2526,7 @@ poll_deployment_status() (
   local snapshot status
   snapshot=$(mktemp "${destination}.XXXXXXXX") || return
   trap 'rm -f "$snapshot"' EXIT
-  replacement_occ_read "Agent $agent_id deployment $deployment_id status could not be read before the upgrade timeout." \
+  OCC_UPGRADE_BOUND_STATUS_ENRICHMENT=1 replacement_occ_read "Agent $agent_id deployment $deployment_id status could not be read before the upgrade timeout." \
     --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
     >"$snapshot" || return
   status=$(jq -ser 'select(length == 1) | .[0].status | select(IN("queued","running","succeeded","failed"))' "$snapshot") ||
@@ -2519,10 +2544,16 @@ while ((pending > 0)); do
   ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
   pending=0
   failed=0
+  status_read_failed=0
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
-    status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file")
+    if ! status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file"); then
+      warn "Could not read Agent $agent_id deployment $deployment_id; its current status is unknown."
+      status_read_failed=1
+      ((SECONDS < deadline)) || break
+      continue
+    fi
     case "$status" in
       queued | running) ((pending += 1)) ;;
       succeeded) ;;
@@ -2530,6 +2561,7 @@ while ((pending > 0)); do
     esac
   done <"$deployments"
   ((failed == 0)) || die "at least one Agent deployment failed; inspect $evidence_dir/status."
+  ((status_read_failed == 0)) || die "could not verify all Agent deployment statuses; inspect $evidence_dir/status."
   remaining_seconds=$((deadline - SECONDS))
   ((pending == 0 || remaining_seconds <= 0)) || sleep "$((remaining_seconds < 2 ? remaining_seconds : 2))"
 done
@@ -2624,14 +2656,15 @@ while IFS= read -r deployment; do
       ]
     ' "$live_pods"
   )
-  jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
+  doctor_target=$(jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
     --arg deploymentId "$deployment_id" --arg gatewayNamespace "$gateway_namespace" \
     --arg gatewayName "$gateway_name" --argjson gatewayRestarts "$gateway_restarts" \
     --argjson gatewayUid "$(jq '.uid' <<<"$gateway")" --argjson revisionPods "$revision_pods" \
     '{namespaceId: $namespaceId, agentId: $agentId, deploymentId: $deploymentId,
       gatewayNamespace: $gatewayNamespace, gatewayName: $gatewayName,
-      gatewayRestarts: $gatewayRestarts, gatewayUid: $gatewayUid, revisionPods: $revisionPods}' \
-    >>"$doctor_targets"
+      gatewayRestarts: $gatewayRestarts, gatewayUid: $gatewayUid, revisionPods: $revisionPods}')
+  ((SECONDS < deadline)) || die "$pod_timeout"
+  printf '%s\n' "$doctor_target" >>"$doctor_targets"
 done <"$deployments"
 
 # Doctor runs in the serving gateway container and shares its memory limit. An
@@ -2784,6 +2817,7 @@ revision_pod_change_since_ready() {
 doctor_failed=0
 doctor_timeout=
 if ((target_count > 0)); then
+  ((SECONDS < deadline)) || die "Agent replacement verification exceeded the upgrade timeout before Doctor."
   while IFS= read -r target; do
     json_fields "$target" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId \
       gateway_namespace=gatewayNamespace gateway_name=gatewayName

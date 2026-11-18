@@ -51,8 +51,10 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Bash, Python 3, Node.js matching `package.json` `engines.node`, Helm, kubectl,
-  jq, yq, cmp and mktemp. The Helm upgrade identity lists Deployments, StatefulSets,
+- Bash, Python 3 with POSIX `waitid(WNOWAIT)` support, Node.js matching `package.json` `engines.node`, Helm, kubectl,
+  jq, yq, cmp and mktemp. Use the OCC CLI from the upgrade revision so a slow optional
+  Agent lookup cannot hold a completed deployment read for the full request timeout.
+  The Helm upgrade identity lists Deployments, StatefulSets,
   Pods and PVCs cluster-wide. In the release namespace it creates, reads and deletes
   preflight Jobs, Secrets and NetworkPolicies, lists Jobs, reads Pods, logs and
   Installation Secrets, and gets, patches and watches Deployments. Rendered
