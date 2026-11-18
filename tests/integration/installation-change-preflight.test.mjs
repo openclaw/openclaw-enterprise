@@ -354,14 +354,18 @@ test("the upgrade hook checks the public token grant bundle before migration", a
   assert.equal(result.stdout, "");
 
   const invalidKey = { use: "jwt-svid", kty: "EC", kid: "private-fixture-marker", crv: "P-256" };
-  const { publicKey: weakKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
+  const weakPublicKey = {
+    kty: "RSA",
+    e: "AQAB",
+    n: Buffer.alloc(128, 0xff).toString("base64url"),
+    kid: "weak",
+    use: "jwt-svid",
+  };
   for (const invalid of [
     '{"private-fixture-marker":',
     JSON.stringify({ keys: [] }),
     JSON.stringify({ keys: [invalidKey] }),
-    JSON.stringify({
-      keys: [{ ...weakKey.export({ format: "jwk" }), kid: "weak", use: "jwt-svid" }],
-    }),
+    JSON.stringify({ keys: [weakPublicKey] }),
   ]) {
     await writeFile(bundlePath, invalid, "utf8");
     const result = await runCheck(t, configuration);
