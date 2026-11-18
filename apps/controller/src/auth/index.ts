@@ -1814,18 +1814,18 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       try {
         created = await withAuthLogContext("create-service-key", undefined, () =>
           api.createApiKey({
-          body: {
-            configId: SERVICE_KEY_CONFIG,
-            userId: principal.id,
-            name,
-            ...(expiresIn === undefined ? {} : { expiresIn }),
-            metadata: {
-              installationId: options.installationId,
-              ...(principal.namespaceId === undefined
-                ? {}
-                : { namespaceId: principal.namespaceId }),
+            body: {
+              configId: SERVICE_KEY_CONFIG,
+              userId: principal.id,
+              name,
+              ...(expiresIn === undefined ? {} : { expiresIn }),
+              metadata: {
+                installationId: options.installationId,
+                ...(principal.namespaceId === undefined
+                  ? {}
+                  : { namespaceId: principal.namespaceId }),
+              },
             },
-          },
           }),
         );
       } catch (error) {
