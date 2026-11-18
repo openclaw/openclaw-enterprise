@@ -917,8 +917,8 @@ async function earlierReleaseFixture(embedded) {
   const revisionDeployments = (revisionId) =>
     deployments().filter(
       ({ metadata: { annotations } }) =>
-        (annotations["openclaw.dev/revision-id"] ?? annotations["openclaw.dev/agent-revision-id"]) ===
-        revisionId,
+        (annotations["openclaw.dev/revision-id"] ??
+          annotations["openclaw.dev/agent-revision-id"]) === revisionId,
     );
   const runsEarlierProgram = (deployment) =>
     containers(deployment).some(({ args }) => JSON.stringify(args) === JSON.stringify(earlier));
