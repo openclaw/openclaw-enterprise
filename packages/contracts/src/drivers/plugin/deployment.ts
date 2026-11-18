@@ -7,7 +7,7 @@ import type {
 import type {
   BearerCredentialProjection,
   DeploymentWorkloadRequirement,
-  PluginDeploymentRequestMatch,
+  DeploymentRequestMatch,
 } from "../../credential-deployment.ts";
 
 type ConsumerRole = "gateway" | "harness";
@@ -73,7 +73,7 @@ export interface PluginDeploymentNetworkRequirement {
   readonly id: string;
   readonly toolId: string;
   readonly purpose: "installation" | "invocation";
-  readonly match: PluginDeploymentRequestMatch;
+  readonly match: DeploymentRequestMatch;
 }
 
 export interface PluginCredentialConnection {
