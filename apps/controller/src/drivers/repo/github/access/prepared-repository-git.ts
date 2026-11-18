@@ -18,6 +18,7 @@ import type {
   RepositoryGitInstallationFence,
   RepositoryGitSendDecision,
   RequestCredentialGrant,
+  RequestCredentialMaterial,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialDeliveries,
@@ -34,6 +35,9 @@ import type { InstalledTokenVersion } from "../../../../backends/token-service/m
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
   preparedGitGrantContents,
+  preparedGitCredentialKey,
+  preparedGitPullScope,
+  type PreparedGitCredentialPull,
   projectPreparedGitGrant,
   gitGrantOperationAllowed,
   preparedGitRedemption,
@@ -755,6 +759,17 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         checkRequest(wireRequest, "github-repository");
         return this.approveGitGrant(request, installed, approval, lifetime(signal), readPullTarget);
       },
+      ...(this.grantMode === "selected-repository-pull-preview" &&
+        prepareApproved && {
+          pull: (request, route, stillInstalled, signal) =>
+            this.pullGitCredential(
+              request,
+              route,
+              stillInstalled,
+              lifetime(signal),
+              prepareApproved,
+            ),
+        }),
       redeem: (request, installed, grant, signal) => {
         const { stockPullRequest: _action, ...wireRequest } = request;
         checkRequest(wireRequest, "github-repository");
@@ -1088,6 +1103,151 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       Date.now() < Date.parse(result.decisionBy)
     ) {
       return result.decisionBy;
+    }
+  }
+
+  private async pullGitCredential(
+    q: PreparedGitCredentialPull,
+    route: RepositoryGitInstallationFence,
+    stillInstalled: () => Promise<boolean>,
+    signal: AbortSignal,
+    prepare: PrepareApprovedGit,
+  ): Promise<RequestCredentialMaterial | undefined> {
+    const proxy = this.proxy;
+    const query = proxy?.kind === "selected" && proxy.policy.evidence.grantReady;
+    const deadline = Date.parse(q.deadlineAt);
+    const started = performance.now();
+    const active = () => !signal.aborted && Date.now() < deadline;
+    if (!query || !proxy?.driver || this.shared || !active() || deadline > Date.now() + 30_000) {
+      return;
+    }
+    const currentScope = async (c: PostgresClient) => {
+      const current = await lockLiveSession(c, "live_revision_id", route.revisionId, proxy);
+      const session = current?.session;
+      const execution = session?.credentialProxyExecution;
+      const admitted = session && this.policy(session);
+      if (
+        current?.authorization !== "online-request" ||
+        !session ||
+        session.revisionId !== route.revisionId ||
+        execution?.sandboxId !== q.recipientId ||
+        execution.executionId !== q.bindingId ||
+        q.credentialKey !== preparedGitCredentialKey ||
+        admitted?.grant.profile !== "github-repository"
+      ) {
+        return;
+      }
+      const observed = route.observed as
+        | {
+            providerId?: string;
+            pullApi?: { providerId?: string };
+          }
+        | undefined;
+      const api = observed?.pullApi?.providerId === q.providerId;
+      const exact = preparedGitPullScope(admitted.grant, api);
+      if (
+        (!api && observed?.providerId !== q.providerId) ||
+        exact?.resource !== q.resource ||
+        exact.scopes.join(" ") !== q.scope ||
+        !(await c.query(query, [route.revisionId, route.fence, JSON.stringify(observed)])).rowCount
+      ) {
+        return;
+      }
+      const source = projectPreparedGitGrant(admitted, this.grantMode, api);
+      const until = Math.min(deadline, Number(current.end_ms));
+      return source && active() && until > Date.now() ? { source, session, until } : undefined;
+    };
+    let bytes: Buffer | undefined;
+    try {
+      const decision = await this.transaction(async (c) => {
+        const current = await currentScope(c);
+        const approvals = this.grantApprovals?.(c);
+        const driver = proxy.driver;
+        if (!current || !approvals || !driver) {
+          return;
+        }
+        const { source, session, until } = current;
+        const { replayKey, expiresAt, credentialIdentity } = q.clientAssertion;
+        const request = {
+          recipientId: q.recipientId,
+          bindingId: q.bindingId,
+          requestId: replayKey,
+          deadlineAt: new Date(until).toISOString(),
+          clientAssertion: q.clientAssertion,
+        };
+        // Claim this signed assertion under the existing database-backed replay quota.
+        // This row is created and consumed together, with no pending request callback.
+        const now = new Date().toISOString();
+        if (
+          !(await approvals.insert(
+            {
+              ...request,
+              replayUntilAt: expiresAt,
+              driver,
+              execution: {
+                namespaceId: session.namespaceId,
+                agentId: session.agentId,
+                revisionId: session.revisionId,
+              },
+              policyDigest: q.scopeDigest,
+              expectedCredentialIdentity: credentialIdentity,
+            },
+            now,
+            { requestIds: 8192, sandboxRequestIds: 2048 },
+          ))
+        ) {
+          return;
+        }
+        const claim = await approvals.consume(request, driver, now);
+        if (!claim) {
+          throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
+        }
+        return {
+          source,
+          needsPreparation: !(await this.tokens.readWarm(c, source)),
+          releaseLifetimeMs: claim.remainingLifetimeMs,
+        };
+      });
+      if (!decision || !active() || performance.now() - started >= decision.releaseLifetimeMs) {
+        return;
+      }
+      if (decision.needsPreparation) {
+        await prepare(decision.source, deadline, signal);
+      }
+      if (!active() || !(await stillInstalled())) {
+        return;
+      }
+      const material = await this.transaction(async (c) => {
+        const current = await currentScope(c);
+        if (!current || !isDeepStrictEqual(current.source, decision.source)) {
+          return;
+        }
+        const token = await this.tokens.readWarm(c, current.source);
+        const until = Math.min(current.until, token?.usableUntil ?? 0);
+        if (!token || !active() || until <= Date.now()) {
+          return;
+        }
+        bytes = token.open();
+        return {
+          version: token.materialVersion,
+          usableUntil: new Date(until).toISOString(),
+          releaseLifetimeMs: decision.releaseLifetimeMs,
+        };
+      });
+      if (
+        bytes &&
+        material &&
+        active() &&
+        Date.now() < Date.parse(material.usableUntil) &&
+        performance.now() - started < material.releaseLifetimeMs
+      ) {
+        return { ...material, value: bytes.toString("utf8") };
+      }
+    } catch {
+      // Ambiguous replay/issuance settlement cannot authorize a token release.
+      return;
+    } finally {
+      bytes?.fill(0);
     }
   }
 

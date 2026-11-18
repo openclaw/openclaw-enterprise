@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import {
+  OpenShellCredentialProxyDriver,
+  openShellEgressConfiguration,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   OpenShellGitRouteBlockedError,
   openShellGitRouteReadiness,
@@ -18,7 +21,11 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
-import type { AgentRevision, SandboxDriver } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  ProxyPlan,
+  SandboxDriver,
+} from "../../packages/contracts/src/index.ts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
@@ -779,6 +786,69 @@ test("bundled live Git refuses historical v5 installation scope before any effec
   assert.deepEqual([f.calls.providerWrites, f.calls.material, f.calls.rotate], [0, 0, 0]);
 });
 
+test("the selected credential pull removes Git middleware and preserves mandatory model middleware", async (t) => {
+  const { revision } = await selectedV5(t);
+  const execution = {
+    ...revision.egressPlan!.execution,
+    revisionId: revision.id,
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+  };
+  const policy = { id: "fixture-model-policy", generation: 1 };
+  const plan: ProxyPlan = {
+    ...revision.egressPlan!,
+    authorization: "online-request",
+    execution,
+    routes: [
+      {
+        route: policy,
+        origin: "https://model.fixture.test",
+        path: "/v1/responses",
+        method: "POST",
+        operationPolicy: policy,
+        responsePolicy: policy,
+        deadlineMs: 30_000,
+        binding: {
+          binding: { id: "fixture-model-binding", generation: 1 },
+          execution,
+          source: {
+            installationId: execution.installationId,
+            namespaceId: execution.namespaceId,
+            source: policy,
+            backend: policy,
+            provider: policy,
+          },
+          grant: { kind: "inference", models: ["fixture-model"], providerTools: "none" },
+          grantHash: "fixture-model-grant",
+          isolationId: "fixture-model-isolation",
+        },
+      },
+    ],
+  };
+  const options = {
+    authorityScope: "execution",
+    middlewareName: "model-authorization",
+    repositoryMiddlewareName: "git-authorization",
+    requestCredentials: {
+      audience: "model-audience",
+      tokenEndpoint: "https://authority.fixture.test/token",
+    },
+  } as const;
+  const selected = {
+    ...revision,
+    harness: { ...revision.harness, id: "codex", mode: "dedicated" } as const,
+  };
+  const legacy = openShellEgressConfiguration(plan, options, selected);
+  const pull = openShellEgressConfiguration(plan, options, selected, true);
+  const { "oce-prepared-git": git, ...other } = legacy.network_middlewares as Record<
+    string,
+    unknown
+  >;
+  assert.ok(git, "legacy Git keeps its authenticated request hook");
+  assert.deepEqual(Object.keys(other), ["oce-model"]);
+  assert.deepEqual(pull.network_middlewares, other);
+});
+
 // Preserve the admission checks on the supported selected-repository workflow.
 test("Git preparation refuses missing admission or plan identity before gateway calls", async (t) => {
   const { f: assessor, store: assessorStore, revision: selected } = await selectedV5(t);
@@ -994,7 +1064,7 @@ test("selected v5 retries classified reads before reservation, then prepares the
     [1, undefined, undefined, "bootstrap"],
   );
   assert.equal(
-    prepared.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue,
+    prepared.middlewares["oce-prepared-git"]?.config.fields.binding_id.stringValue,
     executionId,
   );
   const entry = await f.runtime["entries"].get(revision.id);

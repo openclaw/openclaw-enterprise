@@ -235,6 +235,7 @@ export function openShellEgressConfiguration(
   plan: ProxyPlan,
   options: OpenShellProxyOptions,
   revision?: Readonly<AgentRevision>,
+  repositoryCredentialPull = false,
 ): Readonly<Record<string, unknown>> {
   const artifacts = openShellProtectedCodexArtifacts(revision);
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
@@ -255,7 +256,10 @@ export function openShellEgressConfiguration(
       throw new Error("Request authorization requires its admitted revision.");
     }
     const model = openShellModelRequestPolicy(plan, options, revision);
-    if (!model || (plan.repositoryGit && !options.repositoryMiddlewareName)) {
+    if (
+      !model ||
+      (plan.repositoryGit && !repositoryCredentialPull && !options.repositoryMiddlewareName)
+    ) {
       throw new DependencyUnavailableError("Request-authorized model delivery is unavailable.");
     }
     return immutableCopy({
@@ -263,12 +267,13 @@ export function openShellEgressConfiguration(
       network_middlewares: {
         ...model.middlewares,
         ...(plan.repositoryGit &&
+          !repositoryCredentialPull &&
           openShellGitMiddleware(options.repositoryMiddlewareName!, plan.execution.executionId)),
       },
     });
   }
   if (plan.repositoryGit) {
-    if (plan.routes.length || !options.repositoryMiddlewareName) {
+    if (plan.routes.length || (!repositoryCredentialPull && !options.repositoryMiddlewareName)) {
       throw new DependencyUnavailableError(
         "This Credential Proxy cannot install the admitted repository plan.",
       );
@@ -277,10 +282,12 @@ export function openShellEgressConfiguration(
     // authority, broad Git network rule or second credential-bearing sender accompanies it.
     return immutableCopy({
       network_policies: artifacts,
-      network_middlewares: openShellGitMiddleware(
-        options.repositoryMiddlewareName,
-        plan.execution.executionId,
-      ),
+      ...(!repositoryCredentialPull && {
+        network_middlewares: openShellGitMiddleware(
+          options.repositoryMiddlewareName!,
+          plan.execution.executionId,
+        ),
+      }),
     });
   }
   return immutableCopy({
@@ -470,6 +477,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           );
         }
         const info = await client.getGatewayInfo(signal);
+        if (this.repositoryPullPreview && profile === "github_repository") {
+          // The Provider profile import checks the Gateway's distinct JWT bearer capability.
+          return { profile, authorization: "online-request" as const };
+        }
         const extensions = info.extensions;
         const git =
           profile === "repository_git" ||
@@ -722,6 +733,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       context.plan,
       this.options,
       context.revision,
+      this.repositoryPullPreview,
     );
     const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
     if (context.plan.repositoryGit !== undefined && profile === undefined) {
@@ -753,6 +765,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       context.plan,
       this.options,
       context.revision,
+      this.repositoryPullPreview,
     );
     const expected = prepared.configuration;
     const expectedPolicies = asRecord(expected.network_policies);

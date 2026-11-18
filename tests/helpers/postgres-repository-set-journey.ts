@@ -304,7 +304,9 @@ async function repositoryGitJourney(
   await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
   const grantPort = selectedRead ? await reservePort() : undefined;
   const grantKeys = selectedRead ? generateKeyPairSync("ed25519") : undefined;
-  const grantIssuer = "openshell-gateway:git-fixture";
+  const grantIssuer = pullPreview
+    ? "https://gateway.fixture.test/workload"
+    : "openshell-gateway:git-fixture";
   const grantBundlePath = join(tls.directory, "gateway-jwks.json");
   const grantEndpoint = grantPort && `https://localhost:${grantPort.port}/token`;
   if (grantPort && grantKeys) {
@@ -434,6 +436,7 @@ async function repositoryGitJourney(
       sandbox,
       backend: backend as never,
       bindRepositoryGit: (authority) => runtime.bindRepositoryGit(authority),
+      ...(pullPreview && { repositoryPullPreview: true as const }),
       ...{
         mandatoryEnforcement: (ctx: ProxyRevisionContext, box: string) => {
           const observe = Reflect.get(runtime, "mandatoryEnforcement");
@@ -619,7 +622,55 @@ async function repositoryGitJourney(
     gatewayVersion: "0.1.6",
     gatewayTls: { ...tls, tokenPath },
     ...{ supervisor: state },
-    configure: startupOptions?.configure,
+    configure: pullPreview
+      ? (methods) => {
+          type Metadata = { get(name: string): string[] };
+          type Credential = {
+            token_grant: {
+              grant_type?: number;
+              token_endpoint?: string;
+              resource?: string;
+              scopes?: string[];
+              cache_ttl?: { seconds?: string; nanos?: number };
+            };
+            auth_style: string;
+            env_vars?: string[];
+          };
+          type ImportCall = { profiles: { profile: { credentials: Credential[] } }[] };
+          const gateway = methods as unknown as {
+            LintProviderProfiles(input: unknown, metadata: Metadata): { valid: boolean };
+            ImportProviderProfiles(input: ImportCall, metadata: Metadata): unknown;
+          };
+          const lint = gateway.LintProviderProfiles;
+          const importProfile = gateway.ImportProviderProfiles;
+          const header = "openshell-profile-gateway-jwt-bearer-grant";
+          gateway.LintProviderProfiles = (request, metadata) => {
+            assert.deepEqual(metadata.get(header), ["1"]);
+            return { ...lint(request, metadata), supports_gateway_jwt_bearer_grant: true };
+          };
+          gateway.ImportProviderProfiles = (input, metadata) => {
+            assert.deepEqual(metadata.get(header), ["1"]);
+            const credential = input.profiles[0]?.profile.credentials[0];
+            assert.ok(credential);
+            const api = credential.auth_style === "bearer";
+            assert.equal(credential.auth_style, api ? "bearer" : "placeholder");
+            assert.deepEqual(credential.env_vars ?? [], api ? [] : ["GITHUB_TOKEN"]);
+            const { cache_ttl: ttl, ...grant } = credential.token_grant;
+            assert.ok(ttl);
+            assert.equal(Number(ttl.seconds ?? 0), 0);
+            assert.equal(ttl.nanos ?? 0, 0);
+            assert.deepEqual(grant, {
+              grant_type: 4,
+              token_endpoint: grantEndpoint,
+              resource: "https://github.com/" + selectedRepositories[0]!.repository,
+              scopes: api
+                ? ["metadata:read", "pull_requests:write"]
+                : ["contents:write", "metadata:read"],
+            });
+            return importProfile(input, metadata);
+          };
+        }
+      : startupOptions?.configure,
     onGitInstall(value: string) {
       state.installed = value;
     },
@@ -687,6 +738,12 @@ async function repositoryGitJourney(
   const release = new ProtectedExecutionDriver(owner);
   const wiring = await release.configure(context);
   state.policy = wiring.configuration;
+  const gitMiddleware = (wiring.configuration.network_middlewares ?? {}) as Record<string, unknown>;
+  assert.equal(
+    Object.hasOwn(gitMiddleware, "oce-prepared-git"),
+    !pullPreview,
+    "JWT bearer protects the credential path without selecting a body-buffering middleware",
+  );
   if (beforePrepare) {
     await beforePrepare({
       runtime,
@@ -982,6 +1039,11 @@ async function repositoryGitJourney(
             }
             retry = true;
             return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => {
+              assert.equal(
+                pullPreview,
+                undefined,
+                "JWT bearer proves the held recipient without a probe",
+              );
               const target = path.startsWith("/graphql?")
                 ? {
                     ...probe.target,
@@ -1025,11 +1087,13 @@ async function repositoryGitJourney(
           writesBeforeActivation,
           "no credential update before activation",
         );
-        assert.equal(
-          (await evaluate(probe)).decision,
-          2,
-          "recorded recipient cannot send before activation",
-        );
+        if (!pullPreview) {
+          assert.equal(
+            (await evaluate(probe)).decision,
+            2,
+            "recorded recipient cannot send before activation",
+          );
+        }
         assert.equal(peer.originCalls(), originBeforeActivation);
         assert.ok(p.provider);
         return f.compute.prepareRevision(r);
@@ -1145,8 +1209,28 @@ async function repositoryGitJourney(
     }
     assert.equal(acked, false);
     assert.equal(runtime.previewReleased(revision.id), false);
-    const blocked = await evaluate(probe);
-    assert.equal(blocked.decision, 2, "no request can use installed material before launcher ACK");
+    if (pullPreview) {
+      assert.equal(
+        await runtime.lookup(
+          {
+            sandboxId: wire.world.id!,
+            bindingId: revision.egressPlan!.execution.executionId,
+            workspace,
+            requestId: randomUUID(),
+          },
+          t.signal,
+        ),
+        undefined,
+        "the owner refuses a pull before launcher ACK",
+      );
+    } else {
+      const blocked = await evaluate(probe);
+      assert.equal(
+        blocked.decision,
+        2,
+        "no request can use installed material before launcher ACK",
+      );
+    }
     await runtime.releasePreview(revision.id, startupId, async () => {
       assert.ok(lastCustody);
       const installed = await release.current(context, lastCustody, async () => true);

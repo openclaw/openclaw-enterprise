@@ -66,6 +66,7 @@ export interface OpenShellGitObservationEntry {
   };
   binding: OpenShellPreparedGitBinding;
   readonly preview?: ObservedHookPreview;
+  heldStartupId?: string;
   verify?: (sandbox: OpenShellSandboxResponse) => void;
   sandboxId?: string;
   continuity?: OpenShellGitContinuity;
@@ -91,6 +92,7 @@ interface OpenShellGitObservationOptions {
     readonly registrationName: string;
     readonly authority: { readonly audience: string };
     readonly grantRedemption?: { readonly endpoint: string };
+    readonly grantRedemptionProfile?: string;
   };
   readonly verifyFence: () => Promise<void>;
   readonly reportEnvironmentLag: () => void;
@@ -383,6 +385,8 @@ export async function observeOpenShellGitInstallation(
           (await previewPolicyAndRecipient({
             ...(entry.preview.mandatory && { mandatory: true }),
             usesTokenGrant: !!configuration.grantRedemption,
+            usesWorkloadGrant:
+              configuration.grantRedemptionProfile === "selected-repository-pull-preview",
             client: entry.client,
             sandbox,
             observed: last,
@@ -463,6 +467,8 @@ export async function observeOpenShellGitInstallation(
     const recipient = await previewPolicyAndRecipient({
       ...(preview.mandatory && { mandatory: true }),
       usesTokenGrant: !!configuration.grantRedemption,
+      usesWorkloadGrant:
+        configuration.grantRedemptionProfile === "selected-repository-pull-preview",
       client: entry.client,
       sandbox,
       observed,
@@ -488,8 +494,9 @@ export async function observeOpenShellGitInstallation(
     if (
       preview.recipient !== recipient ||
       (observed.credentialState === "active"
-        ? !preview.hook ||
-          (entry.pullApi && !entry.pullApi.preview.hook) ||
+        ? (configuration.grantRedemptionProfile === "selected-repository-pull-preview"
+            ? !entry.heldStartupId
+            : !preview.hook || (entry.pullApi && !entry.pullApi.preview.hook)) ||
           (configuration.grantRedemption
             ? observed.providerEnvRevision !== preview.bootstrapRevision
             : observed.providerEnvRevision === preview.bootstrapRevision)

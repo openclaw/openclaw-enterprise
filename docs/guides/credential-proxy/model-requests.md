@@ -214,13 +214,23 @@ Leave the shared GitHub issuance generation unset for this preview. The
 Worker accepts shared issuance only with the default read-only, one-repository
 profile. Preview tokens keep separate per-admission custody.
 
-The preview supports the bundled `gh` version with explicit repository, head,
-base, title and body for `gh pr create --draft`, and an explicit PR number and
-title for `gh pr edit --title`. It checks the CLI's discovery requests and
-compares each write target against the selected repository using GitHub's
-authoritative identity response. The exact check runs before every write,
-including when a sender can reuse a token. GitHub still enforces the App's
-permissions and repository rules.
+Use an OpenShell Gateway and supervisor that support Gateway-signed JWT bearer
+grants. Set `repository.openShell.grantRedemption.issuer` to the Gateway's
+canonical HTTPS workload grant issuer ending in `/workload`. Mount its public
+verification keys in the Worker's configured `bundlePath`. The supervisor uses
+the exact HTTPS token endpoint as the assertion audience and requests a token
+for each protected use. The Worker reuses usable issuer material for the same
+repository and permission scope. The Gateway must authorize the immutable
+Provider ID, credential key, and token endpoint. Gateways with a startup-only
+authorization list need a supported registration step after Provider creation
+before the installed preview can serve Git requests.
+
+The GitHub App's permissions and repository rules determine the operations GitHub
+accepts. OCC selects the API token for the repository and permissions in the
+signed grant. GitHub interprets the GraphQL operation. This preview uses the
+provider route for Git requests and leaves the push body with the supervisor's
+streaming path. Verify ordinary and draft pull requests and a large
+streamed push on the installed build before rollout.
 
 OCC denies new Git and API requests after expiry or committed removal. The
 original issuer retires each token family. Current grant-mode cleanup can
@@ -228,7 +238,7 @@ retire the execution before detaching a provider. Keeping the model running
 requires a durable withdrawal path that verifies both original GitHub
 attachments, the original execution fence, and current model authorization.
 Verify that path on an installed mixed online execution.
-[Repository credential flow](../../flows/credential-source-egress/model-requests.md#selected-repository-pull-request-preview)
+[Repository credential flow](../../flows/credential-source-egress/model-requests.md#selected-repository-credential-pull-preview)
 
 ## Verify the installed path
 

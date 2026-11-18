@@ -147,7 +147,7 @@ async function loadJwtAuthorities(config: OpenShellTokenGrantConfiguration) {
   }
 }
 
-async function readGrant(request: IncomingMessage) {
+async function readGrantForm(request: IncomingMessage) {
   if (
     request.headersDistinct["content-type"]?.length !== 1 ||
     request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() !==
@@ -165,7 +165,26 @@ async function readGrant(request: IncomingMessage) {
     }
     chunks.push(buf);
   }
-  const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+  return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+}
+
+function readWorkloadGrant(form: URLSearchParams) {
+  const assertion = form.get("assertion");
+  const resource = form.get("resource");
+  const scope = form.get("scope");
+  if (
+    form.size !== 4 ||
+    form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:jwt-bearer" ||
+    !assertion ||
+    !resource ||
+    !scope
+  ) {
+    return;
+  }
+  return { assertion, resource, scope };
+}
+
+function readGrant(request: IncomingMessage, form: URLSearchParams) {
   const assertion = form.get("client_assertion");
   const bindingId = form.get("audience");
   const requestId = request.headers["x-openshell-request-id"];
@@ -212,6 +231,22 @@ interface AuthenticatedRecipient {
   readonly clientAssertion?: NonNullable<RequestCredentialGrant["clientAssertion"]>;
 }
 
+export interface AuthenticatedOpenShellWorkloadGrant {
+  readonly recipientId: string;
+  readonly providerId: string;
+  readonly credentialKey: string;
+  readonly resource: string;
+  readonly scope: string;
+  readonly scopeDigest: string;
+  readonly clientAssertion: NonNullable<RequestCredentialGrant["clientAssertion"]>;
+  readonly deadlineAt: string;
+}
+
+type WorkloadGrantResolver = (
+  grant: AuthenticatedOpenShellWorkloadGrant,
+  signal: AbortSignal,
+) => ReturnType<Resolve>;
+
 export interface AuthenticatedOpenShellGatewayAssertion extends AuthenticatedRecipient {
   readonly providerId: string;
   readonly credentialKey: string;
@@ -223,6 +258,14 @@ export async function verifyOpenShellGatewayAssertion(
   assertion: string,
   config: OpenShellGatewayTokenGrantConfiguration,
 ): Promise<AuthenticatedOpenShellGatewayAssertion | undefined> {
+  return verifyGatewayAssertion(assertion, config);
+}
+
+async function verifyGatewayAssertion(
+  assertion: string,
+  config: OpenShellGatewayTokenGrantConfiguration,
+  workload?: { readonly resource: string; readonly scope: string },
+): Promise<AuthenticatedOpenShellGatewayAssertion | undefined> {
   const keys = await loadJwtAuthorities(config);
   const jwt = await jwtVerify(assertion, keys, {
     algorithms: ["EdDSA"],
@@ -233,9 +276,11 @@ export async function verifyOpenShellGatewayAssertion(
   const payload = jwt?.payload;
   if (
     !jwt?.protectedHeader.kid ||
-    jwt.protectedHeader.typ !== "openshell-provider-assertion+jwt" ||
+    jwt.protectedHeader.typ !==
+      (workload ? "openshell-workload-grant+jwt" : "openshell-provider-assertion+jwt") ||
     !payload ||
     payload.aud !== config.endpoint ||
+    (workload && (payload.resource !== workload.resource || payload.scope !== workload.scope)) ||
     payload.caller_kind !== "supervisor" ||
     typeof payload.sandbox_id !== "string" ||
     !/^[A-Za-z0-9._-]{1,256}$/.test(payload.sandbox_id) ||
@@ -305,9 +350,28 @@ export async function bindOpenShellTokenGrant(
   tls: { cert: Buffer; key: Buffer },
   resolve: Resolve,
   acquireAuthentication: NonNullable<CredentialProxyExchange["acquireRequestAuthentication"]>,
+  pull?: WorkloadGrantResolver,
 ): Promise<CredentialProxyBinding> {
   if (!validTokenGrantConfiguration(config)) {
     throw new Error("Invalid OpenShell token grant configuration.");
+  }
+  if (pull) {
+    if (config.assertionSource !== "openshell_gateway") {
+      throw new Error("OpenShell workload grants require a Gateway issuer.");
+    }
+    const issuer = URL.parse(config.issuer);
+    if (
+      !issuer ||
+      issuer.protocol !== "https:" ||
+      issuer.username ||
+      issuer.password ||
+      issuer.search ||
+      issuer.hash ||
+      issuer.pathname !== "/workload" ||
+      issuer.href !== config.issuer
+    ) {
+      throw new Error("Invalid OpenShell workload grant issuer.");
+    }
   }
   await loadJwtAuthorities(config);
   const path = new URL(config.endpoint).pathname;
@@ -323,14 +387,21 @@ export async function bindOpenShellTokenGrant(
     }
     try {
       const startedAt = Date.now();
-      const grant = await readGrant(request);
+      const form = await readGrantForm(request);
+      const workload = form && pull ? readWorkloadGrant(form) : undefined;
+      const legacy = form && !pull ? readGrant(request, form) : undefined;
+      const grant = workload ?? legacy;
       if (!grant) {
         reply(response, 400, { error: "invalid_request" });
         return;
       }
+      const gateway =
+        config.assertionSource === "openshell_gateway"
+          ? await verifyGatewayAssertion(grant.assertion, config, workload)
+          : undefined;
       const recipient =
         config.assertionSource === "openshell_gateway"
-          ? await verifyOpenShellGatewayAssertion(grant.assertion, config)
+          ? gateway
           : await verifySpireAssertion(grant.assertion, config);
       if (!recipient) {
         reply(response, 401, { error: "invalid_client" });
@@ -348,18 +419,46 @@ export async function bindOpenShellTokenGrant(
         disconnected.signal,
         AbortSignal.timeout(Math.max(1, deadline - Date.now())),
       ]);
-      release();
+      if (!workload) {
+        release();
+      }
       const resolveStarted = performance.now();
-      const token = await resolve(
-        {
-          recipientId,
-          requestId: grant.requestId,
-          bindingId: grant.bindingId,
-          deadlineAt: new Date(deadline).toISOString(),
-          ...(recipient.clientAssertion && { clientAssertion: recipient.clientAssertion }),
-        },
-        signal,
-      );
+      const deadlineAt = new Date(deadline).toISOString();
+      let token;
+      if (workload && pull && gateway) {
+        token = await pull(
+          {
+            recipientId,
+            providerId: gateway.providerId,
+            credentialKey: gateway.credentialKey,
+            clientAssertion: gateway.clientAssertion,
+            resource: workload.resource,
+            scope: workload.scope,
+            scopeDigest: sha256Hex(
+              JSON.stringify([
+                recipientId,
+                gateway.providerId,
+                gateway.credentialKey,
+                workload.resource,
+                workload.scope,
+              ]),
+            ),
+            deadlineAt,
+          },
+          signal,
+        );
+      } else if (legacy) {
+        token = await resolve(
+          {
+            recipientId,
+            requestId: legacy.requestId,
+            bindingId: legacy.bindingId,
+            deadlineAt,
+            ...(recipient.clientAssertion && { clientAssertion: recipient.clientAssertion }),
+          },
+          signal,
+        );
+      }
       // This TTL limits redemption release; it does not describe the provider key's expiry.
       // The installed OpenShell token-grant profile must independently require cache_ttl: 0.
       // The database-derived budget starts at resolver invocation, before its asynchronous reads.

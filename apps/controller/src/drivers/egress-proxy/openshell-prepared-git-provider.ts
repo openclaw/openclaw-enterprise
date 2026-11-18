@@ -16,6 +16,7 @@ import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts
 import {
   matchesOpenShellGatewayAssertionGrant,
   OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
+  OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE,
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
@@ -46,6 +47,7 @@ export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
     readonly selectedRepositories?: GitHubRepositoryGrant["repositories"];
     readonly allowPush?: true;
     readonly pullApi?: true;
+    readonly workloadGrant?: { readonly resource: string; readonly scopes: readonly string[] };
   };
 };
 
@@ -186,6 +188,31 @@ function origin(value: string): URL {
   return url;
 }
 
+function matchesWorkloadGrant(
+  value: unknown,
+  endpoint: string,
+  expected: { readonly resource: string; readonly scopes: readonly string[] },
+): boolean {
+  const grant = asRecord(value);
+  const ttl = asRecord(grant?.cache_ttl);
+  return (
+    grant?.grant_type === OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE &&
+    grant.token_endpoint === endpoint &&
+    grant.resource === expected.resource &&
+    isDeepStrictEqual(grant.scopes, expected.scopes) &&
+    ttl !== undefined &&
+    Number(ttl.seconds ?? 0) === 0 &&
+    Number(ttl.nanos ?? 0) === 0 &&
+    !grant.audience &&
+    !grant.jwt_svid_audience &&
+    !grant.client_assertion_type &&
+    grant.subject_token == null &&
+    !grant.requested_token_type &&
+    (grant.audience_overrides === undefined ||
+      (Array.isArray(grant.audience_overrides) && grant.audience_overrides.length === 0))
+  );
+}
+
 /**
  * Private operator-plane provisioning, prior to Sandbox attachment/admission. The supplied
  * client must use the installation's authenticated gateway connection; never expose it to
@@ -284,6 +311,7 @@ export class OpenShellPreparedGitProvider {
                   selected ?? grant.repository,
                   ...(grant.allowPush ? ["write"] : []),
                   ...(grant.pullApi ? ["pull-api"] : []),
+                  ...(grant.workloadGrant ? [grant.workloadGrant] : []),
                 ],
               ]
             : []),
@@ -306,14 +334,22 @@ export class OpenShellPreparedGitProvider {
         ? [
             {
               name: CREDENTIAL,
-              envVars: [],
+              envVars: grant.workloadGrant && !grant.pullApi ? [KEY] : [],
               required: false,
-              authStyle: grant.pullApi ? "bearer" : "basic",
+              authStyle: grant.pullApi ? "bearer" : grant.workloadGrant ? "placeholder" : "basic",
               headerName: "Authorization",
               tokenGrant: {
                 token_endpoint: grant.endpoint,
-                audience: grant.audience,
-                grant_type: OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
+                ...(grant.workloadGrant
+                  ? {
+                      grant_type: OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE,
+                      resource: grant.workloadGrant.resource,
+                      scopes: grant.workloadGrant.scopes,
+                    }
+                  : {
+                      audience: grant.audience,
+                      grant_type: OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
+                    }),
                 cache_ttl: { seconds: 0, nanos: 0 },
               },
             },
@@ -471,19 +507,25 @@ export class OpenShellPreparedGitProvider {
       credential?.name !== CREDENTIAL ||
       (grant
         ? definition.scope !== "workspace" ||
-          (credential.env_vars !== undefined && !isDeepStrictEqual(credential.env_vars, [])) ||
+          !isDeepStrictEqual(
+            credential.env_vars ?? [],
+            grant.workloadGrant && !grant.pullApi ? [KEY] : [],
+          ) ||
           credential.required === true ||
           credential.stable_placeholder === true ||
-          !matchesOpenShellGatewayAssertionGrant(
-            credential.token_grant,
-            grant.endpoint,
-            grant.audience,
-          )
+          !(grant.workloadGrant
+            ? matchesWorkloadGrant(credential.token_grant, grant.endpoint, grant.workloadGrant)
+            : matchesOpenShellGatewayAssertionGrant(
+                credential.token_grant,
+                grant.endpoint,
+                grant.audience,
+              ))
         : !isDeepStrictEqual(credential.env_vars, [KEY]) ||
           credential.required !== true ||
           credential.stable_placeholder !== true ||
           credential.token_grant !== undefined) ||
-      credential.auth_style !== (grant && !grant.pullApi ? "basic" : "bearer") ||
+      credential.auth_style !==
+        (grant && !grant.pullApi ? (grant.workloadGrant ? "placeholder" : "basic") : "bearer") ||
       credential.header_name !== (grant ? "Authorization" : "authorization") ||
       credential.refresh !== undefined ||
       !isDeepStrictEqual(

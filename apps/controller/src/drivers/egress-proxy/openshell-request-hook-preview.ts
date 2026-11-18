@@ -29,6 +29,7 @@ interface Selection {
   readonly gitRule: { name: string; endpoints: readonly Record<string, unknown>[] };
   readonly pullApiRule?: Selection["gitRule"];
   readonly usesTokenGrant?: boolean;
+  readonly usesWorkloadGrant?: boolean;
   readonly workload: (sandboxId: string, signal: AbortSignal) => Promise<string | undefined>;
   readonly signal: AbortSignal;
 }
@@ -112,6 +113,7 @@ export async function previewPolicyAndRecipient({
   signal,
   mandatory,
   usesTokenGrant,
+  usesWorkloadGrant,
 }: Selection): Promise<string | undefined> {
   const admission = sandbox.configurationAdmission;
   const started = sandbox.mainProcessStartedAt;
@@ -206,7 +208,11 @@ export async function previewPolicyAndRecipient({
   // per-request recheck. Qualify the operator's five-second RPC timeout; OCE still caps
   // its decision at three seconds and never retries a possible authorization commitment.
   const timeout = asRecord(service && service.request_timeout);
-  if (
+  if (usesWorkloadGrant) {
+    if (Object.hasOwn(asRecord(source.network_middlewares) ?? {}, "oce-prepared-git")) {
+      return;
+    }
+  } else if (
     !service ||
     (!legacyObserved &&
       (![2, 3].includes(service.binding_policy as number) ||
@@ -243,7 +249,7 @@ export async function previewPolicyAndRecipient({
         started,
         admission.instance_id,
         wirePolicy(policy),
-        wirePolicy(service),
+        ...(usesWorkloadGrant ? [] : [wirePolicy(service)]),
         pods,
       ]),
     )

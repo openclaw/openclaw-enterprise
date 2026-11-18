@@ -871,7 +871,7 @@ message ProviderProfileCredential {
 }
 
 // A present zero Duration disables token caching. Keep the raw grant discriminator
-// for exact readback, including value 3 for client_credentials with a Gateway assertion.
+// for exact readback. Value 3 is the legacy prototype. JWT bearer uses value 4.
 message ProviderCredentialTokenGrant {
   string token_endpoint = 1;
   string audience = 2;
@@ -882,6 +882,7 @@ message ProviderCredentialTokenGrant {
   int32 grant_type = 8;
   ProviderCredentialTokenGrantSubjectToken subject_token = 9;
   string requested_token_type = 10;
+  string resource = 12;
   google.protobuf.Duration cache_ttl = 104;
 }
 
@@ -1059,6 +1060,7 @@ message LintProviderProfilesResponse {
   repeated ProviderProfileDiagnostic diagnostics = 1;
   bool valid = 2;
   bool supports_openshell_gateway_assertion_source = 4;
+  bool supports_gateway_jwt_bearer_grant = 5;
 }
 
 message ImportProviderProfilesRequest {

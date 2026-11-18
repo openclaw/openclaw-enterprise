@@ -107,6 +107,38 @@ export function gitGrantOperationAllowed(
   );
 }
 
+export const preparedGitCredentialKey = "installation_token";
+
+/** Both attachments use one repository resource, with disjoint Git and API permissions. */
+export function preparedGitPullScope(
+  scope: GitGrantScope & { readonly repositories: readonly { readonly repository: string }[] },
+  api: boolean,
+): { readonly resource: string; readonly scopes: readonly string[] } | undefined {
+  const contents = preparedGitGrantContents(scope, "selected-repository-pull-preview");
+  const repository = scope.repositories[0]?.repository;
+  if (!contents || !repository || (api && !allowsStockGitHubPullGrant(scope))) {
+    return;
+  }
+  return {
+    resource: "https://github.com/" + repository,
+    scopes: api
+      ? ["metadata:read", "pull_requests:write"]
+      : [`contents:${contents}`, "metadata:read"],
+  };
+}
+
+export interface PreparedGitCredentialPull {
+  readonly recipientId: string;
+  readonly bindingId: string;
+  readonly providerId: string;
+  readonly credentialKey: string;
+  readonly resource: string;
+  readonly scope: string;
+  readonly scopeDigest: string;
+  readonly deadlineAt: string;
+  readonly clientAssertion: NonNullable<RequestCredentialGrant["clientAssertion"]>;
+}
+
 export type PreparedGitGrantApproval = Pick<
   RequestCredentialGrant,
   "recipientId" | "requestId" | "bindingId"
@@ -123,6 +155,12 @@ export interface PreparedGitRedemption {
     approval: PreparedGitGrantApproval,
     signal: AbortSignal,
   ): Promise<string | undefined>;
+  pull?(
+    request: PreparedGitCredentialPull,
+    route: RepositoryGitInstallationFence,
+    stillInstalled: () => Promise<boolean>,
+    signal: AbortSignal,
+  ): Promise<RequestCredentialMaterial | undefined>;
   redeem(
     request: PreparedGitGrantRequest,
     installed: InstalledGitRoute,

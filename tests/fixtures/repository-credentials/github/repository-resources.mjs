@@ -200,7 +200,7 @@ export function createRepositoryResources({
       if (query.includes("createPullRequest")) {
         if (
           permissions.pull_requests !== "write" ||
-          (pullPreview && (input.repositoryId !== repo.node_id || input.draft !== true))
+          (pullPreview && input.repositoryId !== repo.node_id)
         ) {
           return denied();
         }

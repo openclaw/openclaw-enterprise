@@ -196,7 +196,6 @@ async function capturedWireClient(port, ca) {
     try {
       let url;
       if (args[1] === "create") {
-        assert.ok(args.includes("--draft"));
         const { repository } = await send("RepositoryInfo", { owner, name: repo });
         const headRefName = flag("--head");
         await send("PullRequestForBranch", { owner, repo, headRefName, states: ["OPEN"] });
@@ -207,7 +206,7 @@ async function capturedWireClient(port, ca) {
             headRefName,
             title: flag("--title"),
             body: flag("--body"),
-            draft: true,
+            draft: args.includes("--draft"),
             maintainerCanModify: true,
           },
         });

@@ -190,6 +190,7 @@ export interface OpenShellProfileCredentialRefresh {
 
 // OpenShell uses a wire discriminator for client_credentials with a Gateway assertion.
 export const OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE = 3;
+export const OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE = 4;
 
 export function matchesOpenShellGatewayAssertionGrant(
   value: unknown,
@@ -230,18 +231,24 @@ export interface OpenShellProviderProfile {
     readonly refresh?: OpenShellProfileCredentialRefresh;
     readonly tokenGrant?: {
       readonly token_endpoint: string;
-      readonly audience: string;
       readonly cache_ttl: { readonly seconds: 0; readonly nanos: 0 };
     } & (
       | {
           readonly grant_type?: never;
+          readonly audience: string;
           readonly jwt_svid_audience: string;
           readonly client_assertion_type: string;
         }
       | {
           readonly grant_type: typeof OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE;
+          readonly audience: string;
           readonly jwt_svid_audience?: never;
           readonly client_assertion_type?: never;
+        }
+      | {
+          readonly grant_type: typeof OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE;
+          readonly resource: string;
+          readonly scopes: readonly string[];
         }
     );
   }[];
@@ -960,10 +967,8 @@ function providerResponse(value: unknown, operation: string): OpenShellProviderR
   });
 }
 
-function usesGatewayAssertion(profile: OpenShellProviderProfile): boolean {
-  return profile.credentials.some(
-    ({ tokenGrant }) => tokenGrant?.grant_type === OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
-  );
+function usesGatewayAssertion(profile: OpenShellProviderProfile, grantType: 3 | 4): boolean {
+  return profile.credentials.some(({ tokenGrant }) => tokenGrant?.grant_type === grantType);
 }
 
 function profileMessage(profile: OpenShellProviderProfile): RecordValue {
@@ -2173,13 +2178,18 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     signal: AbortSignal,
   ): Promise<void> {
     const profiles = [{ profile: profileMessage(profile), source: "openclaw-enterprise" }];
-    if (usesGatewayAssertion(profile)) {
+    const workload = usesGatewayAssertion(profile, OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE);
+    const legacy = usesGatewayAssertion(profile, OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE);
+    if (workload || legacy) {
       const lint = await this.unary(
         "LintProviderProfiles",
         { profiles, workspace_scope: { workspace } },
         signal,
       );
-      if (lint.supports_openshell_gateway_assertion_source !== true) {
+      if (
+        (workload && lint.supports_gateway_jwt_bearer_grant !== true) ||
+        (legacy && lint.supports_openshell_gateway_assertion_source !== true)
+      ) {
         throw new OpenShellGatewayFailure(
           "OpenShell does not support Gateway assertions in provider profiles.",
         );
@@ -2210,7 +2220,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     expectedResourceVersion: string,
     signal: AbortSignal,
   ): Promise<void> {
-    if (usesGatewayAssertion(profile)) {
+    if (
+      usesGatewayAssertion(profile, OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE) ||
+      usesGatewayAssertion(profile, OPEN_SHELL_GATEWAY_JWT_BEARER_GRANT_TYPE)
+    ) {
       throw new OpenShellGatewayFailure(
         "Gateway assertion profiles are immutable. Create a new Agent revision.",
       );
@@ -2763,6 +2776,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     const headers = await openShellGatewayGrpcMetadata(grpc, this.options.auth);
     if (GATEWAY_ASSERTION_PROFILE_METHODS.has(method)) {
       headers.set("openshell-profile-openshell-gateway-assertion-source", "1");
+    }
+    if (method === "LintProviderProfiles" || GATEWAY_ASSERTION_PROFILE_METHODS.has(method)) {
+      headers.set("openshell-profile-gateway-jwt-bearer-grant", "1");
     }
     signal.throwIfAborted();
     return new Promise<RecordValue>((resolve, reject) => {
