@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 
 export function runnerRecord(value: unknown, label: string): Record<string, unknown> {
   assert(isRecord(value), `Expected ${label} to be an object`);

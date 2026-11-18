@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/human-login.ts";
-import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.ts";
 import type {
   ControllerAuth,
   ControllerAuthOptions,
@@ -35,7 +35,7 @@ type HumanState = Pick<
   PostgresHumanAuthentication,
   "createAttempt" | "consumeAttempt" | "snapshotExternal" | "snapshotPassword" | "recordDenied"
 > &
-  Partial<Pick<PostgresHumanAuthentication, "knownDeviceState">>;
+  Partial<Pick<PostgresHumanAuthentication, "knownDeviceState" | "recoveryDesignation">>;
 const createControllerAuth: (options: ControllerAuthOptions) => ControllerAuth = createFixtureAuth;
 const memoryModule: unknown = await import(require.resolve("better-auth/adapters/memory"));
 assert.ok(
@@ -355,6 +355,12 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
       consumeAttempt: async () => undefined,
       snapshotExternal: async () => undefined,
       snapshotPassword: async () => undefined,
+      // The exhausted budget reads the durable designation; only the denial audit is down.
+      recoveryDesignation: async () => ({
+        userId: "guarded-recovery",
+        principalId: "prn_guarded_recovery",
+        email: "recovery@example.test",
+      }),
       recordDenied: async () => {
         denials += 1;
         throw new Error("audit unavailable");
@@ -789,7 +795,6 @@ for (const passwordSignIn of ["all", "recovery-only"] as const) {
       },
       baseURL,
     );
-    humanLogin.designateRecovery(literalEmail);
     const auth = createControllerAuth({
       mode: "development",
       installationId: "ins_literal_email_guarded",

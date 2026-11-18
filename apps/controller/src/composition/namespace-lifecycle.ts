@@ -1,4 +1,5 @@
 import { asRecord } from "@openclaw-enterprise/utils";
+import { withTenantAccessHint } from "../drivers/compute/operation-context.ts";
 import type { ComputeDriver, SandboxDriver } from "@openclaw-enterprise/contracts";
 import {
   SandboxNamespaceRefusedError,
@@ -59,7 +60,9 @@ export function sandboxNamespaceLifecycleBinding(
       },
       async deleteNamespace({ namespace, signal }) {
         try {
-          await sandbox.cleanup(await resolve(namespace, signal));
+          const context = await resolve(namespace, signal);
+          // The Sandbox cleans tenant resources through the Namespace's own plane client.
+          await withTenantAccessHint(() => sandbox.cleanup(context));
           return { namespaceId: namespace.id, namespaceDeleted: true };
         } catch (error) {
           signal.throwIfAborted();

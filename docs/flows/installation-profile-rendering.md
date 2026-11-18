@@ -204,7 +204,7 @@ profile schema accepts only string labels.
 `scripts/render-installation-profile.ts:buildRendered`
 
 The Installation output selects Kubernetes Configuration, native IAM,
-Kubernetes Compute, Kubernetes Secrets, default Preset seeding, and the profile
+Kubernetes Compute, Kubernetes Secrets, Preset seeding, and the profile
 PluginDriver. Compute settings consume the runtime image, DNS peer, trusted
 proxy CIDRs, plugin-status proxy CIDRs, gateway routing identity, runtime
 storage class, node selectors, and transport Secret prefix. The Codex profile
@@ -226,10 +226,11 @@ truncates `<releaseName>-agent-gateways` to 63 characters and removes a trailing
 hyphen. HTTPRoute parent references therefore match the Gateway the chart
 renders.
 
-Optional `presets.files` adds operator-selected JSON paths and retains both standard
-Presets. Preflight rejects non-lists and empty/non-string entries without reading
-files; controller startup resolves paths and validates contents. Changes alter
-the Installation checksum.
+Optional `presets.includeDefaults` selects bundled Preset seeding and defaults
+to `true`. Optional `presets.files` adds operator-selected JSON paths. Preflight
+rejects a non-boolean `includeDefaults`, a non-list `files`, and empty or
+non-string entries without reading files; controller startup resolves paths and
+validates contents. Changes alter the Installation checksum.
 
 `runtime.transportSecretPrefix` must produce the same DNS-safe name that
 Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
@@ -317,6 +318,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18: Render `presets.includeDefaults` from site input, defaulting to `true`. (accompanying change)
 
 - 2026-11-15 10:07: Align database CA mount preflight with prepared Git mounts. (authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
 

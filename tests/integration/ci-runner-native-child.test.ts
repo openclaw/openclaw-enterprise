@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -30,6 +31,10 @@ const socketStub = `
 const { EventEmitter } = require("node:events");
 const Module = require("node:module");
 const originalRequire = Module.prototype.require;
+const setTimeoutOriginal = setTimeout;
+globalThis.setTimeout = (fn, ms) => setTimeoutOriginal(fn, ms === 250 ? 0 : ms);
+let now = 0;
+Date.now = () => (now += 5_000);
 class Socket extends EventEmitter {
   static OPEN = 1;
   readyState = Socket.OPEN;
@@ -45,13 +50,7 @@ class Socket extends EventEmitter {
     if (id === undefined) return;
     const response = { id, result: {} };
     if (method === "thread/read") {
-      response.result.thread = params.threadId === "synthetic-parent"
-        ? { id: "synthetic-parent", turns: [{ items: [
-            { type: "subAgentActivity", kind: "started", agentThreadId: "synthetic-child" },
-          ] }] }
-        : { id: "synthetic-child", parentThreadId: "synthetic-parent", turns: [{
-            status: "completed", items: [{ type: "agentMessage", text: answer }],
-          }] };
+      response.result.thread = params.threadId === "synthetic-parent" ? fixture.parent : fixture.child;
       if (fault === "child-read" && params.threadId === "synthetic-child") {
         response.error = { code: -1 };
       }
@@ -65,23 +64,64 @@ Module.prototype.require = function (id) {
 };
 `;
 
+function nativeHistory(prompt: string, task: string, answer: string) {
+  const user = (text: string) => ({ type: "userMessage", content: [{ type: "text", text }] });
+  const start = { type: "subAgentActivity", kind: "started", agentThreadId: "synthetic-child" };
+  const spawn = {
+    type: "collabAgentToolCall",
+    tool: "spawnAgent",
+    status: "completed",
+    receiverThreadIds: ["synthetic-child"],
+  };
+  const command = {
+    type: "commandExecution",
+    source: "unifiedExecStartup",
+    status: "completed",
+    exitCode: 0,
+    command: `/bin/bash -lc 'node -p "crypto.randomUUID()"'`,
+    aggregatedOutput: answer + "\n",
+  };
+  const final: { type: string; phase?: string; text: string } = {
+    type: "agentMessage",
+    phase: "final_answer",
+    text: answer,
+  };
+  return {
+    parent: {
+      id: "synthetic-parent",
+      turns: [{ status: "completed", items: [user(prompt), start, spawn] }],
+    },
+    child: {
+      id: "synthetic-child",
+      parentThreadId: "synthetic-parent",
+      turns: [{ status: "completed", items: [user(task), command, final] }],
+    },
+    command,
+    final,
+    spawn,
+  };
+}
+
 function readSyntheticNativeChild(
   readEvidence: ReadEvidence,
   fault?: Fault,
   onFailure?: (error: unknown) => void | Promise<void>,
 ): Promise<unknown> {
-  const marker = `synthetic-answer-${randomUUID()}`;
+  const marker = `synthetic-correlation-${randomUUID()}`;
+  const task = `Run the native shell task for ${marker}`;
+  const prompt = `Spawn a native child with task ${JSON.stringify(task)}`;
+  const fixture = nativeHistory(prompt, task, randomUUID());
   return readEvidence(
     "unused-namespace",
     "unused-pod",
     "synthetic-parent",
     marker,
-    `reply with ${marker}`,
+    prompt,
     async (_namespace: string, _pod: string, script: string) => {
       try {
         const { stdout } = await exec(process.execPath, [
           "-e",
-          `const fault = ${JSON.stringify(fault)};\nconst answer = ${JSON.stringify(marker)};\n${socketStub}\n${script}`,
+          `const fault = ${JSON.stringify(fault)};\nconst fixture = ${JSON.stringify(fixture)};\n${socketStub}\n${script}`,
         ]);
         return stdout;
       } catch (error) {
@@ -159,7 +199,253 @@ test("native child query retains only an observed stage from its own failed exec
   assert.equal(evidence.parentThreadId, "synthetic-parent");
   assert.equal(evidence.childThreadId, "synthetic-child");
   assert.equal(evidence.observation.stage, "complete");
-  assert.equal(evidence.observation.completedNonceTurn, true);
+  assert.equal(evidence.observation.commandMatched, true);
+});
+
+test("dedicated native child relay binds the current HTTP answer to its generating turn", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "native-child-relay-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const fixturePath = join(directory, "history.json");
+  const execPath = join(directory, "kubectl");
+  await writeFile(
+    execPath,
+    `#!${process.execPath}
+const assert = require("node:assert/strict");
+const { readFileSync, writeFileSync } = require("node:fs");
+const path = ${JSON.stringify(fixturePath)};
+const snapshot = JSON.parse(readFileSync(path, "utf8"));
+const { history, fixture, sessionKey } = snapshot;
+const args = process.argv.slice(2);
+assert.deepEqual(args.slice(-8, -1), ["exec", "relay-pod", "--namespace", "relay-ns", "--", "node", "-e"]);
+const script = args.at(-1);
+if (script.includes('"chat.history"')) {
+  assert.ok(script.includes(sessionKey));
+  if (snapshot.pendingHistoryReads > 0) {
+    snapshot.pendingHistoryReads--;
+    writeFileSync(path, JSON.stringify(snapshot));
+    history.messages.pop();
+  }
+  process.stdout.write(JSON.stringify(history));
+} else {
+  const fault = undefined;
+  eval(${JSON.stringify(socketStub)} + script);
+}
+`,
+    { mode: 0o700 },
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${directory}:${previousPath ?? ""}`;
+  t.after(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  });
+  const { assertDedicatedNativeChildRelay } =
+    await import("../helpers/harness-topology-k3d-real.mjs");
+  const topology = {
+    gatewayUrl: "http://127.0.0.1:9",
+    gatewayPassword: "synthetic-offline-only",
+    gatewayPlacement: "relay-ns",
+    gatewayPod: { metadata: { name: "relay-pod" } },
+  };
+
+  for (const [scenario, matchingStage] of [
+    ["explicit final followed by commentary and phase-less text", undefined],
+    ["last textual answer in a phase-less turn", undefined],
+    ["activity-only spawn", undefined],
+    ["tool-call-only spawn", undefined],
+    ["child history omits its initial user message", undefined],
+    ["delayed persisted answer", undefined],
+    ["correct HTTP answer with stale-only history", "history"],
+    ["wrong current HTTP answer with matching old history", "http"],
+    ["missing current HTTP answer with matching old history", "http"],
+    ["the right answer on a different child turn", "child-completion"],
+    ["wrong selected child identity", "child-read"],
+    ["command only mentions the generator", "child-completion"],
+    ["command appears after the final", "child-completion"],
+    ["matching commentary with a different explicit final", "child-completion"],
+    ["two explicit finals", "child-completion"],
+    ["commentary without a final", "child-completion"],
+    ["duplicate spawn to the same child", "parent-read"],
+    ["failed spawn with started activity", "parent-read"],
+    ["completed spawn without a receiver", "parent-read"],
+    ["activity and receiver identify different children", "parent-read"],
+    ["interrupted parent", "parent-read"],
+    ["failed parent", "parent-read"],
+  ] as const) {
+    await t.test(scenario, async (context) => {
+      const answer = randomUUID();
+      const fetchResponse: typeof globalThis.fetch = async (url, options) => {
+        assert.equal(url, `${topology.gatewayUrl}/v1/chat/completions`);
+        assert.equal(options?.method, "POST");
+        const sessionKey = new Headers(options?.headers).get("x-openclaw-session-key");
+        assert.match(sessionKey ?? "", /^agent:main:native-child-/);
+        assert.ok(typeof options?.body === "string");
+        const body = JSON.parse(options.body);
+        assert.equal(body.stream, false);
+        assert.equal(body.messages.length, 1);
+        assert.equal(body.messages[0].role, "user");
+        const prompt: string = body.messages[0].content;
+        const encodedTask = prompt.match(/message=("(?:[^"\\]|\\.)*")/)?.[1];
+        assert.ok(encodedTask);
+        const task: string = JSON.parse(encodedTask);
+        assert.ok(!prompt.includes(answer));
+        const fixture = nativeHistory(prompt, task, answer);
+        const [childTurn] = fixture.child.turns;
+        const [parentTurn] = fixture.parent.turns;
+        assert.ok(childTurn && parentTurn);
+        const commentary = { ...fixture.final, phase: "commentary", text: "still working" };
+        const legacy = { type: "agentMessage", text: "older draft" };
+
+        switch (scenario) {
+          case "child history omits its initial user message":
+            // Codex 0.164.0 thread/read exposes the child's command and answer,
+            // but no initial userMessage. The parent activity still binds this child.
+            childTurn.items.shift();
+            break;
+          case "explicit final followed by commentary and phase-less text":
+            childTurn.items.push(commentary, legacy);
+            break;
+          case "last textual answer in a phase-less turn":
+            childTurn.items.splice(
+              2,
+              1,
+              legacy,
+              { ...legacy, text: answer },
+              { ...legacy, text: "" },
+            );
+            break;
+          case "the right answer on a different child turn":
+            fixture.child.turns.unshift({
+              status: "completed",
+              items: [
+                { type: "userMessage", content: [{ type: "text", text: "earlier task" }] },
+                fixture.command,
+                fixture.final,
+              ],
+            });
+            childTurn.items.splice(1);
+            break;
+          case "wrong selected child identity":
+            fixture.child.id = "different-child";
+            break;
+          case "command only mentions the generator":
+            fixture.command.command = `/bin/bash -lc 'echo ${answer}; # crypto.randomUUID()'`;
+            break;
+          case "command appears after the final":
+            childTurn.items.splice(1, 2, fixture.final, fixture.command);
+            break;
+          case "matching commentary with a different explicit final":
+            childTurn.items.splice(
+              2,
+              1,
+              { ...commentary, text: answer },
+              {
+                ...fixture.final,
+                text: randomUUID(),
+              },
+            );
+            break;
+          case "two explicit finals":
+            childTurn.items.push({ ...fixture.final });
+            break;
+          case "commentary without a final":
+            childTurn.items.splice(2, 1, { ...commentary, text: answer });
+            break;
+          case "duplicate spawn to the same child":
+            parentTurn.items.push({ ...fixture.spawn });
+            break;
+          case "activity-only spawn":
+            parentTurn.items = parentTurn.items.filter((item) => item !== fixture.spawn);
+            break;
+          case "tool-call-only spawn":
+            parentTurn.items = parentTurn.items.filter((item) => item.type !== "subAgentActivity");
+            break;
+          case "failed spawn with started activity":
+            fixture.spawn.status = "failed";
+            break;
+          case "completed spawn without a receiver":
+            fixture.spawn.receiverThreadIds = [];
+            break;
+          case "activity and receiver identify different children":
+            fixture.spawn.receiverThreadIds = ["different-child"];
+            break;
+          case "interrupted parent":
+          case "failed parent":
+            parentTurn.status = scenario === "interrupted parent" ? "interrupted" : "failed";
+            break;
+        }
+
+        // The earlier answer matches even in the stale-only case. Only a later
+        // answer from the selected parent proves that the Gateway persisted the relay.
+        const storedReply = {
+          role: "assistant",
+          idempotencyKey: "codex-app-server:synthetic-parent:current",
+          content: ` ${answer}\n`,
+        };
+        const history = {
+          messages: [
+            { ...storedReply, idempotencyKey: "codex-app-server:synthetic-parent:old" },
+            { role: "user", content: prompt },
+            {
+              ...storedReply,
+              idempotencyKey: "codex-app-server:synthetic-parent:draft",
+              content: "still working",
+            },
+          ],
+        };
+        if (scenario !== "correct HTTP answer with stale-only history") {
+          history.messages.push(storedReply);
+        }
+        // Hide the final during parent selection and the first persistence poll.
+        const pendingHistoryReads = scenario === "delayed persisted answer" ? 2 : 0;
+        await writeFile(
+          fixturePath,
+          JSON.stringify({ history, fixture, sessionKey, pendingHistoryReads }),
+        );
+        const content =
+          scenario === "wrong current HTTP answer with matching old history"
+            ? randomUUID()
+            : scenario === "missing current HTTP answer with matching old history"
+              ? undefined
+              : ` ${answer}\n`;
+        return Response.json({ choices: [{ message: { content } }] });
+      };
+      const fetch = context.mock.method(globalThis, "fetch", fetchResponse);
+
+      if (matchingStage === "history") {
+        // Advance the history poll past its deadline without waiting on real time.
+        let now = Date.now();
+        context.mock.method(Date, "now", () => (now += 300_000));
+      }
+      const relay = assertDedicatedNativeChildRelay(topology);
+      if (matchingStage === undefined) {
+        await relay;
+      } else if (matchingStage === "http") {
+        await assert.rejects(
+          relay,
+          /current Gateway reply must equal the linked child's final answer/,
+        );
+      } else if (matchingStage === "history") {
+        await assert.rejects(relay, {
+          message:
+            "Timed out waiting for the persisted child answer on the selected Gateway parent.",
+        });
+      } else {
+        await assert.rejects(relay, (error: unknown) => {
+          assert.ok(isRecord(error));
+          assert.deepEqual(error.openclawCiDiagnostic, {
+            kind: "topology-native-child",
+            stage: matchingStage,
+          });
+          return true;
+        });
+      }
+      assert.equal(fetch.mock.callCount(), 1);
+    });
+  }
 });
 
 test("runner reports a native child stage only on the canonical failed topology case", async (t) => {
@@ -196,6 +482,7 @@ import { hasStringField } from ${JSON.stringify(guards.href)};
 import { readDedicatedNativeChildEvidence } from ${JSON.stringify(helper.href)};
 const exec = promisify(execFile);
 const socketStub = ${JSON.stringify(socketStub)};
+const nativeHistory = ${nativeHistory.toString()};
 const readSyntheticNativeChild = ${readSyntheticNativeChild.toString()};
 const recordSyntheticReceipt = ${recordSyntheticReceipt.toString()};
 for (const [index, { name, fault, missingReceipt, diagnostic }] of ${JSON.stringify(
@@ -218,7 +505,7 @@ for (const [index, { name, fault, missingReceipt, diagnostic }] of ${JSON.string
 `);
   const cleanupPath = join(root, "state/native-child-cleanups");
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     `import { appendFile } from "node:fs/promises";
 export async function prepareFile() {
   return { cleanup: () => appendFile(${JSON.stringify(cleanupPath)}, "cleaned\\n") };

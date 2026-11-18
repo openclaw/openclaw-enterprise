@@ -45,7 +45,7 @@ plane follows the Compute Driver, selecting Kubernetes here.
 To qualify one Agent after repository-binding removal, set `file` to
 `tests/integration/openshell-git-finite-removal-real.test.ts`. Follow the lane
 prerequisites below; pass `--selected-file "$file"` to
-`scripts/ci/prepare.mjs --lane openshell`, then `--file "$file"` to
+`scripts/ci/prepare.ts --lane openshell`, then `--file "$file"` to
 `scripts/ci/run-tests.ts run openshell`, using the same private `--state "$state"`.
 Always run `node scripts/ci/cleanup.ts --state "$state"`, even after preparation
 or execution fails. The fixture owns a disposable Kubernetes control plane and
@@ -236,7 +236,7 @@ else
   export NODE_BASE_IMAGE
 fi
 export OCC_OPENSHELL_TEST_ROOT="$(mktemp -d)"
-node scripts/ci/prepare.mjs --lane openshell \
+node scripts/ci/prepare.ts --lane openshell \
   --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 node scripts/ci/run-tests.ts run openshell \
   --state "$OCC_OPENSHELL_TEST_ROOT/state.json" \

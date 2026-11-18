@@ -367,15 +367,7 @@ async function kubernetesApiEndpoint(
   cluster: Cluster,
   execFile: CommandExecutor,
   kubectl: string,
-  env: NodeJS.ProcessEnv,
 ): Promise<Endpoint> {
-  if (env.OCC_CI_OTEL_KUBERNETES_API_CIDR || env.OCC_CI_OTEL_KUBERNETES_API_PORT) {
-    assertIpv4Cidr(env.OCC_CI_OTEL_KUBERNETES_API_CIDR, "OCC_CI_OTEL_KUBERNETES_API_CIDR");
-    return {
-      cidr: env.OCC_CI_OTEL_KUBERNETES_API_CIDR,
-      port: assertPort(env.OCC_CI_OTEL_KUBERNETES_API_PORT, "OCC_CI_OTEL_KUBERNETES_API_PORT"),
-    };
-  }
   const result = await execFile(
     kubectl,
     kubectlArgs(cluster, [
@@ -558,7 +550,7 @@ async function installKubernetesCollector({
   const kubectl = env.OCC_KUBECTL_BIN ?? "kubectl";
   const exporterCidr = env.OCC_CI_OTEL_BACKEND_EGRESS_CIDR ?? `${endpointHost}/32`;
   assertIpv4Cidr(exporterCidr, "OCC_CI_OTEL_BACKEND_EGRESS_CIDR");
-  const api = await kubernetesApiEndpoint(cluster, execFile, kubectl, env);
+  const api = await kubernetesApiEndpoint(cluster, execFile, kubectl);
   assertInsideDirectory(directory, secretsManifestPath, "OTel Kubernetes Secret manifest");
   assertInsideDirectory(directory, manifestPath, "OTel Kubernetes Collector manifest");
   await writePrivateFile(

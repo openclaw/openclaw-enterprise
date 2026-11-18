@@ -1,3 +1,5 @@
+import { optionalRecord as record } from "./records.ts";
+
 type TestCounts = {
   tests: number;
   passed: number;
@@ -114,12 +116,6 @@ export function exercisedAssertionFailures(
     assertions.add(entry);
   }
   return assertions;
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
 }
 
 function countsMatch(value: unknown, passed: number, failed: number): boolean {

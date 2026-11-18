@@ -41,7 +41,7 @@ import {
   renderedPolicies,
   resourceRecord,
   resourceRecords,
-} from "./kubernetes-network-profile-cases.ts";
+} from "../helpers/kubernetes-rendered-resources.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type CoreApi = InstanceType<KubernetesSdk["CoreV1Api"]>;

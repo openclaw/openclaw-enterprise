@@ -8,7 +8,7 @@ import type { RequestListener } from "node:http";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.mjs";
 
 type Fixture = {

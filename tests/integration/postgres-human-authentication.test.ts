@@ -17,7 +17,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { administrativeActor } from "../helpers/administrative-actor.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitForLockHolder, waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitUntil, within } from "../helpers/wait-for.ts";
@@ -1402,6 +1402,21 @@ test(
         );
         const enrolled = await persistence.enrolAccount(successor.id, admin);
         assert.deepEqual(enrolled, { principalId: successorPrincipal, version: 1, created: true });
+        const restricted = new PostgresHumanAuthentication(state, installationId, issuer, {
+          ...configured,
+          passwordSignIn: "recovery-only",
+        });
+        const formerProof = await restricted.snapshotPassword(recoveryEmail);
+        assert.ok(formerProof);
+        assert.equal(await restricted.snapshotPassword(successor.email), undefined);
+        assert.equal(
+          await restricted.snapshotPassword(`missing-recovery-${suffix}@example.test`),
+          undefined,
+        );
+        const retained = await restricted.issueSession(
+          formerProof.proof,
+          sessionRecord(recoveryUserId),
+        );
         const disabled = await persistence.readAccount(person.id, admin);
         assert.equal(disabled.disabled, true);
         await assert.rejects(
@@ -1445,7 +1460,7 @@ test(
         const [replacement] = replaced;
         assert.ok(replacement);
         assert.equal(replacement.value.changed, true);
-        // The committed holder's email is what the controller moves the reserved lane to.
+        // The replacement reports the committed holder's email.
         assert.equal(replacement.value.email, `successor-${suffix}@example.test`);
         const refused = results.find((result) => result.status === "rejected");
         const reason: unknown = refused?.reason;
@@ -1463,6 +1478,33 @@ test(
         assert.ok(moved);
         assert.equal(moved.userId, successor.id);
         assert.equal(moved.principalId, successorPrincipal);
+        assert.equal(await restricted.snapshotPassword(recoveryEmail), undefined);
+        const successorProof = await restricted.snapshotPassword(successor.email);
+        assert.ok(successorProof);
+        const refusedSession = sessionRecord(recoveryUserId);
+        await assert.rejects(restricted.issueSession(formerProof.proof, refusedSession), {
+          name: "RecoveryPasswordPolicyError",
+        });
+        assert.equal(
+          (await pool.query("SELECT id FROM occ.session WHERE id=$1", [refusedSession.id]))
+            .rowCount,
+          0,
+          "a former-holder proof writes no session",
+        );
+        assert.equal((await restricted.currentSession(retained.token))?.user.id, recoveryUserId);
+        const successorSession = await restricted.issueSession(
+          successorProof.proof,
+          sessionRecord(successor.id),
+        );
+        assert.equal(
+          (await restricted.currentSession(successorSession.token))?.user.id,
+          successor.id,
+        );
+        await restricted.revokeSession(successorSession.token);
+        assert.ok(
+          await persistence.snapshotPassword(recoveryEmail),
+          "the default all policy still admits the former holder",
+        );
         const current = await persistence.readAccount(successor.id, admin);
         assert.equal(
           (
