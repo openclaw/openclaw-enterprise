@@ -194,6 +194,8 @@ export type HarnessExecutionModeSupport =
   | { readonly supported: false; readonly reason?: string };
 
 export interface SandboxDriver extends Driver {
+  /** Mediates public TCP access while retaining explicit credential and control routes. */
+  readonly publicNetworkEgress?: true;
   /**
    * OpenClaw mode support, set in the constructor from Driver identity and Installation settings.
    * Refusal reasons contain only the setting name and a corrective action.
@@ -270,6 +272,11 @@ export interface SandboxDriver extends Driver {
     harness: Readonly<RevisionHarnessDescriptor>,
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
+  /**
+   * Returns the Sandbox after its required provisioning checks. Once creation is confirmed,
+   * throw SandboxPolicyObservationPendingError to await network policy convergence on the
+   * same Sandbox. Dependency failures retain their ordinary failure path.
+   */
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
   /** The launcher stays held while the Driver observes its request challenge.
    * A denial observed here can select material, never release work. */

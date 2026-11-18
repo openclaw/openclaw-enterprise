@@ -22,6 +22,7 @@ import {
   verifyConfirmedSandboxCleanup,
   verifyNativeHeldFailureExposure,
   verifyExistingSandboxAdoption,
+  verifyPublicEgressSupervisorReadback,
   verifySandboxRequestReplay,
 } from "./sandbox-driver-adoption-cases.ts";
 import {
@@ -48,6 +49,10 @@ registerManagedPluginPolicyCases(credentialGatewayOverProviders);
 test(
   "OpenShell provisions native OpenClaw without exposing an inbound Harness service",
   verifyNativeOpenClawProvisioning,
+);
+test(
+  "OpenShell public egress waits for explicit confirmation from the same supervisor",
+  verifyPublicEgressSupervisorReadback,
 );
 
 // Finding 1676: OpenShell answers NOT_FOUND for a Sandbox this identity may not see exactly as

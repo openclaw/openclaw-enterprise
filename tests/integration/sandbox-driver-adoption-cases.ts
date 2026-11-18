@@ -10,6 +10,7 @@ import type { SandboxEnvironmentVariable } from "../../packages/contracts/src/in
 import {
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
+  SandboxPolicyObservationPendingError,
   SandboxRevisionUnsupportedError,
 } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -47,6 +48,89 @@ function record(value: unknown): Record<string, unknown> {
 
 function structFields(value: unknown): Record<string, unknown> {
   return record(record(record(value).structValue).fields);
+}
+
+export async function verifyPublicEgressSupervisorReadback(): Promise<void> {
+  const gateway = workspaceGatewayClient();
+  const base = buildSandboxInstallation().drivers.sandbox.configuration;
+  const driver = openShellDriver(gateway, {
+    ...base,
+    gateway: { ...base.gateway, publicNetworkEgress: "qualified" },
+  });
+  const {
+    context,
+    revision: fixtureRevision,
+    requirements,
+  } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  const revision = {
+    ...completeSandboxRevision(fixtureRevision),
+    networkEgressMode: "public" as const,
+  };
+  const harness = { ...context, revision, requirements };
+  const policyHash = "c".repeat(64);
+  const configRevision = "9007199254740993";
+  const providerRevision = "2";
+  let created: OpenShellSandboxCreateRequest | undefined;
+  let creationCount = 0;
+  let appliedMode: boolean | undefined;
+  let configInstance = "supervisor-one";
+  const sandbox = () =>
+    created &&
+    storedSandbox(created, {
+      id: "sandbox-one",
+      serviceUrls: {},
+      mainProcessInstanceId: "supervisor-one",
+      configurationAdmission: {
+        state: 2,
+        instance_id: "supervisor-one",
+        policy_hash: policyHash,
+        policy_version: 1,
+        config_revision: configRevision,
+        provider_env_revision: providerRevision,
+        ...(appliedMode === undefined
+          ? {}
+          : { applied_allow_unconfigured_public_tcp: appliedMode }),
+      },
+    });
+  gateway.createSandbox = async (request) => {
+    created = request;
+    creationCount++;
+    return sandbox()!;
+  };
+  gateway.getSandbox = async () => sandbox();
+  gateway.getPolicyStatus = async () => ({
+    version: 1,
+    activeVersion: 1,
+    state: "POLICY_STATUS_LOADED",
+    policyHash: "a".repeat(64),
+    policy: record(created?.spec.policy),
+  });
+  gateway.getSandboxConfig = async (workspace) => ({
+    workspace,
+    version: 1,
+    policy: created!.spec.policy,
+    policy_source: 1,
+    policy_hash: policyHash,
+    configuration_instance_id: configInstance,
+    config_revision: configRevision,
+    provider_env_revision: providerRevision,
+    configuration_admitted: true,
+  });
+  await driver.ensureNamespace(context);
+
+  // A loaded policy and requested mode do not establish that the supervisor applied it.
+  await assert.rejects(driver.provisionHarness(harness), SandboxPolicyObservationPendingError);
+  assert.equal(record(created?.spec.policy).allow_unconfigured_public_tcp, true);
+  appliedMode = false;
+  await assert.rejects(driver.provisionHarness(harness), /public network egress is inactive/);
+  appliedMode = true;
+  configInstance = "replaced-supervisor";
+  await assert.rejects(driver.provisionHarness(harness), /conflicting evidence/);
+  configInstance = "supervisor-one";
+  assert.equal((await driver.provisionHarness(harness)).revisionId, revision.id);
+  assert.equal(creationCount, 1, "policy observation must keep the original Sandbox");
 }
 
 export async function verifyNativeOpenClawProvisioning(): Promise<void> {

@@ -99,6 +99,7 @@ import {
   SandboxNamespaceRefusedError,
   SandboxNamespacePendingError,
   SandboxNetworkPolicyConflictError,
+  SandboxPolicyObservationPendingError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
@@ -142,6 +143,8 @@ import {
   openShellSandboxLogReader,
   openShellSandboxObserver,
   type OpenShellGatewayClient,
+  type OpenShellPolicyRequest,
+  type OpenShellPolicyStatus,
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
   type OpenShellStoredProviderProfile,
@@ -215,6 +218,7 @@ export interface OpenShellSandboxDriverOptions {
   /** Workspace and readiness policy; the `openshell` Backend owns the gateway connection. */
   readonly gateway: {
     readonly workspaceMode: "managed" | "operator";
+    readonly publicNetworkEgress?: "qualified";
     /** Exact HTTPS endpoint of the registered OCE request guard. */
     readonly managedPluginMiddleware?: string;
     readonly operatorNamespaceLabels?: Readonly<Record<string, string>>;
@@ -269,6 +273,143 @@ export interface OpenShellSandboxDriverSelection {
 }
 
 class OpenShellSandboxConfigurationFailure extends Error {}
+
+function sameConfigurationGeneration(effective: unknown, admitted: unknown): boolean {
+  // These proto3 uint64 fields omit zero; the decoder preserves other values as strings.
+  // Keep full uint64 precision and never treat malformed, matching values as evidence.
+  const actual = effective === undefined ? "0" : effective;
+  const expected = admitted === undefined ? "0" : admitted;
+  return (
+    typeof actual === "string" &&
+    /^(0|[1-9][0-9]{0,19})$/.test(actual) &&
+    BigInt(actual) <= 18446744073709551615n &&
+    actual === expected
+  );
+}
+
+function matchesConfigurationAdmission(
+  config: ConfigurationRecord,
+  admission: ConfigurationRecord,
+): boolean {
+  return (
+    isNonEmptyString(admission.instance_id) &&
+    config.configuration_instance_id === admission.instance_id &&
+    typeof admission.policy_hash === "string" &&
+    /^[0-9a-f]{64}$/.test(admission.policy_hash) &&
+    config.policy_hash === admission.policy_hash &&
+    sameConfigurationGeneration(config.config_revision, admission.config_revision) &&
+    sameConfigurationGeneration(config.provider_env_revision, admission.provider_env_revision)
+  );
+}
+
+type NetworkEgressObservation =
+  | { readonly state: "applied"; readonly configuration: ConfigurationRecord | undefined }
+  | { readonly state: "pending" | "failed"; readonly message: string };
+
+async function observeNetworkEgress(
+  client: OpenShellGatewayClient,
+  request: OpenShellPolicyRequest,
+  signal: AbortSignal,
+  {
+    mode,
+    status,
+    sandbox,
+    requireEffectiveConfiguration,
+  }: {
+    readonly mode: NonNullable<AgentRevision["networkEgressMode"]>;
+    readonly status: OpenShellPolicyStatus;
+    readonly sandbox: OpenShellSandboxResponse | undefined;
+    readonly requireEffectiveConfiguration: boolean;
+  },
+): Promise<NetworkEgressObservation> {
+  if (status.state === "POLICY_STATUS_FAILED" || status.state === "POLICY_STATUS_SUPERSEDED") {
+    return { state: "failed", message: "OpenShell failed to load the Sandbox network policy." };
+  }
+  const loaded = status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version;
+  const isPublic = mode === "public";
+  if (loaded && (status.policy.allow_unconfigured_public_tcp ?? false) !== isPublic) {
+    return {
+      state: "failed",
+      message: "OpenShell loaded a source policy with a different network egress mode.",
+    };
+  }
+  // Stock restricted readiness uses sandbox:read. Qualified egress and managed
+  // request policies use the same config:read snapshot when they need it.
+  const readConfig = isPublic || requireEffectiveConfiguration;
+  const config = readConfig
+    ? await client.getSandboxConfig?.(request.workspace, request.sandbox, signal)
+    : undefined;
+  const admission = sandbox?.configurationAdmission;
+  const appliedPublic = admission?.applied_allow_unconfigured_public_tcp;
+  const effectivePublic = asRecord(config?.policy)?.allow_unconfigured_public_tcp;
+  if (!isPublic && (appliedPublic === true || effectivePublic === true)) {
+    return {
+      state: "failed",
+      message: "OpenShell reports public network egress for a restricted Agent revision.",
+    };
+  }
+  const currentConfig = config?.version === status.version ? config : undefined;
+  const currentAdmission = admission?.policy_version === status.version ? admission : undefined;
+  const matchesCurrentConfiguration =
+    currentConfig !== undefined &&
+    currentAdmission !== undefined &&
+    matchesConfigurationAdmission(currentConfig, currentAdmission);
+  const admissionRefused = admission?.state === 3 || isNonEmptyString(admission?.error);
+  // A refusal can precede source policy load. OpenShell can retain an earlier
+  // admission while a replacement converges. Compare the effective generation
+  // when the configuration read is available, since composition changes its hash.
+  if (
+    isNonEmptyString(currentConfig?.configuration_error) ||
+    (admissionRefused && currentAdmission && (!readConfig || matchesCurrentConfiguration))
+  ) {
+    return { state: "failed", message: "OpenShell refused the Sandbox network policy." };
+  }
+  if (!loaded) {
+    return {
+      state: "pending",
+      message: "OpenShell has not loaded the Sandbox network policy yet.",
+    };
+  }
+  if (!isPublic) {
+    if (readConfig && config === undefined) {
+      return { state: "failed", message: "OpenShell effective configuration is unavailable." };
+    }
+    return { state: "applied", configuration: config };
+  }
+  if (
+    appliedPublic === undefined ||
+    admissionRefused ||
+    !currentAdmission ||
+    currentAdmission.state === 1 ||
+    !sandbox?.mainProcessInstanceId ||
+    currentConfig?.configuration_admitted !== true
+  ) {
+    return {
+      state: "pending",
+      message: "OpenShell is waiting for the supervisor to confirm active public network egress.",
+    };
+  }
+  if (
+    typeof status.policyHash === "string" &&
+    /^[0-9a-f]{64}$/.test(status.policyHash) &&
+    currentConfig.workspace === request.workspace &&
+    currentAdmission.state === 2 &&
+    sandbox.mainProcessInstanceId === currentAdmission.instance_id &&
+    currentConfig.policy_source === 1 &&
+    matchesCurrentConfiguration
+  ) {
+    if (appliedPublic === false) {
+      return { state: "failed", message: "OpenShell reports public network egress is inactive." };
+    }
+    if (appliedPublic === true && effectivePublic === true) {
+      return { state: "applied", configuration: currentConfig };
+    }
+  }
+  return {
+    state: "failed",
+    message: "OpenShell reports conflicting evidence for active public network egress.",
+  };
+}
 
 const GRPC_NOT_FOUND = 5;
 const GRPC_PERMISSION_DENIED = 7;
@@ -2344,6 +2485,7 @@ function sandboxSpec(
     },
     policy: {
       version: 1,
+      ...(revision.networkEgressMode === "public" && { allow_unconfigured_public_tcp: true }),
       filesystem: filesystemPolicy(options, dataMount, volumeMounts),
       landlock: { compatibility: "hard_requirement" },
       process: {
@@ -2397,10 +2539,20 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       "OpenShell gateway workspaceMode must be managed or operator.",
     );
   }
+  if (
+    options.gateway.publicNetworkEgress !== undefined &&
+    (options.gateway.publicNetworkEgress !== "qualified" ||
+      options.gateway.workspaceMode !== "operator")
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell gateway publicNetworkEgress must be qualified and requires operator workspace mode.",
+    );
+  }
   for (const key of Object.keys(options.gateway)) {
     if (
       ![
         "workspaceMode",
+        "publicNetworkEgress",
         "managedPluginMiddleware",
         "operatorNamespaceLabels",
         "readiness",
@@ -2565,6 +2717,7 @@ export const configurationSchema = Object.freeze({
       additionalProperties: false,
       properties: {
         workspaceMode: { type: "string", enum: ["managed", "operator"] },
+        publicNetworkEgress: { const: "qualified" },
         managedPluginMiddleware: { type: "string", pattern: "^https://" },
         operatorNamespaceLabels: { type: "object", writeOnly: true },
         operatorWorkspaceResources: { type: "array", writeOnly: true },
@@ -3019,6 +3172,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
 
   readonly id: string;
   readonly capability = "sandbox" as const;
+  readonly publicNetworkEgress?: true;
   readonly implementation: string;
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
   readonly supportsHarnessExecutionMode;
@@ -3056,6 +3210,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     this.options = options;
+    if (options.gateway.publicNetworkEgress === "qualified") {
+      this.publicNetworkEgress = true;
+    }
     let reason: string | undefined;
     if (options.kubernetes.userNamespaces !== false) {
       reason =
@@ -3346,6 +3503,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   async provisionHarness(context: SandboxHarnessContext): Promise<SandboxResourceRef> {
     assertNoRepositoryEnrollment(context, this.openShellGit);
     this.requireOperatorWorkspaceMode("provision a Harness");
+    if (context.revision.networkEgressMode === "public" && this.publicNetworkEgress !== true) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "Public network egress requires a qualified OpenShell Gateway and supervisor.",
+      );
+    }
     if (!isDeepStrictEqual(context.requirements.proxyWiring?.plan, context.revision.egressPlan)) {
       throw new OpenShellSandboxConfigurationFailure(
         "Protected egress attachment must match the admitted revision.",
@@ -3457,16 +3620,63 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
-    const checkEffectivePolicy = async () => {
-      const config =
-        plugin || mcpPolicies.length
-          ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
-          : undefined;
+    const checkEffectivePolicy = async (provisioned: OpenShellSandboxResponse) => {
+      const mode = context.revision.networkEgressMode ?? "restricted";
+      let configuration: ConfigurationRecord | undefined;
+      if (this.publicNetworkEgress === true) {
+        if (!client.getPolicyStatus || !client.getSandboxConfig) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "OpenShell policy readback is unavailable.",
+          );
+        }
+        const request = { workspace, sandbox: sandbox.resourceName };
+        const current = await client.getSandbox(
+          { workspace, name: sandbox.resourceName },
+          context.signal,
+        );
+        if (
+          !current?.id ||
+          current.id !== provisioned.id ||
+          current.name !== request.sandbox ||
+          current.workspace !== request.workspace
+        ) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "OpenShell Sandbox identity changed during policy readback.",
+          );
+        }
+        const status = await client.getPolicyStatus(request, context.signal);
+        const observation = await observeNetworkEgress(client, request, context.signal, {
+          mode,
+          status,
+          sandbox: current,
+          requireEffectiveConfiguration: true,
+        });
+        if (observation.state !== "applied") {
+          if (observation.state === "pending") {
+            throw new SandboxPolicyObservationPendingError(observation.message);
+          }
+          throw new OpenShellSandboxConfigurationFailure(observation.message);
+        }
+        configuration = observation.configuration;
+      } else {
+        configuration =
+          plugin || mcpPolicies.length
+            ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
+            : undefined;
+        if (
+          provisioned.configurationAdmission?.applied_allow_unconfigured_public_tcp === true ||
+          asRecord(configuration?.policy)?.allow_unconfigured_public_tcp === true
+        ) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "OpenShell reports public network egress for a restricted Agent revision.",
+          );
+        }
+      }
       if (plugin) {
-        verifyPluginRequestGuard(config, plugin, workspace);
+        verifyPluginRequestGuard(configuration, plugin, workspace);
       }
       for (const policy of mcpPolicies) {
-        verifyManagedMcpPolicy(config, policy, workspace);
+        verifyManagedMcpPolicy(configuration, policy, workspace);
       }
     };
     const exposed = exposesHarnessPort(context.requirements, codex);
@@ -3684,7 +3894,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           // delay when OpenShell reports that an exposed Sandbox service is ready.
           await delay(this.options.startupDelayMs, undefined, { signal: context.signal });
         }
-        await checkEffectivePolicy();
+        await checkEffectivePolicy(created);
         await this.initializeWorkspace(context, sandbox, client);
         return result;
       }
@@ -3772,7 +3982,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       validateHarnessServiceUrl(service.url);
     }
-    await checkEffectivePolicy();
+    await checkEffectivePolicy(existing);
     await this.initializeWorkspace(context, sandbox, client);
     return result;
   }
@@ -4672,6 +4882,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     ) {
       throw new Error("Invalid policy revision scope.");
     }
+    if (context.revision.networkEgressMode === "public" && this.publicNetworkEgress !== true) {
+      throw new Error(
+        "Public network egress requires a qualified OpenShell Gateway and supervisor.",
+      );
+    }
     const ref = this.sandboxRef(context);
     const client = this.gatewayClientForNamespace(ref.namespaceName);
     const request = { sandbox: ref.resourceName, workspace: workspaceName(context.namespace) };
@@ -4708,15 +4923,21 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, snapshot);
+    const candidate = openShellPolicyCandidate(
+      {
+        ...baseline,
+        allow_unconfigured_public_tcp: context.revision.networkEgressMode === "public",
+      },
+      snapshot,
+    );
     const status = await client.getPolicyStatus(request, context.signal);
     const matches = sameOpenShellPolicy(status.policy, candidate);
-    const state =
-      status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version
-        ? "applied"
-        : status.state === "POLICY_STATUS_FAILED" || status.state === "POLICY_STATUS_SUPERSEDED"
-          ? "failed"
-          : "pending";
+    const { state } = await observeNetworkEgress(client, request, context.signal, {
+      mode: context.revision.networkEgressMode ?? "restricted",
+      status,
+      sandbox,
+      requireEffectiveConfiguration: this.publicNetworkEgress === true,
+    });
     return {
       resourceVersion: sandbox.resourceVersion!,
       policyVersion: String(status.version),
@@ -4758,7 +4979,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, input.snapshot);
+    const candidate = openShellPolicyCandidate(
+      {
+        ...baseline,
+        allow_unconfigured_public_tcp: context.revision.networkEgressMode === "public",
+      },
+      input.snapshot,
+    );
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);

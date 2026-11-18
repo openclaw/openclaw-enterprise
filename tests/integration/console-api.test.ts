@@ -22,6 +22,8 @@ import {
   memberRole,
 } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
@@ -2203,6 +2205,148 @@ test("public Agent revisions return the selected binding without private credent
   const historicalData = checkedResponse(fixture, historical, AgentRevisionReadResponse).data;
   assert.ok("harnessAuth" in historicalData);
   assert.deepEqual(historicalData.harnessAuth, agent.harnessAuth);
+});
+
+test("public network egress requires a qualified OpenShell selection before enqueueing a deployment", async (t) => {
+  for (const qualified of [false, true]) {
+    await t.test(qualified ? "qualified pair" : "stock pair", async (t) => {
+      const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(
+        t,
+        {},
+        qualified ? { publicNetworkEgress: "qualified" } : {},
+      );
+      const credentialGatewayDriver = new OpenShellCredentialGatewayDriver(
+        { binaries: ["/app/bin/codex"] },
+        { id: backend.drivers.credential_gateway!, backend },
+      );
+      let state: PlatformStateStore | undefined;
+      const fixture = await createConsoleAppFixture(t, {
+        networkEgressMode: "public",
+        sandboxDriver,
+        credentialGatewayDriver,
+        driverConfigurations,
+        provisionedPeople: [],
+        recordOperations: true,
+        wrapState(platformState: PlatformStateStore) {
+          state = platformState;
+          return platformState;
+        },
+      });
+      await fixture.bootstrap();
+      fixture.controller.registerDriver(credentialGatewayDriver);
+      fixture.controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
+      const namespace = await fixture.createNamespace("OpenShell public admission", {
+        ready: true,
+      });
+      const secret = await fixture.createSecret(
+        namespace.id,
+        "Model token",
+        "synthetic-model-token",
+      );
+      const sourceId = `cs_${randomUUID()}`;
+      assert.ok(state);
+      // A registered model source is ready and keeps its credential with the paired owner.
+      await state.transact((unit) =>
+        unit.credentialSources.createCredentialSource({
+          id: sourceId,
+          namespaceId: namespace.id,
+          name: "Codex account",
+          type: "codex-pat",
+          config: {},
+          secrets: { access_token: secret.ref },
+          ownerCapability: "credential_gateway",
+          driverId: credentialGatewayDriver.id,
+          state: "ready",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      const configuration = await fixture.createConfiguration(
+        namespace.id,
+        createHarnessConfiguration("codex", "gpt-5.1"),
+      );
+      const saved = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+        body: {
+          name: "Public egress Agent",
+          configurationId: configuration.id,
+          executionMode: "dedicated",
+          harnessAuth: { method: "credential_source", sourceId },
+          credentialSources: [{ sourceId }],
+        },
+      });
+      assert.equal(saved.status, 201, JSON.stringify(saved.body));
+      const agent = saved.data;
+      const iam = `/namespaces/${namespace.id}/iam`;
+      const role = await fixture.request("POST", `${iam}/roles`, {
+        body: {
+          name: "Use model source",
+          permissions: [{ action: "operate", resourceKind: "credential_source" }],
+        },
+      });
+      assert.equal(role.status, 201, JSON.stringify(role.body));
+      const grant = await fixture.request("POST", `${iam}/access-bindings`, {
+        body: {
+          subjectKind: "identity",
+          subjectId: agent.servicePrincipalId,
+          roleId: role.data.id,
+          resourceKind: "credential_source",
+          resourceId: sourceId,
+        },
+      });
+      assert.equal(grant.status, 201, JSON.stringify(grant.body));
+      const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+      const before = await fixture.request("GET", path);
+      const operationsBefore = await state.read((view) => view.operations.list());
+      const intent = {
+        key: "public-egress",
+        expectedConfigurationId: configuration.id,
+        expectedGeneration: configuration.generation,
+        networkEgressMode: "public",
+      };
+      const deploy = await fixture.request("POST", `${path}/deploy-first`, { body: intent });
+      const revisions = await fixture.request("GET", `${path}/revisions`);
+      assert.equal(revisions.status, 200);
+
+      // Only the operator's qualified selection permits an otherwise identical revision.
+      if (qualified) {
+        assert.equal(deploy.status, 202, JSON.stringify(deploy.body));
+        const revisionId = deploy.data.revisionId;
+        assert.deepEqual(
+          revisions.data.map(({ id }: { id: string }) => id),
+          [revisionId],
+        );
+        const recoveryPath = `${path}/deploy-first/${intent.key}/${configuration.id}/${configuration.generation}`;
+        const differentIntent = await fixture.request("GET", recoveryPath);
+        assert.equal(differentIntent.status, 200, JSON.stringify(differentIntent.body));
+        assert.equal(differentIntent.data, null);
+        const recovery = await fixture.request("GET", `${recoveryPath}?networkEgressMode=public`);
+        assert.equal(recovery.status, 200, JSON.stringify(recovery.body));
+        assert.deepEqual(recovery.data, deploy.data);
+        const publicSuccessor = await fixture.request("POST", `${path}/deploy`, {
+          body: { networkEgressMode: "public" },
+        });
+        assert.equal(publicSuccessor.status, 202, JSON.stringify(publicSuccessor.body));
+        assert.equal(publicSuccessor.data.networkEgressMode, "public");
+        const restricted = await fixture.request("POST", `${path}/deploy`);
+        assert.equal(restricted.status, 202, JSON.stringify(restricted.body));
+        assert.equal(restricted.data.networkEgressMode, "restricted");
+        const retained = await fixture.request("GET", `${path}/revisions/${revisionId}`);
+        assert.equal(retained.status, 200, JSON.stringify(retained.body));
+        assert.equal(retained.data.networkEgressMode, "public");
+        assert.ok(
+          (await state.read((view) => view.operations.list())).some(
+            (operation) =>
+              operation.kind === "agent_revision" && operation.resourceId === revisionId,
+          ),
+        );
+      } else {
+        assertApiError(deploy, 409, "RESOURCE_CONFLICT");
+        assert.match(deploy.body.error.message, /Compute and Sandbox Drivers/);
+        assert.deepEqual(revisions.data, []);
+        assert.deepEqual(await state.read((view) => view.operations.list()), operationsBefore);
+        assert.deepEqual((await fixture.request("GET", path)).data, before.data);
+      }
+    });
+  }
 });
 
 // Administration remains an exact-Agent permission even when operate admits browser chat.

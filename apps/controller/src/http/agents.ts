@@ -108,6 +108,7 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     configurationGeneration: revision.configurationGeneration,
     backendId: revision.backendId,
     gatewayManagedMode: revision.gatewayManagedMode,
+    networkEgressMode: revision.networkEgressMode,
     configuration: revision.configuration,
     harness: revision.harness,
     compute: { id: revision.compute.id, implementation: revision.compute.implementation },
@@ -545,15 +546,17 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       namespaceId,
       mutationEvent,
     }) {
+      const input = request.body as FirstDeploymentIntent & DeployAgentInput;
       try {
         const receipt = await controller.deployAgentFirst(
           context.actorId,
           {
             namespaceId,
             agentId: params.agentId!,
-            harnessOverrides: (request.body as FirstDeploymentIntent).harnessOverrides,
+            harnessOverrides: input.harnessOverrides,
+            networkEgressMode: input.networkEgressMode,
           },
-          request.body as FirstDeploymentIntent,
+          input,
           options.resolveHarness,
           (admitted) =>
             mutationEvent(
@@ -579,7 +582,10 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       namespaceId,
     }) {
       let harnessOverrides: DeployAgentInput["harnessOverrides"];
-      const query = request.query as { harnessOverrides?: string };
+      const query = request.query as {
+        harnessOverrides?: string;
+        networkEgressMode?: DeployAgentInput["networkEgressMode"];
+      };
       if (query.harnessOverrides !== undefined) {
         try {
           harnessOverrides = JSON.parse(query.harnessOverrides);
@@ -590,7 +596,12 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       reply.header("cache-control", "no-store");
       const receipt = await controller.recoverAgentFirstDeployment(
         context.actorId,
-        { namespaceId, agentId: params.agentId!, harnessOverrides },
+        {
+          namespaceId,
+          agentId: params.agentId!,
+          harnessOverrides,
+          networkEgressMode: query.networkEgressMode,
+        },
         {
           key: params.key!,
           expectedConfigurationId: params.expectedConfigurationId!,
@@ -608,6 +619,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
             namespaceId,
             agentId,
             harnessOverrides: (request.body as DeployAgentInput | undefined)?.harnessOverrides,
+            networkEgressMode: (request.body as DeployAgentInput | undefined)?.networkEgressMode,
           },
           options.resolveHarness,
           (admitted) =>

@@ -131,6 +131,7 @@ import {
 import type {
   SandboxPolicy,
   SandboxFacet,
+  NetworkEgressMode,
   SandboxNetworkGrant,
   SandboxPolicySnapshot,
   SandboxPolicyRecommendations,
@@ -566,6 +567,7 @@ export {
   SandboxNamespacePendingError,
   ProtectedExecutionNetworkPolicyError,
   SandboxNetworkPolicyConflictError,
+  SandboxPolicyObservationPendingError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
@@ -876,6 +878,7 @@ export interface ControllerOptions {
   readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  readonly networkEgressMode?: NetworkEgressMode;
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
   readonly authorize?: (
@@ -1243,6 +1246,7 @@ export interface UpdateConfigurationInput {
 
 export interface DeployAgentInput {
   readonly harnessOverrides?: Readonly<Record<string, unknown>> | undefined;
+  readonly networkEgressMode?: NetworkEgressMode | undefined;
   readonly namespaceId: string;
   readonly agentId: string;
 }
@@ -2325,6 +2329,7 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly networkEgressMode: NetworkEgressMode;
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
@@ -2379,6 +2384,7 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    this.networkEgressMode = options.networkEgressMode ?? "restricted";
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
     }
@@ -13005,6 +13011,16 @@ export class OpenClawController {
     return immutableCopy(compute.normalizeHarnessOverrides(overrides));
   }
 
+  private requestedNetworkEgressMode(value: unknown): NetworkEgressMode {
+    if (value === undefined || value === "restricted") {
+      return "restricted";
+    }
+    if (value === "public") {
+      return value;
+    }
+    throw new ScopeViolationError("The Agent revision network egress mode is invalid.");
+  }
+
   private captureFirstDeploymentRequest(
     principalId: string,
     input: DeployAgentInput,
@@ -13015,6 +13031,7 @@ export class OpenClawController {
       namespaceId: input.namespaceId,
       agentId: input.agentId,
       harnessOverrides: this.normalizedHarnessOverrides(input.harnessOverrides),
+      networkEgressMode: this.requestedNetworkEgressMode(input.networkEgressMode),
     };
     const capturedIntent = intent && {
       key: intent.key,
@@ -13046,6 +13063,8 @@ export class OpenClawController {
           capturedIntent.expectedConfigurationId,
           capturedIntent.expectedGeneration,
           canonicalProvisioningJson(target.harnessOverrides),
+          // Restricted is the historical intent. Keep its existing receipt digest.
+          ...(target.networkEgressMode === "public" ? [target.networkEgressMode] : []),
         ]),
       )
       .digest("hex");
@@ -13420,6 +13439,7 @@ export class OpenClawController {
     if (!isNonEmptyString(input.agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
+    const networkEgressMode = this.requestedNetworkEgressMode(input.networkEgressMode);
     const ordinaryPreparation =
       first === undefined ? await this.validateDeploymentChannels(principalId, input) : undefined;
     this.namespaceIdentity(input.namespaceId);
@@ -13533,6 +13553,18 @@ export class OpenClawController {
         throw new ScopeViolationError("The persisted Agent Harness execution mode is invalid.");
       }
       requireSandboxExecutionMode(sandbox, lockedAgent.executionMode);
+      if (networkEgressMode === "public") {
+        if (this.networkEgressMode !== "public") {
+          throw new ResourceStateConflictError(
+            "Public network egress is disabled in this Installation.",
+          );
+        }
+        if (compute.publicNetworkEgress !== true || sandbox?.publicNetworkEgress !== true) {
+          throw new ResourceStateConflictError(
+            "Public network egress requires selected Compute and Sandbox Drivers that support it.",
+          );
+        }
+      }
       this.assertCredentialGatewayDelivery(lockedAgent.harnessAuth);
       await this.authorize(principalId, "read", {
         kind: "configuration",
@@ -13945,6 +13977,7 @@ export class OpenClawController {
         // The name then becomes the served Agent's OpenClaw display name.
         configuration: frozenValues(withAgentIdentityName(admittedConfiguration, lockedAgent.name)),
         gatewayManagedMode: lockedAgent.gatewayManagedMode,
+        networkEgressMode,
         harness: revisionHarness,
         compute: { id: compute.id, implementation: compute.implementation },
         ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),

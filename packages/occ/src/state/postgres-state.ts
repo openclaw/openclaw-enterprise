@@ -825,6 +825,17 @@ function revisionFromRow(
       "Persisted AgentRevision repository credentials are invalid.",
     );
   }
+  const networkEgressMode = optionalText(row, "network_egress_mode");
+  if (
+    networkEgressMode !== undefined &&
+    networkEgressMode !== "public" &&
+    networkEgressMode !== "restricted"
+  ) {
+    throw new SavedConfigurationReadError(
+      "configuration",
+      "Persisted AgentRevision network egress mode is invalid.",
+    );
+  }
   return immutableCopy({
     ...metadata,
     configurationId: admitted.configuration_id,
@@ -832,6 +843,7 @@ function revisionFromRow(
     configurationGeneration: admitted.configuration_generation,
     configuration: admitted.draft_spec,
     gatewayManagedMode: boolean(row, "gateway_managed_mode"),
+    ...(networkEgressMode === undefined ? {} : { networkEgressMode }),
     harness: admitted.harness,
     compute: admitted.compute,
     ...(admitted.sandbox_policy === undefined ? {} : { sandboxPolicy: admitted.sandbox_policy }),
@@ -3984,7 +3996,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode,
+                      r.admitted_spec, r.gateway_managed_mode, r.network_egress_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -4005,7 +4017,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode,
+                      r.admitted_spec, r.gateway_managed_mode, r.network_egress_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -4195,8 +4207,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         // skew (finding 1195). The caller's createdAt is replaced, not stored.
         const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp(), $8)
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest, network_egress_mode)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp(), $8, $9)
            RETURNING admitted_at`,
           [
             revision.id,
@@ -4243,6 +4255,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             }),
             revision.gatewayManagedMode,
             firstDeploymentDigest ?? null,
+            revision.networkEgressMode ?? null,
           ],
         );
         const [stamped] = rows(admitted.rows);

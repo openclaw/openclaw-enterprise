@@ -208,6 +208,8 @@ message SandboxPolicy {
   // policy-local names. At most 10 configs are accepted, and at most 10 stages
   // can be selected per request.
   map<string, NetworkMiddlewareConfig> network_middlewares = 6;
+  // Permit unclaimed public TCP destinations without credential resolution.
+  bool allow_unconfigured_public_tcp = 7;
 }
 
 // Filesystem access policy.
@@ -592,6 +594,8 @@ message SandboxConfigurationAdmission {
   uint64 config_revision = 5;
   uint64 provider_env_revision = 6;
   string error = 7;
+  // Reported from the active supervisor engine, not copied from the requested policy.
+  optional bool applied_allow_unconfigured_public_tcp = 8;
 }
 message ConfigUpdateOperation {
   string operation_id = 1;

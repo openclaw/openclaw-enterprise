@@ -26,6 +26,7 @@ import {
   Meta,
   Name,
   NamespaceId,
+  NetworkEgressModeSchema,
   PermissionActionSchema,
   BackendId,
   RepositoryBindingSelectionSchema,
@@ -1388,6 +1389,7 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
+    networkEgressMode: Type.Optional(NetworkEgressModeSchema),
     harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },

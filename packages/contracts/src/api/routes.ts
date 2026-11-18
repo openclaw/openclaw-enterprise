@@ -2159,7 +2159,10 @@ export const occApiRoutes = [
     tags: ["Agents"],
     schema: {
       querystring: Type.Object(
-        { harnessOverrides: Type.Optional(Type.String({ maxLength: 8192 })) },
+        {
+          harnessOverrides: Type.Optional(Type.String({ maxLength: 8192 })),
+          networkEgressMode: AgentDeploymentBody.properties.networkEgressMode,
+        },
         { additionalProperties: false },
       ),
       params: Type.Object(

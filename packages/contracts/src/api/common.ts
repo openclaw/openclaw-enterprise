@@ -60,8 +60,17 @@ export const RevisionHarnessSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+export const NetworkEgressModeSchema = Type.Union(
+  [Type.Literal("public"), Type.Literal("restricted")],
+  {
+    description: "The outbound network policy for this revision. Omission selects restricted mode.",
+  },
+);
 export const AgentDeploymentBody = Type.Object(
-  { harnessOverrides: Type.Optional(HarnessSettings) },
+  {
+    harnessOverrides: Type.Optional(HarnessSettings),
+    networkEgressMode: Type.Optional(NetworkEgressModeSchema),
+  },
   { additionalProperties: false },
 );
 export const FirstDeploymentIntent = Type.Object(

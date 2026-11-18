@@ -265,6 +265,7 @@ export const parameterExamples = {
   expectedConfigurationId: configurationId,
   expectedGeneration: "1",
   harnessOverrides: "{}",
+  networkEgressMode: "public",
   namespaceId,
   agentId,
   configurationId,

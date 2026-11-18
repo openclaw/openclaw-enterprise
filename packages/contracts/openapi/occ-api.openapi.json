@@ -22349,6 +22349,13 @@
                     "additionalProperties": {},
                     "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                     "type": "object"
+                  },
+                  "networkEgressMode": {
+                    "anyOf": [
+                      { "const": "public", "type": "string" },
+                      { "const": "restricted", "type": "string" }
+                    ],
+                    "description": "The outbound network policy for this revision. Omission selects restricted mode."
                   }
                 },
                 "type": "object"
@@ -22649,6 +22656,13 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkEgressMode": {
+                          "anyOf": [
+                            { "const": "public", "type": "string" },
+                            { "const": "restricted", "type": "string" }
+                          ],
+                          "description": "The outbound network policy for this revision. Omission selects restricted mode."
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "plugins": {
@@ -22988,6 +23002,13 @@
                     "minLength": 1,
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]*$",
                     "type": "string"
+                  },
+                  "networkEgressMode": {
+                    "anyOf": [
+                      { "const": "public", "type": "string" },
+                      { "const": "restricted", "type": "string" }
+                    ],
+                    "description": "The outbound network policy for this revision. Omission selects restricted mode."
                   }
                 },
                 "required": ["key", "expectedConfigurationId", "expectedGeneration"],
@@ -23231,6 +23252,24 @@
             "name": "harnessOverrides",
             "required": false,
             "schema": { "maxLength": 8192, "type": "string" }
+          },
+          {
+            "description": "The outbound network policy for this revision. Omission selects restricted mode.",
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "public"
+              }
+            },
+            "in": "query",
+            "name": "networkEgressMode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                { "const": "public", "type": "string" },
+                { "const": "restricted", "type": "string" }
+              ]
+            }
           },
           {
             "examples": {
@@ -29908,6 +29947,13 @@
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
+                            },
+                            "networkEgressMode": {
+                              "anyOf": [
+                                { "const": "public", "type": "string" },
+                                { "const": "restricted", "type": "string" }
+                              ],
+                              "description": "The outbound network policy for this revision. Omission selects restricted mode."
                             },
                             "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                             "plugins": {

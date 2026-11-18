@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   addWireService,
   bindWireServer,
@@ -9,8 +10,37 @@ import {
 } from "./openshell-gateway-wire-fixture.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { loader } from "../helpers/openshell-grpc-sdk.ts";
 
 export function registerPolicyCases(): void {
+  test("OpenShell decodes the optional applied public TCP report at field 8", () => {
+    const definitions = loader.loadSync(
+      fileURLToPath(
+        new URL(
+          "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+          import.meta.url,
+        ),
+      ),
+      { keepCase: true, defaults: false, oneofs: true },
+    );
+    const admission = definitions["openshell.v1.SandboxConfigurationAdmission"];
+    assert.ok(
+      admission &&
+        "format" in admission &&
+        admission.format === "Protocol Buffer 3 DescriptorProto",
+    );
+    // Field 8 is a varint. Older senders omit it, while false and true are explicit.
+    for (const { bytes, expected } of [
+      { bytes: [], expected: undefined },
+      { bytes: [0x40, 0], expected: false },
+      { bytes: [0x40, 1], expected: true },
+    ]) {
+      const decoded = asRecord(admission.deserialize(Buffer.from(bytes)));
+      assert.ok(decoded);
+      assert.equal(decoded.applied_allow_unconfigured_public_tcp, expected);
+    }
+  });
+
   test("OpenShell policy updates preserve static and L7 constraints and carry fixed scoped CAS receipts", async (t) => {
     // These restrictions must survive decode/re-encode when a network grant is added.
     const policy = {
