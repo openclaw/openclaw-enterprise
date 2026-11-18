@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-16"
-last_updated_session: "01a1e535-91ca-7273-913f-aaacfd69c1c2"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -97,20 +97,18 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-[downloadVerified](../../internal/occdev/openshell_assets.go) streams archives. The
-[Go launcher](../../internal/occdev/routing_manifest.go) and [CI](../../scripts/ci/routing.ts)
-cap manifests at 32 MiB. Network and HTTP 408/429/5xx failures allow eight
-60-second cancelable attempts starting within 120 seconds. Retries remove
-partial `0600` archives and preserve existing files.
+[downloadVerified](../../internal/occdev/openshell_assets.go) streams archives;
+[launcher](../../internal/occdev/routing_manifest.go) and [CI](../../scripts/ci/routing.ts)
+cap manifests at 32 MiB. Network/HTTP 408/429/5xx failures allow eight cancelable
+60-second attempts starting within 120 seconds. Retries remove partial `0600`
+archives, preserving existing files.
 
-[Kubernetes-only setup](../guides/deploy/local-setup.md) uses PostgreSQL in
-`oce-system`, in-cluster authentication and per-Agent HTTPS. Compose uses k3d.
-
-`prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.ts) verify native/descriptor identity
-from cached children/indexes or exact-child pulls. Manifest/config/CRI checks precede apply
-(`Never`); CRI misses retry. Overrides remain intact.
-The [importer](../../internal/occdev/openshell_image.go) journals tag/engine-ID intent before creation.
-Return/rollback/`dev down` reconcile without clusters/Compose providers. Incomplete inspection
+`prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.ts) validate cached/pulled native
+manifest/config/CRI identity before apply (`Never`); CRI misses retry. Overrides remain intact.
+[`importOpenShellImage`](../../internal/occdev/openshell_image.go) journals staging-tag/engine-ID intent before creation.
+`imageCommand` accepts Podman 6 exit `125` only for the complete absence diagnostic
+naming the requested image, with empty/`[]` stdout.
+Return/rollback/`dev down` reconcile without clusters/Compose. Incomplete inspection
 or uncertain/replaced tags retain state.
 
 [first-agent](../../scripts/first-agent.ts) and the [operator check](../../internal/occdev/check.go)
@@ -421,6 +419,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 14:08: Accept Podman cache misses. (authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604 - f07a2b05a8db5e88142ca1a2c9fd90f0ec812284)
 
 - 2026-11-16 13:04: Remove RuntimeClass selection. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)
 

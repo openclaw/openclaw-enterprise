@@ -1632,16 +1632,13 @@ test("command redacts malformed private JSON before issuing requests", async (t)
   const fixture = await createFixture();
   const bundle = await exportTenants(fixture.api);
   const files = {
-    bundle: join(directory, "bundle.json"),
-    "service-key file": join(directory, "key.json"),
-    "Secret-values file": join(directory, "values.json"),
-    "ID map": join(directory, "map.json"),
-  };
-  const contents = {
-    bundle,
-    "service-key file": { data: { key: "synthetic-service-key" } },
-    "Secret-values file": {},
-    "ID map": { ids: {}, deployed: [] },
+    bundle: { path: join(directory, "bundle.json"), contents: bundle },
+    "service-key file": {
+      path: join(directory, "key.json"),
+      contents: { data: { key: "synthetic-service-key" } },
+    },
+    "Secret-values file": { path: join(directory, "values.json"), contents: {} },
+    "ID map": { path: join(directory, "map.json"), contents: { ids: {}, deployed: [] } },
   };
   let requests = 0;
   const server = createServer((_request, response) => {
@@ -1653,15 +1650,14 @@ test("command redacts malformed private JSON before issuing requests", async (t)
   assert.ok(address && typeof address !== "string");
   const command = fileURLToPath(new URL("../../scripts/split-layout-tenants.ts", import.meta.url));
   const marker = "SYNTHETIC_PRIVATE_VALUE";
-  for (const [label, path] of Object.entries(files)) {
-    for (const [name, value] of Object.entries(contents)) {
-      const file = files[name as keyof typeof files];
-      writeFileSync(file, JSON.stringify(value));
+  for (const [label, { path }] of Object.entries(files)) {
+    for (const file of Object.values(files)) {
+      writeFileSync(file.path, JSON.stringify(file.contents));
     }
     // Native JSON syntax errors can quote this text. Exercise the shipped
     // executable's stderr handler, rather than only rejecting inside main().
     writeFileSync(path, marker);
-    const before = readFileSync(files["ID map"], "utf8");
+    const before = readFileSync(files["ID map"].path, "utf8");
     await assert.rejects(
       promisify(execFile)(
         process.execPath,
@@ -1669,18 +1665,18 @@ test("command redacts malformed private JSON before issuing requests", async (t)
           command,
           "import",
           "--bundle",
-          files.bundle,
+          files.bundle.path,
           "--secret-values",
-          files["Secret-values file"],
+          files["Secret-values file"].path,
           "--map",
-          files["ID map"],
+          files["ID map"].path,
           "--no-deploy",
         ],
         {
           env: {
             ...process.env,
             OCC_URL: `http://127.0.0.1:${address.port}`,
-            OCC_SERVICE_KEY_FILE: files["service-key file"],
+            OCC_SERVICE_KEY_FILE: files["service-key file"].path,
           },
         },
       ),
@@ -1694,8 +1690,8 @@ test("command redacts malformed private JSON before issuing requests", async (t)
       },
     );
     assert.equal(requests, 0);
-    assert.equal(readFileSync(files["ID map"], "utf8"), before);
-    assert.equal(existsSync(`${files["ID map"]}.partial`), false);
+    assert.equal(readFileSync(files["ID map"].path, "utf8"), before);
+    assert.equal(existsSync(`${files["ID map"].path}.partial`), false);
   }
 });
 
