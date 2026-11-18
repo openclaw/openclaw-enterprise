@@ -93,7 +93,7 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 "volume ls --filter "*) ;;
 "volume inspect "*|"network inspect "*) exit 1 ;;
 "compose "*" config --quiet"|"compose "*" build postgres migrate bootstrap") ;;
-"compose "*" up --no-start --build --no-deps bootstrap") ;;
+"compose "*" build bootstrap"|"compose "*" up --no-start --no-build --no-deps bootstrap") ;;
 "compose "*" ps --all --quiet bootstrap") echo bootstrap-id ;;
 "inspect --format "*" bootstrap-id") echo '{"image":"controller","user":"1000:1000"}' ;;
 "run "*" -p "*) echo '[1000,1000]' ;;

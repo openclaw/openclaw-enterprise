@@ -98,6 +98,10 @@ func (r *runner) composeOutput(ctx context.Context, state *developmentState, arg
 }
 
 func (r *runner) invokeCompose(ctx context.Context, state *developmentState, capture bool, args ...string) ([]byte, error) {
+	return r.invokeComposeCommand(ctx, state.composeCommand(), capture, args...)
+}
+
+func (r *runner) invokeComposeCommand(ctx context.Context, prefix []string, capture bool, args ...string) ([]byte, error) {
 	// Cold builds retain their caller's cancellation context without consuming
 	// the readiness budget. All startup calls use --no-build after this step.
 	if len(args) == 0 || args[0] != "build" {
@@ -108,7 +112,7 @@ func (r *runner) invokeCompose(ctx context.Context, state *developmentState, cap
 		defer cancel()
 		ctx = bounded
 	}
-	cmd := r.command(ctx, r.engine, append(state.composeCommand(), args...)...)
+	cmd := r.command(ctx, r.engine, append(append([]string{}, prefix...), args...)...)
 	finish, err := ownComposeProcessGroup(cmd)
 	if err != nil {
 		return nil, err
