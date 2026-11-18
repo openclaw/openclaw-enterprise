@@ -17,7 +17,7 @@ const POLICY_TIMEOUT_MS = 30_000;
 const RPC_TIMEOUT_MS = 2_000;
 
 interface PolicyReadback {
-  readonly forward: ChildProcess & { readonly stdout: Readable };
+  readonly startForward: () => ChildProcess & { readonly stdout: Readable };
   readonly parentSignal: AbortSignal;
   readonly sandbox: OpenShellSandboxDeleteRequest;
   readonly readTlsIdentity?: (
@@ -60,13 +60,17 @@ async function waitWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Pro
 }
 
 export async function verifyFirstAgentSandboxPolicy({
-  forward,
+  startForward,
   parentSignal,
   sandbox,
   readTlsIdentity,
   createClient,
   checkPolicy,
 }: PolicyReadback): Promise<void> {
+  parentSignal.throwIfAborted();
+  const identity = readTlsIdentity === undefined ? undefined : await readTlsIdentity(parentSignal);
+  parentSignal.throwIfAborted();
+  const forward = startForward();
   const owner = ownPortForward(forward);
   const forwardFailure = new AbortController();
   const onError = (error: NodeJS.ErrnoException) => {
@@ -99,7 +103,6 @@ export async function verifyFirstAgentSandboxPolicy({
   const failures: unknown[] = [];
   try {
     setupSignal.throwIfAborted();
-    const identity = readTlsIdentity === undefined ? undefined : await readTlsIdentity(setupSignal);
     const deadline = new AbortController();
     const timeout = new Error("Timed out reading the deployed Agent's OpenShell Sandbox policy");
     const expiresAt = performance.now() + POLICY_TIMEOUT_MS;
@@ -116,7 +119,7 @@ export async function verifyFirstAgentSandboxPolicy({
     checkActive();
     const gateway = createClient({
       ...(identity ?? { auth: { mode: "unauthenticated" } }),
-      endpoint: `${readTlsIdentity === undefined ? "http" : "https"}://127.0.0.1:${port}`,
+      endpoint: `${identity === undefined ? "http" : "https"}://127.0.0.1:${port}`,
     });
     client = gateway;
     for (;;) {

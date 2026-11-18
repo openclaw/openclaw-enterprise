@@ -53,6 +53,40 @@ function inertForward(fragmented = false) {
   );
 }
 
+test("cancelled installer identity preparation cannot launch a port-forward", async () => {
+  const parent = new AbortController();
+  const prepared = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  let spawns = 0;
+  const result = verifyFirstAgentSandboxPolicy({
+    sandbox,
+    parentSignal: parent.signal,
+    readTlsIdentity: async (signal) => {
+      assert.equal(signal, parent.signal);
+      entered.resolve();
+      await prepared.promise;
+      return { auth: { mode: "mtls", certificatePath: "unused", privateKeyPath: "unused" } };
+    },
+    startForward() {
+      spawns++;
+      assert.fail("cancelled setup must not open a listener");
+    },
+    createClient() {
+      assert.fail("cancelled setup must not open a client");
+    },
+    checkPolicy() {
+      assert.fail("cancelled setup must not accept policy");
+    },
+  });
+  await entered.promise;
+  const reason = new Error("cancelled during identity preparation");
+  parent.abort(reason);
+  assert.equal(spawns, 0);
+  prepared.resolve();
+  await assert.rejects(result, (error) => error === reason);
+  assert.equal(spawns, 0);
+});
+
 test(
   "the installer reads policy through the child port announced on a complete line",
   {
@@ -76,7 +110,7 @@ test(
     let checked = false;
     let reads = 0;
     const readback = verifyFirstAgentSandboxPolicy({
-      forward,
+      startForward: () => forward,
       parentSignal: context.signal,
       sandbox,
       createClient(options) {
@@ -147,7 +181,7 @@ test(
     let clientClosed = false;
     await assert.rejects(
       verifyFirstAgentSandboxPolicy({
-        forward,
+        startForward: () => forward,
         parentSignal: context.signal,
         sandbox,
         createClient() {
@@ -189,7 +223,7 @@ test(
     const forward = inertForward();
     let checked = false;
     const readback = verifyFirstAgentSandboxPolicy({
-      forward,
+      startForward: () => forward,
       parentSignal: AbortSignal.any([parent.signal, context.signal]),
       sandbox,
       createClient: () => ({
@@ -256,7 +290,7 @@ test(
     const forwardClosed = once(forward, "close");
     let calls = 0;
     const result = verifyFirstAgentSandboxPolicy({
-      forward,
+      startForward: () => forward,
       parentSignal: AbortSignal.any([parent.signal, context.signal]),
       sandbox,
       createClient(options) {
@@ -320,7 +354,7 @@ test(
     const clientClosed = Promise.withResolvers<void>();
     const forward = inertForward();
     const result = verifyFirstAgentSandboxPolicy({
-      forward,
+      startForward: () => forward,
       parentSignal: context.signal,
       sandbox,
       createClient: () => ({
@@ -365,7 +399,7 @@ test(
     let calls = 0;
     await assert.rejects(
       verifyFirstAgentSandboxPolicy({
-        forward,
+        startForward: () => forward,
         parentSignal: AbortSignal.any([parent.signal, context.signal]),
         sandbox,
         createClient: () => ({
@@ -415,7 +449,7 @@ test(
       });
       await assert.rejects(
         verifyFirstAgentSandboxPolicy({
-          forward,
+          startForward: () => forward,
           parentSignal: context.signal,
           sandbox,
           createClient() {
@@ -443,7 +477,7 @@ test(
     const cleanupFailure = new Error("client close failed");
     await assert.rejects(
       verifyFirstAgentSandboxPolicy({
-        forward,
+        startForward: () => forward,
         parentSignal: context.signal,
         sandbox,
         createClient: () => ({

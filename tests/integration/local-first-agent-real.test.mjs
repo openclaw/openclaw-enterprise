@@ -1278,22 +1278,22 @@ test(
           "--context",
           `k3d-${recorded.cluster}`,
         ];
-        const forward = spawn(
-          "kubectl",
-          [
-            ...kubectl,
-            "port-forward",
-            "--namespace",
-            openShellNamespace,
-            "--address",
-            "127.0.0.1",
-            "service/openshell-gateway",
-            "0:8080",
-          ],
-          { env: safeEnvironment, stdio: ["ignore", "pipe", "ignore"] },
-        );
         await verifyFirstAgentSandboxPolicy({
-          forward,
+          startForward: () =>
+            spawn(
+              "kubectl",
+              [
+                ...kubectl,
+                "port-forward",
+                "--namespace",
+                openShellNamespace,
+                "--address",
+                "127.0.0.1",
+                "service/openshell-gateway",
+                "0:8080",
+              ],
+              { env: safeEnvironment, stdio: ["ignore", "pipe", "ignore"] },
+            ),
           parentSignal: context.signal,
           sandbox: { name: sandboxName, workspace: namespaces.items[0].metadata.name },
           readTlsIdentity:

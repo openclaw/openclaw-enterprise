@@ -884,9 +884,12 @@
     {
       "path": "tests/integration/first-agent-sandbox-policy.test.ts",
       "expectedTests": [
+        "cancelled installer identity preparation cannot launch a port-forward",
         "the installer reads policy through the child port announced on a complete line",
         "a Sandbox returned after the policy deadline cannot satisfy the assertion",
         "parent abort reaches an in-flight Sandbox read and rejects its late result",
+        "parent cancellation closes the forward before lazy gRPC setup settles and closes its late transport",
+        "the shared policy timer closes the forward while a read stays pending",
         "parent abort during Sandbox retry sleep preserves the abort reason",
         "the installer reports fixed forward startup errors and closes each child",
         "policy failure remains the cause when Gateway client cleanup fails"
