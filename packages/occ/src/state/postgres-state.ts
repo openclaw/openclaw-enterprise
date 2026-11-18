@@ -1940,6 +1940,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "fail",
       "recoverStale",
       "findWork",
+      "findWorkByKeys",
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "repositoryExpiryState",
@@ -5723,6 +5724,10 @@ export class PostgresPlatformState implements PlatformStateStore {
         findWork: async (idempotencyKey) => {
           await this.requireInitialized(context);
           return queue.findWork(idempotencyKey);
+        },
+        findWorkByKeys: async (idempotencyKeys) => {
+          await this.requireInitialized(context);
+          return queue.findWorkByKeys(idempotencyKeys);
         },
         findWorkAttempt: async (idempotencyKey) => {
           await this.requireInitialized(context);

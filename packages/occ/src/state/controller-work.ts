@@ -26,6 +26,8 @@ export { WorkClaimLostError } from "../errors.ts";
 
 export type { RuntimeFailureCause, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
+export type ControllerWorkLookup = Pick<ReadonlyMap<string, Readonly<ControllerWork>>, "get">;
+
 export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed";
 
 export interface DeploymentStatusError {
