@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
 const selectedImageMigrationProgram = readFileSync(
-  new URL("../../deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs", import.meta.url),
+  new URL(
+    "../../deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs",
+    import.meta.url,
+  ),
   "utf8",
 );
 
