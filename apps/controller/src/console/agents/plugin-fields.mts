@@ -524,7 +524,12 @@ export function createPluginFields({
     const savedIds = new Set([...toolNames, ...Object.keys(selected.tools ?? {})]);
     const unavailable: Tool[] = [...savedIds]
       .filter((id) => !discoveredIds.has(id))
-      .map((id) => ({ id, name: id, available: false }));
+      .map((id) => ({
+        id,
+        name: id,
+        available: false,
+        unavailableReason: "Discovery has not confirmed this saved tool for the selected account.",
+      }));
     return {
       picker,
       managed: { slot, sourceId, canDiscover, tools: [...discovered, ...unavailable], toolNames },
