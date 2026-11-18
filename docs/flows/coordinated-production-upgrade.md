@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-18"
-last_updated_session: "authoring-run/7ae70bae-f8ac-425d-abbf-7039b71997b7"
+last_updated_session: "authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965"
 ---
 
 # Production image upgrade flow
@@ -155,12 +155,15 @@ theme bundles. Both writers use `loadStartupConfigurationSnapshot` and
 
 `connectionPlan` refuses unknown chart entrypoints. Private OIDC CA trust retains database preload, CA argument and assembler mounts. Writer Jobs require `OCC_DATABASE_URL`. Candidate `createPostgresPool` reads at most two `occ.installation` IDs read-only; exactly one must match the authenticated API/startup-Secret ID. Statement/lock timeouts are five seconds; authentication through cleanup has 15 seconds. Fixed diagnostics distinguish refusal from incomplete checks without exposing connection errors or rows. Migrator identity and data continuity remain unverified.
 
-Before quiescence or Helm, `preflight_resume` runs migration history and API/worker identity checks together, including both-stopped recovery. It revalidates frozen `installation-id` against the live startup Secret without calling the API. Completed Helm releases skip these Jobs. Historical migration-only records remain valid for cleanup.
-`apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` filters
-typed refusals to up to 32 field diagnostics. The final successful preflight poll
-supplies the Job/Pod identity check immediately before log retrieval. Preflight
-rechecks identity after the request, rejects NUL bytes and discards unbound output.
-kubectl diagnostics stay separate from container logs.
+Before quiescence or Helm, `preflight_resume` checks migration history and both
+writer identities, even with both writers stopped. It verifies saved
+`installation-id` against the live startup Secret without calling the API.
+Completed Helm releases skip these Jobs. Cleanup accepts historical migration-only records.
+
+`apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` caps
+typed refusals at 32 field diagnostics. The last successful poll verifies the Job
+and Pod before logs. Preflight rechecks identity afterward, rejects NUL bytes
+and discards unbound output. kubectl diagnostics stay separate.
 
 Kubernetes Compute `preflight` uses startup's Pod credentials (`inCluster` service account). It refuses
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
@@ -206,28 +209,27 @@ Resume checks immutable intent, Secret identity and unrelated data. `verify_inst
 rechecks both immutable Secrets' UIDs/data. Pending Installation writes require a mutable Secret before scaling. Retries require
 migration-history review and terminal initializer Jobs/Pods. `new_attempt` fsyncs
 attempt-directory ancestors before publishing pointers.
-Before quiescence or Helm, resume rechecks migrations and application identities;
-failure leaves stopped writers stopped. Reconcile unknown creates before same-directory
-`--resume`, retaining lock/evidence/journal. The original process handles signals;
-ordinary failures attempt cleanup.
+Failed preflight leaves stopped writers stopped. Reconcile unknown creates before
+same-directory `--resume`, keeping the lock, evidence and journal. Ordinary failures
+attempt cleanup.
 Ordinary resume skips Helm only at the exact submitted deployed revision.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
-`scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership, completed
-Job/Pod and exact security contexts. `pod_matches` compares requests/limits through
-Compute's `resource-quantities.ts`. Reads use manifest namespaces and release
-ownership. `check-recovery` validates the original attempt before preflight Jobs;
-both application identities must pass before a new rollback. `recover` repeats
-admission before exclusive intent and dispatch. Accepted/uncertain recovery stays
-readback-only.
-`require_absent` rejects remaining predecessor-only resources before intent,
-before rollback, after rollback and on resume. `verify_workload_changes` requires
-retired environment entries and container placements absent before rollback; afterward all changed selections must
-match. Neither check deletes resources. Changed nonnative resource specs require exact
-candidate matches. Resume rechecks recorded UIDs without pinning old versions.
-Supports only pre-upgrade hooks. Resume requires successor acknowledgement.
-Client shutdown, exclusive ownership, resource reconciliation and database history
-remain operator attestations.
+`scripts/upgrade-helm-state.py:recover` checks the Helm payload, ownership,
+successful Job and Pod, and exact security contexts. `pod_matches` compares
+requests and limits through Compute's `resource-quantities.ts`. Reads use
+manifest namespaces and release ownership. `check-recovery` checks the original
+attempt before preflight. Both application identities must pass before rollback.
+`recover` rechecks admission before exclusive intent and dispatch. Accepted or
+uncertain recovery stays readback-only.
+
+`require_absent` refuses predecessor-only resources before intent, around rollback
+and on resume. `verify_workload_changes` checks for absent retired environment
+entries and container placements before rollback and matching all changed selections afterward.
+Both checks are read-only. Changed nonnative specs must match the candidate exactly.
+Only pre-upgrade hooks qualify. Resume rechecks recorded UIDs without pinning old
+versions and requires successor acknowledgement. Operators attest to client
+shutdown, exclusive ownership, resource reconciliation and database history.
 
 ### 3. Quiesce writers and run the candidate release
 
@@ -293,28 +295,24 @@ Resume may retry refusals; replacements must name the current failed revision.
 Unknown outcomes or stale journals require
 [recovery](../guides/deploy/production-upgrade-recovery.md).
 
-Verify authorized deployment status, version and Pod readiness on the candidate digest. Before startup, `openClawStateMigrationHelper` in
-`runtime-startup.ts` runs `openclaw doctor --fix --non-interactive` for older schemas.
-Current schemas and Doctor's settled result gate startup: maintenance or cleanup
-refusal holds `state-migration` unready; ordinary warnings do not. A private pending
-marker forces interrupted or refused maintenance to retry after restart, even with current schemas. The same step
-runs before Harness native setup or native-worker connection. Embedded execution
-requires one runtime container; dedicated execution requires Gateway and Agent containers.
+Verify authorized deployment status, version and Pod readiness on the candidate digest.
+`runtime-startup.ts:openClawStateMigrationHelper` runs `openclaw doctor --fix --non-interactive`
+for older schemas before startup, native Harness setup or native-worker connection.
+Startup requires current schemas and a settled result. Refused maintenance or
+cleanup holds `state-migration` unready. Ordinary warnings allow startup. A private marker
+retries interrupted or refused maintenance after restart even if schemas advanced.
+Embedded execution needs one container. Dedicated execution needs Gateway and
+Agent containers.
+
 Replacement gateways run read-only `openclaw doctor --lint --json --severity-min error`
-serially, with a heap cap (`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway's memory limit;
-an OOM kill can stop both. The cgroup v2 check (`gateway_free_memory`) requires
-one reading with cap plus 640 MiB free or two consecutive readings with cap plus
-256 MiB. This reserves no memory. Transient failures are retried.
-Initially unavailable data allows warning and run.
-After insufficient memory, unavailable reads reset consecutive evidence; only fresh
-sufficient readings admit Doctor before its deadline.
-Reports distinguish Doctor's exit status from gateway restarts since Ready.
-Missing/incomparable counts or Pod identities report unknown; only a comparable
-increase with last termination `OOMKilled` establishes OOM. A memory timeout
-starts no further Doctor. Then, also after a failed Doctor, `revision_pod_change_since_ready`
-fails the upgrade for any revision Pod the wait required (gateway or dedicated agent)
-missing, deleting, replaced, restarted, or unready. Resume selects the Ready
-replacement even while the terminating Pod still appears in the Kubernetes API.
+serially. `gateway_free_memory` checks cgroup v2 for the heap cap plus 640 MiB free once or
+cap plus 256 MiB twice consecutively. `--doctor-heap-mib` defaults to 384 MiB.
+A memory timeout stops further Doctor runs. See [Doctor failure recovery](../guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure)
+for missing readings, retries and OOM evidence.
+
+`revision_pod_change_since_ready` fails the upgrade if any required Pod is missing,
+deleting, replaced, restarted or unready after Doctor, including after failure.
+Resume selects the Ready replacement even if the terminating Pod remains visible.
 
 ### 6. Hand off application verification
 
@@ -374,6 +372,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 19:45: Tighten the upgrade trace. (authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965 - aed2f7edd530ab336bbd6cb8c7389b24cb83e397)
 
 - 2026-11-18 19:27: Trace migration-only compatibility checks through the Helm hook and Job journal. (authoring-run/7ae70bae-f8ac-425d-abbf-7039b71997b7 - 71334bb9b104662870798a29814e7171e8905baf)
 
