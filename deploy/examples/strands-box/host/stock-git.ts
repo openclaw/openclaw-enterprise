@@ -157,7 +157,7 @@ export function runtimeSearchPath(environment: Readonly<Record<string, string>>)
  * link loop), or that passes on its way (any component, link or target) through a loader
  * directory, git's helper directory or a directory the agent's boundary may write (`writable`:
  * a link there could be changed to name the loader directory's git), or that holds a `git` or
- * `gh` leading into a loader directory. `appended` are directories the runtime adds inside the
+ * `gh` leading into a loader directory or through a writable one. `appended` are directories the runtime adds inside the
  * writable state (`runtimeSearchPath`): each must hold no `git` or `gh` of any kind, and must
  * contain no link (a link could lead into the workspace, where the workload's own git writes).
  * Never throws: a path it cannot judge counts as covering git.
@@ -214,13 +214,16 @@ export function execCoversGit(
       join(directory, "git"),
       join(directory, "gh"),
     ]);
-    // A link by one of those names that leads into a loader directory runs with no grant.
+    // A link by one of those names that leads into a loader directory runs with no grant; one
+    // that passes through a writable directory could be changed to.
     const resolved = named.map(resolution);
     if (
       resolved.some(
         ({ path, visited, judged }) =>
           !judged ||
-          [path, ...visited].some((step) => loaders.some((directory) => within(directory, step))),
+          [path, ...visited].some((step) =>
+            [...loaders, ...written].some((directory) => within(directory, step)),
+          ),
       )
     )
       return true;
