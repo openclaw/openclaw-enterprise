@@ -875,6 +875,95 @@ test("admitted dedicated runtimes keep their images across maintenance and activ
   assert.equal(fixture.templates.length, starts, "maintenance must not restart either workload");
 });
 
+// A running revision whose Deployments carry an earlier release's start-up programs, and the
+// same Kubernetes API served by a driver of the current release with new default images.
+async function earlierReleaseFixture(embedded) {
+  const fixture = workspaceSetupFixture(embedded);
+  fixture.state.ready = true;
+  for (let pass = 0; pass < 2; pass += 1) {
+    assert.equal(
+      (await fixture.driver.prepareRevision(fixture.revision, fixture.context)).ready,
+      true,
+    );
+  }
+  await fixture.driver.activateRevision(fixture.revision, fixture.context);
+  const deployments = () =>
+    [...fixture.objects.values()].filter((object) => object.kind === "Deployment");
+  const containers = (deployment) => [
+    ...deployment.spec.template.spec.containers,
+    ...(deployment.spec.template.spec.initContainers ?? []),
+  ];
+  const earlier = ["earlier-release-program"];
+  for (const deployment of deployments()) {
+    for (const container of containers(deployment)) {
+      if (container.args !== undefined) {
+        container.args = earlier;
+      }
+    }
+  }
+  assert.ok(deployments().some((deployment) => containers(deployment).some((c) => c.args)));
+  const driver = new KubernetesComputeDriver(
+    {
+      ...fixture.driver.options,
+      images: {
+        ...fixture.driver.options.images,
+        gateway: "openclaw-enterprise/gateway-fixture:candidate",
+        agent: "openclaw-enterprise/agent-fixture:candidate",
+      },
+    },
+    { nodeEnrollment: fixture.driver.nodeEnrollment },
+  );
+  driver.apiClients = fixture.driver.apiClients;
+  const revisionDeployments = (revisionId) =>
+    deployments().filter(
+      ({ metadata: { annotations } }) =>
+        (annotations["openclaw.dev/revision-id"] ?? annotations["openclaw.dev/agent-revision-id"]) ===
+        revisionId,
+    );
+  const runsEarlierProgram = (deployment) =>
+    containers(deployment).some(({ args }) => JSON.stringify(args) === JSON.stringify(earlier));
+  return { ...fixture, driver, deployments, revisionDeployments, runsEarlierProgram };
+}
+
+test("maintenance keeps a running revision's start-up programs and images from its deployment", async () => {
+  for (const embedded of [true, false]) {
+    const fixture = await earlierReleaseFixture(embedded);
+    const { driver, revision, context } = fixture;
+    const templates = () => fixture.deployments().map(({ spec }) => spec.template);
+    const before = structuredClone(templates());
+    assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+    await driver.activateRevision(revision, context);
+    assert.deepEqual(templates(), before, `embedded=${embedded}`);
+    // Stop removes the revision's workloads as before; preparing it again, as for a missing
+    // Deployment, starts the current release's programs.
+    await driver.stopRevision(revision);
+    assert.deepEqual(fixture.revisionDeployments(revision.id), []);
+    await driver.prepareRevision(revision, context);
+    const recreated = fixture.revisionDeployments(revision.id);
+    assert.ok(recreated.length > 0);
+    assert.ok(!recreated.some(fixture.runsEarlierProgram), `embedded=${embedded}`);
+  }
+});
+
+test("a new deployment starts the current release's start-up programs", async () => {
+  for (const embedded of [true, false]) {
+    const fixture = await earlierReleaseFixture(embedded);
+    const { driver, revision, context } = fixture;
+    const successor = { ...structuredClone(revision), id: "revision-successor", revision: 2 };
+    const successorContext = { ...context, ...authContext(successor, fixture.namespace) };
+    assert.equal((await driver.prepareRevision(successor, successorContext)).ready, true);
+    await driver.activateRevision(successor, successorContext);
+    const gateway = fixture.objects.get(
+      `Deployment:${fixture.namespace}:gateway-${digest(revision.agentId)}`,
+    );
+    // The Gateway Deployment is shared between revisions: activation hands it over to the new one.
+    assert.equal(gateway.metadata.annotations["openclaw.dev/agent-revision-id"], successor.id);
+    const started = fixture.revisionDeployments(successor.id);
+    assert.ok(started.includes(gateway));
+    assert.ok(!started.some(fixture.runsEarlierProgram), `embedded=${embedded}`);
+  }
+});
+
 test("an enforced digest policy rejects previously admitted tags before reconciliation", async () => {
   const fixture = dedicatedFirstDeployFixture();
   const pinned = "registry.example.test/runtime@sha256:" + "a".repeat(64);
