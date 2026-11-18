@@ -1444,7 +1444,7 @@ revisionTest(
           error: {
             code: "RUNTIME_STATE_LOCK_UNVERIFIED",
             message:
-              "Runtime failed startup check gateway-state-lock: it cannot verify that the earlier holder of its state lock stopped. To see the holder, run 'occ agent logs AGENT_ID --source gateway' (Harness: '--source agent'). Recover it per the troubleshooting guide.",
+              "Startup check gateway-state-lock failed: the runtime cannot verify that its state lock holder stopped. See it with 'occ agent logs AGENT_ID --source gateway' (Harness: --source agent), then follow the troubleshooting guide.",
           },
         },
       })),
