@@ -154,21 +154,17 @@ the setting and what is accepted, never its value, before any version is created
 
 ### Pending deployment progress
 
-While a version is not ready, deployment `progress.lastAttempt.code` says why
-when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live
-Pod is `Unschedulable`, `REVISION_IMAGE_PULL_FAILED` when a container waits on
-`ErrImagePull` or `ImagePullBackOff`, `NAMESPACE_POD_QUOTA_EXCEEDED` when a
-Deployment for that version reports a full Pod quota in `ReplicaFailure`,
-`WORKSPACE_SETUP_RETRYING` while restarting a failed workspace setup, and
-`WORKSPACE_NODE_PENDING` when only the workspace node's gateway connection is
-outstanding. Activation of a dedicated version reports
-`WORKSPACE_NODE_BINDING_PENDING` until the gateway applies the workspace node it
-was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
-the code is `REVISION_INCOMPLETE`. The version stays pending until ready, a
-startup failure (such as `WORKSPACE_SETUP_REFUSED` or a Kubernetes
-[crash loop](../drivers/kubernetes-compute.md#troubleshooting)) ends it, or the
-convergence deadline passes. The worker rechecks an unready
-version after 500 ms, growing with the deployment's age to 5 s at 200 s.
+Deployment `progress.lastAttempt.code` explains why a version is pending.
+Kubernetes reports `REVISION_UNSCHEDULABLE` for an unschedulable Pod,
+`REVISION_IMAGE_PULL_FAILED` for `ErrImagePull` or `ImagePullBackOff`,
+`NAMESPACE_POD_QUOTA_EXCEEDED` for Pod quota `ReplicaFailure`, and
+`WORKSPACE_SETUP_RETRYING` when restarting workspace setup. During dedicated
+activation, `WORKSPACE_NODE_BINDING_PENDING` means the gateway has yet to apply
+the workspace node. `WORKSPACE_NODE_PENDING` means the node has yet to connect.
+Other readiness waits use `REVISION_INCOMPLETE`. They end on readiness,
+startup failure (such as `WORKSPACE_SETUP_REFUSED` or a
+[crash loop](../drivers/kubernetes-compute.md#troubleshooting)), or the convergence
+deadline. Rechecks grow from 500 ms to 5 s by age 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
 apply its workspace node, so activation fails at once with
@@ -204,6 +200,10 @@ continues, or past its convergence deadline stops the candidate and fails
 `CONVERGENCE_DEADLINE_EXCEEDED`; other refusals stand. A deployment that a
 newer version supersedes still finishes the stop, even of a lifted refusal,
 then ends superseded.
+
+`PREDECESSOR_COMPLETION_WAITING` means a
+[planned replacement](planned-replacement.md) is waiting for the previous
+version to finish active work and deliver its results.
 
 `AGENT_STOP_YIELDED` (the Agent was stopped), `PREDECESSOR_STOP_YIELDED` (a
 dedicated replacement waits for the previous version) and

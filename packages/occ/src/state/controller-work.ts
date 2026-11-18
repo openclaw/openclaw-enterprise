@@ -154,6 +154,17 @@ export function deploymentProgressForWork(
                 : ""
             }; stopping the refused version before recording the failure. The controller will retry.`;
       break;
+    case "PREDECESSOR_COMPLETION_WAITING":
+      code = attempt.code;
+      message =
+        "Waiting for the previous version to finish its active work and deliver its results before this version starts.";
+      break;
+    case "PLANNED_PREDECESSOR_STOP_YIELDED":
+    case "PLANNED_PREDECESSOR_STOP_PENDING":
+      code = attempt.code;
+      message =
+        "The controller will retry stopping the previous version before this deployment continues.";
+      break;
     case "PREDECESSOR_STOP_YIELDED":
       // Exclusive replacement: the serving version's gateway drains before this one starts.
       code = attempt.code;

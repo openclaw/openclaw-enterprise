@@ -28,9 +28,13 @@ export function stopYieldRecheckMs(ageMs: number): number {
   );
 }
 
-/** The pending code of a pass whose stop yielded during a Gateway drain. */
+/** Pending codes for a yielded stop or bounded predecessor completion wait. */
 export type StopYieldedCode =
-  "AGENT_STOP_YIELDED" | "PREDECESSOR_STOP_YIELDED" | "SUPERSEDED_STOP_YIELDED";
+  | "AGENT_STOP_YIELDED"
+  | "PREDECESSOR_STOP_YIELDED"
+  | "PLANNED_PREDECESSOR_STOP_YIELDED"
+  | "SUPERSEDED_STOP_YIELDED"
+  | "PREDECESSOR_COMPLETION_WAITING";
 
 interface YieldedStop {
   readonly code: StopYieldedCode;
@@ -49,6 +53,7 @@ interface YieldedStop {
  *   own yielded stop, whose next pass only rechecks its drain. They do end for a deployment whose
  *   predecessor stop yielded: once that drain is over, its next pass deletes the predecessor's
  *   Harness and deploys.
+ * - Completion waits always remain due so another drain cannot starve their short leases.
  * - Their `worker.completed` lines are throttled: the first yield is logged, then at most one
  *   a minute, each with the work's yield count so far, which the work's next other line
  *   (usually its completion) carries too.
@@ -98,7 +103,13 @@ export class StopYields {
   waiting(wait: ComputeWorkWait): string[] {
     this.prune(this.now());
     return [...this.stops]
-      .filter(([, stop]) => wait === "gateway-drain" || stop.code !== "PREDECESSOR_STOP_YIELDED")
+      .filter(
+        ([, stop]) =>
+          stop.code !== "PREDECESSOR_COMPLETION_WAITING" &&
+          (wait === "gateway-drain" ||
+            (stop.code !== "PREDECESSOR_STOP_YIELDED" &&
+              stop.code !== "PLANNED_PREDECESSOR_STOP_YIELDED")),
+      )
       .map(([key]) => key);
   }
 
@@ -115,6 +126,16 @@ export class StopYields {
  * Exclusive replacement's stop of a predecessor yielded during its Gateway drain: the pass ends
  * pending as `PREDECESSOR_STOP_YIELDED` before the candidate is prepared (finding 1090).
  */
+/** Pre-stop renewal must yield to other work, but remains due to renew its short lease. */
+export class PredecessorCompletionWaitingError extends ComputeStopYieldedError {
+  constructor() {
+    super("The predecessor is completing admitted work before replacement.");
+    this.name = "PredecessorCompletionWaitingError";
+  }
+}
+
+export const PLANNED_COMPLETION_WAIT_MS = 30 * 60_000;
+
 export class PredecessorStopYieldedError extends ComputeStopYieldedError {
   constructor(cause: ComputeStopYieldedError) {
     super(cause.message);
@@ -138,14 +159,19 @@ export class SupersededStopYieldedError extends ComputeStopYieldedError {
 /** Whether `code` is the pending code of revision work whose stop yielded during a drain. */
 export function isStopYieldedCode(code: string): code is StopYieldedCode {
   return (
+    code === "PREDECESSOR_COMPLETION_WAITING" ||
     code === "AGENT_STOP_YIELDED" ||
     code === "PREDECESSOR_STOP_YIELDED" ||
+    code === "PLANNED_PREDECESSOR_STOP_YIELDED" ||
     code === "SUPERSEDED_STOP_YIELDED"
   );
 }
 
 /** The pending code of a pass whose stop yielded with `error`, if it did. */
 export function stopYieldedCode(error: unknown): StopYieldedCode | undefined {
+  if (error instanceof PredecessorCompletionWaitingError) {
+    return "PREDECESSOR_COMPLETION_WAITING";
+  }
   if (error instanceof PredecessorStopYieldedError) {
     return "PREDECESSOR_STOP_YIELDED";
   }
@@ -159,13 +185,16 @@ export function stopYieldedCode(error: unknown): StopYieldedCode | undefined {
  * Runs a Compute stop for work `ageMs` old. Before the convergence deadline its Gateway drain
  * wait ends once other Work is due (ComputeStopYieldedError), and the caller defers the work to
  * repeat the stop; the Harness's own waits never yield, so the Harness is deleted only after the
- * Gateway's Pods are gone. From the deadline on, the stop keeps its full bounded wait, so a drain
- * that never ends cannot defer the work forever (finding 1088).
+ * Gateway's Pods are gone. After the deadline the Gateway poll lets the worker claim a due
+ * predecessor completion renewal while the stop continues.
  */
 export function stopWithDrainYield<Result>(
   ageMs: number,
   convergenceTimeoutMs: number,
   stop: () => Promise<Result>,
 ): Promise<Result> {
-  return ageMs < convergenceTimeoutMs ? withYieldingGatewayDrain(stop) : stop();
+  return withYieldingGatewayDrain(
+    stop,
+    ageMs < convergenceTimeoutMs ? "gateway-drain" : "predecessor-completion",
+  );
 }

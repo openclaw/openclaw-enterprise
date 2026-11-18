@@ -1550,6 +1550,8 @@ export type {
   ComputeDriver,
   AgentChatCompletionsEndpoint,
   AgentChatCompletionsResolution,
+  PredecessorCompletionContext,
+  PredecessorCompletionResult,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,

@@ -238,8 +238,23 @@ export interface AgentRepository extends AgentReadRepository {
       readonly predecessorRevisionId: string;
       readonly candidateRevisionId: string;
       readonly phase: "pre-stop" | "stopping";
+      readonly beginCompletion?: true;
+      readonly executionIdentity?: string;
+      /** Require the existing candidate's pre-stop phase and unexpired completion window. */
+      readonly completionClaim?: {
+        readonly idempotencyKey: string;
+        readonly claimToken: string;
+        readonly windowMs: number;
+      };
     },
   ): Promise<Readonly<PredecessorReplacement> | undefined>;
+  /** Caller holds the Namespace and Agent locks. Confirm only the same committed stop. */
+  confirmPredecessorStop(
+    namespaceId: string,
+    agentId: string,
+    predecessorRevisionId: string,
+    stoppingAt: string,
+  ): Promise<void>;
   createAgent(
     agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
   ): Promise<Readonly<Agent>>;
@@ -304,6 +319,9 @@ export interface PredecessorReplacement {
   readonly phase: "pre-stop" | "stopping";
   readonly startedAt: string;
   readonly stoppingAt?: string;
+  readonly stopCompleted?: true;
+  readonly completionStartedAt?: string;
+  readonly executionIdentity?: string;
 }
 
 export interface AgentRevisionReadRepository {
@@ -3387,6 +3405,13 @@ function repositories(
         ? undefined
         : snapshot.predecessorReplacements.get(agentKey(namespaceId, agentId)),
     recordPredecessorReplacement: async (namespaceId, agentId, input) => {
+      if (
+        input.executionIdentity !== undefined &&
+        (typeof input.executionIdentity !== "string" ||
+          !/^[\x21-\x7e]{1,256}$/.test(input.executionIdentity))
+      ) {
+        throw new ScopeViolationError("The predecessor execution identity is invalid.");
+      }
       const agent = await agents.findAgent(namespaceId, agentId);
       if (!agent || agent.activeRevisionId !== input.predecessorRevisionId) {
         return undefined;
@@ -3402,10 +3427,22 @@ function repositories(
       const previous =
         current?.predecessorRevisionId === input.predecessorRevisionId ? current : undefined;
       const now = new Date().toISOString();
+      const completionStartedAt =
+        previous?.completionStartedAt ??
+        (input.beginCompletion === true &&
+        input.phase === "pre-stop" &&
+        previous?.phase !== "stopping"
+          ? now
+          : undefined);
+      const executionIdentity = previous?.executionIdentity ?? input.executionIdentity;
       const saved = immutableCopy({
-        ...input,
+        predecessorRevisionId: input.predecessorRevisionId,
+        candidateRevisionId: input.candidateRevisionId,
         phase: previous?.phase === "stopping" ? "stopping" : input.phase,
         startedAt: previous?.startedAt ?? now,
+        ...(completionStartedAt === undefined ? {} : { completionStartedAt }),
+        ...(executionIdentity === undefined ? {} : { executionIdentity }),
+        ...(previous?.stopCompleted === true ? { stopCompleted: true as const } : {}),
         ...(previous?.stoppingAt
           ? { stoppingAt: previous.stoppingAt }
           : input.phase === "stopping"
@@ -3414,6 +3451,20 @@ function repositories(
       });
       snapshot.predecessorReplacements.set(key, saved);
       return saved;
+    },
+    confirmPredecessorStop: async (namespaceId, agentId, predecessorRevisionId, stoppingAt) => {
+      const key = agentKey(namespaceId, agentId);
+      const current = snapshot.predecessorReplacements.get(key);
+      if (
+        current?.phase === "stopping" &&
+        current.predecessorRevisionId === predecessorRevisionId &&
+        current.stoppingAt === stoppingAt
+      ) {
+        snapshot.predecessorReplacements.set(
+          key,
+          immutableCopy({ ...current, stopCompleted: true }),
+        );
+      }
     },
     findAgentForBrowsing: async (namespaceId, agentId) => agents.findAgent(namespaceId, agentId),
     listAgentsForBrowsing: async (namespaceId) => agents.listAgents(namespaceId),
