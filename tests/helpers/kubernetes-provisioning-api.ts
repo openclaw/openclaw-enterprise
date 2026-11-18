@@ -16,11 +16,7 @@ import {
   createControllerWorker,
   type ControllerWorkerOptions,
 } from "../../apps/controller/src/worker.ts";
-import {
-  InferencePrivatePeerSchema,
-  JsonValue,
-  PluginApproversSchema,
-} from "../../packages/contracts/src/api/common.ts";
+import { JsonValue, PluginApproversSchema } from "../../packages/contracts/src/api/common.ts";
 import {
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
@@ -47,7 +43,6 @@ const responseSchemas = {
   ConnectionTemplate: ConnectionTemplateSchema,
   OAuthConnectionTemplateVersion: OAuthConnectionTemplateVersionSchema,
   StaticKeyConnectionTemplateVersion: StaticKeyConnectionTemplateVersionSchema,
-  InferencePrivatePeer: InferencePrivatePeerSchema,
   PluginApprovers: PluginApproversSchema,
   PluginDesiredSelection: PluginDesiredSelectionSchema,
   PluginDesiredState: PluginDesiredStateSchema,

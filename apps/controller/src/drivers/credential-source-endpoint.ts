@@ -45,7 +45,8 @@ export function validateOpenAiSourceBaseUrl(
       normalizeInferenceBaseUrl(value);
     } catch {
       return {
-        error: "The openai authorized_base_url host must be an exact DNS name or private IPv4 address.",
+        error:
+          "The openai authorized_base_url host must be an exact DNS name or private IPv4 address.",
       };
     }
   }
