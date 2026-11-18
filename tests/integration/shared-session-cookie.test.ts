@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createControllerAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth } from "../helpers/password-hasher.ts";
 
 const options = {
   mode: "development" as const,

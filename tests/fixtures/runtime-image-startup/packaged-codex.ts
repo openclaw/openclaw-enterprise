@@ -112,6 +112,8 @@ export async function probePackagedCodex(
             "197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8",
           "openclaw-chat-absent-selected-agent.patch":
             "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
+          "openclaw-restart-resume-scope.patch":
+            "da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);

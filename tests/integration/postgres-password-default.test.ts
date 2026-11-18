@@ -29,7 +29,7 @@ import {
   text,
   type App,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
-import { testPasswordHasher } from "../helpers/password-hasher.mjs";
+import { testPasswordHasher } from "../helpers/password-hasher.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "password-default-admin@example.test";
@@ -461,7 +461,7 @@ test(
         );
         const refused = await passwordSignIn(production, origin, { email, password });
         assert.equal(refused.statusCode, 401, refused.body);
-        // The fixtures' app above hashed with their cheap hasher (password-hasher.mjs).
+        // The fixtures' app above hashed with their cheap hasher (password-hasher.ts).
         const fixtureHash = await pool.query<{ password: string }>(
           "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
           [member.id],

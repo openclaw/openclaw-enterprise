@@ -673,7 +673,9 @@ interface GatewayConfigurationSnapshot {
 }
 
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
+const PROXY_CODEX_LAUNCH = "explicit-proxy-codex-launch:v1:";
 const OPENSHELL_CODEX_LAUNCH = "openshell-codex-launch:v1:";
+const CODEX_LAUNCH_PREFIXES = [OPENSHELL_CODEX_LAUNCH, PROXY_CODEX_LAUNCH];
 
 interface PluginRuntimeSnapshot {
   readonly name: string;
@@ -1191,6 +1193,7 @@ const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   "OPENCLAW_RUNTIME_STATUS_PORT",
   "OPENCLAW_POD_UID",
 ]);
+const GATEWAY_RESTART_RESUME_SCOPE = "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE";
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
@@ -14991,35 +14994,39 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   private runtimeAdmission(revision: Readonly<AgentRevision>): string | undefined {
     const saved = this.savedRuntimeAdmission(revision);
-    return saved?.startsWith(OPENSHELL_CODEX_LAUNCH)
-      ? saved.slice(OPENSHELL_CODEX_LAUNCH.length) || undefined
-      : saved;
+    const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
+    return prefix === undefined ? saved : saved?.slice(prefix.length) || undefined;
   }
 
-  private usesOpenShellCodexLaunch(
+  private providerCodexLaunchPrefix(
     revision: Readonly<AgentRevision>,
     sandbox: SandboxDriver | undefined,
-  ): boolean {
-    return (
-      this.options.runtime !== undefined &&
-      sandbox?.implementation === "openshell" &&
-      sandbox.provisionHarness !== undefined &&
-      revision.harness.id === "codex" &&
-      revision.harness.mode === "dedicated"
-    );
+  ): string | undefined {
+    if (
+      this.options.runtime === undefined ||
+      sandbox?.provisionHarness === undefined ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated"
+    ) {
+      return undefined;
+    }
+    return sandbox.implementation === "openshell" ? OPENSHELL_CODEX_LAUNCH : PROXY_CODEX_LAUNCH;
   }
 
   private codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch {
-    const updated = this.savedRuntimeAdmission(revision)?.startsWith(OPENSHELL_CODEX_LAUNCH);
-    if (updated && !this.usesOpenShellCodexLaunch(revision, sandbox)) {
+    const saved = this.savedRuntimeAdmission(revision);
+    const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
+    if (prefix !== undefined && prefix !== this.providerCodexLaunchPrefix(revision, sandbox)) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const auth = revision.harnessAuth;
+    const providerOwned = sandbox?.provisionHarness !== undefined;
     return {
-      providerOwned: sandbox?.provisionHarness !== undefined,
+      providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
       modelRequestEnrollment: revision.egressPlan?.authorization === "online-request",
-      ...(updated && {
+      ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
+      ...(prefix === OPENSHELL_CODEX_LAUNCH && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
           auth.method === "credential_source" &&
@@ -15042,10 +15049,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // Select the updated renderer only when admitting a new revision.
     if (
       revision.sandboxDriverId !== undefined &&
-      revision.sandboxDriverId === this.sandboxDriver?.id &&
-      this.usesOpenShellCodexLaunch(revision, this.sandboxDriver)
+      revision.sandboxDriverId === this.sandboxDriver?.id
     ) {
-      runtime = OPENSHELL_CODEX_LAUNCH + (runtime ?? "");
+      const prefix = this.providerCodexLaunchPrefix(revision, this.sandboxDriver);
+      if (prefix !== undefined) {
+        runtime = prefix + (runtime ?? "");
+      }
     }
     const provider = this.providerAdmission(revision);
     const admission =
@@ -16932,6 +16941,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
     const variables: V1EnvVar[] = [];
+    // OpenClaw resumes a turn that its graceful shutdown interrupted only under the same
+    // scope (deploy/runtime/openclaw-restart-resume-scope.patch). A restart of this revision
+    // resumes it; a turn cut by stop, replace or delete never runs again (finding 3347).
+    if (role === "gateway" && configuration !== undefined) {
+      variables.push({ name: GATEWAY_RESTART_RESUME_SCOPE, value: configuration.revisionId });
+    }
     const providerNetwork =
       providerEndpoint === undefined ? undefined : this.options.network.providerHarness;
     if (providerEndpoint !== undefined && providerNetwork === undefined) {

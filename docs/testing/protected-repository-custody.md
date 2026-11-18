@@ -194,7 +194,7 @@ forward to the API service alive across Pod replacement. Include setup, test,
 fresh API readiness, evidence and cleanup in the actual slot and outer deadline.
 
 ```sh
-node tests/fixtures/egress-custody-postgres-observer.mjs "$new_observer_dir" "$data_port"
+node tests/fixtures/egress-custody-postgres-observer.ts "$new_observer_dir" "$data_port"
 ```
 
 In the qualification shell, set the four connected inputs from the lane manifest,
