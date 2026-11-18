@@ -106,7 +106,8 @@ live Secret without a Gateway copy.
 delivery. Otherwise `staticEgressProvider` selects the external Driver’s first matching
 provider. A bundled owner with retirement policy requires one eligible provider for the
 type; missing or ambiguous choices refuse before Secret reads. Updates validate the original
-profile and eligible successor. Admission rechecks Sandbox pairing, provider and callbacks through audit.
+profile and eligible successor. Admission rechecks the Gateway, Sandbox pairing, provider,
+Proxy references and callbacks through audit.
 
 `packages/occ/src/index.ts:credentialSourceProtection` reports live model protection
 on create, GET and list. It checks the exact provider, lifecycle, backend, sender and

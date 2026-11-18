@@ -75,6 +75,17 @@ async function sourceRows(f: ModelFixture, name: string) {
   return rows.rowCount;
 }
 
+function registerAlternateGateway(controller: OpenClawController) {
+  const selected = controller.selectedDriver("credential_gateway");
+  const alternate = new Proxy(selected, {
+    get(target, key) {
+      return key === "id" ? "alternate-gateway" : Reflect.get(target, key, target);
+    },
+  });
+  controller.registerDriver(alternate);
+  return { selected, alternate };
+}
+
 test(
   "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
   { ...requiresPostgres, timeout: 90_000 },
@@ -962,6 +973,174 @@ test(
 );
 
 test(
+  "static source admission refuses incompatible profile lifecycles (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const { f, owner } = await requestCredentialFixture(t, {
+      verifyAdmissionPolicy: true,
+      retainStrictBeforePolicy: true,
+      includeLegacy: true,
+    });
+    const controller: OpenClawController = f.controller;
+    controller.selectDriver("sandbox", "request-policy-previous");
+    const proxy = controller.selectDriver("credential_proxy", "request-policy-previous");
+    const providers = proxy.sourceControl.providers as CredentialProviderDefinition[];
+    const first = providers[0]!;
+    const created = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
+      body: modelSourceBody(f, "strict-lifecycle"),
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const id = created.data.id;
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const sourceBefore = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, id),
+    );
+    const incompatibleType = {
+      ...first.sourceType,
+      harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" as const },
+    };
+    const incompatible = {
+      ...first,
+      ref: { ...first.ref, generation: first.ref.generation + 1 },
+      sourceType: incompatibleType,
+    };
+    providers.push(incompatible);
+    const reads = f.countSecretReads();
+    const result = await f.request("PATCH", `${path}/${id}`, {
+      body: { adoption: "live", authorityScope: "execution" },
+    });
+    const upgrade = {
+      status: result.status,
+      reads: f.countSecretReads() - reads,
+      unchanged: isDeepStrictEqual(
+        await controller.transact((unit) =>
+          unit.credentialSources.findCredentialSource(f.namespace.id, id),
+        ),
+        sourceBefore,
+      ),
+    };
+    providers.pop();
+    providers[0] = { ...first, sourceType: incompatibleType };
+    const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+    const offered = catalog.data.capabilities.credentialSources.types.some(
+      (type: { type: string }) => type.type === "openai",
+    );
+    providers[0] = first;
+
+    const gateway = controller.selectedDriver("credential_gateway");
+    const list = gateway.listSourceTypes;
+    const fresh = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+      body: { name: "replacement-key", value: "synthetic-key-replacement" },
+    });
+    assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
+    const legacy = f.legacySource;
+    assert.ok(legacy);
+    const legacyBefore = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, legacy.id),
+    );
+    gateway.listSourceTypes = async (context) =>
+      (await list.call(gateway, context)).map((type) =>
+        type.type === "openai"
+          ? {
+              ...type,
+              rotation: "refresh" as const,
+              secrets: type.secrets.map((field) => ({ ...field, issuerRotated: true })),
+            }
+          : type,
+      );
+    let refresh;
+    try {
+      const before = f.countSecretReads();
+      const response = await f.request("PATCH", `${path}/${legacy.id}`, {
+        body: {
+          adoption: "live",
+          authorityScope: "execution",
+          secrets: { api_key: fresh.data.ref },
+        },
+      });
+      refresh = {
+        status: response.status,
+        reads: f.countSecretReads() - before,
+        unchanged: isDeepStrictEqual(
+          await controller.transact((unit) =>
+            unit.credentialSources.findCredentialSource(f.namespace.id, legacy.id),
+          ),
+          legacyBefore,
+        ),
+      };
+    } finally {
+      gateway.listSourceTypes = list;
+      controller.selectDriver("sandbox", owner.ref.id);
+      controller.selectDriver("credential_proxy", owner.ref.id);
+    }
+    assert.deepEqual(
+      { upgrade, offered, refresh },
+      {
+        upgrade: { status: 409, reads: 0, unchanged: true },
+        offered: false,
+        refresh: { status: 409, reads: 0, unchanged: true },
+      },
+    );
+  },
+);
+
+test(
+  "static source admission fences Credential Gateway selection (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const { f, owner } = await requestCredentialFixture(t);
+    const controller: OpenClawController = f.controller;
+    const { selected: gateway, alternate } = registerAlternateGateway(controller);
+    const transport = owner.require("credential_proxy").requestTimeCredentials!;
+    const available = transport.assertAvailable;
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const created = await f.request("POST", path, { body: modelSourceBody(f, "update-owner") });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const beforeSource = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, created.data.id),
+    );
+    transport.assertAvailable = async (signal) => {
+      await available.call(transport, signal);
+      controller.selectDriver("credential_gateway", alternate.id);
+    };
+    const observed: Record<string, { status: number; reads: number; unchanged: boolean }> = {};
+    try {
+      let before = f.countSecretReads();
+      const post = await f.request("POST", path, { body: modelSourceBody(f, "changed-owner") });
+      observed.create = {
+        status: post.status,
+        reads: f.countSecretReads() - before,
+        unchanged: (await sourceRows(f, "changed-owner")) === 0,
+      };
+      controller.selectDriver("credential_gateway", gateway.id);
+      before = f.countSecretReads();
+      const patch = await f.request("PATCH", `${path}/${created.data.id}`, {
+        body: { secrets: { api_key: f.secret.ref } },
+      });
+      observed.update = {
+        status: patch.status,
+        reads: f.countSecretReads() - before,
+        unchanged: isDeepStrictEqual(
+          await controller.transact((unit) =>
+            unit.credentialSources.findCredentialSource(f.namespace.id, created.data.id),
+          ),
+          beforeSource,
+        ),
+      };
+    } finally {
+      transport.assertAvailable = available;
+      controller.selectDriver("credential_gateway", gateway.id);
+    }
+    assert.deepEqual(observed, {
+      create: { status: 409, reads: 0, unchanged: true },
+      update: { status: 409, reads: 0, unchanged: true },
+    });
+    const healthy = await f.request("POST", path, { body: modelSourceBody(f, "restored-gateway") });
+    assert.equal(healthy.status, 201, JSON.stringify(healthy.body));
+  },
+);
+
+test(
   "model source PATCH rechecks admission after its success audit is written (PostgreSQL)",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
@@ -996,6 +1175,7 @@ test(
     );
     assert.ok(sourceBefore?.egress);
     const proxy = owner.require("credential_proxy");
+    const { selected: gateway, alternate } = registerAlternateGateway(controller);
     const transport = proxy.requestTimeCredentials!;
     let replacementCalls = 0;
     const replacement = {
@@ -1005,40 +1185,65 @@ test(
         throw new Error("unavailable replacement");
       },
     };
-    const pause = fixture.pauseSourceUpdateAudit({
-      namespaceId: f.namespace.id,
-      sourceId: id,
-      actorId: principalId,
-      action,
-    });
-    t.after(pause.release);
-    const pending = f.request("PATCH", sourcePath, {
-      body: { secrets: { api_key: f.secret.ref } },
-    });
-    const observed = await pause.reached;
-    assert.equal(observed.recorded, true);
-    assert.equal(observed.generation, sourceBefore.egress.key.source.generation + 1);
-    assert.equal(Reflect.set(proxy, "requestTimeCredentials", replacement), true);
-    pause.release();
-    let result;
-    try {
-      result = await pending;
-    } finally {
-      Reflect.set(proxy, "requestTimeCredentials", transport);
+    const control = proxy.sourceControl;
+    const backend = control.backend;
+    for (const change of [
+      {
+        apply: () => Reflect.set(proxy, "requestTimeCredentials", replacement),
+        restore: () => Reflect.set(proxy, "requestTimeCredentials", transport),
+      },
+      {
+        apply: () =>
+          Reflect.set(control, "backend", { ...backend, generation: backend.generation + 1 }),
+        restore: () => Reflect.set(control, "backend", backend),
+      },
+      {
+        apply: () => {
+          controller.selectDriver("credential_gateway", alternate.id);
+          return true;
+        },
+        restore: () => {
+          controller.selectDriver("credential_gateway", gateway.id);
+          return true;
+        },
+      },
+    ]) {
+      const pause = fixture.pauseSourceUpdateAudit({
+        namespaceId: f.namespace.id,
+        sourceId: id,
+        actorId: principalId,
+        action,
+      });
+      t.after(pause.release);
+      const pending = f.request("PATCH", sourcePath, {
+        body: { secrets: { api_key: f.secret.ref } },
+      });
+      const observed = await pause.reached;
+      assert.equal(observed.recorded, true);
+      assert.equal(observed.generation, sourceBefore.egress.key.source.generation + 1);
+      assert.equal(change.apply(), true);
+      pause.release();
+      let result;
+      try {
+        result = await pending;
+      } finally {
+        change.restore();
+      }
+      assert.equal(result.status, 409, JSON.stringify(result.body));
+      assert.equal(replacementCalls, 0);
+      const events = (await query()).rows;
+      assert.deepEqual(events, committed.rows);
+      assert.equal(
+        events.some((event) => event.id === observed.eventId),
+        false,
+      );
+      assert.deepEqual(
+        await controller.transact((unit) =>
+          unit.credentialSources.findCredentialSource(f.namespace.id, id),
+        ),
+        sourceBefore,
+      );
     }
-    assert.equal(result.status, 409, JSON.stringify(result.body));
-    assert.equal(replacementCalls, 0);
-    assert.deepEqual((await query()).rows, committed.rows);
-    assert.equal(
-      (await query()).rows.some((event) => event.id === observed.eventId),
-      false,
-    );
-    assert.deepEqual(
-      await controller.transact((unit) =>
-        unit.credentialSources.findCredentialSource(f.namespace.id, id),
-      ),
-      sourceBefore,
-    );
     const restored = await f.request("PATCH", sourcePath, {
       body: { secrets: { api_key: f.secret.ref } },
     });

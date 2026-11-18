@@ -784,6 +784,8 @@
         "external model source catalog refuses an unsupported live schema before material access (PostgreSQL)",
         "strict model source upgrades require an exact original and an eligible successor (PostgreSQL)",
         "model source admission fences a changed paired Sandbox (PostgreSQL)",
+        "static source admission refuses incompatible profile lifecycles (PostgreSQL)",
+        "static source admission fences Credential Gateway selection (PostgreSQL)",
         "model source PATCH rechecks admission after its success audit is written (PostgreSQL)",
         "model-only request admission uses the registered request profile without strict capabilities",
         "API-admitted model and Git revision requires its original worker (PostgreSQL)",

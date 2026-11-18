@@ -8832,7 +8832,6 @@ export class OpenClawController {
       original.assertRegistrationCurrent();
       if (
         !this.staticSourceLifecycleMatches(type, original.provider.sourceType) ||
-        !this.staticSourceLifecycleMatches(original.provider.sourceType) ||
         original.provider.sourceType.secrets.length !== 1
       ) {
         throw new ResourceStateConflictError(
@@ -8884,7 +8883,8 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     sourceId: string,
-    type: string,
+    gateway: CredentialGatewayDriver,
+    type: CredentialSourceType,
     config: Readonly<Record<string, string>>,
     references: Readonly<Record<string, SecretReference>>,
     generation: number,
@@ -8894,28 +8894,43 @@ export class OpenClawController {
     const control = proxy.sourceControl;
     if (
       !selection ||
-      selection.provider.sourceType.type !== type ||
-      selection.provider.sourceType.rotation === "refresh" ||
+      selection.provider.sourceType.type !== type.type ||
+      !this.staticSourceLifecycleMatches(type, selection.provider.sourceType) ||
       selection.provider.sourceType.secrets.length !== 1
     ) {
       // An Installation property about the type the request sent (finding 2536). The who comes
       // before the type list, so the 256-character cap never cuts it.
       throw new ResourceStateConflictError(
-        `The selected Credential Proxy cannot protect ${type} sources. Ask an Installation administrator, or create a type it protects: ${control.providers.map((entry) => entry.sourceType.type).join(", ")}.`,
+        `The selected Credential Proxy cannot protect ${type.type} sources. Ask an Installation administrator, or create a type it protects: ${control.providers.map((entry) => entry.sourceType.type).join(", ")}.`,
       );
     }
     const { provider, ref, inject, normalizeConfig, assertCurrent } = selection;
     const owner = this.selectedProxyOwner();
     const sandbox = this.selections.get("sandbox");
+    const gatewaySelection = this.selections.get("credential_gateway");
+    const sourceType = immutableCopy(type);
+    const transport = immutableCopy({
+      backend: control.backend,
+      sender: control.sender,
+      resolver: control.resolver,
+    });
     const assertSelected = () => {
       assertCurrent();
       if (
+        !gatewaySelection ||
+        gatewaySelection.driver !== gateway ||
+        this.selections.get("credential_gateway") !== gatewaySelection ||
+        !this.unchangedDriver(gatewaySelection) ||
         this.selections.get("sandbox") !== sandbox ||
         this.selections.get("credential_proxy")?.owner !== owner ||
-        this.selectedProxyOwner() !== owner
+        this.selectedProxyOwner() !== owner ||
+        !isDeepStrictEqual(type, sourceType) ||
+        !isDeepStrictEqual(control.backend, transport.backend) ||
+        !isDeepStrictEqual(control.sender, transport.sender) ||
+        !isDeepStrictEqual(control.resolver, transport.resolver)
       ) {
         throw new ResourceStateConflictError(
-          "The paired Sandbox and Credential Proxy changed during admission.",
+          "The selected credential source dependencies changed during admission.",
         );
       }
     };
@@ -9028,7 +9043,7 @@ export class OpenClawController {
         installationId: this.installation.id,
         namespaceId,
         source: { id: sourceId, generation },
-        backend: control.backend,
+        backend: transport.backend,
         provider: ref,
       },
       schemaVersion: 1 as const,
@@ -9036,8 +9051,8 @@ export class OpenClawController {
       materialRefId: crypto.randomUUID(),
       secret: reference,
       secretDriver: { id: secretDriver.id, generation: 1 },
-      sender: control.sender,
-      resolver: control.resolver,
+      sender: transport.sender,
+      resolver: transport.resolver,
       retention: "none" as const,
     });
     return Object.freeze({ source, assertCurrent: assertAdmissionCurrent });
@@ -9388,7 +9403,8 @@ export class OpenClawController {
             principalId,
             locked.id,
             sourceId,
-            type.type,
+            selected!,
+            type,
             config,
             secretRefs,
             1,
@@ -9722,7 +9738,8 @@ export class OpenClawController {
           principalId,
           namespace.id,
           source.id,
-          source.type,
+          gateway,
+          type,
           source.config,
           secretRefs,
           (source.egress?.key.source.generation ?? 0) + 1,
@@ -18151,12 +18168,11 @@ export class OpenClawController {
     provider?: CredentialSourceType,
   ): boolean {
     // Externally rotated static inputs still use explicit Secret updates, not Refresh.
-    return (
-      type.rotation !== "refresh" &&
-      type.deviceAuthorization === undefined &&
-      type.harnessAuth?.loginMode !== "chatgptAuthTokens" &&
-      (provider === undefined || provider.rotation !== "refresh")
-    );
+    const isStatic = (candidate: CredentialSourceType) =>
+      candidate.rotation !== "refresh" &&
+      candidate.deviceAuthorization === undefined &&
+      candidate.harnessAuth?.loginMode !== "chatgptAuthTokens";
+    return isStatic(type) && (provider === undefined || isStatic(provider));
   }
 
   private newSourceTypeAvailable(type: CredentialSourceType): boolean {

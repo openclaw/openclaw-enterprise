@@ -666,6 +666,7 @@ export async function requestCredentialFixture(
       assert.ok(policyState instanceof PostgresPlatformState);
       const original = policyState.transact.bind(policyState);
       let pending = true;
+      let released = false;
       policyState.transact = (work) =>
         original((unit) =>
           work({
@@ -704,6 +705,8 @@ export async function requestCredentialFixture(
       return {
         reached: reached.promise,
         release() {
+          if (released) return;
+          released = true;
           policyState.transact = original;
           release.resolve();
         },
