@@ -328,7 +328,7 @@ inputs as Sandbox startup fields.
 - Sandbox selection is optional. Only dedicated execution with bundled Kubernetes Compute supports a Sandbox, including one from an installed package.
 - Supported facets are `networking`, `filesystem`, and `process`. The Sandbox
   does not authorize commands or create a Sandbox for each tool invocation.
-- The Sandbox reports Harness status. Compute decides when to activate traffic.
+- Each Sandbox reports Harness status, including [Strands](strands-box.md). Compute activates traffic.
 
 ## Troubleshooting
 

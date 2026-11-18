@@ -4,7 +4,7 @@ import {
 } from "../../../gateway/workspace-node-observation.ts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
-import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
+import { networkPolicySpecToJson, resolverEgress } from "../../kubernetes/network-policy.ts";
 import {
   KubernetesRequestTimeout,
   unreachableSocketCause,
@@ -406,6 +406,16 @@ export interface KubernetesGatewayRoutingOptions {
     readonly domain: string;
     readonly publicPort?: number;
   };
+}
+
+export function gatewayRoutingHostname(routing: KubernetesGatewayRoutingOptions): string {
+  if (routing.hostname !== undefined && routing.hostname.length > 0) {
+    return routing.hostname;
+  }
+  return `occ-gateway-${sha256Hex(
+    `${routing.gatewayNamespace}/${routing.gatewayName}`,
+    12,
+  )}.${routing.envoyNamespace}.svc`;
 }
 
 export type {
@@ -5032,7 +5042,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (routing === undefined) {
       return undefined;
     }
-    const hostname = this.gatewayRoutingHostname(routing);
+    const hostname = gatewayRoutingHostname(routing);
     const authority =
       routing.endpointPort === undefined || routing.endpointPort === 443
         ? hostname
@@ -7539,18 +7549,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
-        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
-          return incomplete();
-        }
-        if (heldForRepositoryGitMaterial) {
-          // Preparation of a v6 recipient, not a serving Harness or a released workload.
-          return {
-            ...result,
-            ready: false,
-            heldForRepositoryGitMaterial: true,
-            pendingReason: "REPOSITORY_GIT_ROUTE_PENDING",
-          };
-        }
         // The provider-owned Harness's own view of its startup, read through the
         // provider with the Agent transport token. `failed` carries a held startup
         // failure (a failed model probe), validated like a Compute-owned status port.
@@ -7614,6 +7612,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
           return { ...result, runtimeFailure };
         };
+        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
+          if (sandboxDriver.implementation === "strands-box" && sandboxDriver.harnessStatus) {
+            const failure = heldProviderHarnessFailure(await observeProviderHarness());
+            if (failure) {
+              return failure;
+            }
+          }
+          return incomplete();
+        }
+        if (heldForRepositoryGitMaterial) {
+          // Preparation of a v6 recipient, not a serving Harness or a released workload.
+          return {
+            ...result,
+            ready: false,
+            heldForRepositoryGitMaterial: true,
+            pendingReason: "REPOSITORY_GIT_ROUTE_PENDING",
+          };
+        }
         if (!(await this.workspaceNodeReady(revision, namespace))) {
           if (nativeRuntime !== undefined && !nodeEnrolled) {
             // Only a connection attributes the Agent's device to this revision.
@@ -13228,22 +13244,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         podSelector: ordinaryNetworkPolicySelector(),
         policyTypes: ["Egress"],
         egress: [
-          {
-            to: [
-              this.peer(
-                namespace.plane === "execution"
-                  ? (this.options.executionCluster?.network.dns ?? network.dns)
-                  : network.dns,
-              ),
-            ],
-            ports: [
-              { protocol: "UDP", port: 53 },
-              { protocol: "TCP", port: 53 },
-              // Allow port 5353 for compatibility with OpenShift DNS.
-              { protocol: "UDP", port: 5353 },
-              { protocol: "TCP", port: 5353 },
-            ],
-          },
+          resolverEgress(
+            namespace.plane === "execution"
+              ? (this.options.executionCluster?.network.dns ?? network.dns)
+              : network.dns,
+          ),
         ],
       }),
       policy("allow-gateway-ingress", {
@@ -14147,16 +14152,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
-  private gatewayRoutingHostname(routing: KubernetesGatewayRoutingOptions): string {
-    if (routing.hostname !== undefined && routing.hostname.length > 0) {
-      return routing.hostname;
-    }
-    return `occ-gateway-${sha256Hex(
-      `${routing.gatewayNamespace}/${routing.gatewayName}`,
-      12,
-    )}.${routing.envoyNamespace}.svc`;
-  }
-
   private verifyGatewayRoutingConfiguration(revision: {
     readonly configuration: OpenClawConfigurationDocument;
     readonly harness: Pick<RevisionHarnessDescriptor, "mode">;
@@ -14267,9 +14262,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       },
       spec: {
         hostnames: [
-          access === "sandbox"
-            ? new URL(sandboxOrigin!).hostname
-            : this.gatewayRoutingHostname(routing),
+          access === "sandbox" ? new URL(sandboxOrigin!).hostname : gatewayRoutingHostname(routing),
         ],
         parentRefs: [
           {
@@ -14861,7 +14854,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned: sandbox?.provisionHarness !== undefined,
       protected: this.hasProtectedCodexAdmission(revision),
-      ...(sandbox?.implementation === "strands-box" && { mountedHookDirectory: true }),
+      ...(sandbox?.implementation === "strands-box" && { strandsBox: true }),
       ...(updated && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
@@ -16912,11 +16905,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const providerPreparesCodexPlugins =
       dedicated &&
       pluginRuntime?.runtime.kind === "codex" &&
-      (role === "agent"
-        ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
-        : // The initial Gateway must issue node setup before the provider has an
-          // endpoint. OpenShell already selects verifier delivery in prepareRevision.
-          this.sandboxDriver?.implementation === "openshell");
+      // Strands projects the transport verifier into its contained Codex launcher.
+      // Both verifier-based providers install the selected plugins over stdio
+      // before serving. Their initial Gateway can issue the node setup immediately.
+      (this.sandboxDriver?.implementation === "strands-box" ||
+        (role === "agent"
+          ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
+          : this.sandboxDriver?.implementation === "openshell"));
     if (providerPreparesCodexPlugins && role === "gateway") {
       variables.push({ name: "OPENCLAW_CODEX_PLUGINS_PREPARED", value: "true" });
     }

@@ -5,7 +5,7 @@ import { nativeReady } from "./handshake.mjs";
 
 // A distinct listener accepts one authenticated read for this revision. It never
 // upgrades or forwards requester bytes. Only the supervisor authenticates to Codex.
-export function serveStatus(manifest) {
+export function serveStatus(manifest, workspaceFailure) {
   const route = "/revisions/" + encodeURIComponent(manifest.revisionId) + "/readiness";
   const server = createServer({ requestTimeout: 8000, headersTimeout: 5000 }, async (req, res) => {
     const reply = (status, value) => {
@@ -21,6 +21,8 @@ export function serveStatus(manifest) {
       const header = Buffer.from(req.headers.authorization ?? "");
       if (header.length !== expected.length || !timingSafeEqual(header, expected))
         return reply(401, {});
+      if (workspaceFailure)
+        return reply(200, { state: "failed", runtimeFailure: workspaceFailure });
       if (await nativeReady(manifest.port, token)) return reply(200, { state: "serving" });
       const diagnostic = await fetch(
         "http://127.0.0.1:" + manifest.port + "/openclaw/runtime/status",

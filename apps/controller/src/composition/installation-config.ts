@@ -1270,11 +1270,24 @@ export async function loadInstallationConfiguration(options: {
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
-  if (boxPackage && (openShellBackend || proxySelection || !kubernetesCompute ||
-      (compute.configuration as unknown as KubernetesComputeDriverOptions).executionCluster !== undefined)) {
-    throw new Error("The Strands Box Pod driver requires same-cluster Kubernetes Compute and a sandbox-only installation.");
+  if (
+    boxPackage &&
+    (openShellBackend ||
+      proxySelection ||
+      !kubernetesCompute ||
+      (compute.configuration as unknown as KubernetesComputeDriverOptions).executionCluster !==
+        undefined)
+  ) {
+    throw new Error(
+      "The Strands Box Pod driver requires same-cluster Kubernetes Compute and a sandbox-only installation.",
+    );
   }
-  if (sandbox !== undefined && sandboxPackage === undefined && !boxPackage && openShellBackend === undefined) {
+  if (
+    sandbox !== undefined &&
+    sandboxPackage === undefined &&
+    !boxPackage &&
+    openShellBackend === undefined
+  ) {
     throw new Error(
       "The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.",
     );
@@ -1463,10 +1476,21 @@ export async function loadInstallationConfiguration(options: {
       };
     }
     if (boxPackage) {
-      return { sandboxDriver: new boxPackage.StrandsBoxSandboxDriver(
-        sandbox.configuration as unknown as import("../drivers/sandbox/strands-box.ts").StrandsBoxOptions,
-        { id: sandbox.id, authentication: (compute.configuration as unknown as KubernetesComputeDriverOptions).authentication },
-      ) };
+      const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
+      if (kubernetes.executionCluster || !kubernetes.gatewayRouting) {
+        throw new Error("Strands Box requires a single cluster with Gateway routing.");
+      }
+      return {
+        sandboxDriver: new boxPackage.StrandsBoxSandboxDriver(
+          sandbox.configuration as unknown as import("../drivers/sandbox/strands-box.ts").StrandsBoxOptions,
+          {
+            id: sandbox.id,
+            authentication: kubernetes.authentication,
+            dns: kubernetes.network.dns,
+            routing: kubernetes.gatewayRouting,
+          },
+        ),
+      };
     }
     if (sandboxPackage !== undefined) {
       if (proxySelection === undefined) {

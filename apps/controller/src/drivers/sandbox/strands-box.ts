@@ -1,8 +1,14 @@
+import {
+  gatewayRoutingHostname,
+  type KubernetesGatewayRoutingOptions,
+  type KubernetesWorkloadPeer,
+} from "../compute/kubernetes/index.ts";
 import { lookup } from "node:dns/promises";
 import { createHmac } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { createKubernetesClientConfiguration } from "../kubernetes/client.ts";
+import { networkPolicyToSdk } from "../kubernetes/network-policy.ts";
 import type { KubernetesAuthentication } from "../kubernetes/authentication.ts";
 import { requireWorkspaceSetupConfiguration } from "../compute/workspace-setup-runtime.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
@@ -198,12 +204,7 @@ async function read(
 function name(namespaceId: string, agentId: string, revisionId: string): string {
   return `strands-${sha256Hex(JSON.stringify([namespaceId, agentId, revisionId]), 32)}`;
 }
-function owned(
-  resource: KubernetesObject,
-  namespaceId: string,
-  driverId: string,
-  workerNamespace?: string,
-): void {
+function owned(resource: KubernetesObject, namespaceId: string, driverId: string): void {
   const labels = resource.metadata?.labels;
   if (
     labels?.[MANAGED] !== sha256Hex(driverId, 20) ||
@@ -216,14 +217,7 @@ function owned(
   const expected = name(namespaceId, labels[AGENT], labels[REVISION]);
   if (
     resource.metadata?.name !== expected &&
-    !(resource.kind === "Service" && resource.metadata?.name === `${expected}-status`) &&
-    !(
-      workerNamespace &&
-      resource.metadata?.namespace === workerNamespace &&
-      resource.kind === "NetworkPolicy" &&
-      resource.apiVersion === "networking.k8s.io/v1" &&
-      resource.metadata.name === `${expected}-readiness`
-    )
+    !(resource.kind === "Service" && resource.metadata?.name === `${expected}-status`)
   ) {
     throw new Error("Strands Box resource ownership does not match the requested scope.");
   }
@@ -251,15 +245,24 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
   readonly harnessHome = "/home/node";
   readonly id: string;
   private readonly options: StrandsBoxOptions;
+  private readonly routing: KubernetesGatewayRoutingOptions;
+  private readonly dns: KubernetesWorkloadPeer;
   private readonly authentication: KubernetesAuthentication;
   private observer?: Promise<KubernetesObjectApi>;
 
   constructor(
     options: StrandsBoxOptions,
-    selection: { readonly id: string; readonly authentication: KubernetesAuthentication },
+    selection: {
+      readonly id: string;
+      readonly authentication: KubernetesAuthentication;
+      readonly dns: KubernetesWorkloadPeer;
+      readonly routing: KubernetesGatewayRoutingOptions;
+    },
   ) {
     requireConfiguration(StrandsBoxSandboxDriver, options);
     this.options = immutableCopy(options);
+    this.routing = immutableCopy(selection.routing);
+    this.dns = immutableCopy(selection.dns);
     this.id = selection.id;
     this.authentication = immutableCopy(selection.authentication);
   }
@@ -450,7 +453,9 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         "This Strands Box driver supports ordinary dedicated Codex revisions only.",
       );
     }
-    const hash = sha256Hex(JSON.stringify([3, context.requirements, this.options]));
+    const hash = sha256Hex(
+      JSON.stringify([3, context.requirements, this.options, this.dns, this.routing]),
+    );
     // A completed preparation is immutable, including its exact input identity.
     // Do not re-read an enrollment Secret that Compute may already have retired.
     const existing = await read(context, {
@@ -482,6 +487,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       this.labels(context),
       hash,
       transportHash,
+      this.dns,
       gateway,
       cidrs,
     );
@@ -490,12 +496,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     for (const resource of resources) {
       const current = await read(context, resource);
       if (current) {
-        owned(
-          current,
-          context.namespace.id,
-          this.id,
-          this.options.kubernetes.controlPlanePeer.namespace,
-        );
+        owned(current, context.namespace.id, this.id);
         if (current.metadata?.annotations?.[HASH] !== hash) {
           throw new Error("Strands Box immutable inputs differ.");
         }
@@ -506,18 +507,13 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         continue;
       }
       try {
-        await api(context).create(resource);
+        await api(context).create(networkPolicyToSdk(resource));
       } catch (error) {
         const current = await read(context, resource);
         if (!current) {
           throw error;
         }
-        owned(
-          current,
-          context.namespace.id,
-          this.id,
-          this.options.kubernetes.controlPlanePeer.namespace,
-        );
+        owned(current, context.namespace.id, this.id);
         if (current.metadata?.annotations?.[HASH] !== hash) {
           throw error;
         }
@@ -700,76 +696,13 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     });
     const endpoint = new URL(setup.url);
     const port = Number(endpoint.port || (endpoint.protocol === "wss:" ? 443 : 80));
-    const serviceHost = /^([a-z0-9-]+)\.([a-z0-9-]+)\.svc(?:\.cluster\.local)?$/u.exec(
-      endpoint.hostname,
-    );
-    if (!serviceHost) {
-      throw new Error(
-        "Strands Box qualification currently requires an in-cluster Gateway Service endpoint.",
-      );
-    }
-    const service = await read(context, {
-      apiVersion: "v1",
-      kind: "Service",
-      metadata: { name: serviceHost[1]!, namespace: serviceHost[2]! },
-    });
-    const spec = asRecord(asRecord(service)?.spec);
-    const selector = asRecord(spec?.selector);
-    const ports = Array.isArray(spec?.ports) ? spec.ports : [];
-    const selectedPort = ports
-      .map(asRecord)
-      .find(
-        (entry) =>
-          entry?.port === port && [undefined, "TCP"].includes(entry.protocol as string | undefined),
-      );
+    const routing = this.routing;
     if (
-      !selector ||
-      Object.keys(selector).length === 0 ||
-      !Object.values(selector).every((value) => typeof value === "string") ||
-      !selectedPort
+      endpoint.protocol !== "wss:" ||
+      endpoint.hostname !== gatewayRoutingHostname(routing) ||
+      port !== (routing.endpointPort ?? 443)
     ) {
-      throw new Error("Gateway Service must select exact Pods and its prepared TCP port.");
-    }
-    let targetPort = selectedPort.targetPort ?? port;
-    if (typeof targetPort === "string") {
-      const query = Object.entries(selector)
-        .map(([key, value]) => `${key}=${String(value)}`)
-        .join(",");
-      const pods = await api(context).list(
-        "v1",
-        "Pod",
-        serviceHost[2],
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        query,
-      );
-      const resolved = new Set<number>();
-      for (const pod of pods.items) {
-        const containers = asRecord(asRecord(pod)?.spec)?.containers;
-        for (const container of Array.isArray(containers) ? containers : []) {
-          const mappings = asRecord(container)?.ports;
-          for (const mapping of Array.isArray(mappings) ? mappings : []) {
-            const item = asRecord(mapping);
-            if (item?.name === targetPort && typeof item.containerPort === "number") {
-              resolved.add(item.containerPort);
-            }
-          }
-        }
-      }
-      if (resolved.size !== 1) {
-        throw new Error("Gateway Service target port is not uniquely resolved.");
-      }
-      targetPort = [...resolved][0]!;
-    }
-    if (
-      typeof targetPort !== "number" ||
-      !Number.isInteger(targetPort) ||
-      targetPort < 1 ||
-      targetPort > 65535
-    ) {
-      throw new Error("Invalid Gateway Service target port.");
+      throw new Error("Strands Box workspace enrollment must use the installation Gateway route.");
     }
     return {
       host: endpoint.hostname,
@@ -777,11 +710,21 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       egress: {
         to: [
           {
-            namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": serviceHost[2] } },
-            podSelector: { matchLabels: selector },
+            namespaceSelector: {
+              matchLabels: { "kubernetes.io/metadata.name": routing.envoyNamespace },
+            },
+            podSelector: {
+              matchLabels: {
+                "app.kubernetes.io/component": "proxy",
+                "app.kubernetes.io/managed-by": "envoy-gateway",
+                "app.kubernetes.io/name": "envoy",
+                "gateway.envoyproxy.io/owning-gateway-namespace": routing.gatewayNamespace,
+                "gateway.envoyproxy.io/owning-gateway-name": routing.gatewayName,
+              },
+            },
           },
         ],
-        ports: [{ protocol: "TCP", port: targetPort }],
+        ports: [{ protocol: "TCP", port: routing.envoyHttpsTargetPort ?? 10443 }],
       },
     };
   }
@@ -892,19 +835,24 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
           let bytes = Buffer.alloc(0);
           response.on("data", (chunk) => {
             bytes = Buffer.concat([bytes, chunk]);
-            if (bytes.length > 16384)
+            if (bytes.length > 16384) {
               response.destroy(new Error("Invalid readiness response size"));
+            }
           });
           response.on("error", unreadable);
           response.on("end", () => {
             if (response.statusCode === 200) {
               try {
                 const result = asRecord(JSON.parse(bytes.toString()));
-                if (result?.state === "serving" || result?.state === "starting")
+                if (result?.state === "serving" || result?.state === "starting") {
                   return resolve({ state: result.state });
-                if (result?.state === "failed" && result.runtimeFailure)
+                }
+                if (result?.state === "failed" && result.runtimeFailure) {
                   return resolve({ state: "failed", runtimeFailure: result.runtimeFailure });
-              } catch {}
+                }
+              } catch {
+                // Malformed status follows the same unavailable path as an unknown state.
+              }
             }
             unreadable(new Error("Readiness response unavailable"));
           });
@@ -924,17 +872,11 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         : this.harnessResource({ namespace: context.namespace, revision: context.revision });
     // Stop the workload before deleting its immutable inputs or exposure. A
     // retry resumes at the same ownership-fenced objects; PVCs are never listed.
-    for (const [apiVersion, kind, suffix = "", resourceNamespace = context.namespace.name] of [
+    for (const [apiVersion, kind, suffix = ""] of [
       ["apps/v1", "Deployment"],
       ["v1", "Service"],
       ...(exact ? [["v1", "Service", "-status"] as const] : []),
       ["networking.k8s.io/v1", "NetworkPolicy"],
-      [
-        "networking.k8s.io/v1",
-        "NetworkPolicy",
-        "-readiness",
-        this.options.kubernetes.controlPlanePeer.namespace,
-      ],
       ["v1", "Secret"],
       ["v1", "ConfigMap"],
     ] as const) {
@@ -943,14 +885,17 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
             await read(context, {
               apiVersion,
               kind,
-              metadata: { namespace: resourceNamespace, name: `${exact.resourceName}${suffix}` },
+              metadata: {
+                namespace: context.namespace.name,
+                name: `${exact.resourceName}${suffix}`,
+              },
             }),
           ].filter((resource): resource is KubernetesObject => resource !== undefined)
         : (
             await api(context).list(
               apiVersion,
               kind === "Secret" ? "ConfigMap" : kind,
-              resourceNamespace,
+              context.namespace.name,
               undefined,
               undefined,
               undefined,
@@ -966,12 +911,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         if (!resource) {
           continue;
         }
-        owned(
-          resource,
-          context.namespace.id,
-          this.id,
-          this.options.kubernetes.controlPlanePeer.namespace,
-        );
+        owned(resource, context.namespace.id, this.id);
         const uid = resource.metadata?.uid;
         if (!uid) {
           throw new Error("Cannot remove a Strands Box resource without its exact UID.");

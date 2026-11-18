@@ -4046,6 +4046,18 @@ function codexReadinessFailure(url, token) {
 }
 `;
 
+const BOX_HTTPS_PROVIDER_ARGUMENTS = String.raw`// Box's HTTP egress proxy strips Upgrade. An OpenAI provider with native HTTPS
+// retains the account-selected backend URL and PAT authentication.
+const httpsProviderArguments = loginMode === "codex_pat" && pluginRuntime?.manifest.modelEndpoint === undefined ? [
+  "-c", 'model_provider="oce-openai-https"',
+  "-c", 'model_providers.oce-openai-https.name="OpenAI"',
+  "-c", 'model_providers.oce-openai-https.wire_api="responses"',
+  "-c", 'model_providers.oce-openai-https.requires_openai_auth=true',
+  "-c", 'model_providers.oce-openai-https.supports_websockets=false',
+  "-c", 'model_providers.oce-openai-https.supports_standalone_web_search=true',
+] : [];
+`;
+
 // Only newly admitted OpenShell PAT launches carry this transcript rule.
 const OPENSHELL_PAT_RECOVERY = String.raw`
     function openShellPatRecovery(events) {
@@ -4096,6 +4108,7 @@ function agentRuntimeEntrypoint({
   computeOwned = false,
   withNode = false,
   patRecovery = false,
+  boxHttps = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4223,7 +4236,7 @@ if (pluginRuntime !== undefined) {
   assertCodexPluginRuntime(pluginRuntime);
   writeCodexConfigToml(pluginRuntime);
 }
-// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
+${boxHttps ? BOX_HTTPS_PROVIDER_ARGUMENTS : ""}// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
 // classify it. The native PAT auth-file contract still hydrates and validates account metadata.
 const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
 if (providerManagedPat) {
@@ -4478,7 +4491,7 @@ function probeCodexAuthentication(timeout) {
     ];
     result = spawnSync(codexExecutable(), [
       ...nativeTelemetryArguments,
-${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
+${boxHttps ? "      ...httpsProviderArguments,\n" : ""}${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
       "--model", modelId,
@@ -4701,7 +4714,7 @@ if (digest === undefined) {
 }
 const nativeArguments = [
     ...nativeTelemetryArguments,
-    // Preserve the admitted model selection for native policy readback.
+${boxHttps ? "    ...httpsProviderArguments,\n" : ""}    // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
     // Managed container tools must retain the runtime PATH, including Skill dependencies.
@@ -4945,7 +4958,24 @@ ${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
 // The Codex child serves this container's runtime status, and it starts only after the
 // node state is current and the workspace is initialized. A failure before then is held
 // here with the named step in the log and its check served in Codex's place.
-${SUPERVISOR_HELD_FAILURE_HELPER}
+${SUPERVISOR_HELD_FAILURE_HELPER}${
+    role === "file-node"
+      ? String.raw`
+function publishWorkspaceOutcome(check) {
+  const path = "/run/oce-workspace/outcome.sock";
+  const outcome = check === undefined ? { state: "ready" } : {
+    state: "failed",
+    runtimeFailure: { component: "agent", check, checkedAt: new Date().toISOString(), code: "UNAVAILABLE" },
+  };
+  rmSync(path, { force: true });
+  require("node:net").createServer((socket) => {
+    socket.on("error", () => socket.destroy());
+    socket.end(JSON.stringify(outcome));
+  }).listen(path);
+}
+`
+      : ""
+  }
 ${
   includeNode
     ? String.raw`const state = process.env.OPENCLAW_NODE_STATE_DIR;
@@ -5064,7 +5094,7 @@ function workspaceBaselineReport(path) {
 (async () => {
 const outdatedDatabases = outdatedOpenClawDatabases(state);
 if ((outdatedDatabases.length > 0 || openClawMaintenancePending(state)) && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
-  holdStartupFailure("state-migration", "UNAVAILABLE");
+  ${role === "file-node" ? 'publishWorkspaceOutcome("state-migration");\n  ' : ""}holdStartupFailure("state-migration", "UNAVAILABLE");
   return;
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
@@ -5113,7 +5143,7 @@ if (baseline.error || baseline.status !== 0) {
       ") " + workspaceBaselineReport(baselineResultPath) +
       " Codex was not started. Fix the cause, then deploy the Agent again.",
   );
-  holdStartupFailure("workspace-baseline", "UNAVAILABLE");
+  ${role === "file-node" ? 'publishWorkspaceOutcome("workspace-baseline");\n  ' : ""}holdStartupFailure("workspace-baseline", "UNAVAILABLE");
   return;
 }
 logStartupPhase("workspace-baseline", baselineStartedAt);
@@ -5398,7 +5428,7 @@ process.on("SIGINT", () => stop("SIGINT"));
 logStartupPhase("supervisor-spawn", startupPhaseOrigin);
 ${includeNode ? "nodeSetupWait = Date.now();" : ""}
 // Codex first: it does not wait for the node setup.
-for (const slot of [...processes].reverse()) start(slot);${role === "file-node" ? '\nrmSync("/tmp/oce-file-baseline.sock", {force:true}); require("node:net").createServer(socket => socket.end()).listen("/tmp/oce-file-baseline.sock");' : ""}
+for (const slot of [...processes].reverse()) start(slot);${role === "file-node" ? "\npublishWorkspaceOutcome();" : ""}
 })().catch((error) => {
   console.error(error);
   process.exit(1);
@@ -5425,7 +5455,12 @@ export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifie
       "node",
       "-e",
       ...nodeProgramArguments(
-        setupVerifier + agentWithNodeEntrypoint(providerCodexArguments, true, "codex"),
+        setupVerifier +
+          agentWithNodeEntrypoint(
+            nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, boxHttps: true })),
+            true,
+            "codex",
+          ),
       ),
     ],
     fileNode: [
@@ -5463,7 +5498,7 @@ export interface CodexLaunch {
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
-  readonly mountedHookDirectory?: boolean;
+  readonly strandsBox?: boolean;
 }
 
 export function codexLaunchEntrypoint(
@@ -5473,7 +5508,7 @@ export function codexLaunchEntrypoint(
     openShellProgram,
     withNode,
     workspaceSetup,
-    mountedHookDirectory,
+    strandsBox,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
   if (!providerOwned) {
@@ -5493,6 +5528,9 @@ export function codexLaunchEntrypoint(
     return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
   }
   if (!withNode) {
+    if (strandsBox && !protectedLaunch) {
+      return agentRuntimeEntrypoint({ boxHttps: true });
+    }
     return protectedLaunch ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
   }
   if (workspaceSetup && openShellProgram !== undefined) {
@@ -5501,7 +5539,7 @@ export function codexLaunchEntrypoint(
     }
     return (compactProviderLaunch ??= compactWorkspaceNodeLaunch(providerCodexChild));
   }
-  if (mountedHookDirectory) {
+  if (strandsBox) {
     const args = protectedLaunch ? protectedProviderCodexArguments : providerCodexArguments;
     return agentWithNodeEntrypoint(args, true);
   }

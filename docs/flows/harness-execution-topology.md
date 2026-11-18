@@ -8,8 +8,7 @@ last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
 
 ## Overview
 
-Deployment saves settings and authentication. Compute prepares workloads, publishes
-guarded routes, and retires predecessors.
+Deployment saves settings and authentication. Compute checks workload readiness, including [Strands diagnostics](../reference/drivers/strands-box.md), publishes routes and retires predecessors.
 
 ## Entry Points
 
@@ -218,11 +217,11 @@ Login, authentication probes and app-server launch override native log and metri
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.
 
-Kubernetes Compute records admitted inference launch behavior in new protected Codex revisions. The authentication probe and app-server disable unbounded
+Compute records inference launch settings in new protected Codex revisions. The authentication probe and app-server disable unbounded
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
 original retry settings.
 
-For custom endpoints, `gatewayConfigurationDocument` uses
+For custom endpoints, `gatewayConfigurationDocument` calls
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
 to clone the admitted document and qualify chat selections checked by
 `configuration-rules.ts:rewriteModelSelections`, including allowlists,

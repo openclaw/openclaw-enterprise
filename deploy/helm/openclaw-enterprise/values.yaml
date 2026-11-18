@@ -197,6 +197,10 @@ publicGithubRead:
   # Operator-approved IPv4 CIDRs for api.github.com; no default Internet grant.
   upstreamCidrs: []
 
+# Enable when the Installation selects the in-Pod Strands Box Sandbox Driver.
+strandsBox:
+  workerReadiness: false
+
 gatewayRouting:
   # Requires operator-installed routing controllers/CRDs, an existing GatewayClass,
   # and the service-key Secret below. Helm does not install those prerequisites.
