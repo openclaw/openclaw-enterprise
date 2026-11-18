@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 const { WebSocket } = createRequire("/app/package.json")("ws");
-export function nativeReady(port, token) {
+export function nativeReady(socketPath) {
   return new Promise((resolve) => {
     const id = randomUUID();
-    const socket = new WebSocket(`ws://127.0.0.1:${port}`, {
-      headers: { authorization: `Bearer ${token}`, "x-oce-readiness": "1" },
+    const socket = new WebSocket(`ws+unix://${socketPath}:/`, {
       maxPayload: 16384,
       handshakeTimeout: 4000,
     });
