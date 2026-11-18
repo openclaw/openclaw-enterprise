@@ -22,11 +22,11 @@ Select this [Secret Driver](secret.md) to store Namespace Secrets in AWS and rea
 
 ## Lifecycle
 
-OCC generates the Secret ID. The Driver derives a stable UUID and creation token from it and uses the name `<prefix>/<namespaceId>/<secretId>/<uuid>`. It verifies the workload account with STS before sending the value. STS and `CreateSecret` use the same captured credentials. The Driver verifies the returned identity, then calls `DescribeSecret` to check ownership and the current version before OCC saves metadata.
+OCC generates the Secret ID. The Driver derives a stable UUID and creation token from it and uses the name `<prefix>/<namespaceId>/<secretId>/<uuid>`. It verifies the workload account with STS before sending the value. STS and `CreateSecret` use the same captured credentials. The Driver verifies the returned identity, then retries `DescribeSecret` against that complete ARN up to four times if the object, tags, or current version are not yet visible. It checks ownership and the current version before OCC saves metadata.
 
 The backend reference contains the UUID, encoded AWS suffix and SHA-256 digest of the complete ARN split across DNS labels. Subsequent operations reconstruct that ARN, verify its digest and check the four ownership tags. A change of account, region, prefix, Namespace, Driver or Secret identity prevents access.
 
-- Reads request both the observed version ID and `AWSCURRENT`, then check ownership and the current version again. The Driver caches no values. A rotation after the last check can affect the next read.
+- Reads request both the observed version ID and `AWSCURRENT`, then check ownership and the current version again. The Driver caches no values. During AWS propagation, all checks can still observe the previous `AWSCURRENT` version, so a successful read can return the previous value. The Driver detects disagreement between observations but cannot establish immediate revocation.
 - Updates use `PutSecretValue` to move `AWSCURRENT`. A separate observed `AWSPENDING` version blocks the update. Concurrent updates are last-writer-wins. AWS limits version creation frequency. See [PutSecretValue](https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_PutSecretValue.html).
 - Deletion requests a 30-day recovery window. A retry succeeds if the same owned Secret already has a deletion date. A missing object requires operator reconciliation. Restoring it in AWS does not recreate OCC metadata.
 
@@ -46,7 +46,7 @@ drivers:
 
 | Setting     | Type   | Requirement | Value                                                                                                                                                              |
 | ----------- | ------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `region`    | string | Required    | AWS region for STS and Secrets Manager.                                                                                                                            |
+| `region`    | string | Required    | AWS region in the commercial, China, or GovCloud partition for STS and Secrets Manager. Isolated partitions are rejected.                                          |
 | `accountId` | string | Required    | Twelve-digit AWS account that owns the Secrets.                                                                                                                    |
 | `prefix`    | string | Required    | Up to 200 letters, digits, underscores, hyphens or slashes. The first character cannot be a slash.                                                                 |
 | `kmsKeyId`  | string | Optional    | AWS KMS key identifier. Omit to use the AWS managed key. A customer-managed key requires key policy access and grants for `kms:GenerateDataKey` and `kms:Decrypt`. |
@@ -72,10 +72,10 @@ The fixed-inventory policy covers existing ARNs. AWS assigns the ARN suffix at c
 
 ## Limits
 
-The AWS Driver supports server-side reads. Kubernetes Compute requires tenant-local Kubernetes Secret references for environment and Harness projections. SSH does not deliver AWS references either. Use Kubernetes Secret storage for these projections. Workflows that require atomic compare-and-swap, including device login, cannot use this Driver. Installation-private OAuth client credentials also require a Driver that implements Installation Secret storage. External rotation is visible on subsequent successful reads. The Driver does not provision rotation functions.
+The AWS Driver supports server-side reads. Kubernetes Compute requires tenant-local Kubernetes Secret references for environment and Harness projections. SSH does not deliver AWS references either. OCC refuses AWS-backed projections during admission, before it saves an Agent revision or queues deployment. Use Kubernetes Secret storage for these projections. Workflows that require atomic compare-and-swap, including device login, cannot use this Driver. Installation-private OAuth client credentials also require a Driver that implements Installation Secret storage. The Driver does not provision rotation functions.
 
 ## Troubleshooting
 
 A provider or STS failure before submission prevents the write. Each Driver request has a 30-second ceiling and SDK retries are disabled. HTTP Secret writes share the handler's 12-second backend budget across credential lookup, STS and Secrets Manager. Protected reads also observe the caller's cancellation and deadline.
 
-A timeout or failed verification after submission can leave a write applied. OCC returns a generic storage failure. Inspect AWS audit records and the owned resource before retrying. An OCC create retry with a new HTTP request generates a new Secret ID. Repeating a Driver create for the same ID uses the same name and token. The Driver never adopts a Secret by name, automatically deletes an uncertain create, or force-deletes a Secret.
+A definite AWS service rejection reports that the mutation was rejected. A timeout or failed verification after submission can leave a write applied. OCC returns a generic storage failure. Inspect AWS audit records and the owned resource before retrying. An OCC create retry with a new HTTP request generates a new Secret ID. Repeating a Driver create for the same ID uses the same name and token. The Driver never adopts a Secret by name, automatically deletes an uncertain create, or force-deletes a Secret.

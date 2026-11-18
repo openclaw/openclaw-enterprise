@@ -80,3 +80,22 @@ test("saved Agent discovery recovers after a simulated AWS GetSecretValue denial
   assert.equal(publicEvidence.includes(accessToken), false);
   assert.equal(publicEvidence.includes(diagnostic), false);
 });
+
+test("AWS-backed Harness projection is refused before OCC saves a revision or queues deployment", async (t) => {
+  const aws = await awsFixtureFromInstallation(t);
+  const fixture = await createFixture(t, { secretDriver: aws.driver });
+  const { agent } = await createSavedAgent(fixture);
+  const before = await fixture.controller.transact((tx) => tx.operations.list());
+  const response = await fixture.request(
+    "POST",
+    `/namespaces/${fixture.namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.notEqual(response.status, 202, "AWS storage cannot deliver a workload projection");
+  assert.deepEqual(
+    await fixture.controller.transact((tx) =>
+      tx.revisions.listRevisions(fixture.namespace.id, agent.id),
+    ),
+    [],
+  );
+  assert.deepEqual(await fixture.controller.transact((tx) => tx.operations.list()), before);
+});

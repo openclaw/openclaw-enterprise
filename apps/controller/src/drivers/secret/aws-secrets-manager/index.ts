@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Agent } from "node:https";
+import { setTimeout as delay } from "node:timers/promises";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import {
@@ -9,6 +10,7 @@ import {
   GetSecretValueCommand,
   PutSecretValueCommand,
   SecretsManagerClient,
+  ResourceNotFoundException,
   type DescribeSecretCommandOutput,
   type SecretsManagerClientConfig,
 } from "@aws-sdk/client-secrets-manager";
@@ -27,7 +29,7 @@ import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enter
 import { withComputeOperationDeadline } from "../../compute/operation-context.ts";
 
 import { AwsSecretBinding, type AwsSecretsManagerOptions } from "./binding.ts";
-import { awsRequest } from "./request.ts";
+import { awsRequest, sendMutation } from "./request.ts";
 
 export type { AwsSecretsManagerOptions } from "./binding.ts";
 
@@ -38,7 +40,10 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     additionalProperties: false,
     required: ["region", "accountId", "prefix"],
     properties: {
-      region: { type: "string", pattern: "^[a-z]{2}(-[a-z]+)+-[0-9]+$" },
+      region: {
+        type: "string",
+        pattern: "^(af|ap|ca|eu|il|me|mx|sa|us|cn)-(?!iso[a-z]*-)([a-z]+-)+[0-9]+$",
+      },
       accountId: { type: "string", pattern: "^[0-9]{12}$" },
       prefix: { type: "string", pattern: "^[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}$" },
       kmsKeyId: { type: "string", minLength: 1 },
@@ -152,16 +157,18 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     if (caller.Account !== this.options.accountId) {
       throw new ScopeViolationError("AWS caller account does not match Secret configuration.");
     }
-    return awsRequest(async (abortSignal) => {
-      const result = await clients.secrets.send(
-        new CreateSecretCommand({
-          Name: name,
-          SecretString: value,
-          ClientRequestToken: token,
-          Tags: this.ownership.tags(identity),
-          ...(this.options.kmsKeyId ? { KmsKeyId: this.options.kmsKeyId } : {}),
-        }),
-        { abortSignal },
+    return awsRequest(async (abortSignal, deadline) => {
+      const result = await sendMutation(() =>
+        clients.secrets.send(
+          new CreateSecretCommand({
+            Name: name,
+            SecretString: value,
+            ClientRequestToken: token,
+            Tags: this.ownership.tags(identity),
+            ...(this.options.kmsKeyId ? { KmsKeyId: this.options.kmsKeyId } : {}),
+          }),
+          { abortSignal },
+        ),
       );
       abortSignal.throwIfAborted();
       this.ownership.checkArn(result.ARN, name);
@@ -176,33 +183,77 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
         uid,
         key: "SecretString",
       });
-      const observed = await this.owned(
-        {
-          ...identity,
-          backendRef: reference,
-          driverId: this.id,
-          createdAt: new Date().toISOString(),
-        },
-        false,
+      await this.verifyCreated(
+        identity,
+        result.ARN,
+        name,
+        token,
         clients.secrets,
+        abortSignal,
+        deadline,
       );
-      if (this.current(observed) !== token) {
-        throw new DependencyUnavailableError(
-          "Secret changed during creation; outcome may be unknown.",
-        );
-      }
       return reference;
     }, true);
   }
 
-  private async owned(
-    secret: Secret,
-    deleting = false,
-    client = this.client,
-  ): Promise<DescribeSecretCommandOutput> {
+  private async verifyCreated(
+    identity: SecretIdentity,
+    arn: string,
+    name: string,
+    token: string,
+    client: Pick<SecretsManagerClient, "send">,
+    signal: AbortSignal,
+    deadline: number,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      signal.throwIfAborted();
+      if (Date.now() >= deadline) {
+        throw new DependencyUnavailableError("Secret create verification deadline elapsed.");
+      }
+      try {
+        const result = await client.send(new DescribeSecretCommand({ SecretId: arn }), {
+          abortSignal: signal,
+        });
+        if (result.ARN !== arn || result.Name !== name || result.DeletedDate) {
+          throw new ScopeViolationError("Secret create verification identity changed.");
+        }
+        const expected = this.ownership.tags(identity);
+        for (const tag of expected) {
+          const actual = result.Tags?.filter((entry) => entry.Key === tag.Key) ?? [];
+          if (actual.length > 1 || (actual.length === 1 && actual[0]!.Value !== tag.Value)) {
+            throw new ScopeViolationError("Secret create verification ownership changed.");
+          }
+        }
+        const current = Object.entries(result.VersionIdsToStages ?? {}).filter(([, stages]) =>
+          stages.includes("AWSCURRENT"),
+        );
+        if (current.length > 1 || (current.length === 1 && current[0]![0] !== token)) {
+          throw new ScopeViolationError("Secret changed during creation.");
+        }
+        if (
+          expected.every((tag) =>
+            result.Tags?.some((entry) => entry.Key === tag.Key && entry.Value === tag.Value),
+          ) &&
+          current.length === 1
+        ) {
+          return;
+        }
+      } catch (error) {
+        if (!(error instanceof ResourceNotFoundException)) {
+          throw error;
+        }
+      }
+      if (attempt < 3) {
+        await delay(50 * 2 ** attempt, undefined, { signal });
+      }
+    }
+    throw new DependencyUnavailableError("Secret create verification did not become visible.");
+  }
+
+  private async owned(secret: Secret, deleting = false): Promise<DescribeSecretCommandOutput> {
     const { arn, name } = this.ownership.resource(secret);
     const result = await awsRequest((abortSignal) =>
-      client.send(new DescribeSecretCommand({ SecretId: arn }), { abortSignal }),
+      this.client.send(new DescribeSecretCommand({ SecretId: arn }), { abortSignal }),
     );
     if (
       result.ARN !== arn ||
@@ -233,9 +284,8 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     return versions[0]![0];
   }
 
-  async resolve(secret: Secret): Promise<SecretBackendRef> {
-    this.current(await this.owned(secret));
-    return Object.freeze({ ...secret.backendRef });
+  async resolve(_secret: Secret): Promise<SecretBackendRef> {
+    throw new ScopeViolationError("AWS Secret workload projection is unsupported.");
   }
 
   async update(secret: Secret, value: string): Promise<void> {
@@ -253,14 +303,16 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     const binding = this.ownership.resource(secret);
     const client = this.createClients(await this.signingCredentials()).secrets;
     await awsRequest(async (abortSignal) => {
-      const result = await client.send(
-        new PutSecretValueCommand({
-          SecretId: binding.arn,
-          SecretString: value,
-          ClientRequestToken: token,
-          VersionStages: ["AWSCURRENT"],
-        }),
-        { abortSignal },
+      const result = await sendMutation(() =>
+        client.send(
+          new PutSecretValueCommand({
+            SecretId: binding.arn,
+            SecretString: value,
+            ClientRequestToken: token,
+            VersionStages: ["AWSCURRENT"],
+          }),
+          { abortSignal },
+        ),
       );
       if (
         result.ARN !== binding.arn ||
@@ -281,12 +333,14 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     const binding = this.ownership.resource(secret);
     const client = this.createClients(await this.signingCredentials()).secrets;
     await awsRequest(async (abortSignal) => {
-      const deleted = await client.send(
-        new DeleteSecretCommand({
-          SecretId: binding.arn,
-          RecoveryWindowInDays: 30,
-        }),
-        { abortSignal },
+      const deleted = await sendMutation(() =>
+        client.send(
+          new DeleteSecretCommand({
+            SecretId: binding.arn,
+            RecoveryWindowInDays: 30,
+          }),
+          { abortSignal },
+        ),
       );
       if (deleted.ARN !== binding.arn || deleted.Name !== binding.name || !deleted.DeletionDate) {
         throw new DependencyUnavailableError(
@@ -343,6 +397,9 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     return withComputeOperationDeadline(input.lifetime, async (lifetime) => {
       const result = await this.read(input.secret);
       lifetime.signal.throwIfAborted();
+      if (Date.now() >= lifetime.deadline) {
+        throw new DependencyUnavailableError("AWS Secret credential read deadline elapsed.");
+      }
       return result;
     });
   }

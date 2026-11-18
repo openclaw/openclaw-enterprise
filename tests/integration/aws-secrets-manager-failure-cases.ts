@@ -22,7 +22,10 @@ test("configuration drift and in-progress rotation fail closed before mutations"
       { client: b.client },
     );
     const before = b.calls.length;
-    await assert.rejects(driver.resolve(secret), ScopeViolationError);
+    await assert.rejects(
+      driver.withValue(secret, async (value) => value),
+      ScopeViolationError,
+    );
     await assert.rejects(driver.delete(secret), ScopeViolationError);
     assert.equal(b.calls.length, before);
   }
@@ -36,7 +39,7 @@ test("configuration drift and in-progress rotation fail closed before mutations"
   assert.notEqual(other.namespaceId, secret.namespaceId);
   assert.notEqual(other.backendRef.namespaceName, secret.backendRef.namespaceName);
   await assert.rejects(
-    b.driver.resolve({ ...secret, backendRef: other.backendRef }),
+    b.driver.withValue({ ...secret, backendRef: other.backendRef }, async (value) => value),
     ScopeViolationError,
   );
 });
@@ -283,7 +286,10 @@ test("pre-mutation provider, STS, describe and read failures do not claim mutati
       unavailable,
     );
     if (command === "DescribeSecretCommand") {
-      await assert.rejects(b.driver.resolve(secret), unavailable);
+      await assert.rejects(
+        b.driver.withValue(secret, async (value) => value),
+        unavailable,
+      );
       await assert.rejects(b.driver.update(secret, "synthetic-new"), unavailable);
       await assert.rejects(b.driver.delete(secret), unavailable);
     }
@@ -321,7 +327,10 @@ test("applied create with failed ownership verification requires reconciliation 
     });
     assert.equal(b.records.size, 1, "retain the applied record for reconciliation");
     assert.equal(b.values.size, 1);
-    assert.deepEqual(b.calls, ["CreateSecretCommand", "DescribeSecretCommand"]);
+    assert.deepEqual(b.calls, [
+      "CreateSecretCommand",
+      ...Array.from({ length: failure === "ownership" ? 4 : 1 }, () => "DescribeSecretCommand"),
+    ]);
   }
 });
 
@@ -360,4 +369,48 @@ test("submitted create, update and delete failures require reconciliation", asyn
       );
     }
   }
+});
+
+test("an overdue protected read never releases material when the abort timer has not fired", async (t) => {
+  const b = backend();
+  const secret = await stored(b);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const deadline = Date.now() + 1_000;
+  let describes = 0;
+  b.setFault((name) => {
+    if (name === "DescribeSecretCommand" && ++describes === 2) {
+      t.mock.timers.setTime(deadline + 1);
+    }
+  });
+  await assert.rejects(
+    b.driver.readCredentialInput({
+      secret,
+      retention: "none",
+      lifetime: {
+        signal: new AbortController().signal,
+        deadlineAt: new Date(deadline).toISOString(),
+      },
+    }),
+    DependencyUnavailableError,
+  );
+  assert.equal(describes, 2);
+});
+
+test("create retries transient visibility only against its returned complete ARN", async () => {
+  const b = backend();
+  let describes = 0;
+  b.setFault((name, input) => {
+    if (name !== "DescribeSecretCommand") {
+      return;
+    }
+    const record = Array.from(b.records.values())[0]!;
+    assert.equal(input.SecretId, record.ARN);
+    if (++describes === 1) {
+      return { ...record, Tags: [], VersionIdsToStages: {} };
+    }
+  });
+  const secret = await stored(b);
+  assert.equal(describes, 2);
+  assert.equal(b.calls.filter((name) => name === "CreateSecretCommand").length, 1);
+  assert.equal(await b.driver.withValue(secret, async (value) => value), "synthetic-original");
 });

@@ -79,6 +79,7 @@ for (const mutation of ["PutSecretValue", "DeleteSecret"] as const) {
     "identity-failure",
     "invalid-identity",
     "lost-response",
+    "service-rejection",
     "invalid-response",
     "success",
   ] as const) {
@@ -139,6 +140,23 @@ for (const mutation of ["PutSecretValue", "DeleteSecret"] as const) {
             } else {
               assert.equal(action, mutation);
               signedMutations++;
+              if (outcome === "service-rejection") {
+                return {
+                  response: {
+                    statusCode: 400,
+                    headers: {
+                      "x-amzn-errortype": "AccessDeniedException",
+                      "content-type": "application/x-amz-json-1.1",
+                    },
+                    body: new TextEncoder().encode(
+                      JSON.stringify({
+                        __type: "AccessDeniedException",
+                        message: "synthetic private AWS diagnostic",
+                      }),
+                    ),
+                  },
+                };
+              }
               if (outcome === "lost-response") {
                 throw new Error("synthetic private transport diagnostic");
               }
@@ -195,12 +213,13 @@ for (const mutation of ["PutSecretValue", "DeleteSecret"] as const) {
         );
       } else {
         assert.ok(result instanceof DependencyUnavailableError);
-        assert.equal(
-          result.message,
-          beforeTransport
-            ? "AWS Secret operation failed; no mutation was submitted."
-            : "AWS Secret mutation may have applied; reconciliation required.",
-        );
+        let expected = "AWS Secret mutation may have applied; reconciliation required.";
+        if (beforeTransport) {
+          expected = "AWS Secret operation failed; no mutation was submitted.";
+        } else if (outcome === "service-rejection") {
+          expected = "AWS Secret mutation was rejected.";
+        }
+        assert.equal(result.message, expected);
       }
     });
   }

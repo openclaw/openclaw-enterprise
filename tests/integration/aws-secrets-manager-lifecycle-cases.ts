@@ -85,7 +85,10 @@ test("Installation selects AWS and OCC authorizes the Secret lifecycle against a
     ScopeViolationError,
   );
   assert.ok(Array.from(b.records.values())[0]?.DeletedDate);
-  await assert.rejects(driver.resolve(secret), DependencyUnavailableError);
+  await assert.rejects(
+    driver.withValue(secret, async (value) => value),
+    DependencyUnavailableError,
+  );
   await driver.delete(secret);
   assert.equal(b.calls.filter((c) => c === "DeleteSecretCommand").length, 1);
   // OCC propagates an unknown create outcome without replay. A separate client
@@ -112,6 +115,8 @@ test("Installation selects AWS and OCC authorizes the Secret lifecycle against a
   assert.deepEqual(await controller.listSecrets("owner", namespace.id), []);
   for (const configuration of [
     { ...options, accountId: "bad" },
+    { ...options, region: "us-iso-east-1" },
+    { ...options, region: "eu-isoe-west-1" },
     { ...options, prefix: "../bad" },
     { ...options, credentials: "forbidden" },
   ]) {
@@ -148,7 +153,10 @@ test("complete ARN and ownership binding rejects namespace, driver, key, account
   }
   const record = Array.from(b.records.values())[0]!;
   record.Tags[1]!.Value = "ns_foreign";
-  await assert.rejects(b.driver.resolve(secret), ScopeViolationError);
+  await assert.rejects(
+    b.driver.withValue(secret, async (value) => value),
+    ScopeViolationError,
+  );
   await assert.rejects(b.driver.delete(secret), ScopeViolationError);
   record.Tags[1]!.Value = secret.namespaceId;
   record.ARN = record.ARN.replace("Ab123x", "Cd456y");
@@ -160,7 +168,7 @@ test("complete ARN and ownership binding rejects namespace, driver, key, account
   for (const operation of [
     () => b.driver.update(secret, "synthetic-new"),
     () => b.driver.delete(secret),
-    () => b.driver.resolve(secret),
+    () => b.driver.withValue(secret, async (value) => value),
   ]) {
     await assert.rejects(operation, (error: Error) => {
       assert.ok(error instanceof DependencyUnavailableError);
@@ -212,7 +220,10 @@ test("versioned credential reads follow external rotation and refuse stale or ra
   await assert.rejects(read, DependencyUnavailableError);
   b.setFault(undefined);
   record.VersionIdsToStages = {};
-  await assert.rejects(b.driver.resolve(secret), DependencyUnavailableError);
+  await assert.rejects(
+    b.driver.withValue(secret, async (value) => value),
+    DependencyUnavailableError,
+  );
   const before = b.calls.length;
   await assert.rejects(
     b.driver.readCredentialInput({

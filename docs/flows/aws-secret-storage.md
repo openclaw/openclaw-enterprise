@@ -1,7 +1,7 @@
 ---
 created: "2026-11-18"
 updated: "2026-11-18"
-last_updated_session: "authoring-run/1c41665a-15f0-4ee5-a222-01c2d2d74c32"
+last_updated_session: "authoring-run/cfae1295-1506-4b46-b6d6-63204f46b76a"
 ---
 
 # AWS Secret storage and saved-Agent discovery flow
@@ -48,7 +48,8 @@ graph TD
 Composition selects the proposed Driver from trusted Installation configuration.
 OCC allocates the Secret identity. The Driver captures one signing identity for
 STS and creation, checks the account, creates the tagged Secret, and verifies
-the complete ARN, ownership tags, and current version. OCC then saves the
+the complete ARN. If AWS has not yet exposed the object, tags, or current version,
+it retries only Describe against that ARN within the original deadline. OCC then saves the
 backend reference without the value. Requests observe the API mutation deadline.
 A failure after submission can require reconciliation; the Driver does not adopt
 a resource by name.
@@ -61,8 +62,9 @@ OCC checks the caller's and Agent's authority on the bound Secret. The Driver
 verifies the exact resource, reads the observed version with `AWSCURRENT`, and
 checks ownership and version again. OCC rechecks the binding and grants before
 passing the value to the Plugin Driver. Denial, cancellation, or a changed
-version withholds the credential. This server-side path does not project AWS
-references into Kubernetes workloads.
+version withholds the credential. Protected reads check their absolute deadline
+before dispatch and before returning material. OCC refuses AWS workload projections
+during admission, before it saves a revision or queues deployment.
 
 ## Debugging and Verification
 
@@ -86,3 +88,5 @@ references into Kubernetes workloads.
 ## Changelog
 
 - 2026-11-18 22:46: Trace the draft AWS storage and discovery path. (authoring-run/1c41665a-15f0-4ee5-a222-01c2d2d74c32 - de3817de1de2c010d87cbd1b7f2747753f5ce973)
+
+- 2026-11-18 22:58: Document create verification retries, protected-read deadlines, and projection admission. (authoring-run/cfae1295-1506-4b46-b6d6-63204f46b76a - 08b5147bc72a7ec6680f9a42ef8f3feaceac7c67)
