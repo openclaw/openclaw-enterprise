@@ -602,9 +602,14 @@ test("Git authority cannot be constructed without both trusted owner callbacks",
 
 test("protected Git replies to this online decision before its authority deadline", async (t) => {
   let answer = "current";
+  let approvals = 0;
+  const lookupBinding = async () => binding;
   const { client, keys } = await openShellOnlineGitWire(t, {
-    lookupBinding: async () => binding,
-    authorizeOnlineRequest: async (q, installed) => {
+    lookupBinding,
+    async authorizeOnlineRequest(q, installed) {
+      approvals++;
+      // A durable owner method can depend on its original options receiver.
+      assert.equal(this.lookupBinding, lookupBinding);
       const { deadlineAt, exchangeId, requestDigestSha256 } = q;
       if (typeof answer === "object") {
         return answer;
@@ -644,8 +649,10 @@ test("protected Git replies to this online decision before its authority deadlin
     ["current", 1],
   ]) {
     answer = decision;
+    const priorApprovals = approvals;
     const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
     assert.equal(result.decision, expected, decision);
+    assert.equal(approvals, priorApprovals + 1);
   }
   // The trusted owner can return malformed runtime values despite its TypeScript contract.
   // A structured denial must never be treated as an allow, even with a truthy reason.
@@ -678,12 +685,8 @@ test("an allow or denial that settles after the call ends is not acted on", asyn
     onDeny: (denial) => denials.push(denial),
   });
   const auth = token(keys, "supervisor", binding.sandboxId);
-  // A late allow is refused like any unusable answer; a late denial is not reported as its reason.
-  for (const [late, reason] of [
-    ["allow", "approval_denied"],
-    ["draft_already_opened", "aborted"],
-    ["access_withdrawn", "aborted"],
-  ]) {
+  // Once the call ends, neither an allow nor a structured denial describes why we refused.
+  for (const late of ["allow", "draft_already_opened", "access_withdrawn", "unavailable"]) {
     answer = late;
     const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
     assert.equal(result.decision, 2, late);
@@ -696,7 +699,7 @@ test("an allow or denial that settles after the call ends is not acted on", asyn
     );
     assert.deepEqual(
       [denial.reason, denial.reasonCode, denial.operation],
-      [reason, "route_not_ready", "receive-pack"],
+      ["aborted", "route_not_ready", "receive-pack"],
     );
   }
 });

@@ -4,7 +4,6 @@ import type {
   PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseRequest,
   RepositoryGitOnlineDecision,
-  RepositoryGitSendDecision,
 } from "@openclaw-enterprise/contracts";
 import { decodePushedBranchRef, normalizePushRefAllowlist } from "../../access/client-contracts.ts";
 import type { InstalledGitMaterial } from "./prepared-repository-git.ts";
@@ -16,9 +15,7 @@ import { selectGitHubRequest } from "./routes/request-selection.ts";
 // routes/request-selection.ts; the durable checks are the authority's.
 
 /** The request view the caller validated, before any credential is added. */
-export type GitHubRequestView = Omit<Parameters<typeof selectGitHubRequest>[0], "target"> & {
-  readonly target: Omit<Parameters<typeof selectGitHubRequest>[0]["target"], "reportedScheme">;
-};
+type GitHubRequestView = Parameters<typeof selectGitHubRequest>[0];
 
 export type GitHubRequestOperation =
   PreparedGitHubUseRequest["operation"] | PreparedGitHubInstallationUseRequest["operation"];
@@ -148,49 +145,38 @@ type Refused = {
   readonly operation?: GitHubRequestOperation;
 };
 
-export type GitHubRequestOutcome<Decision> =
+type GitHubRequestOutcome =
   | {
       readonly kind: "allowed";
       readonly operation: GitHubRequestOperation;
-      readonly decision: Decision;
+      readonly replyBy: string;
     }
   | Refused;
-
-type AllowedDecision =
-  | Extract<RepositoryGitOnlineDecision, { kind: "allow" }>
-  | Extract<RepositoryGitSendDecision, { kind: "permit" }>;
 
 /**
  * Classify one request for a validated binding, record one possible use and check the
  * authority's answer against this exact request and material. The caller authenticates the
  * execution, validates the binding and supplies a digest of the request view it will send.
  */
-export async function decideGitHubRequest<Decision extends AllowedDecision>(options: {
+export async function decideGitHubRequest(options: {
   readonly request: GitHubRequestView;
   readonly binding: GitHubRequestBinding;
   readonly deadlineAt: string;
   readonly signal: AbortSignal;
   /** Called once, after classification; binds the sender's whole request view. */
   readonly requestDigest: () => string;
-  /** "allow" for online authorization (replyBy), "permit" for exact dispatch (sendStartBy). */
-  readonly expect: Decision["kind"];
   readonly authorize: (
     request: Use,
     installed: InstalledGitMaterial,
     signal: AbortSignal,
-  ) => Promise<Decision | Extract<RepositoryGitOnlineDecision, { kind: "denied" }>>;
-}): Promise<GitHubRequestOutcome<Decision>> {
+  ) => Promise<RepositoryGitOnlineDecision>;
+}): Promise<GitHubRequestOutcome> {
   const { request, binding, signal, deadlineAt } = options;
   const refuse = (refusal: GitHubRequestRefusal, operation?: GitHubRequestOperation): Refused =>
     operation === undefined
       ? { kind: "refused", refusal }
       : { kind: "refused", refusal, operation };
-  // The caller verified TLS to the target; the classifier does not read the scheme.
-  const selection = selectGitHubRequest(
-    { ...request, target: { ...request.target, reportedScheme: "https" } },
-    binding,
-    randomUUID,
-  );
+  const selection = selectGitHubRequest(request, binding, randomUUID);
   if ("denied" in selection) {
     return refuse(selection.denied);
   }
@@ -235,42 +221,32 @@ export async function decideGitHubRequest<Decision extends AllowedDecision>(opti
     };
   }
   const { installed } = binding;
-  let denied: false | "draft_already_opened" | "access_withdrawn";
   try {
     const result = await options.authorize(q, installed, signal);
+    if (signal.aborted) {
+      return refuse("aborted", selected.operation);
+    }
     if (result.kind === "denied") {
-      const { reason } = result;
-      denied = reason === "draft_already_opened" || reason === "access_withdrawn" ? reason : false;
+      // Expose only the two denial reasons the Agent can act on.
+      if (result.reason === "access_withdrawn") {
+        return refuse("session_closed", selected.operation);
+      }
+      if (result.reason === "draft_already_opened") {
+        return refuse("draft_already_opened", selected.operation);
+      }
     } else if (
-      result.kind === options.expect &&
-      !signal.aborted &&
+      result.kind === "allow" &&
       result.exchangeId === q.exchangeId &&
       result.requestDigestSha256 === requestDigestSha256 &&
       result.materialVersion === installed.materialVersion &&
       result.preparationAttemptId === installed.preparationAttemptId &&
-      Date.parse(result.kind === "allow" ? result.replyBy : result.sendStartBy) <=
-        Date.parse(deadlineAt)
+      Date.parse(result.replyBy) <= Date.parse(deadlineAt)
     ) {
-      // The owner checked this exact authority deadline at its final callback. A sender that
-      // holds the allow may finish the request after withdrawal.
-      return { kind: "allowed", operation: selected.operation, decision: result as Decision };
-    } else {
-      denied = false;
+      return { kind: "allowed", operation: selected.operation, replyBy: result.replyBy };
     }
+    return refuse("approval_denied", selected.operation);
   } catch {
     // The owner did not answer. Possible use may have committed; deny without retry.
     return refuse("approval_failed", selected.operation);
   }
-  if (denied) {
-    if (signal.aborted) {
-      return refuse("aborted", selected.operation);
-    }
-    // The grant's one draft create was already used (finding 2147), or the session ended.
-    // The Agent is told which; nothing about the earlier draft or the session is disclosed.
-    return refuse(
-      denied === "access_withdrawn" ? "session_closed" : "draft_already_opened",
-      selected.operation,
-    );
-  }
-  return refuse("approval_denied", selected.operation);
 }
