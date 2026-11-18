@@ -304,24 +304,15 @@ In the console, use **Stop Agent**, and resume with **Deploy new version**; see 
 
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires
 exact-Agent `operate`. A `202` response means OCC committed `desiredRuntimeState:
-"stopped"` and queued Agent-scoped work; it does not claim Compute has already
-finished. The worker reauthorizes the original actor, invokes the selected
+"stopped"` and queued Agent-scoped work; Compute may still be stopping. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
-Agent revision nor calls destructive version retirement. Repeated stop requests
-converge safely, and one Agent's stop does not affect siblings.
-
-A turn that Stop cuts short stays stopped: the next deployment does not run it
-again, and a message queued behind it is not delivered. The Gateway resumes an
-interrupted turn only when the same Agent revision restarts, such as during a
-rollout at a controller upgrade, a node drain or a Gateway restart. It adds one
-hidden system message asking the Agent to check the current state and continue.
-A turn cut by a replacement or a deletion does not resume either, because the next
-revision can carry different configuration, policy and credentials; the user sends
-the request again. A Gateway that misses its graceful shutdown leaves the runtime's
-crash recovery, which does not check the revision, to resume unfinished runs.
+Stop terminates inbound routing and execution, including the current turn, which
+[stays stopped](interrupted-turns.md). It retains the Agent revision, Agent
+credentials, gateway state, and workspace, creates no Agent revision and calls no
+destructive version retirement. Repeated stops converge safely without
+affecting sibling Agents.
 
 Deployment is the resume operation. It saves the next version in a new Agent revision and
 sets desired state to `running`; OCC never restarts an old version by mutating

@@ -276,7 +276,8 @@ An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then
 clears `activeRevisionId`; version history, credentials, and persistent state
 remain. Cleanup includes failed candidate resources and interrupted predecessor
-retirement owned by the current Compute. Repeating stop is safe. To resume,
+retirement owned by the current Compute. Repeating stop is safe. A turn cut by
+stop [does not resume](agents/interrupted-turns.md). To resume the Agent,
 deploy a new version; old versions cannot be restarted. See
 [stop and resume](agents/deployment.md#stop-and-resume).
 
@@ -391,6 +392,8 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18: A turn cut by stop, replacement or deletion does not resume; see [interrupted turns](agents/interrupted-turns.md). (finding 3347)
 
 - 2026-10-25: Moved workspace file request details to [Agent workspace files](agents/workspace-files.md).
 
