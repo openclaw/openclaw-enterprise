@@ -3900,7 +3900,7 @@ export class OpenClawController {
       );
       // Provisioning creates the Agent before it has tool sources. Bind the account
       // on the saved Agent after the initial install.
-      this.validatePluginCredentialSources(driver, plugins, []);
+      await this.validatePluginCredentialSources(driver, plugins, []);
       await this.authorizeProvisioningSources(
         state,
         principalId,
@@ -12221,7 +12221,7 @@ export class OpenClawController {
         pluginApprovers,
         async () => (await savedConfiguration()).values,
       );
-      this.validatePluginCredentialSources(driver, plugins, sources, harnessAuth);
+      await this.validatePluginCredentialSources(driver, plugins, sources, harnessAuth);
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
       await this.validateSavedAgentTopology(
         state,
@@ -12664,7 +12664,7 @@ export class OpenClawController {
         );
       }
       if (sources !== undefined) {
-        this.validatePluginCredentialSources(driver, selections, sources, auth);
+        await this.validatePluginCredentialSources(driver, selections, sources, auth);
       }
       const backendId = this.backendId(input.backendId, agent.backendId);
       const repositoryChange =
@@ -15421,14 +15421,14 @@ export class OpenClawController {
     return sources;
   }
 
-  private validatePluginCredentialSources(
+  private async validatePluginCredentialSources(
     driver: PluginDriver | undefined,
     plugins: PluginDesiredState | undefined,
     sources: readonly CredentialSource[],
     harnessAuth?: HarnessAuthBinding | null,
-  ): void {
+  ): Promise<void> {
     if (plugins && Object.keys(plugins).length) {
-      driver?.credentials?.validate(
+      await driver?.credentials?.validate(
         plugins,
         sources,
         harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
@@ -15451,7 +15451,7 @@ export class OpenClawController {
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
-      this.validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
+      await this.validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
       return [];
     }
     // A state refusal, so HTTP keeps the message instead of the generic "already exists".
@@ -15467,7 +15467,7 @@ export class OpenClawController {
       bindings,
       agent.harnessAuth,
     );
-    this.validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
+    await this.validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const { sourceId } of bindings) {
       await this.authorizeAgentPrincipal(principalId, agent, "operate", {
