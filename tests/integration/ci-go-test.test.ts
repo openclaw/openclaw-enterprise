@@ -99,7 +99,7 @@ async function goTest(
     env = {},
     args = [],
     timeout = 120_000,
-    killSignal,
+    killSignal = "SIGTERM",
   }: {
     env?: NodeJS.ProcessEnv;
     args?: string[];
