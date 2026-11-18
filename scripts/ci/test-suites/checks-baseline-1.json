@@ -130,6 +130,7 @@
     "tests/conformance/url-authority.test.ts",
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
+    "tests/integration/egress-custody-observer.test.ts",
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/credential-proxy-provider-pin.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
@@ -765,6 +766,12 @@
       ]
     },
     {
+      "path": "tests/integration/egress-custody-observer.test.ts",
+      "expectedTests": [
+        "the dispatch observer rejects malformed selections before arming its one fault"
+      ]
+    },
+    {
       "path": "tests/integration/egress-stock-online-authority.test.ts"
     },
     {
@@ -947,7 +954,8 @@
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
         "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "repository scope changes invalidate the external Driver identity while a reload preserves it"
+        "repository scope changes invalidate the external Driver identity while a reload preserves it",
+        "the loader closes an installed registration that later composition refuses"
       ]
     },
     {
@@ -1003,6 +1011,9 @@
       "expectedTests": [
         "controller topology keeps API-only fixture inputs separate from the worker"
       ]
+    },
+    {
+      "path": "tests/integration/agent-http-chat.test.ts"
     }
   ]
 }

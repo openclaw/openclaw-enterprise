@@ -1158,6 +1158,10 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
             [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
             if ((resume)); then
               message="the $component application identity preflight failed: ${message}No additional OCC writer was stopped. Preserve the original evidence and writer freeze; reconcile the application connection before --resume."
+            elif grep -q '^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\.' \
+              "$evidence_dir/preflight-$component.log"; then
+              # Not an Installation refusal: the database, its sign-in or the egress that reaches it.
+              message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the database, the chart's database values (database.cidrs) or the network policies that admit this Pod's database egress, then start again with a new evidence directory."
             else
               message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the Installation and start again with a new evidence directory."
             fi
@@ -2536,32 +2540,86 @@ poll_deployment_status() (
   printf '%s\n' "$status"
 )
 
+# At the timeout, identify incomplete Agents from the last observed status. Name
+# lookups are best effort and share one second across the whole diagnostic.
+incomplete_agents() {
+  local namespace_id agent_id status current agent_name observed remaining_seconds
+  local diagnostic_deadline=$((SECONDS + 1))
+  while IFS=' ' read -r namespace_id agent_id status current; do
+    agent_name=
+    remaining_seconds=$((diagnostic_deadline - SECONDS))
+    if ((remaining_seconds > 0)); then
+      agent_name=$(replacement_read "$remaining_seconds" "Agent $agent_id name could not be read before the diagnostic timeout." \
+        "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" 2>/dev/null |
+        jq -r 'if (.name | type) == "string" then .name | tojson | gsub("[\u0080-\u009f]"; "?") else empty end' 2>/dev/null) || agent_name=
+    fi
+    observed="no status read"
+    [[ -z "$status" || "$status" == - ]] || observed="last status $status"
+    [[ "$current" != unknown ]] || observed+="; current status unknown"
+    printf '  - Agent %s %s: %s, waiting for succeeded\n' "$agent_id" "${agent_name:-(name unavailable)}" "$observed"
+  done
+}
+
 # Agent replacement has its own observation budget after dispatch. Preserve the
 # shorter bounds for controller recovery, Doctor and other release phases.
 deadline=$((SECONDS + replacement_timeout_seconds))
 pending=$target_count
+incomplete=()
+while IFS= read -r deployment; do
+  json_fields "$deployment" namespace_id=namespaceId agent_id=agentId
+  incomplete+=("$namespace_id $agent_id")
+done <"$deployments"
 while ((pending > 0)); do
-  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
+  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout:
+$(printf '%s\n' "${incomplete[@]}" | incomplete_agents)
+Their last statuses are in $evidence_dir/status."
   pending=0
   failed=0
   status_read_failed=0
+  incomplete=()
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
-    if ! status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file"); then
+    if status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file"); then
+      :
+    else
+      status_read_exit=$?
       warn "Could not read Agent $agent_id deployment $deployment_id; its current status is unknown."
-      status_read_failed=1
-      ((SECONDS < deadline)) || break
+      if ((status_read_failed == 0)); then status_read_failed=$status_read_exit; fi
+      ((pending += 1))
+      historical_status=$(jq -ser --arg namespaceId "$namespace_id" --arg agentId "$agent_id" --arg deploymentId "$deployment_id" '
+        select(length == 1) | .[0] |
+        select(.namespaceId == $namespaceId and .agentId == $agentId and .deploymentId == $deploymentId) |
+        .status | select(IN("queued","running","succeeded","failed"))
+      ' "$status_file" 2>/dev/null) || historical_status=
+      incomplete+=("$namespace_id $agent_id ${historical_status:--} unknown")
       continue
     fi
     case "$status" in
-      queued | running) ((pending += 1)) ;;
+      queued | running)
+        ((pending += 1))
+        incomplete+=("$namespace_id $agent_id $status")
+        ;;
       succeeded) ;;
       failed) failed=1 ;;
     esac
   done <"$deployments"
-  ((failed == 0)) || die "at least one Agent deployment failed; inspect $evidence_dir/status."
-  ((status_read_failed == 0)) || die "could not verify all Agent deployment statuses; inspect $evidence_dir/status."
+  observation_exit=1
+  if ((status_read_failed != 0)); then observation_exit=$status_read_failed; fi
+  if ((failed != 0)); then
+    warn "at least one Agent deployment failed; inspect $evidence_dir/status."
+    exit "$observation_exit"
+  fi
+  if ((pending != 0 && SECONDS >= deadline)); then
+    warn "$pending Agent deployments remained incomplete at the upgrade timeout:
+$(printf '%s\n' "${incomplete[@]}" | incomplete_agents)
+Their last statuses are in $evidence_dir/status."
+    exit "$observation_exit"
+  fi
+  if ((status_read_failed != 0)); then
+    warn "could not verify all Agent deployment statuses; inspect $evidence_dir/status."
+    exit "$status_read_failed"
+  fi
   remaining_seconds=$((deadline - SECONDS))
   ((pending == 0 || remaining_seconds <= 0)) || sleep "$((remaining_seconds < 2 ? remaining_seconds : 2))"
 done

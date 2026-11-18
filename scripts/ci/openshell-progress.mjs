@@ -2,6 +2,14 @@ import { types } from "node:util";
 import { installationPhase } from "./openshell-installation-phase.ts";
 
 export const openShellProgressPrefix = "openclaw-ci-progress ";
+export const upstreamOutageCase = Object.freeze({
+  entry: "tests/integration/openshell-upstream-real.test.ts",
+  declaration: "tests/helpers/openshell-sandbox-workflows.mjs",
+  name: "OpenShell model and tool upstream outages fail closed",
+});
+export const openShellReplacementCheckpoints = Object.freeze(
+  /** @type {const} */ (["redeploy-request", "activation", "reconciliation"]),
+);
 
 const failureCategories = new Set([
   "AssertionError",
@@ -48,11 +56,17 @@ const openShellStages = new Set([
   "native-policy",
 ]);
 
-// A live log carries only fixed categories. Reject extra fields rather than
-// accidentally turning this channel into an arbitrary diagnostic transport.
+// Progress records carry only fixed categories. Reject extra fields to keep
+// arbitrary diagnostic data out of this channel.
 export function openShellProgress(value) {
   if (value?.kind === "openshell-installation") {
     return installationPhase(value);
+  }
+  if (value?.kind === "openshell-replacement-checkpoint") {
+    return Object.keys(value).length === 2 &&
+      openShellReplacementCheckpoints.includes(value.checkpoint)
+      ? { kind: value.kind, checkpoint: value.checkpoint }
+      : undefined;
   }
   if (value?.kind === "openshell-stage-failure") {
     if (
@@ -88,6 +102,13 @@ export function openShellProgress(value) {
 
 export function emitOpenShellProgress(stage, outcome) {
   const value = openShellProgress({ kind: "openshell-stage", stage, outcome });
+  if (value) {
+    process.stdout.write(`\n${openShellProgressPrefix}${JSON.stringify(value)}\n`);
+  }
+}
+
+export function emitOpenShellReplacementCheckpoint(checkpoint) {
+  const value = openShellProgress({ kind: "openshell-replacement-checkpoint", checkpoint });
   if (value) {
     process.stdout.write(`\n${openShellProgressPrefix}${JSON.stringify(value)}\n`);
   }

@@ -212,6 +212,7 @@ export async function checkLegacyWorkspaceNodeRetirement() {
         async listNamespacedPod() {
           return { items: [] };
         },
+        readNamespacedService: notFound,
         readNamespacedConfigMap: notFound,
         async readNamespacedSecret({ name }: ReadSecret) {
           const secret = secrets.get(name);

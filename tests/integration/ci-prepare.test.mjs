@@ -1358,7 +1358,7 @@ assert.equal(commands, 0);
         "qa-matrix",
         "blacksmith-8vcpu-ubuntu-2404",
         "integration-qa-pr",
-        "qa-advisory-${{ matrix.installation }}",
+        "qa-advisory-${{ matrix.installation }}-${{ matrix.preset }}",
       ],
     ]) {
       const job = workflow.jobs[name];
@@ -1481,7 +1481,7 @@ assert.equal(commands, 0);
       );
       return { ...result, outputs, summary: await readFile(summary, "utf8") };
     };
-    const fullCounts = [manifests["dev-up-k3d"].length, 2, manifests.openshell.length, 1];
+    const fullCounts = [manifests["dev-up-k3d"].length, 4, manifests.openshell.length, 1];
     for (const [labels, counts, name = "pull_request"] of [
       [["Full-QA", model], fullCounts],
       [
@@ -1562,15 +1562,23 @@ assert.equal(commands, 0);
             assert.deepEqual(
               JSON.parse(JSON.stringify(rows)),
               labels.some((label) => label.toLowerCase() === "full-qa") || name !== "pull_request"
-                ? ["compose", "kubernetes"].map((installation) => ({
-                    installation,
-                    preset: "Codex",
-                    scenarios:
-                      installation === "compose"
-                        ? "console-secrets,agent-audit"
-                        : "console-secrets",
-                    focused: false,
-                  }))
+                ? [
+                    ...["compose", "kubernetes"].map((installation) => ({
+                      installation,
+                      preset: "Codex",
+                      scenarios:
+                        installation === "compose"
+                          ? "console-secrets,agent-audit,http-chat"
+                          : "console-secrets,http-chat",
+                      focused: false,
+                    })),
+                    ...["kubernetes", "compose"].map((installation) => ({
+                      installation,
+                      preset: "OpenClaw",
+                      scenarios: "http-chat",
+                      focused: true,
+                    })),
+                  ]
                 : [
                     {
                       installation: "kubernetes",
@@ -1684,7 +1692,10 @@ assert.equal(commands, 0);
     const original = job.steps.find(({ name }) => name === "Materialize selected QA credentials");
     assert.equal(job.environment, "integration-qa-pr");
     assert.deepEqual(selected.env, { OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}" });
-    assert.deepEqual(original.env, { CODEX_ACCESS_TOKEN: "${{ secrets.CODEX_ACCESS_TOKEN }}" });
+    assert.deepEqual(original.env, {
+      CODEX_ACCESS_TOKEN: "${{ secrets.CODEX_ACCESS_TOKEN }}",
+      OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}",
+    });
     assert.equal(selected.if, "matrix.focused");
     assert.equal(original.if, "${{ !matrix.focused }}");
     assert.equal(workflow.jobs["local-installation"].environment, undefined);
@@ -3263,7 +3274,6 @@ if (args[0] === "pull") {
           OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: mutableImage,
           OCC_TEST_OPENSHELL_HELM: "helm",
           OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
-          OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
         },
       },
       {
@@ -3277,7 +3287,6 @@ if (args[0] === "pull") {
           OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_HELM: "helm",
           OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
-          OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
         },
       },
       {
@@ -3292,7 +3301,6 @@ if (args[0] === "pull") {
           OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_HELM: "helm",
           OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
-          OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
         },
       },
       {
@@ -3306,7 +3314,6 @@ if (args[0] === "pull") {
           OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_HELM: "helm",
           OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
-          OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
           OCC_TEST_KEYCLOAK_IMAGE: mutableImage,
         },
       },

@@ -64,7 +64,10 @@ for (const harness of ["codex", "openclaw"] as const) {
       } else {
         assert.equal(revision.compute.runtimeInputs, undefined);
       }
-      assert.match(revision.compute.admission ?? "", /^model-provider:v1:[a-f0-9]{64}:/);
+      assert.match(
+        revision.compute.admission ?? "",
+        /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:/,
+      );
       assert.deepEqual(revision.harness.overrides, {});
       assert.deepEqual(revision.harness.configuration, {
         modelProvider: {

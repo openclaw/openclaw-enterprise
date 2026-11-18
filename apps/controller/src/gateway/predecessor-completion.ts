@@ -7,11 +7,15 @@ import type {
 import { asRecord } from "@openclaw-enterprise/utils";
 import { withGateway } from "./node-enrollment-client.ts";
 
+type GatewayCompletionContext = PredecessorCompletionContext & {
+  readonly expectedHostname: string;
+};
+
 export interface GatewayPredecessorCompletion {
   observe(
     url: string,
     requestId: string,
-    context: PredecessorCompletionContext,
+    context: GatewayCompletionContext,
     signal: AbortSignal,
   ): Promise<PredecessorCompletionResult>;
 }
@@ -31,7 +35,7 @@ export function createGatewayPredecessorCompletion(
 export async function completePredecessorOnConnection(
   client: Pick<GatewayClient, "request">,
   requestId: string,
-  context: PredecessorCompletionContext,
+  context: GatewayCompletionContext,
   signal: AbortSignal,
 ): Promise<PredecessorCompletionResult> {
   const info = asRecord(await client.request("system.info", {}, { signal }));
@@ -49,6 +53,11 @@ export async function completePredecessorOnConnection(
       "unavailable",
       "The predecessor did not identify its execution.",
     );
+  }
+  // The Agent-wide route can lag the Kubernetes endpoint observation. Identify
+  // the process that actually answered on this connection before touching it.
+  if (!context.expectedHostname || info.hostname !== context.expectedHostname) {
+    return "runtime-changed";
   }
   const target = { pid: Number(info.pid), processInstanceId: info.processInstanceId };
   const identity = `${target.pid}:${target.processInstanceId}`;

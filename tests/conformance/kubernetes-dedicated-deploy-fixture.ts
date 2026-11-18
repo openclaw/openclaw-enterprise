@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  NODE_SETUP_POLL_MS,
+  type GatewayNodeEnrollment,
+  type NodeSetupObservation,
+} from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import type {
   HarnessWorkloadRequirements,
@@ -123,13 +128,27 @@ type FixtureState = {
   waitingStatuses?: StatusBucket;
   waitingReason?: string;
   podStatuses?: Partial<Record<WorkloadRole, PodStatus>> | undefined;
-  pairAfterSetupMs?: number;
-  pairAtMs?: number;
+  pairAfterSetupMs?: number | undefined;
+  pairAtMs?: number | undefined;
   gatewayAppliesBinding: boolean;
   gatewayWorkspaceNodeId?: unknown;
   gatewayWorkspaceNodeFailure?: unknown;
   gatewayRuntimeFailure?: RuntimeFailureEvidence | undefined;
 };
+type DedicatedDeployEnrollmentState = FixtureState & {
+  setupCalls: number;
+  connected: boolean;
+  redeemedDeviceId: string | undefined;
+  setupDelivery: NodeSetupObservation["delivery"];
+  possessionAvailable: boolean | undefined;
+  possessionDevices: string[];
+  enrollmentAvailable: boolean;
+  observeWaits: number[];
+  failAtMs: number | undefined;
+  stepObservations: boolean;
+};
+type FixtureSetupObservation = NodeSetupObservation & { connected: boolean };
+
 type FixtureOptions = {
   namespace: string;
   gatewayName: string;
@@ -313,6 +332,113 @@ export function readyNativeHarnessPod(
     metadata: { name: nativeHarnessName, namespace, labels },
     status: { conditions: [{ type: "Ready", status: "True" }] },
   };
+}
+
+export function createDedicatedDeployEnrollmentFixture(clock?: FixtureClock) {
+  const state: DedicatedDeployEnrollmentState = {
+    setupCalls: 0,
+    connected: false,
+    // A retained setup receipt can name a device that is currently disconnected.
+    redeemedDeviceId: undefined,
+    setupDelivery: "confirmed",
+    // Registry presence does not imply a completed token-authenticated connection.
+    possessionAvailable: undefined,
+    possessionDevices: [],
+    enrollmentAvailable: true,
+    // The node OpenClaw reports applied through the wrapper's runtime status,
+    // or the reason it has not.
+    gatewayWorkspaceNodeId: undefined,
+    gatewayWorkspaceNodeFailure: undefined,
+    gatewayAppliesBinding: true,
+    // With a fake clock: when set, the node host pairs this long after its setup
+    // reaches the Harness.
+    pairAfterSetupMs: undefined,
+    // The wait each setup observation was given.
+    observeWaits: [],
+    // With a fake clock: when the node pairs, and when a waiting observation fails.
+    pairAtMs: undefined,
+    failAtMs: undefined,
+    // With a fake clock: observe poll by poll, asking `stopWaiting` between reads.
+    stepObservations: false,
+  };
+
+  function connectedObservation(): FixtureSetupObservation | undefined {
+    return state.connected
+      ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
+      : undefined;
+  }
+
+  const nodeEnrollment: GatewayNodeEnrollment = {
+    async createSetup() {
+      state.setupCalls++;
+      return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
+    },
+    async observeSetup(
+      _url,
+      _setupId,
+      signal,
+      options,
+    ): Promise<FixtureSetupObservation | undefined> {
+      if (!state.enrollmentAvailable) {
+        throw new Error("Gateway is restarting after the Harness replacement");
+      }
+      // Like the client: one connection, re-read until connected or the wait ends.
+      state.observeWaits.push(options?.waitMs ?? 0);
+      if (state.redeemedDeviceId !== undefined) {
+        return {
+          deviceId: state.redeemedDeviceId,
+          connected: state.connected,
+          delivery: state.setupDelivery,
+        };
+      }
+      if (clock !== undefined && state.stepObservations) {
+        // Like the client, poll by poll: read, then ask whether other Work
+        // is waiting for the worker before the next read.
+        const deadline = clock.now + (options?.waitMs ?? 0);
+        for (;;) {
+          if (state.pairAtMs !== undefined && state.pairAtMs <= clock.now) {
+            state.connected = true;
+          }
+          if (
+            state.connected ||
+            clock.now + NODE_SETUP_POLL_MS > deadline ||
+            (options?.stopWaiting !== undefined && (await options.stopWaiting()))
+          ) {
+            return connectedObservation();
+          }
+          clock.now += NODE_SETUP_POLL_MS;
+        }
+      }
+      if (clock !== undefined) {
+        const deadline = clock.now + (options?.waitMs ?? 0);
+        if (state.failAtMs !== undefined && state.failAtMs <= deadline) {
+          clock.now = Math.max(clock.now, state.failAtMs);
+          throw new Error("Gateway connection closed");
+        }
+        if (!state.connected && state.pairAtMs !== undefined && state.pairAtMs <= deadline) {
+          clock.now = Math.max(clock.now, state.pairAtMs);
+          state.connected = true;
+        } else if (!state.connected) {
+          clock.now = deadline;
+        }
+        return connectedObservation();
+      }
+      const deadline = Date.now() + (options?.waitMs ?? 0);
+      while (!state.connected && Date.now() < deadline) {
+        if (options?.stopWaiting !== undefined && (await options.stopWaiting())) {
+          break;
+        }
+        signal.throwIfAborted();
+        await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      }
+      return connectedObservation();
+    },
+    async isConnected(_url, deviceId) {
+      state.possessionDevices.push(deviceId);
+      return state.possessionAvailable ?? state.connected;
+    },
+  };
+  return { state, nodeEnrollment };
 }
 
 export function createDedicatedDeployKubernetesFixture(

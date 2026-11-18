@@ -12,6 +12,7 @@ import {
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join, relative } from "node:path";
 import test, { describe } from "node:test";
 import {
@@ -19,6 +20,8 @@ import {
   registerUnknownAgentDeploymentResumeTest,
 } from "../helpers/production-upgrade-dispatch-restore.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { rejectPostgresStartup } from "../helpers/fake-postgres-server.ts";
+import { listen } from "../helpers/listen.ts";
 import { preflightIdentities } from "../helpers/production-upgrade-preflight-cleanup.ts";
 import {
   assertHelmIntent,
@@ -829,6 +832,55 @@ export function registerWriterHandoffCases({
     assert.equal(existsSync(join(f.evidence, "completed")), false);
   });
 
+  test("a failed status read keeps its exit code when a neighbor fails or the deadline expires", async (t) => {
+    for (const scenario of ["terminal", "deadline"] as const) {
+      const f = await fixture(t, {
+        inventoryNamespaces: [embeddedDoctorNamespace("agt_a", "agt_b")],
+      });
+      const first = { namespaceId: "ns_test", agentId: "agt_a", deploymentId: "rev_first" };
+      const second = { namespaceId: "ns_test", agentId: "agt_b", deploymentId: "rev_new" };
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: first.deploymentId, status: "running" },
+          deploymentStatusResponses: {
+            [first.deploymentId]: {
+              stdout: JSON.stringify({ ...first, status: "running" }),
+              exitCode: 9,
+            },
+            ...(scenario === "terminal"
+              ? {
+                  [second.deploymentId]: {
+                    stdout: JSON.stringify({ ...second, status: "failed" }),
+                  },
+                }
+              : {}),
+          },
+          ...(scenario === "deadline" ? { statusHangAfterReads: 1, statusHangMs: 12000 } : {}),
+        }),
+      );
+      const failure = await expectUpgradeFailure(
+        f.run("--timeout-seconds", scenario === "deadline" ? "8" : "30"),
+        "the upgrade must refuse the mixed observation",
+      );
+      assert.equal(failure.code, 9, scenario);
+      assert.match(
+        failure.stderr,
+        scenario === "terminal" ? /at least one Agent deployment failed/u : /upgrade timeout/u,
+      );
+      assert.equal(existsSync(join(f.evidence, "status", "ns_test--agt_a--rev_first.json")), false);
+      if (scenario === "terminal") {
+        const snapshot = JSON.parse(
+          await readFile(join(f.evidence, "status", "ns_test--agt_b--rev_new.json"), "utf8"),
+        );
+        assert.equal(snapshot.status, "failed");
+      }
+      assert.ok(!(await f.events()).some((event) => event.startsWith("doctor")));
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    }
+  });
+
   registerAcceptedAgentDeployNoticeTest(fixture);
 
   // Doctor shares the serving gateway container's memory limit, and an out-of-memory
@@ -951,6 +1003,80 @@ export function registerWriterHandoffCases({
         lastLine,
         /Agent agt_b's gateway did not keep 640 MiB free below its memory limit before the upgrade timeout \(last read: 0 MiB free\), so OpenClaw Doctor did not run/,
       );
+    });
+
+    // A deployment that never finishes stops the upgrade at its timeout. The message names
+    // the Agent (ID and name), the status last read and the status the upgrade waited for, so
+    // the operator knows which Agent to inspect without reading the evidence first.
+    test("an Agent deployment still running at the upgrade timeout is named", async (t) => {
+      const f = await fixture(t, { agent: true });
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: "rev_new", status: "running" },
+        }),
+      );
+      // 8 s leaves room for at least one status poll after the deploy.
+      const failure = await expectUpgradeFailure(
+        f.run("--timeout-seconds", "8"),
+        "the upgrade must stop at the timeout",
+      );
+      assert.deepEqual(failure.stderr.trimEnd().split("\n").slice(-3), [
+        "upgrade-production-images: 1 Agent deployments remained incomplete at the upgrade timeout:",
+        '  - Agent agt_test "Mail triage": last status running, waiting for succeeded',
+        `Their last statuses are in ${f.evidence}/status.`,
+      ]);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    });
+
+    test("a stalled timeout name lookup does not extend replacement observation", async (t) => {
+      const f = await fixture(t, { agent: true });
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: "rev_new", status: "running" },
+          agentNameHoldMs: 4000,
+        }),
+      );
+      const failure = await expectUpgradeFailure(
+        f.run("--timeout-seconds", "8"),
+        "the upgrade must stop without waiting for the stalled name lookup",
+      );
+      assert.match(
+        failure.stderr,
+        /Agent agt_test \(name unavailable\): last status running, waiting for succeeded/u,
+      );
+      const events = await f.events();
+      assert.ok(events.includes("agent-name-started"));
+      assert.ok(!events.includes("agent-name-finished"));
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    });
+
+    test("a deadline-expired poll keeps the last validated deployment status diagnostic", async (t) => {
+      const f = await fixture(t, { agent: true });
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: "rev_new", status: "running" },
+          statusHangAfterReads: 1,
+          statusHangMs: 12000,
+        }),
+      );
+      const failure = await expectUpgradeFailure(
+        f.run("--timeout-seconds", "8"),
+        "the upgrade must refuse an unknown current status at the deadline",
+      );
+      assert.match(failure.stderr, /last status running; current status unknown/u);
+      const snapshot = JSON.parse(
+        await readFile(join(f.evidence, "status", "ns_test--agt_test--rev_new.json"), "utf8"),
+      );
+      assert.equal(snapshot.status, "running");
+      assert.ok((await f.events()).includes("deployment-status-hung"));
+      assert.ok(!(await f.events()).some((event) => event.startsWith("doctor")));
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
     });
 
     test("OpenClaw Doctor does not run while the gateway lacks free memory", async (t) => {
@@ -1104,8 +1230,14 @@ export function registerWriterHandoffCases({
         "api",
         /does not identify/,
       ],
-      ["denied", { error: "private database diagnostic" }, "api", /could not be verified/],
-      ["stalled", { hang: true }, "api", /could not be verified/],
+      // A read that fails or stalls after the connection opened keeps the plain message.
+      [
+        "denied",
+        { error: "private database diagnostic" },
+        "api",
+        /Installation identity could not be verified\.$/m,
+      ],
+      ["stalled", { hang: true }, "api", /Installation identity could not be verified\.$/m],
     ] satisfies [string, IdentityAnswer, "api" | "worker", RegExp | null][]) {
       await t.test(name, { timeout: 25_000 }, async () => {
         answer = response;
@@ -1131,13 +1263,43 @@ export function registerWriterHandoffCases({
         );
       });
     }
+    // A Pod that cannot open the connection says so instead of reporting an unreadable
+    // identity (finding 3255: egress pinned to the PostgreSQL Pod's former address dropped
+    // every connection). One server closes each connection before startup; the other
+    // accepts and never answers, as when a packet filter drops the handshake replies, so the
+    // 15 s identity deadline ends the attempt while it still connects. The message names no
+    // address, role, password or URL.
+    const refusing = await rejectPostgresStartup(t);
+    const silentPort = await listen(t, createServer());
+    for (const [name, port] of [
+      ["closed before startup", refusing.port],
+      ["never answered", silentPort],
+    ] as const) {
+      await t.test(name, { timeout: 25_000 }, async () => {
+        const previousSessions: number = f.databaseSessions.length;
+        const result = await f.runIdentityCheck("api", "identity-job", (url) =>
+          url.replace(/:\d+\//, `:${port}/`),
+        );
+        assert.equal(result.phase, "Failed");
+        const log = result.log;
+        assert.ok(typeof log === "string");
+        assert.match(
+          log,
+          /^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\. Check that PostgreSQL is running and that the chart's database egress \(database\.cidrs\) admits its current address/m,
+        );
+        assert.doesNotMatch(log, /127\.0\.0\.1|candidate_app|fixture-only|postgresql:\/\//);
+        assert.equal(f.databaseSessions.length, previousSessions);
+      });
+    }
     // pg parses other schemes as connection strings, but stock startup refuses
     // them. Neither generated entrypoint may open that otherwise reachable DB.
     answer = { rows: [{ id: "ins_test" }] };
     for (const action of ["job", "identity-job"] as const) {
       for (const component of ["api", "worker"] as const) {
         const previousSessions: number = f.databaseSessions.length;
-        const result = await f.runIdentityCheck(component, action, "https:");
+        const result = await f.runIdentityCheck(component, action, (url) =>
+          url.replace(/^[^:]+:/, "https:"),
+        );
         assert.equal(result.phase, "Failed");
         const log = result.log;
         assert.ok(typeof log === "string");

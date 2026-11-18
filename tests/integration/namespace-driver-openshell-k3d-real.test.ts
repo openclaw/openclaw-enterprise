@@ -139,7 +139,6 @@ test(
       openShellHelmPath: env.OCC_TEST_OPENSHELL_HELM,
       openShellHelmChart: env.OCC_TEST_OPENSHELL_HELM_CHART,
       openShellWorkspaceHelmChart: env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART,
-      openShellRuntimeClass: env.OCC_TEST_OPENSHELL_RUNTIME_CLASS,
     });
     const resourceMetadata = async (kind: string, name: string, namespace?: string) =>
       metadata(await fixture.resource(kind, name, namespace));
@@ -243,7 +242,6 @@ test(
       cluster: env.OCC_TEST_KUBERNETES_CONTEXT,
       gatewayImage: env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
       codexImage: env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
-      openShellRuntimeClass: env.OCC_TEST_OPENSHELL_RUNTIME_CLASS,
     }) as ReturnType<typeof createOpenShellInstallationConfiguration> & {
       backend: { configuration: { serviceName: string; insecureTransport: string } }[];
       drivers: {
@@ -334,7 +332,6 @@ test(
       "--set=sandboxServiceAccount.create=false",
       `--set-string=sandboxServiceAccount.name=${sandboxAccount}`,
       "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-      `--set-string=server.defaultRuntimeClassName=${env.OCC_TEST_OPENSHELL_RUNTIME_CLASS}`,
       `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
       ...openShellChartImageValues("gateway.image", env.OCC_TEST_OPENSHELL_GATEWAY_IMAGE),
       ...openShellChartImageValues("sandboxRuntime.image", env.OCC_TEST_OPENSHELL_SANDBOX_IMAGE),

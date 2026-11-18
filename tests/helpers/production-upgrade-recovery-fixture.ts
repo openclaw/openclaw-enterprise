@@ -756,7 +756,8 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       runIdentityCheck: async (
         component: "api" | "worker",
         action: "identity-job" | "job" = "identity-job",
-        protocol?: string,
+        // Rewrites the candidate database URL the Pod receives, such as its scheme or port.
+        databaseUrl?: (url: string) => string,
         fixtureFiles?: readonly string[],
       ) => {
         const { stdout } = await execute(
@@ -796,8 +797,8 @@ export function createRecoveryFixture(tools: RecoveryTools) {
         };
         assert.ok(database, "the identity check needs a chart fixture database");
         const connection = { ...database };
-        if (protocol) {
-          connection.url = database.url.replace(/^[^:]+:/, protocol);
+        if (databaseUrl) {
+          connection.url = databaseUrl(database.url);
         }
         const result = await runPreflight(
           directory,

@@ -198,6 +198,11 @@ export interface ControllerWorkerOptions {
   readonly emit?: (event: Readonly<Record<string, unknown>>) => void;
   readonly onHealthy?: () => Promise<void>;
   /**
+   * Monotonic milliseconds for the health check's startup warning window. Tests only; the
+   * default is `performance.now`.
+   */
+  readonly healthClock?: () => number;
+  /**
    * Called, at most once per health interval, when the run loop starts a pass or a claim
    * heartbeat renews. It goes quiet only while the loop is stuck, so a liveness probe can tell
    * a wedged worker from one waiting out a database outage (each pass then fails fast).
@@ -250,10 +255,45 @@ const REVISION_KEPT_WITHOUT_GIT_CODES: ReadonlySet<string> = new Set([
   "REPOSITORY_GIT_TOKEN_PENDING",
 ]);
 
+function requireClaimRenewal(renewed: ClaimedWork | undefined): void {
+  if (renewed === undefined) {
+    throw new WorkClaimLostError();
+  }
+}
+
 // A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
 // An active revision's source is already consumed.
 function isCandidateDeployment(claim: ClaimedWork): boolean {
   return claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`;
+}
+
+// Only exclusive admissions necessarily retarget the record. A later, nonexclusive
+// deployment can legitimately encounter the record of an older, refused candidate.
+async function hasNewerRecordedReplacement(
+  view: PlatformReadView,
+  activeRevisionId: string | undefined,
+  revision: Readonly<AgentRevision>,
+): Promise<boolean> {
+  const replacement = await view.agents.findPredecessorReplacement(
+    revision.namespaceId,
+    revision.agentId,
+  );
+  if (
+    replacement === undefined ||
+    replacement.predecessorRevisionId !== activeRevisionId ||
+    replacement.candidateRevisionId === revision.id
+  ) {
+    return false;
+  }
+  const revisions = await view.revisions.listRevisionMetadata(
+    revision.namespaceId,
+    revision.agentId,
+  );
+  const selected = revisions.find(({ id }) => id === replacement.candidateRevisionId);
+  if (selected === undefined) {
+    throw new PersistedStateInvalidError("The recorded replacement revision is missing.");
+  }
+  return selected.revision > revision.revision;
 }
 
 function isCommittedPredecessorStop(
@@ -944,6 +984,15 @@ function agentWorkLogFields(claim: ClaimedWork) {
   };
 }
 
+// The worker health check's steps, in order: the work queue read, the repository credential
+// broker's admission readiness, and the readiness report (the readiness file).
+type HealthDependency = "work-queue" | "repository-credential-broker" | "readiness-report";
+
+// How long after start a failed health check only warns about a dependency that has not
+// passed once in this process (finding 3297). On Kubernetes the broker is the Worker Pod's
+// main container, so it always starts after the worker's native sidecar.
+const HEALTH_STARTUP_WARNING_MS = 30_000;
+
 function workerPassErrorCode(error: unknown): string {
   if (error instanceof WorkClaimLostError) {
     return "CLAIM_LOST";
@@ -1278,6 +1327,13 @@ export class ControllerWorker {
   private closing = false;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
+  // Set once the first health check after start has ended. That check always only warns.
+  private firstHealthCheckEnded = false;
+  private readonly healthClock: () => number;
+  // When this process started, on `healthClock`: the startup warning window's origin.
+  private startedAt = 0;
+  // The health dependencies that have passed at least once in this process.
+  private readonly healthyDependencies = new Set<HealthDependency>();
   private lastProgressAt = 0;
   private pendingProgress = false;
   /**
@@ -1433,6 +1489,7 @@ export class ControllerWorker {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       });
     this.onHealthy = options.onHealthy;
+    this.healthClock = options.healthClock ?? (() => performance.now());
     this.onProgress = options.onProgress;
     this.repositoryGitMaterial = options.repositoryGitMaterial;
     this.repositoryPolicy = drivers?.repositoryPolicy;
@@ -1498,6 +1555,7 @@ export class ControllerWorker {
       throw new Error("The platform Installation must be bootstrapped before starting the worker.");
     }
     this.installation = installation;
+    this.startedAt = this.healthClock();
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
@@ -1736,9 +1794,14 @@ export class ControllerWorker {
       return age;
     }
     const created = claim.createdAt.getTime();
-    const end = wait.stoppingAt === undefined ? created + age : Date.parse(wait.stoppingAt);
-    const overlap = Math.max(0, end - Math.max(created, Date.parse(wait.completionStartedAt)));
-    return Math.max(0, age - Math.min(PLANNED_COMPLETION_WAIT_MS, overlap));
+    const start = Date.parse(wait.completionStartedAt);
+    const now = created + age;
+    const end = Math.min(
+      now,
+      start + PLANNED_COMPLETION_WAIT_MS,
+      wait.stoppingAt === undefined ? now : Date.parse(wait.stoppingAt),
+    );
+    return age - Math.max(0, end - Math.max(created, start));
   }
 
   /** Report loop progress without ever delaying the loop; see `onProgress`. */
@@ -1868,17 +1931,39 @@ export class ControllerWorker {
     }
     this.lastHealthAt = now;
     this.pendingHealth = (async () => {
-      const pending = await this.queue.pending();
-      await this.nativeRepositorySender?.checkAdmissionReady?.(AbortSignal.timeout(2000));
-      await this.onHealthy?.();
-      this.emit({ event: "worker.health", status: "ready", pending });
-    })()
-      .catch(() => {
-        this.emit({ event: "worker.error", code: "HEALTH_UNAVAILABLE" });
-      })
-      .finally(() => {
-        this.pendingHealth = undefined;
-      });
+      let dependency: HealthDependency = "work-queue";
+      try {
+        const pending = await this.queue.pending();
+        this.healthyDependencies.add(dependency);
+        dependency = "repository-credential-broker";
+        await this.nativeRepositorySender?.checkAdmissionReady?.(AbortSignal.timeout(2000));
+        this.healthyDependencies.add(dependency);
+        dependency = "readiness-report";
+        await this.onHealthy?.();
+        this.healthyDependencies.add(dependency);
+        this.emit({ event: "worker.health", status: "ready", pending });
+      } catch (error) {
+        // Name the step that failed and the error's class, never its message, which can carry
+        // hosts or connection details (finding 3259). A dependency that has not passed once
+        // yet may still be starting, such as the broker sidecar's control socket: it only
+        // warns on the first check and during the startup window (finding 3297). Any other
+        // failure is an error, so an outage that persists or returns is reported as one.
+        const starting =
+          !this.healthyDependencies.has(dependency) &&
+          (!this.firstHealthCheckEnded ||
+            this.healthClock() - this.startedAt < HEALTH_STARTUP_WARNING_MS);
+        this.emit({
+          event: starting ? "worker.health-warning" : "worker.error",
+          code: "HEALTH_UNAVAILABLE",
+          dependency,
+          cause: loggedErrorClass(error),
+        });
+      } finally {
+        this.firstHealthCheckEnded = true;
+      }
+    })().finally(() => {
+      this.pendingHealth = undefined;
+    });
     return this.pendingHealth;
   }
 
@@ -2188,6 +2273,16 @@ export class ControllerWorker {
       if (predecessor !== undefined && predecessor.revision < revision.revision) {
         // A waiting pass never starts a stop sweep or prepares the candidate.
         await this.waitForPlannedCompletion(claim, predecessor, revision);
+        const replacement = this.completionWaits.get(claim);
+        if (
+          isCandidateDeployment(claim) &&
+          !(
+            replacement?.predecessorRevisionId === predecessor.id &&
+            replacement.phase === "stopping"
+          )
+        ) {
+          await this.recheckPreparationAuthority(claim, revision);
+        }
         await this.recordPredecessorStop(claim, predecessor);
       }
       earlier = await this.state.read(async (view) =>
@@ -2198,6 +2293,11 @@ export class ControllerWorker {
       await this.stopPredecessors(claim, earlier);
       if (earlier.length !== 0 && isCandidateDeployment(claim)) {
         await this.recheckPreparationAuthority(claim, revision);
+        const refreshed = await this.resolveRevisionSecretContext(revision);
+        if ("result" in refreshed) {
+          throw new RevisionPreparationBlocked(refreshed.result);
+        }
+        context = refreshed.context;
       }
     }
     try {
@@ -2369,6 +2469,7 @@ export class ControllerWorker {
               )
             )?.executionIdentity === identity,
           commitStopping: async (identity) => {
+            await this.recheckPreparationAuthority(claim, candidate);
             if (
               (await this.recordPredecessorStop(claim, previous, identity, completionWindowMs)) ===
               undefined
@@ -2379,7 +2480,7 @@ export class ControllerWorker {
         }),
       );
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
+      if (error instanceof WorkClaimLostError || error instanceof RevisionPreparationBlocked) {
         throw error;
       }
       if (expired()) {
@@ -2482,21 +2583,24 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
-    // Stopping predecessors may take minutes. Use the current owner and grant at
-    // the boundary before creating the candidate's runtime.
-    const { namespace, agent } = await this.state.read(async (view) => ({
-      namespace: await view.namespaces.findNamespace(revision.namespaceId),
-      agent: await view.agents.findAgent(revision.namespaceId, revision.agentId),
-    }));
+    const { namespace, agent, superseded } = await this.state.read(async (view) => {
+      const namespace = await view.namespaces.findNamespace(revision.namespaceId);
+      const agent = await view.agents.findAgent(revision.namespaceId, revision.agentId);
+      const superseded = await hasNewerRecordedReplacement(view, agent?.activeRevisionId, revision);
+      return { namespace, agent, superseded };
+    });
     if (
       namespace?.status !== "ready" ||
       agent?.status !== "active" ||
       agent.desiredRuntimeState !== "running" ||
-      agent.servicePrincipalId !== revision.servicePrincipalId
+      agent.servicePrincipalId !== revision.servicePrincipalId ||
+      superseded
     ) {
       throw new RevisionPreparationBlocked();
     }
-    const denied = await this.authorizeRevision(claim, agent, revision);
+    const denied =
+      (await this.authorizeRevision(claim, agent, revision)) ??
+      (await this.resolveRevisionBackend(revision));
     if (denied !== undefined) {
       throw new RevisionPreparationBlocked(denied);
     }
@@ -2661,9 +2765,7 @@ export class ControllerWorker {
       cause = repositoryCleanupFailureCode(error);
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (denial !== undefined) {
         await this.appendRevisionDenial(unit, claim, denial);
       }
@@ -3581,9 +3683,7 @@ export class ControllerWorker {
     result: AgentStopDispatchResult,
   ): Promise<void> {
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (result.outcome === "success" && result.agent !== undefined) {
         const agent = await this.lockClaimAgent(unit, claim);
         if (agent === undefined || agent.servicePrincipalId !== result.agent.servicePrincipalId) {
@@ -3912,9 +4012,7 @@ export class ControllerWorker {
     const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
       outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       result = dispatched;
       let terminalFailure = terminal(result);
       // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
@@ -4448,9 +4546,7 @@ export class ControllerWorker {
       // Namespace first, as every transaction that may also lock it (the work insert's
       // foreign key) must.
       await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const pending = await this.pendingCredentialWithdrawals(unit, revision);
       await this.requeueCredentialWithdrawals(unit, pending);
       await queue.complete(claim, { code: "CREDENTIAL_WITHDRAWN" });
@@ -4553,9 +4649,7 @@ export class ControllerWorker {
     }
     await this.state.transactWithQueue(async (unit, queue) => {
       await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       await this.requeueCredentialWithdrawals(
         unit,
         await this.pendingCredentialWithdrawals(unit, revision, sourceIds),
@@ -5416,9 +5510,7 @@ export class ControllerWorker {
     }
     const deferred = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (!isCurrent(agent)) {
         await queue.complete(claim, { code: "REVISION_MAINTENANCE_SUPERSEDED" });
         return false;
@@ -5467,9 +5559,7 @@ export class ControllerWorker {
     const completed = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
       const namespace = await unit.namespaces.findNamespace(claim.namespaceId);
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const revision = await unit.revisions.findRevision(
         claim.namespaceId,
         claim.agentId!,
@@ -6255,6 +6345,17 @@ export class ControllerWorker {
     this.workOrigins.set(claim, performance.now() - claim.ageMs);
     let code = "PREDECESSOR_COMPLETION_RECHECK";
     let delayMs = this.stopYieldRecheckMs(claim);
+    let claimLost = false;
+    const deferClaim = async () => {
+      try {
+        await this.queue.defer(claim, { code }, { delayMs });
+      } catch (error) {
+        // Keep the original claim loss when deferral also refuses the stale token.
+        if (!claimLost || !(error instanceof WorkClaimLostError)) {
+          throw error;
+        }
+      }
+    };
     try {
       const { namespace, agent, previous, revision } = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
@@ -6301,13 +6402,22 @@ export class ControllerWorker {
         return;
       }
       this.validateExecutionAdmission(revision);
+      if (this.compute.bindAgent !== undefined) {
+        await this.withClaimHeartbeat(claim, async () => {
+          await this.compute.bindAgent!({ namespace, agent });
+        });
+      }
       await this.waitForPlannedCompletion(claim, previous, revision, PLANNED_COMPLETION_WAIT_MS);
       if (this.completionWaits.get(claim)?.phase === "stopping") {
         delayMs = 1;
       }
     } catch (error) {
+      claimLost = error instanceof WorkClaimLostError;
       if (error instanceof PredecessorCompletionWaitingError) {
         code = "PREDECESSOR_COMPLETION_WAITING";
+      } else if (error instanceof RevisionPreparationBlocked) {
+        // Ordinary dispatch publishes the current refusal under its own claim.
+        delayMs = 1;
       } else if (!(error instanceof RepositoryCredentialAuthorityError)) {
         throw error;
       }
@@ -6315,7 +6425,7 @@ export class ControllerWorker {
       // The ordinary pass owns refusal handling, physical stop and candidate preparation.
       // Releasing this claim refunds its attempt, including after committing the stop boundary.
       if (!this.stopping) {
-        await this.queue.defer(claim, { code }, { delayMs });
+        await deferClaim();
       }
     }
   }
@@ -6402,6 +6512,7 @@ export class ControllerWorker {
     void this.health(false);
     const workerContext = AsyncLocalStorage.snapshot();
     let renewal: Promise<void> | undefined;
+    let outcome: { value: T } | { error: unknown };
     try {
       // The worker is serial: Compute may end an optional in-pass wait early
       // when other Work could be claimed, instead of holding it back (D221).
@@ -6410,7 +6521,7 @@ export class ControllerWorker {
       // superseded version's own yielded stop, whose next pass just rechecks its drain; a
       // deployment whose predecessor's drain ended deploys next. Every wait that asks is optional and bounded, so this only lets it
       // run to its own end (findings 1093, 1090, 1108).
-      return await withComputeAbortSignal(operation.signal, () =>
+      const value = await withComputeAbortSignal(operation.signal, () =>
         withComputeWorkWaiting(
           async (wait) => {
             if (wait !== "predecessor-completion") {
@@ -6433,16 +6544,23 @@ export class ControllerWorker {
           () => effect(operation.signal),
         ),
       );
+      outcome = { value };
+    } catch (error) {
+      outcome = { error };
     } finally {
       await renewal;
       clearInterval(heartbeat);
       this.abort.signal.removeEventListener("abort", stopping);
       await pending.catch(() => {});
       clearTimeout(lapse);
-      if (lost !== undefined) {
-        throw new ClaimLeaseLostError(lost);
-      }
     }
+    if (lost !== undefined) {
+      throw new ClaimLeaseLostError(lost);
+    }
+    if ("error" in outcome) {
+      throw outcome.error;
+    }
+    return outcome.value;
   }
 
   private async observe(
@@ -6562,11 +6680,13 @@ export class ControllerWorker {
       !isStopYieldedCode(result.code) &&
       this.revisionConvergenceAgeMs(claim) >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
-    // end, and then hold the container unready until an explicit restart that
-    // nothing performs: no liveness probe or controller restarts it. Waiting for
-    // the convergence deadline therefore cannot change the result, so every held
-    // failure ends the deployment at once with a code naming its cause. The kubelet
-    // does restart a refused workspace setup, but it refuses the same way each time.
+    // end, and then hold the container unready: no liveness probe or controller
+    // restarts it. Only a Gateway held on its state lock restarts itself once no
+    // holder remains, and a lock left by another Pod stays until an operator's
+    // recovery, which stops the Agent first. Waiting for the convergence deadline
+    // therefore does not help, so every held failure ends the deployment at once
+    // with a code naming its cause. The kubelet does restart a refused workspace
+    // setup, but it refuses the same way each time.
     const heldFailureCode =
       runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure.code);
     let resolved: RevisionDispatchResult;
@@ -6688,6 +6808,7 @@ export class ControllerWorker {
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
+    let replacementRetargeted = false;
     let committedOutcome: WorkOutcome =
       resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
         ? "permanent"
@@ -6699,9 +6820,7 @@ export class ControllerWorker {
       };
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (resolved.supersededBy !== undefined && resolved.outcome === "success") {
         const revision = await unit.revisions.findRevision(
           claim.namespaceId,
@@ -6734,6 +6853,13 @@ export class ControllerWorker {
         }
         if (current.desiredRuntimeState !== "running") {
           stoppedCandidate = resolved.revision;
+          return;
+        }
+        if (await hasNewerRecordedReplacement(unit, current.activeRevisionId, resolved.revision)) {
+          // Admission changed the candidate while Compute was preparing it. Dispatch will
+          // retire the superseded runtime; never publish it, even briefly.
+          await queue.defer(claim, { code: "PREDECESSOR_STOP_RETARGETED" }, { delayMs: 1 });
+          replacementRetargeted = true;
           return;
         }
         const activeAgent = await unit.agents.compareAndSetActiveRevision(
@@ -6813,6 +6939,10 @@ export class ControllerWorker {
         });
       }
     }, this.queueOptions);
+    if (replacementRetargeted) {
+      this.passOutcome = "pending";
+      return;
+    }
     if (stoppedCandidate !== undefined) {
       await this.closeRevisionCredentials(claim, stoppedCandidate);
       try {
@@ -7349,9 +7479,7 @@ export class ControllerWorker {
       return false;
     }
     const outcome = await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent?.status !== "active" ||
@@ -7406,9 +7534,7 @@ export class ControllerWorker {
   ): Promise<void> {
     await this.closeRevisionCredentials(claim, revision);
     await this.state.transactWithQueue(async (_unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       await queue.complete(claim, { code });
     }, this.queueOptions);
     this.passOutcome = "success";
@@ -7450,9 +7576,7 @@ export class ControllerWorker {
     let completed = false;
     let withdrawalPending = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
@@ -7600,9 +7724,7 @@ export class ControllerWorker {
       }
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
@@ -7726,9 +7848,7 @@ export class ControllerWorker {
   ): Promise<
     { readonly agent: Readonly<Agent>; readonly revision: Readonly<AgentRevision> } | undefined
   > {
-    if ((await queue.heartbeat(claim)) === undefined) {
-      throw new WorkClaimLostError();
-    }
+    requireClaimRenewal(await queue.heartbeat(claim));
     const agent = await this.lockClaimAgent(unit, claim);
     if (
       agent === undefined ||
@@ -8052,9 +8172,7 @@ export class ControllerWorker {
         : undefined;
     let auditedPending = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const current =
         namespace === undefined
           ? undefined

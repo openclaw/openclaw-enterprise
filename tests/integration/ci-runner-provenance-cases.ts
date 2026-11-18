@@ -283,8 +283,10 @@ test("failed checkout builds", async () => {
       "unrecognized outcome",
     ] as const) {
       await t.test(scenario, async (t) => {
-        const root = join(await fixture(t), "private-source-canary");
-        await mkdir(join(root, "tests/integration"), { recursive: true });
+        const runnerRoot = join(await fixture(t), "private-source-canary");
+        await mkdir(join(runnerRoot, "tests/integration"), { recursive: true });
+        // The installed summary uses process.cwd(), which resolves the runner root's symlinks.
+        const root = await realpath(runnerRoot);
         await mkdir(join(root, "tests/helpers"), { recursive: true });
         const path = "tests/integration/skipper-prepared-git-installed.test.mjs";
         const name = "installed journey";
@@ -376,7 +378,7 @@ test("failed checkout builds", async () => {
           "run",
           "installed",
           "--root",
-          root,
+          runnerRoot,
           "--manifest",
           "manifest.json",
           "--state",

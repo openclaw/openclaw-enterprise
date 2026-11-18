@@ -304,14 +304,15 @@ In the console, use **Stop Agent**, and resume with **Deploy new version**; see 
 
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires
 exact-Agent `operate`. A `202` response means OCC committed `desiredRuntimeState:
-"stopped"` and queued Agent-scoped work; it does not claim Compute has already
-finished. The worker reauthorizes the original actor, invokes the selected
+"stopped"` and queued Agent-scoped work; Compute may still be stopping. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
-Agent revision nor calls destructive version retirement. Repeated stop requests
-converge safely, and one Agent's stop does not affect siblings.
+Stop terminates inbound routing and execution, including the current turn, which
+[stays stopped on Kubernetes](interrupted-turns.md). It retains the Agent revision, Agent
+credentials, gateway state, and workspace, creates no revision and calls no
+destructive version retirement. Repeated stops converge safely without
+affecting siblings.
 
 Deployment is the resume operation. It saves the next version in a new Agent revision and
 sets desired state to `running`; OCC never restarts an old version by mutating
