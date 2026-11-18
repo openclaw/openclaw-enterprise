@@ -677,6 +677,7 @@ function signinBuildInputs(root: string, revision: string) {
     "scripts/migration-history.mjs",
     "scripts/migration-catalog.mjs",
     "scripts/migration-catalog.ts",
+    "scripts/migration-history-preflight.ts",
     "scripts/bootstrap-installation.mjs",
     // The reviewed controller image copied this historical entry point.
     "scripts/auth-maintain.mjs",
