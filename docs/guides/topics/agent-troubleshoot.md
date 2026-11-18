@@ -148,16 +148,17 @@ original PID 1 start time. If the replacement reports an unverifiable owner,
 follow this procedure.
 
 A dedicated Gateway does not recover a killed container's locks. On
-Kubernetes it stays unready with the failed check `gateway-state-lock`, a
-deployment in progress fails with `RUNTIME_STARTUP_FAILED`, and `occ agent logs
-AGENT_ID --source gateway` quotes the holder. If the holder stops cleanly, the
+Kubernetes it stays unready on the check `gateway-state-lock`, and the deployment
+status shows `failed` with `RUNTIME_STATE_LOCK_UNVERIFIED` while the Pod waits.
+`occ agent logs AGENT_ID --source gateway` shows `The Gateway cannot start: …`
+with the holder. If the holder stops cleanly, the
 Gateway restarts within 5 minutes; otherwise use the same procedure, which stops
 the Agent first.
 
 A dedicated Harness Pod killed during Doctor or native setup (on a node failure)
-can leave its workspace node state locked. Later versions then fail the check
-`gateway-state-lock`; `occ agent logs AGENT_ID --source agent` quotes the holder.
-After OCE deletes their Pods, only `RUNTIME_STARTUP_FAILED` remains. This applies
+can leave its workspace node state locked. Later versions then fail with
+`RUNTIME_STATE_LOCK_UNVERIFIED`; `occ agent logs AGENT_ID --source agent` shows
+`The Harness cannot start: …` with the holder. That log goes with the Pod. This applies
 to the Harness Deployment that Kubernetes Compute creates; a Harness run by a
 SandboxDriver has no such Deployment. Use the same procedure, with these changes:
 

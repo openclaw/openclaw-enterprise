@@ -174,6 +174,8 @@ state after admission.
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 - An `agent` `gateway-state-lock` check is a Kubernetes Harness whose Doctor or
   native setup met node state lock holders; the log quotes them. Recover as above.
+  Either check fails the deployment with `RUNTIME_STATE_LOCK_UNVERIFIED`
+  (`worker.ts:heldRuntimeFailureCode`), whose message names the log source.
 - A dedicated Gateway held at `gateway-tool-policy` with code
   `INCOMPATIBLE_RESPONSE` can have a runtime image provenance failure.
   `apps/controller/src/drivers/compute/gateway-tool-policy.ts:requireGatewayToolPolicyRuntime`
@@ -251,6 +253,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 03:40: A held `gateway-state-lock` check fails the deployment with `RUNTIME_STATE_LOCK_UNVERIFIED`. (finding 3348)
 
 - 2026-11-17 23:35: Kubernetes wrappers release an unfinished Doctor's or setup's own state locks; a Harness on an unverifiable holder reports `gateway-state-lock`. (finding 3345)
 
