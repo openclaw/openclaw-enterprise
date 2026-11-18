@@ -243,7 +243,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo 'e59465d887614ef916585e25139da75cf1a71a8e4622ed6b801f78fd37c76c15  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
