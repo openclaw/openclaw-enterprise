@@ -1,21 +1,19 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import type { ErrorDetail } from "./api/common.ts";
-import { OAuthScope } from "./api/connection-templates.ts";
 import type { DeploymentRequestMatch, DeploymentRequestPolicy } from "./credential-deployment.ts";
-import { networkMatchDetails, SandboxNetworkGrantSchema, validDnsHost } from "./sandbox-policy.ts";
+import { networkMatchDetails, SandboxNetworkGrantSchema } from "./sandbox-policy.ts";
 
 type Destination = Pick<DeploymentRequestMatch, "host" | "ports">;
 type PortRanges = DeploymentRequestMatch["ports"];
 
 const strict = { additionalProperties: false } as const;
 const literal = Type.String({ minLength: 1, pattern: "^[^\\s\\x00-\\x1f\\x7f*?]+$" });
-const path = Type.String({ pattern: "^/[^\\s\\x00-\\x1f\\x7f?#*\\\\]*$" });
 const requestSchema = Type.Union([
   Type.Object(
     {
       type: Type.Literal("http"),
-      path,
+      path: Type.String(),
       method: Type.String({ pattern: "^[A-Za-z0-9!#$%&'\\+.^_`|~-]+$" }),
     },
     strict,
@@ -23,27 +21,9 @@ const requestSchema = Type.Union([
   Type.Object(
     {
       type: Type.Literal("mcp"),
-      path,
+      path: Type.String(),
       method: literal,
       toolName: Type.Optional(literal),
-    },
-    strict,
-  ),
-  Type.Object(
-    {
-      type: Type.Literal("evaluator"),
-      id: literal,
-      digest: literal,
-      admittedSource: Type.Object(
-        {
-          bindingRef: Type.String({ minLength: 1 }),
-          host: Type.String(),
-          port: Type.Integer({ minimum: 1, maximum: 65535 }),
-          path: Type.String({ maxLength: 512, pattern: "^/[^\\s\\x00-\\x1f\\x7f?#\\\\]*$" }),
-          scopes: Type.Array(OAuthScope, { uniqueItems: true }),
-        },
-        strict,
-      ),
     },
     strict,
   ),
@@ -92,33 +72,54 @@ export function portsCovered(ports: PortRanges, allowed: readonly Destination[])
   });
 }
 
+// Match canonical path segments directly. Encoded delimiters, dot segments and path
+// parameters can be interpreted differently by the enforcing Driver and the origin.
+function validPath(path: unknown, allowSubtree: boolean): path is string {
+  if (typeof path !== "string" || !path.startsWith("/") || path.includes("//")) {
+    return false;
+  }
+  const base = allowSubtree && path.endsWith("/**") ? path.slice(0, -3) : path;
+  return (
+    !/[^A-Za-z0-9._~!$&'()+,:=@/-]/.test(base) &&
+    !base.split("/").some((part) => part === "." || part === "..")
+  );
+}
+
+/** A terminal subtree includes its base and descendants separated by a slash. */
+export function pathCovered(path: string, allowedPath: string): boolean {
+  if (!validPath(path, true) || !validPath(allowedPath, true)) {
+    return false;
+  }
+  if (path === allowedPath) {
+    return true;
+  }
+  if (!allowedPath.endsWith("/**")) {
+    return false;
+  }
+  const base = allowedPath.slice(0, -3);
+  return path === base || path.startsWith(base + "/");
+}
+
 function sameRequest(a?: DeploymentRequestPolicy, b?: DeploymentRequestPolicy): boolean {
-  if (!a || !b) {
-    return a === b;
+  return (
+    a?.type === b?.type &&
+    a?.method === b?.method &&
+    a?.path === b?.path &&
+    (a?.type !== "mcp" || (b?.type === "mcp" && a.toolName === b.toolName))
+  );
+}
+
+export function requestPolicyCovered(
+  policy?: DeploymentRequestPolicy,
+  allowed?: DeploymentRequestPolicy,
+): boolean {
+  if (allowed === undefined) {
+    return true;
   }
-  switch (a.type) {
-    case "http":
-      return b.type === "http" && a.path === b.path && a.method === b.method;
-    case "mcp":
-      return (
-        b.type === "mcp" && a.path === b.path && a.method === b.method && a.toolName === b.toolName
-      );
-    case "evaluator": {
-      if (b.type !== "evaluator" || a.id !== b.id || a.digest !== b.digest) {
-        return false;
-      }
-      const left = a.admittedSource;
-      const right = b.admittedSource;
-      return (
-        left.bindingRef === right.bindingRef &&
-        left.host === right.host &&
-        left.port === right.port &&
-        left.path === right.path &&
-        left.scopes.length === right.scopes.length &&
-        left.scopes.every((scope) => right.scopes.includes(scope))
-      );
-    }
+  if (allowed.type === "http" && policy?.type === "http") {
+    return policy.method === allowed.method && pathCovered(policy.path, allowed.path);
   }
+  return sameRequest(policy, allowed);
 }
 
 export function requestCovered(
@@ -129,7 +130,7 @@ export function requestCovered(
     (limit) =>
       match.binary === limit.binary &&
       hostCovered(match.host, limit.host) &&
-      (limit.requestPolicy === undefined || sameRequest(match.requestPolicy, limit.requestPolicy)),
+      requestPolicyCovered(match.requestPolicy, limit.requestPolicy),
   );
   return portsCovered(match.ports, candidates);
 }
@@ -141,22 +142,27 @@ function destinationsOverlap(a: Destination, b: Destination): boolean {
   );
 }
 
-// Two exact methods or tool names can be alternatives. An opaque evaluator has no
-// provable intersection semantics with any other selector.
 export function disjointRequests(
   a?: DeploymentRequestPolicy,
   b?: DeploymentRequestPolicy,
 ): boolean {
-  if (!a || !b || a.type === "evaluator" || b.type === "evaluator") {
+  if (!a || !b) {
     return false;
   }
-  return a.path !== b.path || (a.type === b.type && !sameRequest(a, b));
+  if (!pathCovered(a.path, b.path) && !pathCovered(b.path, a.path)) {
+    return true;
+  }
+  // The contract distinguishes HTTP from MCP operations. Different selectors on the
+  // same endpoint do not establish that the enforcing Driver can separate the requests.
+  return (
+    (a.type === "http" && b.type === "http" && a.method !== b.method) ||
+    (a.type === "mcp" && b.type === "mcp" && !sameRequest(a, b))
+  );
 }
 
 export function validateMatches(
   matches: readonly DeploymentRequestMatch[],
   pointer: string,
-  policyKind: "network" | "injection",
 ): ErrorDetail[] {
   const details: ErrorDetail[] = [];
   matches.forEach((rule, index) => {
@@ -171,19 +177,11 @@ export function validateMatches(
     }
     details.push(...networkMatchDetails(rule, path));
     const policy = rule.requestPolicy;
-    if (policy?.type === "evaluator" && !validDnsHost(policy.admittedSource.host)) {
+    if (policy && !validPath(policy.path, policy.type === "http")) {
       details.push({
         path,
         code: "INVALID_VALUE",
-        message: "Use an exact DNS hostname for the admitted credential source.",
-      });
-    }
-    const requestPath = policy?.type === "evaluator" ? policy.admittedSource.path : policy?.path;
-    if (requestPath?.split("/").some((part) => part === "." || part === "..")) {
-      details.push({
-        path,
-        code: "INVALID_VALUE",
-        message: "Use a request path without dot segments.",
+        message: "Use a canonical request path. Only HTTP paths can end in a subtree wildcard.",
       });
     }
     if (
@@ -209,7 +207,6 @@ export function validateMatches(
             grant.binary === other.binary &&
             destinationsOverlap(grant, other) &&
             !sameRequest(grant.requestPolicy, other.requestPolicy) &&
-            !separateEvaluatorGrants(grant.requestPolicy, other.requestPolicy, policyKind) &&
             !disjointRequests(grant.requestPolicy, other.requestPolicy),
         )
     ) {
@@ -221,41 +218,6 @@ export function validateMatches(
     }
   });
   return details;
-}
-
-// Unknown path patterns stay closed. For literal paths and terminal /** subtrees,
-// a common slash-delimited prefix determines whether both can cover one request.
-function separateEndpointPaths(left: string, right: string): boolean {
-  const canonical = /^\/(?:(?:[A-Za-z0-9._~-]+\/)*(?:[A-Za-z0-9._~-]+|\*\*))?$/;
-  if (left === right || !canonical.test(left) || !canonical.test(right)) {
-    return false;
-  }
-  const covers = (pattern: string, path: string) =>
-    pattern.endsWith("/**") &&
-    (path === pattern.slice(0, -3) || path.startsWith(pattern.slice(0, -2)));
-  return !covers(left, right) && !covers(right, left);
-}
-
-function separateEvaluatorGrants(
-  left: DeploymentRequestPolicy | undefined,
-  right: DeploymentRequestPolicy | undefined,
-  policyKind: "network" | "injection",
-): boolean {
-  if (
-    left?.type !== "evaluator" ||
-    right?.type !== "evaluator" ||
-    left.id !== right.id ||
-    left.digest !== right.digest
-  ) {
-    return false;
-  }
-  const a = left.admittedSource;
-  const b = right.admittedSource;
-  if (a.bindingRef !== b.bindingRef) {
-    // The Sandbox qualifies the union. The proxy selects one binding by its placeholder.
-    return policyKind === "network";
-  }
-  return a.host !== b.host || a.port !== b.port || separateEndpointPaths(a.path, b.path);
 }
 
 export function intersectPorts(a: PortRanges, b: PortRanges): PortRanges {

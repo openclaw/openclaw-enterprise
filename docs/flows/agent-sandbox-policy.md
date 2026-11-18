@@ -72,10 +72,10 @@ Stale and unauthorized requests retain their resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
 omitting records with Unicode control characters.
 
-For each evaluator rule, `deploymentPolicyAdmissionDetails` checks its pin, endpoint and
-scopes against the admitted binding and Driver capabilities. Accounts can share an evaluator when the Drivers
-enforce each account's bounds. Discovery outside the source path stays credentialless. OCC
-must supply current binding authority and the reviewed model presentation during revision admission.
+The staged `deploymentPolicyAdmissionDetails` check compares each HTTP or MCP injection rule
+against both the binding's current source destinations and its reviewed consumer requests.
+Network-only discovery can use another path on the same host. The revision caller still needs
+to supply this authority and the reviewed presentation. The provider enforces OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -274,7 +274,7 @@ the policy read, only the network policy card states it; the suggestions card is
 
 ## Changelog
 
-- 2026-11-18 05:31: Trace source and model authority in staged admission. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 1075aec5e13ce4d957523b13eb1389300378b986)
+- 2026-11-18 05:50: Trace per-binding static request admission. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 913c717d12f78645b5f8d47216aaddd2dfe90c0e)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
