@@ -1612,98 +1612,7 @@ revisionTest(
 );
 
 revisionTest(
-  "compatible deployment generations survive redeploy but cannot cross an explicit stop",
-  async (fixture) => {
-    const owner = await fixture.agent("restart-generations", { executionMode: "dedicated" });
-    const driver = countingExclusiveCompute(fixture);
-    let domain: string | undefined = "retained-agent-workspace-v1";
-    const compute: ComputeDriver = {
-      ...driver.compute,
-      id: "restart-generation-fixture",
-      // This seam declares Compute support. The real controller, PostgreSQL and
-      // worker own the lifecycle being proved; no native recovery is simulated here.
-      restartContinuationDomain: () => domain,
-    };
-    fixture.controller.registerDriver(compute);
-    fixture.controller.selectDriver("compute", compute.id);
-    const configuration = await fixture.controller.createConfiguration(fixture.actor.id, {
-      namespaceId: fixture.namespace.id,
-      kind: "agent",
-      values: createHarnessConfiguration("codex", "gpt-4.1"),
-    });
-    await fixture.controller.updateAgent(fixture.actor.id, {
-      namespaceId: fixture.namespace.id,
-      agentId: owner.id,
-      configurationId: configuration.id,
-      gatewayManagedMode: false,
-    });
-    const target = { namespaceId: fixture.namespace.id, agentId: owner.id };
-    const deploy = () =>
-      fixture.controller.deployAgent(fixture.actor.id, target, resolveApprovedHarness);
-    const current = () =>
-      fixture.state.read((view) =>
-        view.agents.findRestartContinuation(target.namespaceId, target.agentId),
-      );
-    const first = await deploy();
-    assert.ok(first.restartContinuation);
-    await fixture.start(compute);
-    await fixture.work(
-      { id: first.id, idempotencyKey: `agent_revision:${first.id}:reconcile` },
-      "succeeded",
-    );
-    await fixture.stop();
-    assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, first.id);
-
-    // Concurrent deployments serialize on the Agent and share one current generation.
-    const replacements = await Promise.all([deploy(), deploy()]);
-    for (const revision of replacements) {
-      assert.deepEqual(revision.restartContinuation, first.restartContinuation);
-    }
-    await fixture.controller.stopAgent(fixture.actor.id, target.namespaceId, target.agentId);
-    assert.equal(await current(), undefined, "stop ends continuation before any teardown runs");
-    assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, first.id);
-
-    // Both deployments precede worker activation: deriving from the old active
-    // pointer would revive generation A on one of these admissions.
-    const afterStop = await deploy();
-    const afterStopAgain = await deploy();
-    assert.ok(afterStop.restartContinuation);
-    assert.notEqual(afterStop.restartContinuation.generation, first.restartContinuation.generation);
-    assert.deepEqual(afterStopAgain.restartContinuation, afterStop.restartContinuation);
-    assert.deepEqual(await current(), afterStop.restartContinuation);
-    await assert.rejects(
-      fixture.observerPool.query("UPDATE occ.agents SET restart_domain = NULL WHERE id = $1", [
-        owner.id,
-      ]),
-      { code: "23514" },
-      "PostgreSQL must reject a generation without its compatibility domain",
-    );
-
-    // A changed or unsupported execution domain ends continuity even while running.
-    domain = "different-retained-workspace";
-    const incompatible = await deploy();
-    assert.notEqual(
-      incompatible.restartContinuation?.generation,
-      afterStop.restartContinuation.generation,
-    );
-    domain = undefined;
-    const unsupported = await deploy();
-    assert.equal(unsupported.restartContinuation, undefined);
-    assert.equal(await current(), undefined);
-    await fixture.start(compute);
-    await fixture.work(
-      { id: unsupported.id, idempotencyKey: `agent_revision:${unsupported.id}:reconcile` },
-      "succeeded",
-    );
-    assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, unsupported.id);
-    for (const revision of [...replacements, afterStop, afterStopAgain, incompatible]) {
-      assert.equal(driver.preparations(revision), 0, "superseded generations must not prepare");
-    }
-  },
-);
-
-revisionTest(
-  "a stop and redeploy during preparation cannot activate the ended recovery generation",
+  "a stop during preparation prevents activation before a later deployment",
   async (fixture) => {
     const owner = await fixture.agent("restart-preparation-race", { executionMode: "dedicated" });
     let release!: () => void;
@@ -1726,7 +1635,6 @@ revisionTest(
     const compute: ComputeDriver = {
       ...driver.compute,
       id: "restart-preparation-race",
-      restartContinuationDomain: () => "retained-agent-workspace-v1",
       async activateRevision(revision, context) {
         activated.push(revision.id);
         await driver.compute.activateRevision?.(revision, context);
@@ -1755,15 +1663,17 @@ revisionTest(
     await fixture.start(compute);
     try {
       await preparing;
-      // The first worker is still in Compute. Stop and redeploy make desired state
-      // running again, so checking that flag alone would activate the ended turn.
+      // Stop while Compute is preparing. Desired stopped state must prevent activation.
+      // A later deployment starts a new workload; Stop no longer fences that startup.
       await fixture.controller.stopAgent(fixture.actor.id, fixture.namespace.id, owner.id);
-      const successor = await deploy();
-      assert.notEqual(
-        successor.restartContinuation?.generation,
-        first.restartContinuation?.generation,
-      );
       release();
+      await fixture.work(
+        { id: first.id, idempotencyKey: `agent_revision:${first.id}:reconcile` },
+        "succeeded",
+      );
+      assert.equal(activated.includes(first.id), false);
+      assert.equal((await fixture.currentAgent(owner))?.desiredRuntimeState, "stopped");
+      const successor = await deploy();
       await fixture.work(
         { id: successor.id, idempotencyKey: `agent_revision:${successor.id}:reconcile` },
         "succeeded",
