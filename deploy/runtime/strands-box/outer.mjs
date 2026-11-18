@@ -26,7 +26,10 @@ const { stop } = serveHarness(manifest, {
     setTimeout(() => box.kill("SIGKILL"), 8000).unref();
   },
 });
-box.on("error", stop);
+box.on("error", () => {
+  process.exitCode = 1;
+  stop();
+});
 box.on("exit", (code) => {
   stop();
   process.exitCode = shutdownRequested || code === 0 ? 0 : 1;

@@ -26,7 +26,7 @@ export function serveStatus(manifest) {
         "http://127.0.0.1:" + manifest.port + "/openclaw/runtime/status",
         {
           redirect: "error",
-          headers: { authorization: "Bearer " + token },
+          headers: { authorization: "Bearer " + token, "x-oce-readiness": "1" },
           signal: AbortSignal.timeout(1500),
         },
       );

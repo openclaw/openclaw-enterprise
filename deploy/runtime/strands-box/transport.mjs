@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 export const MAX_FRAME = 96 * 1024;
 export const MAX_BUFFER = 1024 * 1024;
 export const MAX_CHANNELS = 16;
+export const PROBE_CHANNELS = 2;
 export const CHUNK = 32 * 1024;
 
 export function channelId() {
@@ -63,7 +64,7 @@ export function framed(reader, writer, receive, failed) {
           typeof message !== "object" ||
           typeof message.id !== "string" ||
           !/^[a-f0-9-]{36}$/u.test(message.id) ||
-          !["open", "data", "close"].includes(message.type)
+          !["open", "opened", "probe", "data", "close", "abort"].includes(message.type)
         ) {
           throw new Error("Invalid transport frame");
         }
@@ -111,11 +112,11 @@ export function relay(socket, id, send, closed) {
     pump();
   });
   socket.on("error", () => socket.destroy());
-  socket.once("close", () => {
+  socket.once("close", (hadError) => {
     cancelDrain?.();
     closed();
     try {
-      send({ id, type: "close" });
+      send({ id, type: hadError || !socket.readableEnded ? "abort" : "close" });
     } catch {
       /* The whole Box may already be stopping. */
     }
@@ -124,6 +125,12 @@ export function relay(socket, id, send, closed) {
 
 export function deliver(message, socket) {
   if (message.type === "close") {
+    // Flush bytes already queued for this peer before releasing the channel.
+    socket.setTimeout(30000, () => socket.destroy());
+    socket.end(() => socket.destroy());
+    return;
+  }
+  if (message.type === "abort") {
     socket.destroy();
     return;
   }

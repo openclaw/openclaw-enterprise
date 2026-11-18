@@ -7,6 +7,7 @@ import {
   deliver,
   firstHeader,
   MAX_CHANNELS,
+  PROBE_CHANNELS,
   CHUNK,
 } from "./transport.mjs";
 
@@ -24,6 +25,7 @@ export function serveHarness(manifest, { reader, writer, terminate }) {
   }
   const channels = new Map();
   const accepted = new Set();
+  const probes = new Set();
   let stopping = false;
   function stop() {
     if (stopping) {
@@ -48,13 +50,16 @@ export function serveHarness(manifest, { reader, writer, terminate }) {
         }
         // Both peers may allocate the last slot before receiving the other's
         // open. Refuse that channel without terminating established sessions.
-        if (channels.size >= MAX_CHANNELS) {
+        if (channels.size - probes.size >= MAX_CHANNELS) {
           send({ id: message.id, type: "close" });
           return;
         }
         const socket = connect({ host: manifest.gateway.host, port: manifest.gateway.port });
         socket.setTimeout(30000, () => socket.destroy());
-        socket.once("connect", () => socket.setTimeout(0));
+        socket.once("connect", () => {
+          socket.setTimeout(0);
+          send({ id: message.id, type: "opened" });
+        });
         channels.set(message.id, socket);
         relay(socket, message.id, send, () => channels.delete(message.id));
       } else {
@@ -67,7 +72,7 @@ export function serveHarness(manifest, { reader, writer, terminate }) {
     stop,
   );
   const server = createServer((socket) => {
-    if (channels.size >= MAX_CHANNELS || stopping) {
+    if (stopping || (accepted.size >= MAX_CHANNELS && socket.remoteAddress !== "127.0.0.1")) {
       socket.destroy();
       return;
     }
@@ -102,21 +107,30 @@ export function serveHarness(manifest, { reader, writer, terminate }) {
         reject("401 Unauthorized");
         return;
       }
-      if (channels.size >= MAX_CHANNELS) {
+      const probe =
+        socket.remoteAddress === "127.0.0.1" &&
+        lines.some((line) => /^x-oce-readiness: 1$/iu.test(line));
+      if (probe ? probes.size >= PROBE_CHANNELS : channels.size - probes.size >= MAX_CHANNELS) {
         socket.destroy();
         return;
       }
       const id = channelId();
       channels.set(id, socket);
-      relay(socket, id, send, () => channels.delete(id));
-      send({ id, type: "open" });
+      if (probe) {
+        probes.add(id);
+      }
+      relay(socket, id, send, () => {
+        channels.delete(id);
+        probes.delete(id);
+      });
+      send({ id, type: probe ? "probe" : "open" });
       for (let offset = 0; offset < bytes.length; offset += CHUNK) {
         send({ id, type: "data", data: bytes.subarray(offset, offset + CHUNK).toString("base64") });
       }
       socket.resume();
     });
   });
-  server.maxConnections = MAX_CHANNELS;
+  server.maxConnections = MAX_CHANNELS + PROBE_CHANNELS;
   server.on("error", stop);
   server.listen(manifest.port, "0.0.0.0");
   return { server, stop };
