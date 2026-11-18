@@ -440,14 +440,28 @@ export function createPluginFields({
     });
   }
 
+  function removeToolPolicy(selection: EditableSelection, toolId: string) {
+    const overrides = { ...selection.tools };
+    delete overrides[toolId];
+    if (Object.keys(overrides).length) {
+      selection.tools = overrides;
+    } else {
+      delete selection.tools;
+    }
+  }
+
   function managedToolPicker(
     entry: CatalogEntry,
     slot: AgentPluginCredentialSlot,
     sourceId: string,
     selected: EditableSelection,
+    canDiscover: boolean,
   ) {
     const connection = { slot: slot.id, sourceId };
+    const supportsHumanApproval =
+      capabilities?.policyScopeByPlugin?.[entry.id] === "tool_human_approval";
     const result =
+      canDiscover &&
       entry.managedTools?.connection.slot === slot.id &&
       entry.managedTools.connection.sourceId === sourceId
         ? entry.managedTools
@@ -457,7 +471,10 @@ export function createPluginFields({
     });
     load.dataset.discovery = "true";
     load.dataset.policyUnsupported = String(
-      !catalog?.canLoad || catalog.status === "loading" || result?.status === "loading",
+      !canDiscover ||
+        !catalog?.canLoad ||
+        catalog.status === "loading" ||
+        result?.status === "loading",
     );
     const picker = element(
       "fieldset",
@@ -470,6 +487,15 @@ export function createPluginFields({
       ),
       load,
     );
+    if (supportsHumanApproval) {
+      picker.append(
+        element(
+          "p",
+          { className: "hint" },
+          "Human approval applies to Gateway-dispatched MCP calls. Scripts can call enabled tools directly using the same connection without approval.",
+        ),
+      );
+    }
     if (result?.status === "loading") {
       picker.append(element("p", { className: "hint", role: "status" }, "Loading tools…"));
     } else if (result?.status === "error") {
@@ -480,40 +506,81 @@ export function createPluginFields({
           result.message ?? "Tools could not be loaded.",
         ),
       );
-    } else if (result?.status === "loaded") {
-      const tools = result.tools ?? [];
-      if (!tools.length) {
-        picker.append(element("p", { className: "hint" }, "This account returned no tools."));
-      }
-      for (const tool of tools) {
-        const toolNames = selected.driverPolicy?.toolNames;
-        const checkbox = element("input", {
-          type: "checkbox",
-          checked: Array.isArray(toolNames) && toolNames.includes(tool.id),
-          "aria-label": tool.name,
-        });
-        checkbox.addEventListener("change", () =>
-          updateSelection(entry.id, (selection) => {
-            const policy = selection.driverPolicy;
-            const credentials = policy?.credentials;
+    } else if (result?.status === "loaded" && !result.tools?.length) {
+      picker.append(element("p", { className: "hint" }, "This account returned no tools."));
+    }
+    const toolNames = Array.isArray(selected.driverPolicy?.toolNames)
+      ? selected.driverPolicy.toolNames.filter((id): id is string => typeof id === "string")
+      : [];
+    const discovered = result?.status === "loaded" ? (result.tools ?? []) : [];
+    const discoveredIds = new Set(discovered.map((tool) => tool.id));
+    const savedIds = new Set([...toolNames, ...Object.keys(selected.tools ?? {})]);
+    const unavailable = [...savedIds]
+      .filter((id) => !discoveredIds.has(id))
+      .map((id) => ({ id, name: id, unavailable: true }));
+    for (const tool of [...discovered, ...unavailable]) {
+      const isUnavailable = "unavailable" in tool;
+      const checkbox = element("input", {
+        type: "checkbox",
+        checked: toolNames.includes(tool.id),
+        "aria-label": tool.name,
+      });
+      checkbox.dataset.policyUnsupported = String(isUnavailable && !checkbox.checked);
+      checkbox.addEventListener("change", () =>
+        updateSelection(entry.id, (selection) => {
+          const policy = selection.driverPolicy;
+          const credentials = policy?.credentials;
+          if (!policy) {
+            return;
+          }
+          const allowed = new Set(Array.isArray(policy.toolNames) ? policy.toolNames : []);
+          if (checkbox.checked) {
             if (
-              policy?.releaseSha256 !== slot.releaseSha256 ||
+              !canDiscover ||
+              policy.releaseSha256 !== slot.releaseSha256 ||
               !isObject(credentials) ||
               credentials[slot.id] !== sourceId
             ) {
               return;
             }
-            const allowed = new Set(Array.isArray(policy.toolNames) ? policy.toolNames : []);
-            if (checkbox.checked) {
-              allowed.add(tool.id);
-            } else {
-              allowed.delete(tool.id);
-            }
-            selection.driverPolicy = { ...policy, toolNames: [...allowed] };
-          }),
-        );
-        picker.append(element("label", { className: "plugin-toggle" }, checkbox, tool.name));
+            allowed.add(tool.id);
+          } else {
+            allowed.delete(tool.id);
+            removeToolPolicy(selection, tool.id);
+          }
+          selection.driverPolicy = { ...policy, toolNames: [...allowed] };
+        }),
+      );
+      const row = element(
+        "div",
+        { className: "plugin-controls", "data-tool": tool.id },
+        element("label", { className: "plugin-toggle" }, checkbox, tool.name),
+      );
+      if (isUnavailable) {
+        row.append(element("span", { className: "badge" }, "Unavailable"));
       }
+      if (supportsHumanApproval && checkbox.checked) {
+        const approval = select<PluginApprovalMode>(
+          "Approval",
+          selected.tools?.[tool.id]?.approval ?? "none",
+          [
+            ["none", "No approval"],
+            ["all_actions", "Ask a human"],
+          ],
+          (value) =>
+            writeToolPolicy(entry.id, "approval", value === "none" ? undefined : value, tool.id),
+        );
+        approval.querySelector("select")?.setAttribute("aria-label", `${tool.name} approval`);
+        row.append(approval);
+      }
+      if (!checkbox.checked && selected.tools?.[tool.id]) {
+        row.append(
+          button("Remove saved policy", () =>
+            updateSelection(entry.id, (selection) => removeToolPolicy(selection, tool.id)),
+          ),
+        );
+      }
+      picker.append(row);
     }
     return picker;
   }
@@ -935,6 +1002,9 @@ export function createPluginFields({
               capabilities?.credentialSlots?.some((slot) => slot.pluginId === entry.id)
             ) {
               delete selection.driverPolicy;
+              if (capabilities?.policyScopeByPlugin?.[entry.id] === "tool_human_approval") {
+                delete selection.tools;
+              }
             }
           }),
         );
@@ -989,6 +1059,9 @@ export function createPluginFields({
               options,
               (sourceId) =>
                 updateSelection(entry.id, (selection) => {
+                  if (slot.toolDiscovery) {
+                    delete selection.tools;
+                  }
                   if (sourceId) {
                     selection.driverPolicy = {
                       releaseSha256: slot.releaseSha256,
@@ -1012,13 +1085,9 @@ export function createPluginFields({
           if (slot.toolDiscovery && !current && slot.sources.length > 0) {
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));
           }
-          if (
-            slot.toolDiscovery &&
-            !stale &&
-            typeof current === "string" &&
-            slot.sources.some(({ id }) => id === current)
-          ) {
-            details.append(managedToolPicker(entry, slot, current, selected));
+          if (slot.toolDiscovery && typeof current === "string") {
+            const canDiscover = !stale && slot.sources.some(({ id }) => id === current);
+            details.append(managedToolPicker(entry, slot, current, selected, canDiscover));
           }
         }
       }
@@ -1164,7 +1233,7 @@ export function createPluginFields({
       // An override can outlive the tool in the Driver catalog. Show its saved ID in either case.
       type Tool = Omit<PluginToolCatalogEntry, "ownerId"> & { ownerId?: string };
       const tools = new Map<string, Tool>();
-      if (!enablementOnly) {
+      if (!enablementOnly && !hasManagedTools) {
         for (const tool of entry.tools ?? []) {
           tools.set(tool.id, tool);
         }
@@ -1184,11 +1253,11 @@ export function createPluginFields({
           ),
         );
       }
-      if (entry.toolStatus === "loading") {
+      if (!hasManagedTools && entry.toolStatus === "loading") {
         details.append(
           element("p", { className: "hint plugin-loading", role: "status" }, "Loading tools…"),
         );
-      } else if (entry.tools === null && (!enablementOnly || entry.remoteId)) {
+      } else if (!hasManagedTools && entry.tools === null && (!enablementOnly || entry.remoteId)) {
         if (!enablementOnly) {
           details.append(
             element(
@@ -1224,7 +1293,7 @@ export function createPluginFields({
           );
           details.append(load);
         }
-      } else if (!enablementOnly && tools.size === 0) {
+      } else if (!enablementOnly && !hasManagedTools && tools.size === 0) {
         details.append(element("p", { className: "hint" }, "No tools listed for this plugin."));
       }
       if (entry.toolError) {

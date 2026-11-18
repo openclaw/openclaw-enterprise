@@ -452,6 +452,10 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   echoToken = false;
   const capabilities = await request("GET", `${agentPath}/plugins/capabilities`);
   assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
+  assert.equal(
+    record(record(capabilities.data).policyScopeByPlugin)[pluginId],
+    "tool_human_approval",
+  );
   const { credentialSlots } = record(capabilities.data);
   assert(Array.isArray(credentialSlots));
   const slot = record(
@@ -481,8 +485,16 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     string(record(record(refused.body).error).message),
     /Select distinct literal Slack tool names/,
   );
+  const unselectedApproval = pluginsFor(["slack_search_public"]);
+  Object.assign(unselectedApproval[pluginId], {
+    tools: { slack_send_message: { approval: "all_actions" } },
+  });
+  assertApiError(await save(unselectedApproval), 400, "INVALID_REQUEST");
   // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
   const approved = pluginsFor(["slack_send_message"]);
+  Object.assign(approved[pluginId], {
+    tools: { slack_send_message: { approval: "all_actions" } },
+  });
   const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const savedSlack = record(record(record(saved.data).plugins)[pluginId]);

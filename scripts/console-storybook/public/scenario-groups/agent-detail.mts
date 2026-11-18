@@ -238,6 +238,41 @@ export function createAgentDetailScenarios({
     name: "slack_search_public",
     ownerId: slackPluginId,
   };
+  const slackSendTool = {
+    id: "slack_send_message",
+    name: "slack_send_message",
+    ownerId: slackPluginId,
+  };
+  const slackMcpBase = {
+    group: "Pages/Agent detail",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    credentialSources: [{ sourceId: slackSourceId }],
+    pluginDiscoveryCredential: "none",
+    pluginCapabilities: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      approvers: { agent: false, plugin: false, tools: false },
+      toolDefaults: { enabled: false, approval: [], reviewer: [] },
+      tools: { enabled: false, approval: [], reviewer: [] },
+      driverPolicySchema: { type: "object", properties: {} },
+      policyScopeByPlugin: { [slackPluginId]: "tool_human_approval" },
+      credentialSlots: [
+        {
+          pluginId: slackPluginId,
+          releaseSha256: "a".repeat(64),
+          id: "account",
+          label: "Slack account",
+          toolDiscovery: true,
+          sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+        },
+      ],
+    },
+    pluginDiscovery: {
+      pages: { initial: { plugins: [slackEntry], nextCursor: null } },
+      details: { [slackPluginId]: { ...slackEntry, tools: [slackTool, slackSendTool] } },
+    },
+  } satisfies Partial<AgentDetailScenario>;
 
   const shareExistingPerson = [
     { selector: "#share-principal-id", value: "prn_person-demo" },
@@ -1238,36 +1273,9 @@ export function createAgentDetailScenarios({
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
       },
       slackMcpTools: {
-        group: "Pages/Agent detail",
+        ...slackMcpBase,
         name: "Choose tools for a connected Slack account",
-        path: `${draft}&tab=plugins`,
-        harnessId: "openclaw",
-        deployed: true,
         agentPlugins: { [slackPluginId]: { enabled: true } },
-        credentialSources: [{ sourceId: slackSourceId }],
-        pluginDiscoveryCredential: "none",
-        pluginCapabilities: {
-          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-          approvers: { agent: false, plugin: false, tools: false },
-          toolDefaults: { enabled: false, approval: [], reviewer: [] },
-          tools: { enabled: false, approval: [], reviewer: [] },
-          driverPolicySchema: { type: "object", properties: {} },
-          policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
-          credentialSlots: [
-            {
-              pluginId: slackPluginId,
-              releaseSha256: "a".repeat(64),
-              id: "account",
-              label: "Slack account",
-              toolDiscovery: true,
-              sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
-            },
-          ],
-        },
-        pluginDiscovery: {
-          pages: { initial: { plugins: [slackEntry], nextCursor: null } },
-          details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
-        },
         rules: [
           {
             suffix: "/plugins/details",
@@ -1280,13 +1288,39 @@ export function createAgentDetailScenarios({
         ],
         actions: [click("Configure plugins")],
         description:
-          "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+          "The Tools picker loads available tools from the selected Slack account. Enable tools and choose whether native calls require human approval on the next deployment.",
         steps: [
           "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
           "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+          "Check slack_search_public and leave its approval at No approval. Check slack_send_message and choose Ask a human. Review the note that direct scripts bypass Gateway approval.",
+          "Choose Done and Save plugin selections. Open the picker: saved tools and approval choices remain visible as Unavailable until discovery succeeds. Load tools again to confirm the choices.",
+          "Uncheck slack_send_message to remove its approval override, or turn off Enable plugin to clear its managed account and tool policies before saving.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
+      },
+      slackMcpSavedToolsUnavailable: {
+        ...slackMcpBase,
+        name: "Revoke a saved MCP tool when discovery fails",
+        agentPlugins: {
+          [slackPluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: "a".repeat(64),
+              credentials: { account: slackSourceId },
+              toolNames: [slackSendTool.id],
+            },
+            tools: { [slackSendTool.id]: { approval: "all_actions" } },
+          },
+        },
+        rules: [{ suffix: "/plugins/details", method: "POST", status: 403, code: "FORBIDDEN" }],
+        actions: [click("Configure plugins")],
+        description:
+          "A previously saved tool and its Ask policy remain visible when MCP discovery fails. The operator can revoke that tool without discovering it again or selecting another account.",
+        steps: [
+          "Open Slack and choose Load tools. Inspect slack_send_message, labeled Unavailable, with Ask a human selected after discovery fails.",
+          "Uncheck slack_send_message. Its saved approval policy is removed and the unavailable row disappears. Choose Done and save.",
+        ],
+        gap: "The account and discovery failure are simulated. This verifies Console recovery controls.",
       },
       pluginsDraft: {
         group: "Pages/Agent detail",

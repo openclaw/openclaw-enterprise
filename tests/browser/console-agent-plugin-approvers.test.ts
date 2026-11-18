@@ -11,7 +11,12 @@ import type { Locator } from "playwright";
 import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
-import type { PluginApprovers, SecretMetadata } from "../../packages/contracts/src/index.ts";
+import type {
+  CredentialGatewayDriver,
+  PluginApprovers,
+  SandboxDriver,
+  SecretMetadata,
+} from "../../packages/contracts/src/index.ts";
 
 import {
   CodexPluginDriver,
@@ -20,6 +25,7 @@ import {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   apiRequests,
   detailUrl,
@@ -118,6 +124,8 @@ declare global {
   var showPluginPage2: (selections?: string) => void;
   var liveWrites: (string | null)[];
   var liveRegions: (string | null)[];
+  var setManagedMcpCatalog: (result: "error" | "missing" | "available") => void;
+  var setManagedMcpBindingAvailability: (state: "ready" | "missing" | "stale") => void;
 }
 
 // Every test opens its own context in one Chromium per file.
@@ -241,6 +249,300 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
     .getByRole("dialog", { name: "Configure plugins", exact: true })
     .getByRole("button", { name: "Google Workspace", exact: true })
     .waitFor({ state: "visible" });
+});
+
+test("Managed MCP tool approval is saved per selected tool and removed when the tool is disabled", async (t) => {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "MCP tool approval");
+  const namespace = entity(namespaceValue);
+  const sourceConfig = {
+    protocol: "mcp",
+    host: "mcp.slack.com",
+    port: "443",
+    path: "/mcp",
+    env_var: "SLACK_MCP_TOKEN",
+  };
+  const unexpectedCredentialEffect = async (): Promise<never> =>
+    assert.fail("This Console save test does not deploy or use credentials");
+  const gateway: CredentialGatewayDriver = {
+    id: "console-mcp-credential-gateway",
+    capability: "credential_gateway",
+    implementation: "openshell",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "bearer-token",
+          config: Object.keys(sourceConfig).map((name) => ({ name, required: true })),
+          secrets: [{ name: "token", required: true }],
+          rotation: "none",
+        },
+      ];
+    },
+    async registerSource() {
+      return { state: "ready" };
+    },
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    updateSource: unexpectedCredentialEffect,
+    removeSource: unexpectedCredentialEffect,
+    attachForRevision: unexpectedCredentialEffect,
+    attachmentStatus: unexpectedCredentialEffect,
+    withdraw: unexpectedCredentialEffect,
+  };
+  const sandbox: SandboxDriver = {
+    id: "console-mcp-sandbox",
+    capability: "sandbox",
+    implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    provisionHarness: unexpectedCredentialEffect,
+    async cleanup() {},
+  };
+  const compute = createTestKubernetesComputeDriver("compute-mcp", {
+    sandboxDriver: sandbox,
+    credentialGatewayDriver: gateway,
+  });
+  compute.resolveSandboxNamespace = async (namespace) => namespace;
+  for (const driver of [gateway, sandbox, new OCCPluginDriver(), compute]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const secret = secretEntity(
+    await fixture.createSecret(namespace.id, "MCP token", "controlled-token"),
+  );
+  const createdSource = record(
+    await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+      body: {
+        name: "Controlled account",
+        type: "bearer-token",
+        config: sourceConfig,
+        secrets: { token: secret.ref },
+      },
+    }),
+  );
+  assert.equal(createdSource.status, 201, JSON.stringify(createdSource.body));
+  const sourceId = text(responseData(createdSource).id);
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "MCP Agent", nativeValues("mcp"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+      credentialSources: [{ sourceId }],
+    }),
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const capabilities = responseData(await fixture.request("GET", `${path}/plugins/capabilities`));
+  assert.ok(Array.isArray(capabilities.credentialSlots));
+  const slot = capabilities.credentialSlots
+    .map(record)
+    .find((item) => item.pluginId === "occ-plugin:slack@1.0.0");
+  assert.ok(slot);
+  const digest = text(slot.releaseSha256);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).waitFor();
+
+  // The discovered catalog and account are controlled; the editor is the production Console module.
+  await page.evaluate(
+    async ({ sourceId, digest }) => {
+      const modulePath = "/console/agents/plugin-fields.mjs";
+      const module: unknown = await import(modulePath);
+      if (
+        typeof module !== "object" ||
+        module === null ||
+        !("createPluginFields" in module) ||
+        typeof module.createPluginFields !== "function"
+      ) {
+        throw new Error("Expected createPluginFields from " + modulePath);
+      }
+      const createPluginFields =
+        module.createPluginFields as typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs").createPluginFields;
+      const pluginId = "occ-plugin:slack@1.0.0";
+      const tool = { id: "slack_search_public", name: "slack_search_public", ownerId: pluginId };
+      const input = document.querySelector("#agent-plugins");
+      if (!(input instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected the Agent's plugin selections input");
+      }
+      const original = input.closest("section.plugin-fields");
+      if (!original) {
+        throw new Error("Expected the original plugin editor");
+      }
+      input.value = JSON.stringify({
+        [pluginId]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: digest,
+            credentials: { account: sourceId },
+            toolNames: [],
+          },
+        },
+      });
+      const entry = {
+        id: pluginId,
+        name: "Slack",
+        tools: [],
+        managedTools: {
+          connection: { slot: "account", sourceId },
+          status: "loaded" as const,
+          tools: [tool],
+        },
+      };
+      const catalog: PluginFieldCatalog = { status: "ready", canLoad: true, entries: [entry] };
+      const capabilities = {
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        policyScopeByPlugin: { [pluginId]: "tool_human_approval" },
+        toolDefaults: { enabled: false, approval: [], reviewer: [] },
+        tools: { enabled: false, approval: [], reviewer: [] },
+        driverPolicySchema: {},
+        credentialSlots: [
+          {
+            pluginId,
+            releaseSha256: digest,
+            id: "account",
+            label: "Slack account",
+            toolDiscovery: true,
+            sources: [
+              { id: sourceId, name: "Controlled account" },
+              { id: "cs_00000000-0000-4000-8000-000000000002", name: "Another account" },
+            ],
+          },
+        ],
+      } satisfies NonNullable<Parameters<typeof createPluginFields>[0]["capabilities"]>;
+      const fields = createPluginFields({ input, catalog, capabilities });
+      globalThis.setManagedMcpCatalog = (result) => {
+        fields.setCatalog({
+          ...catalog,
+          entries: [
+            {
+              ...entry,
+              managedTools:
+                result === "available"
+                  ? entry.managedTools
+                  : {
+                      connection: entry.managedTools.connection,
+                      status: result === "error" ? "error" : "loaded",
+                      ...(result === "error"
+                        ? { message: "Discovery is unavailable" }
+                        : { tools: [] }),
+                    },
+            },
+          ],
+        });
+      };
+      globalThis.setManagedMcpBindingAvailability = (state) => {
+        fields.setCapabilities({
+          ...capabilities,
+          credentialSlots: capabilities.credentialSlots.map((slot) => ({
+            ...slot,
+            ...(state === "missing" ? { sources: [] } : {}),
+            ...(state === "stale" ? { releaseSha256: "b".repeat(64) } : {}),
+          })),
+        });
+      };
+      original.replaceWith(fields.section);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    { sourceId, digest },
+  );
+
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  const checkbox = dialog.getByRole("checkbox", { name: "slack_search_public", exact: true });
+  const approval = dialog.getByRole("combobox", { name: "slack_search_public approval" });
+  assert.equal(await approval.count(), 0);
+  await checkbox.check();
+  assert.equal(await approval.inputValue(), "none");
+  await approval.selectOption("all_actions");
+  const input = page.locator("#agent-plugins");
+  const selected = record(JSON.parse(await input.inputValue()));
+  assert.deepEqual(record(selected["occ-plugin:slack@1.0.0"]).tools, {
+    slack_search_public: { approval: "all_actions" },
+  });
+  await page.evaluate(() => globalThis.setManagedMcpCatalog("error"));
+  await dialog.getByText("Discovery is unavailable").waitFor();
+  assert.equal(await checkbox.isChecked(), true);
+  assert.equal(await approval.inputValue(), "all_actions");
+  await dialog.getByText("Unavailable", { exact: true }).waitFor();
+  await page.evaluate(() => globalThis.setManagedMcpCatalog("missing"));
+  assert.equal(await checkbox.isChecked(), true);
+  assert.equal(await approval.inputValue(), "all_actions");
+  await approval.selectOption("none");
+  assert.equal(
+    record(record(JSON.parse(await input.inputValue()))["occ-plugin:slack@1.0.0"]).tools,
+    undefined,
+  );
+  await approval.selectOption("all_actions");
+  await checkbox.click();
+  const disabled = record(record(JSON.parse(await input.inputValue()))["occ-plugin:slack@1.0.0"]);
+  assert.deepEqual(record(disabled.driverPolicy).toolNames, []);
+  assert.equal(disabled.tools, undefined);
+  assert.equal(await approval.count(), 0);
+  await page.evaluate(() => globalThis.setManagedMcpCatalog("available"));
+  await checkbox.check();
+  await approval.selectOption("all_actions");
+  await dialog
+    .getByRole("combobox", { name: "Slack account" })
+    .selectOption({ label: "Another account" });
+  const rebound = record(record(JSON.parse(await input.inputValue()))["occ-plugin:slack@1.0.0"]);
+  assert.equal(rebound.tools, undefined);
+  assert.equal(
+    record(record(rebound.driverPolicy).credentials).account,
+    "cs_00000000-0000-4000-8000-000000000002",
+  );
+  await dialog
+    .getByRole("combobox", { name: "Slack account" })
+    .selectOption({ label: "Controlled account" });
+  await checkbox.check();
+  await approval.selectOption("all_actions");
+  await page.evaluate(() => globalThis.setManagedMcpBindingAvailability("missing"));
+  assert.equal(
+    await dialog.getByRole("button", { name: "Load tools for Slack" }).isDisabled(),
+    true,
+  );
+  assert.equal(await checkbox.isChecked(), true);
+  assert.equal(await approval.inputValue(), "all_actions");
+  await page.evaluate(() => globalThis.setManagedMcpBindingAvailability("stale"));
+  assert.equal(
+    await dialog.getByRole("button", { name: "Load tools for Slack" }).isDisabled(),
+    true,
+  );
+  assert.equal(await checkbox.isChecked(), true);
+  await checkbox.click();
+  const revoked = record(JSON.parse(await input.inputValue()));
+  const revokedPlugin = record(revoked["occ-plugin:slack@1.0.0"]);
+  assert.equal(revokedPlugin.enabled, true);
+  assert.equal(record(record(revokedPlugin.driverPolicy).credentials).account, sourceId);
+  assert.deepEqual(record(revokedPlugin.driverPolicy).toolNames, []);
+  assert.equal(revokedPlugin.tools, undefined);
+
+  async function save(expected: Record<string, unknown>) {
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    const saved = page.waitForResponse(
+      (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
+    );
+    await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+    const response = await saved;
+    assert.equal(response.status(), 200, await response.text());
+    assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, expected);
+    await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+  }
+  await save(revoked);
+
+  // Save rebuilds the tab. Stage Ask again in its real JSON editor, then disable the plugin.
+  const restored = structuredClone(revoked);
+  const restoredPlugin = record(restored["occ-plugin:slack@1.0.0"]);
+  record(restoredPlugin.driverPolicy).toolNames = ["slack_search_public"];
+  restoredPlugin.tools = { slack_search_public: { approval: "all_actions" } };
+  await page.locator(".plugin-json > summary").click();
+  await page.locator("#agent-plugins").fill(JSON.stringify(restored));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  await dialog.getByRole("checkbox", { name: "Enable Slack", exact: true }).uncheck();
+  const pluginDisabled = record(JSON.parse(await page.locator("#agent-plugins").inputValue()));
+  assert.deepEqual(pluginDisabled["occ-plugin:slack@1.0.0"], { enabled: false });
+  await save(pluginDisabled);
 });
 
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {

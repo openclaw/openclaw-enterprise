@@ -339,7 +339,7 @@ function managedPluginInstallations() {
   return (Array.isArray(settings) ? settings : [settings]).map(readManagedPluginInstallation);
 }
 
-function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [] }) {
+function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [], approvalToolNames = [] }) {
   if ((kind !== "cli" && kind !== "mcp") || typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
     throw new Error("The managed plugin package type or name is invalid.");
   }
@@ -370,11 +370,16 @@ function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, s
       new Set(toolNames.map((name) => name.toLowerCase())).size !== toolNames.length) {
     throw new Error("The selected MCP tools must have distinct literal names and OpenClaw aliases within 64 characters.");
   }
+  if (!Array.isArray(approvalToolNames) || !approvalToolNames.every((name) => toolNames.includes(name)) ||
+      new Set(approvalToolNames).size !== approvalToolNames.length) {
+    throw new Error("MCP human approval is limited to selected upstream tools.");
+  }
   const mcp = credential && {
     delivery: credential.delivery,
     server: credential.mcp.server,
     localServer: "oce_mcp_" + credential.mcp.server,
     toolNames,
+    approvalToolNames,
   };
   return { id, kind, root, release, skills, skill, credential, mcp };
 }
@@ -2829,6 +2834,53 @@ function requireWorkspaceNodePlugins(config) {
   }
 }
 
+const MANAGED_MCP_POLICY_ID = "oce-managed-mcp-policy";
+const MANAGED_MCP_POLICY_PATH = "/usr/local/lib/oce/platform-plugins/" + MANAGED_MCP_POLICY_ID;
+
+// This platform extension is shipped in the selected immutable runtime image,
+// outside the operator-selectable catalog. Only a selection containing Ask needs it.
+function configureManagedMcpPolicy(config, installs) {
+  const mcp = installs.flatMap(({ mcp }) => mcp ? [mcp] : []);
+  if (!mcp.some(({ approvalToolNames }) => approvalToolNames.length > 0)) return;
+  const manifest = JSON.parse(pluginReadFileSync(MANAGED_MCP_POLICY_PATH + "/openclaw.plugin.json", "utf8"));
+  const pkg = JSON.parse(pluginReadFileSync(MANAGED_MCP_POLICY_PATH + "/package.json", "utf8"));
+  if (manifest.id !== MANAGED_MCP_POLICY_ID || pkg.name !== MANAGED_MCP_POLICY_ID ||
+      !pkg.openclaw?.extensions?.includes("./index.mjs") || !pluginExistsSync(MANAGED_MCP_POLICY_PATH + "/index.mjs")) {
+    throw new Error("The managed MCP approval policy is missing from the runtime image.");
+  }
+  const plugins = config.plugins ??= {};
+  if (plugins.enabled === false || (plugins.deny ?? []).some((id) =>
+      typeof id === "string" && id.trim().toLowerCase() === MANAGED_MCP_POLICY_ID)) {
+    throw new Error("The managed MCP approval policy is disabled by the Gateway configuration.");
+  }
+  // TODO(OpenClaw policySubject): native Slack plugin approver overrides reject
+  // subject-less node-policy prompts, so Agent-wide reviewers cannot approve them.
+  if (config.channels?.slack && config.channels.slack.enabled !== false &&
+      Object.keys(config.approvals?.plugin?.slack?.plugins ?? {}).length > 0) {
+    throw new Error("Managed MCP approval cannot use native Slack per-plugin approver overrides.");
+  }
+  const servers = {};
+  for (const { localServer, toolNames, approvalToolNames } of mcp) {
+    if (Object.hasOwn(servers, localServer)) throw new Error("Managed MCP server identities must be distinct.");
+    servers[localServer] = Object.fromEntries(toolNames.map((tool) => [
+      tool, approvalToolNames.includes(tool) ? "ask" : "allow",
+    ]));
+  }
+  const entries = plugins.entries ??= {};
+  const existing = entries[MANAGED_MCP_POLICY_ID];
+  if (existing !== undefined && (existing.enabled !== true || !pluginDeepEqual(existing.config?.servers, servers))) {
+    throw new Error("Gateway configuration conflicts with the managed MCP approval policy.");
+  }
+  entries[MANAGED_MCP_POLICY_ID] = { enabled: true, config: { servers } };
+  const load = plugins.load ??= {};
+  load.paths = [...new Set([...(load.paths ?? []), MANAGED_MCP_POLICY_PATH])];
+  if (Array.isArray(plugins.allow)) {
+    plugins.allow = [...new Set([...plugins.allow, MANAGED_MCP_POLICY_ID])];
+  }
+  // TODO(OpenClaw mandatory policy): reject MCP execution if native registration
+  // fails after these image and configuration checks. Gateway readiness does not attest it.
+}
+
 function installGatewayPlugins(runtime, failures, installs) {
   if (installs.length === 0) return installOpenClawPlugins(runtime, failures);
 
@@ -2874,6 +2926,8 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   // The path is known at startup. Pairing supplies only the node identity, so
   // loading file-transfer should not also replace the Codex plugin.
   if (workspaceNodeId === undefined) return;
+  const managedMcp = entries[MANAGED_MCP_POLICY_ID];
+  if (managedMcp?.enabled === true) managedMcp.config.nodeId = workspaceNodeId;
   if (Array.isArray(plugins.allow)) {
     plugins.allow = [...new Set([...plugins.allow, "file-transfer"])];
   }
@@ -3305,6 +3359,7 @@ function configureGateway(peerStatus) {
     process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined
   ) {
     const config = readOpenClawConfig();
+    configureManagedMcpPolicy(config, installs);
     // The first pairing records its command grant before a node ID is available.
     // gateway.* changes restart OpenClaw, so this is written only before a spawn.
     const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};
