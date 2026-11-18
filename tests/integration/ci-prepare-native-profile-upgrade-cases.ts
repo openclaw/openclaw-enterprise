@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { prepareNativeProfileUpgradeDatabase } from "../../scripts/ci/prepare.ts";
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import {
   nativeProfileBaseline,
   nativeProfileSourceReceipt,
@@ -56,7 +57,7 @@ if (args[0] === "run" && args.includes("scripts/bootstrap-installation.mjs") && 
   writeFileSync(directory + "/initial-admin-password", "synthetic-generated-bootstrap-password", {mode: 0o600});
 }
 if (args[0] === "run") {
-  const migration = args.includes("scripts/migrate-production.mjs");
+  const migration = args.includes("-e");
   process.stdout.write(JSON.stringify(migration ? {
     event: args.includes("--require-current") ? "migration.checked" : "migration.completed",
     history: args.includes("--expect-empty") ? "empty" : "completed"
@@ -111,8 +112,29 @@ if (args[0] === "run") {
     );
     const initialMigration = runs[0];
     const catalogCheck = runs[1];
+    const candidateMigration = runs[3];
+    const candidateCatalogCheck = runs[4];
     const incumbentVerification = runs[5];
-    assert.ok(initialMigration && catalogCheck && incumbentVerification);
+    assert.ok(
+      initialMigration &&
+        catalogCheck &&
+        candidateMigration &&
+        candidateCatalogCheck &&
+        incumbentVerification,
+    );
+    for (const migration of [
+      initialMigration,
+      catalogCheck,
+      candidateMigration,
+      candidateCatalogCheck,
+    ]) {
+      const entryIndex = migration.args.indexOf("-e");
+      assert.ok(entryIndex > 0);
+      assert.deepEqual(
+        migration.args.slice(entryIndex, entryIndex + selectedImageMigrationEntry.length),
+        selectedImageMigrationEntry,
+      );
+    }
     assert.ok(initialMigration.args.includes("--expect-empty"));
     assert.ok(catalogCheck.args.includes("--require-current"));
     assert.ok(incumbentVerification.args.includes("--verify-existing"));

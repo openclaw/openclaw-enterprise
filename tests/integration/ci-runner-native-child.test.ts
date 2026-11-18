@@ -116,7 +116,6 @@ function readSyntheticNativeChild(
     "unused-pod",
     "synthetic-parent",
     marker,
-    task,
     prompt,
     async (_namespace: string, _pod: string, script: string) => {
       try {
@@ -257,6 +256,7 @@ if (script.includes('"chat.history"')) {
     ["last textual answer in a phase-less turn", undefined],
     ["activity-only spawn", undefined],
     ["tool-call-only spawn", undefined],
+    ["child history omits its initial user message", undefined],
     ["delayed persisted answer", undefined],
     ["correct HTTP answer with stale-only history", "history"],
     ["wrong current HTTP answer with matching old history", "http"],
@@ -300,6 +300,11 @@ if (script.includes('"chat.history"')) {
         const legacy = { type: "agentMessage", text: "older draft" };
 
         switch (scenario) {
+          case "child history omits its initial user message":
+            // Codex 0.164.0 thread/read exposes the child's command and answer,
+            // but no initial userMessage. The parent activity still binds this child.
+            childTurn.items.shift();
+            break;
           case "explicit final followed by commentary and phase-less text":
             childTurn.items.push(commentary, legacy);
             break;

@@ -71,6 +71,10 @@ const appliedPatches: readonly AppliedPatch[] = [
     file: "openclaw-restart-resume-scope.patch",
     sha256: "da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f",
   },
+  {
+    file: "openclaw-restart-harness-readiness.patch",
+    sha256: "0ed9cabbd7dc813ab686cf7b2146ec76b48c5295231739c79dc5ad4019093bd8",
+  },
 ];
 const runtimePaths = [
   "dist",

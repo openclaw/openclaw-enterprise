@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "../../scripts/ci/prepare-command.ts";
 import { assertDockerImageId } from "../../scripts/ci/k3d-image-admission.ts";
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import {
   privateBootstrapDirectory,
   productionBootstrapEnvironment,
@@ -17,8 +18,11 @@ export async function initializeNativeUpgradeInstallation(context, options) {
   assertDockerImageId(image, "native upgrade initializer image");
   const directory = await privateBootstrapDirectory(context, "oce-native-upgrade-bootstrap-");
   const environment = productionBootstrapEnvironment({ ...options, directory: "/bootstrap" });
+  // The existing production launcher reads the selected image's declared
+  // command: fixed535 runs its MJS migrator, current images their typed migrator.
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  const run = async (script, database, args = []) => {
+  const run = async (entry, database, args = []) => {
+    const stage = entry === selectedImageMigrationEntry ? "migration" : "bootstrap";
     const name = "oce-native-upgrade-init-" + randomUUID();
     const values = {
       ...environment,
@@ -62,7 +66,7 @@ export async function initializeNativeUpgradeInstallation(context, options) {
           "type=bind,src=" + directory + ",dst=/bootstrap",
           ...allowed.flatMap((key) => ["--env", key]),
           image,
-          script,
+          ...entry,
           ...args,
         ],
         { env: values, timeoutMs: 120_000, maxOutputChars: 4096 },
@@ -80,7 +84,7 @@ export async function initializeNativeUpgradeInstallation(context, options) {
       throw new Error("Native upgrade initializer cleanup failed.");
     }
     if (failed) {
-      throw new Error("Native upgrade image production initialization failed: " + script);
+      throw new Error("Native upgrade image production initialization failed: " + stage);
     }
     try {
       return JSON.parse(output.stdout);
@@ -89,7 +93,7 @@ export async function initializeNativeUpgradeInstallation(context, options) {
     }
   };
   const migration = await run(
-    "scripts/migrate-production.mjs",
+    selectedImageMigrationEntry,
     migrationUrl,
     expectedInstallationId === undefined ? ["--expect-empty"] : [],
   );
@@ -99,13 +103,13 @@ export async function initializeNativeUpgradeInstallation(context, options) {
       (expectedInstallationId !== undefined || migration.history === "empty"),
     "the baseline must migrate empty history; the candidate must accept the real incumbent catalog",
   );
-  const checked = await run("scripts/migrate-production.mjs", migrationUrl, ["--require-current"]);
+  const checked = await run(selectedImageMigrationEntry, migrationUrl, ["--require-current"]);
   assert.ok(
     checked?.event === "migration.checked" && checked?.history === "completed",
     "the selected image must verify its own complete current catalog after migration",
   );
   const bootstrap = await run(
-    "scripts/bootstrap-installation.mjs",
+    ["scripts/bootstrap-installation.mjs"],
     undefined,
     expectedInstallationId === undefined ? [] : ["--verify-existing", expectedInstallationId],
   );

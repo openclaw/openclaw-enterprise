@@ -43,6 +43,8 @@ test("production upgrades check the stock chart before recording evidence or con
     "scripts/upgrade-node-platform.py",
     "scripts/upgrade-deployment-identity.py",
     "scripts/upgrade-startup-preflight.ts",
+    "scripts/lib/selected-image-migration.ts",
+    "deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs",
     "scripts/upgrade-preflight-state.py",
     "scripts/lib/upgrade-preflight-cleanup.sh",
     "scripts/upgrade-evidence.py",
