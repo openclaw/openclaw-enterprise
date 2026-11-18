@@ -289,7 +289,7 @@ Start the checks once the host's `GET /v1/execution` reports
 1. In the original chat, ask the Agent to change one file, push one branch
    with `git push https://github.com/<owner>/<repo>.git <branch>` and open a
    draft with `gh pr create --draft --repo <owner>/<repo> --head <branch>
---base main --title <title> --body <body>`. Inside Box `GITHUB_TOKEN` holds
+--base <default-branch> --title <title> --body <body>`. Inside Box `GITHUB_TOKEN` holds
    only a placeholder. Independently verify the file, branch, commit and draft
    on GitHub, and that GitHub records the App's bot account as the author of
    the pull request.
