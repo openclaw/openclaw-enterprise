@@ -580,18 +580,24 @@ test(
       },
     );
 
+    const compute = controller.selectedDriver("compute");
+    const resolve = compute.resolveSandboxNamespace;
+    assert.ok(resolve);
+    const replacement: typeof resolve = (namespace) => Reflect.apply(resolve, compute, [namespace]);
     const preliminary = [];
-    for (const stage of ["revision", "withdrawal"] as const) {
+    for (const stage of ["revision", "withdrawal", "compute"] as const) {
       const request = fixture.request();
-      const pause = fixture.pausePreliminary(stage);
+      const pause = fixture.pausePreliminary(stage === "compute" ? "revision" : stage);
       t.after(pause.release);
       const reads = f.secretReads;
       const pending = evaluate(request);
       await reachBarrier(pause.reached, pending, `preliminary ${stage}`);
       if (stage === "revision") {
         Reflect.set(proxy, "sourceControl", { ...control });
-      } else {
+      } else if (stage === "withdrawal") {
         providers[0] = { ...requestProvider };
+      } else {
+        Reflect.set(compute, "resolveSandboxNamespace", replacement);
       }
       pause.release();
       let decision;
@@ -600,6 +606,7 @@ test(
       } finally {
         Reflect.set(proxy, "sourceControl", control);
         providers[0] = requestProvider;
+        Reflect.set(compute, "resolveSandboxNamespace", resolve);
       }
       const policyReads = f.secretReads - reads;
       const grant = await redeem(request);
@@ -610,6 +617,31 @@ test(
         tokenReturned: typeof grant.body.access_token === "string",
       });
     }
+    const placed = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const heldResolve: typeof resolve = async (namespace) => {
+      const value = await Reflect.apply(resolve, compute, [namespace]);
+      placed.resolve();
+      await resume.promise;
+      return value;
+    };
+    Reflect.set(compute, "resolveSandboxNamespace", heldResolve);
+    t.after(() => {
+      resume.resolve();
+      Reflect.set(compute, "resolveSandboxNamespace", resolve);
+    });
+    const duringPlacement = fixture.request();
+    const pendingPlacement = evaluate(duringPlacement);
+    await reachBarrier(placed.promise, pendingPlacement, "Compute placement");
+    Reflect.set(compute, "resolveSandboxNamespace", resolve);
+    resume.resolve();
+    const placementDecision = await pendingPlacement;
+    const placementGrant = await redeem(duringPlacement);
+    const placementObservation = {
+      decision: placementDecision.decision,
+      status: placementGrant.status,
+      tokenReturned: typeof placementGrant.body.access_token === "string",
+    };
     const redeemPreliminary = fixture.request();
     assert.equal((await evaluate(redeemPreliminary)).decision, 1);
     const beforePreliminaryRead = f.secretReads;
@@ -652,12 +684,14 @@ test(
     assert.equal((await evaluate(recovered)).decision, 1);
     assert.equal((await redeem(recovered)).status, 200);
     assert.deepEqual(
-      { preliminary, grantObservation, reported },
+      { preliminary, placementObservation, grantObservation, reported },
       {
         preliminary: [
           { decision: 2, reads: 0, status: 403, tokenReturned: false },
           { decision: 2, reads: 0, status: 403, tokenReturned: false },
+          { decision: 2, reads: 0, status: 403, tokenReturned: false },
         ],
+        placementObservation: { decision: 2, status: 403, tokenReturned: false },
         grantObservation: { status: 403, tokenReturned: false, reads: 0, replay: 403 },
         reported: undefined,
       },

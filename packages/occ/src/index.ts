@@ -8045,6 +8045,7 @@ export class OpenClawController {
     const control = proxy.sourceControl;
     const gateway = this.selections.get("credential_gateway");
     const iam = this.selections.get("iam");
+    const { compute, resolve } = this.credentialPlacement();
     const credentials = proxy.requestTimeCredentials;
     const verify = credentials?.verifyRequestInstallation;
     const transport = immutableCopy({
@@ -8069,6 +8070,8 @@ export class OpenClawController {
           this.selections.get("credential_gateway") === gateway &&
           this.unchangedDriver(gateway) &&
           this.selections.get("iam") === iam &&
+          this.selectedDriver("compute") === compute &&
+          compute.resolveSandboxNamespace === resolve &&
           this.selectedProxyOwner() === owner &&
           proxy.sourceControl === control &&
           proxy.requestTimeCredentials === credentials &&
@@ -8099,7 +8102,7 @@ export class OpenClawController {
       }
       return original.provider;
     };
-    return { proxy, control, credentials, current, provider };
+    return { proxy, control, credentials, compute, resolve, current, provider };
   }
 
   /** Verify the installed recipient before entering a fresh, short policy transaction. */
@@ -8200,10 +8203,16 @@ export class OpenClawController {
     }
     const authorize = authority.authorize;
     const verifyRequestInstallation = credentials.verifyRequestInstallation;
+    const placed = await this.credentialGatewayOperation(() =>
+      Reflect.apply(identity.resolve, identity.compute, [namespace]),
+    );
+    if (!identity.current()) {
+      return undefined;
+    }
     if (
       !(await Reflect.apply(verifyRequestInstallation, credentials, [
         {
-          namespace: await this.credentialNamespace(namespace),
+          namespace: placed,
           revision,
           plan,
           signal,
