@@ -212,8 +212,8 @@ Dedicated launchers capture the [Gateway tool policy](../reference/configuration
 from the saved Agent revision before plugin grants. Startup and peer respawn
 enforce it; failures keep the Gateway unready. Changes require deployment replacement
 after affected old work ends. Human permissions stay unchanged. The default adds
-read-only `skills_search` and `skills_read` for approved Skill Library pins. Embedded
-Gateways apply a Configuration-set policy without this composition; Compute checks
+Gateway-side read-only `skills_search` and `skills_read` for session-eligible skills.
+Embedded Gateways apply a Configuration-set policy without this composition; Compute checks
 it at Configuration save and deployment admission with the same rules
 (`gateway-tool-policy.ts:validateGatewayToolPolicy`), not on maintenance passes.
 
