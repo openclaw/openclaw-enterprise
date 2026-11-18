@@ -202,8 +202,8 @@ export function registerHttpCases(): void {
     const forged = `occ_${randomBytes(24).toString("hex")}`;
     let revoked = "";
     let revokedId = "";
-    // Request data a refusal line must never carry: a query string and a browser cookie.
-    const probe = randomBytes(12).toString("hex");
+    // A browser cookie sent next to the key: request data a refusal line must never carry.
+    // (This route refuses a query string before admission; the unit case below covers it.)
     const cookie = `session_${randomBytes(12).toString("hex")}`;
     const answers: { readonly requestId: unknown; readonly error: unknown }[] = [];
     const { lines } = await withLoggingApp("info", false, undefined, async (app, auth) => {
@@ -221,7 +221,7 @@ export function registerHttpCases(): void {
       for (const key of [forged, revoked]) {
         const refused = await app.inject({
           method: "GET",
-          url: `/namespaces/ns_00000000-0000-4000-8000-000000000001?probe=${probe}`,
+          url: "/namespaces/ns_00000000-0000-4000-8000-000000000001",
           headers: { "x-api-key": key, cookie: `${auth.sessionCookieName}=${cookie}` },
         });
         assert.equal(refused.statusCode, 401, refused.body);
@@ -265,11 +265,10 @@ export function registerHttpCases(): void {
     );
     const logged = JSON.stringify(lines);
     assert.ok(revoked.length > 0 && revokedId.length > 0);
-    // No key, key prefix beyond the fixed `occ_`, key ID, query string or cookie value.
+    // No key, key prefix beyond the fixed `occ_`, key ID or cookie value.
     for (const secret of [forged, revoked, forged.slice(0, 12), revoked.slice(0, 12), revokedId]) {
       assert.equal(logged.includes(secret), false, "no key material is logged");
     }
-    assert.equal(logged.includes(probe), false, "no query string is logged");
     assert.equal(logged.includes(cookie), false, "no cookie value is logged");
   });
 
