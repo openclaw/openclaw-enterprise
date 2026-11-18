@@ -5541,7 +5541,9 @@ const protectedProviderCodexArguments = nodeProgramArguments(protectedProviderCo
 // Only split the exact provider launcher Compute rendered. An unknown or customized
 // command must never silently lose its initialization or gain a companion process.
 export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifier: string) {
-  const args = nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, explicitProxy: true }));
+  const args = nodeProgramArguments(
+    agentRuntimeEntrypoint({ withNode: true, explicitProxy: true }),
+  );
   const expected = [
     ...RUNTIME_WRAPPER_COMMAND,
     ...nodeProgramArguments(setupVerifier + agentWithNodeEntrypoint(args, true)),
@@ -5556,7 +5558,9 @@ export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifie
       ...nodeProgramArguments(
         setupVerifier +
           agentWithNodeEntrypoint(
-            nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, boxHttps: true, explicitProxy: true })),
+            nodeProgramArguments(
+              agentRuntimeEntrypoint({ withNode: true, boxHttps: true, explicitProxy: true }),
+            ),
             true,
             "codex",
           ),
@@ -5638,7 +5642,9 @@ export function codexLaunchEntrypoint(
       explicitProxy: true,
       boxHttps: Boolean(strandsBox && !withNode),
     });
-    const program = withNode ? agentWithNodeEntrypoint(nodeProgramArguments(child), strandsBox) : child;
+    const program = withNode
+      ? agentWithNodeEntrypoint(nodeProgramArguments(child), strandsBox)
+      : child;
     explicitProxyLaunches.set(key, program);
     return program;
   }
