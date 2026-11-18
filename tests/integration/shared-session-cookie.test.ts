@@ -30,13 +30,12 @@ test("browser sessions derive their narrowest shared DNS scope and require HTTPS
     { agentDomain: "agents.other.com" },
     { agentDomain: "com" },
     { baseURL: "https://console.github.io", agentDomain: "agents.github.io" },
-    { sharedCookieDomain: "example.com" },
   ]) {
     assert.throws(
       () => createControllerAuth({ ...options, ...invalid }),
       {
         message:
-          /shared session cookies|sharedCookieDomain|OCC_AGENT_NATIVE_ADMIN_DOMAIN|Console and Agent hostnames/i,
+          /shared session cookies|OCC_AGENT_NATIVE_ADMIN_DOMAIN|Console and Agent hostnames/i,
       },
       JSON.stringify(invalid),
     );

@@ -1171,11 +1171,10 @@ function renderOidc(source: InputRecord, diagnostics: Errors) {
       "an https URL on port 443 with a DNS host name and no query or fragment, written without a port",
   });
   rendered.issuer = issuer;
-  const host = oidcEndpointHost(issuer, { issuer: true });
   for (const key of ["authorizationUrl", "tokenUrl", "jwksUrl"] as const) {
     rendered[key] = asString(source, [...path, key], diagnostics, {
-      validate: (value) => host === undefined || oidcEndpointHost(value) === host,
-      description: "an https URL on port 443 on the issuer's host, with no query or fragment",
+      validate: (value) => oidcEndpointHost(value) !== undefined,
+      description: "an https URL on port 443 with a DNS host name and no query or fragment",
     });
   }
   const tokenAuth = optionalString(source, [...path, "tokenAuth"], diagnostics, {

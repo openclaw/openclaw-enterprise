@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: In progress
 rfc: ../rfcs/0042-redeployment-continuation.md
 ---
 
@@ -16,47 +16,47 @@ and native OpenClaw recovery. Kubernetes dedicated Codex is the first qualified
 topology. Preserve explicit stop, current authority, retained-state ownership,
 and the refusal to take over active remote execution.
 
-The RFC is Proposed. No cross-revision implementation has started. The current
-revision-scope contract remains authoritative until this change ships.
+The RFC was submitted for human review before implementation and merged in [PR #6434](https://github.com/openclaw/openclaw-enterprise/pull/6434). [Implementation PR #6442](https://github.com/openclaw/openclaw-enterprise/pull/6442) contains the lifecycle and native recovery changes. Live qualification passes; final native image checks and publication remain pending. The RFC decision status remains Proposed.
 
 ## Delivery
 
 ### 1. Submit the contract
 
-- [ ] Submit RFC-0042 for human review and link the implementation PR.
-- [ ] Resolve any specific architectural or security hold before dependent work.
+- [x] Submit RFC-0042 for human review in PR #6434.
+- [x] Link the implementation PR #6442.
+- [x] Resolve specific architectural or security holds before dependent work. No human hold was recorded; the reviewed SSH qualification is restored.
 
 ### 2. Persist lifecycle ownership
 
-- [ ] Extend the Agent lifecycle repository and PostgreSQL constraints with the
+- [x] Extend the Agent lifecycle repository and PostgreSQL constraints with the
       server-owned generation/domain pair and immutable revision snapshot.
-- [ ] Extend the Compute contract with side-effect-free domain admission.
-- [ ] Update `admitAgentDeployment` in `packages/occ/src/index.ts` to retain or
+- [x] Extend the Compute contract with side-effect-free domain admission.
+- [x] Update `admitAgentDeployment` in `packages/occ/src/index.ts` to retain or
       allocate generations under the existing Agent lock.
-- [ ] End the generation in explicit stop/delete transactions. Fence stale
+- [x] End the generation in explicit stop/delete transactions. Fence stale
       preparation and activation in the regular worker path.
-- [ ] Exercise AC-3 through PostgreSQL transactions and actual worker callers,
+- [x] Exercise AC-3 through PostgreSQL transactions and actual worker callers,
       including consecutive deployments after stop before activation.
 
 ### 3. Integrate the native runtime
 
-- [ ] Project the admitted snapshot through Kubernetes Compute; preserve
+- [x] Project the admitted snapshot through Kubernetes Compute; preserve
       unsupported topology refusal and existing stop/start ownership.
-- [ ] Extend native run ownership persistence and startup recovery so graceful
+- [x] Extend native run ownership persistence and startup recovery so graceful
       markers and crash recovery require the same generation. Reject missing
       generation evidence in managed deployments.
-- [ ] Preserve same-occurrence workspace reconnect, current authority checks,
+- [x] Preserve same-occurrence workspace reconnect, current authority checks,
       cancellation, and passive waiting for a surviving Codex turn.
-- [ ] Register meaningful native regression tests in the image build, including
+- [x] Register meaningful native regression tests in the image build, including
       forced-loss recovery after an ended generation.
 
 ### 4. Qualify the complete workflow
 
-- [ ] Extend the existing dedicated Agent integration case for AC-1, AC-2, AC-4,
+- [x] Extend the existing dedicated Agent integration case for AC-1, AC-2, AC-4,
       and AC-5 with real runtime images and models; no second recovery sender.
-- [ ] Keep the native-child relay proof aligned with observed protocol history.
+- [x] Keep the native-child relay proof aligned with observed protocol history.
       Prove the child performed the command and the Gateway delivered its answer.
-- [ ] Update the interrupted-turn reference, Compute contract, persistence
+- [x] Update the interrupted-turn reference, Compute contract, persistence
       inventory, lifecycle flow, and operator procedures together.
 - [ ] Run proportional source checks, independent review, and native controller
       and runtime checks on AMD64 and ARM64 at the final branch head.
@@ -72,9 +72,36 @@ revision-scope contract remains authoritative until this change ships.
 
 ## Verification status
 
-RFC-only: no AC-1 through AC-5 proof is claimed. Earlier qualification of native
-restart readiness predates this proposed lifecycle contract and cannot establish
-cross-generation refusal. Missing cluster or credential prerequisites must leave
-the affected acceptance criteria unverified; do not replace them with mocks.
+Source audit at `6ce8147ce28e2636304e215bd20b11e55d3fb586` confirms the lifecycle,
+Compute, worker, and native recovery implementation. The
+[interrupted-turn reference](../../docs/reference/agents/interrupted-turns.md)
+owns current behavior and the [recovery test guide](../../docs/testing/harness-restart-recovery.md)
+owns the live proof and its limits.
+
+Native generation filtering and private-state preservation: 14 selected cases
+pass. All 43 PostgreSQL replacement cases pass, including generation and
+stale-worker races (AC-3). All 236 PostgreSQL migration cases pass, including
+populated historical upgrades and dump/restore. Native core, configuration, and
+Gateway type checks pass. [Required CI at the audited commit](https://github.com/openclaw/openclaw-enterprise/actions/runs/44253949158)
+passes. Independent review found no P0 issues in its selected scope; it did not
+review lower priorities.
+
+AC-1, AC-2, AC-4, and AC-5 pass in the complete real ARM64 Kubernetes/model
+suite at `70de51b4a18a47a1f309d88c5869fbb67e2f6b4f`: 6 passed, 0 failed, 0
+skipped. The run uses Helm-installed OCC and PostgreSQL, Codex 0.164.0, and
+gpt-6-astra through the supported HTTPS Responses endpoint. It covers all eight
+recovery/refusal scenarios, completed/cancelled history, native child execution,
+workspace capabilities, retained storage, credential recovery, and topology cutover.
+The local images were built from `6ce8147ce2`; subsequent changes affect only
+qualification fixtures and specification status, not runtime source.
+
+The native-profile control observes refusal before restoring OCC's shared service
+profile. It does not prove per-user OCC identity propagation. History comparison
+preserves transcript content and actor identity while excluding the current
+profile avatar's cache version. Earlier runs using the default provider transport
+failed on rate limits or model-probe timeouts; readiness checks were not weakened.
+Final-head native checks, merge, and image publication are still required. The
+[implementation PR](https://github.com/openclaw/openclaw-enterprise/pull/6442)
+records their run URLs and publication identities.
 
 ## Manual Notes

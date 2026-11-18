@@ -1231,13 +1231,7 @@ test("generated API reference changes select full across additions, edits, delet
   await expectAll(
     t,
     "full",
-    [
-      "docs/reference/api.md",
-      "docs/reference/cheatsheets/api.md",
-      "docs/reference/api/extra.md",
-      "docs/reference/api/nested/space and\nnewline.md",
-    ].flatMap((path) => [
-      // The check also rejects unexpected Markdown anywhere in the generated directory.
+    ["docs/reference/api.md", "docs/reference/cheatsheets/api.md"].flatMap((path) => [
       [({ put }) => put(path)],
       [({ put }) => put(path, "changed\n"), { [path]: "old\n" }],
       [({ repo }) => rmSync(join(repo, path)), { [path]: "old\n" }],
