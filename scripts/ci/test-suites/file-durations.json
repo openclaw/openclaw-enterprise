@@ -178,7 +178,7 @@
     "tests/integration/ci-prepare.test.ts": 109400,
     "tests/integration/ci-prepare-lane-action.test.ts": 10900,
     "tests/integration/ci-runner-process-ownership.test.ts": 19900,
-    "tests/integration/ci-runner.test.mjs": 328200,
+    "tests/integration/ci-runner.test.ts": 328200,
     "tests/integration/cli-release.test.ts": 4800,
     "tests/integration/client-address.test.ts": 100,
     "tests/integration/codex-model-probe.test.ts": 63100,

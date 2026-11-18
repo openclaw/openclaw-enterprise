@@ -120,7 +120,7 @@ Fixture lanes verify NetworkPolicy enforcement.
 `scripts/ci/run-tests.ts:runLane` runs files sequentially except audited
 `parallelFiles`. State and cleanup stay runner-local.
 
-Only the native IAM barrier test receives its migrated PostgreSQL database and both application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
+Only the native IAM barrier test receives its migrated PostgreSQL database and application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
 
 `runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
 and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
@@ -277,7 +277,7 @@ awaits an approved resource ledger.
 ## Debugging and Verification
 
 - `node scripts/ci/run-tests.ts audit` checks checkout inventory against the suite map.
-- `node --test tests/integration/ci-runner.test.mjs 'tests/integration/ci-runner-*.test.ts'` checks runner outcomes, process cleanup, preparation, redaction, startup, and OpenShell reporting.
+- `node --test tests/integration/ci-runner.test.ts 'tests/integration/ci-runner-*.test.ts'` checks runner outcomes, process cleanup, preparation, redaction, startup, and OpenShell reporting.
 - Serialize unstable local Kubernetes lanes; GitHub Actions keeps its matrix.
 - Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
 - Retain sanitized results for seven days. Exclude private state and credentials. Recover teardown from run-owned state on its original host and path.

@@ -18,6 +18,7 @@ import type {
   HarnessAuthSnapshot,
   HarnessExecutionMode,
   Namespace,
+  ModelProvider,
   OpenClawConfigurationDocument,
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
@@ -259,6 +260,12 @@ export interface ComputeDriver extends Driver {
   readonly maintenanceIntervalMs?: number;
   /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
   admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
+  /**
+   * Side-effect-free compatibility domain for retained sessions and exclusive writers.
+   * Equal domains permit continuity; missing support keeps revision-scoped recovery.
+   * The Driver must enforce the admitted generation for graceful and crash recovery.
+   */
+  restartContinuationDomain?(revision: Readonly<AgentRevision>): string | undefined;
   /** Optional immutable launch inputs, separate from execution authority. No side effects. */
   snapshotRuntimeInputs?(revision: Readonly<AgentRevision>): string | undefined;
   /**
@@ -323,6 +330,15 @@ export interface ComputeDriver extends Driver {
   normalizeHarnessOverrides?(
     overrides: Readonly<Record<string, unknown>>,
   ): Readonly<Record<string, unknown>>;
+  /** Translate a saved provider and its selected catalog rows into immutable deployment values. */
+  resolveModelProvider?(
+    provider: Readonly<ModelProvider>,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+  ): {
+    readonly values: OpenClawConfigurationDocument;
+    readonly settings: Readonly<Record<string, unknown>>;
+  };
   /** Resolve immutable Harness settings before credential and egress admission. */
   resolveHarnessConfiguration?(
     harness: RevisionHarnessDescriptor,

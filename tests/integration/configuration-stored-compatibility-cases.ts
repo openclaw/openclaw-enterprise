@@ -22,6 +22,8 @@ import {
   providerKeyVariantRefusal,
 } from "../helpers/refusal-text.mjs";
 
+export { registerConfigurationModelPolicyCases } from "./configuration-model-policy-cases.ts";
+
 interface HttpResponse {
   status: number;
   body: unknown;

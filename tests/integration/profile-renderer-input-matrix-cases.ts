@@ -315,6 +315,11 @@ export function registerInputMatrixCases(): void {
       profile: "codex",
       input: codexInput,
       cases: [
+        [
+          "presets.includeDefaults",
+          ["false", null, 0],
+          /presets\.includeDefaults must be a boolean/,
+        ],
         ["presets.files", ["presets/custom.json", [""], [42]], /presets\.files/],
         ["presets.unknown", [true], /presets\.unknown/],
       ],

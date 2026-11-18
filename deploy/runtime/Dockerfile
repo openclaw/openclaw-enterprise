@@ -165,15 +165,15 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
 RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
+# Keep the reviewed Codex 0.164.0 (seccomp profile and artifact rules) until OCE moves to the
+# Codex the pinned OpenClaw bundles. Remove this pin with that upgrade.
+COPY deploy/runtime/stock-codex-0.164.0-dependency-pin.patch /tmp/stock-codex-0.164.0-dependency-pin.patch
+RUN echo '1ca10c576c65748498ede421a230740f2ab3d87bbfb4fa4ab92d89f809c1402f  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
+    && git apply /tmp/stock-codex-0.164.0-dependency-pin.patch
 # Bind external Codex turn policy to the Compute-owned Box generation and its WSS peer.
 COPY deploy/runtime/openclaw-codex-box-owner.patch /tmp/openclaw-codex-box-owner.patch
 RUN echo 'cff60afa5c0d0441222b639e8763f730369ba6cb2fe8c5913ef74f57a9f6e238  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-box-owner.patch
-# A dedicated native hook relay call honours Node's own env-proxy switch, which an
-# explicit-proxy Sandbox sets; without it the call still dials the Gateway directly.
-COPY deploy/runtime/openclaw-native-hook-env-proxy.patch /tmp/openclaw-native-hook-env-proxy.patch
-RUN echo '57c2b925521589f43c0db245a3ebbf34d9b68edb66a07ec55d6241b367130c43  /tmp/openclaw-native-hook-env-proxy.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-native-hook-env-proxy.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
     && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
@@ -252,30 +252,17 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '1ebd7e0f3ca32976430c7629a7e91783048940b24355e0fce3748d443d6b6b41  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo 'de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
 COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
-RUN echo 'c3985dc0e7e79c10590be553b59f03a005324e3f06ec49be73f69bd65ea9ea96  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
+RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
-
-# Remove this bridge when the pinned OpenClaw includes openclaw#200358: the
-# native empty-history proof holds only for the Agent whose history was read.
-COPY deploy/runtime/openclaw-chat-absent-selected-agent.patch /tmp/openclaw-chat-absent-selected-agent.patch
-RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp/openclaw-chat-absent-selected-agent.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-chat-absent-selected-agent.patch
-
-# Remove when the pinned OpenClaw scopes restart resume (upstream change prepared for
-# finding 3347): a turn cut by stop, replacement or deletion must not resume under the
-# next revision. Kubernetes and Docker Compute set the scope to the revision ID.
-COPY deploy/runtime/openclaw-restart-resume-scope.patch /tmp/openclaw-restart-resume-scope.patch
-RUN echo 'da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f  /tmp/openclaw-restart-resume-scope.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-restart-resume-scope.patch
 
 # TODO: Remove when the pinned OpenClaw retries safe restart admission and passive Codex recovery.
 COPY deploy/runtime/openclaw-restart-harness-readiness.patch /tmp/openclaw-restart-harness-readiness.patch
-RUN echo '0ed9cabbd7dc813ab686cf7b2146ec76b48c5295231739c79dc5ad4019093bd8  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
+RUN echo 'a7f1cf323cb34affbcbf8e059949660f292215680f91c2e45b3d80322808f35f  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-restart-harness-readiness.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
@@ -294,7 +281,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
     src/cli/update-cli/update-command-service-drain.native.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
-    src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.liveness.test.ts \
+    src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     extensions/codex/src/app-server/thread-policy.test.ts extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts \
     src/auto-reply/reply/session-event-config-readmission.test.ts \
@@ -347,8 +334,10 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.test.ts \
-    -t "interrupted under scope" \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.scope.test.ts \
+    src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
+    src/config/sessions/session-entry-json.test.ts \
+    -t "only at startup scope|in scope across a second restart|keeps a graceful resume marker" \
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
@@ -378,7 +367,7 @@ RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run 
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
     src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
-    src/pages/chat/chat-main-session-absent.test.ts src/pages/chat/chat-history-subscription-errors.test.ts
+    src/pages/chat/chat-history-subscription-errors.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain

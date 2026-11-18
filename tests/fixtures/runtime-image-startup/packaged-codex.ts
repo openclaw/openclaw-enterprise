@@ -102,24 +102,20 @@ export async function probePackagedCodex(
             "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
         }
       : {
+          "stock-codex-0.164.0-dependency-pin.patch":
+            "1ca10c576c65748498ede421a230740f2ab3d87bbfb4fa4ab92d89f809c1402f",
           "openclaw-codex-box-owner.patch":
             "cff60afa5c0d0441222b639e8763f730369ba6cb2fe8c5913ef74f57a9f6e238",
-          "openclaw-native-hook-env-proxy.patch":
-            "57c2b925521589f43c0db245a3ebbf34d9b68edb66a07ec55d6241b367130c43",
           "openclaw-control-ui-browser-reconnect.patch":
             "e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0",
           "openclaw-terminated-gateway-namespace.patch":
             "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
           "openclaw-planned-completion.patch":
-            "c3985dc0e7e79c10590be553b59f03a005324e3f06ec49be73f69bd65ea9ea96",
+            "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
           "openclaw-node-setup-renewal.patch":
-            "1ebd7e0f3ca32976430c7629a7e91783048940b24355e0fce3748d443d6b6b41",
-          "openclaw-chat-absent-selected-agent.patch":
-            "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
-          "openclaw-restart-resume-scope.patch":
-            "da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f",
+            "de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8",
           "openclaw-restart-harness-readiness.patch":
-            "0ed9cabbd7dc813ab686cf7b2146ec76b48c5295231739c79dc5ad4019093bd8",
+            "a7f1cf323cb34affbcbf8e059949660f292215680f91c2e45b3d80322808f35f",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);

@@ -386,12 +386,14 @@ packages:
   }
 });
 
-// OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway so that only a restart of the same
-// revision resumes a cut turn. The Kubernetes and Docker Drivers set the shared constant; the
-// standalone SSH helper spells it out. A runtime patch adds the name until the pinned OpenClaw
-// reads it; the patched tests run only in the manual image check. Record a pinned commit here
-// only after checking that its own restart resume reads the name.
-const NATIVE_RESTART_RESUME_SCOPE_COMMITS: readonly string[] = [];
+// OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway to bound native recovery to its
+// admitted lifecycle. The Kubernetes and Docker Drivers set the shared constant; the
+// standalone SSH helper spells it out. Record a pinned commit here only after checking that
+// OpenClaw scopes crash, parked and legacy recovery and child completion custody, and stamps
+// the scope at chat.send admission (#201186), not only graceful markers (#201060).
+const NATIVE_RESTART_RESUME_SCOPE_COMMITS: readonly string[] = [
+  "f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9",
+];
 
 test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", async () => {
   const name = GATEWAY_RESTART_RESUME_SCOPE;
@@ -403,32 +405,18 @@ test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", 
     sshHelper.includes(`\nEnvironment=${name}=\${revision.id}\n`),
     `SSH Compute must set ${name}`,
   );
-  const patch = "openclaw-restart-resume-scope.patch";
-  const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
-  if (!dockerfile.includes(`COPY deploy/runtime/${patch} /tmp/${patch}\n`)) {
-    // A pin bump dropped the patch: unless OpenClaw reads the name, a turn cut by stop resumes
-    // at the next deployment again.
-    const { commit } = await readOpenclawSource();
-    assert.ok(
-      NATIVE_RESTART_RESUME_SCOPE_COMMITS.includes(commit),
-      `${patch} is no longer applied: check that OpenClaw ${commit} reads ${name}, then record the commit here`,
-    );
-    assert.doesNotMatch(dockerfile, /interrupted under scope/u);
-    return;
-  }
-  // The patch's runtime lines, not only its tests, must read the name the Drivers set.
-  let file = "";
-  const runtimeLines: string[] = [];
-  for (const line of (await readFile(join("deploy/runtime", patch), "utf8")).split("\n")) {
-    if (line.startsWith("+++ b/")) {
-      file = line.slice("+++ b/".length);
-    } else if (line.startsWith("+") && file.startsWith("src/") && !file.endsWith(".test.ts")) {
-      runtimeLines.push(line);
-    }
-  }
+  const { commit } = await readOpenclawSource();
   assert.ok(
-    runtimeLines.some((line) => line.includes(`"${name}"`)),
-    `${patch} must read ${name}`,
+    NATIVE_RESTART_RESUME_SCOPE_COMMITS.includes(commit),
+    `check that OpenClaw ${commit} scopes crash recovery and custody by ${name}, then record the commit here`,
   );
-  assert.match(dockerfile, /session-restart-resume\.test\.ts \\\n\s+-t "interrupted under scope"/u);
+  // The manual image check runs the native crash and custody scope tests, which #201060 lacks.
+  const dockerfile = (await readFile("deploy/runtime/Dockerfile", "utf8")).replace(
+    /\\\n\s*/gu,
+    " ",
+  );
+  assert.match(
+    dockerfile,
+    /session-restart-resume\.scope\.test\.ts\s.*session-restart-resume-custody\.test\.ts\s.*-t "only at startup scope\|in scope across a second restart\|/u,
+  );
 });

@@ -156,7 +156,9 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-replacement.test.ts",
       "expectedTests": [
-        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision"
+        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision",
+        "compatible deployment generations survive redeploy but cannot cross an explicit stop",
+        "a stop and redeploy during preparation cannot activate the ended recovery generation"
       ]
     },
     {

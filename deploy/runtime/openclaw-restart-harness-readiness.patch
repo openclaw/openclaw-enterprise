@@ -1,279 +1,8 @@
---- a/src/auto-reply/reply/session-event-handoff.ts
-+++ b/src/auto-reply/reply/session-event-handoff.ts
-@@ -1,4 +1,8 @@
- import { setTimeout as delay } from "node:timers/promises";
-+import {
-+  collectErrorGraphCandidates,
-+  extractErrorCode,
-+} from "@openclaw/normalization-core/error-coercion";
- import { isRecord } from "@openclaw/normalization-core/record-coerce";
- import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
- import { prepareAgentDeletionBlocked } from "../../agents/agent-lifecycle-registry.js";
-@@ -8,6 +12,7 @@
-   type AgentRunTerminalOutcome,
- } from "../../agents/agent-run-terminal-outcome.js";
- import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
-+import { isWorkspaceAccessUnavailableError } from "../../agents/workspace-access.js";
- import { FAILOVER_REASONS } from "../../agents/failover/signal.js";
- import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
- import {
-@@ -83,6 +88,23 @@
- 
- /** Policy publications an accepted occurrence may outlive before it settles as failed. */
- const MAX_CONFIG_READMISSION_ATTEMPTS = 2;
-+const RESTART_WORKSPACE_RECONNECT_MS = 60_000;
-+
-+// A disconnected workspace read was rejected before dispatch. Other transport
-+// errors can hide effects and must retain the normal terminal failure behavior.
-+function isUndispatchedWorkspaceDisconnect(error: unknown): boolean {
-+  return (
-+    isWorkspaceAccessUnavailableError(error) &&
-+    collectErrorGraphCandidates(error, (current) => [current.cause]).some(
-+      (candidate) =>
-+        extractErrorCode(candidate) === "UNAVAILABLE" &&
-+        isRecord(candidate) &&
-+        isRecord(candidate.details) &&
-+        candidate.details.code === "NOT_CONNECTED" &&
-+        candidate.details.nodeCommandDispatched === false,
-+    )
-+  );
-+}
- 
- /** Producer-owned occurrence; passive notices continue to use enqueueSystemEvent. */
- export function enqueueSessionEventForHost(
-@@ -96,6 +118,8 @@
-   text: string,
-   { assertAcceptanceCurrent, ...options }: SessionEventOptions,
-   readmissionAttempt: number,
-+  configReadmissionAttempt = 0,
-+  reconnectDeadline = Date.now() + RESTART_WORKSPACE_RECONNECT_MS,
- ): SessionEventReceipt {
-   options.assertCurrent?.();
-   options.expectedTarget?.assertCurrent?.();
-@@ -313,34 +337,57 @@
-     }
-     settlement = "settling";
-     const complete = async () => {
-+      let pendingInputSettled = true;
-       try {
-         inputRecorder?.finishPendingInput?.("cancelled");
-         await inputRecorder?.waitForPendingInputSettlement?.();
-       } catch (error) {
-+        pendingInputSettled = false;
-         failure ??= error instanceof Error ? error : String(error);
-       }
-       // Submitting custody ends at the first acceptance; a pre-acceptance re-admission
-       // carries the still-live assertion so revoked ingress rejects the retry.
-       const pendingAcceptanceAssertion = accepted ? undefined : acceptanceAssertion;
-       acceptanceAssertion = undefined;
--      // Producers never retry, so a policy publication that rejected an unstarted
--      // occurrence re-admits it under the current policy instead of destroying it.
--      // Stop, abort and abandonment still settle terminally.
-+      // Re-admit only the same occurrence. Staged input must be cancelled durably
-+      // before another attempt can reclaim it; failed cleanup is never retryable.
-       const retainForConfigChange = () =>
--        configPolicy.changed && !started && !deliveryAttempted && !signal.aborted && !abandoned;
--      const attempt = readmissionAttempt;
--      if (retainForConfigChange() && attempt < MAX_CONFIG_READMISSION_ATTEMPTS) {
--        // Reuse this occurrence's bounded readmission, yielding before fresh authority.
--        await delay(100 * 2 ** readmissionAttempt, undefined, { signal }).catch(
--          (error: unknown) => {
--            if (!signal.aborted) {
--              throw error;
--            }
--          },
--        );
-+        pendingInputSettled &&
-+        configPolicy.changed &&
-+        !started &&
-+        !deliveryAttempted &&
-+        !signal.aborted &&
-+        !abandoned &&
-+        configReadmissionAttempt < MAX_CONFIG_READMISSION_ATTEMPTS;
-+      const retainForWorkspaceReconnect = () =>
-+        pendingInputSettled &&
-+        options.source === "restart" &&
-+        !accepted &&
-+        !adopted &&
-+        !started &&
-+        !delivered &&
-+        !deliveryAttempted &&
-+        !deliveryAmbiguous &&
-+        !conversationResultCommitted &&
-+        !signal.aborted &&
-+        !abandoned &&
-+        Date.now() < reconnectDeadline &&
-+        isUndispatchedWorkspaceDisconnect(failure);
-+      const configRetry = retainForConfigChange();
-+      if (configRetry || retainForWorkspaceReconnect()) {
-+        await delay(
-+          configRetry ? 100 * 2 ** configReadmissionAttempt : 1_000,
-+          undefined,
-+          { signal },
-+        ).catch((error: unknown) => {
-+          if (!signal.aborted) {
-+            throw error;
-+          }
-+        });
-       }
-       settlement = "finished";
--      const canReadmit = retainForConfigChange() && attempt < MAX_CONFIG_READMISSION_ATTEMPTS;
-+      const canReadmit =
-+        retainForConfigChange() || retainForWorkspaceReconnect();
-       const terminal = resolveSessionEventTerminalOutcome({
-         operation,
-         signal,
-@@ -379,7 +426,9 @@
-               occurrences,
-               preserveOccurrenceOnRejection: preservePassive,
-             },
--            attempt + 1,
-+            readmissionAttempt + 1,
-+            configReadmissionAttempt + (configRetry ? 1 : 0),
-+            reconnectDeadline,
-           );
-         } catch (error) {
-           if (!preservePassive) {
-@@ -607,7 +656,7 @@
-               !(await recorder.stageApproved({
-                 runId: occurrenceId,
-                 assertCurrent,
--                // Only this live policy retry can reclaim its cancelled attempt.
-+                // Only this live admission retry can reclaim its cancelled attempt.
-                 retryCancelled: readmissionAttempt > 0,
-               }))
-             ) {
---- a/extensions/codex/src/app-server/thread-policy.ts
-+++ b/extensions/codex/src/app-server/thread-policy.ts
-@@ -1,3 +1,4 @@
-+import { setTimeout as delay } from "node:timers/promises";
- import {
-   AgentHarnessPreflightError,
-   embeddedAgentLog,
-@@ -178,7 +179,7 @@
- 
- /** Passive refusal must precede releasing or acquiring any native subscription. */
- export async function assertAdoptedCodexThreadResumeAllowed(
--  params: CodexStartOrResumeThreadParams,
-+  params: Pick<CodexStartOrResumeThreadParams, "client" | "params" | "signal" | "authority">,
-   threadId: string,
-   context: {
-     lifecycleTiming: Pick<CodexThreadLifecycleTimingTracker, "measure">;
-@@ -186,20 +187,37 @@
-   },
-   assertCurrent: () => void,
- ): Promise<CodexThread> {
--  const { thread } = await context.lifecycleTiming.measure("thread-read-adoption-status", () =>
--    params.client.request(
--      "thread/read",
--      { threadId, includeTurns: false },
--      { signal: params.signal, assertCurrent, withCurrent: params.authority?.withCurrent },
--    ),
--  );
--  context.throwIfAborted();
--  if (thread.id !== threadId) {
--    throw new Error("Codex returned another thread during adoption status read");
--  }
--  assertCodexThreadAcceptsDirectInput(thread);
--  if (thread.status?.type === "active") {
--    throw new CodexAdoptedThreadActiveError();
--  }
--  return thread;
--}
-+  const provenance = params.params.inputProvenance;
-+  const waitForRestart =
-+    provenance?.kind === "internal_system" && provenance.sourceTool === "restart";
-+  const deadline = Date.now() + 120_000;
-+  for (;;) {
-+    context.throwIfAborted();
-+    assertCurrent();
-+    const { thread } = await context.lifecycleTiming.measure(
-+      "thread-read-adoption-status",
-+      () =>
-+        params.client.request(
-+          "thread/read",
-+          { threadId, includeTurns: false },
-+          { signal: params.signal, assertCurrent, withCurrent: params.authority?.withCurrent },
-+        ),
-+    );
-+    context.throwIfAborted();
-+    assertCurrent();
-+    if (thread.id !== threadId) {
-+      throw new Error("Codex returned another thread during adoption status read");
-+    }
-+    assertCodexThreadAcceptsDirectInput(thread);
-+    if (thread.status?.type !== "active") {
-+      return thread;
-+    }
-+    // A remote app-server can outlive its Gateway. A restart input may wait for
-+    // the old turn, but must never interrupt it or adopt a still-active thread.
-+    const remaining = deadline - Date.now();
-+    if (!waitForRestart || remaining <= 0) {
-+      throw new CodexAdoptedThreadActiveError();
-+    }
-+    await delay(Math.min(1_000, remaining), undefined, { signal: params.signal });
-+  }
-+}
---- a/extensions/codex/src/app-server/thread-policy.test.ts
-+++ b/extensions/codex/src/app-server/thread-policy.test.ts
-@@ -1,10 +1,11 @@
--import { describe, expect, it } from "vitest";
-+import { threadStartResult } from "./codex-app-server.test-fixtures.js";
-+import { describe, expect, it, vi } from "vitest";
- import { createClientHarness } from "./test-support.js";
- import {
-   createThreadRequestAppServerOptions,
-   createThreadRequestAttemptParams,
- } from "./thread-lifecycle.test-fixtures.js";
--import { refreshCodexThreadPolicy } from "./thread-policy.js";
-+import { assertAdoptedCodexThreadResumeAllowed, refreshCodexThreadPolicy } from "./thread-policy.js";
- import { buildThreadResumeParams, buildThreadStartParams } from "./thread-requests.js";
- 
- describe("native thread policy refresh", () => {
-@@ -87,3 +88,40 @@
-     },
-   );
- });
-+
-+
-+it("refuses an active restart thread when its passive wait expires", async () => {
-+  const h = createClientHarness();
-+  const params = createThreadRequestAttemptParams({ provider: "openai" });
-+  params.inputProvenance = { kind: "internal_system", sourceTool: "restart" };
-+  const now = Date.now();
-+  using clock = vi.spyOn(Date, "now").mockReturnValue(now);
-+  try {
-+    const waiting = assertAdoptedCodexThreadResumeAllowed(
-+      { client: h.client, params },
-+      "root",
-+      {
-+        lifecycleTiming: { measure: async (_label, run) => await run() },
-+        throwIfAborted: () => {},
-+      },
-+      () => {},
-+    );
-+    const request = JSON.parse(await h.waitForWrite(0));
-+    expect(request.method).toBe("thread/read");
-+    // Expiry never permits a native mutation, even when the last read succeeds.
-+    clock.mockReturnValue(now + 120_000);
-+    h.send({
-+      id: request.id,
-+      result: {
-+        thread: {
-+          ...threadStartResult("root", "/repo").thread,
-+          status: { type: "active" },
-+          canAcceptDirectInput: true,
-+        },
-+      },
-+    });
-+    await expect(waiting).rejects.toThrow("active in another runner");
-+  } finally {
-+    await h.client.closeAndWait();
-+  }
-+});
+diff --git a/extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts b/extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts
+index ba1b9bdd4d1..1afccd9c07c 100644
 --- a/extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts
 +++ b/extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts
-@@ -46,7 +46,11 @@
+@@ -46,7 +46,11 @@ function readEmptyNativeConfig(method: string) {
    throw new Error(`unexpected method: ${method}`);
  }
  
@@ -286,7 +15,7 @@
    const threadId = "thread-adopted";
    const request = vi.fn(async (method: string) => {
      if (method === "thread/start") {
-@@ -59,7 +63,7 @@
+@@ -59,7 +63,7 @@ async function seedAdoptedThreadBinding(params: EmbeddedRunAttemptParams, cwd: s
      params,
      cwd,
      dynamicTools: [],
@@ -295,7 +24,7 @@
    });
    const identity = sessionBindingIdentity({
      sessionId: params.sessionId,
-@@ -272,4 +276,129 @@
+@@ -272,4 +276,129 @@ describe("Codex app-server adopted thread lifecycle", () => {
        }
      },
    );
@@ -425,3 +154,282 @@
 +  );
 +
  });
+diff --git a/extensions/codex/src/app-server/thread-policy.test.ts b/extensions/codex/src/app-server/thread-policy.test.ts
+index fa4997205c4..24d67a260fd 100644
+--- a/extensions/codex/src/app-server/thread-policy.test.ts
++++ b/extensions/codex/src/app-server/thread-policy.test.ts
+@@ -1,10 +1,11 @@
+-import { describe, expect, it } from "vitest";
++import { threadStartResult } from "./codex-app-server.test-fixtures.js";
++import { describe, expect, it, vi } from "vitest";
+ import { createClientHarness } from "./test-support.js";
+ import {
+   createThreadRequestAppServerOptions,
+   createThreadRequestAttemptParams,
+ } from "./thread-lifecycle.test-fixtures.js";
+-import { refreshCodexThreadPolicy } from "./thread-policy.js";
++import { assertAdoptedCodexThreadResumeAllowed, refreshCodexThreadPolicy } from "./thread-policy.js";
+ import { buildThreadResumeParams, buildThreadStartParams } from "./thread-requests.js";
+ 
+ describe("native thread policy refresh", () => {
+@@ -87,3 +88,40 @@ describe("native thread policy refresh", () => {
+     },
+   );
+ });
++
++
++it("refuses an active restart thread when its passive wait expires", async () => {
++  const h = createClientHarness();
++  const params = createThreadRequestAttemptParams({ provider: "openai" });
++  params.inputProvenance = { kind: "internal_system", sourceTool: "restart" };
++  const now = Date.now();
++  using clock = vi.spyOn(Date, "now").mockReturnValue(now);
++  try {
++    const waiting = assertAdoptedCodexThreadResumeAllowed(
++      { client: h.client, params },
++      "root",
++      {
++        lifecycleTiming: { measure: async (_label, run) => await run() },
++        throwIfAborted: () => {},
++      },
++      () => {},
++    );
++    const request = JSON.parse(await h.waitForWrite(0));
++    expect(request.method).toBe("thread/read");
++    // Expiry never permits a native mutation, even when the last read succeeds.
++    clock.mockReturnValue(now + 120_000);
++    h.send({
++      id: request.id,
++      result: {
++        thread: {
++          ...threadStartResult("root", "/repo").thread,
++          status: { type: "active" },
++          canAcceptDirectInput: true,
++        },
++      },
++    });
++    await expect(waiting).rejects.toThrow("active in another runner");
++  } finally {
++    await h.client.closeAndWait();
++  }
++});
+diff --git a/extensions/codex/src/app-server/thread-policy.ts b/extensions/codex/src/app-server/thread-policy.ts
+index d1a82cf4a1b..8c0e1de7029 100644
+--- a/extensions/codex/src/app-server/thread-policy.ts
++++ b/extensions/codex/src/app-server/thread-policy.ts
+@@ -1,3 +1,4 @@
++import { setTimeout as delay } from "node:timers/promises";
+ import {
+   AgentHarnessPreflightError,
+   embeddedAgentLog,
+@@ -178,7 +179,7 @@ export function assertCodexSupervisionThreadLineage(
+ 
+ /** Passive refusal must precede releasing or acquiring any native subscription. */
+ export async function assertAdoptedCodexThreadResumeAllowed(
+-  params: CodexStartOrResumeThreadParams,
++  params: Pick<CodexStartOrResumeThreadParams, "client" | "params" | "signal" | "authority">,
+   threadId: string,
+   context: {
+     lifecycleTiming: Pick<CodexThreadLifecycleTimingTracker, "measure">;
+@@ -186,20 +187,37 @@ export async function assertAdoptedCodexThreadResumeAllowed(
+   },
+   assertCurrent: () => void,
+ ): Promise<CodexThread> {
+-  const { thread } = await context.lifecycleTiming.measure("thread-read-adoption-status", () =>
+-    params.client.request(
+-      "thread/read",
+-      { threadId, includeTurns: false },
+-      { signal: params.signal, assertCurrent, withCurrent: params.authority?.withCurrent },
+-    ),
+-  );
+-  context.throwIfAborted();
+-  if (thread.id !== threadId) {
+-    throw new Error("Codex returned another thread during adoption status read");
+-  }
+-  assertCodexThreadAcceptsDirectInput(thread);
+-  if (thread.status?.type === "active") {
+-    throw new CodexAdoptedThreadActiveError();
++  const provenance = params.params.inputProvenance;
++  const waitForRestart =
++    provenance?.kind === "internal_system" && provenance.sourceTool === "restart";
++  const deadline = Date.now() + 120_000;
++  for (;;) {
++    context.throwIfAborted();
++    assertCurrent();
++    const { thread } = await context.lifecycleTiming.measure(
++      "thread-read-adoption-status",
++      () =>
++        params.client.request(
++          "thread/read",
++          { threadId, includeTurns: false },
++          { signal: params.signal, assertCurrent, withCurrent: params.authority?.withCurrent },
++        ),
++    );
++    context.throwIfAborted();
++    assertCurrent();
++    if (thread.id !== threadId) {
++      throw new Error("Codex returned another thread during adoption status read");
++    }
++    assertCodexThreadAcceptsDirectInput(thread);
++    if (thread.status?.type !== "active") {
++      return thread;
++    }
++    // A remote app-server can outlive its Gateway. A restart input may wait for
++    // the old turn, but must never interrupt it or adopt a still-active thread.
++    const remaining = deadline - Date.now();
++    if (!waitForRestart || remaining <= 0) {
++      throw new CodexAdoptedThreadActiveError();
++    }
++    await delay(Math.min(1_000, remaining), undefined, { signal: params.signal });
+   }
+-  return thread;
+ }
+diff --git a/src/auto-reply/reply/session-event-context.ts b/src/auto-reply/reply/session-event-context.ts
+index a5e09b542d3..448d7993dbe 100644
+--- a/src/auto-reply/reply/session-event-context.ts
++++ b/src/auto-reply/reply/session-event-context.ts
+@@ -83,7 +83,7 @@ export async function stageSessionEventInput(
+     !(await recorder.stageApproved({
+       runId,
+       assertCurrent,
+-      // Only this live policy retry can reclaim its cancelled attempt.
++      // Only this live admission retry can reclaim its cancelled attempt.
+       retryCancelled: readmissionAttempt > 0,
+     }))
+   ) {
+diff --git a/src/auto-reply/reply/session-event-handoff.ts b/src/auto-reply/reply/session-event-handoff.ts
+index f61dd48ae77..371c7cf6d20 100644
+--- a/src/auto-reply/reply/session-event-handoff.ts
++++ b/src/auto-reply/reply/session-event-handoff.ts
+@@ -1,3 +1,8 @@
++import { setTimeout as delay } from "node:timers/promises";
++import {
++  collectErrorGraphCandidates,
++  extractErrorCode,
++} from "@openclaw/normalization-core/error-coercion";
+ import { isRecord } from "@openclaw/normalization-core/record-coerce";
+ import { prepareAgentDeletionBlocked } from "../../agents/agent-lifecycle-registry.js";
+ import {
+@@ -6,6 +11,7 @@ import {
+   type AgentRunTerminalOutcome,
+ } from "../../agents/agent-run-terminal-outcome.js";
+ import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
++import { isWorkspaceAccessUnavailableError } from "../../agents/workspace-access.js";
+ import { FAILOVER_REASONS } from "../../agents/failover/signal.js";
+ import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
+ import {
+@@ -82,6 +88,24 @@ const loadGenerationReadmission = createLazyRuntimeNamedExport(
+   "runOutsideAdmittedGenerationScopes",
+ );
+ 
++const RESTART_WORKSPACE_RECONNECT_MS = 60_000;
++
++// A disconnected workspace read was rejected before dispatch. Other transport
++// errors can hide effects and must retain the normal terminal failure behavior.
++function isUndispatchedWorkspaceDisconnect(error: unknown): boolean {
++  return (
++    isWorkspaceAccessUnavailableError(error) &&
++    collectErrorGraphCandidates(error, (current) => [current.cause]).some(
++      (candidate) =>
++        extractErrorCode(candidate) === "UNAVAILABLE" &&
++        isRecord(candidate) &&
++        isRecord(candidate.details) &&
++        candidate.details.code === "NOT_CONNECTED" &&
++        candidate.details.nodeCommandDispatched === false,
++    )
++  );
++}
++
+ /** Producer-owned occurrence; passive notices continue to use enqueueSystemEvent. */
+ export function enqueueSessionEventForHost(
+   text: string,
+@@ -94,6 +118,8 @@ function enqueueSessionEventAttempt(
+   text: string,
+   { assertAcceptanceCurrent, ...options }: SessionEventOptions,
+   readmissionAttempt: number,
++  configReadmissionAttempt = 0,
++  reconnectDeadline = Date.now() + RESTART_WORKSPACE_RECONNECT_MS,
+ ): SessionEventReceipt {
+   options.assertCurrent?.();
+   options.expectedTarget?.assertCurrent?.();
+@@ -307,6 +333,7 @@ function enqueueSessionEventAttempt(
+     }
+     settlement = "settling";
+     const complete = async () => {
++      let pendingInputSettled = true;
+       try {
+         await settleUserTurnPendingInput(
+           inputRecorder,
+@@ -317,26 +344,49 @@ function enqueueSessionEventAttempt(
+           accepted,
+         );
+       } catch (error) {
++        pendingInputSettled = false;
+         failure ??= error instanceof Error ? error : String(error);
+       }
+       // Submitting custody ends at the first acceptance; a pre-acceptance re-admission
+       // carries the still-live assertion so revoked ingress rejects the retry.
+       const pendingAcceptanceAssertion = accepted ? undefined : acceptanceAssertion;
+       acceptanceAssertion = undefined;
+-      // Producers never retry, so a policy publication that rejected an unstarted
+-      // occurrence re-admits it under the current policy instead of destroying it.
+-      // Stop, abort and abandonment still settle terminally.
++      // Re-admit only the same occurrence. Staged input must be cancelled durably
++      // before another attempt can reclaim it; failed cleanup is never retryable.
+       const retainForConfigChange = () =>
++        pendingInputSettled &&
+         configPolicy.changed &&
+         !started &&
+         !delivery.deliveryAttempted &&
+         !signal.aborted &&
+-        !abandoned;
+-      if (retainForConfigChange() && configPolicy.canReadmit(readmissionAttempt)) {
+-        await waitForSessionEventReadmission(readmissionAttempt, signal);
++        !abandoned &&
++        configPolicy.canReadmit(configReadmissionAttempt);
++      const retainForWorkspaceReconnect = () =>
++        pendingInputSettled &&
++        options.source === "restart" &&
++        !accepted &&
++        !adopted &&
++        !started &&
++        !delivery.delivered &&
++        !delivery.deliveryAttempted &&
++        !delivery.deliveryAmbiguous &&
++        !conversationResultCommitted &&
++        !signal.aborted &&
++        !abandoned &&
++        Date.now() < reconnectDeadline &&
++        isUndispatchedWorkspaceDisconnect(failure);
++      const configRetry = retainForConfigChange();
++      if (configRetry) {
++        await waitForSessionEventReadmission(configReadmissionAttempt, signal);
++      } else if (retainForWorkspaceReconnect()) {
++        await delay(1_000, undefined, { signal }).catch((error: unknown) => {
++          if (!signal.aborted) {
++            throw error;
++          }
++        });
+       }
+       settlement = "finished";
+-      const canReadmit = retainForConfigChange() && configPolicy.canReadmit(readmissionAttempt);
++      const canReadmit = retainForConfigChange() || retainForWorkspaceReconnect();
+       const terminal = resolveSessionEventTerminalOutcome({
+         operation,
+         signal,
+@@ -371,7 +421,14 @@ function enqueueSessionEventAttempt(
+           attempt: readmissionAttempt + 1,
+           adopted,
+           occurrenceId,
+-          enqueue: enqueueSessionEventAttempt,
++          enqueue: (nextText, nextOptions, attempt) =>
++            enqueueSessionEventAttempt(
++              nextText,
++              nextOptions,
++              attempt,
++              configReadmissionAttempt + (configRetry ? 1 : 0),
++              reconnectDeadline,
++            ),
+           log,
+         });
+         readmittedReceipt = readmission.receipt;

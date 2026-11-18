@@ -1277,7 +1277,12 @@ function upgradedCanonicalData(data) {
   return {
     ...data,
     agents: data.agents.map(({ value }) => ({
-      value: { ...value, predecessor_replacement: value.predecessor_replacement ?? null },
+      value: {
+        ...value,
+        predecessor_replacement: value.predecessor_replacement ?? null,
+        restart_generation: null,
+        restart_domain: null,
+      },
     })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
@@ -1457,7 +1462,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "prePackagedCredentialGatewayOwner"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "prePackagedCredentialGatewayOwner"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1761,7 +1768,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "prePackagedCredentialGatewayOwner"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "prePackagedCredentialGatewayOwner"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2063,7 +2072,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "prePackagedCredentialGatewayOwner"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "prePackagedCredentialGatewayOwner"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2263,7 +2274,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "prePackagedCredentialGatewayOwner"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "prePackagedCredentialGatewayOwner"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2275,10 +2288,18 @@ test(
         ok: true,
         history,
       });
-      assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
-        ok: true,
-        history: "completed",
-      });
+      context.diagnostic(
+        `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+      );
+      await context.test(
+        `restored prefix ${prefix} passes the completed history check`,
+        async () => {
+          assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+            ok: true,
+            history: "completed",
+          });
+        },
+      );
     }
   },
 );
@@ -2339,7 +2360,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "prePackagedCredentialGatewayOwner"],
+      [80, "preRestartContinuation"],
+      [81, "preAuthenticationStates"],
+      [82, "prePackagedCredentialGatewayOwner"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2363,9 +2386,10 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
-        // 0081 adds the packaged Gateway owner column and constraints before its trigger.
+        // 0083 adds the packaged Gateway owner column and constraints before its trigger.
         const rollbackTag = [
-          [80, "CREATE TRIGGER"],
+          [82, "CREATE TRIGGER"],
+          [81, "GRANT"],
           [79, "ALTER TABLE"],
           [78, "GRANT"],
           [77, "CREATE FUNCTION"],

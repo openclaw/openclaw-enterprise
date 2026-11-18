@@ -242,6 +242,38 @@ export function parseJson(value: string | undefined): unknown {
   return parse(required(value));
 }
 
+type GatewayVmFileSystem = {
+  existsSync(path: string): boolean;
+  lstatSync(path: string): { isFile(): boolean; mode: number };
+  mkdirSync(): void;
+  readFileSync(path: string): string | undefined;
+  writeFileSync(path: string, data: unknown): void;
+};
+
+export function createGatewayVmFileSystem(files: Map<string, string>): GatewayVmFileSystem {
+  return {
+    existsSync(path) {
+      return files.has(path);
+    },
+    lstatSync(path) {
+      if (!files.has(path)) {
+        throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+      }
+      return { isFile: () => true, mode: 0o600 };
+    },
+    mkdirSync() {},
+    readFileSync(path) {
+      if (!files.has(path)) {
+        throw new Error(`Missing mocked file: ${path}`);
+      }
+      return files.get(path);
+    },
+    writeFileSync(path, data) {
+      files.set(path, String(data));
+    },
+  };
+}
+
 export const runGeneratedProgram: (source: string, sandbox: object) => unknown = vm.runInNewContext;
 
 export function property(value: unknown, ...keys: string[]): unknown {

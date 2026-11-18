@@ -917,10 +917,11 @@ test("Compute preserves admitted Codex commands and forwards proxy settings on n
       const { command } = fixture.provisions[0].requirements;
       if (legacy) {
         // Retry must replay the entire old command, not merely omit a proxy.
-        // Full command captured from the same fixture on pre-proxy main (5563280bd8).
+        // Full command captured from the same fixture on pre-proxy main (5563280bd8); it
+        // embeds the startup schema thresholds, so it moves with the pin.
         assert.equal(
           createHash("sha256").update(JSON.stringify(command)).digest("hex"),
-          "8602532f0647c0882e4a52a3277bda1c5074ec97122765b06d31ae01a72c713c",
+          "a7412cefc1b7f4cfa68243b92e3f9ea789376c9182e4291e1af2872c2bb216a0",
           "a stored Sandbox must keep its admitted command byte for byte",
         );
       }

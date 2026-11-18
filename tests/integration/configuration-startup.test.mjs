@@ -919,6 +919,7 @@ test("production embedded replacements preserve their active Service across fail
   worker.state.read = async (read) =>
     read({
       agents: {
+        findRestartContinuation: async () => undefined,
         findAgent: async () => ({
           id: agentId,
           namespaceId,
@@ -953,6 +954,7 @@ test("production embedded replacements preserve their active Service across fail
           },
         },
         agents: {
+          findRestartContinuation: async () => undefined,
           lockAgent: async (...arguments_) => {
             locks.push(["agent", ...arguments_]);
             return activeAgent;

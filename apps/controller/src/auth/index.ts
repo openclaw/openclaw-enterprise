@@ -1215,7 +1215,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         if (humanLogin !== undefined) {
           // The recovery account is the documented way in when a provider is down, so
           // strangers spending its email can slow it but never refuse it.
-          if (humanLogin.isRecoveryEmail(email)) {
+          if (await humanLogin.isRecoveryEmail(email)) {
             return true;
           }
           // Recovery-only: every other password is refused unread, reserved or not.
@@ -1970,7 +1970,10 @@ export async function createPostgresControllerAuth(
           state,
           options.installationId,
           betterAuthIssuer(options.installationId),
-          { externalProviderIds },
+          {
+            externalProviderIds,
+            ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
+          },
         );
   // Any external provider activates the guarded profile; all share its recovery user.
   const recoveryUserId = google?.recoveryUserId ?? oidc?.recoveryUserId;
@@ -2081,9 +2084,6 @@ export async function createPostgresControllerAuth(
     if (!designation) {
       throw new Error("Recovery designation is unavailable.");
     }
-    // The recovery account's password lane stays admitted under sign-in floods. It follows the
-    // stored designation, never the environment seed, which may name a replaced holder.
-    humanLogin!.designateRecovery(designation.email);
     if (passwordSignIn === "recovery-only") {
       withoutExternalIdentity = await persistence!.accountsWithoutExternalIdentity(
         [humanLogin!.googleProviderId, humanLogin!.oidcProviderId].filter(
@@ -2164,18 +2164,19 @@ export async function createPostgresControllerAuth(
             actor: HumanAuthenticationActor,
             expectedVersion: number,
           ) => {
-            const { email, ...replaced } = await persistence!.replaceRecovery(
+            const replaced = await persistence!.replaceRecovery(
               userId,
               principalId,
               expectedCurrentUserId,
               actor,
               expectedVersion,
             );
-            // Move the reserved password lane to the committed holder's email. The email comes
-            // from the replacing transaction, so no later read can fail and leave the old holder
-            // on the lane.
-            humanLogin.designateRecovery(email);
-            return replaced;
+            return {
+              userId: replaced.userId,
+              principalId: replaced.principalId,
+              methodId: replaced.methodId,
+              changed: replaced.changed,
+            };
           },
           enrolAccount: (userId: string, actor: HumanAuthenticationActor) =>
             persistence!.enrolAccount(userId, actor),
