@@ -1287,7 +1287,7 @@ export function registerStartupPreflightCases({
             const stderr = commandStderr(error);
             assert.match(
               stderr,
-              /Agent agt_test "Mail triage" in Namespace ns_test: Configuration setting models\.providers\.openai\.models may list only entries whose id names a primary or fallback model set in agents\.defaults\.model or agents\.entries\./,
+              /Agent agt_test "Mail triage" in Namespace ns_test: Configuration setting models\.providers\.openai\.models may list only a primary, fallback, or explicit session model selected by the Agent\./,
             );
             assert.match(stderr, /No OCC writer was stopped; the old release keeps serving\./);
             assert.doesNotMatch(commandStdout(error) + stderr, /synthetic-/);

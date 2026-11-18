@@ -947,6 +947,27 @@ test("Configuration save refuses a provider catalog row that no model selection 
     await updateSaved(context, agent.item, values, JSON.stringify(values));
   }
 
+  // A session-only choice can have native provider metadata and deploy beside the primary
+  // without putting it in automatic fallbacks.
+  const alternate = "openai/gpt-4.1-mini";
+  const switchable = withCatalog([{ id: "gpt-4.1" }, { id: "gpt-4.1-mini" }], {
+    defaults: {
+      ...runtimeDefaults,
+      models: { ...runtimeDefaults.models, [alternate]: { agentRuntime: { id: "openclaw" } } },
+      modelPolicy: { allow: [runtimeDefaults.model, alternate] },
+    },
+  });
+  await updateSaved(context, agent.item, switchable);
+  await deployAccepted(context, agent.agentPath, "session model choice");
+
+  // Shared policies can offer the alternate even when the roster supplies the primary.
+  const { model, ...defaults } = switchable.agents.defaults;
+  await updateSaved(context, agent.item, {
+    ...switchable,
+    agents: { defaults, entries: { main: { model } } },
+  });
+  await deployAccepted(context, agent.agentPath, "session model choice with a roster primary");
+
   // A Preset whose model or catalog row waits on a variable names no model yet: a launch can fill
   // both with one model. It saves; the Configuration a launch creates gets Configuration save's
   // check.

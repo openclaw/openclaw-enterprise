@@ -294,7 +294,11 @@ export async function exerciseNamedProvider(
     displayName: "Research models",
     ...endpoint,
     connectionTemplateId: template.id,
-    models: [{ id: "fixture-model", contextWindow: 8192, maxTokens: 512 }, { id: "another-model" }],
+    models: [
+      { id: "fixture-model", contextWindow: 8192, maxTokens: 512 },
+      { id: "another-model", name: "Larger", contextWindow: 16384 },
+      { id: "unselected-model" },
+    ],
   };
   const provider = await request(
     "POST",
@@ -392,8 +396,45 @@ export async function exerciseNamedProvider(
     ]),
     [["POST", values.baseUrl + "/responses"]],
   );
+  // The second Agent opts into another offered model. The revision takes its limits from the
+  // saved provider, and the Proxy grants only the models this Agent explicitly selected.
+  const configPath = root + "/configurations/" + f.agent.configurationId;
+  const { values: config } = await request("GET", configPath, undefined, 200);
+  const defaults = config.agents.defaults;
+  defaults.modelPolicy = { allow: ["codex/fixture-model", "codex/another-model"] };
+  defaults.models["codex/another-model"] = { agentRuntime: { id: "codex" } };
+  await request("PATCH", configPath, { values: config }, 200);
   const next = await request("POST", second + "/deploy", {}, 202);
+  assert.deepEqual(next.configuration.models.providers.codex.models, [
+    { id: "fixture-model", name: "fixture-model", contextWindow: 8192, maxTokens: 512 },
+    { id: "another-model", name: "Larger", contextWindow: 16384 },
+  ]);
+  const active = await f.controller.transact((state: PlatformUnitOfWork) =>
+    state.revisions.findRevision(f.namespace.id, next.agentId, next.id),
+  );
+  const route = active?.egressPlan?.routes[0];
+  assert.ok(route && route.binding.grant.kind === "inference");
+  assert.deepEqual(route.binding.grant.models, ["fixture-model", "another-model"]);
   assert.deepEqual(next.harness, revision.harness);
+  // Promote the alternate and deselect the old primary. A roster entry can retain
+  // runtime metadata for the old model without granting it to this revision.
+  const oldPrimary = defaults.model.primary;
+  const oldPolicy = defaults.models[oldPrimary];
+  defaults.model = "codex/another-model";
+  defaults.modelPolicy.allow = [defaults.model];
+  delete defaults.models[oldPrimary];
+  config.agents.entries = {
+    main: {
+      models: { [oldPrimary]: oldPolicy, [defaults.model]: defaults.models[defaults.model] },
+    },
+  };
+  await request("PATCH", configPath, { values: config }, 200);
+  const promoted = await request("POST", second + "/deploy", {}, 202);
+  assert.deepEqual(promoted.configuration.models.providers.codex.models, [
+    { id: "another-model", name: "Larger", contextWindow: 16384 },
+  ]);
+  assert.deepEqual(promoted.configuration.agents.entries.main.models[oldPrimary], oldPolicy);
+
   await request(
     "POST",
     first + "/deploy",
@@ -409,7 +450,7 @@ export async function exerciseNamedProvider(
     {
       ...values,
       expectedSettingsFingerprint: provider.settingsFingerprint,
-      models: [{ id: "another-model" }],
+      models: values.models.filter((row) => row.id !== "another-model"),
     },
     200,
   );

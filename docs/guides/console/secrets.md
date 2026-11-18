@@ -13,6 +13,8 @@ To reuse an inference endpoint, an Installation administrator selects **Settings
 
 In **Create Agent**, select the saved provider and a compatible Dedicated Harness. Select the registered inference credential, then choose from **Models offered by this provider**. Another Agent in the same Namespace can reuse these choices. Each Namespace needs its own authorized credential. To use a different endpoint, select a different provider. For a private endpoint, enter its HTTPS hostname or IPv4 address in the inference URL. Use the Service DNS name for an in-cluster Kubernetes Service. No separate network destination is required. [Private endpoint prerequisites](../../reference/drivers/kubernetes-compute/model-provider.md#private-endpoints)
 
+Check the models the Agent can use in **Models offered by this provider** and select one **Default** for new sessions. Removing the default promotes the next checked model in catalog order.
+
 ## Register a Google OAuth client
 
 As an Installation administrator, open **Credentials → OAuth clients → Register OAuth client** and select the Installation-wide **Google OAuth** template. Register the displayed redirect URI with Google, then enter the client ID and secret that Google issued.

@@ -2,7 +2,12 @@ import type {
   ConfigurationValidationOptions,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
-import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  isNonEmptyString,
+  selectableCatalogModels,
+  splitModelRef,
+} from "@openclaw-enterprise/utils";
 
 import { canSpell } from "./configuration-settings.ts";
 import {
@@ -439,7 +444,7 @@ function providerModelEntry(
 
 /**
  * The provider catalog rule of resolveConfiguredHarnessId: each row of a
- * models.providers.<provider>.models list names a primary or fallback model of `selections`, by
+ * models.providers.<provider>.models list names a primary, fallback or explicitly selectable model in `selections`, by
  * its complete ref or the remainder after the provider. Deployment checks it on every Harness,
  * before it resolves one, so Configuration save runs it too (requireConsistentModelPolicy;
  * finding 3019).
@@ -488,7 +493,7 @@ function requireSelectedCatalogRows(
         modelProviderMessage(providerId, (path) =>
           catalogIds.size === 0
             ? `Configuration setting ${path}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`
-            : `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
+            : `Configuration setting ${path}.models may list only a primary, fallback, or explicit session model selected by the Agent.`,
         ),
       );
     }
@@ -584,6 +589,9 @@ function resolveModelPolicy(
     return runtimes.length === 0 ? noRunnableRuntime("it") : `set it to ${runtimes.join(" or ")}`;
   };
   const defaultSelection = configuredModels(defaults?.model, defaultModelMessage);
+  const defaultCandidates = [
+    ...new Set([...defaultSelection, ...selectableCatalogModels(defaults)]),
+  ];
   const defaultModels = asRecord(defaults?.models);
   // The runtime a provider catalog row or the provider sets for `model`, read without the
   // catalog's refusals, which deployment names later.
@@ -629,7 +637,7 @@ function resolveModelPolicy(
     models: readonly string[];
     entry?: Readonly<Record<string, unknown>>;
     key?: string;
-  }> = [{ models: defaultSelection }];
+  }> = [];
   // The first candidate: every selection's primary must be this one.
   let primary = defaultSelection[0];
 
@@ -672,7 +680,13 @@ function resolveModelPolicy(
         primaryRuntimeOffer(model, [defaultModels?.[model]]),
       );
     }
-    selections.push({ models: selection, entry, key });
+    const ownChoices = selectableCatalogModels(entry);
+    const inherited = selection === defaultSelection ? defaultCandidates : selection;
+    selections.push({
+      models: ownChoices.length ? [...new Set([...inherited, ...ownChoices])] : inherited,
+      entry,
+      key,
+    });
   }
 
   if (defaults?.models !== undefined && !(draft && primary === undefined)) {
@@ -692,6 +706,10 @@ function resolveModelPolicy(
     );
   }
 
+  if (primary !== undefined) {
+    // Default session choices also apply when the roster supplies the shared primary.
+    selections.unshift({ models: defaultCandidates });
+  }
   requireSelectedCatalogRows(
     providerConfigurations,
     selections.map(({ models }) => models),
@@ -849,7 +867,7 @@ function resolveModelPolicy(
   // entry that shares their list adds only the models its own `models` policy names, in the
   // defaults' order.
   const position = new Map<string, number>();
-  defaultSelection.forEach((model, index) => {
+  defaultCandidates.forEach((model, index) => {
     if (!position.has(model)) {
       position.set(model, index);
     }
@@ -858,7 +876,7 @@ function resolveModelPolicy(
   for (const { models, entry, key } of selections) {
     const entryModels = asRecord(entry?.models);
     const candidates =
-      entry !== undefined && models === defaultSelection
+      entry !== undefined && models === defaultCandidates
         ? Object.keys(entryModels ?? {})
             .filter((model) => position.has(model))
             .sort((left, right) => position.get(left)! - position.get(right)!)
@@ -875,8 +893,8 @@ function resolveModelPolicy(
         model,
         entryPolicy,
         key,
-        policyRuntime(entryModels?.[models[0]!]) !== undefined,
-        models[0]!,
+        policyRuntime(entryModels?.[primary]) !== undefined,
+        primary,
       );
       if (harness !== undefined) {
         resolved.add(harness);

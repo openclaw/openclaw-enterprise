@@ -26,6 +26,10 @@ a refused request; uncertain registration reuses the same request. Switching to 
 
 In **Pages/Create Agent → Saved model provider without a credential**, select Internal vLLM and check that the picker directs the creator to Credentials for a key approved for the current template.
 
+## Choose several models for an Agent
+
+Open **Pages/Create Agent → Choose additional session models**. In the model table, set the checked alternate as **Default**. Both models stay checked. Clear the old default and inspect **Advanced settings**. The Configuration lists only the new default for session selection and adds no automatic fallback.
+
 ## Correct an edited model catalog
 
 Open **Pages/Create Agent → Model choices before credential entry**. Use the

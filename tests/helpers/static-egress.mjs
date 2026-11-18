@@ -86,6 +86,7 @@ async function buildStaticEgressFixture(
     admissionOnly = false,
     gatewayOnly = false,
     protectedSourceOnly = false,
+    sessionModels = /** @type {string[]} */ ([]),
     proxyDriverId = "openshell-egress",
     now = () => new Date(),
     physicalPlacement = false,
@@ -720,7 +721,19 @@ async function buildStaticEgressFixture(
     agents: {
       defaults: {
         model: { primary: "codex/fixture-model" },
-        models: { "codex/fixture-model": { agentRuntime: { id: "codex" } } },
+        models: Object.fromEntries(
+          ["fixture-model", ...sessionModels].map((id) => [
+            `codex/${id}`,
+            { agentRuntime: { id: "codex" } },
+          ]),
+        ),
+        ...(sessionModels.length
+          ? {
+              modelPolicy: {
+                allow: ["fixture-model", ...sessionModels].map((id) => `codex/${id}`),
+              },
+            }
+          : {}),
       },
     },
   });

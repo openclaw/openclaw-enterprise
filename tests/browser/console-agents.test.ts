@@ -2380,6 +2380,34 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
+  const chooseModel = page.getByLabel("Model", { exact: true });
+  await chooseModel.selectOption("gpt-6-sol");
+  await page.getByText("Additional models", { exact: true }).click();
+  const alternate = page.getByRole("checkbox", { name: "gpt-6-luna", exact: true });
+  await alternate.check();
+  let selection = JSON.parse(await configuration.inputValue());
+  assert.equal(selection.agents.defaults.model, "codex/gpt-6-sol");
+  assert.deepEqual(selection.agents.defaults.modelPolicy.allow, [
+    "codex/gpt-6-sol",
+    "codex/gpt-6-luna",
+  ]);
+  assert.deepEqual(
+    selection.models.providers.codex.models.map((row: { id: string }) => row.id),
+    ["gpt-6-sol", "gpt-6-luna"],
+  );
+  // Making an allowed model the default preserves the old default as an explicit choice.
+  await chooseModel.selectOption("gpt-6-luna");
+  assert.equal(
+    await page.getByRole("checkbox", { name: "gpt-6-sol", exact: true }).isChecked(),
+    true,
+  );
+  await page.getByRole("checkbox", { name: "gpt-6-sol", exact: true }).uncheck();
+  selection = JSON.parse(await configuration.inputValue());
+  assert.deepEqual(selection.agents.defaults.modelPolicy.allow, ["codex/gpt-6-luna"]);
+  assert.deepEqual(
+    selection.models.providers.codex.models.map((row: { id: string }) => row.id),
+    ["gpt-6-luna"],
+  );
   await page.getByLabel("Agent name").fill("Template initial credential");
   await createModelCredentialSecret(page, "template-edit-key");
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
@@ -2549,6 +2577,30 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
     "codex/gpt-returned-model",
   );
+  // Codex can also run an advanced configuration with openai/<id> model references.
+  // An alternate must extend that catalog so the selected provider can resolve the model.
+  const advanced = structuredClone(selection);
+  const defaults = advanced.agents.defaults;
+  delete defaults.models;
+  delete defaults.modelPolicy;
+  defaults.model = "openai/gpt-6-luna";
+  const codexProvider = advanced.models.providers.codex;
+  advanced.models.providers = { openai: { ...codexProvider, agentRuntime: { id: "codex" } } };
+  await configuration.fill(JSON.stringify(advanced));
+  await page.getByRole("checkbox", { name: "gpt-6-sol", exact: true }).check();
+  const routed = JSON.parse(await configuration.inputValue());
+  assert.deepEqual(routed.agents.defaults.modelPolicy.allow, [
+    "openai/gpt-6-luna",
+    "openai/gpt-6-sol",
+  ]);
+  assert.deepEqual(
+    routed.models.providers.openai.models.map((row: { id: string }) => row.id),
+    ["gpt-6-luna", "gpt-6-sol"],
+  );
+  assert.deepEqual(routed.agents.defaults.models["openai/gpt-6-luna"], {
+    agentRuntime: { id: "codex" },
+  });
+  assert.equal(routed.models.providers.codex, undefined);
   await page.getByLabel("Agent name").fill("Discarded draft");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start over" }).click();

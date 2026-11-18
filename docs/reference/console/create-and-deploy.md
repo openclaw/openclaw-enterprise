@@ -47,18 +47,16 @@ as the reason Dedicated OpenClaw is disabled.
    token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
    Choose a model Secret or **Create new Secret...** unless a Preset binds one
    or you use ChatGPT OAuth.
-   No model is preselected. Choose a starter model or **Enter model ID manually**.
-   **Choose a model from the list** keeps listed models and other settings.
-   Reselect unlisted IDs when you return.
-4. Check [provider](../../guides/console/secrets.md#reuse-an-inference-provider), credential, and runtime support. Primary and
-   fallback models must share a supported provider and Harness. Model changes keep
-   unrelated JSON edits. **Advanced settings** → **Reset template** replaces them.
-   If a malformed provider list, malformed Codex `plugins.allow`, or a number
-   outside JavaScript's finite range blocks a JSON rewrite, the form keeps the draft
-   and focuses **Configuration JSON**. Fix or remove the malformed field, or replace
-   a number such as `1e400` with a value closer to zero. Then retry.
-   Provider lists take model objects with string `id` values in an array.
-   `plugins.allow` takes a string array.
+   Built-in providers support **Enter model ID manually**. Returning to the list clears unlisted IDs. Select **Additional models** to allow session switches.
+   For a Preset that sets models only on individual roster entries, edit each entry's model policy
+   under **Advanced settings** or set a shared `agents.defaults.model` to use the picker.
+   Choosing a checked model as the default retains the previous one.
+4. Confirm the [provider credential](../../guides/console/secrets.md#reuse-an-inference-provider) can use each model. Primary, fallback and session models
+   must share a provider and Harness. Model edits preserve unrelated JSON.
+   **Advanced settings** → **Reset template** replaces edited settings. If a model
+   edit focuses **Configuration JSON**, correct the indicated field and retry.
+   Provider catalogs require arrays of objects with string IDs; `plugins.allow`
+   requires a string array. Replace values such as `1e400` with finite numbers.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their [access levels](repository-access.md). Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories
