@@ -16,6 +16,7 @@
     "tests/integration/postgres-trusted-proxy.test.ts",
     "tests/integration/postgres-auth-accounts.test.ts",
     "tests/integration/postgres-password-recovery-only.test.ts",
+    "tests/integration/postgres-oidc-identity-import.test.ts",
     "tests/integration/postgres-oidc-sign-in.test.ts",
     "tests/integration/postgres-oidc-tab-binding.test.ts",
     "tests/integration/postgres-oidc-admin-attach.test.ts",
@@ -147,6 +148,12 @@
       "path": "tests/integration/postgres-google-sign-in.test.ts",
       "expectedTests": [
         "PostgreSQL Google sign-in admits only attached identities through the guarded profile"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-oidc-identity-import.test.ts",
+      "expectedTests": [
+        "offline OIDC identity import preserves account ownership and refuses unsafe writes"
       ]
     },
     {

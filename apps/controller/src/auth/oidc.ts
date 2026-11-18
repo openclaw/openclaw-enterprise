@@ -92,6 +92,15 @@ function endpointURL(value: string): URL | undefined {
   return url;
 }
 
+function issuerURL(value: string): URL | undefined {
+  // The ID token uses the configured spelling, including any trailing slash.
+  return /^https:\/\/[^/]*:/i.test(value) ? undefined : endpointURL(value);
+}
+
+export function validOidcIssuer(value: string): boolean {
+  return issuerURL(value) !== undefined;
+}
+
 export function oidcLoginConfiguration(
   environment: Readonly<Record<string, string | undefined>>,
 ): OidcLoginConfiguration | undefined {
@@ -108,10 +117,8 @@ export function oidcLoginConfiguration(
       "OIDC sign-in requires issuer, authorization URL, token URL, JWKS URL, client ID and client secret.",
     );
   }
-  const issuer = endpointURL(values.OCC_AUTH_OIDC_ISSUER);
-  // `iss` is compared with the configured string, so an explicit port (even `:443`, which the
-  // URL parser drops) would never match a token; refuse it here rather than at every callback.
-  if (issuer === undefined || /^https:\/\/[^/]*:/i.test(values.OCC_AUTH_OIDC_ISSUER)) {
+  const issuer = issuerURL(values.OCC_AUTH_OIDC_ISSUER);
+  if (issuer === undefined) {
     throw new Error(
       "OCC_AUTH_OIDC_ISSUER must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port.",
     );
