@@ -165,7 +165,7 @@ const provisioning = {
 };
 const device = {
   status: "pending",
-  session: secretRef,
+  session: { namespaceId, id: "sec_123e4567-e89b-42d3-a456-426614174001" },
   userCode: "ABCD-EFGH",
   verificationUrl: "https://auth.example.com/device",
   expiresAt: "2026-10-01T12:15:00.000Z",
@@ -343,6 +343,7 @@ export const parameterExamples = {
   revisionId,
   deploymentId: revisionId,
   secretId: secret.id,
+  sessionId: device.session.id,
   credentialSourceId: source.id,
   serviceAccountId: account.id,
   presetId: preset.id,

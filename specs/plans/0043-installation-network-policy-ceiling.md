@@ -304,6 +304,11 @@ and dynamic ownership now use 0082 and 0083, with unchanged SQL bytes. Combined
 snapshots retain both schemas; PostgreSQL catalog and restore qualification is
 repeated. RFC-0043 status and published history remain unchanged.
 
+Main at `4237a824c` subsequently owns 0082 for authentication state. Ceiling
+migrations now use 0083–0084 with unchanged SQL; combined snapshots and measured
+native/restore catalogs include that schema. Published history and RFC status stay
+unchanged.
+
 ## Manual Notes
 
 ## Changelog

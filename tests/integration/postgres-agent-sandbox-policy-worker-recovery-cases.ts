@@ -92,7 +92,8 @@ export function registerSandboxPolicyWorkerRecovery(
       });
       assert.equal(activated?.activeRevisionId, revision.id);
 
-      const queue = new PostgresWorkQueue(pool, { maxAttempts: 1, leaseDurationMs: 50 });
+      // Lease expiry is forced below; setup work must survive ordinary database latency.
+      const queue = new PostgresWorkQueue(pool, { maxAttempts: 1, leaseDurationMs: 5_000 });
       // Prior lifecycle work has completed; the active revision is the exact application target.
       for (let claim = await queue.claim(); claim !== undefined; claim = await queue.claim()) {
         await queue.complete(claim);

@@ -116,9 +116,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preRestartContinuation";
   }
   if (count === 81 && completedCount > 81) {
-    return "preInstallationNetworkPolicyCeiling";
+    return "preAuthenticationStates";
   }
   if (count === 82 && completedCount > 82) {
+    return "preInstallationNetworkPolicyCeiling";
+  }
+  if (count === 83 && completedCount > 83) {
     return "preDynamicInstallationNetworkPolicyCeiling";
   }
   if (count === completedCount) {

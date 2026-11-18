@@ -51,6 +51,9 @@ export function createPlatformReadView(
       "listNamespaceConnections",
       "listRevokingConnections",
     ]),
+    authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
+      "findDevice",
+    ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",

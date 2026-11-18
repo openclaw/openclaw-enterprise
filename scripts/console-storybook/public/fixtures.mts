@@ -3,9 +3,9 @@ import { createConnectionTemplateFixture } from "./connection-template-fixture.m
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
+  AgentDeviceAuthorizationResponse,
   AgentPluginCredentialSlot,
   CredentialSourceMetadata,
-  CredentialSourceReference,
   SecretMetadata,
   AgentRuntimeContainerStatus,
   AgentRuntimePodStatus,
@@ -15,6 +15,7 @@ import type {
   RepositoryOption,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
+import type { Static } from "typebox";
 import type { StoredConfiguration } from "./configuration-store.mts";
 import { createConfigurationStore } from "./configuration-store.mts";
 import { candidateDeploymentError } from "./deployment-fixture.mts";
@@ -137,15 +138,7 @@ type StoredCredentialSource = Pick<
   driverId: string;
   createdAt: string;
 };
-type DeviceLogin = {
-  session: SecretReference;
-  status: "pending" | "ready";
-  verificationUrl: string;
-  userCode: string;
-  expiresAt: string;
-  intervalSeconds: number;
-  source?: CredentialSourceReference;
-};
+type DeviceLogin = Static<typeof AgentDeviceAuthorizationResponse>["data"];
 function storedIdentity<T extends { id: string }>(response: T): StoredIdentity {
   return { id: response.id, response };
 }
@@ -628,16 +621,15 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (deviceLogin) {
         const [, id, poll] = deviceLogin;
         if (!id && method === "POST") {
-          const session = secretRef(nextId("sec"));
           const login: DeviceLogin = {
-            session,
+            session: { id: nextId("sec"), namespaceId },
             status: "pending",
             verificationUrl: "https://auth.openai.com/codex/device",
             userCode: "DEMO-1234",
             expiresAt: new Date(Date.now() + (scenario.oauthExpired ? -1 : 600_000)).toISOString(),
             intervalSeconds: 1,
           };
-          deviceLogins.set(session.id, login);
+          deviceLogins.set(login.session.id, login);
           return response(login);
         }
         const login = deviceLogins.get(id ?? "");
@@ -653,7 +645,6 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (!poll && method === "DELETE") {
           deviceLogins.delete(id ?? "");
-          secrets.delete(id ?? "");
           return new Response(null, { status: 204 });
         }
       }

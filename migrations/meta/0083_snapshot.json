@@ -1360,6 +1360,214 @@
       },
       "isRLSEnabled": false
     },
+    "occ.authentication_states": {
+      "name": "authentication_states",
+      "schema": "occ",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "namespace_id": {
+          "name": "namespace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_source_id": {
+          "name": "credential_source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connection_template_id": {
+          "name": "connection_template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connection_template_version": {
+          "name": "connection_template_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "binding": {
+          "name": "binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phase": {
+          "name": "phase",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_poll_at": {
+          "name": "next_poll_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "encrypted_challenge": {
+          "name": "encrypted_challenge",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "private_state": {
+          "name": "private_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "authentication_states_oauth_expiry": {
+          "name": "authentication_states_oauth_expiry",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"occ\".\"authentication_states\".\"kind\" = 'oauth_connection'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "authentication_states_device_expiry": {
+          "name": "authentication_states_device_expiry",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"occ\".\"authentication_states\".\"kind\" = 'device_authorization' AND \"occ\".\"authentication_states\".\"phase\" <> 'cancelled'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "authentication_states_source_owner": {
+          "name": "authentication_states_source_owner",
+          "tableFrom": "authentication_states",
+          "tableTo": "credential_sources",
+          "schemaTo": "occ",
+          "columnsFrom": [
+            "namespace_id",
+            "credential_source_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "restrict"
+        },
+        "authentication_states_template_version": {
+          "name": "authentication_states_template_version",
+          "tableFrom": "authentication_states",
+          "tableTo": "oauth_connection_template_versions",
+          "schemaTo": "occ",
+          "columnsFrom": [
+            "connection_template_id",
+            "connection_template_version"
+          ],
+          "columnsTo": [
+            "template_id",
+            "version"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        },
+        "authentication_states_namespace": {
+          "name": "authentication_states_namespace",
+          "tableFrom": "authentication_states",
+          "tableTo": "namespaces",
+          "schemaTo": "occ",
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "authentication_states_kind": {
+          "name": "authentication_states_kind",
+          "value": "\"occ\".\"authentication_states\".\"kind\" IN ('oauth_connection','device_authorization')"
+        },
+        "authentication_states_oauth_shape": {
+          "name": "authentication_states_oauth_shape",
+          "value": "\"occ\".\"authentication_states\".\"kind\" <> 'oauth_connection' OR ((\n      \"occ\".\"authentication_states\".\"id\" ~ '^[0-9a-f]{64}$' AND \"occ\".\"authentication_states\".\"credential_source_id\" IS NOT NULL\n      AND \"occ\".\"authentication_states\".\"connection_template_id\" IS NOT NULL AND \"occ\".\"authentication_states\".\"connection_template_version\" IS NOT NULL\n      AND \"occ\".\"authentication_states\".\"created_at\" IS NOT NULL AND \"occ\".\"authentication_states\".\"expires_at\" > \"occ\".\"authentication_states\".\"created_at\"\n      AND \"occ\".\"authentication_states\".\"phase\" IS NULL AND \"occ\".\"authentication_states\".\"next_poll_at\" IS NULL AND \"occ\".\"authentication_states\".\"encrypted_challenge\" IS NULL\n      AND \"occ\".\"authentication_states\".\"private_state\" IS NULL AND \"occ\".\"authentication_states\".\"version\" IS NULL\n      AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\") = 'object'\n      AND \"occ\".\"authentication_states\".\"binding\" ?& ARRAY['pkceVerifier','selectedScopes','issuerRequired','sessionId','redirectUri']\n      AND \"occ\".\"authentication_states\".\"binding\" - ARRAY['pkceVerifier','selectedScopes','issuerRequired','sessionId','redirectUri'] = '{}'::jsonb\n      AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'pkceVerifier') = 'string' AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'sessionId') = 'string'\n      AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'redirectUri') = 'string' AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'issuerRequired') = 'boolean'\n      AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'selectedScopes') = 'array'\n      AND NOT jsonb_path_exists(\"occ\".\"authentication_states\".\"binding\", '$.selectedScopes[*] ? (@.type() != \"string\")')\n    ) IS TRUE)"
+        },
+        "authentication_states_device_shape": {
+          "name": "authentication_states_device_shape",
+          "value": "\"occ\".\"authentication_states\".\"kind\" <> 'device_authorization' OR ((\n      \"occ\".\"authentication_states\".\"id\" ~ $1\n      AND \"occ\".\"authentication_states\".\"credential_source_id\" IS NULL AND \"occ\".\"authentication_states\".\"connection_template_id\" IS NULL\n      AND \"occ\".\"authentication_states\".\"connection_template_version\" IS NULL AND \"occ\".\"authentication_states\".\"created_at\" IS NULL AND \"occ\".\"authentication_states\".\"version\" > 0\n      AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\") = 'object'\n      AND \"occ\".\"authentication_states\".\"binding\" ?& ARRAY['harnessId','credentialGatewayId','credentialRefreshId','sourceId','intervalSeconds']\n      AND \"occ\".\"authentication_states\".\"binding\" - ARRAY['agentId','harnessId','credentialGatewayId','credentialRefreshId','sourceId','intervalSeconds'] = '{}'::jsonb\n      AND (NOT (\"occ\".\"authentication_states\".\"binding\" ? 'agentId') OR jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'agentId') = 'string')\n      AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'harnessId') = 'string' AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'credentialGatewayId') = 'string'\n      AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'credentialRefreshId') = 'string' AND jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'sourceId') = 'string'\n      AND CASE WHEN jsonb_typeof(\"occ\".\"authentication_states\".\"binding\"->'intervalSeconds') = 'number' THEN\n        (\"occ\".\"authentication_states\".\"binding\"->>'intervalSeconds')::numeric BETWEEN 1 AND 2147483647\n        AND trunc((\"occ\".\"authentication_states\".\"binding\"->>'intervalSeconds')::numeric) = (\"occ\".\"authentication_states\".\"binding\"->>'intervalSeconds')::numeric ELSE false END\n      AND \"occ\".\"authentication_states\".\"phase\" IS NOT NULL AND \"occ\".\"authentication_states\".\"phase\" IN ('pending','polling','cancelled','ready')\n      AND \"occ\".\"authentication_states\".\"next_poll_at\" IS NOT NULL\n      AND ((\"occ\".\"authentication_states\".\"phase\" IN ('pending','polling')) = (\"occ\".\"authentication_states\".\"private_state\" IS NOT NULL))\n      AND ((\"occ\".\"authentication_states\".\"phase\" <> 'cancelled') = (\"occ\".\"authentication_states\".\"encrypted_challenge\" IS NOT NULL))\n    ) IS TRUE)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "occ.configurations": {
       "name": "configurations",
       "schema": "occ",
@@ -1446,159 +1654,6 @@
         "configurations_secret_bindings_valid": {
           "name": "configurations_secret_bindings_valid",
           "value": "\"occ\".\"configurations\".\"secret_bindings\" IS NULL OR occ.secret_bindings_are_valid(\"occ\".\"configurations\".\"secret_bindings\", \"occ\".\"configurations\".\"namespace_id\")"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "occ.connection_sessions": {
-      "name": "connection_sessions",
-      "schema": "occ",
-      "columns": {
-        "state_hash": {
-          "name": "state_hash",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "namespace_id": {
-          "name": "namespace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "credential_source_id": {
-          "name": "credential_source_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pkce_verifier": {
-          "name": "pkce_verifier",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "selected_scopes": {
-          "name": "selected_scopes",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "issuer_required": {
-          "name": "issuer_required",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "redirect_uri": {
-          "name": "redirect_uri",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "actor_id": {
-          "name": "actor_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "connection_template_id": {
-          "name": "connection_template_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "connection_template_version": {
-          "name": "connection_template_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "connection_sessions_expiry_idx": {
-          "name": "connection_sessions_expiry_idx",
-          "columns": [
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "connection_sessions_source_owner": {
-          "name": "connection_sessions_source_owner",
-          "tableFrom": "connection_sessions",
-          "tableTo": "credential_sources",
-          "schemaTo": "occ",
-          "columnsFrom": [
-            "namespace_id",
-            "credential_source_id"
-          ],
-          "columnsTo": [
-            "namespace_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "restrict"
-        },
-        "connection_sessions_template_version": {
-          "name": "connection_sessions_template_version",
-          "tableFrom": "connection_sessions",
-          "tableTo": "oauth_connection_template_versions",
-          "schemaTo": "occ",
-          "columnsFrom": [
-            "connection_template_id",
-            "connection_template_version"
-          ],
-          "columnsTo": [
-            "template_id",
-            "version"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "restrict"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "connection_sessions_state_hash_format": {
-          "name": "connection_sessions_state_hash_format",
-          "value": "\"occ\".\"connection_sessions\".\"state_hash\" ~ '^[0-9a-f]{64}$'"
-        },
-        "connection_sessions_expiry_after_creation": {
-          "name": "connection_sessions_expiry_after_creation",
-          "value": "\"occ\".\"connection_sessions\".\"expires_at\" > \"occ\".\"connection_sessions\".\"created_at\""
-        },
-        "connection_sessions_selected_scopes_valid": {
-          "name": "connection_sessions_selected_scopes_valid",
-          "value": "array_position(\"occ\".\"connection_sessions\".\"selected_scopes\",NULL) IS NULL"
         }
       },
       "isRLSEnabled": false
@@ -4391,6 +4446,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "startup_configuration": {
+          "name": "startup_configuration",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "management_mode": {
+          "name": "management_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -4432,6 +4499,10 @@
         "installation_ceiling_rules": {
           "name": "installation_ceiling_rules",
           "value": "occ.sandbox_network_grants_are_valid(\"occ\".\"installation_network_policy_ceiling\".\"rules\")"
+        },
+        "installation_ceiling_mode": {
+          "name": "installation_ceiling_mode",
+          "value": "\"occ\".\"installation_network_policy_ceiling\".\"management_mode\" IN ('console', 'startup')"
         }
       },
       "isRLSEnabled": false
@@ -7500,6 +7571,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "e54f0d7c-8d0c-4949-bd38-46ec0d60756c",
-  "prevId": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a"
+  "id": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a",
+  "prevId": "57be4ec3-81ed-4c74-8fb3-e41316a73ce7"
 }
