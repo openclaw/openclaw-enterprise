@@ -25,7 +25,7 @@ published: false
   from the pool for Harness and embedded Agent Pods. Match the reviewed labels
   in `controlPlane.nodeSelector`, `runtime.gatewayNodeSelector`, and
   `runtime.nodeSelector`; see [Kubernetes cluster preparation](/guides/deploy/kubernetes/#prepare-the-cluster).
-- **Storage:** A fresh protected bootstrap PVC and gateway storage. Dedicated
+- **Storage:** Gateway storage and a precreated bootstrap credential Secret. Dedicated
   Agent workspaces also need a default StorageClass supporting `ReadWriteOnce`.
   Use the [storage requirements](/guides/deploy/kubernetes/#prepare-storage-database-and-network-access)
   to select capacities and classes.

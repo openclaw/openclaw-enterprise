@@ -1,5 +1,5 @@
-// Direct Node consumers import the same OCC module the Console serves at this URL
-// (console-assets.ts); browsers never load this file.
+export { DEPLOYMENT_FAILURE_STEPS, deploymentFailureStep } from "./deployment-failure-steps.ts";
+export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   codexPluginPolicyProblem,
   configIncludeProblem,
@@ -16,4 +16,7 @@ export {
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
   workspaceNodeGatewayPasswordProblem,
-} from "@openclaw-enterprise/occ";
+} from "./environment-references.ts";
+export { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
+export { storedConfigurationProblem } from "./stored-configuration-rules.ts";
+export type { StoredConfigurationRule } from "./stored-configuration-rules.ts";

@@ -1,7 +1,7 @@
 ---
 created: "2026-11-17 17:20"
-updated: "2026-11-17 17:58"
-last_updated_session: "authoring-run/f7f6f818-89bc-4764-bccc-441fe67e2a3b"
+updated: "2026-11-18 22:29"
+last_updated_session: "authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1"
 ---
 
 # Harness restart recovery flow
@@ -9,7 +9,7 @@ last_updated_session: "authoring-run/f7f6f818-89bc-4764-bccc-441fe67e2a3b"
 ## Overview
 
 A replacement Gateway uses retained OpenClaw session and boot records to continue
-eligible interrupted work within the admitted recovery generation. Native recovery submits
+eligible interrupted work. Native recovery submits
 a new input to the same session.
 This flow ends when the continuation can start a fresh Harness turn or recovery
 reports failure. Normal Harness execution owns the resulting model output.
@@ -68,22 +68,22 @@ The recovery owner captures the exact session target, retains current source
 authority, and admits its native continuation through session-event handoff.
 It keeps the restart marker until acceptance or a terminal admission failure.
 
-Deployment admission in `packages/occ/src/index.ts:admitAgentDeployment` asks
-`ComputeDriver.restartContinuationDomain` for compatible retained execution.
-Under the Agent lock it retains a matching generation or allocates a new one,
-snapshots it into the revision, and saves it with the running lifecycle.
-`transitionAgentDesiredRuntimeState` clears it on explicit stop in PostgreSQL.
-The worker checks the current generation before preparation, pointer commit,
-and activation, including retries after stop followed by another deployment.
+Deployment admission in `packages/occ/src/index.ts:admitAgentDeployment` saves
+ordinary runtime inputs and enqueues the revision. It stores no recovery metadata.
+`apps/controller/src/worker.ts` retains desired-running-state, selected-revision,
+lease, and predecessor checks during replacement. Compute runtime selection and
+planned-replacement compatibility remain independent of native continuation.
 
-Kubernetes Compute projects the immutable generation into
-`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`. Unsupported topologies use the revision ID.
-`deploy/runtime/openclaw-restart-resume-scope.patch` stamps native lifecycle starts
-and checks both graceful markers and crash evidence before continuation. It also
-refuses child completion custody from an ended scope. Public session projections
-omit the private scope and preserve it only within the same session incarnation.
+Pinned native `src/config/sessions/session-restart-resume-scope.ts` retains its
+optional scope policy. OCE supplies no scope. Native discovery compares retained
+marker or lifecycle scope with the startup scope: an older nonempty value does
+not match the unset value. This can refuse old unfinished work, cancel affected
+queued input, or withhold child-completion custody. New unscoped work uses normal
+native recovery. Session identity, authority, and explicit cancellation remain
+enforced; no OCE translator or policy patch changes these decisions.
+
 The [interrupted-turn reference](../reference/agents/interrupted-turns.md) owns the
-compatibility and stop contract.
+transition limit and Stop→Deploy behavior.
 
 ### 2. Wait for a disconnected workspace before execution
 
@@ -102,7 +102,7 @@ Cancelled staged input can be reclaimed only by the same occurrence.
 
 ### 3. Transfer to the regular turn owner
 
-`deploy/runtime/Dockerfile:268` applies the bridge and leaves native
+`deploy/runtime/Dockerfile:262` applies the bridge and leaves native
 `acceptRestartResumeReceipt` ownership unchanged. Acceptance transfers the
 continuation to the normal reply lifecycle; the admission owner no longer retries it. Codex
 preflight can still wait as described below.
@@ -152,6 +152,10 @@ show one continuation and a final result without another user message.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 22:29: Leave upstream restart-scope policy unchanged and document accepted transition refusal (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
+
+- 2026-11-18 20:10: Remove OCE recovery bookkeeping and document native startup ownership with accompanying changes (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9)
 
 - 2026-11-17 17:58: Add surviving Codex turn wait and real-model qualification boundaries with accompanying uncommitted changes (authoring-run/f7f6f818-89bc-4764-bccc-441fe67e2a3b - 114d1a8e3d)
 - 2026-11-17 17:20: Document native workspace reconnect admission bridge with accompanying uncommitted changes (authoring-run/f7f6f818-89bc-4764-bccc-441fe67e2a3b - 114d1a8e3d)

@@ -16,8 +16,10 @@ Namespace reader from issuance through `GET /namespaces/:namespaceId` to
 revocation. It stops at the OCC resource response or the credential's deletion
 and audit result; provisioning IAM identities and Agent workload credentials
 remain separate lifecycles. Fresh native-IAM bootstrap provisions the initial
-service administrator and calls the same key helper, delivering its response to
-protected storage rather than an HTTP issuance response. That separate entry and
+service administrator and registers an operator-supplied key through
+`apps/controller/src/auth/index.ts:registerBootstrapServiceKey`. A separate auth
+instance uses the plugin's supported generation extension; normal issuance
+continues to generate keys. Bootstrap emits only non-secret attempt IDs. That separate entry and
 commit boundary is traced in the [bootstrap flow](local-password-authentication.md).
 
 Better Auth owns key material and persistence. The selected IAM Driver owns
@@ -258,6 +260,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 ## Changelog
 
 - 2026-11-18 04:25: Trace the request, method, route pattern and operation on auth library refusal and error lines. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
+
+- 2026-11-16 09:39: Distinguish bootstrap key registration from ordinary generated issuance. (pi/01a1e4f4-3138-71b5-b224-7ecf7ed57406 - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
 - 2026-11-12 16:13: Trace the audit target for a cross-Namespace Agent capability denial. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
 

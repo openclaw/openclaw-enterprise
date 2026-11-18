@@ -238,12 +238,17 @@ URL. The console sign-in page loads. Stop the forward when you are done. Do
 not publish the console port on an address other than loopback. This name and
 certificate are for the private development installation.
 
-## Bootstrap volume preparation failed
+## Bootstrap credential inputs failed
 
-If `prepare-bootstrap-volume` reports a retained Pod, run its printed
-`Inspect claim` command for the phase, StorageClass and bound volume. Ask the
-storage administrator to check a Pending claim's class, provisioning and placement.
-`WaitForFirstConsumer` claims can remain Pending until the consumer is scheduled.
+For a failed Secret mount, check `bootstrap.credentials.secretName` in the
+release namespace for `passwordKey` and `serviceKeyKey`. Create it before the
+pre-install hook. Inspect names, not values.
+
+For `BOOTSTRAP_INPUT_INVALID`, check files against the
+[input contract](../../reference/authentication.md#installation-and-account-ownership)
+without printing contents. Follow
+[incomplete-bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
+before another attempt; a failed hook does not prove an empty database.
 
 ## The Helm installation did not complete
 

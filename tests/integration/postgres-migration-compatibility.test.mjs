@@ -1041,7 +1041,7 @@ function receiptsMatchEntries(receipts, entries) {
 async function seedCanonicalAgent(
   db,
   namespace,
-  { computeAdmission, executionAdmission, harnessSettings },
+  { computeAdmission, executionAdmission, harnessSettings, restartContinuation = false },
 ) {
   const configuration = `cfg_${randomUUID()}`;
   const agent = `agt_${randomUUID()}`;
@@ -1078,6 +1078,9 @@ async function seedCanonicalAgent(
           configuration_kind: "agent",
           configuration_generation: 1,
           draft_spec: {},
+          ...(restartContinuation
+            ? { restart_continuation: { generation: randomUUID(), domain: "retained-workspace" } }
+            : {}),
           harness: {
             id: "codex",
             version: "1.0.0",
@@ -1096,6 +1099,12 @@ async function seedCanonicalAgent(
         },
       ],
     );
+    if (restartContinuation) {
+      await db.app.query(
+        "UPDATE occ.agents SET desired_runtime_state='running', restart_generation=$2, restart_domain=$3 WHERE id=$1",
+        [agent, randomUUID(), "retained-workspace"],
+      );
+    }
     await db.app.query("COMMIT");
   } catch (error) {
     await db.app.query("ROLLBACK");
@@ -1276,14 +1285,12 @@ const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 function upgradedCanonicalData(data) {
   return {
     ...data,
-    agents: data.agents.map(({ value }) => ({
-      value: {
-        ...value,
-        predecessor_replacement: value.predecessor_replacement ?? null,
-        restart_generation: null,
-        restart_domain: null,
-      },
-    })),
+    agents: data.agents.map(({ value }) => {
+      const current = { ...value, predecessor_replacement: value.predecessor_replacement ?? null };
+      delete current.restart_generation;
+      delete current.restart_domain;
+      return { value: current };
+    }),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
         ...value,
@@ -1453,6 +1460,80 @@ async function canonicalData(db) {
 }
 
 test(
+  "Native restart migration removes recovery metadata and preserves immutable admitted revisions",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    for (const prefix of [0, 81, 82]) {
+      await context.test(`fresh or populated prefix ${prefix}`, async (child) => {
+        const db = await historyDatabase(child, fixture, "native_restart", { prefix });
+        let revision;
+        let before;
+        if (prefix > 0) {
+          // These published schemas admitted recovery metadata. Preserve all other
+          // execution inputs when the migrator removes it from immutable snapshots.
+          ({ revision } = await seedCanonicalAgent(db, `ns_${randomUUID()}`, {
+            computeAdmission: true,
+            executionAdmission: true,
+            harnessSettings: true,
+            restartContinuation: true,
+          }));
+          before = (
+            await db.app.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
+              revision,
+            ])
+          ).rows[0].admitted_spec;
+          assert.ok(before.restart_continuation);
+        }
+        assert.equal((await runHistoryMigration(db)).ok, true);
+        await assertCompletedHistory(db, []);
+        assert.deepEqual(
+          (
+            await db.migrator.query(
+              "SELECT attname FROM pg_attribute WHERE attrelid='occ.agents'::regclass AND NOT attisdropped AND attname IN ('restart_generation','restart_domain')",
+            )
+          ).rows,
+          [],
+        );
+        assert.equal(
+          (
+            await db.app.query(
+              "SELECT has_table_privilege(current_user,'occ.agent_revisions','UPDATE') AS allowed",
+            )
+          ).rows[0].allowed,
+          false,
+        );
+        if (revision !== undefined) {
+          delete before.restart_continuation;
+          assert.deepEqual(
+            (
+              await db.app.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
+                revision,
+              ])
+            ).rows[0].admitted_spec,
+            before,
+          );
+          await assert.rejects(
+            db.migrator.query(
+              'UPDATE occ.agent_revisions SET admitted_spec=admitted_spec || \'{"draft_spec":{"changed":true}}\'::jsonb WHERE id=$1',
+              [revision],
+            ),
+            { code: "55000" },
+          );
+          await assert.rejects(
+            db.app.query("UPDATE occ.agent_revisions SET admitted_spec=admitted_spec WHERE id=$1", [
+              revision,
+            ]),
+            { code: "42501" },
+          );
+          await assertUpgradedRevisionReadable(db);
+        }
+      });
+    }
+  },
+);
+
+test(
   "Canonical migration preserves pending SandboxPolicy custody across the published 0076 and 0077 predecessors",
   requiresHistoryPostgres,
   async (context) => {
@@ -1464,7 +1545,8 @@ test(
       [79, "preRevisionRuntimeInputs"],
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
-      [82, "preSandboxPolicyCapacity"],
+      [82, "preNativeRestartRecovery"],
+      [83, "preSandboxPolicyCapacity"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1770,7 +1852,8 @@ test(
       [79, "preRevisionRuntimeInputs"],
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
-      [82, "preSandboxPolicyCapacity"],
+      [82, "preNativeRestartRecovery"],
+      [83, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2074,7 +2157,8 @@ test(
       [79, "preRevisionRuntimeInputs"],
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
-      [82, "preSandboxPolicyCapacity"],
+      [82, "preNativeRestartRecovery"],
+      [83, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2276,7 +2360,8 @@ test(
       [79, "preRevisionRuntimeInputs"],
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
-      [82, "preSandboxPolicyCapacity"],
+      [82, "preNativeRestartRecovery"],
+      [83, "preSandboxPolicyCapacity"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2362,7 +2447,8 @@ test(
       [79, "preRevisionRuntimeInputs"],
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
-      [82, "preSandboxPolicyCapacity"],
+      [82, "preNativeRestartRecovery"],
+      [83, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2387,7 +2473,8 @@ test(
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         const rollbackTag = [
-          [82, "ALTER TABLE"],
+          [83, "ALTER TABLE"],
+          [82, "CREATE TRIGGER"],
           [81, "GRANT"],
           [80, "ALTER TABLE"],
           [79, "ALTER TABLE"],
@@ -3231,7 +3318,7 @@ test(
   requiresHistoryPostgres,
   async (t) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 82 });
+    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 83 });
     const namespaceId = await seedCanonicalData(db, {
       preset: true,
       computeAdmission: true,

@@ -119,6 +119,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preAuthenticationStates";
   }
   if (count === 82 && completedCount > 82) {
+    return "preNativeRestartRecovery";
+  }
+  if (count === 83 && completedCount > 83) {
     return "preSandboxPolicyCapacity";
   }
   if (count === completedCount) {

@@ -8,7 +8,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { ScopeViolationError } from "../../packages/occ/src/index.ts";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 import {
   OPENCLAW_SANDBOX_SETTINGS,
   admittedConfiguration,

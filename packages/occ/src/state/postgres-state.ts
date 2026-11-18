@@ -755,7 +755,6 @@ function revisionFromRow(
     draft_spec: AgentRevision["configuration"];
     harness: AgentRevision["harness"];
     compute: AgentRevision["compute"];
-    restart_continuation?: AgentRevision["restartContinuation"];
     sandbox_driver_id?: AgentRevision["sandboxDriverId"];
     sandbox_policy?: AgentRevision["sandboxPolicy"];
     harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
@@ -836,9 +835,6 @@ function revisionFromRow(
     gatewayManagedMode: boolean(row, "gateway_managed_mode"),
     harness: admitted.harness,
     compute: admitted.compute,
-    ...(admitted.restart_continuation === undefined
-      ? {}
-      : { restartContinuation: admitted.restart_continuation }),
     ...(admitted.sandbox_policy === undefined ? {} : { sandboxPolicy: admitted.sandbox_policy }),
     ...(admitted.sandbox_driver_id === undefined
       ? {}
@@ -3632,38 +3628,6 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
     const agents: AgentRepository = {
-      findRestartContinuation: async (namespaceId, agentId) => {
-        const row = rows(
-          (
-            await client.query(
-              `SELECT a.restart_generation, a.restart_domain FROM occ.agents a
-           JOIN occ.namespaces n ON n.id = a.namespace_id AND n.deleted_at IS NULL
-           WHERE a.namespace_id = $1 AND a.id = $2`,
-              [namespaceId, agentId],
-            )
-          ).rows,
-        )[0];
-        return row === undefined || row.restart_generation === null
-          ? undefined
-          : Object.freeze({
-              generation: text(row, "restart_generation"),
-              domain: text(row, "restart_domain"),
-            });
-      },
-      setRestartContinuation: async (namespaceId, agentId, continuation) => {
-        const result = await client.query(
-          `UPDATE occ.agents a SET restart_generation = $3, restart_domain = $4
-           FROM occ.namespaces n WHERE a.namespace_id = $1 AND a.id = $2
-           AND a.desired_runtime_state = 'running' AND a.status = 'active'
-           AND n.id = a.namespace_id AND n.deleted_at IS NULL`,
-          [namespaceId, agentId, continuation?.generation ?? null, continuation?.domain ?? null],
-        );
-        if (result.rowCount !== 1) {
-          throw new ResourceStateConflictError(
-            "Restart continuation requires a running Agent lifecycle.",
-          );
-        }
-      },
       findPredecessorReplacement: async (namespaceId, agentId) => {
         const row = rows(
           (
@@ -3979,9 +3943,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         const updated = rows(
           (
             await client.query(
-              `UPDATE occ.agents AS a SET desired_runtime_state = $4,
-                 restart_generation = CASE WHEN $4 = 'stopped' THEN NULL ELSE a.restart_generation END,
-                 restart_domain = CASE WHEN $4 = 'stopped' THEN NULL ELSE a.restart_domain END
+              `UPDATE occ.agents AS a SET desired_runtime_state = $4
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND a.desired_runtime_state = ANY($3::text[])
@@ -4255,9 +4217,6 @@ export class PostgresPlatformState implements PlatformStateStore {
               draft_spec: revision.configuration,
               harness: revision.harness,
               compute: revision.compute,
-              ...(revision.restartContinuation === undefined
-                ? {}
-                : { restart_continuation: revision.restartContinuation }),
               ...(revision.sandboxPolicy === undefined
                 ? {}
                 : { sandbox_policy: revision.sandboxPolicy }),

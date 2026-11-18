@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { PostgresNativeBrowserAccess } from "./native-browser-access.ts";
 import {
   CallerStateDeniedError,
+  RecoveryPasswordPolicyError,
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
@@ -217,6 +218,8 @@ export interface PostgresHumanAuthenticationOptions {
    * external provider is configured: only password sessions authenticate.
    */
   readonly externalProviderIds?: readonly string[];
+  /** Restricts new password sessions to the durable recovery designation. */
+  readonly passwordSignIn?: "all" | "recovery-only";
 }
 
 /** Authentication persistence shares the original State transaction and audit writer. */
@@ -226,6 +229,7 @@ export class PostgresHumanAuthentication {
   private readonly installationId: string;
   private readonly issuer: string;
   private readonly externalProviderIds: readonly string[];
+  private readonly recoveryOnly: boolean;
 
   constructor(
     state: PostgresPlatformState,
@@ -274,6 +278,11 @@ export class PostgresHumanAuthentication {
       throw new ScopeViolationError("The configured external sign-in providers are invalid.");
     }
     this.externalProviderIds = Object.freeze([...new Set(externalProviderIds)]);
+    const passwordSignIn = options.passwordSignIn ?? "all";
+    if (passwordSignIn !== "all" && passwordSignIn !== "recovery-only") {
+      throw new ScopeViolationError("The password sign-in policy is invalid.");
+    }
+    this.recoveryOnly = passwordSignIn === "recovery-only";
   }
 
   private async query(
@@ -823,8 +832,12 @@ export class PostgresHumanAuthentication {
     return this.state.transact(async (unit) => {
       const [user] = await this.query(
         unit,
-        `SELECT ${userColumns} FROM occ."user" u WHERE u.email = $1 FOR UPDATE`,
-        [email],
+        this.recoveryOnly
+          ? `SELECT ${userColumns} FROM occ."user" u
+             JOIN occ.human_authentication_recovery r ON r.user_id = u.id
+             WHERE u.email = $1 AND r.installation_id = $2 FOR UPDATE OF u`
+          : `SELECT ${userColumns} FROM occ."user" u WHERE u.email = $1 FOR UPDATE`,
+        this.recoveryOnly ? [email, this.installationId] : [email],
       );
       if (user === undefined) {
         return undefined;
@@ -969,7 +982,30 @@ export class PostgresHumanAuthentication {
     ) {
       throw new ScopeViolationError("The authentication audit identity is invalid.");
     }
-    return this.state.transact(async (unit) => {
+    const recoveryPassword = this.recoveryOnly && proof.providerId === "credential";
+    const issue = async (unit: PlatformUnitOfWork) => {
+      if (recoveryPassword) {
+        // Replacement takes this lock before user locks. Keep that order and
+        // retain the lock through the session, binding and audit commit.
+        await this.query(unit, "SET LOCAL lock_timeout = '5s'");
+        await this.query(unit, `SELECT pg_advisory_xact_lock(1868785005, hashtext($1))`, [
+          this.installationId,
+        ]);
+        const [designation] = await this.query(
+          unit,
+          `SELECT user_id, principal_id, method_id FROM occ.human_authentication_recovery
+           WHERE installation_id = $1`,
+          [this.installationId],
+        );
+        if (
+          designation === undefined ||
+          designation.user_id !== proof.userId ||
+          designation.principal_id !== proof.principalId ||
+          designation.method_id !== proof.methodId
+        ) {
+          throw new RecoveryPasswordPolicyError();
+        }
+      }
       const user = await this.lockUser(unit, proof.userId);
       const current = await this.snapshot(unit, user, proof.providerId, proof.subject);
       if (
@@ -1037,7 +1073,10 @@ export class PostgresHumanAuthentication {
         throw new ScopeViolationError("The sign-in result deadline is unavailable.");
       }
       return { ...issued, resultExpiresAt: result.expires_at.getTime() };
-    });
+    };
+    // A waiter must see a replacement committed while acquiring the advisory
+    // lock, even when the connection defaults to repeatable read.
+    return recoveryPassword ? this.state.transactReadCommitted(issue) : this.state.transact(issue);
   }
 
   /**

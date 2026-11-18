@@ -6,7 +6,7 @@ author: russellb
 
 # Proposal: Raise network policy capacity to 16,384 rules
 
-- **ID:** RFC-0043
+- **ID:** RFC-0044
 - **Created:** 2026-11-11
 - **Last updated:** 2026-11-18
 - **RFC PR:** https://github.com/openclaw/openclaw-enterprise/pull/5497
