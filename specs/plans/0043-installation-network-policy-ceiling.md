@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0042-installation-network-policy-ceiling.md
+rfc: ../rfcs/0043-installation-network-policy-ceiling.md
 ---
 
 # Implementation plan: Manage the Installation network policy ceiling
 
-- **ID:** RFC-0042
+- **ID:** RFC-0043
 - **Delivery status:** In progress
 - **Owner:** russellb
-- **Authority:** [RFC-0042](../rfcs/0042-installation-network-policy-ceiling.md)
+- **Authority:** [RFC-0043](../rfcs/0043-installation-network-policy-ceiling.md)
 - **Source baseline:** `6bf16386658e8b1f81a7f90a04ccd0697c23805c`
 
 ## Outcome and scope
@@ -289,6 +289,23 @@ Merged-source owner 9/9, readiness 1/1, Agent policy 45/45 and ceiling browser
 types, formatting, workspace/module boundaries, OpenAPI, CI inventories and
 documentation/specification checks pass. No runtime or native attachment gap is
 closed by this numbering refresh.
+
+## RFC numbering refresh, 2026-11-18
+
+Main at `d8d985bc5` assigns RFC-0042 to redeployment continuation. The ceiling
+proposal and primary plan now use RFC-0043; both proposals and all old ceiling
+filenames remain in their owning indexes. The PostgreSQL CI registration keeps
+the renamed transaction test, main's parallel Agent policy registration and the
+ceiling owner scenario. Decision status, dynamic-only ownership, migrations
+0081–0082 and published history remain unchanged. Main now runs migrations through
+`scripts/migrate-production.ts`; validation uses that current entry point.
+
+The merged source passes owner 9/9, readiness 1/1, Agent policy 45/45, ceiling
+browser 5/5 and migration restore/rollback 45/45 checks, without skips. The
+typed bootstrap fixture now uses its prepared environment URL and existing
+resolved passive Drivers; its real stored-name API/worker refusal passes 1/1.
+Typecheck, lint, formatting, boundaries, OpenAPI, both CI inventories and
+documentation checks pass. These checks retain the earlier runtime and media gaps.
 
 ## Manual Notes
 

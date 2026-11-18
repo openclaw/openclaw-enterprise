@@ -18,7 +18,7 @@ const digest = "a".repeat(64);
 const collectorImage = `registry.example/otelcol@sha256:${digest}`;
 const execFileAsync = promisify(execFile);
 // The CI scripts bound commands with `timeoutMs` and read a timeout as `timedOut`, as
-// scripts/ci/prepare.mjs's executor does; Node's execFile names the option `timeout`.
+// scripts/ci/prepare.ts's executor does; Node's execFile names the option `timeout`.
 const execute: CommandExecutor = async (command, args, { timeoutMs, ...options } = {}) => {
   const bounded = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0;
   try {

@@ -22,9 +22,8 @@ import {
   SecretReference,
 } from "../../packages/contracts/src/api/common.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -939,27 +938,18 @@ test(
     const configurationRoot = await temporaryDirectory(context, "openclaw-bootstrap-stored-name-");
     // Complete trusted API initialization before corrupting the name. The worker must
     // reach the stored-name guard with its required saved ceiling already initialized.
-    const startupConfiguration = { ...createInstallationDriverConfiguration(), backend: [] };
     const initializedApi = await composePostgresDevelopment(
       {
         mode: "development",
         host: "127.0.0.1",
-        databaseUrl: failureDatabaseUrl,
+        databaseUrl: environment.OCC_DATABASE_URL,
         poolMax: 2,
         logging: { level: "warn" },
         authBaseURL: environment.OCC_AUTH_BASE_URL,
         authSecret: environment.OCC_AUTH_SECRET,
         nativeAdmin: { enabled: false, domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN },
       },
-      {
-        installation: startupConfiguration,
-        computeDriver: passiveComputeDriver(),
-        configurationDriver: createTestConfigurationDriver(),
-        secretDriver: createTestSecretDriver({ id: startupConfiguration.drivers.secret.id }),
-        createIAMDriver(state: PostgresPlatformState) {
-          return new NativeIAMDriver(state, { id: startupConfiguration.drivers.iam.id });
-        },
-      },
+      await passiveDrivers(),
     );
     try {
       await initializedApi.ready();

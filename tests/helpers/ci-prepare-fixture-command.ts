@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.ts";
 import { startFakePostgres } from "./fake-postgres-server.ts";
 import {
   commandShim as fixtureCommandShim,
@@ -12,7 +12,7 @@ import {
 
 // The external commands preparation runs (docker, podman, k3d, kubectl, helm, yq,
 // corepack), faked for ci-prepare*.test.mjs through fixture-command-server.ts: each is
-// a bash script answered by the test's command server. scripts/ci/prepare.mjs and
+// a bash script answered by the test's command server. scripts/ci/prepare.ts and
 // cleanup.ts still start every command as a real process and own its timeouts, signals
 // and pipes; only the scenario logic below runs in the test process. A command sends
 // the environment variables below. The fixture directory the scenarios write to is the

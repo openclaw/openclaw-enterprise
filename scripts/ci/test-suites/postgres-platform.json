@@ -40,7 +40,8 @@
     "tests/integration/postgres-pool-options.test.ts",
     "tests/integration/postgres-repository-transactions.test.ts",
     "tests/integration/postgres-controller-work-targets.test.ts",
-    "tests/integration/postgres-transaction-commit.test.mjs",
+    "tests/integration/postgres-transaction-commit.test.ts",
+    "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.ts",
     "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
@@ -372,7 +373,7 @@
       "expectedTests": ["PostgreSQL repository ownership, lifetime, and atomicity"]
     },
     {
-      "path": "tests/integration/postgres-transaction-commit.test.mjs",
+      "path": "tests/integration/postgres-transaction-commit.test.ts",
       "expectedTests": [
         "a lost real COMMIT response preserves the unknown outcome and committed resource"
       ]

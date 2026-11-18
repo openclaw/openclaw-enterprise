@@ -14,6 +14,7 @@ import {
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import {
   parseRuntimeDownloadClientSelection,
   readRuntimeDownloadClients,
@@ -382,4 +383,42 @@ packages:
   ] as const) {
     assert.equal(provenance[field], patches[file], field);
   }
+});
+
+// OCE sets OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE on every Gateway so that only a restart of the
+// same revision resumes a cut turn. A runtime patch adds the name until the pinned OpenClaw reads
+// it; the patched tests run only in the manual image check (finding 3358). Record a pinned commit
+// here only after checking that its own restart resume reads the name.
+const NATIVE_RESTART_RESUME_SCOPE_COMMITS: readonly string[] = [];
+
+test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", async () => {
+  const name = "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE";
+  const patch = "openclaw-restart-resume-scope.patch";
+  const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
+  if (!dockerfile.includes(`COPY deploy/runtime/${patch} /tmp/${patch}\n`)) {
+    // A pin bump dropped the patch: unless OpenClaw reads the name, a turn cut by stop resumes
+    // at the next deployment again.
+    const { commit } = await readOpenclawSource();
+    assert.ok(
+      NATIVE_RESTART_RESUME_SCOPE_COMMITS.includes(commit),
+      `${patch} is no longer applied: check that OpenClaw ${commit} reads ${name}, then record the commit here`,
+    );
+    assert.doesNotMatch(dockerfile, /interrupted under scope/u);
+    return;
+  }
+  // The patch's runtime lines, not only its tests, must read the exact name the Drivers set.
+  let file = "";
+  const runtimeLines: string[] = [];
+  for (const line of (await readFile(join("deploy/runtime", patch), "utf8")).split("\n")) {
+    if (line.startsWith("+++ b/")) {
+      file = line.slice("+++ b/".length);
+    } else if (line.startsWith("+") && file.startsWith("src/") && !file.endsWith(".test.ts")) {
+      runtimeLines.push(line);
+    }
+  }
+  assert.ok(
+    runtimeLines.some((line) => line.includes(`"${name}"`)),
+    `${patch} must read ${name}`,
+  );
+  assert.match(dockerfile, /session-restart-resume\.test\.ts \\\n\s+-t "interrupted under scope"/u);
 });
