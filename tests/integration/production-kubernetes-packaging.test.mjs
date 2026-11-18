@@ -1988,7 +1988,7 @@ test(
       ...inspectionArgs,
     ]);
     // The image built from this checkout must serve the unmodified release chart.
-    assert.equal(stdout.trim(), "ts");
+    assert.equal(stdout.trim(), "ts:ts");
     const chartDirectory = await initialUpgradeChart(repository, directory, stdout.trim());
     const objects = await resources((await renderProductionChart({}, { chartDirectory })).stdout);
     const worker = findResourceByComponent(
