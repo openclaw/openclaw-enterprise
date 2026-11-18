@@ -144,7 +144,7 @@ test("full coverage receipts require real case evidence and retain approved same
   await mkdir(join(fixtureRoot, "scripts/ci"), { recursive: true });
   const ownedFile = join(fixtureRoot, "owned-prepare-file");
   await writeFile(
-    join(fixtureRoot, "scripts/ci/prepare.mjs"),
+    join(fixtureRoot, "scripts/ci/prepare.ts"),
     [
       'import { writeFile, rm } from "node:fs/promises";',
       'const ownedFile = new URL("../../owned-prepare-file", import.meta.url);',

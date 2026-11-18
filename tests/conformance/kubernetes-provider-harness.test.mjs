@@ -41,11 +41,12 @@ import {
 } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import {
-  tenant,
-  authContext,
-  digest,
+  firstPeerSelector,
+  podSelector,
   selectorMatches,
-} from "../helpers/kubernetes-routed-scenarios.mjs";
+  serviceSelector,
+} from "../helpers/kubernetes-rendered-resources.ts";
+import { tenant, authContext, digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
@@ -345,7 +346,7 @@ test("provider Harness endpoint admits only exact node and provider peers", asyn
   const { revision, namespace, read, writes, provisions, peerLookups, gatewayNamespace } = fixture;
   const workspaceNodePolicy = read("NetworkPolicy", "allow-node-gateway");
   assert.equal(
-    selectorMatches(workspaceNodePolicy.spec.podSelector, provisions[0].requirements.labels),
+    selectorMatches(podSelector(workspaceNodePolicy), provisions[0].requirements.labels),
     true,
     "the provider-fenced Harness must retain exact workspace-node Gateway egress",
   );
@@ -407,7 +408,7 @@ test("provider Harness endpoint admits only exact node and provider peers", asyn
   assert.ok(peerLookups.every((id) => id === revision.id));
   const agentServiceName = `agent-${digest(revision.agentId)}`;
   assert.equal(
-    read("Service", agentServiceName).spec.selector["app.kubernetes.io/name"],
+    serviceSelector(read("Service", agentServiceName))["app.kubernetes.io/name"],
     `${agentServiceName}-inactive`,
   );
 });
@@ -497,11 +498,11 @@ test("provider Harness activation replaces broad legacy peers and deletes obsole
   assert.equal(endpoints.length, 2);
   assert.deepEqual(deletedPolicies, [legacyEgress.metadata.name, plainRuntime.metadata.name]);
   assert.equal(read("NetworkPolicy", legacyEgress.metadata.name), undefined);
-  assert.deepEqual(read("NetworkPolicy", legacyIngressName).spec.ingress[0].from[0].podSelector, {
+  assert.deepEqual(firstPeerSelector(read("NetworkPolicy", legacyIngressName), "ingress"), {
     matchLabels: supervisorPeerLabels(revision.id),
   });
   assert.equal(
-    read("Service", agentServiceName).spec.selector["app.kubernetes.io/name"],
+    serviceSelector(read("Service", agentServiceName))["app.kubernetes.io/name"],
     `${agentServiceName}-inactive`,
   );
   const gatewayPolicy = read(
@@ -1552,16 +1553,17 @@ test("provider Harness protected execution is released only on current signed in
               (error) => error === released,
             );
           }
-          // SHA-256 of prepare and activate argv at 61c73c99 with Node 24.22.1.
+          // SHA-256 of prepare and activate argv with Node 24.22.1; the prepare
+          // argv embeds the startup schema thresholds, so it moves with the pin.
           assert.deepEqual(
             hashes,
             disabled
               ? [
-                  "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d",
+                  "ae8967fa5105be4f6c222600d9f83f4c3d608259fd79a2fa2092d4da1d6cdb76",
                   "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
                 ]
               : [
-                  "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf",
+                  "8602532f0647c0882e4a52a3277bda1c5074ec97122765b06d31ae01a72c713c",
                   "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
                 ],
           );

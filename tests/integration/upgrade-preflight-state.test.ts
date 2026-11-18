@@ -3,6 +3,7 @@ import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_p
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  copyFileSync,
   linkSync,
   mkdirSync,
   openSync,
@@ -16,6 +17,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { commandCalls, commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -31,7 +33,8 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, sourceRepository = repository) {
+  const stateScript = join(sourceRepository, "scripts/upgrade-preflight-state.py");
   const parent = temporaryDirectorySync(t, "upgrade-preflight-state-");
   const root = join(realpathSync(parent), "evidence");
   mkdirSync(root, { mode: 0o700 });
@@ -42,10 +45,18 @@ function fixture(t: TestContext) {
     evidenceDirectory: { path: root, st_dev: info.dev, st_ino: info.ino },
     arguments: [kubeconfig, "fixture", "control", "team", ...Array.from({ length: 11 }, () => "")],
     kubeconfigSha256: sha256(kubeconfig),
-    scriptSha256: sha256(join(repository, "scripts/upgrade-production-images")),
-    startupPreflightSha256: sha256(join(repository, "scripts/upgrade-startup-preflight.ts")),
-    preflightStateSha256: sha256(script),
-    preflightCleanupSha256: sha256(join(repository, "scripts/lib/upgrade-preflight-cleanup.sh")),
+    scriptSha256: sha256(join(sourceRepository, "scripts/upgrade-production-images")),
+    startupPreflightSha256: sha256(join(sourceRepository, "scripts/upgrade-startup-preflight.ts")),
+    selectedImageMigrationSha256: sha256(
+      join(sourceRepository, "scripts/lib/selected-image-migration.ts"),
+    ),
+    selectedImageMigrationProgramSha256: sha256(
+      join(sourceRepository, "deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"),
+    ),
+    preflightStateSha256: sha256(stateScript),
+    preflightCleanupSha256: sha256(
+      join(sourceRepository, "scripts/lib/upgrade-preflight-cleanup.sh"),
+    ),
   };
   writePrivate(join(root, "parameters.json"), parameters);
   const invoke = (
@@ -53,7 +64,7 @@ function fixture(t: TestContext) {
     args: readonly string[] = [],
     options: Omit<SpawnSyncOptionsWithStringEncoding, "encoding"> = {},
   ) =>
-    spawnSync("python3", [script, action, root, ...args], {
+    spawnSync("python3", [stateScript, action, root, ...args], {
       ...options,
       encoding: "utf8",
     });
@@ -286,6 +297,84 @@ test("a final ACK rejects a conflicting staging file rather than ignoring it", (
   const result = state.inspect();
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, "");
+});
+
+test("cleanup binds startup preflight dependencies before Kubernetes actions", async (t) => {
+  const parent = temporaryDirectorySync(t, "upgrade-cleanup-source-");
+  const checkout = join(parent, "checkout");
+  const dependencies = [
+    "scripts/lib/selected-image-migration.ts",
+    "deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs",
+  ];
+  const sources = [
+    "scripts/upgrade-production-images",
+    "scripts/upgrade-startup-preflight.ts",
+    "scripts/upgrade-preflight-state.py",
+    "scripts/lib/upgrade-preflight-cleanup.sh",
+    ...dependencies,
+  ];
+  for (const source of sources) {
+    const destination = join(checkout, source);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(repository, source), destination);
+  }
+  const state = fixture(t, checkout);
+  acknowledgedJob(state);
+  const bin = join(parent, "bin");
+  mkdirSync(bin);
+  const log = join(parent, "kubectl.log");
+  await writeCommand(
+    bin,
+    "kubectl",
+    `case "$*" in *" get pods "*) printf '{"items":[]}\\n' ;; esac\n`,
+    { log },
+  );
+  const cleanup = () =>
+    spawnSync(
+      "/bin/bash",
+      [
+        join(checkout, "scripts/upgrade-production-images"),
+        "--cleanup-preflight",
+        "--kubeconfig",
+        join(state.parent, "kubeconfig"),
+        "--context",
+        "fixture",
+        "--namespace",
+        "control",
+        "--release",
+        "team",
+        "--evidence-dir",
+        state.root,
+        "--previous-process-settled",
+        "--evidence-unrestored",
+      ],
+      { cwd: checkout, env: { ...process.env, PATH: commandPath(bin) }, encoding: "utf8" },
+    );
+
+  // The unchanged checkout must reach the real cleanup path and settle the
+  // acknowledged Job before changed source can be proved to block that path.
+  const accepted = cleanup();
+  assert.equal(accepted.status, 0, accepted.stderr);
+  const acceptedCalls = await commandCalls(log);
+  assert.ok(acceptedCalls.some((call) => /delete --raw=.*jobs\//.test(call)));
+  assert.ok(acceptedCalls.some((call) => /get pods -o json/.test(call)));
+
+  for (const source of dependencies) {
+    const path = join(checkout, source);
+    const original = readFileSync(path);
+    try {
+      writeFileSync(
+        path,
+        Buffer.concat([original, Buffer.from("\n// changed after preparation\n")]),
+      );
+      const refused = cleanup();
+      assert.equal(refused.status, 2, refused.stderr);
+      assert.match(refused.stderr, /original helper source/);
+      assert.deepEqual(await commandCalls(log), acceptedCalls);
+    } finally {
+      writeFileSync(path, original);
+    }
+  }
 });
 
 for (const kind of ["fifo", "symlink-to-fifo"]) {

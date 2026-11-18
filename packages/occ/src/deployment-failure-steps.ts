@@ -53,6 +53,7 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     RUNTIME_MODEL_PROBE_FAILED: "logs",
     RUNTIME_MODEL_PROBE_TIMEOUT: "logs",
     RUNTIME_STARTUP_FAILED: "logs",
+    RUNTIME_STATE_LOCK_UNVERIFIED: "logs",
     UNKNOWN_FAILURE: "logs",
 
     AUTHORIZATION_DENIED: "change",
