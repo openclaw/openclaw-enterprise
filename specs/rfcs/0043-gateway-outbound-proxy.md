@@ -6,11 +6,11 @@ author: miguelbranco80
 
 # Proposal: one Gateway outbound proxy
 
-- **ID:** RFC-0030
+- **ID:** RFC-0043
 - **Status:** Proposed
 - **Author:** miguelbranco80
 - **Created:** 2026-11-05
-- **Last updated:** 2026-11-06
+- **Last updated:** 2026-11-18
 - **Implementation plan:** TASK-0051
 - **Related:** RFC-0018 Installation profiles; RFC-0017 Agent egress boundaries; RFC-0023 Credential Proxy.
 
@@ -84,6 +84,8 @@ Compute grants access to the selected proxy peer and port independently of chann
 
 Without a selected endpoint, Compute leaves native Gateway proxy settings and networking unchanged.
 
+NetworkPolicy enforces the route; native configuration only selects it. With a proxy selected, the Gateway's egress grant permits the proxy peer and Compute-provisioned internal endpoints only. For embedded Gateways, Compute removes direct public HTTPS egress when a proxy is selected. A Gateway whose native proxy settings were changed, for example by a native edit with managed mode off, fails to connect; it does not gain direct access.
+
 This is Gateway routing, not whole-workload containment. It does not route arbitrary tool subprocesses, replace embedded model/tool permissions, authorize provider requests, or mediate credentials.
 
 ### 3. Generalize the bundled Slack proxy
@@ -112,7 +114,7 @@ For example, this profile fragment permits Slack and other public HTTPS destinat
 
 Direct Helm users set `gatewayProxy.enabled: true` and `gatewayProxy.allowedHosts: ["*"]`, together with the matching Compute configuration.
 
-The bundled server accepts CONNECT only to TCP 443. Its Kubernetes NetworkPolicy permits public IPv4 upstreams and excludes private and reserved ranges. `"*"` removes hostname filtering; it does not remove those port or address restrictions.
+The bundled server accepts CONNECT only to TCP 443. It resolves the hostname, rejects the request when no resolved IPv4 address is public, and connects to a checked address, not to the hostname. Nonpublic means the private and reserved ranges that its Kubernetes NetworkPolicy excludes. The NetworkPolicy remains a separate control; its `ipBlock` rules do not apply to traffic to the node that hosts the proxy Pod. `"*"` removes hostname filtering; it does not remove the port or address checks.
 
 TLS remains end-to-end. The proxy does not decrypt traffic or inject credentials. An external proxy manages its own destination policy.
 
@@ -125,6 +127,8 @@ Separate dedicated Harnesses and workspace nodes do not inherit the Gateway prox
 For dedicated Codex, Compute provisions the private app-server URL. Before connecting, the Gateway’s Codex transport registers an exact-URL exception with OpenClaw’s process proxy owner, using Proxyline’s existing mechanism.
 
 Release that exception when the transport closes or construction fails. Another path on the same host is not exempt. Agents cannot choose exception destinations.
+
+Other Compute-provisioned in-cluster endpoints, such as the repository credential broker, use the same exact-URL exception. Without it, native routing would send their traffic to the proxy, which rejects private addresses.
 
 Native OpenClaw workers and workspace nodes retain their separate, unproxied connections to the Gateway. Existing native-worker restrictions remain unchanged.
 
@@ -213,7 +217,19 @@ Operators render and apply protected configuration, then roll out the control pl
 
 Endpoint changes replace the previous owned proxy grant rather than adding another grant. Removing the selection revokes that proxy grant; Agent retirement deletes the owned policy. Existing non-proxy permissions remain separate.
 
+To change from the bundled proxy to an external proxy:
+
+1. Select the external endpoint for Compute and keep the bundled proxy deployed.
+2. Replace Agent revisions.
+3. Disable the bundled proxy after all Agent revisions use the external endpoint.
+
+Each Agent's proxy grant is replaced in place. Outbound Gateway traffic from an earlier revision can be interrupted while that Agent's replacement runs. If a replacement stops, retry it before step 3; the bundled proxy stays available until then.
+
 These configuration changes are outside the image-only upgrade command.
+
+## Non-goals
+
+- **Per-Agent destination rules.** The bundled destination list applies to all Gateways that use the proxy. A later proposal can let the managed proxy identify the calling Agent and apply that Agent's destinations.
 
 ## Alternatives
 
@@ -230,8 +246,11 @@ Validate the regular OCE API/worker deployment workflow, not only rendered confi
 - Both Gateway modes use the selected proxy without requiring channels. Dedicated Gateways also use it with channels enabled.
 - Unsupported channel combinations and conflicting Agent proxy settings are rejected.
 - Allowed destinations work. Denied destinations and proxy outages do not cause direct fallback.
+- A permitted hostname that resolves to a nonpublic address is rejected before the proxy opens an outbound connection.
+- After an unrelated native edit with managed mode off and a Gateway restart, the Gateway does not gain direct access.
+- During a change from the bundled to an external proxy, an earlier Gateway revision that still serves traffic follows the documented sequence, and retrying a stopped replacement recovers it.
 - Directory requests inherit the default or use the explicit override. Their proxy egress grant excludes an unused default endpoint.
-- Internal Codex connectivity works. Closing the transport removes its exact-URL exception without exempting other paths.
+- Internal Codex and repository credential broker connectivity work. Closing the transport removes its exact-URL exception without exempting other paths.
 - Changing, removing and retiring the proxy selection replaces or revokes the previous grant. Agent revision replacement applies the new settings.
 - Separate Harness routing and permissions remain unchanged.
 - A Gateway can search ClawHub, fetch and install a public skill, discover it, and retain it after Agent revision replacement.
