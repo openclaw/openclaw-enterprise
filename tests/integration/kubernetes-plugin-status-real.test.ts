@@ -287,7 +287,6 @@ async function prepareNamespace(driver: KubernetesComputeDriver, owner: Namespac
     assert.notEqual(observation.failure, "permanent");
     return observation.namespaceReady ? observation : undefined;
   });
-  return kubernetesNamespaceName(owner.id);
 }
 
 async function provisionHarnessAuth(owner: Namespace): Promise<HarnessAuthFixture> {
@@ -399,24 +398,33 @@ async function provisionAgentTransportSecret(namespaceName: string, agentId: str
 async function createStatusCandidate(label: string, context: TestContext) {
   const driver = createDriver();
   const owner = namespace(label);
-  const namespaceName = await prepareNamespace(driver, owner);
+  const namespaceName = kubernetesNamespaceName(owner.id);
+  let candidate: AgentRevision | null = null;
+  // Register cleanup before the first cluster write, including a create that
+  // succeeds on the server but fails locally.
+  context.after(async () => {
+    try {
+      if (candidate) {
+        await createDriver()
+          .retireRevision(candidate)
+          .catch(() => {});
+      }
+    } finally {
+      // Finding 682: 'Unable to connect to the server: EOF' here failed a passing test.
+      await retryKubectlWrite(
+        () =>
+          kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false"),
+        { applied: namespaceAlreadyTerminating },
+      );
+    }
+  });
+  await prepareNamespace(driver, owner);
   const agentId = `agt_${randomUUID()}`;
   // The product runtime projects a per-Agent transport Secret by this derived name
   // before the gateway Pod can start.
   await provisionAgentTransportSecret(namespaceName, agentId);
   const auth = await provisionHarnessAuth(owner);
-  const candidate = revision(driver, owner, agentId, 1, auth.snapshot);
-  context.after(async () => {
-    await createDriver()
-      .retireRevision(candidate)
-      .catch(() => {});
-    // Finding 682: 'Unable to connect to the server: EOF' here failed a passing test.
-    await retryKubectlWrite(
-      () =>
-        kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false"),
-      { applied: namespaceAlreadyTerminating },
-    );
-  });
+  candidate = revision(driver, owner, agentId, 1, auth.snapshot);
   return {
     driver,
     namespaceName,
