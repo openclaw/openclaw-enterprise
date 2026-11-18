@@ -85,10 +85,7 @@ Only the Gateway Pod mounts these writable directories:
 | `skill-library`             | `/home/node/.openclaw/skill-library`        |
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
-Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
-Skill Library revision bundles in `skill-library` persist with the library database in
-`state/openclaw.sqlite`; without the mount, rows and session pins survive a replacement
-while their bundle directories do not.
+These directories persist across Gateway replacement.
 
 Back up `state/openclaw.sqlite` with its matching `client/credentials.sqlite`.
 Restore both at their original configured paths with private ownership and
