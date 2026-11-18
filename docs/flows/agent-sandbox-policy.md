@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
-last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/17a66632-6f14-45a9-9a3d-61939f4e57d7"
 ---
 
 # Agent sandbox policy flow
@@ -130,6 +130,12 @@ cleans its exact IAM access.
 into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
 snapshot rather than re-reading changed defaults.
 
+The deployment request may select `networkEgressMode: public` for this revision
+when the Installation allows public mode and both selected Drivers support it.
+The request defaults to restricted. The controller stores the mode with the
+revision and the API returns it on revision detail reads. Retained revisions
+without a stored mode use restricted policy.
+
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before any refusal that names saved additions, then requires
 the exact active revision and supporting Driver. When the caller supplies reviewed additions, the same transaction saves the new
@@ -148,7 +154,10 @@ are bounded by the claim lease. Database and audit failures roll back the pass.
 `apps/controller/src/drivers/sandbox/openshell.ts` verifies exact provider
 ownership, preserves the Sandbox's static policy and generated access, and uses
 native status/UpdateConfig RPCs. A full candidate match plus loaded active version
-is required for `applied`. If the current resource version already differs from the
+is required for `applied`. The Driver keeps the revision's network mode when it
+builds the candidate. A revision with no saved mode uses restricted policy.
+The Driver uses the same [supervisor readback](openshell-sandbox-provisioning.md#5-observe-readiness-or-clean-up)
+for any revision marked `public`. If the current resource version already differs from the
 pinned version and the policy does not match, the worker fails before it sends a write.
 After a refused write, the worker reads the provider again and confirms its lease.
 A matching policy still loading is deferred within the deadline, `applied` is recorded
@@ -269,6 +278,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 01:31: Trace how live policy reconciliation retains the saved network mode. (authoring-run/17a66632-6f14-45a9-9a3d-61939f4e57d7 - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 

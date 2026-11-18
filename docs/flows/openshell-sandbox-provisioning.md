@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-16"
-last_updated_session: "01a1e535-91ca-7273-913f-aaacfd69c1c2"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/17a66632-6f14-45a9-9a3d-61939f4e57d7"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -327,6 +327,16 @@ On process-group `EPERM`, the supervisor signals the process directly.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
+`apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness` checks policy
+readback when the operator-managed Gateway is qualified for public TCP. For a
+revision marked `public`, readiness requires an explicit `true` from the current
+supervisor and a matching effective policy, supervisor instance, policy version
+and hash, configuration revision, and provider-environment revision. An omitted
+report leaves the same Sandbox pending within the deployment deadline. A
+contradictory report blocks readiness. Saved revisions that omit the mode use
+restricted policy. Installation admission of public revisions requires the
+pending persistence integration.
+
 Compute verifies Namespace, Agent, ServicePrincipal and revision IDs.
 Codex `harnessEndpoint` sets `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`
 and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider host.
@@ -421,6 +431,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 01:31: Trace OpenShell's supervisor readback and readiness checks for public TCP. (authoring-run/17a66632-6f14-45a9-9a3d-61939f4e57d7 - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)
 
 - 2026-11-16 13:04: Remove RuntimeClass selection. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)
 

@@ -120,6 +120,15 @@ The Driver submits `256Mi` and `1Gi` for ephemeral-storage request and limit.
 Provider template resource keys take precedence. Verify CPU, memory, and
 ephemeral storage on the rendered Agent container.
 
+`gateway.publicNetworkEgress: qualified` is accepted only in `operator`
+workspace mode. It declares that the Gateway and supervisor support public TCP
+policy and applied-mode readback. To make public mode available, set
+`networkEgressMode: public` in the Installation startup file. Deploy an Agent
+with `networkEgressMode: public` in its request to select the mode for that
+revision. Deployments that omit the mode use restricted policy. See the
+[Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md#5-observe-readiness-or-clean-up)
+for the readiness checks.
+
 `kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
 pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
 `agentResources`. Startup rejects malformed IDs, duplicates, and requests above

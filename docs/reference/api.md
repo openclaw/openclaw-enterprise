@@ -5917,6 +5917,7 @@ Save an Agent revision from the Agent's saved settings
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
+| `networkEgressMode` | `"public" or "restricted"` | No | The outbound network policy for this revision. Omission selects restricted mode. |
 
 Example request
 ```json
@@ -5965,6 +5966,7 @@ Example request
 | `data.harnessAuth` | `object or object or object or object` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkEgressMode` | `"public" or "restricted"` | No | The outbound network policy for this revision. Omission selects restricted mode. |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -6143,6 +6145,7 @@ Admit the first deployment of an exact reviewed Configuration; requires Configur
 | `expectedGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
 | `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `key` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._~-]*$` |
+| `networkEgressMode` | `"public" or "restricted"` | No | The outbound network policy for this revision. Omission selects restricted mode. |
 
 Example request
 ```json
@@ -6219,6 +6222,7 @@ Read an exact first-deployment receipt; null does not prove failure; requires Co
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
 | `harnessOverrides` | query | `string` | No | max length: 8192 | "{}" |
+| `networkEgressMode` | query | `"public" or "restricted"` | No | — | "public" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 | `key` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._~-]*$` | "review-1" |
