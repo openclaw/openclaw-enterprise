@@ -439,19 +439,6 @@ export const CreateCredentialSourceBody = Type.Object(
   {
     name: Name,
     type: CredentialSourceType,
-    connectionTemplateId: Type.Optional(
-      Type.String({
-        ...ConnectionTemplateId,
-        description:
-          "Static-key template approved for this credential; requires connectionTemplateVersion.",
-      }),
-    ),
-    connectionTemplateVersion: Type.Optional(
-      Type.Integer({
-        minimum: 1,
-        description: "Approved template version; requires connectionTemplateId.",
-      }),
-    ),
     config: Type.Optional(CredentialSourceConfig),
     secrets: Type.Optional(CredentialSourceSecrets),
   },

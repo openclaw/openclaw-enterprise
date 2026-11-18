@@ -272,8 +272,7 @@ interface RequiredPermission {
     | "read_logs_alternative"
     | "bound_credential_source"
     | "unless_consent_owner"
-    | "saved_sandbox_policy_additions"
-    | "model_provider_filter";
+    | "saved_sandbox_policy_additions";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -607,24 +606,6 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId === "disconnectNamespaceConnection") {
     return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
-  }
-  if (operation.operationId === "listCredentialSources") {
-    return [
-      { action: "read", resourceKind: "namespace", scope: "requested" },
-      { action: "read", resourceKind: "credential_source", scope: "each_returned" },
-      {
-        action: "create",
-        resourceKind: "agent",
-        scope: "namespace",
-        condition: "model_provider_filter",
-      },
-      {
-        action: "operate",
-        resourceKind: "credential_source",
-        scope: "each_returned",
-        condition: "model_provider_filter",
-      },
-    ];
   }
   if (operation.operationId === "listNamespaceConnections") {
     return [
@@ -1068,6 +1049,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     case "namespace_and_service_account_candidates":
     case "namespace_and_secret_candidates":
     case "namespace_and_preset_candidates":
+    case "namespace_and_credential_source_candidates":
       return [
         { action: "read", resourceKind: "namespace", scope: "requested" },
         { ...permission, scope: "each_returned" },
@@ -1125,11 +1107,6 @@ function permissionDescription(
   const description = permissions
     .map(({ action, resourceKind, scope, condition }) => {
       const name = names[resourceKind];
-      if (condition === "model_provider_filter") {
-        return scope === "each_returned"
-          ? "When filtering by modelProviderId, only CredentialSource resources with operate permission are returned."
-          : "Filtering by modelProviderId requires Agent create permission in the requested Namespace.";
-      }
       if (condition === "unless_consent_owner") {
         return "Requires delete permission on this CredentialSource unless the caller owns the saved connection.";
       }
@@ -2111,7 +2088,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const params = request.params as Record<string, unknown>;
     if (
       Object.keys(request.query as Record<string, unknown>).length > 0 &&
-      operation.operationId !== "listCredentialSources" &&
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
@@ -2408,19 +2384,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
     // Older handlers would otherwise ignore a requested provider or credential destination.
     if (
+      body?.mode === "static_bearer" &&
+      (operation.operationId === "createConnectionTemplate" ||
+        operation.operationId === "updateConnectionTemplate")
+    ) {
+      throw failure(
+        501,
+        "NOT_IMPLEMENTED",
+        "Static Connection Templates are unavailable on this controller.",
+      );
+    }
+    if (
       (body &&
         "modelProviderId" in body &&
         ["createAgent", "provisionAgent", "validateAgentCreate", "updateAgent"].includes(
           operation.operationId,
         )) ||
-      (body?.mode === "static_bearer" &&
-        (operation.operationId === "createConnectionTemplate" ||
-          operation.operationId === "updateConnectionTemplate")) ||
-      (operation.operationId === "listCredentialSources" &&
-        (request.query as { modelProviderId?: string }).modelProviderId !== undefined) ||
-      (operation.operationId === "createCredentialSource" &&
-        body &&
-        ("connectionTemplateId" in body || "connectionTemplateVersion" in body)) ||
       [
         "listModelProviders",
         "getModelProvider",

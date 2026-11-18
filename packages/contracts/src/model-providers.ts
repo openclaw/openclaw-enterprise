@@ -1,4 +1,8 @@
-import { ConnectionTemplateValidationError } from "./connection-templates.ts";
+import {
+  ConnectionTemplateValidationError,
+  isApprovedDestinationHost,
+  type ConnectionTemplateSettings,
+} from "./connection-templates.ts";
 
 export type InferenceProtocol = "openai-responses" | "openai-completions";
 
@@ -33,14 +37,6 @@ export interface ModelProviderView extends ModelProvider {
   readonly settingsFingerprint: string;
 }
 
-/** The version pins where the credential owner approved sending the key. */
-export interface StaticKeyGrant {
-  readonly connectionTemplateId: string;
-  readonly connectionTemplateVersion: number;
-  readonly baseUrl: string;
-  readonly protocol: InferenceProtocol;
-}
-
 export function normalizeInferenceBaseUrl(value: string): string {
   // Reject URL parser rewrites before interpreting a credential destination.
   if (
@@ -55,19 +51,7 @@ export function normalizeInferenceBaseUrl(value: string): string {
   }
   const url = new URL(value);
   const originalHost = value.slice("https://".length).split(/[/:]/, 1)[0]?.toLowerCase();
-  const dnsHost =
-    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
-      url.hostname,
-    );
-  const octets = url.hostname.split(".").map(Number);
-  const privateIpv4 =
-    originalHost === url.hostname &&
-    octets.length === 4 &&
-    octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255) &&
-    (octets[0] === 10 ||
-      (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) ||
-      (octets[0] === 192 && octets[1] === 168));
-  if (!dnsHost && !privateIpv4) {
+  if (originalHost !== url.hostname || !isApprovedDestinationHost(url.hostname)) {
     throw new ConnectionTemplateValidationError(
       "baseUrl",
       "Choose an exact DNS host or private IPv4 address for inference.",
@@ -90,4 +74,29 @@ export function inferenceKeyDestination(baseUrl: string, protocol: InferenceProt
     port: Number(url.port || 443),
     path: url.pathname + (protocol === "openai-responses" ? "/responses" : "/chat/completions"),
   };
+}
+
+/** A provider can use a static credential only for a request its template approves. */
+export function modelProviderRequestApproved(
+  provider: Pick<ModelProviderSettings, "baseUrl" | "protocol">,
+  template: Readonly<ConnectionTemplateSettings>,
+): boolean {
+  if (template.mode !== "static_bearer") {
+    return false;
+  }
+  const request = inferenceKeyDestination(provider.baseUrl, provider.protocol);
+  return template.destinations.some((destination) => {
+    if (
+      destination.host !== request.host ||
+      destination.port !== request.port ||
+      destination.method !== request.method
+    ) {
+      return false;
+    }
+    if (!destination.path.endsWith("/**")) {
+      return destination.path === request.path;
+    }
+    const prefix = destination.path.slice(0, -3);
+    return request.path === prefix || request.path.startsWith(prefix + "/");
+  });
 }

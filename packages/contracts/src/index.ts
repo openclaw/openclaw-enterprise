@@ -161,6 +161,7 @@ export type {
   OAuthClientAuthMethod,
   McpAuthorizationMetadata,
   ConnectionEndpoint,
+  StaticKeyDestination,
   ConnectionTemplate,
   ConnectionTemplateValues,
   ConnectionTemplateSettings,
@@ -176,6 +177,7 @@ export {
   isFlowOwnedOAuthParameter,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
+  normalizeStaticKeyDestinations,
   validateConnectionTemplateAuthorization,
   validateConnectionTemplateDestinations,
 } from "./connection-templates.ts";
@@ -422,9 +424,12 @@ export type {
   ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
-  StaticKeyGrant,
 } from "./model-providers.ts";
-export { inferenceKeyDestination, normalizeInferenceBaseUrl } from "./model-providers.ts";
+export {
+  inferenceKeyDestination,
+  modelProviderRequestApproved,
+  normalizeInferenceBaseUrl,
+} from "./model-providers.ts";
 export interface Installation {
   readonly id: string;
   readonly name: string;
@@ -545,8 +550,6 @@ export interface CredentialSourceFieldSpec {
 
 /** One entry in a Credential Gateway implementation's catalog. */
 export interface CredentialSourceType {
-  /** The Driver can enforce this source's immutable static Bearer grant. */
-  readonly staticKeyBaseUrlConfig?: string;
   /** Device login defers the first mint to the selected Credential Refresh Driver. */
   readonly deviceAuthorization?: { readonly harnessId: string };
   readonly type: string;
@@ -575,7 +578,6 @@ export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapabi
 
 /** OCC source admission, including its owner and Secret references, never credential values. */
 export type CredentialSource = CredentialSourceOwner & {
-  readonly staticKeyGrant?: import("./model-providers.ts").StaticKeyGrant;
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -588,7 +590,6 @@ export type CredentialSource = CredentialSourceOwner & {
 };
 
 export interface CredentialSourceMetadata {
-  readonly staticKeyGrant?: import("./model-providers.ts").StaticKeyGrant;
   readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
   readonly id: string;

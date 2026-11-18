@@ -50,7 +50,6 @@ import {
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
-  ModelProviderId,
   SecretId,
   AgentProvisioningParams,
   PresetParams,
@@ -1300,22 +1299,10 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_and_credential_source_candidates",
-    summary:
-      "List credential-source metadata, optionally filtered to ready, approved model credentials",
+    summary: "List readable credential sources without revealing credential values",
     tags: ["Credential sources"],
     schema: {
-      querystring: Type.Object(
-        {
-          modelProviderId: Type.Optional(
-            Type.String({
-              ...ModelProviderId,
-              description:
-                "Return ready credential sources with a matching approved template that the caller can operate.",
-            }),
-          ),
-        },
-        { additionalProperties: false },
-      ),
+      querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: CredentialSourceListResponse, ...readErrors },
     },

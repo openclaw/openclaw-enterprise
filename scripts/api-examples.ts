@@ -195,8 +195,9 @@ const connectionTemplateId = id("ctp");
 const inferenceConnectionTemplateId = "ctp_223e4567-e89b-42d3-a456-426614174000";
 const inferenceConnectionTemplateValues = {
   mode: "static_bearer",
-  baseUrl: "https://inference.example.com/v1",
-  protocol: "openai-responses",
+  destinations: [
+    { host: "inference.example.com", port: 443, path: "/v1/responses", method: "POST" },
+  ],
 };
 const inferenceConnectionTemplate = {
   id: inferenceConnectionTemplateId,
@@ -207,15 +208,12 @@ const inferenceConnectionTemplate = {
     templateId: inferenceConnectionTemplateId,
     version: 1,
     createdAt: time,
-    destinations: [
-      { host: "inference.example.com", port: 443, path: "/v1/responses", method: "POST" },
-    ],
   },
 };
 const modelProviderSettings = {
   displayName: "Research inference",
-  baseUrl: inferenceConnectionTemplateValues.baseUrl,
-  protocol: inferenceConnectionTemplateValues.protocol,
+  baseUrl: "https://inference.example.com/v1",
+  protocol: "openai-responses",
   models: [{ id: "research-model" }],
   defaultModelId: "research-model",
   connectionTemplateId: inferenceConnectionTemplateId,
@@ -224,20 +222,6 @@ const modelProvider = {
   ...modelProviderSettings,
   id: id("mpr"),
   settingsFingerprint: "a".repeat(64),
-};
-const inferenceCredentialSourceId = "cs_223e4567-e89b-42d3-a456-426614174000";
-const inferenceCredentialSource = {
-  ...source,
-  id: inferenceCredentialSourceId,
-  name: "Research inference key",
-  config: { authorized_base_url: inferenceConnectionTemplateValues.baseUrl },
-  staticKeyGrant: {
-    connectionTemplateId: inferenceConnectionTemplateId,
-    connectionTemplateVersion: inferenceConnectionTemplate.current.version,
-    baseUrl: inferenceConnectionTemplateValues.baseUrl,
-    protocol: inferenceConnectionTemplateValues.protocol,
-  },
-  ref: { ...source.ref, id: inferenceCredentialSourceId },
 };
 const inferenceConfigurationId = "cfg_223e4567-e89b-42d3-a456-426614174000";
 const inferenceModelReference = "codex/research-model";
@@ -258,7 +242,6 @@ const inferenceConfiguration = {
     },
   },
 };
-const inferenceHarnessAuth = { method: "credential_source", sourceId: inferenceCredentialSourceId };
 const inferenceAgent = {
   ...agent,
   id: "agt_223e4567-e89b-42d3-a456-426614174000",
@@ -266,8 +249,6 @@ const inferenceAgent = {
   configurationId: inferenceConfigurationId,
   servicePrincipalId: "principal-research-agent",
   modelProviderId: modelProvider.id,
-  harnessAuth: inferenceHarnessAuth,
-  credentialSources: [{ sourceId: inferenceCredentialSourceId }],
 };
 const oauthClientId = id("ccr");
 const oauthClientInput = {
@@ -422,8 +403,6 @@ export const requestExamples = {
     configurationId: inferenceConfigurationId,
     modelProviderId: modelProvider.id,
     executionMode: "dedicated",
-    harnessAuth: inferenceHarnessAuth,
-    credentialSources: inferenceAgent.credentialSources,
   },
   updateAgent: { configurationId, executionMode: "dedicated", harnessAuth },
   provisionAgent: {
@@ -442,11 +421,10 @@ export const requestExamples = {
   createSecret: { name: secret.name, value: "replace-with-your-authorized-model-key" },
   updateSecret: { value: "replace-with-your-rotated-model-key" },
   createCredentialSource: {
-    name: inferenceCredentialSource.name,
-    type: inferenceCredentialSource.type,
-    connectionTemplateId: inferenceConnectionTemplateId,
-    connectionTemplateVersion: inferenceConnectionTemplate.current.version,
-    secrets: inferenceCredentialSource.secrets,
+    name: source.name,
+    type: source.type,
+    config: {},
+    secrets: source.secrets,
   },
   updateCredentialSource: { adoption: "live", secrets: source.secrets },
   createServiceAccount: { name: account.name },
@@ -796,8 +774,8 @@ export const responseExamples = {
     },
     callerPermissions: { update: true, delete: true },
   },
-  listCredentialSources: [inferenceCredentialSource],
-  createCredentialSource: inferenceCredentialSource,
+  listCredentialSources: [source],
+  createCredentialSource: source,
   getCredentialSource: source,
   updateCredentialSource: source,
   rotateCredentialSource: source,

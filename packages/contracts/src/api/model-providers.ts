@@ -51,7 +51,8 @@ const fields = {
   ),
   connectionTemplateId: Type.String({
     ...ConnectionTemplateId,
-    description: "Installation-wide static-key template matching the provider URL and protocol.",
+    description:
+      "Installation-wide static-key Connection Template that approves the inference request.",
   }),
 };
 const settingsFingerprint = Type.String({

@@ -185,7 +185,11 @@ function schemaConstraints(schema: unknown) {
   }
   const pattern = field(schema, "pattern");
   if (pattern) {
-    constraints.push(`pattern: \`${text(pattern).replaceAll("|", "\\|")}\``);
+    const value = text(pattern).replaceAll("|", "\\|");
+    const longest = Math.max(0, ...(value.match(/`+/g) ?? []).map((run) => run.length));
+    const delimiter = "`".repeat(longest + 1);
+    const padding = value.startsWith("`") || value.endsWith("`") ? " " : "";
+    constraints.push(`pattern: ${delimiter}${padding}${value}${padding}${delimiter}`);
   }
   const defaultValue = field(schema, "default");
   if (defaultValue !== undefined) {
@@ -299,7 +303,6 @@ function schemaTable(schema: unknown, document: unknown): string {
 }
 
 const permissionScopeQualifiers: Record<string, string> = {
-  model_provider_filter: " (when filtering by `modelProviderId`)",
   associated_service_account: " (when associated)",
   existing_namespace: " (when selecting an existing namespace)",
   bound_secret: " (when bound)",

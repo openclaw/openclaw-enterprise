@@ -764,30 +764,6 @@
                   { "const": "deleting", "type": "string" }
                 ]
               },
-              "staticKeyGrant": {
-                "additionalProperties": false,
-                "properties": {
-                  "baseUrl": { "type": "string" },
-                  "connectionTemplateId": {
-                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                    "type": "string"
-                  },
-                  "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
-                  "protocol": {
-                    "anyOf": [
-                      { "const": "openai-responses", "type": "string" },
-                      { "const": "openai-completions", "type": "string" }
-                    ]
-                  }
-                },
-                "required": [
-                  "connectionTemplateId",
-                  "connectionTemplateVersion",
-                  "baseUrl",
-                  "protocol"
-                ],
-                "type": "object"
-              },
               "status": {
                 "additionalProperties": false,
                 "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
@@ -1036,51 +1012,36 @@
       "def-16": {
         "additionalProperties": false,
         "properties": {
-          "baseUrl": {
-            "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
-            "maxLength": 2048,
-            "pattern": "^https://",
-            "type": "string"
-          },
           "createdAt": { "type": "string" },
           "destinations": {
             "items": {
               "additionalProperties": false,
               "properties": {
-                "host": { "type": "string" },
-                "method": { "const": "POST", "type": "string" },
-                "path": { "type": "string" },
-                "port": { "type": "integer" }
+                "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                "method": {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                  "type": "string"
+                },
+                "path": { "maxLength": 512, "minLength": 1, "pattern": "^/", "type": "string" },
+                "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
               },
               "required": ["host", "port", "path", "method"],
               "type": "object"
             },
-            "maxItems": 1,
+            "maxItems": 128,
             "minItems": 1,
             "type": "array"
           },
           "mode": { "const": "static_bearer", "type": "string" },
-          "protocol": {
-            "anyOf": [
-              { "const": "openai-responses", "type": "string" },
-              { "const": "openai-completions", "type": "string" }
-            ]
-          },
           "templateId": {
             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
           "version": { "minimum": 1, "type": "integer" }
         },
-        "required": [
-          "mode",
-          "baseUrl",
-          "protocol",
-          "templateId",
-          "version",
-          "createdAt",
-          "destinations"
-        ],
+        "required": ["mode", "destinations", "templateId", "version", "createdAt"],
         "title": "Static-key connection template version",
         "type": "object"
       },
@@ -1123,7 +1084,7 @@
             "type": "string"
           },
           "connectionTemplateId": {
-            "description": "Installation-wide static-key template matching the provider URL and protocol.",
+            "description": "Installation-wide static-key Connection Template that approves the inference request.",
             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
@@ -11826,10 +11787,16 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "baseUrl": "https://inference.example.com/v1",
+                    "destinations": [
+                      {
+                        "host": "inference.example.com",
+                        "method": "POST",
+                        "path": "/v1/responses",
+                        "port": 443
+                      }
+                    ],
                     "displayName": "Research inference",
-                    "mode": "static_bearer",
-                    "protocol": "openai-responses"
+                    "mode": "static_bearer"
                   }
                 }
               },
@@ -11838,26 +11805,40 @@
                   {
                     "additionalProperties": false,
                     "properties": {
-                      "baseUrl": {
-                        "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
-                        "maxLength": 2048,
-                        "pattern": "^https://",
-                        "type": "string"
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                            "method": {
+                              "maxLength": 16,
+                              "minLength": 1,
+                              "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                              "type": "string"
+                            },
+                            "path": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^/",
+                              "type": "string"
+                            },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["host", "port", "path", "method"],
+                          "type": "object"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array"
                       },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                       "mode": { "const": "static_bearer", "type": "string" },
                       "namespaceId": {
                         "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
-                      },
-                      "protocol": {
-                        "anyOf": [
-                          { "const": "openai-responses", "type": "string" },
-                          { "const": "openai-completions", "type": "string" }
-                        ]
                       }
                     },
-                    "required": ["displayName", "mode", "baseUrl", "protocol"],
+                    "required": ["displayName", "mode", "destinations"],
                     "type": "object"
                   },
                   {
@@ -12000,7 +11981,6 @@
                       "data": {
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "current": {
-                          "baseUrl": "https://inference.example.com/v1",
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "destinations": [
                             {
@@ -12011,7 +11991,6 @@
                             }
                           ],
                           "mode": "static_bearer",
-                          "protocol": "openai-responses",
                           "templateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                           "version": 1
                         },
@@ -12666,22 +12645,36 @@
                   {
                     "additionalProperties": false,
                     "properties": {
-                      "baseUrl": {
-                        "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
-                        "maxLength": 2048,
-                        "pattern": "^https://",
-                        "type": "string"
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                            "method": {
+                              "maxLength": 16,
+                              "minLength": 1,
+                              "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                              "type": "string"
+                            },
+                            "path": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^/",
+                              "type": "string"
+                            },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["host", "port", "path", "method"],
+                          "type": "object"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array"
                       },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                      "mode": { "const": "static_bearer", "type": "string" },
-                      "protocol": {
-                        "anyOf": [
-                          { "const": "openai-responses", "type": "string" },
-                          { "const": "openai-completions", "type": "string" }
-                        ]
-                      }
+                      "mode": { "const": "static_bearer", "type": "string" }
                     },
-                    "required": ["mode", "baseUrl", "protocol"],
+                    "required": ["mode", "destinations"],
                     "type": "object"
                   },
                   {
@@ -13066,10 +13059,6 @@
                                           "type": "object"
                                         },
                                         "type": "array"
-                                      },
-                                      "staticKeyBaseUrlConfig": {
-                                        "description": "When present, this source type supports static-key template approval; the value names its immutable destination URL config field.",
-                                        "type": "string"
                                       },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
@@ -13494,10 +13483,6 @@
                                           "type": "object"
                                         },
                                         "type": "array"
-                                      },
-                                      "staticKeyBaseUrlConfig": {
-                                        "description": "When present, this source type supports static-key template approval; the value names its immutable destination URL config field.",
-                                        "type": "string"
                                       },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
@@ -14401,7 +14386,7 @@
                     "type": "string"
                   },
                   "connectionTemplateId": {
-                    "description": "Installation-wide static-key template matching the provider URL and protocol.",
+                    "description": "Installation-wide static-key Connection Template that approves the inference request.",
                     "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
                   },
@@ -14754,7 +14739,7 @@
                     "type": "string"
                   },
                   "connectionTemplateId": {
-                    "description": "Installation-wide static-key template matching the provider URL and protocol.",
+                    "description": "Installation-wide static-key Connection Template that approves the inference request.",
                     "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
                   },
@@ -15755,10 +15740,6 @@
                                         },
                                         "type": "array"
                                       },
-                                      "staticKeyBaseUrlConfig": {
-                                        "description": "When present, this source type supports static-key template approval; the value names its immutable destination URL config field.",
-                                        "type": "string"
-                                      },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
                                         "maxLength": 64,
@@ -16608,14 +16589,7 @@
                   "summary": "Example request",
                   "value": {
                     "configurationId": "cfg_223e4567-e89b-42d3-a456-426614174000",
-                    "credentialSources": [
-                      { "sourceId": "cs_223e4567-e89b-42d3-a456-426614174000" }
-                    ],
                     "executionMode": "dedicated",
-                    "harnessAuth": {
-                      "method": "credential_source",
-                      "sourceId": "cs_223e4567-e89b-42d3-a456-426614174000"
-                    },
                     "modelProviderId": "mpr_123e4567-e89b-42d3-a456-426614174000",
                     "name": "Research assistant"
                   }
@@ -16892,15 +16866,16 @@
                         "backendId": null,
                         "configurationId": "cfg_223e4567-e89b-42d3-a456-426614174000",
                         "createdAt": "2026-10-01T12:00:00.000Z",
-                        "credentialSources": [
-                          { "sourceId": "cs_223e4567-e89b-42d3-a456-426614174000" }
-                        ],
                         "desiredRuntimeState": "stopped",
                         "executionMode": "dedicated",
                         "gatewayManagedMode": true,
                         "harnessAuth": {
-                          "method": "credential_source",
-                          "sourceId": "cs_223e4567-e89b-42d3-a456-426614174000"
+                          "method": "api_key",
+                          "source": {
+                            "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+                            "kind": "secret",
+                            "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+                          }
                         },
                         "id": "agt_223e4567-e89b-42d3-a456-426614174000",
                         "modelProviderId": "mpr_123e4567-e89b-42d3-a456-426614174000",
@@ -37152,25 +37127,9 @@
     },
     "/namespaces/{namespaceId}/credential-sources": {
       "get": {
-        "description": "Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned. Filtering by modelProviderId requires Agent create permission in the requested Namespace. When filtering by modelProviderId, only CredentialSource resources with operate permission are returned.",
+        "description": "Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned.",
         "operationId": "listCredentialSources",
         "parameters": [
-          {
-            "description": "Return ready credential sources with a matching approved template that the caller can operate.",
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "mpr_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "query",
-            "name": "modelProviderId",
-            "required": false,
-            "schema": {
-              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          },
           {
             "examples": {
               "example": {
@@ -37204,13 +37163,13 @@
                     "value": {
                       "data": [
                         {
-                          "config": { "authorized_base_url": "https://inference.example.com/v1" },
-                          "id": "cs_223e4567-e89b-42d3-a456-426614174000",
-                          "name": "Research inference key",
+                          "config": {},
+                          "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+                          "name": "Model credentials",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "ownerCapability": "credential_gateway",
                           "ref": {
-                            "id": "cs_223e4567-e89b-42d3-a456-426614174000",
+                            "id": "cs_123e4567-e89b-42d3-a456-426614174000",
                             "kind": "credential_source",
                             "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                           },
@@ -37222,12 +37181,6 @@
                             }
                           },
                           "state": "ready",
-                          "staticKeyGrant": {
-                            "baseUrl": "https://inference.example.com/v1",
-                            "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
-                            "connectionTemplateVersion": 1,
-                            "protocol": "openai-responses"
-                          },
                           "type": "openai"
                         }
                       ],
@@ -37335,30 +37288,6 @@
                               { "const": "ready", "type": "string" },
                               { "const": "deleting", "type": "string" }
                             ]
-                          },
-                          "staticKeyGrant": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "baseUrl": { "type": "string" },
-                              "connectionTemplateId": {
-                                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
-                              "protocol": {
-                                "anyOf": [
-                                  { "const": "openai-responses", "type": "string" },
-                                  { "const": "openai-completions", "type": "string" }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "connectionTemplateId",
-                              "connectionTemplateVersion",
-                              "baseUrl",
-                              "protocol"
-                            ],
-                            "type": "object"
                           },
                           "status": {
                             "additionalProperties": false,
@@ -37503,23 +37432,11 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List credential-source metadata, optionally filtered to ready, approved model credentials",
+        "summary": "List readable credential sources without revealing credential values",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" },
-          { "action": "read", "resourceKind": "credential_source", "scope": "each_returned" },
-          {
-            "action": "create",
-            "condition": "model_provider_filter",
-            "resourceKind": "agent",
-            "scope": "namespace"
-          },
-          {
-            "action": "operate",
-            "condition": "model_provider_filter",
-            "resourceKind": "credential_source",
-            "scope": "each_returned"
-          }
+          { "action": "read", "resourceKind": "credential_source", "scope": "each_returned" }
         ]
       },
       "post": {
@@ -37549,9 +37466,8 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
-                    "connectionTemplateVersion": 1,
-                    "name": "Research inference key",
+                    "config": {},
+                    "name": "Model credentials",
                     "secrets": {
                       "api_key": {
                         "id": "sec_123e4567-e89b-42d3-a456-426614174000",
@@ -37571,16 +37487,6 @@
                     "description": "Non-secret source configuration keyed by catalog field name.",
                     "maxProperties": 32,
                     "type": "object"
-                  },
-                  "connectionTemplateId": {
-                    "description": "Static-key template approved for this credential; requires connectionTemplateVersion.",
-                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                    "type": "string"
-                  },
-                  "connectionTemplateVersion": {
-                    "description": "Approved template version; requires connectionTemplateId.",
-                    "minimum": 1,
-                    "type": "integer"
                   },
                   "name": {
                     "maxLength": 200,
@@ -37634,13 +37540,13 @@
                     "summary": "Example response",
                     "value": {
                       "data": {
-                        "config": { "authorized_base_url": "https://inference.example.com/v1" },
-                        "id": "cs_223e4567-e89b-42d3-a456-426614174000",
-                        "name": "Research inference key",
+                        "config": {},
+                        "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+                        "name": "Model credentials",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "ownerCapability": "credential_gateway",
                         "ref": {
-                          "id": "cs_223e4567-e89b-42d3-a456-426614174000",
+                          "id": "cs_123e4567-e89b-42d3-a456-426614174000",
                           "kind": "credential_source",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
@@ -37652,12 +37558,6 @@
                           }
                         },
                         "state": "ready",
-                        "staticKeyGrant": {
-                          "baseUrl": "https://inference.example.com/v1",
-                          "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
-                          "connectionTemplateVersion": 1,
-                          "protocol": "openai-responses"
-                        },
                         "type": "openai"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }

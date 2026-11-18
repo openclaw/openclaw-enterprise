@@ -1,5 +1,3 @@
-import type { InferenceProtocol } from "./model-providers.ts";
-
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
 export function isOAuthScopeToken(value: unknown): value is string {
@@ -12,6 +10,14 @@ export interface ConnectionEndpoint {
   readonly port: number;
   readonly path: string;
 }
+
+/** An approved HTTP request that can receive a static bearer credential. */
+export interface StaticKeyDestination extends ConnectionEndpoint {
+  readonly method: string;
+}
+
+/** Uppercase HTTP token syntax, bounded for credential request policy. */
+export const staticKeyHttpMethodPattern = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
 
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
@@ -61,9 +67,7 @@ export interface ConnectionTemplateValues {
 
 export interface StaticKeyTemplateValues {
   readonly mode: "static_bearer";
-  readonly baseUrl: string;
-  readonly protocol: InferenceProtocol;
-  readonly destinations: readonly (ConnectionEndpoint & { readonly method: "POST" })[];
+  readonly destinations: readonly StaticKeyDestination[];
 }
 export type ConnectionTemplateSettings = ConnectionTemplateValues | StaticKeyTemplateValues;
 export type ConnectionTemplateVersion =
@@ -165,6 +169,41 @@ function compareEndpoint(left: ConnectionEndpoint, right: ConnectionEndpoint): n
   );
 }
 
+const dnsHostPattern =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const ipv4Pattern = /^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$/;
+
+/** Accept an exact DNS name or canonical RFC 1918 IPv4 address. */
+export function isApprovedDestinationHost(host: string): boolean {
+  if (host.length > 253) {
+    return false;
+  }
+  if (dnsHostPattern.test(host)) {
+    return true;
+  }
+  if (!ipv4Pattern.test(host)) {
+    return false;
+  }
+  const octets = host.split(".").map(Number);
+  return (
+    octets.every((octet) => octet <= 255) &&
+    (octets[0] === 10 ||
+      (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) ||
+      (octets[0] === 192 && octets[1] === 168))
+  );
+}
+
+function validEndpoint(port: number, path: string): boolean {
+  return (
+    Number.isInteger(port) &&
+    port >= 1 &&
+    port <= 65535 &&
+    path.length <= 512 &&
+    /^\/[!-~]*$/.test(path) &&
+    !/[?#\\]/.test(path)
+  );
+}
+
 /** Save exact HTTPS routes in a stable order regardless of editor row order or omitted defaults. */
 export function normalizeConnectionDestinations(
   rows: readonly { readonly host: string; readonly port?: number; readonly path?: string }[],
@@ -178,18 +217,7 @@ export function normalizeConnectionDestinations(
   const destinations = rows
     .map(({ host, port = 443, path = "/**" }) => {
       host = host.toLowerCase();
-      if (
-        host.length > 253 ||
-        !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
-          host,
-        ) ||
-        !Number.isInteger(port) ||
-        port < 1 ||
-        port > 65535 ||
-        path.length > 512 ||
-        !/^\/[!-~]*$/.test(path) ||
-        /[?#\\]/.test(path)
-      ) {
+      if (host.length > 253 || !dnsHostPattern.test(host) || !validEndpoint(port, path)) {
         throw new ConnectionTemplateValidationError(
           "destinations",
           "Choose a DNS host, HTTPS port and request path for each destination.",
@@ -200,6 +228,41 @@ export function normalizeConnectionDestinations(
     .sort(compareEndpoint);
   return destinations.filter(
     (row, index) => index === 0 || compareEndpoint(row, destinations[index - 1]!) !== 0,
+  );
+}
+
+function compareStaticDestination(left: StaticKeyDestination, right: StaticKeyDestination): number {
+  return compareEndpoint(left, right) || compareText(left.method, right.method);
+}
+
+/** Canonicalize the complete approved HTTP destination set, including each method. */
+export function normalizeStaticKeyDestinations(
+  rows: readonly StaticKeyDestination[],
+): StaticKeyDestination[] {
+  if (!rows.length || rows.length > 128) {
+    throw new ConnectionTemplateValidationError(
+      "destinations",
+      "Choose 1 to 128 approved HTTP destinations.",
+    );
+  }
+  const destinations = rows
+    .map(({ host, port, path, method }) => {
+      host = host.toLowerCase();
+      if (
+        !isApprovedDestinationHost(host) ||
+        !validEndpoint(port, path) ||
+        !staticKeyHttpMethodPattern.test(method)
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "destinations",
+          "Choose an exact DNS host or private IPv4 address, port, request path and uppercase HTTP method for each destination.",
+        );
+      }
+      return { host, port, path, method };
+    })
+    .sort(compareStaticDestination);
+  return destinations.filter(
+    (row, index) => index === 0 || compareStaticDestination(row, destinations[index - 1]!) !== 0,
   );
 }
 
@@ -236,8 +299,7 @@ export function connectionValuesChanged(
     return (
       current.mode !== "static_bearer" ||
       next.mode !== "static_bearer" ||
-      current.baseUrl !== next.baseUrl ||
-      current.protocol !== next.protocol
+      !sameStaticDestinations(current.destinations, next.destinations)
     );
   }
   return (
@@ -253,6 +315,18 @@ export function connectionValuesChanged(
     current.scopes.length !== next.scopes.length ||
     current.scopes.some((scope, index) => scope !== next.scopes[index]) ||
     !sameParameters(current.authorizationParameters, next.authorizationParameters)
+  );
+}
+
+function sameStaticDestinations(
+  left: readonly StaticKeyDestination[],
+  right: readonly StaticKeyDestination[],
+): boolean {
+  const canonicalLeft = normalizeStaticKeyDestinations(left);
+  const canonicalRight = normalizeStaticKeyDestinations(right);
+  return (
+    canonicalLeft.length === canonicalRight.length &&
+    canonicalLeft.every((row, index) => compareStaticDestination(row, canonicalRight[index]!) === 0)
   );
 }
 

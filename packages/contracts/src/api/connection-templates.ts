@@ -1,8 +1,6 @@
 import { Type } from "typebox";
-import { oauthScopeTokenPattern } from "../connection-templates.ts";
+import { oauthScopeTokenPattern, staticKeyHttpMethodPattern } from "../connection-templates.ts";
 import { RequestId, NamespaceId, ConnectionTemplateId } from "./common.ts";
-
-import { InferenceBaseUrlSchema, InferenceProtocolSchema } from "./model-providers.ts";
 
 export { ConnectionTemplateId } from "./common.ts";
 
@@ -20,6 +18,23 @@ const ConnectionEndpointSchema = Type.Object(
     path: Type.Optional(Type.String({ minLength: 1, maxLength: 512, pattern: "^/" })),
   },
   { additionalProperties: false },
+);
+
+const StaticKeyDestinationsSchema = Type.Array(
+  Type.Object(
+    {
+      host: Type.String({ minLength: 1, maxLength: 253 }),
+      port: Type.Integer({ minimum: 1, maximum: 65535 }),
+      path: Type.String({ minLength: 1, maxLength: 512, pattern: "^/" }),
+      method: Type.String({
+        minLength: 1,
+        maxLength: 16,
+        pattern: staticKeyHttpMethodPattern.source,
+      }),
+    },
+    { additionalProperties: false },
+  ),
+  { minItems: 1, maxItems: 128 },
 );
 
 export const ConnectionDestinationsSchema = Type.Array(
@@ -61,8 +76,7 @@ const fields = {
 };
 const staticBearer = {
   mode: Type.Literal("static_bearer"),
-  baseUrl: InferenceBaseUrlSchema,
-  protocol: InferenceProtocolSchema,
+  destinations: StaticKeyDestinationsSchema,
 };
 const manual = {
   mode: Type.Literal("manual"),
@@ -177,18 +191,6 @@ export const StaticKeyConnectionTemplateVersionSchema = Type.Object(
     templateId: ConnectionTemplateId,
     version: Type.Integer({ minimum: 1 }),
     createdAt: Type.String(),
-    destinations: Type.Array(
-      Type.Object(
-        {
-          host: Type.String(),
-          port: Type.Integer(),
-          path: Type.String(),
-          method: Type.Literal("POST"),
-        },
-        strict,
-      ),
-      { minItems: 1, maxItems: 1 },
-    ),
   },
   {
     ...strict,
