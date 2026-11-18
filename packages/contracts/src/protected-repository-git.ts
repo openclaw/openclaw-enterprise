@@ -263,7 +263,7 @@ export type GitHubRequestDecision =
  * the credential) or refuse. Callers need no GitHub ref, draft or repository rules of
  * their own; malformed input is refused, never thrown.
  *
- * Precondition (current rule; a release-per-request evidence mode may replace it, RFC-0040):
+ * Precondition (current rule; a release-per-request evidence mode may replace it, RFC-0043):
  * OCE allows a use only for a recipient whose installation of that exact material version is
  * confirmed with `recipients.beginInstall` and `confirmInstall`, once per material version,
  * again after every renewal; pass the route `confirmInstall` returned. For a request-time

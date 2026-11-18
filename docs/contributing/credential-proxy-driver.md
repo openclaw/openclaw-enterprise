@@ -97,7 +97,7 @@ placement or provider behavior.
 
 For GitHub, let the second `bindRepositoryGit` argument decide each request:
 [`requests.authorize`](../reference/drivers/credential-proxy.md#github-request-decisions)
-classifies it, checks the ref and draft rules and returns the header to inject. The
+classifies it, checks the ref and draft rules and returns the credential to place. The
 [request injector fixture](../../tests/fixtures/driver-packages/protected-execution-driver/request-sender.ts)
 keeps no GitHub rules of its own.
 

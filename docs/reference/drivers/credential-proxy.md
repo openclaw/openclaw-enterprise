@@ -196,7 +196,7 @@ one use and returns `allow` or `refused`. Malformed input is refused.
   and `confirmInstall` for that exact material version, once per version and again after
   each renewal. Pass the route `confirmInstall` returned. An injector that asks per
   request holds no value, so its confirmation means "ready to ask per request". A
-  per-request release mode may replace this rule (RFC-0040).
+  per-request release mode may replace this rule (RFC-0043).
 - **Request.** What a supervisor-style hook sends before injection: the TLS-verified
   target (never the `Host` header), lowercase headers without credential, routing or
   framing headers, and the buffered body up to 4 MiB. Give each execution credential its
