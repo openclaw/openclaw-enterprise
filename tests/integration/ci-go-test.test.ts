@@ -341,11 +341,11 @@ if (args[0] === "list") {
   // Wait for all three processes before producing records. A serialized runner
   // cannot complete this handshake. Each child acknowledges cleanup on errors.
   const role = isolated ? "isolated" : remainder ? "remainder" : "other";
-  fs.writeFileSync(role, "started");
   process.on("SIGTERM", () => {
     console.error(role + " observed termination");
     process.exit(0);
   });
+  fs.writeFileSync(role, "started");
   const timer = setInterval(() => {
     if (!["isolated", "remainder", "other"].every((file) => fs.existsSync(file))) return;
     clearInterval(timer);
@@ -394,7 +394,11 @@ if (args[0] === "list") {
         assert.equal(result.stderr.match(/Error: spawn go ENOENT/g)?.length, 3, result.stderr);
       } else {
         for (const role of ["isolated", "remainder", "other"]) {
-          assert.match(result.stderr, new RegExp(`${role} (stderr evidence|observed termination)`));
+          const evidence =
+            scenario === "cancel"
+              ? new RegExp(`^${role} observed termination$`, "m")
+              : new RegExp(`${role} (stderr evidence|observed termination)`);
+          assert.match(result.stderr, evidence);
         }
       }
       if (scenario === "pass") {

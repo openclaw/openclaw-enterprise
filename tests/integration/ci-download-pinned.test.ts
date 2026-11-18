@@ -300,7 +300,7 @@ test("downloads publish only verified bytes and preserve existing tools on failu
 // decide whether restored bytes can be published.
 test("a verified cached download works offline and an empty cache is populated", async () => {
   await withServer(
-    () => "fast",
+    (n) => (n === 1 ? "fast" : "missing"),
     async ({ url, destination, requests, dir }) => {
       const cache = join(dir, "cache");
       const cold = await download(url, destination, sha256, {}, "022", cache);
@@ -308,14 +308,7 @@ test("a verified cached download works offline and an empty cache is populated",
       assert.equal(requests.length, 1);
       assert.deepEqual(await readFile(join(cache, sha256)), body);
       await rm(destination);
-      const hit = await download(
-        "http://127.0.0.1:1/unreachable",
-        destination,
-        sha256,
-        {},
-        "022",
-        cache,
-      );
+      const hit = await download(url, destination, sha256, {}, "022", cache);
       assert.equal(hit.code, 0, hit.stderr);
       assert.deepEqual(await readFile(destination), body);
       assert.equal(requests.length, 1);

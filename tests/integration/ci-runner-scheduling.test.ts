@@ -136,8 +136,8 @@ test("audit rejects invalid file concurrency marks", async (t) => {
 });
 
 // Each fixture file holds a marker in `running/` while it runs. A parallel file waits
-// for its partner's marker, so it passes only if both share slots; a file that must
-// run alone fails if any other marker exists. Neither depends on timing.
+// for its partner's marker and acknowledgment, so both must observe the overlap;
+// a file that must run alone fails if any other marker exists.
 function concurrencyProbe(name: string, partner: string | null) {
   return [
     'import assert from "node:assert/strict";',
@@ -155,9 +155,17 @@ function concurrencyProbe(name: string, partner: string | null) {
           `      assert.ok(Date.now() < deadline, "${partner} never ran beside ${name}");`,
           "      await sleep(10);",
           "    }",
+          "    const acknowledgments = process.env.CI_RUNNER_PROBE_ACK_DIR;",
+          `    writeFileSync(acknowledgments + "/${name}", "");`,
+          `    while (!existsSync(acknowledgments + "/${partner}")) {`,
+          `      assert.ok(Date.now() < deadline, "${partner} never acknowledged ${name}");`,
+          "      await sleep(10);",
+          "    }",
         ].join("\n")
-      : `    assert.deepEqual(readdirSync(running), ["${name}"]);`,
-    "    await sleep(50);",
+      : [
+          `    assert.deepEqual(readdirSync(running), ["${name}"]);`,
+          "    await sleep(50);",
+        ].join("\n"),
     "  } finally {",
     `    rmSync(running + "/${name}", { force: true });`,
     "  }",
@@ -175,7 +183,13 @@ async function runSharedLaneFixture(
 ) {
   const resultsPath = `results/${name}.json`;
   const args = laneArgs(root, "shared", `state/${name}.jsonl`, resultsPath, manifestPath);
-  const { status, stderr } = runRunnerSync(args, env);
+  const probeEnv = { ...env };
+  if (probeEnv.CI_RUNNER_PROBE_DIR) {
+    const acknowledgments = join(root, `acknowledgments-${name}`);
+    await mkdir(acknowledgments);
+    probeEnv.CI_RUNNER_PROBE_ACK_DIR = acknowledgments;
+  }
+  const { status, stderr } = runRunnerSync(args, probeEnv);
   assert.equal(status, exitCode, stderr);
   const summary = JSON.parse(await readFile(join(root, resultsPath), "utf8")) as SharedLaneReceipt;
   return { summary, stderr };
