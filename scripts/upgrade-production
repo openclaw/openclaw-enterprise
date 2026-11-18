@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-OPERATIONS = ("preflight", "upgrade", "resume", "cleanup-preflight")
+OPERATIONS = ("plan", "preflight", "upgrade", "status", "resume", "cleanup-preflight")
 REQUIRED = (
     "kubeconfig",
     "context",
@@ -102,6 +102,51 @@ def profile_input(parser, filename):
     return value
 
 
+def report_status(parser, directory):
+    try:
+        fd = os.open(Path(directory), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
+        try:
+            info = os.fstat(fd)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                parser.error("evidence must be an owner-only directory, not a symbolic link")
+            observed = {}
+            for name, is_directory in (
+                ("prepared", False),
+                ("database-migration-handoff.json", False),
+                ("helm-started", False),
+                ("completed", False),
+                (".upgrade-lock", True),
+                ("native-command-failures.tsv", False),
+            ):
+                try:
+                    item = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    observed[name] = False
+                    continue
+                expected = stat.S_ISDIR(item.st_mode) if is_directory else stat.S_ISREG(item.st_mode)
+                if not expected or item.st_uid != os.geteuid() or item.st_mode & 0o077:
+                    parser.error("evidence contains an invalid or nonprivate status marker")
+                observed[name] = True
+        finally:
+            os.close(fd)
+    except OSError:
+        parser.error("cannot inspect private local evidence directory")
+
+    print("Local evidence observations (not current cluster health or resume authority):")
+    for name, present in observed.items():
+        print(f"  {name}: {'present' if present else 'absent'}")
+    if observed["completed"]:
+        print("Completion was recorded; verify the current release and workloads separately.")
+    elif observed["helm-started"]:
+        print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
+    elif observed["database-migration-handoff.json"]:
+        print("A migration pause was recorded; confirm migration history before an authorized resume.")
+    else:
+        print("No completion was recorded; inspect the original attempt before any further write.")
+    if observed[".upgrade-lock"]:
+        print("A lock marker exists; it does not prove whether the previous process is still running.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run a coordinated production image upgrade from a private operator profile.",
@@ -116,18 +161,25 @@ def main():
         ),
     )
     parser.add_argument("operation", choices=OPERATIONS)
-    parser.add_argument(
-        "--profile", required=True, help="Owner-only operator JSON file"
-    )
+    parser.add_argument("--profile", help="Owner-only operator JSON file")
     parser.add_argument(
         "--evidence-dir",
-        required=True,
         help="Fresh evidence directory, or the original directory for resume/cleanup",
     )
     argv = sys.argv[1:]
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     extra = argv[split + 1 :] if split < len(argv) else []
+    if args.operation in ("plan", "status") and extra:
+        parser.error("plan and status do not accept expert upgrade options")
+    if args.operation == "status":
+        if args.profile is not None or not args.evidence_dir:
+            parser.error("status requires --evidence-dir and does not use --profile")
+    elif args.operation == "plan":
+        if not args.profile or args.evidence_dir is not None:
+            parser.error("plan requires --profile and does not use --evidence-dir")
+    elif not args.profile or not args.evidence_dir:
+        parser.error("this operation requires --profile and --evidence-dir")
     extra_flags = {item.split("=", 1)[0] for item in extra}
     if "--resume" in extra_flags:
         parser.error(
@@ -145,12 +197,30 @@ def main():
     if extra_flags & PROTECTED:
         parser.error("cannot override profile or operation arguments after --")
 
+    checkout = Path(__file__).resolve().parent.parent
+    if checkout != Path.cwd().resolve():
+        parser.error("run this command from its reviewed release checkout root")
+    if args.operation == "status":
+        report_status(parser, args.evidence_dir)
+        return
+
     profile = profile_input(parser, args.profile)
     base = Path(args.profile).absolute().parent
 
     def path(value):
         candidate = Path(value)
         return str(candidate if candidate.is_absolute() else base / candidate)
+
+    if args.operation == "plan":
+        print(f"Target: context {profile['context']}, namespace {profile['namespace']}, release {profile['release']}")
+        revision = profile["sourceRevision"]
+        safe_revision = revision if len(revision) == 40 and all(c in "0123456789abcdef" for c in revision) else "invalid"
+        print(f"Selected source revision: {safe_revision} (not verified by this plan)")
+        print(f"Rendered installation directory: {path(profile['installationDirectory'])}")
+        print("Selected image components: " + (", ".join(profile.get("images", {})) or "none"))
+        print("No cluster contact or writes occurred. Prepare and bind the Installation Secret, then run preflight with fresh evidence.")
+        print("Protected configuration changes use the chart-owned operation; authentication changes use stopped authentication maintenance.")
+        return
 
     target = [
         "--kubeconfig",
@@ -186,9 +256,6 @@ def main():
         elif args.operation == "resume":
             command.append("--resume")
 
-    checkout = Path(__file__).resolve().parent.parent
-    if checkout != Path.cwd().resolve():
-        parser.error("run this command from its reviewed release checkout root")
     canonical = checkout / "scripts" / "upgrade-production-images"
     try:
         os.execv(canonical, [str(canonical), *command, *extra])

@@ -1,9 +1,10 @@
-# Run production image upgrades with a private profile
+# Run production image upgrades with the CLI
 
-Use `scripts/upgrade-production` from the reviewed release checkout to reuse the
-same target, image selection, and rendered installation files across preflight,
-upgrade, and recovery. Complete the [production upgrade prerequisites](production-upgrade.md#prepare-the-release)
-first. This command runs `scripts/upgrade-production-images`; it keeps that
+Run from the reviewed release checkout root so relative paths keep their meaning.
+Use `occ installation upgrade` to reuse the
+same target, image selection, and rendered installation files across planning,
+preflight, upgrade, and recovery. Complete the [production upgrade prerequisites](production-upgrade.md#prepare-the-release)
+first. The CLI uses the private profile adapter for `scripts/upgrade-production-images`; it keeps that
 command's authorization, compatibility, locking, evidence, and recovery checks.
 It upgrades selected images; the canonical command still refuses protected settings changes.
 
@@ -36,11 +37,17 @@ out of the profile. Set `OCC_URL`, `OCC_SERVICE_KEY_FILE`, and, if needed,
 The optional `occ` field names the matching CLI file; omit it to use `occ` on
 `PATH`.
 
+Review the offline plan. It validates the private profile and shows the selected target, source, rendered directory, and image components without contacting the cluster or writing state.
+
+```bash
+occ installation upgrade plan --profile /secure/occ/upgrade.json
+```
+
 Before the first preflight, [bind the Installation Secret](production-upgrade.md#bind-the-installation-once)
 so it carries the required Installation ID annotation.
 
 ```bash
-scripts/upgrade-production preflight --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/preflight-1
+occ installation upgrade preflight --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/preflight-1
 ```
 
 The canonical `--preflight-only` flag maps to the `preflight` operation. Change
@@ -56,15 +63,19 @@ required by the [maintenance handoff](production-upgrade.md#rehearse-before-the-
 Keep reviewed optional arguments, such as candidate-file flags, identical for the upgrade.
 
 ```bash
-scripts/upgrade-production upgrade --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
+occ installation upgrade --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
 ```
 
-Use fresh evidence directories for preflight and upgrade. After an interruption,
-reconcile the original operation and preserve its evidence and dispatch journal
-before using the same profile, checkout, and upgrade evidence directory:
+Use fresh evidence directories for preflight and upgrade. After an interruption, inspect the original private evidence without contacting the cluster:
 
 ```bash
-scripts/upgrade-production resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
+occ installation upgrade status --evidence-dir /secure/occ/upgrade-1
+```
+
+Status reports local markers only. A Helm intent marker does not prove Helm completed; a lock marker does not prove a process is running. Reconcile the original operation and preserve its evidence and dispatch journal before using the same profile, checkout, and upgrade evidence directory:
+
+```bash
+occ installation upgrade resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
 ```
 
 If the original upgrade used expert options after `--`, repeat all of them unchanged
@@ -75,14 +86,14 @@ its migration-history check first. The example below assumes the original upgrad
 had no expert options; otherwise include them after `--` before the attestation:
 
 ```bash
-scripts/upgrade-production resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1 -- --migration-history-checked
+occ installation upgrade resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1 -- --migration-history-checked
 ```
 
 For interrupted preflight cleanup, follow the [cleanup procedure](production-preflight-cleanup.md)
 and supply its attestations explicitly:
 
 ```bash
-scripts/upgrade-production cleanup-preflight --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/preflight-1 -- --previous-process-settled --evidence-unrestored
+occ installation upgrade cleanup-preflight --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/preflight-1 -- --previous-process-settled --evidence-unrestored
 ```
 
 Pass other canonical options after `--`, for example `-- --timeout-seconds 1200`.
@@ -90,3 +101,5 @@ Those options cannot replace the profile's target, source, image selection, or
 operation. For an unprofiled invocation or all supported options, run
 `scripts/upgrade-production-images --help`. A successful preflight does not
 authorize a resume or prove a live workload works; complete the [release verification](production-upgrade.md#verify-the-release).
+
+Protected Installation configuration is a separate [chart-owned operation](production-upgrade.md#apply-other-installation-changes). `occ installation upgrade config apply` and `config rollback` direct you there and exit without writes. A failed Helm operation can leave an earlier Secret change in effect; inspect recorded effects and use the chart operation to restore the original configuration. Before returning to an earlier controller, check compatibility with committed database and authentication state. Use [stopped authentication maintenance](auth-maintenance.md) for authentication changes.
