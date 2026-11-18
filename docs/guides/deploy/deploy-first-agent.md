@@ -10,7 +10,18 @@ A successful run does not complete the
 
 The Kubernetes network helper defaults to `oce-system`. If you use an existing Gateway in another namespace, complete these steps before you start in the Console or call the API.
 
-1. Confirm that the Installation already references that Gateway. Set `OPENSHELL_NAMESPACE` in the operator shell to the Gateway's namespace. The helper uses it for OpenShell Service discovery and policy placement. OCE stays in `oce-system`, and `save_session` retains the setting.
+1. Confirm that the Installation references that Gateway. The command prints the Gateway endpoint, the Harness peer namespace and Service ClusterIP, and the namespaces in the workspace policies and RoleBinding. All must match that Gateway. OCE creates Agent and workspace NetworkPolicies from these fields.
+
+   ```bash
+   jq -r '(.backend[] | select(.type == "openshell") | .configuration.endpoint),
+     (.drivers.compute.configuration.network.providerHarness | "\(.namespace) \(.address)"),
+     (.drivers.sandbox.configuration.gateway | (.operatorWorkspaceResources + .networkPolicyResources)[]
+       | .. | objects | .["kubernetes.io/metadata.name"] // (select(.kind == "ServiceAccount") | .namespace) // empty)' \
+     "$INSTALLATION_FILE"
+   ```
+
+   Set `OPENSHELL_NAMESPACE` in the operator shell to the Gateway's namespace, if the installation did not already save it. The helper uses it for OpenShell Service discovery and policy placement. OCE stays in `oce-system`, and `save_session` retains the setting.
+
 2. Confirm that the operator can read the Services used by the helper and manage NetworkPolicies in the affected namespaces.
 3. Check that the API and worker Pods can reach that Gateway. The quickstart's installation block grants this egress when `OPENSHELL_NAMESPACE` is set before it runs. Otherwise, add scoped egress from those Pods to the `openshell-gateway` Service on TCP 8080 and to its selected Pods on the target port.
 4. Ask the Gateway owner to check ingress for every existing client of the management Pods, including any ingress controller or proxy that connects to them. Verify that each required client has a scoped allow on its destination port before the helper applies its rules. On a cluster that enforces NetworkPolicy, the first ingress policy selecting those Pods can isolate them for ingress.
