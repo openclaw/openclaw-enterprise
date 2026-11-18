@@ -19,6 +19,7 @@ import {
   readRuntimeDownloadClients,
 } from "../../scripts/lib/runtime-download-clients.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { GATEWAY_RESTART_RESUME_SCOPE } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 
 type RuntimeAsset =
   { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
@@ -382,4 +383,29 @@ packages:
   ] as const) {
     assert.equal(provenance[field], patches[file], field);
   }
+});
+
+// OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway to bound native recovery to its
+// admitted lifecycle. The Kubernetes and Docker Drivers set the shared constant; the
+// standalone SSH helper spells it out.
+test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", async () => {
+  const name = GATEWAY_RESTART_RESUME_SCOPE;
+  const sshHelper = await readFile(
+    "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+    "utf8",
+  );
+  assert.ok(
+    sshHelper.includes(`\nEnvironment=${name}=\${revision.id}\n`),
+    `SSH Compute must set ${name}`,
+  );
+  // The manual image check runs the native scope, crash and custody tests. The scope test
+  // file exists only from upstream #201186, so a pin without native scoping fails that check.
+  const dockerfile = (await readFile("deploy/runtime/Dockerfile", "utf8")).replace(
+    /\\\n\s*/gu,
+    " ",
+  );
+  assert.match(
+    dockerfile,
+    /session-restart-resume\.scope\.test\.ts\s.*session-restart-resume-custody\.test\.ts\s.*-t "only at startup scope\|in scope across a second restart\|/u,
+  );
 });

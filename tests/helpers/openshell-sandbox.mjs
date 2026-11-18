@@ -7,7 +7,6 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
  * undefined value removes the setting), with extra `gateway` settings. */
 export function openShellSandbox(t, overrides = {}, gateway = {}) {
   const kubernetes = {
-    runtimeClassName: "openshell-sandbox",
     // Native OpenClaw workspace preparation requires it.
     userNamespaces: false,
     serviceAccount: { mode: "gatewayConfigured" },

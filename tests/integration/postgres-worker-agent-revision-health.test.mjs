@@ -25,6 +25,8 @@ import {
   reportHealthDuringCompute,
   renewLeaseDuringSlowHealth,
   preserveRetryBudgetAfterHealthFailure,
+  warnWhileDependencyStarts,
+  errorAfterDependencyPassed,
 } from "./postgres-worker-revision-lease-health-cases.ts";
 import {
   shutdownDuringIdleHealth,
@@ -225,6 +227,18 @@ test(
   "failed readiness updates do not abort Compute or spend its retry budget",
   requiresPostgres,
   (context) => preserveRetryBudgetAfterHealthFailure(context, setup),
+);
+
+test(
+  "a dependency that has not passed yet warns during the startup window, then errors",
+  { ...requiresPostgres, timeout: 30_000 },
+  (context) => warnWhileDependencyStarts(context, setup),
+);
+
+test(
+  "a dependency that passed once errors when it fails inside the startup window",
+  { ...requiresPostgres, timeout: 30_000 },
+  (context) => errorAfterDependencyPassed(context, setup),
 );
 
 test(

@@ -554,6 +554,27 @@
       "when": 1787000000079,
       "tag": "0079_predecessor_replacement",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1787000000080,
+      "tag": "0080_revision_runtime_inputs",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1787000000081,
+      "tag": "0081_restart_continuation",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1787000000082,
+      "tag": "0082_authentication_states",
+      "breakpoints": true
     }
   ]
 }

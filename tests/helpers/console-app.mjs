@@ -16,7 +16,7 @@ import { createConsoleFixtureRevisions } from "./console-fixture-revisions.ts";
 import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
-import { createControllerAuth } from "./password-hasher.mjs";
+import { createControllerAuth } from "./password-hasher.ts";
 import { backendSummariesFromDefinitions } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -333,12 +333,13 @@ export async function createConsoleAppFixture(t, options = {}) {
     verification: [],
     apikey: [],
   };
+  const authSecret = `console-test-secret-${randomUUID()}-${randomUUID()}`;
   const auth = createControllerAuth({
     installationId,
     mode: authMode,
     baseURL: authBaseURL,
     agentDomain: options.nativeAdmin?.domain ?? `agents.${new URL(authBaseURL).hostname}`,
-    secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
+    secret: authSecret,
     memoryDatabase,
   });
   const credentials = {
@@ -509,6 +510,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
           options.namespaceLifecycleBindings ??
           (options.sandboxDriver?.ensureNamespace === undefined
