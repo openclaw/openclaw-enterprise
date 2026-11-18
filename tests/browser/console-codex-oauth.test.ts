@@ -33,7 +33,6 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { responseTo } from "./console-action-helpers.ts";
 import { within } from "../helpers/wait-for.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
@@ -921,9 +920,9 @@ for (const refused of [false, true]) {
   test(`an OAuth start ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
     const oauth = await openAgentOAuth(t, "OAuth tab switch");
     const { page } = oauth;
-    // The real Native IAM Driver refuses the start without Secret create.
+    // The real Native IAM Driver refuses the start without credential source create.
     if (refused) {
-      revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+      revokeAdministratorGrant(oauth.fixture, ["create", "credential_source"]);
     }
     const held = await holdNextStart(t, oauth);
     await waitForIdleFetches(page);
@@ -982,15 +981,18 @@ for (const before of ["a refused start", "Cancel login"]) {
         // counting it in flight although the tab's request has settled.
         idle = { except: `${oauth.beginPath}/${session.id}` };
       } else {
-        // The real Native IAM Driver refuses the first start without Secret create.
-        const restoreCreate = revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+        // The real Native IAM Driver refuses the first start without credential source create.
+        const restoreCreate = revokeAdministratorGrant(oauth.fixture, [
+          "create",
+          "credential_source",
+        ]);
         await start.click();
         await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
         restoreCreate();
       }
       await waitForEnabled(start);
       if (refused) {
-        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+        revokeAdministratorGrant(oauth.fixture, ["create", "credential_source"]);
       }
       const held = await holdNextStart(t, oauth);
       await waitForIdleFetches(page, idle);
@@ -1029,7 +1031,7 @@ for (const replyFirst of [true, false]) {
       const oauth = await openAgentOAuth(t, "OAuth save");
       const { page } = oauth;
       if (refused) {
-        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+        revokeAdministratorGrant(oauth.fixture, ["create", "credential_source"]);
       }
       const held = await holdNextStart(t, oauth);
       await waitForIdleFetches(page);
@@ -1088,7 +1090,7 @@ test("an OAuth start answered after a newer Credentials tab was built keeps that
 });
 
 // A refused device login names what the API checked for that request (finding 2577). Create
-// Agent's start checks Agent create, Secret create and credential source create in the Namespace,
+// Agent's start checks Agent create and credential source create in the Namespace,
 // which only an Installation administrator holds. The real Native IAM Driver refuses each request
 // below after the administrator's grant is removed from its Role.
 test("a refused device login start on Create Agent names the create grants it checks", async (t) => {
@@ -1100,7 +1102,7 @@ test("a refused device login start on Create Agent names the create grants it ch
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
-  revokeAdministratorGrant(fixture, ["create", "secret"]);
+  revokeAdministratorGrant(fixture, ["create", "credential_source"]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -1148,9 +1150,8 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
   await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
 });
 
-// From Agent detail, each request checks Agent read and update on that Agent. A start also
-// requires Secret create and credential source create. A Namespace Role can grant Secret operate
-// on the session, so poll and cancellation refusals identify that grant.
+// From Agent detail, every request checks Agent read and update. Start also checks credential
+// source create; poll checks operate on that source. The login itself has no IAM grant.
 test("a refused device login on Agent detail names the grants its start, poll and cancel check", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Agent refused");
   const { gateway, refresh } = createDeviceCredentialDrivers();
@@ -1186,39 +1187,29 @@ test("a refused device login on Agent detail names the grants its start, poll an
   await page.getByLabel("Authentication source").selectOption("credential_source");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
 
-  // Without Secret create the start is refused before any login exists.
-  const restoreCreate = revokeAdministratorGrant(fixture, ["create", "secret"]);
+  // Without credential source create the start is refused before any login exists.
+  const restoreCreate = revokeAdministratorGrant(fixture, ["create", "credential_source"]);
   await start.click();
   await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
   assert.deepEqual(answers, ["POST  403"]);
 
-  // With the grant back the login starts. Removing Secret operate then refuses its poll, which
-  // the Console sends after the login's 5 s interval, and its cancel.
+  // With create restored the login starts. Removing source operate refuses its poll.
   restoreCreate();
   await waitForEnabled(start);
-  const started = responseTo(page, "POST", new URL(loginsPath, fixture.origin).href);
   await start.click();
-  const session = responseData(await (await started).json()).session;
-  assertResourceIdentity(session);
   await page
     .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
     .waitFor();
-  revokeAdministratorGrant(fixture, ["operate", "secret"]);
-  await page
-    .getByText(`${AGENT_DEVICE_LOGIN_POLL_DENIED} Login session ID: ${session.id}`, { exact: true })
-    .waitFor({
-      timeout: 20_000,
-    });
+  revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  await page.getByText(AGENT_DEVICE_LOGIN_POLL_DENIED, { exact: true }).waitFor({
+    timeout: 20_000,
+  });
+  // Cancellation needs no source grant, but it still requires update on the saved Agent.
+  revokeAdministratorGrant(fixture, ["update", "agent"]);
   await page.getByRole("button", { name: "Cancel login", exact: true }).click();
-  await page
-    .getByText(`${AGENT_DEVICE_LOGIN_CANCEL_DENIED} Login session ID: ${session.id}`, {
-      exact: true,
-    })
-    .waitFor();
-  assert.deepEqual(answers, [
-    "POST  403",
-    "POST  200",
-    `POST /${session.id}/poll 403`,
-    `DELETE /${session.id} 403`,
-  ]);
+  await page.getByText(AGENT_DEVICE_LOGIN_CANCEL_DENIED, { exact: true }).waitFor();
+  assert.deepEqual(
+    answers.map((answer) => answer.replace(/\/[^/ ]+(\/poll)? /, "/{login}$1 ")),
+    ["POST  403", "POST  200", "POST /{login}/poll 403", "DELETE /{login} 403"],
+  );
 });

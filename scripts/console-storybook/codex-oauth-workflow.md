@@ -48,10 +48,8 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
 
 Open **Components/Credentials → ChatGPT login poll denied (Experimental)** and choose
 **Sign in with OAuth**. The simulated API starts the login, then refuses the first poll.
-Confirm the message shows the login session ID and names Secret operate on that
-session and credential source operate on its credential source. Choose **Cancel
-login**. The cancellation refusal shows the same session ID and names the grants
-required to cancel.
+Confirm the message names Agent read and update and credential source operate. Choose
+**Cancel login**. The cancellation refusal names Agent read and update.
 
 ## Return after an interrupted start
 

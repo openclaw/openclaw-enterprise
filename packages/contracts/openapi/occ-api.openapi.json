@@ -16409,7 +16409,7 @@
     },
     "/namespaces/{namespaceId}/agents/device-authorizations": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Secret resources in the requested Namespace.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16483,7 +16483,7 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16651,13 +16651,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}": {
       "delete": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Only the initiating actor can poll or cancel the login.",
         "operationId": "cancelAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16771,14 +16771,13 @@
         "summary": "Experimental: Discard a local device login without upstream revocation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.",
         "operationId": "pollAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16858,7 +16857,7 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -17026,7 +17025,7 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "operate", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
@@ -25585,7 +25584,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for Secret resources in the requested Namespace.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -25674,7 +25673,7 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -25843,13 +25842,13 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}": {
       "delete": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Only the initiating actor can poll or cancel the login.",
         "operationId": "cancelSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -25979,14 +25978,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
-          { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.",
         "operationId": "pollSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -26081,7 +26079,7 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -26250,7 +26248,7 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "operate", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },

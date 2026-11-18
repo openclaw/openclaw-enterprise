@@ -4,13 +4,14 @@ import test from "node:test";
 
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
+import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { deviceTestSandbox } from "./device-authorization-api-fixture.ts";
 
 test(
-  "device login survives an API replica change, accepts an exact Secret grant and fences a cancelled exchange in PostgreSQL",
+  "device login survives an API replica change and fences a cancelled exchange in PostgreSQL",
   requiresPostgres,
   async (t) => {
     const clock = createControlledClock();
@@ -33,10 +34,12 @@ test(
       controllerOptions: {
         now: () => new Date(clock.wallNow()),
         deviceAuthorizationSecret: authSecret,
+        iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
       },
     };
     const first = await createPostgresAgentApp(t, options);
     const second = await createPostgresAgentApp(t, options);
+    await first.controller.applyIAMConfiguration();
     for (const { controller } of [first, second]) {
       controller.registerDriver(gateway);
       controller.selectDriver("credential_gateway", gateway.id);
@@ -62,7 +65,7 @@ test(
     }
     async function row(id: string) {
       const result = await first.pool.query(
-        "SELECT phase, private_state, encrypted_challenge, to_jsonb(s)::text AS contents FROM occ.device_authorizations s WHERE namespace_id = $1 AND id = $2",
+        "SELECT phase, source_id, private_state, encrypted_challenge, to_jsonb(s)::text AS contents FROM occ.device_authorizations s WHERE namespace_id = $1 AND id = $2",
         [namespaceId, id],
       );
       assert.equal(result.rowCount, 1);
@@ -76,23 +79,38 @@ test(
     assert.equal(pending.contents.includes(userCode), false);
     assert.equal(pending.contents.includes(verificationUrl), false);
     assert.equal(pending.contents.includes("device-private-handle-"), false);
-    // The session has no ordinary Secret row but remains an exact Secret IAM target.
-    const secret = await first.inject("GET", `/namespaces/${namespaceId}/secrets/${id}`);
-    assert.equal(secret.statusCode, 404, secret.body);
+    // A login is actor-owned transient state, not a Secret or an IAM grant target.
+    const authority = await first.pool.query(
+      `SELECT EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1 AND id = $2) AS has_secret,
+              EXISTS (SELECT 1 FROM occ.iam_access_bindings WHERE resource_kind = 'secret' AND resource_id = $2) AS has_binding`,
+      [namespaceId, id],
+    );
+    assert.deepEqual(authority.rows, [{ has_secret: false, has_binding: false }]);
+    const ownedSource = await first.pool.query(
+      `SELECT resource_kind, resource_id FROM occ.iam_access_bindings
+       WHERE identity_subject_id = $1 AND role_id = 'role_config_owner' AND resource_id = $2`,
+      [first.principal.id, pending.source_id],
+    );
+    assert.deepEqual(ownedSource.rows, [
+      { resource_kind: "credential_source", resource_id: pending.source_id },
+    ]);
     const policy = `/namespaces/${namespaceId}/iam`;
     const role = await first.inject("POST", `${policy}/roles`, {
-      name: "Login operator",
+      name: "Secret operator",
       permissions: [{ action: "operate", resourceKind: "secret" }],
     });
     assert.equal(role.statusCode, 201, role.body);
-    const binding = await first.inject("POST", `${policy}/access-bindings`, {
+    const deniedBinding = await first.inject("POST", `${policy}/access-bindings`, {
       subjectKind: "identity",
       subjectId: first.principal.id,
       roleId: role.json().data.id,
       resourceKind: "secret",
       resourceId: id,
     });
-    assert.equal(binding.statusCode, 201, binding.body);
+    assert.equal(deniedBinding.statusCode, 400, deniedBinding.body);
+    assert.deepEqual(deniedBinding.json().error.details, [
+      { path: "/resourceId", code: "INVALID_VALUE" },
+    ]);
 
     await clock.advance(5000);
     // The Refresh Driver verifies that a different API instance decrypted the original handle.
@@ -148,8 +166,7 @@ test(
     assert.equal(expired.statusCode, 409, expired.body);
     assert.deepEqual(secretDriver.calls, [], "login state must never reach a Secret Driver");
 
-    // OCC finalizes Namespace deletion and records the exact grants it removed.
-    // The teardown audit must still identify a binding that targeted a login handle.
+    // Namespace finalization removes its transient login rows.
     const namespacePath = `/namespaces/${namespaceId}`;
     for (const sourceId of gateway.sources.keys()) {
       const deleted = await first.inject(
@@ -168,25 +185,5 @@ test(
       [namespaceId],
     );
     assert.equal(sessions.rowCount, 0);
-    const teardown = await first.pool.query(
-      `SELECT details->'removedAccessBindings' AS removed FROM occ.audit_events
-       WHERE action = 'openclaw.namespaces.lifecycle.delete' AND resource_id = $1 AND outcome = 'success'
-       AND details ? 'removedAccessBindings'`,
-      [namespaceId],
-    );
-    assert.deepEqual(teardown.rows, [
-      {
-        removed: [
-          {
-            id: binding.json().data.id,
-            subjectKind: "identity",
-            subjectId: first.principal.id,
-            roleId: role.json().data.id,
-            resourceKind: "secret",
-            resourceId: id,
-          },
-        ],
-      },
-    ]);
   },
 );

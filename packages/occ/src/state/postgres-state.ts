@@ -2389,13 +2389,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         )[0];
         if (updated !== undefined) {
-          // Namespace-scoped bindings are removed by removeNamespacePolicy for lifecycle audit.
-          await client.query(
-            `WITH removed AS (DELETE FROM occ.device_authorizations WHERE namespace_id = $1 RETURNING id)
-             DELETE FROM occ.iam_access_bindings b USING removed
-             WHERE b.namespace_id IS NULL AND b.resource_kind = 'secret' AND b.resource_id = removed.id`,
-            [namespaceId],
-          );
+          await client.query("DELETE FROM occ.device_authorizations WHERE namespace_id = $1", [
+            namespaceId,
+          ]);
           return namespaceFromRow(updated);
         }
         const existing = rows(
@@ -4408,9 +4404,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         configuration:
           "SELECT 1 FROM occ.configurations WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         preset: "SELECT 1 FROM occ.presets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
-        secret: `SELECT 1 WHERE
-          EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE)
-          OR EXISTS (SELECT 1 FROM occ.device_authorizations WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE)`,
+        secret: "SELECT 1 FROM occ.secrets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         credential_source:
           "SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         sandbox_policy: `SELECT 1 FROM occ.sandbox_policies AS p JOIN occ.agents AS a ON a.namespace_id = p.namespace_id AND a.id = p.agent_id WHERE p.namespace_id = $1 AND p.id = $2 AND a.status = 'active' FOR SHARE OF a`,

@@ -203,7 +203,6 @@ test("device login binding denials retain generic 404 and attributable fail-clos
     namespaceId: undefined,
     permissions: {
       agent: ["create", "read", "update"],
-      secret: ["operate"],
       credential_source: ["operate"],
     },
     resource: { kind: "agent", id: fixture.namespace.id },
@@ -218,17 +217,13 @@ test("device login binding denials retain generic 404 and attributable fail-clos
   }
   for (const login of [unsavedLogin, savedLogin]) {
     const stored = await fixture.snapshot(login);
-    for (const resource of [
-      { kind: "secret", id: login.id },
-      { kind: "credential_source", id: string(stored.session.sourceId) },
-    ] as const) {
-      bindRole(fixture.policy, other.principal.id, {
-        id: `device-denial-${resource.id}`,
-        roleId: role.role.id,
-        namespaceId: fixture.namespace.id,
-        resource,
-      });
-    }
+    const resource = { kind: "credential_source" as const, id: string(stored.session.sourceId) };
+    bindRole(fixture.policy, other.principal.id, {
+      id: `device-denial-${resource.id}`,
+      roleId: role.role.id,
+      namespaceId: fixture.namespace.id,
+      resource,
+    });
   }
 
   const control: Refusal = {

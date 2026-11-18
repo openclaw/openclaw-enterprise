@@ -90,8 +90,7 @@ export const AgentDeviceAuthorizationResponse = Type.Object(
           { id: SecretId, namespaceId: NamespaceId },
           {
             additionalProperties: false,
-            description:
-              "Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID.",
+            description: "Device-login handle for the poll and cancel operations.",
           },
         ),
         source: Type.Optional(CredentialSourceReference),

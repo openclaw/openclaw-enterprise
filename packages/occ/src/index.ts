@@ -10237,6 +10237,10 @@ export class OpenClawController {
       namespaceId,
       id: sourceId,
     });
+    return this.credentialSourceContext(namespaceId, sourceId);
+  }
+
+  private async credentialSourceContext(namespaceId: string, sourceId: string) {
     const { namespace, source } = await this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
@@ -10268,7 +10272,6 @@ export class OpenClawController {
     ) => AuditEvent,
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
     // The source registration below checks credential source create again. Checking it here too
     // means a caller who can never start gets the 403 naming that grant, not the Driver-selection
     // 501, and no Gateway call (finding 2995).
@@ -10316,7 +10319,7 @@ export class OpenClawController {
       audit === undefined ? undefined : (source) => audit(source, "source_ready"),
       audit === undefined ? undefined : (source) => audit(source, "source_registering"),
     );
-    const { context } = await this.authorizedCredentialSource(principalId, namespaceId, source.id);
+    const { context } = await this.credentialSourceContext(namespaceId, source.id);
     let started: CredentialSourceDeviceAuthorization;
     try {
       started = await refresh.startDeviceAuthorization(context);
@@ -10353,7 +10356,11 @@ export class OpenClawController {
     await this.mutate(async (state) => {
       await this.holdAuthority(state);
       const namespace = await this.lockNamespace(state, namespaceId);
-      await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
+      await this.authorize(principalId, "create", {
+        kind: "credential_source",
+        id: namespaceId,
+        namespaceId,
+      });
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -10362,7 +10369,6 @@ export class OpenClawController {
         encryptedChallenge,
         privateState: encrypted,
       });
-      await this.bindCreator(state, principalId, { kind: "secret", ...handle });
       if (audit !== undefined) {
         await state.audit.append(audit(source, "session_pending"));
       }
@@ -10394,37 +10400,19 @@ export class OpenClawController {
     agentId?: string,
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", { kind: "secret", id: sessionId, namespaceId });
     const stored = await this.read((state) =>
       state.deviceAuthorizations.find(namespaceId, sessionId),
     );
     if (stored === undefined) {
-      // A caller can supply an authorized ordinary Secret reference to the login route.
-      // Its value is never needed to distinguish an unavailable login from an unknown ID.
-      if (await this.read((state) => state.secrets.findSecret(namespaceId, sessionId))) {
-        throw new ResourceStateConflictError(
-          "This login is no longer available in OCE. Connect again.",
-        );
-      }
       throw new ScopeViolationError("The login does not belong to the exact Namespace.");
     }
-    const { session, version } = stored;
+    const { session } = stored;
     if (
       session.actorId !== principalId ||
       session.namespaceId !== namespaceId ||
       session.agentId !== agentId
     ) {
       throw new DeviceAuthorizationScopeMismatchError();
-    }
-    if (
-      session.phase !== "cancelled" &&
-      Date.parse(session.expiresAt) <= Date.parse(this.timestamp())
-    ) {
-      // Expiry closes the login handle; the separately managed credential source survives.
-      const expired = cancelledDeviceAuthorization(session);
-      if (await this.replaceDeviceAuthorization(sessionId, version, expired)) {
-        return { version: version + 1, session: expired };
-      }
     }
     return stored;
   }
@@ -10441,17 +10429,26 @@ export class OpenClawController {
       sessionId,
       agentId,
     );
+    await this.authorize(principalId, "operate", {
+      kind: "credential_source",
+      namespaceId,
+      id: session.sourceId,
+    });
     if (
       session.phase === "cancelled" ||
       Date.parse(session.expiresAt) <= Date.parse(this.timestamp())
     ) {
+      if (session.phase !== "cancelled") {
+        // Expiry closes the login handle; the separately managed credential source survives.
+        await this.replaceDeviceAuthorization(
+          sessionId,
+          version,
+          cancelledDeviceAuthorization(session),
+        );
+      }
       throw new ResourceStateConflictError("Device login expired or was cancelled. Connect again.");
     }
-    const { gateway, context } = await this.authorizedCredentialSource(
-      principalId,
-      namespaceId,
-      session.sourceId,
-    );
+    const { gateway, context } = await this.credentialSourceContext(namespaceId, session.sourceId);
     const refresh = this.selections.has("credential_refresh")
       ? this.credentialRefreshDriver()
       : undefined;
@@ -10526,7 +10523,6 @@ export class OpenClawController {
       throw new RetryLaterError("deviceLoginFailed", error);
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", { kind: "secret", id: sessionId, namespaceId });
     const current = await this.authorizedCredentialSource(
       principalId,
       namespaceId,
@@ -17979,10 +17975,7 @@ export class OpenClawController {
         return;
       }
       if (resourceKind === "secret") {
-        if (
-          (await state.secrets.findSecret(namespaceId, resourceId)) === undefined &&
-          (await state.deviceAuthorizations.find(namespaceId, resourceId)) === undefined
-        ) {
+        if ((await state.secrets.findSecret(namespaceId, resourceId)) === undefined) {
           throw new IAMPolicyValidationError(
             "/resourceId",
             "The IAM target Secret does not belong to the Namespace.",

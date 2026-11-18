@@ -198,7 +198,7 @@ export function registerDeviceAuthorizationRefusalCases() {
   });
 
   // Finding 2995: the start checks every grant it needs before the Driver selection. A Namespace
-  // member who may create Agents and Secrets, and read and update an Agent, still lacks credential
+  // member who may create Agents and read and update an Agent still lacks credential
   // source create, which no Namespace Role can grant, so they can never start. They get the 403
   // naming that grant on Create Agent and on a saved Agent, whether or not the Installation selects
   // the Drivers, with one audited denial. The administrator, who holds every grant, still gets the
@@ -224,7 +224,6 @@ export function registerDeviceAuthorizationRefusalCases() {
         ["create", "agent"],
         ["read", "agent"],
         ["update", "agent"],
-        ["create", "secret"],
       ]);
       const session = await fixture.signIn(member.credentials);
       for (const path of [
@@ -257,7 +256,7 @@ export function registerDeviceAuthorizationRefusalCases() {
           resource: { kind: "credential_source", id: namespace.id, namespaceId: namespace.id },
         });
       }
-      // A refused start registers no source and saves no login Secret.
+      // A refused start registers no source.
       const sourceList = await fixture.request(
         "GET",
         `/namespaces/${namespace.id}/credential-sources`,
@@ -269,14 +268,6 @@ export function registerDeviceAuthorizationRefusalCases() {
         "list sources after grant refusal",
       );
       assert.deepEqual(sources, []);
-      const secretList = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
-      const { data: secrets } = fixture.fixtureResponse(
-        secretList,
-        200,
-        SecretListResponse,
-        "list Secrets after grant refusal",
-      );
-      assert.deepEqual(secrets, []);
     }
   });
 }

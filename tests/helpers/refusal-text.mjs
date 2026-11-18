@@ -301,19 +301,19 @@ export const AGENT_UPDATE_DENIED = notIncluded(
 export const AGENT_SOURCES_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an Installation administrator for that access.";
 // Device login from Create Agent (Namespace-scoped) and from Agent detail (Agent-scoped): a start
-// requires Secret create and credential source create. A poll or cancellation checks the Agent
-// scope again and requires Secret operate on the login session.
+// requires credential source create. A poll checks the Agent scope and source operate;
+// cancellation checks only the Agent scope.
 const DEVICE_LOGIN_START_REMEDY =
   "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
-export const DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login in this Namespace. It needs Agent create, Secret create and credential source create here, ${DEVICE_LOGIN_START_REMEDY}`;
-export const AGENT_DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus Secret create and credential source create in this Namespace, ${DEVICE_LOGIN_START_REMEDY}`;
+export const DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login in this Namespace. It needs Agent create and credential source create here, ${DEVICE_LOGIN_START_REMEDY}`;
+export const AGENT_DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus credential source create in this Namespace, ${DEVICE_LOGIN_START_REMEDY}`;
 export const AGENT_DEVICE_LOGIN_POLL_DENIED = notIncluded(
   "finishing this device login",
-  "Agent read and update on this Agent, plus Secret operate on this login session and credential source operate on its credential source",
+  "Agent read and update on this Agent, plus credential source operate on its credential source",
 );
 export const AGENT_DEVICE_LOGIN_CANCEL_DENIED = notIncluded(
   "cancelling this device login",
-  "Agent read and update on this Agent, plus Secret operate on this login session",
+  "Agent read and update on this Agent",
 );
 
 // Kubernetes Compute refuses a Dedicated Agent the Installation cannot place (no gateway routing

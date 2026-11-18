@@ -235,7 +235,7 @@ export function registerDeviceAuthorizationAgentCases(): void {
       namespaceId: undefined,
       resource: undefined,
     });
-    // An authorized ordinary Secret is a known resource, but its value is never a login handle.
+    // An ordinary Secret ID is not a device-login handle and must not resolve through its Driver.
     const ordinary = await fixture.createSecret(
       fixture.namespace.id,
       "Ordinary Secret",
@@ -245,7 +245,7 @@ export function registerDeviceAuthorizationAgentCases(): void {
     const refused = await fixture.request("POST", `${fixture.path}/${ordinary.id}/poll`, {
       body: {},
     });
-    assert.equal(refused.status, 409);
+    assert.equal(refused.status, 404);
     assert.equal(fixture.secretDriver.calls.length, calls);
     const login = await readyLogin(fixture);
     const before = fixture.gateway.calls.length;
@@ -327,6 +327,68 @@ export function registerDeviceAuthorizationAgentCases(): void {
     );
     assertDeviceAudit(fixture, "cancel", agent.id);
     assertNoCredentials(fixture);
+  });
+
+  test("device-login authority follows the Agent and credential source, not a session Secret", async (t) => {
+    const fixture = await createFixture(t, { approve: async () => false });
+    const agent = await fixture.createAgent(
+      fixture.namespace.id,
+      "Saved device login",
+      createHarnessConfiguration("codex", "gpt-5.1"),
+      { executionMode: "dedicated", harnessAuth: null },
+    );
+    const operator = await fixture.createAccountWithPolicy("device-login-operator", (principal) => {
+      // This configured Role permits both Agent scopes and source creation, but grants no Secret
+      // permission and no source operate permission before a particular source is selected.
+      grantRole(fixture.policy, principal.id, {
+        id: "device-login-operator",
+        permissions: { agent: ["create", "read", "update"], credential_source: ["create"] },
+      });
+    });
+    const session = await fixture.signIn(operator.credentials);
+    const savedPath = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/device-authorizations`;
+    for (const [index, path] of [fixture.path, savedPath].entries()) {
+      const login = await fixture.start(path, session);
+      const sourceId = (await fixture.stored(login)).sourceId;
+      const before = fixture.gateway.calls.length;
+
+      // Polling needs operate on this exact source; possession of the login handle is insufficient.
+      const denied = await fixture.poll(login, path, session);
+      assert.equal(denied.status, 403, JSON.stringify(denied.body));
+      assert.equal(fixture.gateway.calls.length, before);
+      const grant = grantRole(fixture.policy, operator.principal.id, {
+        id: `device-login-source-${index}`,
+        namespaceId: fixture.namespace.id,
+        permissions: { credential_source: ["operate"] },
+        resource: { kind: "credential_source", id: sourceId },
+      });
+      await fixture.clock.advance(5000);
+      assert.equal((await fixture.poll(login, path, session)).status, 200);
+      assert.equal(
+        fixture.gateway.calls
+          .slice(before)
+          .filter((call) => call.operation === "pollDeviceAuthorization").length,
+        1,
+      );
+
+      // Revoking source authority prevents another poll but must not prevent local cancellation.
+      fixture.policy.bindings = fixture.policy.bindings.filter(
+        (binding) => binding.id !== grant.binding.id,
+      );
+      assert.equal((await fixture.poll(login, path, session)).status, 403);
+      assert.equal(
+        (await fixture.request("DELETE", `${path}/${login.session.id}`, { session })).status,
+        204,
+      );
+      assert.equal((await fixture.poll(login, path, session)).status, 403);
+    }
+
+    // An unauthorized poll cannot settle expiry or clear the private session state.
+    const expiring = await fixture.start(fixture.path, session);
+    const beforeExpiry = await fixture.stored(expiring);
+    await fixture.clock.advance(Date.parse(beforeExpiry.expiresAt) - fixture.clock.wallNow() + 1);
+    assert.equal((await fixture.poll(expiring, fixture.path, session)).status, 403);
+    assert.deepEqual(await fixture.stored(expiring), beforeExpiry);
   });
 
   // Each Agent update checks credential source operate on every source the Agent lists, so the

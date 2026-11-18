@@ -4049,10 +4049,7 @@ function repositories(
       return (await presets.findPreset(namespaceId, resourceId)) !== undefined;
     }
     if (resourceKind === "secret") {
-      return (
-        (await secrets.findSecret(namespaceId, resourceId)) !== undefined ||
-        (await deviceAuthorizations.find(namespaceId, resourceId)) !== undefined
-      );
+      return (await secrets.findSecret(namespaceId, resourceId)) !== undefined;
     }
     if (resourceKind === "credential_source") {
       return (await findCredentialSource(namespaceId, resourceId)) !== undefined;

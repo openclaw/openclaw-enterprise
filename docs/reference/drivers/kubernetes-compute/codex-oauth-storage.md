@@ -33,8 +33,8 @@ and verification URL. When login completes, OCC clears the private handle.
 It retains the encrypted code and URL so the user can poll the completed login.
 Cancellation or expiry clears both encrypted values.
 
-OCC keeps the closed session row until Namespace deletion. Closing a login
-does not remove its exact IAM grants or revoke its credential source.
+OCC keeps the closed session row until Namespace deletion. The session has no
+IAM grant, and closing a login does not revoke its credential source.
 Plugin configuration requests a usable access
 token from the source. The token service may refresh it before returning it. This does not consume the deployed
 credential or require another login.

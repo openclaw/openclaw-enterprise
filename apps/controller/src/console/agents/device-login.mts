@@ -79,11 +79,9 @@ export function deviceLoginOffered(capabilities: InstallationCapabilities | unde
 const NOT_OFFERED =
   "ChatGPT sign-in needs a Credential Gateway that offers ChatGPT device login and a Credential Refresh Driver, and this Installation's Drivers do not offer it. Choose another authentication method.";
 
-// What each device-authorization request checks (packages/occ/src/index.ts), so a 403 names it
-// (finding 2577). Starting a login requires Secret and credential source create, and Namespace Roles cannot
-// grant create, so only an Installation administrator can start one. Create Agent's requests also
-// check Agent create; Agent detail's check Agent read and update on that Agent. Poll and cancel
-// check Secret operate on the login handle, and poll checks operate on its credential source too.
+// Each request checks Agent scope: create for a new Agent, or read and update for a saved Agent.
+// Starting also checks credential source create, and polling checks operate on that source.
+// The transient login itself is not an IAM resource.
 type DeviceLoginStep = "start" | "poll" | "cancel";
 const START_REMEDY =
   "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
@@ -91,17 +89,18 @@ const START_REMEDY =
 function deviceLoginDenied(step: DeviceLoginStep, agentScoped: boolean) {
   if (step === "start") {
     return agentScoped
-      ? `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus Secret create and credential source create in this Namespace, ${START_REMEDY}`
-      : `Your access does not include starting a device login in this Namespace. It needs Agent create, Secret create and credential source create here, ${START_REMEDY}`;
+      ? `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus credential source create in this Namespace, ${START_REMEDY}`
+      : `Your access does not include starting a device login in this Namespace. It needs Agent create and credential source create here, ${START_REMEDY}`;
   }
   const task = step === "poll" ? "finishing this device login" : "cancelling this device login";
-  const login =
-    step === "poll"
-      ? "Secret operate on this login session and credential source operate on its credential source"
-      : "Secret operate on this login session";
+  const scope = agentScoped
+    ? "Agent read and update on this Agent"
+    : "Agent create in this Namespace, which only an Installation administrator holds";
+  const required =
+    step === "poll" ? `${scope}, plus credential source operate on its credential source` : scope;
   return agentScoped
-    ? notIncluded(task, `Agent read and update on this Agent, plus ${login}`)
-    : `Your access does not include ${task}. It needs Agent create in this Namespace, which only an Installation administrator holds, plus ${login}. ${askAdministratorTo("check your access")}`;
+    ? notIncluded(task, required)
+    : `Your access does not include ${task}. It needs ${required}. ${askAdministratorTo("check your access")}`;
 }
 
 export function createDeviceLogin({
@@ -224,9 +223,6 @@ export function createDeviceLogin({
       context.onExpired();
     } else if (failure.status === 403) {
       error = deviceLoginDenied(step, agentId !== undefined);
-      if (login && login.status !== "start_unconfirmed") {
-        error += ` Login session ID: ${login.session.id}`;
-      }
     } else {
       error =
         failure.status === 410

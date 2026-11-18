@@ -4199,12 +4199,12 @@ Experimental: Start a private device login for Agent configuration
 
 **Operation ID:** `startAgentDeviceAuthorization`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires create permission for Secret resources in the requested Namespace.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires create permission for CredentialSource resources in the requested Namespace.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
-| `create` | `secret` | `namespace` |
+| `create` | `credential_source` | `namespace` |
 
 ##### Parameters
 
@@ -4252,7 +4252,7 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID. |
+| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. |
 | `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
@@ -4293,12 +4293,11 @@ Experimental: Discard a local device login without upstream revocation
 
 **Operation ID:** `cancelAgentDeviceAuthorization`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Only the initiating actor can poll or cancel the login.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
-| `operate` | `secret` | `requested` |
 
 ##### Parameters
 
@@ -4329,12 +4328,12 @@ Experimental: Complete device login without returning credential material
 
 **Operation ID:** `pollAgentDeviceAuthorization`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
-| `operate` | `secret` | `requested` |
+| `operate` | `credential_source` | `requested` |
 
 ##### Parameters
 
@@ -4379,7 +4378,7 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID. |
+| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. |
 | `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
@@ -6266,13 +6265,13 @@ Experimental: Start a private device login for Agent configuration
 
 **Operation ID:** `startSavedAgentDeviceAuthorization`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for Secret resources in the requested Namespace.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for CredentialSource resources in the requested Namespace.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
-| `create` | `secret` | `namespace` |
+| `create` | `credential_source` | `namespace` |
 
 ##### Parameters
 
@@ -6321,7 +6320,7 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID. |
+| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. |
 | `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
@@ -6362,13 +6361,12 @@ Experimental: Discard a local device login without upstream revocation
 
 **Operation ID:** `cancelSavedAgentDeviceAuthorization`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Only the initiating actor can poll or cancel the login.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
-| `operate` | `secret` | `requested` |
 
 ##### Parameters
 
@@ -6400,13 +6398,13 @@ Experimental: Complete device login without returning credential material
 
 **Operation ID:** `pollSavedAgentDeviceAuthorization`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
-| `operate` | `secret` | `requested` |
+| `operate` | `credential_source` | `requested` |
 
 ##### Parameters
 
@@ -6452,7 +6450,7 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. Exact Secret IAM grants use the session ID. |
+| `data.session` | `object` | Yes | Device-login handle for the poll and cancel operations. |
 | `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |

@@ -91,7 +91,7 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
         { pathIncludes: "/device-authorizations/", method: "DELETE", status: 403 },
       ],
       description:
-        "Choose Sign in with OAuth, wait for the refused poll, then choose Cancel login. Both refusals show the session ID and the grants needed for that action.",
+        "Choose Sign in with OAuth, wait for the refused poll, then choose Cancel login. The poll refusal names credential source operate; the cancellation refusal names Agent read and update.",
     },
     authOAuthStartTabSwitchRefused: {
       group: "Components/Credentials",
