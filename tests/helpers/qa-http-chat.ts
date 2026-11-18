@@ -1,15 +1,134 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
+import { posix } from "node:path";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { parseNativeRolloutProvenance } from "./native-rollout-provenance.ts";
+import { runQaHttpChatWithCleanup } from "./qa-http-chat-cleanup.ts";
 import { verifyQaHttpChatIsolation } from "./qa-http-chat-isolation.ts";
 import { redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 import { createQaAgent, type createQaInstallation } from "./qa-installation.mjs";
 
 type Fixture = Awaited<ReturnType<typeof createQaInstallation>>;
 type Agent = Awaited<ReturnType<typeof createQaAgent>>;
+
+const toolProofFile = `
+  const fs = require('node:fs');
+  const [phase, file, marker] = process.argv.slice(1);
+  if (phase === 'cleanup') {
+    try { fs.unlinkSync(file); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  } else {
+    const entry = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (phase === 'precheck') {
+      if (entry !== undefined) throw new Error('HTTP tool proof path already exists');
+    } else {
+      if (!entry?.isFile()) throw new Error('HTTP tool proof must be a regular file');
+      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const opened = fs.fstatSync(fd);
+        if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino) {
+          throw new Error('HTTP tool proof file changed before readback');
+        }
+        const expected = Buffer.from(marker);
+        const bytes = Buffer.alloc(expected.length + 1);
+        let length = 0;
+        while (length < bytes.length) {
+          const count = fs.readSync(fd, bytes, length, bytes.length - length, null);
+          if (count === 0) break;
+          length += count;
+        }
+        process.stdout.write(bytes.subarray(0, length).equals(expected) ? 'match' : 'mismatch');
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  }
+`;
+
+async function verifyToolAction(
+  f: Fixture,
+  agent: Agent,
+  marker: string,
+  turn: (file: string) => Promise<void>,
+): Promise<void> {
+  const dedicated = agent.preset === "Codex";
+  const role = dedicated ? "agent" : "gateway";
+  const workspace = dedicated ? "/home/node/workspace" : "/home/node/.openclaw/workspace";
+  const file = posix.join(workspace, `occ-http-chat-${randomUUID()}`);
+  const pod = await f.pod(agent, role);
+  const { namespace, name, uid } = pod.metadata;
+  const containerId = (selected: typeof pod) =>
+    selected.status.containerStatuses?.find((status: { name: string }) => status.name === role)
+      ?.containerID;
+  const id = containerId(pod);
+  assert.ok(uid && namespace && name && id, "HTTP tool proof requires an identified workload");
+  const container = pod.spec.containers.find(
+    (candidate: { name: string }) => candidate.name === role,
+  );
+  assert.ok(
+    container?.volumeMounts?.some(
+      (mount: { mountPath: string; readOnly?: boolean }) =>
+        mount.mountPath === workspace && mount.readOnly !== true,
+    ),
+    "HTTP tool proof requires a writable workspace mount in the selected workload",
+  );
+  const checkWorkload = async () => {
+    const selected = await f.pod(agent, role);
+    assert.ok(
+      selected.metadata.uid === uid &&
+        selected.metadata.namespace === namespace &&
+        selected.metadata.name === name &&
+        containerId(selected) === id,
+      "HTTP tool proof workload changed",
+    );
+  };
+  const run = async (phase: "precheck" | "readback" | "cleanup") => {
+    // The initial Pod lookup already binds the precheck. Recheck after the HTTP turn.
+    if (phase !== "precheck") {
+      await checkWorkload();
+    }
+    const stdout = await f.kubectl(
+      "-n",
+      namespace,
+      "exec",
+      name,
+      "-c",
+      role,
+      "--",
+      "node",
+      "-e",
+      toolProofFile,
+      phase,
+      file,
+      marker,
+    );
+    await checkWorkload();
+    return stdout;
+  };
+
+  await run("precheck");
+  let failed = false;
+  try {
+    await turn(file);
+    assert.equal(
+      await run("readback"),
+      "match",
+      "the selected Harness must execute the HTTP turn's tool action",
+    );
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    await run("cleanup").catch((error: unknown) => {
+      // Preserve the HTTP or readback failure when the owned path cannot be removed.
+      if (!failed) {
+        throw error;
+      }
+    });
+  }
+}
 
 export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> {
   const transport = createConsoleFixtureTransport(f.consoleUrl, f.apiUrl);
@@ -183,7 +302,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     evidence.completedJsonResponses += 1;
     return String(json.choices[0].message.content);
   };
-  try {
+  const verify = async () => {
     await verifyQaHttpChatIsolation(f, agent);
     const reader = await f.api("POST", `${base}/iam/service-principals`, {});
     const readRole = await f.api("POST", `${base}/iam/roles`, {
@@ -240,26 +359,16 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     // Verify a real tool side effect inside the selected Harness, not a model's claim of execution.
     for (const headers of [human, service]) {
       const marker = `proof-${randomUUID()}`;
-      const file = `/tmp/occ-http-chat-${randomUUID()}`;
-      completion(
-        await send(
-          headers,
-          message(
-            `Use your command execution tool to write exactly ${marker} to ${file}. Then reply DONE.`,
+      await verifyToolAction(f, agent, marker, async (file) => {
+        completion(
+          await send(
+            headers,
+            message(
+              `Use your command execution tool to write exactly ${marker} to ${file}. Then reply DONE.`,
+            ),
           ),
-        ),
-      );
-      const observed = await f.execRole(agent, agent.preset === "Codex" ? "agent" : "gateway", [
-        "node",
-        "-e",
-        "const fs=require('node:fs'); const p=process.argv[1]; process.stdout.write(fs.readFileSync(p,'utf8')); fs.unlinkSync(p)",
-        file,
-      ]);
-      assert.equal(
-        observed.stdout,
-        marker,
-        "the selected Harness must execute the HTTP turn's tool action",
-      );
+        );
+      });
       evidence.verifiedToolActions += 1;
       if (
         agent.preset === "Codex" &&
@@ -543,16 +652,18 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     assert.equal((await send(rotated, message("Do not execute this request."))).status, 503);
     await f.api("POST", `${base}/agents/${agent.id}/stop`);
     assert.equal((await send(rotated, message("Do not execute this request."))).status, 503);
-  } finally {
-    await f.record(`http-chat-${agent.id}-outcomes`, {
-      ...evidence,
-      preset: agent.preset,
-      verificationMode: process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE || "workspace-write",
-      // These count HTTP completions, not internal provider calls or automatic retries.
-      providerCallCount: "unobserved",
-    });
-    for (const id of issuedKeys) {
-      await f.api("DELETE", `/api/auth/service-keys/${id}`);
-    }
-  }
+  };
+  await runQaHttpChatWithCleanup({
+    verify,
+    record: () =>
+      f.record(`http-chat-${agent.id}-outcomes`, {
+        ...evidence,
+        preset: agent.preset,
+        verificationMode: process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE || "workspace-write",
+        // These count HTTP completions, not internal provider calls or automatic retries.
+        providerCallCount: "unobserved",
+      }),
+    cleanupHandles: issuedKeys,
+    dispose: (id) => f.api("DELETE", `/api/auth/service-keys/${id}`),
+  });
 }

@@ -6,6 +6,10 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import {
+  loadYaml,
+  type V1Pod,
+} from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   agentSandboxControllerForNodes,
@@ -42,7 +46,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl with runc", async (t) => {
+test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl", async (t) => {
   const root = await openShellTestDirectory(t, "openshell-cluster-bootstrap-test");
   const calls: CommandCall[] = [];
 
@@ -67,8 +71,6 @@ test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl with runc"
   const kubectl = join(root, "bin", `kubectl-darwin-arm64-${kubectlVersion}`);
   assert.deepEqual(result, {
     k3sImage,
-    runtimeClass: "openshell-sandbox",
-    runtimeHandler: "runc",
     kubectl,
     kubectlVersion,
   });
@@ -473,29 +475,38 @@ test("prepareOpenShell rejects source, chart, and image mismatches before cluste
   assert.equal(registerImage.mock.callCount(), 0);
 });
 
-test("prepareOpenShell fails before downloads when the RuntimeClass smoke Pod fails", async (t) => {
+test("prepareOpenShell fails before downloads when the default runtime smoke Pod fails", async (t) => {
   const clusterName = "openclaw-k8s-openshell-test";
   const root = await openShellTestDirectory(t, clusterName);
   const calls: CommandCall[] = [];
   const cluster = ownedCluster(root, clusterName);
   const agentImage =
     "localhost/openclaw-k8s-openshell-test/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const admissionProbes: V1Pod[] = [];
 
   async function execFile(command: string, args: string[]) {
     calls.push([command, args]);
-    if (command === "docker" && args[0] === "exec") {
-      return {
-        stdout: "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.'runc']\n",
-        stderr: "",
-      };
-    }
     if (
       command === "kubectl" &&
       args.includes("--dry-run=server") &&
       args.some((arg) => arg.endsWith("openshell-psa-restricted-rejection.yaml"))
     ) {
+      const manifestPath = args[args.indexOf("-f") + 1];
+      assert.ok(manifestPath);
+      const pod = loadYaml<V1Pod>(await readFile(manifestPath, "utf8"));
+      const securityContext = pod.spec?.containers[0]?.securityContext;
+      assert.ok(securityContext);
+      // Kubernetes rejects this combination before PSA. The mock below proves
+      // orchestration only; the generated input must independently be valid.
+      if (securityContext.privileged) {
+        assert.notEqual(securityContext.allowPrivilegeEscalation, false);
+      } else {
+        assert.equal(securityContext.allowPrivilegeEscalation, false);
+        assert.deepEqual(securityContext.capabilities?.add, ["NET_ADMIN"]);
+      }
+      admissionProbes.push(pod);
       throw new Error(
-        'Error from server (Forbidden): pods "openshell-psa-violation" is forbidden: violates PodSecurity "restricted:latest": privileged',
+        `Error from server (Forbidden): pods "openshell-psa-violation" is forbidden: violates PodSecurity "restricted:latest": ${securityContext.privileged ? "privileged" : "unrestricted capabilities"}`,
       );
     }
     if (command === "kubectl" && args.includes("--for=jsonpath={.status.phase}=Succeeded")) {
@@ -538,71 +549,19 @@ test("prepareOpenShell fails before downloads when the RuntimeClass smoke Pod fa
       ([command, args]) =>
         command === "kubectl" &&
         args.includes("delete") &&
-        args.includes("openshell-runtimeclass-smoke"),
+        args.includes("openshell-runtime-smoke"),
     ),
   );
 
-  const manifest = await readFile(
-    join(root, "openshell", "openshell-runtimeclass-smoke.yaml"),
-    "utf8",
+  assert.deepEqual(
+    admissionProbes.map((pod) => pod.spec?.containers[0]?.securityContext?.privileged === true),
+    [true, false],
+    "both admission probes must complete before the runtime smoke",
   );
-  assert.match(manifest, /runtimeClassName: openshell-sandbox/);
+  const manifest = await readFile(join(root, "openshell", "openshell-runtime-smoke.yaml"), "utf8");
+  assert.doesNotMatch(manifest, /runtimeClassName:/);
   assert.match(manifest, new RegExp(`image: "${agentImage}"`));
   assert.match(manifest, /imagePullPolicy: Never/);
-});
-
-test("prepareOpenShell fails before downloads when the k3d node lacks the selected handler", async (t) => {
-  const clusterName = "openclaw-k8s-openshell-test";
-  const root = await openShellTestDirectory(t, clusterName);
-  const calls: CommandCall[] = [];
-  const cluster = ownedCluster(root, clusterName);
-
-  async function execFile(command: string, args: string[]) {
-    calls.push([command, args]);
-    return { stdout: "", stderr: "" };
-  }
-
-  await assert.rejects(
-    () =>
-      prepareOpenShell({
-        cluster,
-        execFile,
-        registerImage: async () => {
-          assert.fail("OpenShell must refuse before image registration");
-        },
-        env: {
-          OCC_KUBECTL_BIN: "kubectl",
-          OCC_HELM_BIN: "helm",
-          OCC_DOCKER_BIN: "docker",
-        },
-      }),
-    /does not advertise that handler/,
-  );
-
-  assert.equal(
-    calls.some(([command]) => command === "tar"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "helm" && args[0] === "pull"),
-    false,
-  );
-  assert.equal(
-    calls.some(([command, args]) => command === "docker" && args[0] !== "exec"),
-    false,
-  );
-  assert.deepEqual(
-    calls.filter(([command]) => command === "docker").map(([, args]) => args[1]),
-    [`k3d-${cluster.name}-server-0`],
-  );
-  for (const [, args] of calls.filter(([command]) => command === "kubectl")) {
-    assert.deepEqual(args.slice(0, 4), [
-      "--kubeconfig",
-      cluster.kubeconfig,
-      "--context",
-      cluster.context,
-    ]);
-  }
 });
 
 function first<T>(values: readonly T[]): T {

@@ -20,6 +20,8 @@ import {
 import { registerQaCodexPolicyThreadCase } from "./qa-codex-policy-thread-case.ts";
 import { registerQaNativeToolEvidenceCase } from "./qa-native-tool-evidence-case.ts";
 import { registerQaAgentLifecycleDiagnosticsCases } from "./qa-agent-lifecycle-diagnostics-cases.ts";
+import { registerQaHttpChatCleanupCases } from "./qa-http-chat-cleanup-cases.ts";
+import { registerQaHttpChatRoutingCases } from "./qa-http-chat-routing-cases.ts";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
@@ -762,6 +764,9 @@ test("QA waits report the last observation when they time out", async () => {
 });
 
 registerQaAgentLifecycleDiagnosticsCases();
+
+registerQaHttpChatCleanupCases();
+registerQaHttpChatRoutingCases();
 
 test("QA log redaction hides each line of a registered multi-line secret", async () => {
   const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.ts");

@@ -539,7 +539,6 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   const configuration: OpenShellSandboxDriverOptions = {
     gateway: { workspaceMode: "operator" },
     kubernetes: {
-      runtimeClassName: "openshell-sandbox",
       userNamespaces: false,
       serviceAccount: { mode: "gatewayConfigured" },
       sandboxDataMount: { subPath: "workspace", mountPath: "/sandbox/enterprise", readOnly: false },

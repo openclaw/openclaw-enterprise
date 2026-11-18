@@ -72,6 +72,8 @@ const invalidValue = (path: string, message: string): RefusalDetail[] => [
 test("startup refuses unknown OpenShell settings and invalid Agent resource quantities", async (t) => {
   for (const [change, path] of [
     [(c) => Object.assign(sandboxOf(c).kubernetes, { userNamespace: false }), "/kubernetes"],
+    // Runtime placement belongs to Kubernetes/provider configuration, not OCE.
+    [(c) => Object.assign(sandboxOf(c).kubernetes, { runtimeClassName: "runc" }), "/kubernetes"],
     [
       (c) => Object.assign(sandboxOf(c).kubernetes.serviceAccount, { name: "sandbox" }),
       "/kubernetes/serviceAccount",
@@ -262,10 +264,10 @@ test("startup refuses invalid or conflicting exact-Agent resource overrides", as
     t,
     (c) => {
       Reflect.set(sandboxOf(c).kubernetes, "agentResourceOverrides", [
-        { ...override, runtimeClassName: "bad/Name" },
+        { ...override, runtimeClassName: "runc" },
       ]);
     },
-    invalidValue(`${path}/0/runtimeClassName`, "Use a Kubernetes RuntimeClass resource name."),
+    structuralRefusal(`${path}/0`, "additionalProperties", "UNKNOWN_FIELD"),
   );
 });
 
