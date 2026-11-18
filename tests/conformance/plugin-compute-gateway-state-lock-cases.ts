@@ -283,6 +283,12 @@ export function registerGatewayStateLockCases(): void {
       inspects: true,
     },
     {
+      label: "an inspection that fails after printing a report",
+      lockInspection: { ...heldLock, status: 1 },
+      exit: [1, null],
+      inspects: true,
+    },
+    {
       label: "an inspection that prints no report",
       lockInspection: { status: 0, stdout: "No Gateway lock or owner lease is present." },
       exit: [1, null],
