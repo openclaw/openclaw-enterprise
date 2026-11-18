@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: "2026-11-14"
-last_updated_session: "authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7"
+updated: 2026-11-18
+last_updated_session: authoring-run/427e95c2-8e34-4624-8497-52493b5980f5
 ---
 
 # Common Operational Logging Flow
@@ -220,6 +220,8 @@ hash is not exported. `authentication.provider-unavailable-warning` keeps
 `occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile`,
 `membership` or `email`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
+`authentication.request-refused` and `authentication.library-error` or `-warning` keep `request.id`
+and `occ.reason_code`; the operation, method and route pattern stay local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`. These codes and runtime wrapper codes reject the same recognized
 key and token shapes as the other code fields. SQLSTATE values remain supported.
@@ -341,6 +343,8 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 04:25: Name the exported authentication refusal and library events with their request ID. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
 
 - 2026-11-14 09:29: Update the bootstrap command source pointer. (authoring-run/602e1dce-894d-4511-86f1-ad21de085cc7 - e23d8854d8eec8701c29e4067e7899cb04fff97c)
 

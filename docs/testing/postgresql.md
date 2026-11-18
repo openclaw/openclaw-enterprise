@@ -37,7 +37,7 @@ release that accepts `up --wait`, such as 1.6.0. Then run:
   PG_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-postgres.XXXXXX")"
   printf 'Run directory: %s\n' "$PG_RUN_DIR"
   trap 'status=$?; node scripts/ci/cleanup.ts --state "$PG_RUN_DIR/state.json" || status=1; exit "$status"' EXIT
-  node scripts/ci/prepare.mjs --lane postgres-application \
+  node scripts/ci/prepare.ts --lane postgres-application \
     --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/owner.env"
   node scripts/ci/run-tests.ts run postgres-application \
     --state "$PG_RUN_DIR/state.json" --results "$PG_RUN_DIR/results.json"
@@ -47,7 +47,7 @@ release that accepts `up --wait`, such as 1.6.0. Then run:
 For one Agent revision worker file, replace the `run-tests` command above with:
 
 ```sh
-node scripts/ci/prepare.mjs --lane postgres-application \
+node scripts/ci/prepare.ts --lane postgres-application \
   --file tests/integration/postgres-worker-agent-revision.test.mjs \
   --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/test.env"
 env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \

@@ -83,7 +83,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
   const root = await createRunnerFixture(t);
   // Keep an independent witness of cleanup for the selected file.
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     [
       'import { appendFile } from "node:fs/promises";',
       "export function prepareFile({ file, statePath }) {",

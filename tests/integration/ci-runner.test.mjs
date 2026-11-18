@@ -89,8 +89,8 @@ test("runner applies file environment over real preparation defaults without rep
   );
   // Use the real no-infrastructure preparer, including its persisted lane state.
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
-    `import { prepareLane, prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};
+    join(root, "scripts/ci/prepare.ts"),
+    `import { prepareLane, prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.ts")).href)};
 await prepareLane({ lane: ${JSON.stringify(laneName)}, statePath: ${JSON.stringify(statePath)} });
 export { prepareFile };
 `,

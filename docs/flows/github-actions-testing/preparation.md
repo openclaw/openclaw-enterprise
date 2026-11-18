@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-18 02:08"
-last_updated_session: "authoring-run/3d960c94-5e42-4c7d-9cff-d0eb63beceb4"
+updated: "2026-11-18 03:52"
+last_updated_session: "authoring-run/96d31457-49fb-4427-a877-88398bb619ab"
 ---
 
 # CI resource preparation
@@ -13,7 +13,7 @@ CI prepares lane and file resources before the runner starts selected tests.
 ## Entry Points
 
 - `scripts/ci/prepare-cli.ts:runPreparationCli`
-- `scripts/ci/prepare.mjs:prepareFile`
+- `scripts/ci/prepare.ts:prepareFile`
 
 ## Flow
 
@@ -62,7 +62,7 @@ The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects package
 
 `scripts/ci/prepare-inputs.ts` rejects malformed manifest preparation objects
 and policy flags at load time. `runPreparationCli` dispatches lane and file
-requests from `prepare.mjs`. Lane and file preparation validate selected
+requests from `prepare.ts`. Lane and file preparation validate selected
 OpenShell credentials and optional Gateway/Agent image pairs before locking or
 creating state. The CLI validates environment names and rejects CR/LF values
 before appending any assignment. It excludes `NODE_OPTIONS`.
@@ -127,7 +127,7 @@ or possible survivors retain state.
 The retired CLI-only installed repository lane is absent from the manifest:
 `assertLane` rejects it before allocation; its preparation below is unreachable.
 
-`scripts/ci/prepare.mjs:retainRuntimeProvenance` compares platform-selected host
+`scripts/ci/prepare.ts:retainRuntimeProvenance` compares platform-selected host
 and CRI config digests. `scripts/ci/runtime-provenance.ts:readImageCodexProvenance`
 reads bounded metadata; results and diagnostics retain only their preparation's evidence.
 Missing metadata records `unavailable`; image policy is unchanged.
@@ -151,13 +151,10 @@ empty-directory removal; confirmed SQL is removed after Compose teardown. Unexpe
 contents or teardown failure retain state. Subnet exhaustion preserves the original
 error and planned resource and prints [owned cleanup](../../testing/postgresql.md#subnet-pool-exhaustion).
 
-`prepareFile` registers child identities.
-`prepareLane` atomically publishes complete journals without replacement. Cleanup opens regular files,
-verifying identity, lane and path. Tests require fresh registered children.
-Worker death remains recoverable; mismatches, symlinks and failures preserve
-journals and parent references.
+`scripts/ci/prepare.ts:readState` rejects malformed lane, selected-file, env, and defaults fields; owners validate resources.
+`prepareLane` atomically publishes without replacement; `prepareFile` registers fresh children. Cleanup verifies files, identity, lane, and path. Worker death remains recoverable; mismatches, symlinks, and failures preserve journals and parent references.
 
-For hosted repository QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
+For hosted QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
 reviewed registry file only when a repository scenario is selected. It copies
 that metadata, the selected private App key and approved endpoint CIDRs into one
 private input directory under `RUNNER_TEMP`. Both fixtures pass that directory to
@@ -237,7 +234,7 @@ The Repository Credentials lane writes the service, client, and qualification ID
 and source commit to a mode-0600 receipt. Production Observability builds the
 service for k3d import and verification on each node.
 
-`scripts/ci/prepare.mjs:prepareFileWithState` extracts the delivered `gh`
+`scripts/ci/prepare.ts:prepareFileWithState` extracts the delivered `gh`
 only for manifest consumers, using a networkless, read-only container. It checks
 the pinned version before returning the path and cleanup callback. Nonconsumers
 return no callback. The standalone CLI refuses consumers before extraction;
@@ -287,6 +284,10 @@ See [lane verification](../../testing/ci/run-lanes.md).
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 03:52: Validate journals. (authoring-run/96d31457-49fb-4427-a877-88398bb619ab - a56c941614457b172727092dcc1c25e43496fd16)
+
+- 2026-11-18 03:26: Point preparation callers to the TypeScript command. (authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5 - f5ac2329754d41a36a6cc47950cd3a95eae1ebfc)
 
 - 2026-11-18 02:08: Reject malformed preparation policy and preserve cleanup ownership. (authoring-run/3d960c94-5e42-4c7d-9cff-d0eb63beceb4 - 886eacfe0fce0e18c03a0f01d5f8dc9476efdfc2)
 - 2026-11-18 01:27: Trace input admission and dispatch. (authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)

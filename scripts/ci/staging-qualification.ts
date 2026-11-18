@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -855,9 +856,17 @@ async function smoke(directory: string) {
     assert.equal(image.Config.Labels["org.opencontainers.image.revision"], env.SOURCE_SHA);
   }
   const state = join(directory, "staging-runtime-state.json");
-  const { prepareRuntimeImageSmoke } = await import(
-    pathToFileURL(join(root, "scripts/ci/prepare.mjs")).href
+  const preparationModule: unknown = await import(
+    pathToFileURL(join(root, "scripts/ci/prepare.ts")).href
   );
+  const smoke = asRecord(preparationModule)?.prepareRuntimeImageSmoke;
+  if (typeof smoke !== "function") {
+    throw new Error("The selected checkout does not export runtime image smoke preparation.");
+  }
+  const prepareRuntimeImageSmoke = smoke as Pick<
+    typeof import("./prepare.ts"),
+    "prepareRuntimeImageSmoke"
+  >["prepareRuntimeImageSmoke"];
   const prepared = await prepareRuntimeImageSmoke({
     image: proof.imageIds.runtime,
     statePath: state,

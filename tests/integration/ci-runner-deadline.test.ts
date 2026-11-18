@@ -181,7 +181,7 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
     const marker = join(root, "state/started");
     // The preparation returns half a second before the deadline.
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       [
         "export async function prepareFile() {",
         "  const left = Number(process.env.CI_RUNNER_DEADLINE_MS) - Date.now();",
@@ -277,7 +277,7 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
     const { statePath, resultsPath } = runnerArtifactPaths(root, "hung-prepare");
     const preparing = join(root, "state/preparing");
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       [
         'import { writeFileSync } from "node:fs";',
         "export async function prepareFile({ file }) {",
