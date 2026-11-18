@@ -2376,7 +2376,7 @@ export class ControllerWorker {
     }
     await this.recheckRevokedCredentialSources(claim, revision);
     await this.assertRestartContinuation(revision);
-    if (candidate) {
+    if (candidate && revision.egressPlan?.authorization === "online-request") {
       await this.authorizeCandidate(claim);
     }
     this.preparedThisPass = revision.id;
