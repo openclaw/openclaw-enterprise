@@ -268,7 +268,27 @@ runs:
       # CI Impact also selects part 2 for a change confined to a TypeScript test.
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
-      run: pnpm typecheck
+      run: |
+        if [[ ! -e .build/tests/tsconfig.tsbuildinfo && ! -L .build/tests/tsconfig.tsbuildinfo ]]; then
+          printf 'fresh-tests-build=true\n' >> "$GITHUB_OUTPUT" || true
+        fi
+        pnpm typecheck
+    - name: Report TypeScript test graph advisory
+      if: >-
+        inputs.lane == 'checks-baseline-2' && inputs.artifact-prefix == 'ci-results' &&
+        (github.event_name == 'pull_request' || github.event_name == 'push') &&
+        steps.typecheck-workspace.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        FRESH_TESTS_BUILD: ${{ steps.typecheck-workspace.outputs.fresh-tests-build }}
+      run: |
+        if [[ "$FRESH_TESTS_BUILD" == true ]] &&
+          report=$(timeout -k 1s 5s node scripts/ci/test-graph-advisory.ts 2>/dev/null); then
+          printf '::notice title=CI TypeScript test graph advisory::%s\n' "$report"
+        else
+          printf '::notice title=CI TypeScript test graph advisory::{"version":1,"fallback":["graph_unavailable"],"omissions":0}\n'
+        fi
     - name: Build Go CLI for development installation proof
       id: build-go-cli
       if: inputs.lane == 'checks-baseline-2' || inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix'
