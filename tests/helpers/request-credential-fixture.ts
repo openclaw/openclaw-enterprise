@@ -617,6 +617,39 @@ export async function requestCredentialFixture(
       }
       return { reached: reached.promise, release: release.resolve };
     },
+    pauseNextSourceReady() {
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const policyState = state;
+      assert.ok(policyState instanceof PostgresPlatformState);
+      const original = policyState.transact.bind(policyState);
+      let pending = true;
+      policyState.transact = (work) =>
+        original((unit) =>
+          work({
+            ...unit,
+            credentialSources: {
+              ...unit.credentialSources,
+              async markCredentialSourceReady(...args) {
+                const ready = await unit.credentialSources.markCredentialSourceReady(...args);
+                if (pending && ready) {
+                  pending = false;
+                  reached.resolve();
+                  await release.promise;
+                }
+                return ready;
+              },
+            },
+          }),
+        );
+      return {
+        reached: reached.promise,
+        release() {
+          policyState.transact = original;
+          release.resolve();
+        },
+      };
+    },
     pauseMaterialRead,
     pauseFinalMaterialRead() {
       return pauseMaterialRead(2);

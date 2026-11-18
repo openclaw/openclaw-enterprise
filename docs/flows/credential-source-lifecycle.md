@@ -37,7 +37,8 @@ graph TD
   P0 -- "prepared, credential-free or protected static" --> P1["<b>Admit protected source</b><br/>No Gateway copy"]
   P0 -- "no Proxy or validated Git-only static model" --> C["<b>Read Secret input</b><br/>withValue"]
   P0 -- "unsupported or retired" --> X
-  P1 --> R
+  P1 -- "live static" --> E
+  P1 -- "prepared or credential-free" --> R
   C --> R["<b>Commit record</b><br/>state registering"]
   R -- "Gateway copy" --> D["<b>registerSource</b><br/>Gateway stores copy"]
   R -- "protected source" --> PR["<b>Finalize protected source</b><br/>Prepare issuer if required"]
@@ -130,8 +131,9 @@ alone is insufficient. Kubernetes verifies ownership labels, UID and key before 
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-OCC commits `registering` with Secret references. Gateway registration resolves
-Compute's Sandbox namespace and calls `registerSource` (30-second deadline).
+Live static sources commit `ready` and audit in their admission transaction. Other
+sources commit `registering`; Gateway registration resolves Compute's Sandbox namespace
+and calls `registerSource` (30-second deadline).
 OpenShell checks provider ownership before changing the source-owned profile,
 creates the labeled provider and rechecks collisions. Calls are non-atomic.
 Only Refresh receives refresh material.

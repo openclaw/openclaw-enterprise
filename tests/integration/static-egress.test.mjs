@@ -786,7 +786,35 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
     });
   });
   assert.equal((await f.request("PATCH", path, { body: { adoption: "live" } })).status, 409);
-  assert.equal((await f.request("PATCH", path, { body: consent })).status, 200);
+  const unknown = (await f.request("GET", path)).data;
+  const unknownReads = f.secretReads;
+  assert.equal((await f.request("PATCH", path, { body: consent })).status, 409);
+  assert.equal(f.secretReads, unknownReads);
+  assert.deepEqual((await f.request("GET", path)).data, unknown);
+
+  // An upgrade is safe only while the exact original strict registration can
+  // still establish the old profile alongside one strict successor.
+  const catalog = f.egress.sourceControl.providers;
+  const successor = catalog.find(
+    (entry) =>
+      entry.sourceType.type === "openai" &&
+      entry.authorization === undefined &&
+      entry.ref.generation === 3,
+  );
+  assert.ok(successor);
+  const original = { ...successor, ref: { ...successor.ref, generation: 1 } };
+  catalog.push(original);
+  try {
+    const upgraded = await f.request("PATCH", path, { body: consent });
+    assert.equal(upgraded.status, 200, JSON.stringify(upgraded.body));
+    assert.equal(upgraded.data.egress.protection, "exact-dispatch");
+    const persisted = await f.controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(namespaceId, id),
+    );
+    assert.deepEqual(persisted.egress.key.provider, successor.ref);
+  } finally {
+    catalog.splice(catalog.indexOf(original), 1);
+  }
   // A missing online provider is a different authorization profile, not an older
   // generation of this strict provider. Re-adoption consent must not switch it.
   await f.controller.transact(async ({ credentialSources: sources }) => {

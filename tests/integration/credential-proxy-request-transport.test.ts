@@ -55,6 +55,25 @@ const { SignJWT } = createRequire(new URL("../../apps/controller/package.json", 
   "jose",
 );
 
+type ModelFixture = Awaited<ReturnType<typeof requestCredentialFixture>>["f"];
+
+function modelSourceBody(f: ModelFixture, name: string) {
+  return {
+    name,
+    type: "openai",
+    config: { authorized_base_url: f.modelProvider.baseUrl },
+    secrets: { api_key: f.secret.ref },
+  };
+}
+
+async function sourceRows(f: ModelFixture, name: string) {
+  const rows = await f.pool.query(
+    "SELECT id FROM occ.credential_sources WHERE namespace_id=$1 AND name=$2",
+    [f.namespace.id, name],
+  );
+  return rows.rowCount;
+}
+
 test(
   "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
   { ...requiresPostgres, timeout: 90_000 },
@@ -614,6 +633,202 @@ test(
         providers.shift();
       }
       providers.unshift(requestProvider);
+    }
+  },
+);
+
+test(
+  "model source admission fences changed authority and transport (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t);
+    const { f, owner } = fixture;
+    const controller: OpenClawController = f.controller;
+    const proxy = owner.require("credential_proxy");
+    const transport = proxy.requestTimeCredentials!;
+    const availability = transport.assertAvailable;
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const previousAuthorization = Reflect.get(controller, "authorization");
+    const iam = controller.selectedDriver("iam");
+    let replacementCalls = 0;
+    const replacement = {
+      ...transport,
+      async assertAvailable() {
+        replacementCalls++;
+        throw new Error("replacement unavailable");
+      },
+    };
+    const observe = async (name: string) => {
+      const reads = f.countSecretReads();
+      const response = await f.request("POST", path, { body: modelSourceBody(f, name) });
+      return {
+        status: response.status,
+        reads: f.countSecretReads() - reads,
+        rows: await sourceRows(f, name),
+      };
+    };
+    const observed: Record<string, { status: number; reads: number; rows: number | null }> = {};
+    try {
+      transport.assertAvailable = async (signal) => {
+        await availability.call(transport, signal);
+        assert.equal(Reflect.set(controller, "authorization", iam.authorize.bind(iam)), true);
+      };
+      observed.authority = await observe("authority-changed");
+      assert.equal(Reflect.set(controller, "authorization", previousAuthorization), true);
+
+      transport.assertAvailable = async (signal) => {
+        await availability.call(transport, signal);
+        assert.equal(Reflect.set(proxy, "requestTimeCredentials", replacement), true);
+      };
+      observed.transport = await observe("transport-changed");
+      assert.equal(Reflect.set(proxy, "requestTimeCredentials", transport), true);
+      transport.assertAvailable = availability;
+
+      const pause = fixture.pauseMaterialRead();
+      t.after(() => pause.release());
+      const before = f.countSecretReads();
+      const name = "transport-changed-after-read";
+      const pending = f.request("POST", path, { body: modelSourceBody(f, name) });
+      await pause.reached;
+      assert.equal(Reflect.set(proxy, "requestTimeCredentials", replacement), true);
+      pause.release();
+      const response = await pending;
+      observed.afterRead = {
+        status: response.status,
+        reads: f.countSecretReads() - before,
+        rows: await sourceRows(f, name),
+      };
+      assert.equal(Reflect.set(proxy, "requestTimeCredentials", transport), true);
+
+      const ready = fixture.pauseNextSourceReady();
+      t.after(() => ready.release());
+      const commitReads = f.countSecretReads();
+      const commitName = "transport-changed-before-ready";
+      const committing = f.request("POST", path, { body: modelSourceBody(f, commitName) });
+      await ready.reached;
+      assert.equal(Reflect.set(proxy, "requestTimeCredentials", replacement), true);
+      ready.release();
+      const committed = await committing;
+      observed.beforeReady = {
+        status: committed.status,
+        reads: f.countSecretReads() - commitReads,
+        rows: await sourceRows(f, commitName),
+      };
+    } finally {
+      transport.assertAvailable = availability;
+      Reflect.set(proxy, "requestTimeCredentials", transport);
+      Reflect.set(controller, "authorization", previousAuthorization);
+    }
+    assert.deepEqual(observed, {
+      authority: { status: 409, reads: 0, rows: 0 },
+      transport: { status: 409, reads: 0, rows: 0 },
+      afterRead: { status: 409, reads: 1, rows: 0 },
+      beforeReady: { status: 409, reads: 1, rows: 0 },
+    });
+    assert.equal(replacementCalls, 0, "an unchecked replacement must never be used");
+    const healthy = await f.request("POST", path, {
+      body: modelSourceBody(f, "restored-transport"),
+    });
+    assert.equal(healthy.status, 201, JSON.stringify(healthy.body));
+    assert.equal(healthy.data.egress.protection, "request-time");
+  },
+);
+
+test(
+  "model source re-adoption cannot change protection across an unknown generation (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const { f, owner } = await requestCredentialFixture(t);
+    const controller: OpenClawController = f.controller;
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const created = await f.request("POST", path, { body: modelSourceBody(f, "unbound-request") });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.data.egress.protection, "request-time");
+    const id = created.data.id;
+    const original = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, id),
+    );
+    assert.equal(
+      await controller.transact((unit) => unit.credentialSources.hasReferences(f.namespace.id, id)),
+      false,
+    );
+    const providers = owner.require("credential_proxy").sourceControl
+      .providers as CredentialProviderDefinition[];
+    const request = providers[0]!;
+    const strict = providers.find(
+      (provider) => provider.sourceType.type === "openai" && provider.authorization === undefined,
+    )!;
+    const successor = {
+      ...strict,
+      ref: { id: request.ref.id, generation: request.ref.generation + 1 },
+    };
+    const reads = f.countSecretReads();
+    const effects = [...f.gatewayEffects];
+    providers.splice(0, 1, successor);
+    try {
+      const result = await f.request("PATCH", `${path}/${id}`, {
+        body: { adoption: "live", authorityScope: "execution" },
+      });
+      assert.equal(result.status, 409, JSON.stringify(result.body));
+      assert.equal(f.countSecretReads(), reads);
+      assert.deepEqual(
+        await controller.transact((unit) =>
+          unit.credentialSources.findCredentialSource(f.namespace.id, id),
+        ),
+        original,
+      );
+      assert.deepEqual(f.gatewayEffects, effects);
+      assert.equal((await f.request("GET", `${path}/${id}`)).data.egress.protection, "unavailable");
+    } finally {
+      providers.splice(0, 1, request);
+    }
+  },
+);
+
+test(
+  "external model source catalog refuses an unsupported live schema before material access (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const { f, owner } = await requestCredentialFixture(t, {
+      verifyAdmissionPolicy: true,
+      retainStrictBeforePolicy: true,
+    });
+    const controller: OpenClawController = f.controller;
+    controller.selectDriver("sandbox", "request-policy-previous");
+    const external = controller.selectDriver("credential_proxy", "request-policy-previous");
+    const providers = external.sourceControl.providers as CredentialProviderDefinition[];
+    const first = providers[0]!;
+    const malformed = { ...first };
+    assert.equal(Reflect.set(malformed, "schemaVersion", 2), true);
+    assert.equal(Reflect.get(malformed, "schemaVersion"), 2);
+    assert.equal(Reflect.set(providers, "0", malformed), true);
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    try {
+      const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+      const offered = catalog.data.capabilities.credentialSources.types.some(
+        (type: { type: string }) => type.type === "openai",
+      );
+      const reads = f.countSecretReads();
+      const response = await f.request("POST", path, {
+        body: modelSourceBody(f, "foreign-schema"),
+      });
+      const observed = {
+        offered,
+        status: response.status,
+        reads: f.countSecretReads() - reads,
+        rows: await sourceRows(f, "foreign-schema"),
+      };
+      providers[0] = first;
+      const healthy = await f.request("POST", path, {
+        body: modelSourceBody(f, "valid-external-schema"),
+      });
+      assert.equal(healthy.status, 201, JSON.stringify(healthy.body));
+      assert.equal(healthy.data.egress.protection, "exact-dispatch");
+      assert.deepEqual(observed, { offered: false, status: 409, reads: 0, rows: 0 });
+    } finally {
+      providers[0] = first;
+      controller.selectDriver("sandbox", owner.ref.id);
+      controller.selectDriver("credential_proxy", owner.ref.id);
     }
   },
 );

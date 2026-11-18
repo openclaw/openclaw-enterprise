@@ -158,6 +158,11 @@ are explicit, separate decisions; a Secret edit grants neither. The first cutove
 requires an unbound source and an explicitly admitted new binding. Leave an existing
 approved copy available until its owner can make that transition safely.
 
+Re-admission can upgrade a strict provider only while its exact original registration
+and one newer strict generation of the same provider remain verifiable. If the original
+registration is missing, restore it or create a separate source; consent cannot prove
+which protection the missing generation supplied.
+
 The supervisor withholds the complete bounded response, including the last trailer,
 until Credential Proxy permits its release. The 30-second operation deadline bounds
 the first response byte. The supervisor reports that first byte and subsequent progress.
