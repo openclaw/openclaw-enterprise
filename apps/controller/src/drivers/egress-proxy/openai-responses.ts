@@ -625,15 +625,23 @@ export type ItemEvent = {
   item: ResponseOutputItem & { id: string };
 };
 export type ItemContentEvent = {
-  type: string;
   output_index: number;
   item_id: string;
   delta?: string;
   arguments?: string;
   content_index?: number;
   summary_index?: number;
-  part?: ResponseOutputContent;
-};
+} & (
+  | {
+      type: "response.content_part.added" | "response.content_part.done";
+      part: ResponseOutputContent;
+    }
+  | {
+      type: "response.reasoning_summary_part.added" | "response.reasoning_summary_part.done";
+      part: { type: "summary_text"; text: string };
+    }
+  | { type: string; part?: never }
+);
 export type ResponsesEvent = { type: string; sequence_number?: number } & (
   | { response: { id: string; status: string; output: ResponseOutputItem[] } }
   | ItemEvent

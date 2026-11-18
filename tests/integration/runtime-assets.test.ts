@@ -20,6 +20,7 @@ import {
   readRuntimeDownloadClients,
 } from "../../scripts/lib/runtime-download-clients.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { GATEWAY_RESTART_RESUME_SCOPE } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 
 type RuntimeAsset =
   { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
@@ -385,14 +386,23 @@ packages:
   }
 });
 
-// OCE sets OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE on every Gateway so that only a restart of the
-// same revision resumes a cut turn. A runtime patch adds the name until the pinned OpenClaw reads
-// it; the patched tests run only in the manual image check (finding 3358). Record a pinned commit
-// here only after checking that its own restart resume reads the name.
+// OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway so that only a restart of the same
+// revision resumes a cut turn. The Kubernetes and Docker Drivers set the shared constant; the
+// standalone SSH helper spells it out. A runtime patch adds the name until the pinned OpenClaw
+// reads it; the patched tests run only in the manual image check. Record a pinned commit here
+// only after checking that its own restart resume reads the name.
 const NATIVE_RESTART_RESUME_SCOPE_COMMITS: readonly string[] = [];
 
 test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", async () => {
-  const name = "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE";
+  const name = GATEWAY_RESTART_RESUME_SCOPE;
+  const sshHelper = await readFile(
+    "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+    "utf8",
+  );
+  assert.ok(
+    sshHelper.includes(`\nEnvironment=${name}=\${revision.id}\n`),
+    `SSH Compute must set ${name}`,
+  );
   const patch = "openclaw-restart-resume-scope.patch";
   const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
   if (!dockerfile.includes(`COPY deploy/runtime/${patch} /tmp/${patch}\n`)) {
@@ -406,7 +416,7 @@ test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", 
     assert.doesNotMatch(dockerfile, /interrupted under scope/u);
     return;
   }
-  // The patch's runtime lines, not only its tests, must read the exact name the Drivers set.
+  // The patch's runtime lines, not only its tests, must read the name the Drivers set.
   let file = "";
   const runtimeLines: string[] = [];
   for (const line of (await readFile(join("deploy/runtime", patch), "utf8")).split("\n")) {
