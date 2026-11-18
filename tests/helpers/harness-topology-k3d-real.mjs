@@ -3634,6 +3634,49 @@ function hasReadyCondition(pod) {
 
 async function assertInterruptedGatewayTurnResumes(context, topology) {
   assert.ok(topology.harnessPod, "restart continuation requires the dedicated Codex topology");
+  const configurationPath = `/namespaces/${topology.namespaceId}/configurations/${topology.agent.configurationId}`;
+  async function deployReplacement() {
+    const previousGatewayUid = topology.gatewayPod.metadata.uid;
+    const previousHarnessUid = topology.harnessPod.metadata.uid;
+    const deployed = await topology.request(
+      "POST",
+      `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
+    );
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+    await waitFor("replacement Agent deployment", () =>
+      topology.events.find(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === deployed.data.id &&
+          event.outcome === "success",
+      ),
+    );
+    topology.revision = deployed.data;
+    topology.harnessPod = await waitForReadyAgentPod(
+      topology,
+      deployed.data.id,
+      previousHarnessUid,
+    );
+    topology.gatewayPod = await waitForReadyGatewayPod(
+      topology,
+      deployed.data.id,
+      previousGatewayUid,
+    );
+  }
+  // Named roles let the real Gateway revalidate a session owner's current authority.
+  const configuration = await topology.request("GET", configurationPath);
+  assert.equal(configuration.status, 200);
+  const recoveryValues = structuredClone(configuration.data.values);
+  recoveryValues.gateway.roles = {
+    default: "writer",
+    definitions: {
+      writer: { scopes: ["operator.write"], agents: "*", sessions: { others: "none" } },
+      reader: { scopes: ["operator.read"], agents: "*", sessions: { others: "none" } },
+    },
+  };
+  const configured = await topology.request("PATCH", configurationPath, { values: recoveryValues });
+  assert.equal(configured.status, 200, JSON.stringify(configured.error));
+  await deployReplacement();
   const completedKey = `agent:main:completed-${randomUUID()}`;
   const completedNonce = `COMPLETED-${randomUUID()}`;
   await gatewayCall(topology, "chat.send", {
@@ -3648,6 +3691,25 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     // finish before native recovery can adopt the thread without taking it over.
     const sleepSeconds = label === "gateway-process" ? 90 : 600;
     const sessionKey = `agent:main:${label}-${randomUUID()}`;
+    let ownerProfileId;
+    if (label === "revoked-owner") {
+      const { profile } = await gatewayCall(topology, "users.linkEmail", {
+        email: `restart-owner-${randomUUID()}@example.test`,
+      });
+      ownerProfileId = profile.id;
+      await gatewayCall(topology, "users.setRole", { profileId: ownerProfileId, role: "writer" });
+      const ready = `OWNER-READY-${randomUUID()}`;
+      await gatewayCall(topology, "chat.send", {
+        sessionKey,
+        idempotencyKey: randomUUID(),
+        message: `Reply with exactly ${ready}. Do not use tools.`,
+      });
+      await assertConversation(topology, sessionKey, ready);
+      await gatewayCall(topology, "sessions.assignOwner", {
+        key: sessionKey,
+        owner: { type: "human", id: ownerProfileId },
+      });
+    }
     const nonce = `RECOVERED-${randomUUID()}`;
     const ledger = `/home/node/workspace/${nonce}.txt`;
     // The real model records an effect before blocking. Recovery must inspect that
@@ -3684,7 +3746,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       false,
       "the original turn must still be unfinished when interrupted",
     );
-    return { sessionKey, nonce, ledger, prompt, sessionId: history.sessionId };
+    return { sessionKey, nonce, ledger, prompt, sessionId: history.sessionId, ownerProfileId };
   }
 
   // Explicit cancellation is intentional, so a subsequent restart must leave it stopped.
@@ -3708,7 +3770,15 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     [completedKey, completed],
     [cancelled.sessionKey, cancelledHistory],
   ];
-  for (const replacement of ["gateway-pod", "workload-pods", "gateway-process", "deployment"]) {
+  for (const replacement of [
+    "gateway-pod",
+    "workload-pods",
+    "gateway-process",
+    "deployment",
+    "explicit-stop",
+    "revoked-owner",
+    "incompatible",
+  ]) {
     const interrupted = await startInterruptedWork(replacement);
     const previousUid = topology.gatewayPod.metadata.uid;
     if (replacement === "gateway-process") {
@@ -3744,78 +3814,122 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
           : undefined;
       });
       assert.equal(topology.gatewayPod.metadata.uid, previousUid);
-    } else if (replacement === "deployment") {
-      const previousHarnessUid = topology.harnessPod.metadata.uid;
-      // A new Agent revision ends the old recovery scope. This is a negative
-      // control: replacement must not restart work under different authority.
-      const deployed = await topology.request(
-        "POST",
-        `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
-      );
-      assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
-      await waitFor("replacement Agent deployment", () =>
-        topology.events.find(
-          (event) =>
-            event.event === "worker.completed" &&
-            event.revisionId === deployed.data.id &&
-            event.outcome === "success",
-        ),
-      );
-      topology.revision = deployed.data;
-      topology.harnessPod = await waitForReadyAgentPod(
-        topology,
-        topology.revision.id,
-        previousHarnessUid,
-      );
-      topology.gatewayPod = await waitForReadyGatewayPod(
-        topology,
-        topology.revision.id,
-        previousUid,
-      );
-      const probeKey = `agent:main:replacement-ready-${randomUUID()}`;
-      const probeNonce = `READY-${randomUUID()}`;
-      await gatewayCall(topology, "chat.send", {
-        sessionKey: probeKey,
-        idempotencyKey: randomUUID(),
-        message: `Reply with exactly ${probeNonce}. Do not use tools.`,
-      });
-      // A completed fresh turn proves the new revision finished startup. It does
-      // not send input to the interrupted session or manufacture its recovery.
-      await assertConversation(topology, probeKey, probeNonce);
-      const stoppedHistory = await gatewayCall(topology, "chat.history", {
-        sessionKey: interrupted.sessionKey,
-        limit: 100,
-      });
-      const { session } = await gatewayCall(topology, "sessions.describe", {
-        key: interrupted.sessionKey,
-      });
-      assert.equal(session.hasActiveRun, false);
-      assert.equal(stoppedHistory.sessionId, interrupted.sessionId);
-      assert.equal(
-        stoppedHistory.messages.some(
-          (message) => message.__openclaw?.continuation?.source === "restart",
-        ),
-        false,
-        "a new revision must not continue the predecessor's interrupted turn",
-      );
-      assert.equal(
-        stoppedHistory.messages.some(
-          (message) =>
-            message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
-        ),
-        false,
-      );
-      assert.equal(
-        await readFileInPod(
-          topology.placement,
-          topology.harnessPod.metadata.name,
-          interrupted.ledger,
-        ),
-        "started\n",
-      );
-      finished.push([interrupted.sessionKey, stoppedHistory]);
-      context.diagnostic("revision replacement left interrupted work stopped");
-      continue;
+    } else if (
+      ["deployment", "explicit-stop", "revoked-owner", "incompatible"].includes(replacement)
+    ) {
+      if (replacement === "revoked-owner") {
+        await gatewayCall(topology, "users.setRole", {
+          profileId: interrupted.ownerProfileId,
+          role: "reader",
+        });
+      }
+      if (replacement === "incompatible") {
+        // A supported policy edit changes the compatibility domain while retaining storage.
+        const changedValues = structuredClone(recoveryValues);
+        (changedValues.skills ??= {}).install ??= {};
+        changedValues.skills.install.allowUploadedArchives = true;
+        const changed = await topology.request("PATCH", configurationPath, {
+          values: changedValues,
+        });
+        assert.equal(changed.status, 200, JSON.stringify(changed.error));
+      }
+      if (replacement === "explicit-stop") {
+        // Deny workload deletion only for this fixture's scoped worker. A committed
+        // stop must end continuity even when its Kubernetes teardown cannot finish.
+        const role = await resource("clusterrole", topology.controllerTenantRole);
+        const blockedRules = role.rules.map((rule) => ({
+          ...rule,
+          verbs: rule.verbs.filter((verb) => verb !== "delete"),
+        }));
+        await kubectl(
+          "patch",
+          "clusterrole",
+          topology.controllerTenantRole,
+          "--type=json",
+          "--patch",
+          JSON.stringify([{ op: "replace", path: "/rules", value: blockedRules }]),
+        );
+        try {
+          const stoppedAgent = await topology.request(
+            "POST",
+            `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/stop`,
+          );
+          assert.equal(stoppedAgent.status, 202, JSON.stringify(stoppedAgent.error));
+          await waitFor("the explicit stop to encounter denied teardown", async () => {
+            const result = await topology.observerPool.query(
+              `SELECT state, attempt_count, reason_code FROM occ.controller_work
+               WHERE agent_id = $1 AND agent_target = 'stopped' ORDER BY created_at DESC LIMIT 1`,
+              [topology.agent.id],
+            );
+            const work = result.rows[0];
+            return work?.attempt_count > 0 && work.state !== "running" && work.reason_code
+              ? work
+              : undefined;
+          });
+          const state = await topology.observerPool.query(
+            "SELECT restart_generation, restart_domain FROM occ.agents WHERE id = $1",
+            [topology.agent.id],
+          );
+          assert.equal(state.rows[0].restart_generation, null);
+          assert.equal(state.rows[0].restart_domain, null);
+        } finally {
+          await kubectl(
+            "patch",
+            "clusterrole",
+            topology.controllerTenantRole,
+            "--type=json",
+            "--patch",
+            JSON.stringify([{ op: "replace", path: "/rules", value: role.rules }]),
+          );
+        }
+      }
+      await deployReplacement();
+      if (replacement !== "deployment") {
+        const probeKey = `agent:main:replacement-ready-${randomUUID()}`;
+        const probeNonce = `READY-${randomUUID()}`;
+        await gatewayCall(topology, "chat.send", {
+          sessionKey: probeKey,
+          idempotencyKey: randomUUID(),
+          message: `Reply with exactly ${probeNonce}. Do not use tools.`,
+        });
+        // A completed fresh turn proves the new revision finished startup. It does
+        // not send input to the interrupted session or manufacture its recovery.
+        await assertConversation(topology, probeKey, probeNonce);
+        const stoppedHistory = await gatewayCall(topology, "chat.history", {
+          sessionKey: interrupted.sessionKey,
+          limit: 100,
+        });
+        const { session } = await gatewayCall(topology, "sessions.describe", {
+          key: interrupted.sessionKey,
+        });
+        assert.equal(session.hasActiveRun, false);
+        assert.equal(stoppedHistory.sessionId, interrupted.sessionId);
+        assert.equal(
+          stoppedHistory.messages.some(
+            (message) => message.__openclaw?.continuation?.source === "restart",
+          ),
+          false,
+          `${replacement} must refuse continuation of the predecessor's interrupted turn`,
+        );
+        assert.equal(
+          stoppedHistory.messages.some(
+            (message) =>
+              message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
+          ),
+          false,
+        );
+        assert.equal(
+          await readFileInPod(
+            topology.placement,
+            topology.harnessPod.metadata.name,
+            interrupted.ledger,
+          ),
+          "started\n",
+        );
+        finished.push([interrupted.sessionKey, stoppedHistory]);
+        context.diagnostic(`${replacement} left interrupted work stopped after redeployment`);
+        continue;
+      }
     } else if (replacement === "workload-pods") {
       const previousHarnessUid = topology.harnessPod.metadata.uid;
       // Replace both Pods without changing the Agent revision or its recovery

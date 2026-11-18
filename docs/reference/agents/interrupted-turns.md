@@ -1,42 +1,48 @@
 # Interrupted turns
 
-A Gateway that shuts down gracefully aborts its active turns and records them for
-restart recovery. A Gateway that later starts on the same retained state resumes a
-recorded turn with one hidden system message. That message asks the Agent to check
-the current state and continue, and messages queued behind the turn follow it.
+OpenClaw can continue eligible interrupted work by sending a new internal input to
+the same retained session. The continuation uses saved context and checks the
+session owner's current authority. It does not restore a process or tool handle.
 
-OCE scopes that record to the Agent revision with
-`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`. Every deployment creates a new revision
-ID, so only a restart of the same revision resumes a turn. Whether this holds
-depends on the Compute Driver:
+## Recovery boundary
 
-- **Kubernetes Compute:** covered. The runtime image supports the setting, and stop
-  allows 330 seconds for the graceful shutdown.
-- **SSH Compute:** the systemd unit sets the scope. It takes effect only once the
-  OpenClaw that the operator installs on the host supports the setting. Until
-  then, a turn cut by stop resumes at the next deployment.
-- **Docker Compute** (development only): stop kills an embedded Gateway without a
-  graceful shutdown. That forced termination is not covered: the runtime's crash
-  recovery can resume the turn.
+For locally managed Kubernetes dedicated Codex, OCC stores a server-owned recovery
+generation and compatibility domain. A compatible deployment retains this
+generation. The selected Compute Driver compares the admitted execution settings,
+retained storage, and exact Agent scope; image changes alone do not end continuity.
+Configuration, policy, credential, placement, or Harness changes can change the
+domain and end the generation.
 
-The table applies where the scope is in effect.
+| Operation                                                                    | Interrupted work                                            |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Compatible redeployment of a running Agent                                   | Eligible work continues in its retained session.            |
+| Gateway or Harness replacement within the generation                         | Eligible work continues after reconnection.                 |
+| [Explicit stop](deployment.md#stop-and-resume), then one or more deployments | Stays stopped; the next deployment starts a new generation. |
+| Incompatible deployment or deletion                                          | Ends the previous generation.                               |
 
-| The Gateway ended because of                                                                  | The interrupted turn                                    |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| [Stop](deployment.md#stop-and-resume), then a new deployment                                  | Stays stopped. A message queued behind it is cancelled. |
-| A replacement or a deletion                                                                   | Ends. The user sends the request again.                 |
-| A rollout during a controller upgrade, a node drain or a Gateway restart of the same revision | Resumes once.                                           |
+Stop ends the generation in the lifecycle transaction, before workload teardown.
+A failed stop cannot let a later deployment reuse that permission. An older
+revision retry cannot prepare or activate with an ended generation.
 
-A replacement does not resume the turn because the next revision can carry
-different configuration, policy and credentials.
+Other Compute Drivers and provider-managed Harnesses retain revision-scoped
+recovery. A new deployment ends their previous recovery scope. Missing Driver
+support never selects an Agent-wide scope.
 
-## Limits
+## Native enforcement and limits
 
-- A Gateway that misses its graceful shutdown, for example after forced
-  termination, leaves unfinished runs to the runtime's crash recovery, which does
-  not check the revision.
-- A runtime from before this scope wrote its records without one. The first
-  Gateway restart after an upgrade to a scoped runtime clears such a record
-  instead of resuming it, so a turn cut by that upgrade does not resume.
-- A resumed turn runs with the session owner's current access, or with no caller
-  when the session has no human owner.
+Both graceful shutdown markers and persisted crash ownership must match the
+Gateway's admitted scope. Missing or mismatched evidence prevents continuation
+and cancels orphaned queued inputs. Recovery also refuses to reacquire child
+completion custody from an ended scope. Current authority and cancellation checks
+still apply; the generation grants no permissions.
+
+A surviving Codex turn can finish before adoption. Recovery waits for up to two
+minutes of polling and refuses takeover if it stays active; an in-flight read
+keeps its native RPC timeout. Completed or explicitly cancelled work does not
+become eligible merely because a Gateway starts.
+
+This is best-effort continuation. It does not guarantee exactly-once external
+effects, recover a hung executor, remove exclusive replacement downtime, or add
+rollback. See [runtime qualification](../../testing/harness-restart-recovery.md)
+for the tested cases and [recovery flow](../../flows/harness-restart-recovery.md)
+for source ownership.

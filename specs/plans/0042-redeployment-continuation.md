@@ -16,14 +16,14 @@ and native OpenClaw recovery. Kubernetes dedicated Codex is the first qualified
 topology. Preserve explicit stop, current authority, retained-state ownership,
 and the refusal to take over active remote execution.
 
-The RFC is Proposed. No cross-revision implementation has started. The current
-revision-scope contract remains authoritative until this change ships.
+The RFC is Proposed and [submitted as PR #6434](https://github.com/openclaw/openclaw-enterprise/pull/6434). Implementation is in progress; live redeployment qualification and publication remain pending.
 
 ## Delivery
 
 ### 1. Submit the contract
 
-- [ ] Submit RFC-0042 for human review and link the implementation PR.
+- [x] Submit RFC-0042 for human review in PR #6434.
+- [ ] Link the implementation PR.
 - [ ] Resolve any specific architectural or security hold before dependent work.
 
 ### 2. Persist lifecycle ownership
@@ -72,7 +72,7 @@ revision-scope contract remains authoritative until this change ships.
 
 ## Verification status
 
-RFC-only: no AC-1 through AC-5 proof is claimed. Earlier qualification of native
+Native generation filtering and private-state preservation: 14 selected cases pass. All 43 PostgreSQL replacement cases pass, including both new generation and stale-worker races (AC-3). Native core and Gateway type checks pass. AC-1, AC-2, AC-4, and AC-5 real-runtime qualification remains in progress. Earlier qualification of native
 restart readiness predates this proposed lifecycle contract and cannot establish
 cross-generation refusal. Missing cluster or credential prerequisites must leave
 the affected acceptance criteria unverified; do not replace them with mocks.

@@ -658,6 +658,7 @@ interface GatewayConfigurationSnapshot {
   readonly name: string;
   readonly revision: number;
   readonly revisionId: string;
+  readonly restartResumeScope: string;
   readonly gatewayManagedMode: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
@@ -3402,6 +3403,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   requiresStoppedPredecessors(revision: AgentRevision): boolean {
     return revision.harness.mode === "dedicated";
+  }
+
+  restartContinuationDomain(revision: Readonly<AgentRevision>): string | undefined {
+    // Only locally owned dedicated Codex workloads qualify. The runtime snapshot
+    // includes exact scope, retained storage and execution policy, excluding image tags.
+    const runtime = decodeReplacementRuntime(this.snapshotRuntimeInputs(revision));
+    return runtime ? `kubernetes-codex:v1:${runtime.compatibility}` : undefined;
   }
 
   private validateGatewayManagedMode(revision: Readonly<AgentRevision>): void {
@@ -13563,6 +13571,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
+      restartResumeScope: revision.restartContinuation?.generation ?? revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
@@ -16940,11 +16949,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
     const variables: V1EnvVar[] = [];
-    // OpenClaw resumes a turn that its graceful shutdown interrupted only under the same
-    // scope (deploy/runtime/openclaw-restart-resume-scope.patch). A restart of this revision
-    // resumes it; a turn cut by stop, replace or delete never runs again (finding 3347).
+    // The admitted generation permits compatible replacement, but an explicit stop
+    // ends it. Unsupported topologies retain the existing revision boundary.
     if (role === "gateway" && configuration !== undefined) {
-      variables.push({ name: GATEWAY_RESTART_RESUME_SCOPE, value: configuration.revisionId });
+      variables.push({
+        name: GATEWAY_RESTART_RESUME_SCOPE,
+        value: configuration.restartResumeScope,
+      });
     }
     const providerNetwork =
       providerEndpoint === undefined ? undefined : this.options.network.providerHarness;

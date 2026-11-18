@@ -69,7 +69,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-restart-resume-scope.patch",
-    sha256: "da813a999fc476afd9d6994e15e81a68c50986bba4164e1e7f727644c8390e4f",
+    sha256: "49d55438e2a1803f1ab5a8847a018b76c4a3025d5bbd0ecad5af2ee52c7d46ff",
   },
   {
     file: "openclaw-restart-harness-readiness.patch",

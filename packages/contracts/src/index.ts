@@ -1124,7 +1124,14 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
   readonly configuration?: Readonly<Record<string, unknown>>;
 }
 
+/** Server-owned permission to continue interrupted work within a compatible lifecycle. */
+export interface RestartContinuation {
+  readonly generation: string;
+  readonly domain: string;
+}
+
 export interface AgentRevision extends Scope {
+  readonly restartContinuation?: RestartContinuation;
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
   readonly id: string;
