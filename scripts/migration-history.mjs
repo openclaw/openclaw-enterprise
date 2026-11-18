@@ -1,13 +1,13 @@
 // @ts-check
 
 import { createRequire } from "node:module";
-import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
   preflight,
   readManifest,
   receiptsMatchEntries,
   refuse,
+  requireReceiptsMatchEntries,
 } from "./migration-history-preflight.ts";
 
 const directory = fileURLToPath(new URL("../migrations", import.meta.url));
@@ -16,8 +16,6 @@ const { drizzle } = dependency("drizzle-orm/node-postgres");
 /** @type {{ readMigrationFiles: import("./migration-history-preflight.ts").MigrationReader }} */
 const { readMigrationFiles } = dependency("drizzle-orm/migrator");
 const lock = [1868785005, 1835624306];
-const legacyApprovalIndex = 76;
-const canonicalApprovalIndex = 80;
 
 export class UnsupportedPostgresVersionError extends Error {
   constructor() {
@@ -28,35 +26,13 @@ export class UnsupportedPostgresVersionError extends Error {
   }
 }
 
-function refuseAppliedReceipts() {
-  refuse(
-    "the applied receipts differ from canonical history; pre-merge preview histories are unsupported; preserve the database with its matching release or explicitly reset a disposable preview",
-  );
-}
-
 /**
  * @param {import("./migration-history-preflight.ts").MigrationReceipt[]} receipts
  * @param {import("./migration-history-preflight.ts").MigrationManifest} manifest
- * @returns {import("./migration-history-preflight.ts").MigrationClassification}
+ * @returns {import("./migration-history-preflight.ts").MigrationHistory}
  */
 function classifyReceipts(receipts, manifest) {
-  /** @type {Array<Pick<import("./migration-history-preflight.ts").MigrationManifest["entries"][number], "tag" | "when" | "sha256">>} */
-  let expected = manifest.entries;
-  const legacy = manifest.compatibleLineages.requestCredentialApprovals.receipt;
-  const hasLegacyApproval =
-    receipts[legacyApprovalIndex]?.hash === legacy.sha256 &&
-    Number(receipts[legacyApprovalIndex].created_at) === legacy.when;
-  if (hasLegacyApproval) {
-    if (receipts.length > legacyApprovalIndex + 1 && receipts.length <= canonicalApprovalIndex) {
-      refuseAppliedReceipts();
-    }
-    expected = [
-      ...expected.slice(0, legacyApprovalIndex),
-      legacy,
-      ...expected.slice(legacyApprovalIndex, canonicalApprovalIndex),
-      ...expected.slice(canonicalApprovalIndex + 1),
-    ];
-  }
+  const expected = manifest.entries;
   const providerCompleted = manifest.compatibleLineages?.providerCompleted;
   const providerCount = providerCompleted?.entries.length ?? 0;
   const providerLineage =
@@ -67,22 +43,13 @@ function classifyReceipts(receipts, manifest) {
       ...providerCompleted.entries,
       ...expected.slice(providerCount),
     ]);
-  if (!providerLineage && !receiptsMatchEntries(receipts, expected)) {
-    refuseAppliedReceipts();
+  if (!providerLineage) {
+    requireReceiptsMatchEntries(receipts, expected);
+  } else if (receipts.length === providerCount) {
+    return "providerCompleted";
   }
-  if (providerLineage && receipts.length === providerCount) {
-    return { catalog: "providerCompleted", hasLegacyApproval };
-  }
-  if (hasLegacyApproval && receipts.length === legacyApprovalIndex + 1) {
-    return { catalog: "legacyRequestCredentialApprovals", hasLegacyApproval };
-  }
-  if (hasLegacyApproval && receipts.length === canonicalApprovalIndex + 1) {
-    return { catalog: "legacyRequestCredentialApprovalsCompleted", hasLegacyApproval };
-  }
-  return {
-    catalog: catalogAtMigrationCount(receipts.length, expected.length),
-    hasLegacyApproval,
-  };
+  // The Provider and canonical lineages share every subsequent migration and catalog.
+  return catalogAtMigrationCount(receipts.length, expected.length);
 }
 
 /**
@@ -146,12 +113,15 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preRevisionRuntimeInputs";
   }
   if (count === 80 && completedCount > 80) {
-    return "preRequestCredentialApprovals";
+    return "preRestartContinuation";
   }
   if (count === 81 && completedCount > 81) {
-    return "preRequestModelDriverIdentity";
+    return "preRequestCredentialApprovals";
   }
   if (count === 82 && completedCount > 82) {
+    return "preRequestModelDriverIdentity";
+  }
+  if (count === 83 && completedCount > 83) {
     return "preControllerWorkReadiness";
   }
   if (count === completedCount) {
@@ -279,7 +249,6 @@ export async function migrateWithHistory(
   const { manifest, migrations } = await readManifest(directory, readMigrationFiles);
   const client = await pool.connect();
   let locked = false;
-  let discardClient = false;
   try {
     /** @type {{ rows: { compatible: boolean }[] }} */
     const { rows } = await client.query(
@@ -290,11 +259,7 @@ export async function migrateWithHistory(
     }
     await client.query("SELECT pg_catalog.pg_advisory_lock($1, $2)", lock);
     locked = true;
-    const { history, receipts, hasLegacyApproval } = await preflight(
-      client,
-      manifest,
-      classifyReceipts,
-    );
+    const history = await preflight(client, manifest, classifyReceipts);
     // Check first-install intent while holding the migration lock. A separate --check
     // could observe empty history and then lose a race to another installer.
     if (expectEmpty && history !== "empty") {
@@ -328,73 +293,19 @@ export async function migrateWithHistory(
           return history;
         }
       }
-      // The original approvals receipt occupies the same timestamp as the first
-      // missing stock migration. Apply the exact stock interval without Drizzle's
-      // timestamp filter, and keep the original ledger order and identities.
-      const unapplied = hasLegacyApproval
-        ? migrations.slice(canonicalApprovalIndex + 1)
-        : migrations;
-      if (history === "legacyRequestCredentialApprovals") {
-        if (typeof manifest.catalogs.legacyRequestCredentialApprovalsCompleted !== "string") {
-          refuse(
-            "the completed historical request credential approval catalog has not been qualified",
-          );
-        }
-        // If BEGIN, ROLLBACK, or COMMIT loses the connection, its state cannot be
-        // reused. Disposing it also releases its session advisory lock.
-        discardClient = true;
-        await client.query("BEGIN");
-        try {
-          for (const migration of migrations.slice(legacyApprovalIndex, canonicalApprovalIndex)) {
-            for (const statement of migration.sql) {
-              await client.query(statement);
-            }
-            await client.query(
-              "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
-              [migration.hash, migration.folderMillis],
-            );
-          }
-          const completed = await preflight(client, manifest, classifyReceipts);
-          if (
-            completed.catalog !== "legacyRequestCredentialApprovalsCompleted" ||
-            !isDeepStrictEqual(completed.receipts.slice(0, receipts.length), receipts)
-          ) {
-            refuse("the historical approval migration did not preserve the applied receipts");
-          }
-        } catch (error) {
-          try {
-            await client.query("ROLLBACK");
-            discardClient = false;
-          } catch (rollbackError) {
-            throw new AggregateError(
-              [error, rollbackError],
-              "Historical migration rollback failed.",
-              { cause: rollbackError },
-            );
-          }
-          throw error;
-        }
-        await client.query("COMMIT");
-        discardClient = false;
-        if (unapplied.length === 0) {
-          return history;
-        }
-      }
       // Pass the verified SQL to Drizzle's stock migrator without reading mutable
       // source files again. Its receipt read and transaction share this backend.
       const db = drizzle(client);
-      await db.dialect.migrate(unapplied, db.session, { migrationsFolder: directory });
+      await db.dialect.migrate(migrations, db.session, { migrationsFolder: directory });
     }
     return history;
   } finally {
     try {
-      if (locked && !discardClient) {
-        discardClient = true;
+      if (locked) {
         await client.query("SELECT pg_catalog.pg_advisory_unlock($1, $2)", lock);
-        discardClient = false;
       }
     } finally {
-      client.release(discardClient);
+      client.release();
     }
   }
 }

@@ -1278,7 +1278,12 @@ function upgradedCanonicalData(data) {
   return {
     ...data,
     agents: data.agents.map(({ value }) => ({
-      value: { ...value, predecessor_replacement: value.predecessor_replacement ?? null },
+      value: {
+        ...value,
+        predecessor_replacement: value.predecessor_replacement ?? null,
+        restart_generation: null,
+        restart_domain: null,
+      },
     })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
@@ -1497,6 +1502,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRestartContinuation"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1651,7 +1657,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const db = await historyDatabase(context, await migrationHistoryFixture(), "readiness", {
-      prefix: 82,
+      prefix: 83,
     });
     const namespaceId = `ns_${randomUUID()}`;
     const { agent: agentId, revision: revisionId } = await seedCanonicalAgent(db, namespaceId, {
@@ -1903,9 +1909,10 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preRequestCredentialApprovals"],
-      [81, "preRequestModelDriverIdentity"],
-      [82, "preControllerWorkReadiness"],
+      [80, "preRestartContinuation"],
+      [81, "preRequestCredentialApprovals"],
+      [82, "preRequestModelDriverIdentity"],
+      [83, "preControllerWorkReadiness"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2215,9 +2222,10 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preRequestCredentialApprovals"],
-      [81, "preRequestModelDriverIdentity"],
-      [82, "preControllerWorkReadiness"],
+      [80, "preRestartContinuation"],
+      [81, "preRequestCredentialApprovals"],
+      [82, "preRequestModelDriverIdentity"],
+      [83, "preControllerWorkReadiness"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2417,9 +2425,10 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preRequestCredentialApprovals"],
-      [81, "preRequestModelDriverIdentity"],
-      [82, "preControllerWorkReadiness"],
+      [80, "preRestartContinuation"],
+      [81, "preRequestCredentialApprovals"],
+      [82, "preRequestModelDriverIdentity"],
+      [83, "preControllerWorkReadiness"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2431,10 +2440,18 @@ test(
         ok: true,
         history,
       });
-      assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
-        ok: true,
-        history: "completed",
-      });
+      context.diagnostic(
+        `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+      );
+      await context.test(
+        `restored prefix ${prefix} passes the completed history check`,
+        async () => {
+          assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+            ok: true,
+            history: "completed",
+          });
+        },
+      );
     }
   },
 );
@@ -2495,6 +2512,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRestartContinuation"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2588,7 +2606,7 @@ test(
     await context.test(
       "a pending migration refuses a stored malformed request-model Driver",
       async (child) => {
-        const db = await historyDatabase(child, fixture, "malformedmodel", { prefix: 81 });
+        const db = await historyDatabase(child, fixture, "malformedmodel", { prefix: 82 });
         const { revision } = await seedCanonicalAgent(db, `ns_${randomUUID()}`, {
           computeAdmission: true,
           executionAdmission: true,
@@ -2597,7 +2615,7 @@ test(
         const malformed = { id: false, implementation: "test", configurationId: "a".repeat(64) };
         assert.equal((await insertRequestModelRevision(db, revision, malformed)).rowCount, 1);
         const before = await historySnapshot(db);
-        assert.equal(before.receipts.length, 81);
+        assert.equal(before.receipts.length, 82);
         assert.deepEqual(
           await runHistoryMigration(db, "development", undefined, undefined, (error) => {
             const failure = error?.cause ?? error;
@@ -2613,176 +2631,56 @@ test(
         assert.deepEqual(stored.rows, [{ driver: false }]);
       },
     );
-
-    for (const { provider, restored } of [
-      { provider: false, restored: false },
-      { provider: true, restored: false },
-      { provider: false, restored: true },
-    ]) {
-      const lineage = provider ? "Provider" : "canonical";
-      const history = restored ? "restored early" : "early";
-      await context.test(`${history} approvals after a ${lineage} prefix`, async (child) => {
-        const source = await historyDatabase(child, fixture, "earlyapprovals");
-        if (provider) {
-          await installProviderCompletedHistory(source);
-        }
-        const manifest = JSON.parse(
-          await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
-        );
-        const entries = manifest.entries.map(({ sha256: _hash, ...entry }) => entry);
-        const approval = entries.find(({ tag }) => tag === "0081_request_credential_approvals");
-        assert.ok(approval);
-        // The approval SQL kept its exact bytes when it moved to 0081. Run it
-        // through stock Drizzle with its original identity on the shared 76-entry prefix.
-        const approvalTime = 1787000000077;
-        await installCanonicalPrefix(source, 77, {
-          entries: [...entries.slice(0, 76), { ...approval, idx: 77, when: approvalTime }],
-        });
+    await context.test(
+      "canonical approval rows retain their decision and replay custody",
+      async (child) => {
+        const db = await historyDatabase(child, fixture, "approvals", { prefix: 82 });
         const namespace = `ns_${randomUUID()}`;
-        const { agent, revision } = await seedCanonicalAgent(source, namespace, {
+        const { agent, revision } = await seedCanonicalAgent(db, namespace, {
           computeAdmission: true,
           executionAdmission: true,
           harnessSettings: true,
         });
-        await source.app.query(
+        await db.app.query(
           `INSERT INTO occ.request_credential_approvals
-             (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at,consumed)
-           VALUES
-             ('recipient','request','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes',false),
-             ('recipient','consumed','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes',true)`,
+           (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at,consumed)
+         VALUES ('recipient','pending','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes',false),
+                ('recipient','consumed','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes',true)`,
           [namespace, agent, revision],
         );
-        const db = restored
-          ? await restoreHistoryArchive(child, fixture, await dumpHistoryArchive(fixture, source))
-          : source;
-        const approvalRows = () =>
-          db.app.query("SELECT * FROM occ.request_credential_approvals ORDER BY request_id");
-        const populated = (await approvalRows()).rows;
-        const before = await historySnapshot(db);
-        assert.equal(before.receipts.length, 77);
-        assert.equal(Number(before.receipts.at(-1).created_at), approvalTime);
-        assert.equal(
-          before.receipts.at(-1).hash,
-          "2eecf64b4368f3f1a9122dfefbbf55ea93b25f98f656bd8c81fb7943688b027d",
-        );
-        const run = (flag) => runHistoryCommand(db, "production", flag);
-        assert.deepEqual(await run("--check"), {
+        const before = await historyReceipts(db.migrator);
+        assert.deepEqual(await runHistoryMigration(db, "production"), {
           ok: true,
-          history: "legacyRequestCredentialApprovals",
+          history: "preRequestModelDriverIdentity",
         });
-        assert.deepEqual(await run("--require-current"), {
-          ok: false,
-          code: "MIGRATION_HISTORY_PENDING",
-        });
-        assert.deepEqual(await run("--expect-empty"), {
-          ok: false,
-          code: "MIGRATION_HISTORY_NOT_EMPTY",
-        });
-        assert.deepEqual(await historySnapshot(db), before);
-
-        const stockAudit = manifest.entries[76];
-        const { rows: partial } = await db.migrator.query(
-          "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2) RETURNING id",
-          [stockAudit.sha256, stockAudit.when],
-        );
-        const partialHistory = await historySnapshot(db);
-        assert.deepEqual(await run(), { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" });
-        assert.deepEqual(await historySnapshot(db), partialHistory);
-        await db.migrator.query("DELETE FROM drizzle.__drizzle_migrations WHERE id=$1", [
-          partial[0].id,
-        ]);
-
-        // Fail on 0080 only after its three predecessors have executed and recorded receipts.
-        await historyAdmin(
-          db,
-          db.name,
-          `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN
-             IF (SELECT max(created_at) FROM drizzle.__drizzle_migrations) = 1787000000079 THEN
-               RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000';
-             END IF;
-           END $$;
-           CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION public.reject_migration_ddl()`,
-        );
+        await assertCompletedHistory(db, before);
+        const approvals = () =>
+          db.app.query(
+            "SELECT request_id,approved,consumed,replay_until_at FROM occ.request_credential_approvals ORDER BY request_id",
+          );
+        const upgraded = (await approvals()).rows;
         assert.deepEqual(
-          await runHistoryMigration(db, "development", undefined, undefined, (error) => {
-            assert.equal(error.code, "55000");
-            assert.equal(error.message, "migration rollback fixture");
-          }),
-          { ok: false, code: "MIGRATION_FAILED" },
+          upgraded.map(({ request_id, approved, consumed }) => [request_id, approved, consumed]),
+          [
+            ["consumed", true, true],
+            ["pending", false, false],
+          ],
         );
-        assert.deepEqual(await historySnapshot(db), before);
-        assert.deepEqual((await approvalRows()).rows, populated);
-        await historyAdmin(
-          db,
-          db.name,
-          "DROP EVENT TRIGGER reject_migration_ddl; DROP FUNCTION public.reject_migration_ddl()",
-        );
-
-        const results = await Promise.all([run(), run()]);
-        assert.deepEqual(
-          results.map((result) => result.ok),
-          [true, true],
-        );
-        assert.deepEqual(results.map((result) => result.history).sort(), [
-          "completed",
-          "legacyRequestCredentialApprovals",
-        ]);
-        const completed = await historySnapshot(db);
-        assert.deepEqual(completed.receipts.slice(0, 77), before.receipts);
-        assert.deepEqual(
-          completed.receipts.slice(77).map(({ hash, created_at }) => [hash, Number(created_at)]),
-          [...manifest.entries.slice(76, 80), ...manifest.entries.slice(81)].map(
-            ({ sha256, when }) => [sha256, when],
-          ),
-        );
-        assert.deepEqual(await run("--require-current"), { ok: true, history: "completed" });
-        assert.deepEqual(await run(), { ok: true, history: "completed" });
-        assert.deepEqual(await historySnapshot(db), completed);
-        assert.deepEqual(
-          (await approvalRows()).rows,
-          populated.map((approval) => ({ ...approval, approved: approval.consumed })),
-        );
-        await assertUpgradedRevisionReadable(db);
         await assert.rejects(
           db.app.query(
             "UPDATE occ.request_credential_approvals SET consumed=true WHERE NOT consumed",
           ),
           { code: "23514", constraint: "request_credential_approval_requires_decision" },
         );
-        await db.app.query(
-          "UPDATE occ.request_credential_approvals SET approved=true WHERE NOT consumed",
-        );
-        assert.equal(
-          (
-            await db.app.query(
-              "UPDATE occ.request_credential_approvals SET consumed=true WHERE NOT consumed",
-            )
-          ).rowCount,
-          1,
-        );
-        await assert.rejects(
-          db.app.query("UPDATE occ.request_credential_approvals SET binding_id='replacement'"),
-          { code: "42501" },
-        );
-        assert.equal(
-          (await db.migrator.query("DELETE FROM occ.agent_revisions WHERE id=$1", [revision]))
-            .rowCount,
-          1,
-        );
-        const retained = (await approvalRows()).rows;
+        await db.migrator.query("DELETE FROM occ.agent_revisions WHERE id=$1", [revision]);
+        const retained = (await approvals()).rows;
         assert.deepEqual(
-          retained.map(({ recipient_id, request_id, consumed, replay_until_at }) => [
-            recipient_id,
+          retained.map(({ request_id, consumed, replay_until_at }) => [
             request_id,
             consumed,
             replay_until_at,
           ]),
-          populated.map(({ recipient_id, request_id, replay_until_at }) => [
-            recipient_id,
-            request_id,
-            true,
-            replay_until_at,
-          ]),
+          upgraded.map(({ request_id, replay_until_at }) => [request_id, true, replay_until_at]),
         );
         const nextNamespace = `ns_${randomUUID()}`;
         const next = await seedCanonicalAgent(db, nextNamespace, {
@@ -2794,16 +2692,16 @@ test(
           (
             await db.app.query(
               `INSERT INTO occ.request_credential_approvals
-                 (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at)
-               SELECT recipient_id,request_id,binding_id,$1,$2,$3,policy_digest,driver_ref,expires_at,replay_until_at
-               FROM occ.request_credential_approvals ON CONFLICT DO NOTHING`,
+           (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at)
+         SELECT recipient_id,request_id,binding_id,$1,$2,$3,policy_digest,driver_ref,expires_at,replay_until_at
+         FROM occ.request_credential_approvals ON CONFLICT DO NOTHING`,
               [nextNamespace, next.agent, next.revision],
             )
           ).rowCount,
           0,
         );
-      });
-    }
+      },
+    );
   },
 );
 

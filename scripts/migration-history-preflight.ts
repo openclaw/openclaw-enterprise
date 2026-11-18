@@ -23,10 +23,7 @@ export type MigrationManifest = {
   catalogs: Partial<Record<MigrationHistory, string>> & { completed: string };
   initialSchemaStates: { absent: unknown; ownerOnly: unknown };
   ledgerCatalogs: { initialized: string; completed: string };
-  compatibleLineages: {
-    providerCompleted?: { entries: ManifestEntry[] };
-    requestCredentialApprovals: { receipt: Pick<ManifestEntry, "tag" | "when" | "sha256"> };
-  };
+  compatibleLineages?: { providerCompleted?: { entries: ManifestEntry[] } };
   logicalRestoreCatalogs?: Record<string, unknown>;
 };
 
@@ -43,16 +40,6 @@ export type MigrationReceipt = {
   id: number;
   hash: string;
   created_at: string | number | null;
-};
-
-export type MigrationClassification = {
-  catalog: MigrationHistory;
-  hasLegacyApproval: boolean;
-};
-
-export type MigrationPreflight = MigrationClassification & {
-  history: MigrationHistory;
-  receipts: MigrationReceipt[];
 };
 
 export function refuse(reason: string): never {
@@ -101,15 +88,11 @@ function isMigrationManifest(value: Record<string, unknown>): value is Migration
     isRecord(ledgerCatalogs) &&
     typeof ledgerCatalogs.initialized === "string" &&
     typeof ledgerCatalogs.completed === "string" &&
-    isRecord(compatibleLineages) &&
-    (compatibleLineages.providerCompleted === undefined ||
-      (isRecord(compatibleLineages.providerCompleted) &&
-        isManifestEntryList(compatibleLineages.providerCompleted.entries))) &&
-    isRecord(compatibleLineages.requestCredentialApprovals) &&
-    isRecord(compatibleLineages.requestCredentialApprovals.receipt) &&
-    typeof compatibleLineages.requestCredentialApprovals.receipt.tag === "string" &&
-    typeof compatibleLineages.requestCredentialApprovals.receipt.when === "number" &&
-    typeof compatibleLineages.requestCredentialApprovals.receipt.sha256 === "string" &&
+    (compatibleLineages === undefined ||
+      (isRecord(compatibleLineages) &&
+        (compatibleLineages.providerCompleted === undefined ||
+          (isRecord(compatibleLineages.providerCompleted) &&
+            isManifestEntryList(compatibleLineages.providerCompleted.entries))))) &&
     (logicalRestoreCatalogs === undefined || isRecord(logicalRestoreCatalogs))
   );
 }
@@ -176,15 +159,6 @@ export async function readManifest(
       "the canonical migration manifest is invalid; preserve the database and run --check with an intact matching release",
     );
   }
-  const legacy = manifest.compatibleLineages.requestCredentialApprovals.receipt;
-  if (
-    legacy.tag !== "0077_request_credential_approvals" ||
-    legacy.when !== manifest.entries[76]?.when ||
-    manifest.entries[80]?.tag !== "0081_request_credential_approvals" ||
-    legacy.sha256 !== migrations[80]?.hash
-  ) {
-    refuse("the historical request credential approval does not match the verified migration");
-  }
   return { manifest, migrations };
 }
 
@@ -232,7 +206,7 @@ async function requireMigrationRoles(client: MigrationSession): Promise<void> {
 
 export function receiptsMatchEntries(
   receipts: readonly MigrationReceipt[],
-  entries: readonly Pick<ManifestEntry, "sha256" | "when">[],
+  entries: readonly ManifestEntry[],
 ): boolean {
   let previousId = 0;
   for (const [index, receipt] of receipts.entries()) {
@@ -298,11 +272,8 @@ async function requireUnambiguousTerminologyData(client: MigrationSession): Prom
 export async function preflight(
   client: MigrationSession,
   manifest: MigrationManifest,
-  classifyReceipts: (
-    receipts: MigrationReceipt[],
-    manifest: MigrationManifest,
-  ) => MigrationClassification,
-): Promise<MigrationPreflight> {
+  classifyReceipts: (receipts: MigrationReceipt[], manifest: MigrationManifest) => MigrationHistory,
+): Promise<MigrationHistory> {
   await requireMigrationRoles(client);
   const ledger = catalogDigest(await migrationCatalog(client, "drizzle"));
   let receipts: MigrationReceipt[] = [];
@@ -316,7 +287,7 @@ export async function preflight(
   } else {
     await requireInitialSchema(client, "drizzle", manifest);
   }
-  const { catalog: shape, hasLegacyApproval } = classifyReceipts(receipts, manifest);
+  const shape = classifyReceipts(receipts, manifest);
   if (shape === "empty") {
     await requireInitialSchema(client, "occ", manifest);
   } else if (ledger !== manifest.ledgerCatalogs.completed) {
@@ -332,10 +303,5 @@ export async function preflight(
   if (shape === "providerCompleted" || shape === "backendCompleted") {
     await requireUnambiguousTerminologyData(client);
   }
-  return {
-    history: receipts.length === manifest.entries.length ? "completed" : shape,
-    catalog: shape,
-    receipts,
-    hasLegacyApproval,
-  };
+  return shape;
 }
