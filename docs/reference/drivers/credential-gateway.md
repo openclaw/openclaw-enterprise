@@ -61,8 +61,9 @@ A `CredentialSourceType` declares:
 - `type`: an implementation-defined name, such as `openai`.
 - `config` and `secrets`: field specifications with `name`, `required`, and an
   optional description. Names must match `^[a-z][a-z0-9_]{0,63}$`, for example
-  `client_id`. Capability discovery returns `503 DEPENDENCY_UNAVAILABLE` if an
-  offered field name is invalid. `config` fields are nonsecret strings; `secrets` fields
+  `client_id`. Capability discovery returns `503 DEPENDENCY_UNAVAILABLE` if any
+  advertised type has an invalid field name. Registration returns the same error
+  if the selected type has an invalid field name. `config` fields are nonsecret strings; `secrets` fields
   are supplied as OCC Secret references. `issuerRotated: true` marks a secret
   the issuer replaces on use, such as a rotating refresh token; an update must
   reference a new Secret for it.

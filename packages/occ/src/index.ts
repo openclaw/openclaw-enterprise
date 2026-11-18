@@ -1625,6 +1625,18 @@ function refuseIssuerRotatedResend(
   }
 }
 
+function assertCredentialSourceCatalogFields({ config, secrets }: CredentialSourceType): void {
+  if (
+    [...config, ...secrets].some(
+      ({ name }) => typeof name !== "string" || !CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.test(name),
+    )
+  ) {
+    throw new DependencyUnavailableError(
+      "The credential source catalog contains an invalid field name.",
+    );
+  }
+}
+
 /**
  * Rejects unknown and missing catalog fields before any Credential Gateway effect. Callers hold
  * the source's grant and named its type, so the refusal names the type's catalog and the field
@@ -2669,17 +2681,8 @@ export class OpenClawController {
       openclaw,
       ...(gatewayTypes || types.length ? { credentialSources: { types } } : {}),
     };
-    if (
-      capabilities.credentialSources?.types.some(({ config, secrets }) =>
-        [...config, ...secrets].some(
-          ({ name }) =>
-            typeof name !== "string" || !CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.test(name),
-        ),
-      )
-    ) {
-      throw new DependencyUnavailableError(
-        "The credential source catalog contains an invalid field name.",
-      );
+    for (const type of capabilities.credentialSources?.types ?? []) {
+      assertCredentialSourceCatalogFields(type);
     }
     const catalogs = this.enabledPluginDrivers().map((driver) => ({
       harnessId: driver.harnessId,
@@ -8786,6 +8789,7 @@ export class OpenClawController {
         throw new NamespaceNotReadyError();
       }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
+      assertCredentialSourceCatalogFields(type);
       credentialSourceFieldsMatch(type, "config", written);
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
       // The Driver may return the configuration in the form it uses, such as a normalized URL:
