@@ -1,36 +1,35 @@
 # Upgrade production images
 
-Upgrade [Kubernetes Compute releases](production-installation.md) using
-`scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
+Upgrade [Kubernetes Compute releases](production-installation.md) with
+`scripts/upgrade-production-images`.
 [Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
 lack the required chart-owned initializer.
 
-1. [Select and prepare the release](#prepare-the-release). Record the live
-   baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
-2. [Preflight the target](#rehearse-before-the-maintenance-window).
-   [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
-3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
-   [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
-4. [Verify the release](#verify-the-release) with a real workload.
-5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
+1. [Prepare the release](#prepare-the-release): record the live baseline and take
+   [required backups](upgrade-checklist.md).
+2. [Preflight](#rehearse-before-the-maintenance-window) and
+   [compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
+3. Plan traffic handoff, freeze writers, and apply the [control plane](#upgrade-the-control-plane)
+   or [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
+4. [Verify](#verify-the-release) with a real workload.
+5. [Recover](#recover-from-a-partial-failure) before retrying.
 
 Use `--controller-image` for API and worker. Repository credentials also require
 `--broker-image`; restarting the broker can interrupt existing Agents.
 `--runtime-image` updates Gateway and runtime images, redeploying running Agents
 concurrently. Allow capacity for overlapping versions. API and worker stop during
 migration and rollout.
+See [completion waiting and timeouts](../../reference/agents/planned-replacement.md#release-observation-window).
 
 Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
 Chart files are verified before cluster access.
 
-Configure endpoint and TLS settings in the selected kubeconfig.
-Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
-`HELM_KUBEINSECURE_SKIP_TLS_VERIFY` before starting or resuming.
-These override kubeconfig/context flags.
+Configure endpoint and TLS in the selected kubeconfig. Before starting or resuming,
+unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
+`HELM_KUBEINSECURE_SKIP_TLS_VERIFY`; they override kubeconfig/context flags.
 
-For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
-For the experimental two-cluster profile, first
-[upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart).
+First [upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart)
+for the experimental two-cluster profile.
 
 ## Prepare the release
 
@@ -50,8 +49,10 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Bash, Python 3, Node.js matching `package.json` `engines.node`, Helm, kubectl,
-  jq, yq, cmp and mktemp. The Helm upgrade identity lists Deployments, StatefulSets,
+- Bash, Python 3 with POSIX `waitid(WNOWAIT)` support, Node.js matching `package.json` `engines.node`, Helm, kubectl,
+  jq, yq, cmp and mktemp. Use the OCC CLI from the upgrade revision so a slow optional
+  Agent lookup cannot hold a completed deployment read for the full request timeout.
+  The Helm upgrade identity lists Deployments, StatefulSets,
   Pods and PVCs cluster-wide. In the release namespace it creates, reads and deletes
   preflight Jobs, Secrets and NetworkPolicies, lists Jobs, reads Pods, logs and
   Installation Secrets, and gets, patches and watches Deployments. Rendered
@@ -357,8 +358,8 @@ for [older state](../../reference/drivers/kubernetes-compute/storage-and-credent
 Upgraded runtime image; controller image remained unchanged and <count> running Agents selected new revisions.
 ```
 
-To release both images together, pass both image options. The command applies
-both changes in one Helm release before deploying the recorded fleet.
+To upgrade the controller and runtime together, pass `--controller-image` and
+`--runtime-image`. Helm applies both changes before the helper deploys the recorded fleet.
 
 ## Verify the release
 
@@ -379,8 +380,7 @@ with passing post-rollout results for the target release and expected Agent
 revision. Use manual checks for missing, stale, or inconclusive synthetic evidence. Investigate failures and reconcile uncertain writes before
 repeating checks.
 
-To check continuity, reopen the test conversation, find its marker, and get a
-fresh reply.
+Reopen the test conversation, find its marker, and get a fresh reply.
 
 After promotion, [verify the served Console](../../release/container-promotion.md#verify-the-served-console).
 
@@ -414,8 +414,7 @@ Migration `0037` adds the human sign-in state, and `helm rollback` never reverse
 - No canary, batching, general runtime compatibility check, automatic rollback,
   or cluster-wide upgrade lock.
 - Agent deployments use current drafts rather than recreating selected versions.
-- One runtime image is used for both gateway and Agent containers.
+- Gateway and Agent containers share one runtime image.
 - Verify functional workflows and restores separately.
 
-See the [production image upgrade flow](../../flows/coordinated-production-upgrade.md)
-for implementation details and failure boundaries.
+See the [production image upgrade flow](../../flows/coordinated-production-upgrade.md).
