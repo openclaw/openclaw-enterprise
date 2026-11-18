@@ -12,7 +12,6 @@ import {
   isKubernetesNamespaceName,
   isKubernetesResourceName,
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
-import { isCodexCatalogSource } from "../apps/controller/src/drivers/plugin/catalog-source.ts";
 import { modelEgressWarning } from "../apps/controller/src/drivers/compute/kubernetes/model-egress.ts";
 
 import {
@@ -201,12 +200,10 @@ interface StringRule {
 }
 interface RenderArguments {
   profile?: string;
-  profileFile?: string;
   input?: string;
   outDir?: string;
 }
-// Bundled profiles and --profile-file inputs are trusted operator definitions;
-// readProfile admits only their closed shape and bundled PluginDriver selections.
+// Checked-in profiles are trusted definitions, not operator-supplied JSON.
 interface Profile extends InputRecord {
   name: string;
   installation: {
@@ -311,7 +308,7 @@ function fail(message: string): never {
 
 function usage() {
   return `Usage: node scripts/render-installation-profile.ts --profile openclaw|codex \\
-  --input <site-inputs.json> --out-dir <rendered-directory> [--profile-file <profile.json>]
+  --input <site-inputs.json> --out-dir <rendered-directory>
 
 The renderer writes values.yaml, installation.yaml, and preflight.json. Missing
 or invalid required inputs write preflight.json and exit nonzero.
@@ -331,8 +328,6 @@ function parseArgs(argv: string[]): RenderArguments {
     };
     if (arg === "--profile") {
       parsed.profile = next();
-    } else if (arg === "--profile-file") {
-      parsed.profileFile = next();
     } else if (arg === "--input") {
       parsed.input = next();
     } else if (arg === "--out-dir") {
@@ -372,64 +367,22 @@ async function readJson(path: string, label: string): Promise<unknown> {
   }
 }
 
-async function readProfile(name: string, profileFile?: string): Promise<Profile> {
-  const diagnostics: Errors = { errors: [] };
+async function readProfile(name: string): Promise<Profile> {
+  const diagnostics = { errors: [] };
   const profile = record(
-    await readJson(
-      profileFile === undefined ? resolve(profilesDir, `${name}.json`) : resolve(profileFile),
-      `profile ${name}`,
-    ),
+    await readJson(resolve(profilesDir, `${name}.json`), `profile ${name}`),
     `profile ${name}`,
     diagnostics,
   );
-  if (profile.name !== name) {
-    fail(`profile ${name} must declare matching name.`);
-  }
-  closed(
-    profile,
-    `profile ${name}`,
-    ["name", "description", "recommendedPreset", "agentHarness", "pluginSelection", "installation"],
-    diagnostics,
-  );
-  for (const key of ["description", "recommendedPreset", "agentHarness", "pluginSelection"]) {
-    asString(profile, [`profile ${name}`, key], diagnostics);
-  }
-  const installation = record(profile.installation, "profile.installation", diagnostics);
-  closed(installation, "profile.installation", ["drivers"], diagnostics);
-  const drivers = record(installation.drivers, "profile.installation.drivers", diagnostics);
-  closed(drivers, "profile.installation.drivers", ["plugin"], diagnostics);
   if (diagnostics.errors.length > 0) {
     fail(diagnostics.errors.join("\n"));
   }
-  if (!Array.isArray(drivers.plugin) || drivers.plugin.length === 0) {
-    fail("profile.installation.drivers.plugin must be a nonempty array.");
+  if (profile.name !== name) {
+    fail(`profile ${name} must declare matching name.`);
   }
-  for (const [index, selected] of drivers.plugin.entries()) {
-    const path = `profile.installation.drivers.plugin[${index}]`;
-    const plugin = record(selected, path, diagnostics);
-    closed(plugin, path, ["id", "configuration"], diagnostics);
-    if (plugin.id !== "occ-plugin" && plugin.id !== "codex-plugin") {
-      diagnostics.errors.push(`${path}.id must select occ-plugin or codex-plugin.`);
-    }
-    if (plugin.configuration === undefined) {
-      plugin.configuration = {};
-    } else {
-      record(plugin.configuration, `${path}.configuration`, diagnostics);
-    }
-    if (diagnostics.errors.length > 0) {
-      fail(diagnostics.errors.join("\n"));
-    }
-    const configuration = record(plugin.configuration, `${path}.configuration`, diagnostics);
-    if (
-      plugin.id === "codex-plugin" &&
-      !isCodexCatalogSource(
-        configuration.catalogSource === undefined ? "hosted" : configuration.catalogSource,
-      )
-    ) {
-      fail(`${path}.configuration.catalogSource must be hosted or openai-curated.`);
-    }
+  if (profile.name === "default") {
+    fail("default is not an installation profile.");
   }
-
   return profile as Profile;
 }
 
@@ -2484,23 +2437,16 @@ function buildRendered(
       );
     }
   }
-  if (
-    profile.installation.drivers.plugin.some(
-      (entry) =>
-        entry.id === "codex-plugin" &&
-        (entry.configuration?.catalogSource ?? "hosted") === "hosted",
-    )
-  ) {
-    diagnostics.prerequisites.push(
-      "Hosted plugin discovery requires a PAT supplied later through a Namespace Secret or the Console; the renderer does not create or verify that credential.",
-    );
-  }
   if (profile.name === "codex") {
     diagnostics.prerequisites.push(
       "Configured Codex seccomp profile installed and verified on every node selected by runtime.nodeSelector.",
-      "Codex runtime credentials configured per Agent; the renderer does not create or verify model credentials.",
+      "Hosted discovery and codex_pat runtime tokens stored later as Namespace Secrets or entered in the Console; the renderer does not create or verify those credentials.",
     );
-    if (Object.keys(managedServiceAccounts).length > 0) {
+    if (Object.keys(managedServiceAccounts).length === 0) {
+      diagnostics.warnings.push(
+        "Managed ChatGPT service-account issuance is not configured; Codex Agents must use an existing codex_pat token until backend provisioning is supplied and verified.",
+      );
+    } else {
       diagnostics.prerequisites.push(
         "ChatGPT service-account app connections configured outside OCE before Agents select a managed ServiceAccount as their codex_pat source.",
       );
@@ -2668,20 +2614,16 @@ export async function renderInstallationProfile(args: RenderArguments) {
     preflight: resolve(outDir, "preflight.json"),
   };
   // Check file identity before cleanup, including symlink and case-insensitive aliases.
-  if (
-    [args.input, args.profileFile]
-      .filter((path): path is string => path !== undefined)
-      .some((input) => Object.values(output).some((path) => sameProfileFile(resolve(input), path)))
-  ) {
+  if (Object.values(output).some((path) => sameProfileFile(resolve(args.input!), path))) {
     fail(
-      "--input must not name a generated output file; --profile-file must not name one either; choose another input name or output directory.",
+      "--input must not name a generated output file; choose another input name or output directory.",
     );
   }
   // A failed rerender must not expose artifacts or a success report from a prior run.
   await Promise.all(Object.values(output).map((path) => rm(path, { force: true })));
   const diagnostics: Diagnostics = { errors: [], warnings: [], prerequisites: [], nextSteps: [] };
   const [profile, rawInput] = await Promise.all([
-    readProfile(args.profile!, args.profileFile),
+    readProfile(args.profile!),
     readJson(resolve(args.input), "input"),
   ]);
   const parsed = buildInput(rawInput, diagnostics);

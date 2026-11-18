@@ -149,7 +149,7 @@ export function registerHelmCases(): void {
         [{ includeDefaults: false, files: [customPresetPath] }, ["SWE Agent"]],
         [{ includeDefaults: false }, []],
       ] as const) {
-        // The renderer's choice must control the catalog loaded by both controller processes.
+        // The production startup loader must seed exactly the Presets the renderer selected.
         const changed = await render(
           "codex",
           codexInput({

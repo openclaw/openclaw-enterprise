@@ -1,7 +1,7 @@
 import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
@@ -26,7 +26,6 @@ import {
   propertyAt,
   objectAt,
   textAt,
-  readJson,
 } from "./profile-renderer-fixture.ts";
 
 export function registerCliCases(): void {
@@ -37,7 +36,7 @@ export function registerCliCases(): void {
     symlinkSync(renderer, link);
     const usage = [
       "Usage: node scripts/render-installation-profile.ts --profile openclaw|codex \\",
-      "  --input <site-inputs.json> --out-dir <rendered-directory> [--profile-file <profile.json>]",
+      "  --input <site-inputs.json> --out-dir <rendered-directory>",
       "",
       "The renderer writes values.yaml, installation.yaml, and preflight.json. Missing",
       "or invalid required inputs write preflight.json and exit nonzero.",
@@ -118,93 +117,7 @@ export function registerCliCases(): void {
       /channels:\n\s+proxyUrl: http:\/\/openclaw-enterprise-slack-proxy\.openclaw-system\.svc:3128/,
     );
     assert.match(codex.preflight.prerequisites.join("\n"), /Slack consumers remain inactive/);
-    assert.match(codex.preflight.prerequisites.join("\n"), /Hosted plugin discovery.*PAT/);
-    assert.match(codex.preflight.prerequisites.join("\n"), /runtime credentials.*Agent/);
-  });
-
-  test("an invalid explicit profile revokes prior outputs without falling back to the bundled profile", async (t) => {
-    const directory = temporaryDirectorySync(t, "oce-profile-selection-invalid-");
-    const profileFile = join(directory, "selected-profile.json");
-    for (const [contents, expected] of [
-      [undefined, /unavailable or invalid JSON/],
-      ["{", /unavailable or invalid JSON/],
-      [JSON.stringify({ name: "openclaw" }), /must declare matching name/],
-      [JSON.stringify({ name: "codex" }), /profile.installation must be an object/],
-      [JSON.stringify([]), /must declare matching name/],
-      ...[{}, [], { id: "codex-plugin" }].map((plugin): [string, RegExp] => [
-        JSON.stringify({
-          ...objectAt(
-            readJson(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
-          ),
-          installation: { drivers: { plugin } },
-        }),
-        /plugin must be a nonempty array/,
-      ]),
-      [
-        JSON.stringify({
-          ...objectAt(
-            readJson(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
-          ),
-          installation: {
-            drivers: { plugin: [{ id: "occ-plugin" }, { id: "uninstalled-plugin" }] },
-          },
-        }),
-        /plugin\[1\].id must select occ-plugin or codex-plugin/,
-      ],
-      ...[{ catalogSource: "hostd" }, { catalogSource: null }].map(
-        (configuration): [string, RegExp] => [
-          JSON.stringify({
-            ...objectAt(
-              readJson(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
-            ),
-            installation: { drivers: { plugin: [{ id: "codex-plugin", configuration }] } },
-          }),
-          /profile.installation.drivers.plugin\[0\].configuration/,
-        ],
-      ),
-      [
-        JSON.stringify({
-          ...objectAt(
-            readJson(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
-          ),
-          installation: {
-            drivers: { plugin: [{ id: "codex-plugin", configuration: [] }] },
-          },
-        }),
-        /profile.installation.drivers.plugin\[0\].configuration must be an object/,
-      ],
-      [
-        JSON.stringify({
-          ...objectAt(
-            readJson(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
-          ),
-          installation: { drivers: { plugin: [{ id: "uninstalled-plugin" }] } },
-        }),
-        /must select occ-plugin or codex-plugin/,
-      ],
-      [
-        JSON.stringify({
-          ...objectAt(
-            readJson(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
-          ),
-          installation: {
-            drivers: { plugin: [{ id: "codex-plugin" }] },
-            presets: { includeDefaults: false },
-          },
-        }),
-        /profile.installation.presets is not supported/,
-      ],
-    ] as const) {
-      await render("codex", codexInput(), directory);
-      if (contents !== undefined) {
-        writeFileSync(profileFile, contents);
-      }
-      const error = await renderError(() => render("codex", codexInput(), directory, profileFile));
-      assert.match(profileFailure(error).output, expected);
-      for (const name of ["values.yaml", "installation.yaml", "preflight.json"]) {
-        assert.equal(existsSync(join(directory, name)), false);
-      }
-    }
+    assert.match(codex.preflight.warnings.join("\n"), /existing codex_pat token/);
   });
 
   // Tenant runtimes may burst to four cores; 100m requests keep the scheduling

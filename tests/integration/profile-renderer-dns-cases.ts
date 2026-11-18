@@ -1,4 +1,3 @@
-import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -17,8 +16,6 @@ import {
   renderError,
   readPreflight,
   propertyAt,
-  objectAt,
-  arrayAt,
   readJson,
 } from "./profile-renderer-fixture.ts";
 
@@ -221,97 +218,3 @@ export function registerDnsCases(): void {
     t.diagnostic(preflight.errors.join("\n"));
   });
 }
-
-test("an explicit profile selects the startup PluginDriver and its credential diagnostics", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "oce-profile-selection-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const profileFile = join(directory, "selected-profile.json");
-  const dns = await startDnsFixture(t, {
-    "auth.openai.com": ["192.0.2.40"],
-    "chatgpt.com": ["198.51.100.20"],
-  });
-  const cases: [
-    string,
-    string,
-    { catalogSource: string } | undefined,
-    { id: string; configuration: { catalogSource: string } }?,
-  ][] = [
-    ["openclaw", "occ-plugin", undefined],
-    ["codex", "codex-plugin", undefined],
-    ["codex", "codex-plugin", { catalogSource: "openai-curated" }],
-    ["openclaw", "codex-plugin", { catalogSource: "hosted" }],
-    ["openclaw", "codex-plugin", { catalogSource: "openai-curated" }],
-    [
-      "openclaw",
-      "occ-plugin",
-      undefined,
-      { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
-    ],
-  ];
-  for (const [name, pluginId, configuration, additionalPlugin] of cases) {
-    const profile = objectAt(
-      readJson(readFileSync(join(repository, `deploy/profiles/${name}.json`), "utf8")),
-    );
-    const selected = arrayAt(profile, "installation", "drivers", "plugin");
-    const driver = objectAt(selected[0]);
-    driver.id = pluginId;
-    if (configuration === undefined) {
-      delete driver.configuration;
-    } else {
-      driver.configuration = configuration;
-    }
-    if (additionalPlugin !== undefined) {
-      selected.push(additionalPlugin);
-    }
-    writeFileSync(profileFile, JSON.stringify(profile));
-
-    // Profile families select runtime settings; the selected PluginDriver independently
-    // determines catalog credentials, including an OpenClaw family with hosted Codex discovery.
-    // Keep hosted discovery on the local DNS fixture, including the OpenClaw family.
-    const output = renderCli(
-      name,
-      name === "codex" ? codexInput() : baseInput(),
-      directory,
-      repository,
-      dns.server,
-      profileFile,
-    );
-    let expectedCidrs: string[] = [];
-    if (name === "codex") {
-      expectedCidrs = ["192.0.2.20/32"];
-    } else if (pluginId === "codex-plugin" && configuration?.catalogSource === "hosted") {
-      expectedCidrs = ["192.0.2.40/32", "198.51.100.20/32"];
-    }
-    assert.deepEqual(
-      propertyAt(loadYaml(output.values), "api", "modelDiscoveryCidrs"),
-      expectedCidrs,
-    );
-    const runtime = await loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: join(directory, "installation.yaml") },
-    });
-    assert.ok(runtime?.installation.drivers.plugin?.[0]);
-    assert.equal(runtime.installation.drivers.plugin[0].id, pluginId);
-    assert.deepEqual(
-      runtime.installation.drivers.plugin.map(({ id, configuration }) => ({ id, configuration })),
-      [
-        { id: pluginId, configuration: configuration ?? {} },
-        ...(additionalPlugin === undefined ? [] : [additionalPlugin]),
-      ],
-    );
-    const diagnostics = [...output.preflight.prerequisites, ...output.preflight.warnings].join(
-      "\n",
-    );
-    if (name === "codex") {
-      assert.match(diagnostics, /runtime credentials.*Agent/);
-      assert.match(diagnostics, /seccomp profile installed/);
-    } else {
-      assert.doesNotMatch(diagnostics, /runtime credentials.*Agent|seccomp profile installed/);
-    }
-    if (pluginId === "codex-plugin" && configuration?.catalogSource !== "openai-curated") {
-      assert.match(diagnostics, /Hosted plugin discovery.*PAT/);
-    } else {
-      assert.doesNotMatch(diagnostics, /Hosted plugin discovery|codex_pat/);
-    }
-  }
-});
