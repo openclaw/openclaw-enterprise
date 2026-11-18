@@ -2009,7 +2009,11 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
       };
       const view = {
         namespaces: { findNamespace: () => tenant },
-        agents: { findAgent: () => agent },
+        agents: {
+          findAgent: () => agent,
+          // This Sandbox topology does not qualify for cross-redeployment recovery.
+          findRestartContinuation: () => undefined,
+        },
         revisions: {
           findRevision: () => structuredClone(pendingRevision),
           listRevisionMetadata: () => [pendingRevision],
