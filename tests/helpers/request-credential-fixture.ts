@@ -650,6 +650,65 @@ export async function requestCredentialFixture(
         },
       };
     },
+    pauseSourceUpdateAudit(input: {
+      namespaceId: string;
+      sourceId: string;
+      actorId: string;
+      action: string;
+    }) {
+      const reached = Promise.withResolvers<{
+        eventId: string;
+        generation: number | undefined;
+        recorded: boolean;
+      }>();
+      const release = Promise.withResolvers<void>();
+      const policyState = state;
+      assert.ok(policyState instanceof PostgresPlatformState);
+      const original = policyState.transact.bind(policyState);
+      let pending = true;
+      policyState.transact = (work) =>
+        original((unit) =>
+          work({
+            ...unit,
+            audit: {
+              ...unit.audit,
+              async append(event) {
+                await unit.audit.append(event);
+                if (
+                  pending &&
+                  event.kind === "mutation" &&
+                  event.outcome === "success" &&
+                  event.actorId === input.actorId &&
+                  event.action === input.action &&
+                  event.namespaceId === input.namespaceId &&
+                  event.resource.kind === "credential_source" &&
+                  event.resource.id === input.sourceId
+                ) {
+                  pending = false;
+                  const source = await unit.credentialSources.findCredentialSource(
+                    input.namespaceId,
+                    input.sourceId,
+                  );
+                  const recorded = (await unit.audit.list()).some((row) => row.id === event.id);
+                  reached.resolve({
+                    eventId: event.id,
+                    generation: source?.egress?.key.source.generation,
+                    recorded,
+                  });
+                  await release.promise;
+                }
+              },
+            },
+          }),
+        );
+      return {
+        reached: reached.promise,
+        release() {
+          policyState.transact = original;
+          release.resolve();
+        },
+      };
+    },
     pauseMaterialRead,
     pauseFinalMaterialRead() {
       return pauseMaterialRead(2);

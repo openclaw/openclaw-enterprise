@@ -8773,6 +8773,7 @@ export class OpenClawController {
     }
     if (
       provider.schemaVersion !== 1 ||
+      provider.sourceType.type !== type ||
       (provider.authorization !== undefined && provider.authorization !== "online-request")
     ) {
       throw new ResourceStateConflictError(
@@ -8780,8 +8781,9 @@ export class OpenClawController {
       );
     }
     const ref = immutableCopy(provider.ref);
+    const sourceType = immutableCopy(provider.sourceType);
     const { inject, normalizeConfig, authorization: profile } = provider;
-    const assertCurrent = () => {
+    const assertRegistrationCurrent = () => {
       if (
         this.selectedDriver("credential_proxy") !== driver ||
         this.selections.get("credential_proxy")?.owner !== owner ||
@@ -8789,6 +8791,7 @@ export class OpenClawController {
         driver.sourceControl !== control ||
         resolve() !== provider ||
         provider.schemaVersion !== 1 ||
+        !isDeepStrictEqual(provider.sourceType, sourceType) ||
         !isDeepStrictEqual(provider.ref, ref) ||
         provider.inject !== inject ||
         provider.normalizeConfig !== normalizeConfig ||
@@ -8798,30 +8801,52 @@ export class OpenClawController {
           "The selected credential provider changed during admission. Check the Installation's provider configuration before retrying this credential-source request.",
         );
       }
+    };
+    const assertCurrent = () => {
+      assertRegistrationCurrent();
       owner?.assertNewStaticProviderUse(ref);
     };
-    return { provider, ref, inject, normalizeConfig, assertCurrent };
+    return { provider, ref, inject, normalizeConfig, assertRegistrationCurrent, assertCurrent };
   }
 
   private newSourceAdmission(type: CredentialSourceType) {
-    return this.ordinaryCredentialGatewayAllowed(type)
-      ? undefined
-      : this.staticEgressProvider(type.type);
+    if (this.ordinaryCredentialGatewayAllowed(type)) {
+      return undefined;
+    }
+    if (!this.staticSourceLifecycleMatches(type)) {
+      throw new ResourceStateConflictError(
+        "The selected Credential Proxy cannot preserve this credential source's lifecycle.",
+      );
+    }
+    return this.staticEgressProvider(type.type);
   }
 
   private strictProviderUpgrade(
-    type: string,
+    type: CredentialSourceType,
     original: NonNullable<ReturnType<OpenClawController["staticEgressProvider"]>>,
   ) {
     if (original.provider.authorization !== undefined) {
       return undefined;
     }
+    const assertOriginal = () => {
+      original.assertRegistrationCurrent();
+      if (
+        !this.staticSourceLifecycleMatches(type, original.provider.sourceType) ||
+        !this.staticSourceLifecycleMatches(original.provider.sourceType) ||
+        original.provider.sourceType.secrets.length !== 1
+      ) {
+        throw new ResourceStateConflictError(
+          "The original credential provider cannot establish this source's strict profile.",
+        );
+      }
+    };
+    assertOriginal();
     const driver = this.selectedDriver("credential_proxy");
     const owner = this.selections.get("credential_proxy")?.owner;
     const candidates = () =>
       driver.sourceControl.providers.filter(
         (entry) =>
-          entry.sourceType.type === type &&
+          entry.sourceType.type === type.type &&
           entry.ref.id === original.ref.id &&
           entry.ref.generation > original.ref.generation &&
           entry.authorization === undefined &&
@@ -8835,14 +8860,14 @@ export class OpenClawController {
       throw new ResourceStateConflictError("The strict provider upgrade is ambiguous.");
     }
     const chosen = newer[0]!;
-    const successor = this.staticEgressProvider(type, chosen.ref);
+    const successor = this.staticEgressProvider(type.type, chosen.ref);
     if (!successor) {
       throw new ResourceStateConflictError("The strict provider upgrade is unavailable.");
     }
     return {
       ...successor,
       assertCurrent: () => {
-        original.assertCurrent();
+        assertOriginal();
         successor.assertCurrent();
         const current = candidates();
         if (current.length !== 1 || current[0] !== chosen) {
@@ -8880,10 +8905,24 @@ export class OpenClawController {
       );
     }
     const { provider, ref, inject, normalizeConfig, assertCurrent } = selection;
+    const owner = this.selectedProxyOwner();
+    const sandbox = this.selections.get("sandbox");
+    const assertSelected = () => {
+      assertCurrent();
+      if (
+        this.selections.get("sandbox") !== sandbox ||
+        this.selections.get("credential_proxy")?.owner !== owner ||
+        this.selectedProxyOwner() !== owner
+      ) {
+        throw new ResourceStateConflictError(
+          "The paired Sandbox and Credential Proxy changed during admission.",
+        );
+      }
+    };
     const reference = references[provider.sourceType.secrets[0]!.name];
-    assertCurrent();
+    assertSelected();
     Reflect.apply(normalizeConfig, provider, [config]);
-    let assertPrerequisites = assertCurrent;
+    let assertPrerequisites = assertSelected;
     // An Installation property: a Proxy that cannot serve the source refuses it before any
     // Secret is read (finding 2360).
     if (provider.authorization === "online-request") {
@@ -8902,7 +8941,7 @@ export class OpenClawController {
       }
       const availability = requestCredentials.assertAvailable;
       assertPrerequisites = () => {
-        assertCurrent();
+        assertSelected();
         if (
           this.requestCredentialAuthority() !== authority ||
           authority.authorize !== authorize ||
@@ -8921,7 +8960,7 @@ export class OpenClawController {
     } else {
       const availability = control.assertAvailable;
       assertPrerequisites = () => {
-        assertCurrent();
+        assertSelected();
         if (control.assertAvailable !== availability) {
           throw new ResourceStateConflictError(
             "The credential transport changed during admission.",
@@ -9589,6 +9628,7 @@ export class OpenClawController {
     principalId: string,
     input: UpdateCredentialSourceInput,
     failureAudit?: (reasonCode: string) => AuditEvent,
+    audit?: AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
@@ -9673,7 +9713,7 @@ export class OpenClawController {
         const consent = input.adoption === "live" && input.authorityScope === "execution";
         let replacement: typeof admitted;
         if (admitted && consent) {
-          replacement = this.strictProviderUpgrade(source.type, admitted);
+          replacement = this.strictProviderUpgrade(type, admitted);
         } else if (!admitted && this.selections.has("credential_proxy")) {
           replacement = this.staticEgressProvider(source.type, "strict-adoption");
         }
@@ -9704,8 +9744,12 @@ export class OpenClawController {
         if (!updated) {
           throw new ResourceStateConflictError("The protected source changed during admission.");
         }
+        const metadata = this.credentialSourceMetadata(updated, { state: "ready" });
+        if (audit !== undefined) {
+          await state.audit.append(audit);
+        }
         admission.assertCurrent();
-        return this.credentialSourceMetadata(updated, { state: "ready" });
+        return metadata;
       }
       const values = await this.readCredentialSourceSecrets(
         state,
@@ -9762,7 +9806,11 @@ export class OpenClawController {
       if (updated === undefined) {
         throw new ResourceStateConflictError("The credential source changed during the update.");
       }
-      return this.credentialSourceMetadata(updated, status);
+      const metadata = this.credentialSourceMetadata(updated, status);
+      if (audit !== undefined) {
+        await state.audit.append(audit);
+      }
+      return metadata;
     });
   }
 

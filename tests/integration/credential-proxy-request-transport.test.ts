@@ -21,6 +21,7 @@ import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import test from "node:test";
 import type {
   CredentialProxyDriver,
@@ -830,6 +831,218 @@ test(
       controller.selectDriver("sandbox", owner.ref.id);
       controller.selectDriver("credential_proxy", owner.ref.id);
     }
+  },
+);
+
+test(
+  "strict model source upgrades require an exact original and an eligible successor (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const { f, owner, retainedStrict } = await requestCredentialFixture(t, {
+      verifyAdmissionPolicy: true,
+      retainStrictBeforePolicy: true,
+    });
+    assert.ok(retainedStrict);
+    const controller: OpenClawController = f.controller;
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const consent = { adoption: "live", authorityScope: "execution" };
+    controller.selectDriver("sandbox", "request-policy-previous");
+    const external = controller.selectDriver("credential_proxy", "request-policy-previous");
+    const previous = external.sourceControl.providers as CredentialProviderDefinition[];
+    const original = previous[0]!;
+    const created = await f.request("POST", path, { body: modelSourceBody(f, "original-type") });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const sourceId = created.data.id;
+    const before = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, sourceId),
+    );
+    previous[0] = { ...original, sourceType: { ...original.sourceType, type: "foreign" } };
+    previous.push({
+      ...original,
+      ref: { ...original.ref, generation: original.ref.generation + 1 },
+    });
+    let foreign;
+    try {
+      const reads = f.countSecretReads();
+      const response = await f.request("PATCH", `${path}/${sourceId}`, { body: consent });
+      foreign = {
+        status: response.status,
+        reads: f.countSecretReads() - reads,
+        unchanged: isDeepStrictEqual(
+          await controller.transact((unit) =>
+            unit.credentialSources.findCredentialSource(f.namespace.id, sourceId),
+          ),
+          before,
+        ),
+      };
+    } finally {
+      previous.pop();
+      previous[0] = original;
+      controller.selectDriver("sandbox", owner.ref.id);
+      controller.selectDriver("credential_proxy", owner.ref.id);
+    }
+    const providers = owner.require("credential_proxy").sourceControl
+      .providers as CredentialProviderDefinition[];
+    const retained = providers.find(
+      (entry) =>
+        entry.ref.id === original.ref.id && entry.ref.generation === original.ref.generation,
+    )!;
+    assert.ok(retained);
+    const beforeRetired = f.countSecretReads();
+    const retired = await f.request("PATCH", `${path}/${retainedStrict.id}`, { body: consent });
+    const retiredReads = f.countSecretReads() - beforeRetired;
+    const successor = {
+      ...retained,
+      ref: { ...retained.ref, generation: retained.ref.generation + 1 },
+    };
+    providers.push(successor);
+    let upgraded;
+    try {
+      const reads = f.countSecretReads();
+      const response = await f.request("PATCH", `${path}/${retainedStrict.id}`, { body: consent });
+      const stored = await controller.transact((unit) =>
+        unit.credentialSources.findCredentialSource(f.namespace.id, retainedStrict.id),
+      );
+      upgraded = {
+        status: response.status,
+        reads: f.countSecretReads() - reads,
+        protection: response.data?.egress?.protection,
+        provider: stored?.egress?.key.provider,
+        originalRetained: providers.includes(retained),
+      };
+    } finally {
+      providers.pop();
+    }
+    assert.deepEqual(foreign, { status: 409, reads: 0, unchanged: true });
+    assert.deepEqual({ status: retired.status, reads: retiredReads }, { status: 409, reads: 0 });
+    assert.deepEqual(upgraded, {
+      status: 200,
+      reads: 1,
+      protection: "exact-dispatch",
+      provider: successor.ref,
+      originalRetained: true,
+    });
+  },
+);
+
+test(
+  "model source admission fences a changed paired Sandbox (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const { f, owner } = await requestCredentialFixture(t, {
+      verifyAdmissionPolicy: true,
+      retainStrictBeforePolicy: true,
+    });
+    const controller: OpenClawController = f.controller;
+    const transport = owner.require("credential_proxy").requestTimeCredentials!;
+    const available = transport.assertAvailable;
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const reads = f.countSecretReads();
+    transport.assertAvailable = async (signal) => {
+      await available.call(transport, signal);
+      controller.selectDriver("sandbox", "request-policy-previous");
+    };
+    let observed;
+    try {
+      const response = await f.request("POST", path, { body: modelSourceBody(f, "changed-pair") });
+      observed = {
+        status: response.status,
+        reads: f.countSecretReads() - reads,
+        rows: await sourceRows(f, "changed-pair"),
+      };
+    } finally {
+      transport.assertAvailable = available;
+      controller.selectDriver("sandbox", owner.ref.id);
+    }
+    const healthy = await f.request("POST", path, { body: modelSourceBody(f, "restored-pair") });
+    assert.deepEqual(observed, { status: 409, reads: 0, rows: 0 });
+    assert.equal(healthy.status, 201, JSON.stringify(healthy.body));
+    assert.equal(healthy.data.egress.protection, "request-time");
+  },
+);
+
+test(
+  "model source PATCH rechecks admission after its success audit is written (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t);
+    const { f, owner, principalId } = fixture;
+    const controller: OpenClawController = f.controller;
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const created = await f.request("POST", path, { body: modelSourceBody(f, "audit-boundary") });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const id = created.data.id;
+    const sourcePath = `${path}/${id}`;
+    const query = () =>
+      f.pool.query<{ id: string; action: string }>(
+        `SELECT id, action FROM occ.audit_events WHERE namespace_id=$1 AND actor_id=$2
+       AND resource_kind='credential_source' AND resource_id=$3 AND kind='mutation' AND outcome='success'
+       ORDER BY id`,
+        [f.namespace.id, principalId, id],
+      );
+    const before = await query();
+    const healthy = await f.request("PATCH", sourcePath, {
+      body: { secrets: { api_key: f.secret.ref } },
+    });
+    assert.equal(healthy.status, 200, JSON.stringify(healthy.body));
+    const committed = await query();
+    const newEvents = committed.rows.filter(
+      (event) => !before.rows.some((old) => old.id === event.id),
+    );
+    assert.equal(newEvents.length, 1);
+    const action = newEvents[0]!.action;
+    const sourceBefore = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, id),
+    );
+    assert.ok(sourceBefore?.egress);
+    const proxy = owner.require("credential_proxy");
+    const transport = proxy.requestTimeCredentials!;
+    let replacementCalls = 0;
+    const replacement = {
+      ...transport,
+      async assertAvailable() {
+        replacementCalls++;
+        throw new Error("unavailable replacement");
+      },
+    };
+    const pause = fixture.pauseSourceUpdateAudit({
+      namespaceId: f.namespace.id,
+      sourceId: id,
+      actorId: principalId,
+      action,
+    });
+    t.after(pause.release);
+    const pending = f.request("PATCH", sourcePath, {
+      body: { secrets: { api_key: f.secret.ref } },
+    });
+    const observed = await pause.reached;
+    assert.equal(observed.recorded, true);
+    assert.equal(observed.generation, sourceBefore.egress.key.source.generation + 1);
+    assert.equal(Reflect.set(proxy, "requestTimeCredentials", replacement), true);
+    pause.release();
+    let result;
+    try {
+      result = await pending;
+    } finally {
+      Reflect.set(proxy, "requestTimeCredentials", transport);
+    }
+    assert.equal(result.status, 409, JSON.stringify(result.body));
+    assert.equal(replacementCalls, 0);
+    assert.deepEqual((await query()).rows, committed.rows);
+    assert.equal(
+      (await query()).rows.some((event) => event.id === observed.eventId),
+      false,
+    );
+    assert.deepEqual(
+      await controller.transact((unit) =>
+        unit.credentialSources.findCredentialSource(f.namespace.id, id),
+      ),
+      sourceBefore,
+    );
+    const restored = await f.request("PATCH", sourcePath, {
+      body: { secrets: { api_key: f.secret.ref } },
+    });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
   },
 );
 
