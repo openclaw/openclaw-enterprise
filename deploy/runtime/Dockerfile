@@ -255,11 +255,6 @@ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-r
 RUN echo '1ebd7e0f3ca32976430c7629a7e91783048940b24355e0fce3748d443d6b6b41  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
-# Issue first-install node setup from the Gateway's own pairing store before it starts.
-COPY deploy/runtime/openclaw-node-only-setup.patch /tmp/openclaw-node-only-setup.patch
-RUN echo 'ac4adee637ccf70f571f90d37451161fd4954e1453a815d5b00ffaabd1236092  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-node-only-setup.patch
-
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
 COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
 RUN echo 'c3985dc0e7e79c10590be553b59f03a005324e3f06ec49be73f69bd65ea9ea96  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
@@ -312,8 +307,6 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/cli/node-cli/register.test.ts \
     src/cli/node-cli/gateway-options.test.ts \
     src/cli/connect-cli.test.ts \
-    src/cli/qr-cli.test.ts \
-    src/cli/qr-node-only.test.ts \
     src/cli/connect-cli.reconnect.test.ts \
     packages/gateway-client/src/client.device-auth.test.ts \
     packages/gateway-client/src/client.node-invocation.test.ts \
