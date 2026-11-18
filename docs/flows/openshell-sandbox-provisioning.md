@@ -99,15 +99,15 @@ graph TD
 
 [downloadVerified](../../internal/occdev/openshell_assets.go) streams archives;
 [launcher](../../internal/occdev/routing_manifest.go) and [CI](../../scripts/ci/routing.ts)
-cap manifests at 32 MiB. Network/HTTP 408/429/5xx failures allow eight cancelable
+cap manifests at 32 MiB. Network/HTTP 408/429/5xx allow eight cancelable
 60-second attempts starting within 120 seconds. Retries remove partial `0600`
 archives, preserving existing files.
 
 `prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.ts) validate cached/pulled native
 manifest/config/CRI identity before apply (`Never`); CRI misses retry. Overrides remain intact.
 [`importOpenShellImage`](../../internal/occdev/openshell_image.go) journals staging-tag/engine-ID intent before creation.
-`imageCommand` accepts Podman exit `125` only for exact legacy or Podman 6 absence
-diagnostics naming the requested image, with empty/`[]` stdout.
+`imageCommand` accepts exit `125` only for exact local/API Podman absence
+naming the requested image, with empty/`[]` stdout.
 Return/rollback/`dev down` reconcile without clusters/Compose. Incomplete inspection
 or uncertain/replaced tags retain state.
 
@@ -424,6 +424,8 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
 - 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)
+
+- 2026-11-18 20:57: Reconcile Podman inspection. (authoring-run/1cd59c7b-799a-42eb-a06b-e71feec2a78b - ac8bbeaff2db3e62bb3bfc4d5e8847eca96ffe60)
 
 - 2026-11-18 14:08: Accept Podman cache misses. (authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604 - f07a2b05a8db5e88142ca1a2c9fd90f0ec812284)
 
