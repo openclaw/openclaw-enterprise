@@ -64,6 +64,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `cmd/occ/`                                                | Go CLI executable entrypoint.                                                                                |
 | `internal/occcli/`                                        | CLI commands and terminal interface.                                                                         |
 | `internal/occclient/`                                     | Go HTTP client for OCC.                                                                                      |
+| `internal/bootstrapcredentials/`                          | Private bootstrap input generation shared by installation and development tools.                             |
 | `internal/occdev/`                                        | CLI development-stack lifecycle commands.                                                                    |
 
 Start from the existing primitive that owns a capability. Keep platform core
