@@ -169,8 +169,8 @@ EOF
 
 For a [selected-image migration](separate-database-upgrade.md#run-a-selected-image-migration),
 assign `MIGRATION_ARGS` there first. Replace the `args:` line inside this unquoted
-heredoc with the literal line `args: $MIGRATION_ARGS`. Use that procedure's
-migration verification and recovery steps instead of the sign-in steps below.
+heredoc with the literal line `args: ${MIGRATION_ARGS:?Select migration arguments first}`.
+Use that procedure's migration verification and recovery steps instead of the sign-in steps below.
 
 Replace `"status"` with the operation's arguments, for example
 `"deactivate", "--writers-stopped"`. The Pod's own database connection is excluded

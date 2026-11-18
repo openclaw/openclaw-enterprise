@@ -12,26 +12,36 @@ The helper exits **3** after both writers stop and before submitting Helm.
 Read the migration program from the reviewed chart. From the reviewed release checkout root:
 
 ```sh
-MIGRATION_PROGRAM="$(cat deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs && printf .)"
-MIGRATION_PROGRAM="${MIGRATION_PROGRAM%.}"
+unset MIGRATION_ARGS
+MIGRATION_PROGRAM="$(
+  program="$(cat deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs && printf .)" || exit
+  test "$program" != . || exit 1
+  printf '%s' "$program"
+)" && MIGRATION_PROGRAM="${MIGRATION_PROGRAM%.}"
 ```
 
 Without a checkout, set `CHART_ARCHIVE` to the reviewed packaged chart and read the same file:
 
 ```sh
-MIGRATION_PROGRAM="$(tar -xOf "$CHART_ARCHIVE" openclaw-enterprise/files/migrate-selected-image.cjs && printf .)"
-MIGRATION_PROGRAM="${MIGRATION_PROGRAM%.}"
+unset MIGRATION_ARGS
+MIGRATION_PROGRAM="$(
+  program="$(tar -xOf "$CHART_ARCHIVE" openclaw-enterprise/files/migrate-selected-image.cjs && printf .)" || exit
+  test "$program" != . || exit 1
+  printf '%s' "$program"
+)" && MIGRATION_PROGRAM="${MIGRATION_PROGRAM%.}"
 ```
 
-The final assignment preserves the program's trailing newline. Set `CONTROLLER_IMAGE`
+Stop if extraction fails or the file is empty. These commands preserve the program's
+trailing newline and clear any previously selected migration arguments. Set `CONTROLLER_IMAGE`
 to the selected immutable controller image and export `OCC_MIGRATION_DATABASE_URL`
 with its migrator credential. To check the image directly:
 
 ```sh
 docker run --rm --env NODE_ENV=production --env OCC_MIGRATION_DATABASE_URL \
-  "$CONTROLLER_IMAGE" -e "$MIGRATION_PROGRAM" -- --check
+  "$CONTROLLER_IMAGE" -e "${MIGRATION_PROGRAM:?Extract the migration program first}" -- --check
 ```
 
+Require exit zero and a `migration.checked` event. Stop if either is missing.
 Supply the database CA and network access required by the selected connection. The program
 reads the image's production migration entry from `package.json`, accepts the supported
 JavaScript or TypeScript entry, and loads it in the same Node process.
@@ -40,26 +50,32 @@ For Kubernetes, choose one mode before creating the
 [maintenance Job](auth-maintenance.md#run-the-command). To inspect recognized history without applying SQL:
 
 ```sh
-MIGRATION_ARGS="$(jq -nc --arg program "$MIGRATION_PROGRAM" '["-e",$program,"--","--check"]')"
+MIGRATION_ARGS="$(jq -nc \
+  --arg program "${MIGRATION_PROGRAM:?Extract the migration program first}" \
+  '["-e",$program,"--","--check"]')" || { unset MIGRATION_ARGS; false; }
 ```
 
 To apply authorized pending SQL:
 
 ```sh
-MIGRATION_ARGS="$(jq -nc --arg program "$MIGRATION_PROGRAM" '["-e",$program,"--"]')"
+MIGRATION_ARGS="$(jq -nc \
+  --arg program "${MIGRATION_PROGRAM:?Extract the migration program first}" \
+  '["-e",$program,"--"]')" || { unset MIGRATION_ARGS; false; }
 ```
 
 To require completed history without applying SQL:
 
 ```sh
-MIGRATION_ARGS="$(jq -nc --arg program "$MIGRATION_PROGRAM" '["-e",$program,"--","--require-current"]')"
+MIGRATION_ARGS="$(jq -nc \
+  --arg program "${MIGRATION_PROGRAM:?Extract the migration program first}" \
+  '["-e",$program,"--","--require-current"]')" || { unset MIGRATION_ARGS; false; }
 ```
 
 In the Job's original unquoted `<<EOF` heredoc, replace its `args:` line with
 this literal YAML line:
 
 ```yaml
-args: $MIGRATION_ARGS
+args: ${MIGRATION_ARGS:?Select migration arguments first}
 ```
 
 Keep the heredoc unquoted so `RELEASE`, `DATABASE_CA_SECRET`, `CONTROLLER_IMAGE`,
@@ -72,7 +88,7 @@ extra separator fails before migration.
 
 1. Keep the maintenance window active and both writers stopped. Assign `MIGRATION_ARGS`
    for apply, then create the maintenance Job with the selected immutable candidate image,
-   this database's migrator credential and CA, and `args: $MIGRATION_ARGS`. Wait for
+   this database's migrator credential and CA, and the guarded `args:` line above. Wait for
    completion, save the logs, delete the Job, and wait for its Pods to stop. If the
    outcome is uncertain, retain those logs and confirm the Job and Pods are terminal.
 2. Assign `MIGRATION_ARGS` for `--require-current` and create a new Job against the
