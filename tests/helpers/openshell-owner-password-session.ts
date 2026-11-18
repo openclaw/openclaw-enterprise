@@ -59,21 +59,41 @@ const nativeAccess = Type.Object({
 const podList = Type.Object({
   items: Type.Array(
     Type.Object({
-      metadata: Type.Object({ name: Type.String(), namespace: Type.String() }),
-      status: Type.Object({
-        containerStatuses: Type.Optional(
-          Type.Array(
-            Type.Object({
-              name: Type.String(),
-              ready: Type.Boolean(),
-              imageID: Type.String(),
-            }),
+      status: Type.Optional(
+        Type.Object({
+          containerStatuses: Type.Optional(
+            Type.Array(Type.Object({ name: Type.String(), ready: Type.Boolean() })),
           ),
-        ),
-      }),
+        }),
+      ),
     }),
   ),
 });
+const observedPod = Type.Object({
+  metadata: Type.Object({
+    name: Type.String({ minLength: 1 }),
+    namespace: Type.String({ minLength: 1 }),
+  }),
+  status: Type.Object({
+    containerStatuses: Type.Array(
+      Type.Object({ name: Type.String(), imageID: Type.String({ minLength: 1 }) }),
+    ),
+  }),
+});
+
+function selectReadyAgentPod(value: unknown) {
+  assert.ok(Check(podList, value), "Expected a kubectl Pod list with readiness information");
+  const readyPods = value.items.filter((pod) =>
+    pod.status?.containerStatuses?.some(
+      (container) => container.name === "agent" && container.ready,
+    ),
+  );
+  assert.equal(readyPods.length, 1, "Expected exactly one Pod with a ready agent");
+  const pod: unknown = readyPods[0];
+  assert.ok(Check(observedPod, pod), "Expected metadata and image IDs for the ready Pod");
+  return pod;
+}
+
 const gatewayHello = Type.Object({
   type: Type.Literal("res"),
   ok: Type.Literal(true),
@@ -176,12 +196,12 @@ export async function verifyOpenShellOwnerPasswordSession({
             ? {}
             : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
         });
-        const json: unknown = res.status === 204 ? undefined : await res.json();
+        const json: unknown = res.ok && res.status !== 204 ? await res.json() : undefined;
         return { status: res.status, json };
       },
       { method, path, body },
     );
-    if (status === 204) {
+    if (status === 204 || status >= 400) {
       return { status, data: undefined };
     }
     assert.ok(
@@ -374,16 +394,7 @@ export async function verifyOpenShellOwnerPasswordSession({
     ],
     { env: environment },
   );
-  const listedPods: unknown = JSON.parse(pods);
-  assert.ok(Check(podList, listedPods), "Expected a kubectl Pod list with container observations");
-  const readyPods = listedPods.items.filter((pod) =>
-    pod.status.containerStatuses?.some(
-      (container) => container.name === "agent" && container.ready,
-    ),
-  );
-  assert.equal(readyPods.length, 1);
-  const [pod] = readyPods;
-  assert.ok(pod?.status.containerStatuses);
+  const pod = selectReadyAgentPod(JSON.parse(pods));
   await execute(
     "kubectl",
     [
