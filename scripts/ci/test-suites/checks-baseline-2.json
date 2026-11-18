@@ -173,6 +173,22 @@
   },
   "files": [
     {
+      "path": "tests/conformance/strands-box-transport.test.mjs",
+      "expectedTests": [
+        "Strands rejected half-open clients release listener capacity without Harness I/O",
+        "Strands shutdown closes clients still reading headers and refuses queued Gateway opens",
+        "Strands supervisor refuses a racing channel without disconnecting admitted clients",
+        "Strands contained receiver refuses capacity overflow and retains native connections",
+        "Strands slow downstream closes only its channel and retains the shared transport",
+        "Strands large stream pauses for shared pipe pressure without truncation",
+        "Strands malformed or oversized IPC fails closed exactly once",
+        "Strands disconnected channel releases its pending drain and a fresh channel works",
+        "Strands routing keeps explicit connection factories on the provider proxy",
+        "a loopback readiness probe retains capacity when all session channels are busy",
+        "a terminal frame flushes queued TCP output"
+      ]
+    },
+    {
       "path": "tests/integration/prepared-refresh-enrollment.test.ts",
       "expectedTests": [
         "prepared refresh enrollment refuses before effects (legacy Refresh installed)",
@@ -707,7 +723,9 @@
     },
     {
       "path": "tests/integration/repository-credentials-service-loss.test.ts",
-      "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
+      "expectedTests": [
+        "a broker restart cannot accept bound admissions without durable fencing"
+      ]
     },
     {
       "path": "tests/conformance/repository-credentials-registry.test.ts"
