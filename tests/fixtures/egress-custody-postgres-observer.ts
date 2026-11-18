@@ -39,9 +39,9 @@ const server = createServer({ allowHalfOpen: true }, (socket) => {
   socket.on("end", () => {
     try {
       if (request !== "status") {
-        const selection = /^drop (.*)$/.exec(request);
-        assert.ok(selection);
-        proxy.arm({ instanceId: selection[1] });
+        const instanceId = /^drop (.*)$/.exec(request)?.[1];
+        assert.ok(instanceId);
+        proxy.arm({ instanceId });
       }
       socket.end(JSON.stringify(proxy.egress));
     } catch {
