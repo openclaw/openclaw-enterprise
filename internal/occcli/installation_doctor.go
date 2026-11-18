@@ -371,7 +371,7 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 // Recognize only this release's chart program. The real-chart CLI tests require
 // this digest to move with deploy/helm/openclaw-enterprise/files/check-installation.mjs.
 func supportedInstallationCheck(script string) bool {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(script))) == "c7af073c69b22fb132011d0167e65725f8b29182588e519ef812f035fe15fdde"
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(script))) == "922174bf3afe57af89544f83f331bb225d4217d8c726361623375dc7ad073047"
 }
 
 func (status initializationJobStatus) state() initializationState {
