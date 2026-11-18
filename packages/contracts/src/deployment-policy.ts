@@ -56,7 +56,8 @@ function evaluatorAvailable(
 export interface NetworkPolicyCapabilities extends RequestPolicyCapabilities {
   readonly wildcards: boolean;
   readonly portRanges: boolean;
-  /** Qualifies the effective policy as a whole, including default routes and executable/port isolation. */
+  /** Qualifies the complete allowlist, including default routes, executable/port isolation,
+   * and the union of separate accounts' evaluator decisions using each binding's own scope. */
   readonly supportsNetworkPolicy: (policy: NetworkAccessPolicy) => boolean;
 }
 
@@ -122,6 +123,7 @@ function deploymentNetworkAccessDetails(
   policy: NetworkAccessPolicy,
   ceiling: readonly DeploymentRequestMatch[],
   capabilities: NetworkPolicyCapabilities,
+  bindings: ReadonlyMap<string, DeploymentCredentialBinding>,
 ): ErrorDetail[] {
   const pointer = "/networkAccessPolicy/allowed";
   if (
@@ -133,9 +135,23 @@ function deploymentNetworkAccessDetails(
       { path: pointer, code: "INVALID_VALUE", message: "Supply the network access allowlist." },
     ];
   }
-  const details = validateMatches(policy.allowed, pointer);
+  const details = validateMatches(policy.allowed, pointer, "network");
   if (details.length) {
     return details;
+  }
+  for (const [index, rule] of policy.allowed.entries()) {
+    const evaluator = rule.requestPolicy;
+    if (
+      evaluator?.type === "evaluator" &&
+      !evaluatorWithinBinding(evaluator, bindings.get(evaluator.admittedSource.bindingRef))
+    ) {
+      return [
+        invalid(
+          `${pointer}/${index}`,
+          "The evaluator requires a permitted source endpoint and granted scopes for its binding.",
+        ),
+      ];
+    }
   }
   if (typeof capabilities?.supportsNetworkPolicy !== "function") {
     return [invalid(pointer, "The selected Sandbox has no qualified network enforcement.")];
@@ -148,8 +164,8 @@ export interface CredentialInjectionCapabilities extends RequestPolicyCapabiliti
   readonly distinguishesExecutable: boolean;
   readonly distinguishesPort: boolean;
   readonly rejectsStaleAndMisplacedPlaceholders: boolean;
-  /** Qualifies the presentation and request across bindings. An evaluator requires the proxy
-   * to intersect approval with the admitted source endpoint, including its actual request path. */
+  /** Qualifies the request and presentation for the binding identified by the placeholder.
+   * The proxy must intersect evaluator approval with that binding's endpoint, including its path. */
   readonly supportsBindingRequest: (
     binding: DeploymentCredentialBinding,
     match: DeploymentRequestMatch,
@@ -207,6 +223,23 @@ function invalid(path: string, message: string): ErrorDetail {
   return { path, code: "INVALID_VALUE", message };
 }
 
+function evaluatorWithinBinding(
+  policy: Extract<DeploymentRequestPolicy, { type: "evaluator" }>,
+  binding: DeploymentCredentialBinding | undefined,
+): boolean {
+  const source = policy.admittedSource;
+  const authority = binding?.evaluatorAuthority;
+  return (
+    binding?.bindingRef === source.bindingRef &&
+    Array.isArray(authority?.endpoints) &&
+    authority.endpoints.some(
+      (row) => row?.host === source.host && row.port === source.port && row.path === source.path,
+    ) &&
+    Array.isArray(authority.grantedScopes) &&
+    source.scopes.every((scope) => authority.grantedScopes.includes(scope))
+  );
+}
+
 const reviewedPresentations = {
   plugin: ["bearer"],
   model: ["bearer", "x-api-key"],
@@ -216,6 +249,11 @@ const reviewedPresentations = {
   readonly DeploymentCredentialBinding["projection"]["presentation"][]
 >;
 
+type ModelPresentation = Extract<
+  DeploymentCredentialBinding,
+  { consumer: { kind: "model" } }
+>["projection"]["presentation"];
+
 export interface CredentialPolicyAdmission {
   readonly networkAccessPolicy: NetworkAccessPolicy;
   readonly ceiling: readonly SandboxNetworkGrant[];
@@ -223,6 +261,13 @@ export interface CredentialPolicyAdmission {
   /** OCC authorizes source use; each consumer supplies its reviewed projection and request rules.
    * Plugin input must use the named connection's networkRequirementIds, not all rules on that host. */
   readonly bindings: readonly DeploymentCredentialBinding[];
+  /** OCC looks up the presentation in the reviewed provider profile for this authorized model
+   * binding. Absence of the profile prevents model admission, even if the proxy supports the header. */
+  readonly modelPresentationFor?: (
+    bindingRef: string,
+    sourceRef: DeploymentCredentialBinding["sourceRef"],
+    providerId: string,
+  ) => ModelPresentation | undefined;
   readonly injectionPolicies: readonly CredentialInjectionPolicy[];
   /** False only for a target known to have no issued placeholders. Retain the guard through withdrawal. */
   readonly targetMayHoldPlaceholders: boolean;
@@ -231,22 +276,6 @@ export interface CredentialPolicyAdmission {
 
 export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmission): ErrorDetail[] {
   const { networkAccessPolicy, proxy } = input;
-  const details = deploymentNetworkAccessDetails(networkAccessPolicy, input.ceiling, input.sandbox);
-  if (details.length) {
-    return details;
-  }
-  if (
-    input.targetMayHoldPlaceholders !== false &&
-    networkAccessPolicy.allowed.length &&
-    proxy?.rejectsStaleAndMisplacedPlaceholders !== true
-  ) {
-    return [
-      invalid(
-        "/injectionPolicies",
-        "Withdrawal requires the proxy to reject previously issued placeholders on the remaining network routes.",
-      ),
-    ];
-  }
   const bindings = new Map<string, DeploymentCredentialBinding>();
   const environments = new Set<string>();
   for (const [index, binding] of input.bindings.entries()) {
@@ -267,7 +296,8 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
     ) {
       return [invalid(path, "Each binding needs a distinct environment variable.")];
     }
-    const kind = binding.consumer?.kind;
+    const consumer = binding.consumer;
+    const kind = consumer?.kind;
     if (
       !Object.hasOwn(reviewedPresentations, kind) ||
       !reviewedPresentations[kind].some(
@@ -282,19 +312,42 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
         ),
       ];
     }
+    if (
+      kind === "model" &&
+      !supported(
+        () =>
+          input.modelPresentationFor?.(
+            binding.bindingRef,
+            binding.sourceRef,
+            consumer.providerId,
+          ) === projection.presentation,
+      )
+    ) {
+      return [invalid(path, "The model presentation must match its reviewed provider profile.")];
+    }
     bindings.set(binding.bindingRef, binding);
     environments.add(projection.environment);
   }
-  for (const [index, rule] of networkAccessPolicy.allowed.entries()) {
-    const policy = rule.requestPolicy;
-    if (policy?.type === "evaluator" && !bindings.has(policy.admittedSource.bindingRef)) {
-      return [
-        invalid(
-          `/networkAccessPolicy/allowed/${index}`,
-          "The evaluator must name an admitted source binding.",
-        ),
-      ];
-    }
+  const details = deploymentNetworkAccessDetails(
+    networkAccessPolicy,
+    input.ceiling,
+    input.sandbox,
+    bindings,
+  );
+  if (details.length) {
+    return details;
+  }
+  if (
+    input.targetMayHoldPlaceholders !== false &&
+    networkAccessPolicy.allowed.length &&
+    proxy?.rejectsStaleAndMisplacedPlaceholders !== true
+  ) {
+    return [
+      invalid(
+        "/injectionPolicies",
+        "Withdrawal requires the proxy to reject previously issued placeholders on the remaining network routes.",
+      ),
+    ];
   }
   for (const [index, policy] of input.injectionPolicies.entries()) {
     const path = `/injectionPolicies/${index}`;
@@ -317,7 +370,7 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
       ];
     }
     const allowedRequests: readonly DeploymentRequestMatch[] = policy.allowedRequests;
-    const issues = validateMatches(allowedRequests, path + "/allowedRequests");
+    const issues = validateMatches(allowedRequests, path + "/allowedRequests", "injection");
     if (issues.length) {
       return issues;
     }
@@ -326,12 +379,15 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
       if (rule.requestPolicy?.type === "evaluator") {
         const source = rule.requestPolicy.admittedSource;
         if (
-          source.bindingRef !== binding.bindingRef ||
+          !evaluatorWithinBinding(rule.requestPolicy, binding) ||
           rule.host !== source.host ||
           rule.ports.some(({ from, to }) => from !== source.port || to !== source.port)
         ) {
           return [
-            invalid(pointer, "The injection rule must use its own binding's source host and port."),
+            invalid(
+              pointer,
+              "The injection rule exceeds its binding's permitted endpoint or granted scopes.",
+            ),
           ];
         }
       }

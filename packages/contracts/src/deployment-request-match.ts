@@ -156,6 +156,7 @@ export function disjointRequests(
 export function validateMatches(
   matches: readonly DeploymentRequestMatch[],
   pointer: string,
+  policyKind: "network" | "injection",
 ): ErrorDetail[] {
   const details: ErrorDetail[] = [];
   matches.forEach((rule, index) => {
@@ -208,6 +209,7 @@ export function validateMatches(
             grant.binary === other.binary &&
             destinationsOverlap(grant, other) &&
             !sameRequest(grant.requestPolicy, other.requestPolicy) &&
+            !separateEvaluatorGrants(grant.requestPolicy, other.requestPolicy, policyKind) &&
             !disjointRequests(grant.requestPolicy, other.requestPolicy),
         )
     ) {
@@ -219,6 +221,41 @@ export function validateMatches(
     }
   });
   return details;
+}
+
+// Unknown path patterns stay closed. For literal paths and terminal /** subtrees,
+// a common slash-delimited prefix determines whether both can cover one request.
+function separateEndpointPaths(left: string, right: string): boolean {
+  const canonical = /^\/(?:(?:[A-Za-z0-9._~-]+\/)*(?:[A-Za-z0-9._~-]+|\*\*))?$/;
+  if (left === right || !canonical.test(left) || !canonical.test(right)) {
+    return false;
+  }
+  const covers = (pattern: string, path: string) =>
+    pattern.endsWith("/**") &&
+    (path === pattern.slice(0, -3) || path.startsWith(pattern.slice(0, -2)));
+  return !covers(left, right) && !covers(right, left);
+}
+
+function separateEvaluatorGrants(
+  left: DeploymentRequestPolicy | undefined,
+  right: DeploymentRequestPolicy | undefined,
+  policyKind: "network" | "injection",
+): boolean {
+  if (
+    left?.type !== "evaluator" ||
+    right?.type !== "evaluator" ||
+    left.id !== right.id ||
+    left.digest !== right.digest
+  ) {
+    return false;
+  }
+  const a = left.admittedSource;
+  const b = right.admittedSource;
+  if (a.bindingRef !== b.bindingRef) {
+    // The Sandbox qualifies the union. The proxy selects one binding by its placeholder.
+    return policyKind === "network";
+  }
+  return a.host !== b.host || a.port !== b.port || separateEndpointPaths(a.path, b.path);
 }
 
 export function intersectPorts(a: PortRanges, b: PortRanges): PortRanges {

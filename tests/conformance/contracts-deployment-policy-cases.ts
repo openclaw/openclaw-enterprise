@@ -57,11 +57,17 @@ function evaluatorPolicyFixture() {
     path: "/calendar/**",
     scopes: ["calendar.read", "profile.read"],
   };
-  const { input, request, binding } = credentialPolicyFixture({
+  const { input, request } = credentialPolicyFixture({
     type: "evaluator",
     ...pin,
     admittedSource,
   });
+  // The connected account granted more scopes than the deployment needs.
+  const authority = {
+    endpoints: [{ host: "api.example.org", port: 443, path: "/calendar/**" }],
+    grantedScopes: ["calendar.read", "calendar.write", "profile.read"],
+  };
+  const binding = { ...calendarAccount("work", "WORK_TOKEN"), evaluatorAuthority: authority };
   const matchSource = (source: typeof admittedSource) => ({
     ...request,
     requestPolicy: { ...request.requestPolicy, admittedSource: source },
@@ -74,6 +80,7 @@ function evaluatorPolicyFixture() {
     matchSource,
     input: {
       ...input,
+      bindings: [binding],
       sandbox: { ...input.sandbox, evaluators: [pin] },
       proxy: { ...input.proxy, evaluators: [pin] },
     },
@@ -210,6 +217,128 @@ export function registerDeploymentPolicyCases(): void {
     }
   });
 
+  test("evaluator bounds on network and injection rules must be authorized by the source record", () => {
+    const { input, binding, request } = evaluatorPolicyFixture();
+    const { evaluatorAuthority, ...withoutAuthority } = binding;
+    const endpoint = evaluatorAuthority.endpoints[0]!;
+    const { binary, host, ports } = request;
+    const transport = { allowed: [{ binary, host, ports }] };
+    // These endpoints share individual fields with the rule, but neither authorizes its full endpoint.
+    const otherEndpoints = [
+      { ...endpoint, path: "/profile/**" },
+      { ...endpoint, port: 8443 },
+    ];
+    for (const candidate of [
+      withoutAuthority,
+      { ...binding, evaluatorAuthority: { ...evaluatorAuthority, endpoints: otherEndpoints } },
+      {
+        ...binding,
+        evaluatorAuthority: { ...evaluatorAuthority, grantedScopes: ["calendar.read"] },
+      },
+    ]) {
+      const policy = { ...input, bindings: [candidate] };
+      assert.deepEqual(policyRefusals(policy), [
+        ["/networkAccessPolicy/allowed/0", "INVALID_VALUE"],
+      ]);
+      // Ordinary transport is authorized. The injection rule must independently check the source.
+      assert.deepEqual(policyRefusals({ ...policy, networkAccessPolicy: transport }), [
+        ["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"],
+      ]);
+    }
+  });
+
+  test("one evaluator can serve two accounts only when both Drivers qualify their combined policy", () => {
+    const { input, pin, binding, request, admittedSource, matchSource } = evaluatorPolicyFixture();
+    const account = calendarAccount("personal", "PERSONAL_TOKEN");
+    const scopes = ["calendar.write"];
+    const personal = {
+      ...account,
+      evaluatorAuthority: {
+        endpoints: binding.evaluatorAuthority.endpoints,
+        grantedScopes: scopes,
+      },
+    };
+    const personalRule = matchSource({ ...admittedSource, bindingRef: account.bindingRef, scopes });
+    const policy = {
+      ...input,
+      bindings: [binding, personal],
+      networkAccessPolicy: { allowed: [request, personalRule] },
+      injectionPolicies: [
+        ...input.injectionPolicies,
+        { bindingRef: account.bindingRef, allowedRequests: [personalRule] },
+      ],
+    };
+    assert.deepEqual(policyRefusals(policy), []);
+    const ungranted = matchSource({ ...admittedSource, bindingRef: personal.bindingRef });
+    assert.deepEqual(
+      policyRefusals({ ...policy, networkAccessPolicy: { allowed: [request, ungranted] } }),
+      [["/networkAccessPolicy/allowed/1", "INVALID_VALUE"]],
+    );
+    assert.deepEqual(
+      policyRefusals({
+        ...policy,
+        sandbox: {
+          ...input.sandbox,
+          supportsNetworkPolicy: (network) => network.allowed.length === 1,
+        },
+      }),
+      [["/networkAccessPolicy/allowed", "INVALID_VALUE"]],
+    );
+    assert.deepEqual(
+      policyRefusals({
+        ...policy,
+        proxy: {
+          ...input.proxy,
+          supportsBindingRequest: (bound) => bound.projection.environment === "WORK_TOKEN",
+        },
+      }),
+      [["/injectionPolicies/1/allowedRequests/0", "INVALID_VALUE"]],
+    );
+
+    // Different evaluator versions can make different decisions at the same endpoint.
+    const otherPin = { ...pin, digest: "2".repeat(64) };
+    const otherRule = {
+      ...personalRule,
+      requestPolicy: { ...personalRule.requestPolicy, ...otherPin },
+    };
+    assert.deepEqual(
+      policyRefusals({
+        ...policy,
+        networkAccessPolicy: { allowed: [request, otherRule] },
+        sandbox: { ...input.sandbox, evaluators: [pin, otherPin] },
+      }),
+      [["/networkAccessPolicy/allowed/1", "INVALID_VALUE"]],
+    );
+  });
+
+  test("one binding can use independent endpoint rows on the same host", () => {
+    const { input, binding, request, admittedSource, matchSource } = evaluatorPolicyFixture();
+    const { evaluatorAuthority } = binding;
+    const endpoint = evaluatorAuthority.endpoints[0]!;
+    for (const [path, issues] of [
+      ["/profile/**", []],
+      ["/calendar/events", [["/networkAccessPolicy/allowed/1", "INVALID_VALUE"]]],
+    ] as const) {
+      const second = matchSource({ ...admittedSource, path, scopes: ["profile.read"] });
+      const allowed = [request, second];
+      const policy = {
+        ...input,
+        bindings: [
+          {
+            ...binding,
+            evaluatorAuthority: {
+              ...evaluatorAuthority,
+              endpoints: [endpoint, { ...endpoint, path }],
+            },
+          },
+        ],
+        networkAccessPolicy: { allowed },
+        injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: allowed }],
+      };
+      assert.deepEqual(policyRefusals(policy), issues, path);
+    }
+  });
+
   test("an evaluator may permit credentialless discovery while injection retains the admitted binding and endpoint", () => {
     const { input, binding, request, admittedSource, matchSource } = evaluatorPolicyFixture();
     const discovery = { ...request, host: "discovery.example.org" };
@@ -255,7 +384,10 @@ export function registerDeploymentPolicyCases(): void {
     }
 
     // An admitted second account still cannot claim the first account's evaluator rule.
-    const other = calendarAccount("personal", "PERSONAL_TOKEN");
+    const other = {
+      ...calendarAccount("personal", "PERSONAL_TOKEN"),
+      evaluatorAuthority: binding.evaluatorAuthority,
+    };
     assert.deepEqual(
       policyRefusals({
         ...policy,
@@ -360,7 +492,7 @@ export function registerDeploymentPolicyCases(): void {
     );
   });
 
-  test("model admission preserves the reviewed raw API-key presentation", () => {
+  test("model admission checks the reviewed provider presentation before proxy support", () => {
     const { input, binding } = credentialPolicyFixture({
       type: "http",
       method: "POST",
@@ -368,23 +500,36 @@ export function registerDeploymentPolicyCases(): void {
     });
     const model = {
       ...binding,
-      consumer: { kind: "model", providerId: "anthropic" },
+      consumer: { kind: "model", providerId: "approved-messages" },
       projection: { environment: "MODEL_KEY", presentation: "x-api-key" },
     } as const;
-    // The same endpoint and request remain admissible only with a proxy that enforces this raw header.
-    assert.deepEqual(policyRefusals({ ...input, bindings: [model] }), [
+    // The fixture supplies the reviewed Anthropic profile separately from the proposed projection.
+    const modelPresentationFor: NonNullable<CredentialPolicyAdmission["modelPresentationFor"]> = (
+      ref,
+      source,
+      provider,
+    ) =>
+      ref === binding.bindingRef &&
+      source.namespaceId === binding.sourceRef.namespaceId &&
+      source.id === binding.sourceRef.id &&
+      provider === "approved-messages"
+        ? "x-api-key"
+        : undefined;
+    const policy = { ...input, bindings: [model], modelPresentationFor };
+    const bothHeaders = { ...input.proxy, supportsBindingRequest: () => true };
+    assert.deepEqual(policyRefusals({ ...policy, proxy: bothHeaders }), []);
+    assert.deepEqual(policyRefusals(policy), [
       ["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"],
     ]);
+    const refused = [["/bindings/0", "INVALID_VALUE"]];
+    assert.deepEqual(policyRefusals({ ...input, bindings: [model], proxy: bothHeaders }), refused);
+    const bearer = {
+      ...model,
+      projection: { ...model.projection, presentation: "bearer" },
+    } as const;
     assert.deepEqual(
-      policyRefusals({
-        ...input,
-        bindings: [model],
-        proxy: {
-          ...input.proxy,
-          supportsBindingRequest: (bound) => bound.projection.presentation === "x-api-key",
-        },
-      }),
-      [],
+      policyRefusals({ ...policy, bindings: [bearer], proxy: bothHeaders }),
+      refused,
     );
   });
 
