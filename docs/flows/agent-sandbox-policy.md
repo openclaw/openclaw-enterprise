@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-13"
-last_updated_session: "01a117f8-113d-7610-83db-37431b054e44"
+last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
 ---
 
 # Agent sandbox policy flow
@@ -117,7 +117,11 @@ authorized editing operation changes this flag.
 `packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
 creation creates its one policy through a database trigger. Constraints enforce
 ownership, document shape, immutable application identity, version transitions,
-and application revision ownership. Agent deletion cascades policy removal and
+and application revision ownership. The in-memory adapter and the PostgreSQL
+update trigger reject saves that remove a pending application, including saves
+that keep the current policy version. The worker can record the expected provider
+resource version and set the same application to `applied` or `failed`.
+Agent deletion cascades policy removal and
 cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
@@ -144,8 +148,14 @@ are bounded by the claim lease. Database and audit failures roll back the pass.
 `apps/controller/src/drivers/sandbox/openshell.ts` verifies exact provider
 ownership, preserves the Sandbox's static policy and generated access, and uses
 native status/UpdateConfig RPCs. A full candidate match plus loaded active version
-is required for `applied`. Transient or unknown outcomes retry within limits;
-terminal stale work becomes an unconfirmed failure. The worker calls
+is required for `applied`. If the current resource version already differs from the
+pinned version and the policy does not match, the worker fails before it sends a write.
+After a refused write, the worker reads the provider again and confirms its lease.
+A matching policy still loading is deferred within the deadline, `applied` is recorded
+only for a loaded active match, and a changed resource version with a nonmatch fails as
+`SANDBOX_POLICY_PROVIDER_FAILED` (the pinned version cannot succeed). Worker shutdown during
+that read rolls back so the next worker recovers the claim; other outcomes retry within limits;
+exhausted abandoned claims become unconfirmed failures. The worker calls
 `failAbandonedSandboxPolicies` inside the same `transactWithQueue` that recovers
 exhausted work, so queue failure, application failure, and audit either all commit
 or remain recoverable after interruption. A failed live request does
@@ -239,7 +249,8 @@ the policy read, only the network policy card states it; the suggestions card is
 - Compare the application revision with the active Agent revision and inspect
   attributable audit evidence before retrying a stale or unconfirmed request.
 - [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
-  exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  exercises HTTP/IAM/storage, application-role refusal of pending application
+  removal, and worker settlement; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
@@ -258,6 +269,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
 - 2026-11-13: Trace the Console’s single save-and-apply request and its atomic admission for a running Agent.
 

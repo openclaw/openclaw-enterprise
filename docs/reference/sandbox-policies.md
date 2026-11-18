@@ -105,6 +105,9 @@ application with its requester, operation ID, snapshot, and expected provider
 resource version. The worker rechecks authority, ownership, lifecycle, and the
 current ceiling before effects. It preserves defaults from the admitted revision.
 A concurrent provider update causes a conflict instead of an overwrite.
+OCC rejects a save that removes a pending application. After the worker records
+`applied` or `failed`, a save that advances the policy to its next version can
+clear the application record.
 
 `pending` means enforcement is unconfirmed. `applied` requires the provider's
 complete desired policy to match the admitted candidate and its active, loaded
@@ -128,7 +131,7 @@ that policy, and the worker does not send it again:
 | `SANDBOX_POLICY_PROTECTED_EXECUTION`   | The version runs under protected execution. Remove the saved rules.                                    |
 | `SANDBOX_POLICY_VALIDATION_FAILED`     | The Driver settings refused the rules. Review, correct and save them.                                  |
 | `SANDBOX_POLICY_PLACEMENT_UNAVAILABLE` | The Compute Driver changed since the version deployed. Deploy a new version.                           |
-| `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure. Refresh and apply again.                                                |
+| `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure or changed version. Refresh and apply again.                             |
 | `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
 
 The last

@@ -66,7 +66,7 @@ Install cert-manager, Gateway API, Envoy Gateway and the matching Agent Sandbox 
 
 The templates below enable private Envoy routing with a `ClusterIP` Service and a separate routing key. OCC checks Agent permissions; the browser connects to OCC’s HTTPS origin. The deployment helpers verify actual Envoy peers and apply Agent network policies. Preserve certificate/hostname verification, exact proxy CIDRs and the fixed native identity’s `operator.admin` grant. Keep model and channel credentials separate from routing credentials. See [private routing](workspace-routing.md#configure-private-routing) for the configuration contract and [existing-resource preparation](workspace-routing.md#enable-routing-for-existing-namespaces-and-agents) when updating an existing installation.
 
-Use an OpenShell-compatible kernel, restricted tenant Pod Security and a `runc` RuntimeClass named `openshell-sandbox` pinned to the Agent group. Check Landlock, seccomp and no-new-privileges before enrolling credentials. For optional Slack support, configure [both required CONNECT proxies](../integrations/slack.md#configure-both-slack-proxies); NAT alone is insufficient.
+Use an OpenShell-compatible kernel and restricted tenant Pod Security. Keep Agent placement on the intended node group through cluster/provider configuration; OCE does not select a RuntimeClass or configure a PSA exemption. Check Landlock, seccomp and no-new-privileges before enrolling credentials. For optional Slack support, configure [both required CONNECT proxies](../integrations/slack.md#configure-both-slack-proxies); NAT alone is insufficient.
 
 ## 1. Prepare the cluster and images
 
@@ -194,7 +194,7 @@ reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
 and put the intended cluster ARN in `eks.clusterArn`.
 
 ```bash
-node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
 ```
 
 Resolve failed and unknown checks before installing. Matching address inventory

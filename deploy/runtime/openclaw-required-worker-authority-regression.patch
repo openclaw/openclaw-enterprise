@@ -1,7 +1,8 @@
 diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/server.required-placement-scopes.test.ts
+index 06f491bb912..a552ad4828c 100644
 --- a/src/gateway/server.required-placement-scopes.test.ts
 +++ b/src/gateway/server.required-placement-scopes.test.ts
-@@ -4,13 +4,20 @@
+@@ -4,13 +4,20 @@ import { afterEach, expect, test, vi } from "vitest";
  import { WebSocket } from "ws";
  import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
  import { waitForGatewayStartup } from "../../test/helpers/gateway-startup.js";
@@ -19,10 +20,10 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
  import * as gateway from "./server.auth.test-helpers.js";
  import * as placementDispatch from "./worker-environments/placement-dispatch.js";
 +import type { WorkerSessionPlacementRecord } from "./worker-environments/placement-record.js";
-
+ 
  gateway.installGatewayTestHooks({ scope: "suite" });
  const temps = useAutoCleanupTempDirTracker(afterEach);
-@@ -26,8 +33,12 @@
+@@ -26,8 +33,12 @@ const writerScopes: NonNullable<GatewayAuthConfig["identityScopes"]>[string] = [
  async function configureWriters(
    identityScopes: NonNullable<GatewayAuthConfig["identityScopes"]>,
    required = true,
@@ -36,7 +37,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
    const auth: GatewayAuthConfig = {
      mode: "trusted-proxy",
      identityScopes,
-@@ -41,9 +52,19 @@
+@@ -41,9 +52,19 @@ async function configureWriters(
    gateway.testState.gatewayAuth = auth;
    gateway.testState.gatewayControlUi = { allowedOrigins: [origin] };
    await writeConfigFile({
@@ -58,10 +59,10 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
        : {}),
    });
    if (required) {
-@@ -118,148 +139,259 @@
+@@ -118,148 +139,259 @@ test.each([false, true])(
    },
  );
-
+ 
 -test("required placement survives disconnect but stops setup when committed caller authority ends", async () => {
 -  const admin = "admin@example.invalid";
 -  const writers = {
@@ -102,7 +103,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +        },
 +      },
 +    );
-
+ 
 -  // Observe real provider setup, never replace it.
 -  const setupCalls: string[] = [];
 -  const dispatchErrors: string[] = [];
@@ -327,7 +328,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +      } else {
 +        await expect(disconnected.created).rejects.toThrow(/closed/);
 +      }
-
+ 
 -  await gateway.withGatewayServer(async ({ port }) => {
 -    await waitForGatewayStartup(port);
 -    using adminConnection = await connectWriter(port, admin, ["operator.admin"]);
@@ -401,7 +402,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -      ["prepareProjectIntent", "createWithRequest"],
 -      true,
 -    );
-
+ 
 -    const revoked = await createThenEndAuthority(writers.scope, async () => {
 -      await commitConfigPatch({
 -        raw: JSON.stringify({ gateway: { auth: { identityScopes: { [writers.scope]: null } } } }),
@@ -429,7 +430,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +      if (!afterAcknowledgment) {
 +        await expect(reassigned.created).rejects.toThrow(/closed|policy changed|role changed/);
 +      }
-
+ 
 -    const unprofiled = await createThenEndAuthority(writers.profile, async () => {
 -      await commitConfigPatch({
 -        raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
@@ -455,9 +456,38 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +  },
 +);
 diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.server.ts
+index e417400c54f..0cfedef1ba7 100644
 --- a/src/gateway/test-helpers.server.ts
 +++ b/src/gateway/test-helpers.server.ts
-@@ -669,13 +669,20 @@
+@@ -1113,7 +1113,7 @@ export async function rpcReq<T extends Record<string, unknown>>(
+   ws: WebSocket,
+   method: string,
+   params?: unknown,
+-  timeoutMs?: number,
++  timeout?: number | AbortSignal,
+ ) {
+   // Config publication leaves in-flight session writers owned by the Gateway.
+   publishGatewayTestConfig();
+@@ -1126,10 +1126,13 @@ export async function rpcReq<T extends Record<string, unknown>>(
+   const { randomUUID } = await import("node:crypto");
+   const id = randomUUID();
+   const started = performance.now();
++  if (typeof timeout === "object") {
++    timeout.throwIfAborted();
++  }
+   const responsePromise = onceMessage<GatewayTestResponse<T | null | undefined>>(
+     ws,
+     responseForId(id),
+-    timeoutMs,
++    timeout,
+   );
+   ws.send(JSON.stringify({ type: "req", id, method, params }));
+   try {
+diff --git a/test/helpers/gateway-websocket.ts b/test/helpers/gateway-websocket.ts
+index 56f3fcc0c68..ee35bd38f58 100644
+--- a/test/helpers/gateway-websocket.ts
++++ b/test/helpers/gateway-websocket.ts
+@@ -108,13 +108,20 @@ export function onceMessage<T extends GatewayTestMessage = GatewayTestMessage>(
    // Full-suite runs can saturate the event loop (581+ files). Keep this high
    // enough to avoid flaky RPC timeouts, but still fail fast when a response
    // never arrives.
@@ -479,7 +509,7 @@ diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.serve
        ws.off("message", handler);
        ws.off("close", closeHandler);
      }
-@@ -690,11 +697,8 @@
+@@ -129,11 +136,8 @@ export function onceMessage<T extends GatewayTestMessage = GatewayTestMessage>(
          resolve(obj);
        }
      }
@@ -493,27 +523,3 @@ diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.serve
      ws.on("message", handler);
      ws.once("close", closeHandler);
    });
-@@ -1155,7 +1159,7 @@
-   ws: WebSocket,
-   method: string,
-   params?: unknown,
--  timeoutMs?: number,
-+  timeout?: number | AbortSignal,
- ) {
-   // Config publication leaves in-flight session writers owned by the Gateway.
-   publishGatewayTestConfig();
-@@ -1167,10 +1171,13 @@
-   }
-   const { randomUUID } = await import("node:crypto");
-   const id = randomUUID();
-+  if (typeof timeout === "object") {
-+    timeout.throwIfAborted();
-+  }
-   const responsePromise = onceMessage<GatewayTestResponse<T | null | undefined>>(
-     ws,
-     responseForId(id),
--    timeoutMs,
-+    timeout,
-   );
-   ws.send(JSON.stringify({ type: "req", id, method, params }));
-   try {

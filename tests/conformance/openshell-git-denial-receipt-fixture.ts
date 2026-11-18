@@ -6,7 +6,8 @@ import type {
 import {
   createOpenShellGitDenial,
   openShellGitDenialFailureStage,
-} from "../helpers/openshell-git-denial.mjs";
+  type GitDenialFailureStage,
+} from "../helpers/openshell-git-denial.ts";
 
 // The numeric destination case exercises the receipt reader's validation.
 type FixtureLogLine = Omit<OpenShellSandboxLogLine, "fields"> & {
@@ -14,7 +15,7 @@ type FixtureLogLine = Omit<OpenShellSandboxLogLine, "fields"> & {
 };
 
 // The installed test may retain only this owner-assigned stage, never raw errors.
-export function refusalAt(stage: string, message: RegExp) {
+export function refusalAt(stage: GitDenialFailureStage, message: RegExp) {
   return (error: unknown) => {
     assert.ok(error instanceof Error);
     assert.match(error.message, message);

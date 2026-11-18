@@ -9,7 +9,8 @@ import type {
   OpenShellProviderResponse,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import {
   deployFiniteAgent,
@@ -24,8 +25,10 @@ import {
 } from "../helpers/finite-git-conversation.ts";
 import {
   createOpenShellGitDenial,
+  gitRemovalDenialCategory,
+  gitRemovalDenialCommand,
   openShellGitDenialFailureStage,
-} from "../helpers/openshell-git-denial.mjs";
+} from "../helpers/openshell-git-denial.ts";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
@@ -135,14 +138,70 @@ test(
       workspace,
       checkpoint: evidence,
     } = fixture;
-    const { agent, revision, suffix, deadlineWallMs, readExecution, original, target, supervisor } =
-      await deployFiniteAgent(t, fixture);
-    const modelKubectl = async (...args: (string | { input?: string; timeout?: number })[]) => {
+    const modelKubectl = async (...args: unknown[]): Promise<string> => {
       const options = args.pop();
       assert.ok(options && typeof options === "object");
       assert.ok(args.every((argument) => typeof argument === "string"));
-      return fixture.kube(args, options);
+      const output: unknown = await fixture.kube(args, options);
+      assert.ok(typeof output === "string");
+      return output;
     };
+    // The same Git-enabled Installation must also start a model-only Agent. This uses the
+    // ordinary API, real worker, Gateway attachment and a genuine model turn before Git starts.
+    const model = process.env.OCC_TEST_OPENAI_MODEL;
+    assert.ok(model);
+    const base = `/namespaces/${namespace.id}`;
+    const configuration = await fixture.request("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("codex", model),
+    });
+    const modelOnly = await fixture.request("POST", `${base}/agents`, {
+      name: `model-only-${randomUUID()}`,
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+    });
+    const role = await fixture.request("POST", `${base}/iam/roles`, {
+      name: `model-only-${randomUUID()}`,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    await fixture.request("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: modelOnly.servicePrincipalId,
+      roleId: role.id,
+      resourceKind: "credential_source",
+      resourceId: modelSource.id,
+    });
+    const modelPath = `${base}/agents/${modelOnly.id}`;
+    await fixture.request("POST", `${modelPath}/runtime-credentials`, {});
+    const modelRevision = await fixture.request("POST", `${modelPath}/deploy`);
+    await observeUntil(
+      "model-only Agent startup",
+      t.signal,
+      async () => {
+        const deployment = await fixture.request(
+          "GET",
+          `${modelPath}/deployments/${modelRevision.id}`,
+        );
+        assert.notEqual(deployment.status, "failed");
+        return deployment.status === "succeeded" ? deployment : undefined;
+      },
+      600_000,
+    );
+    await verifyFirstAgentModel(modelKubectl, {
+      namespaceId: namespace.id,
+      agentId: modelOnly.id,
+      revisionId: modelRevision.id,
+      prompt: undefined,
+      apiKey: undefined,
+      expectProviderKey: false,
+    });
+    await fixture.request("POST", `${modelPath}/stop`);
+    t.diagnostic("Fresh Gateway model source completed a model-only turn with Git configured.");
+
+    const { agent, revision, suffix, deadlineWallMs, readExecution, original, target, supervisor } =
+      await deployFiniteAgent(t, fixture);
     const verifyModelTurn = async (stage: string) => {
       const before = origin.snapshot();
       assert.deepEqual((await readExecution()).identity, original.identity);
@@ -643,15 +702,9 @@ test(
           const startedAt = Date.now();
           // Keep the raw Git error inside the workload. A transport category only
           // qualifies with the exact, ordered supervisor evidence below.
-          const result = await execute(a.target, [
-            "sh",
-            "-ceu",
-            "set +e; error=$(" +
-              git +
-              ' 2>&1); status=$?; set -e; test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127; case "$error" in *"returned error: 403"*|*"response 403"*) printf signed ;; *) printf transport ;; esac',
-          ]);
+          const result = await execute(a.target, gitRemovalDenialCommand(git));
           const endedAt = Date.now();
-          const category = result.stdout.toString("utf8");
+          const category = gitRemovalDenialCategory(result);
           if (category === "signed") {
             assert.equal(mode, "live", "completed detach must refuse before HTTP");
             phase = step.signed;
@@ -683,7 +736,6 @@ test(
               workerUid: previous.workerUid,
             });
           } else {
-            assert.equal(category, "transport");
             phase = step.marker;
             const markerHost = `git-retention-${randomUUID()}.invalid`;
             await execute(a.target, [

@@ -18,17 +18,8 @@ import (
 	"testing"
 )
 
-// Use real kubectl against a local API, including its actual NotFound rendering.
-// Assert the wire operation, not just the arguments given to a mock executable.
-func TestInstallationDoctor(t *testing.T) {
-	if _, err := exec.LookPath("kubectl"); err != nil {
-		t.Skip("requires kubectl")
-	}
-	const job = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
-	const migration = `"scripts/migrate-production.mjs"`
-	failed := strings.Replace(strings.Replace(job, `"type":"Complete"`, `"type":"Failed"`, 1), `"succeeded":1`, `"failed":1`, 1)
-	wrongRelease := strings.Replace(job, `io/instance":"demo"`, `io/instance":"other"`, 1)
-	unguarded := strings.Replace(job, migration+`,"--expect-empty"`, migration, 1)
+func installationCheckArg(t *testing.T) string {
+	t.Helper()
 	checkScript, err := os.ReadFile("../../deploy/helm/openclaw-enterprise/files/check-installation.mjs")
 	if err != nil {
 		t.Fatal(err)
@@ -37,13 +28,28 @@ func TestInstallationDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alteredCheckArg, err := json.Marshal(string(checkScript) + " ")
-	if err != nil {
-		t.Fatal(err)
+	return string(checkArg)
+}
+
+func installationCheckContainer(checkArg string) string {
+	return `{"name":"installation-check","command":["node"],"args":["--input-type=module","-e",` + checkArg + `]}`
+}
+
+// Use real kubectl against a local API, including its actual NotFound rendering.
+// Assert the wire operation, not just the arguments given to a mock executable.
+func TestInstallationDoctor(t *testing.T) {
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		t.Skip("requires kubectl")
 	}
-	asUpgrade := func(job string) string {
-		return strings.Replace(job, `"initContainers":[`, `"initContainers":[{"name":"installation-check","command":["node"],"args":["--input-type=module","-e",`+string(checkArg)+`]},`, 1)
-	}
+	const unchecked = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
+	checkArg := installationCheckArg(t)
+	alteredCheckArg := strings.TrimSuffix(checkArg, `"`) + ` "`
+	check := installationCheckContainer(checkArg)
+	job := strings.Replace(unchecked, `"initContainers":[`, `"initContainers":[`+check+`,`, 1)
+	const migration = `"scripts/migrate-production.mjs"`
+	failed := strings.Replace(strings.Replace(job, `"type":"Complete"`, `"type":"Failed"`, 1), `"succeeded":1`, `"failed":1`, 1)
+	wrongRelease := strings.Replace(job, `io/instance":"demo"`, `io/instance":"other"`, 1)
+	upgrade := strings.Replace(job, migration+`,"--expect-empty"`, migration, 1)
 	withSidecar := func(body string) string {
 		return strings.Replace(body, `"initContainers":[{`, `"initContainers":[{"restartPolicy":"Always",`, 1)
 	}
@@ -55,13 +61,14 @@ func TestInstallationDoctor(t *testing.T) {
 		uid        string
 	}{
 		{"install", 200, job, "Initialization Job (install hook): complete", true, ""},
-		{"unguarded-install", 200, unguarded, "steps do not match", false, ""},
-		{"upgrade", 200, asUpgrade(unguarded), "upgrade hook): complete", true, ""},
-		{"sidecar-migration", 200, withSidecar(job), "runs an initialization step as a sidecar", false, "id"},
-		{"sidecar-upgrade-check", 200, withSidecar(asUpgrade(unguarded)), "runs an initialization step as a sidecar", false, "id"},
-		{"wrong-upgrade-check", 200, strings.Replace(asUpgrade(unguarded), string(checkArg), `"process.exit(0)"`, 1), "steps do not match", false, ""},
-		{"altered-upgrade-check", 200, strings.Replace(asUpgrade(unguarded), string(checkArg), string(alteredCheckArg), 1), "steps do not match", false, ""},
-		{"guarded-upgrade", 200, asUpgrade(job), "steps do not match", false, ""},
+		{"unchecked-upgrade", 200, strings.Replace(unchecked, migration+`,"--expect-empty"`, migration, 1), "steps do not match", false, ""},
+		{"upgrade", 200, upgrade, "upgrade hook): complete", true, ""},
+		{"sidecar-migration", 200, strings.Replace(job, `{"name":"migration"`, `{"restartPolicy":"Always","name":"migration"`, 1), "runs an initialization step as a sidecar", false, "id"},
+		{"sidecar-upgrade-check", 200, withSidecar(upgrade), "runs an initialization step as a sidecar", false, "id"},
+		{"wrong-upgrade-check", 200, strings.Replace(upgrade, checkArg, `"process.exit(0)"`, 1), "steps do not match", false, ""},
+		{"altered-upgrade-check", 200, strings.Replace(upgrade, checkArg, alteredCheckArg, 1), "steps do not match", false, ""},
+		{"unchecked-install", 200, unchecked, "Initialization: unknown. Job steps do not match", false, ""},
+		{"altered-install-check", 200, strings.Replace(job, checkArg, alteredCheckArg, 1), "steps do not match", false, ""},
 		{"extra-install-arg", 200, strings.Replace(job, `"--expect-empty"`, `"--expect-empty","unexpected"`, 1), "steps do not match", false, ""},
 		{"wrong-release", 200, wrongRelease, "did not identify", false, "id"},
 		{"deleting", 200, strings.Replace(job, `"uid":"id"`, `"uid":"id","deletionTimestamp":"now"`, 1), "did not identify", false, "id"},

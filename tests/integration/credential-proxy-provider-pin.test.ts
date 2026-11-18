@@ -8,23 +8,24 @@ import type {
   CredentialGatewayDriver,
   CredentialSource,
   EgressInstallation,
-  EgressRequest,
 } from "../../packages/contracts/src/index.ts";
-import type { PlatformStateStore, PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
-import {
-  CredentialProxy,
-  type EgressAuthorityPorts,
-} from "../../packages/occ/src/credential-proxy.ts";
+import type {
+  OpenClawController,
+  PlatformStateStore,
+  PlatformUnitOfWork,
+} from "../../packages/occ/src/index.ts";
+import { CredentialProxy } from "../../packages/occ/src/credential-proxy.ts";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 
 test("classification diagnostics reject contradictory reports and preserve audit-write refusal", async (t) => {
   // This checks the shared registry's provider and audit ports. The PostgreSQL
   // egress case separately proves signed transport and persisted attribution.
   const f = await syntheticDispatchFixture(t, new EgressSendReceipts(new InMemoryPlatformState()));
-  const ports = f.ports as unknown as EgressAuthorityPorts;
+  const ports = f.ports;
   const peer = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(peer);
   const installed = await ports.installation(peer);
@@ -77,7 +78,7 @@ test("classification diagnostics reject contradictory reports and preserve audit
         body: Buffer.from(
           JSON.stringify({ model: "fixture-model", input: "hello", store: !scenario.accept }),
         ),
-      } as unknown as EgressRequest;
+      };
       const reads = f.reads;
       const result = await proxy.resolve(
         "synthetic-peer",
@@ -348,7 +349,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
     t,
     new EgressSendReceipts(new InMemoryPlatformState()),
   );
-  const ports = synthetic.ports as unknown as EgressAuthorityPorts;
+  const ports = synthetic.ports;
   const syntheticPeer = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(syntheticPeer);
   const installed = await ports.installation(syntheticPeer);
@@ -380,7 +381,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
     "synthetic-peer",
     syntheticPeer.sandboxId,
     {
-      ...(synthetic.request as unknown as EgressRequest),
+      ...synthetic.request,
       bindingId: healthyRoute.binding.binding.id,
     },
     AbortSignal.timeout(5_000),
@@ -893,11 +894,17 @@ test("a source update withholds resolved material after its provider or injector
   assert.equal(f.providerRequests.length, 0);
 });
 
+function assertSandboxNamespaceResolution(
+  compute: ComputeDriver,
+): asserts compute is ComputeDriver & Required<Pick<ComputeDriver, "resolveSandboxNamespace">> {
+  assert.equal(typeof compute.resolveSandboxNamespace, "function");
+}
+
 test("live static registration does not require Compute placement", async (t) => {
   const f = await staticEgressFixture(t, { physicalPlacement: true });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
     throw new Error("placement unavailable");
@@ -1038,8 +1045,8 @@ test("live static registration losing to DELETE preserves its deleting row witho
       }),
   });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace");
   const registration = t.mock.method(gateway, "registerSource");
@@ -1090,4 +1097,294 @@ test("live static registration losing to DELETE preserves its deleting row witho
   assert.equal(retained?.state, "deleting");
   assert.equal(retained?.ownerCapability, source.ownerCapability);
   assert.equal(retained?.driverId, source.driverId);
+});
+
+test("capability discovery omits only conflicting static provider types", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
+  const catalog = await gateway.listSourceTypes({ signal: AbortSignal.timeout(1000) });
+  const model = catalog.find((entry) => entry.type === "openai")!;
+  t.mock.method(gateway, "listSourceTypes", async () => [
+    ...catalog,
+    { ...model, type: "healthy-model" },
+  ]);
+  providers.push(
+    { ...original },
+    {
+      ...original,
+      ref: { ...original.ref, id: "healthy-model" },
+      sourceType: { ...original.sourceType, type: "healthy-model" },
+    },
+  );
+  for (const path of ["/installation", `/namespaces/${f.namespace.id}/agent-capabilities`]) {
+    const response = await f.request("GET", path);
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    const types = response.data.capabilities.credentialSources.types.map(
+      (entry: { type: string }) => entry.type,
+    );
+    assert.equal(types.includes("openai"), false);
+    assert.equal(types.includes("healthy-model"), true);
+  }
+  const reads = f.secretReads;
+  const refused = await f.request("POST", f.path, {
+    body: {
+      name: "conflicting-provider",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
+  });
+  assert.equal(refused.status, 409);
+  assert.match(refused.body.error.message, /duplicate registrations/);
+  assert.equal(f.secretReads, reads);
+});
+
+test("fresh protected enrollment rejects Gateway lifecycle mismatch before material or refresh setup", async (t) => {
+  const f = await staticEgressFixture(t);
+  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
+  const catalog = await gateway.listSourceTypes({ signal: AbortSignal.timeout(1000) });
+  const original = catalog.find((entry) => entry.type === "openai")!;
+  const registration = t.mock.method(gateway, "registerSource");
+  const baseline = await f.request("GET", f.path);
+  const reads = f.secretReads;
+  for (const [index, changed] of [
+    { ...original, rotation: "refresh" as const },
+    { ...original, deviceAuthorization: { harnessId: "codex" } },
+    {
+      ...original,
+      harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" as const },
+    },
+  ].entries()) {
+    const mock = t.mock.method(gateway, "listSourceTypes", async () =>
+      catalog.map((entry) => (entry.type === "openai" ? changed : entry)),
+    );
+    const visible = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+    assert.equal(visible.status, 200);
+    assert.equal(
+      visible.data.capabilities.credentialSources.types.some(
+        (entry: { type: string }) => entry.type === "openai",
+      ),
+      false,
+    );
+    const refused = await f.request("POST", f.path, {
+      body: {
+        name: `lifecycle-mismatch-${index}`,
+        type: "openai",
+        config: { authorized_base_url: f.modelProvider.baseUrl },
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.match(refused.body.error.message, /cannot preserve.*lifecycle/);
+    assert.equal(f.secretReads, reads);
+    assert.equal(registration.mock.callCount(), 0);
+    assert.deepEqual((await f.request("GET", f.path)).data, baseline.data);
+    mock.mock.restore();
+  }
+});
+
+async function ordinaryAdoptionSource(
+  controller: OpenClawController,
+  namespaceId: string,
+  sourceId: string,
+) {
+  return controller.transact(async (unit) => {
+    const source = await unit.credentialSources.findCredentialSource(namespaceId, sourceId);
+    assert.ok(source);
+    assert.equal(source.state, "ready");
+    assert.equal(source.ownerCapability, "credential_gateway");
+    assert.equal(source.driverId, controller.selectedDriver("credential_gateway").id);
+    assert.equal(source.egress, undefined);
+    assert.equal(await unit.credentialSources.hasReferences(namespaceId, sourceId), false);
+    return source;
+  });
+}
+
+test("live adoption refuses duplicate provider identity in either catalog order", async (t) => {
+  const f = await staticEgressFixture(t, { includeLegacy: true });
+  assert.ok("egress" in f && "createNamespaceMember" in f && "signIn" in f);
+  assert.ok(f.legacySource);
+  assert.equal(f.legacySource.egress, undefined);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const before = await ordinaryAdoptionSource(f.controller, f.namespace.id, f.legacySource.id);
+  const gatewayBefore = structuredClone([...f.providers.entries()]);
+  const effectsBefore = [...f.gatewayEffects];
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const injections = [0, 0];
+  const entries = injections.map((_, index): CredentialProviderDefinition => ({
+    ...original,
+    ref: { ...original.ref },
+    inject(value) {
+      injections[index]! += 1;
+      return Reflect.apply(original.inject, this, [value]);
+    },
+  }));
+  const sources = () =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+  const body = {
+    name: "ambiguous-fresh",
+    type: "openai",
+    config: { authorized_base_url: f.modelProvider.baseUrl },
+    secrets: { api_key: f.secret.ref },
+  };
+  providers.splice(0, providers.length, ...entries);
+  assert.equal((await f.request("POST", f.path, { session: null, body })).status, 401);
+  assert.equal((await f.request("POST", f.path, { body: { ...body, name: "" } })).status, 400);
+  const denied = await f.createNamespaceMember("no-source-access", f.namespace.id, []);
+  const session = await f.signIn(denied.credentials);
+  assert.equal((await f.request("POST", f.path, { session, body })).status, 403);
+
+  const outcomes = [];
+  for (const order of [entries, [...entries].reverse()]) {
+    providers.splice(0, providers.length, ...order);
+    injections.fill(0);
+    const count = (await sources()).length;
+    const reads = f.secretReads;
+    const result = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+      body: { adoption: "live", authorityScope: "execution" },
+    });
+    outcomes.push({
+      status: result.status,
+      injections: [...injections],
+      secretReads: f.secretReads - reads,
+      sourceCountDelta: (await sources()).length - count,
+    });
+  }
+  const refused = { status: 409, injections: [0, 0], secretReads: 0, sourceCountDelta: 0 };
+  assert.deepEqual(outcomes, [refused, refused]);
+  assert.equal(f.providerRequests.length, 0);
+  assert.deepEqual(
+    await f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
+    ),
+    before,
+  );
+  assert.deepEqual([...f.providers.entries()], gatewayBefore);
+  assert.deepEqual(f.gatewayEffects, effectsBefore);
+});
+
+test("live adoption keeps catalog order for distinct provider identities", async (t) => {
+  const injections: string[] = [];
+  for (const order of [["catalog-a"], ["catalog-a", "catalog-b"], ["catalog-b", "catalog-a"]]) {
+    const f = await staticEgressFixture(t, { includeLegacy: true });
+    assert.ok("egress" in f);
+    assert.ok(f.legacySource);
+    assert.equal(f.legacySource.egress, undefined);
+    const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+    const saved = [...providers];
+    t.after(() => providers.splice(0, providers.length, ...saved));
+    const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+    const entries = order.map((id): CredentialProviderDefinition => ({
+      ...original,
+      ref: { ...original.ref, id },
+      inject(value) {
+        injections.push(id);
+        return Reflect.apply(original.inject, this, [value]);
+      },
+    }));
+    providers.splice(0, providers.length, ...entries);
+    const before = await ordinaryAdoptionSource(f.controller, f.namespace.id, f.legacySource.id);
+    const reads = f.secretReads;
+    const gatewayBefore = structuredClone([...f.providers.entries()]);
+    const effectsBefore = [...f.gatewayEffects];
+    const result = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+      body: { adoption: "live", authorityScope: "execution" },
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const source = await f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
+    );
+    assert.deepEqual(source?.egress?.key.provider, entries[0]!.ref);
+    assert.equal(source?.driverId, before?.driverId);
+    assert.equal(f.secretReads, reads + 1);
+    assert.equal(f.providerRequests.length, 0);
+    assert.deepEqual([...f.providers.entries()], gatewayBefore);
+    assert.deepEqual(f.gatewayEffects, effectsBefore);
+  }
+  assert.deepEqual(injections, ["catalog-a", "catalog-a", "catalog-b"]);
+});
+
+test("live adoption refuses a provider duplicate added during material resolution", async (t) => {
+  const f = await staticEgressFixture(t, { includeLegacy: true });
+  assert.ok("egress" in f);
+  assert.ok(f.legacySource);
+  assert.equal(f.legacySource.egress, undefined);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const before = await ordinaryAdoptionSource(f.controller, f.namespace.id, f.legacySource.id);
+  const gatewayBefore = structuredClone([...f.providers.entries()]);
+  const effectsBefore = [...f.gatewayEffects];
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  let injections = 0;
+  const provider: CredentialProviderDefinition = {
+    ...original,
+    inject(value) {
+      injections += 1;
+      return Reflect.apply(original.inject, this, [value]);
+    },
+  };
+  providers.splice(0, providers.length, provider);
+  const sources = () =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+  const count = (await sources()).length;
+  const reads = f.secretReads;
+  const release = f.pauseSecretReads();
+  t.after(release);
+  const pending = f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  try {
+    const until = Date.now() + 5_000;
+    while (f.secretReads === reads && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(f.secretReads, reads + 1);
+    // The selected pointer and callbacks stay unchanged; only identity uniqueness changes.
+    providers.push({ ...provider, ref: { ...provider.ref } });
+  } finally {
+    release();
+  }
+  const result = await pending;
+  assert.equal(result.status, 409);
+  assert.equal(injections, 0);
+  assert.equal((await sources()).length, count);
+  assert.equal(f.providerRequests.length, 0);
+  assert.deepEqual(
+    await f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
+    ),
+    before,
+  );
+  assert.deepEqual([...f.providers.entries()], gatewayBefore);
+  assert.deepEqual(f.gatewayEffects, effectsBefore);
+});
+
+test("explicit live adoption does not require Compute placement", async (t) => {
+  const f = await staticEgressFixture(t, { physicalPlacement: true, includeLegacy: true });
+  assert.ok("egress" in f);
+  assert.ok(f.legacySource);
+  await ordinaryAdoptionSource(f.controller, f.namespace.id, f.legacySource.id);
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
+  const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
+    throw new Error("placement unavailable");
+  });
+  const result = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.data.egress.adoption, "live");
+  assert.equal(placement.mock.callCount(), 0);
 });

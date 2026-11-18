@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const script = join(repository, "scripts/upgrade-production-images");

@@ -14,6 +14,7 @@ import {
   SandboxPolicyRecommendationsResponse,
 } from "./sandbox-policy.ts";
 import { Type } from "typebox";
+import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -178,7 +179,56 @@ const runtimeReadErrors = {
   504: ErrorResponseRef,
 } as const;
 
+const nativeChatError = Type.Object({ error: Type.Unknown() }, { additionalProperties: true });
+const chatErrors = Object.fromEntries(
+  Object.entries({
+    ...createErrors,
+    408: ErrorResponseRef,
+    501: ErrorResponseRef,
+    502: ErrorResponseRef,
+    504: ErrorResponseRef,
+  }).map(([status, schema]) => [status, Type.Union([schema, nativeChatError])]),
+);
+
 export const occApiRoutes = [
+  {
+    operationId: "chatWithAgent",
+    method: "POST",
+    path: "/agents/:agentId/chat",
+    action: "openclaw.agents.chat",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Submit an Agent turn and receive native JSON or SSE",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object({ agentId: AgentId }, { additionalProperties: false }),
+      body: Type.Object(
+        {
+          messages: Type.Array(Type.Unknown()),
+          stream: Type.Optional(Type.Boolean()),
+          model: Type.Optional(Type.Literal("openclaw")),
+          user: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+        },
+        { additionalProperties: true },
+      ),
+      response: {
+        ...chatErrors,
+        200: {
+          description: "Native Chat Completions JSON or SSE, without an OCC envelope.",
+          content: {
+            "application/json": { schema: Type.Unknown() },
+            "text/event-stream": { schema: Type.String() },
+          },
+        },
+        default: {
+          description: "Native application error; status and body pass through unchanged.",
+          content: { "application/json": { schema: nativeChatError } },
+        },
+      },
+    },
+  },
   {
     operationId: "startAgentDeviceAuthorization",
     method: "POST",
@@ -1911,6 +1961,22 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentReadResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "listAgentAuditEvents",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/audit-events",
+    action: "openclaw.audit.agent.read",
+    iamAction: "read_audit",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List audit metadata for one Agent",
+    tags: ["Agents"],
+    schema: {
+      params: AgentParams,
+      querystring: AgentAuditQuery,
+      response: { 200: AgentAuditResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {

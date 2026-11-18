@@ -1,79 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import type {
-  OpenShellSandboxCreateRequest,
-  OpenShellSandboxResponse,
-} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
+import type { createOrphanedNativePreparation } from "./sandbox-driver-preparation-cases.ts";
 
-type PreparationMetadata = {
-  name: string;
-  namespace: string;
-  labels: Record<string, string>;
-  uid?: string;
-  deletionTimestamp?: string;
-};
-
-type PreparationResource = {
-  kind: string;
-  metadata: PreparationMetadata;
-};
-
-type PreparationDeployment = PreparationResource & {
-  spec: {
-    template: {
-      metadata: { labels: Record<string, string> };
-      spec: {
-        containers: [{ securityContext: { allowPrivilegeEscalation: boolean } }, ...unknown[]];
-        securityContext: { fsGroup: number };
-      };
-    };
-  };
-};
-
-type PreparationApi = {
-  create: (resource: PreparationResource) => Promise<unknown>;
-  read: (resource: PreparationResource) => Promise<PreparationDeployment>;
-  delete: (
-    resource: PreparationResource,
-    pretty: string | undefined,
-    dryRun: string | undefined,
-    grace: number | undefined,
-    orphan: boolean | undefined,
-    propagation: string | undefined,
-    body: { preconditions: { uid: string | undefined } },
-  ) => Promise<void>;
-  list: (
-    version: string,
-    kind: string,
-    namespace: string,
-    pretty: string | undefined,
-    exact: boolean | undefined,
-    exportValue: boolean | undefined,
-    field: string | undefined,
-    selector: string,
-  ) => Promise<{ items: unknown[] }>;
-};
-
-type HarnessContext = Parameters<OpenShellSandboxDriver["provisionHarness"]>[0];
-type PreparationFixture = {
-  driver: OpenShellSandboxDriver;
-  gateway: {
-    providers: ReadonlyMap<string, unknown>;
-    calls: ReadonlyArray<readonly [string, ...unknown[]]>;
-    createSandbox: (
-      request: OpenShellSandboxCreateRequest,
-    ) => Promise<Pick<OpenShellSandboxResponse, "name" | "serviceUrls">>;
-  };
-  api: PreparationApi;
-  resource: PreparationResource;
-  deployment: PreparationDeployment;
-  context: Omit<HarnessContext, "requirements" | "signal"> & { signal: AbortSignal };
-  requirements: HarnessContext["requirements"];
-};
+type OrphanedNativePreparation = ReturnType<typeof createOrphanedNativePreparation>;
+type PreparationDeployment = Awaited<ReturnType<OrphanedNativePreparation>>["deployment"];
+type PreparationMetadata = NonNullable<PreparationDeployment["metadata"]>;
+type PreparationTemplate = NonNullable<PreparationDeployment["spec"]>["template"];
 
 type PreparerCleanupDependencies = {
-  orphanedNativePreparation: () => Promise<PreparationFixture>;
+  orphanedNativePreparation: OrphanedNativePreparation;
   labelSelectorLabels: (selector: string) => Record<string, string>;
 };
 
@@ -93,7 +29,7 @@ export function registerSandboxDriverPreparerCleanupCases({
     gateway.createSandbox = async (request) => {
       await assert.rejects(api.read(resource), isNotFound);
       sandboxCreates++;
-      return { name: request.name, serviceUrls: {} };
+      return storedSandbox(request, { serviceUrls: {} });
     };
 
     // The original response was lost, not the Deployment. Reconciliation must verify
@@ -108,26 +44,33 @@ export function registerSandboxDriverPreparerCleanupCases({
     for (const scenario of [
       {
         name: "container privilege",
-        change: (template: PreparationDeployment["spec"]["template"]) => {
-          template.spec.containers[0].securityContext.allowPrivilegeEscalation = true;
+        change: (template: PreparationTemplate) => {
+          const security = template.spec?.containers[0]?.securityContext;
+          assert.ok(security);
+          security.allowPrivilegeEscalation = true;
         },
       },
       {
         name: "PVC group identity",
-        change: (template: PreparationDeployment["spec"]["template"]) => {
-          template.spec.securityContext.fsGroup = 1000;
+        change: (template: PreparationTemplate) => {
+          const security = template.spec?.securityContext;
+          assert.ok(security);
+          security.fsGroup = 1000;
         },
       },
       {
         name: "cleanup Pod selector",
-        change: (template: PreparationDeployment["spec"]["template"]) => {
-          template.metadata.labels["openclaw.dev/revision"] = "foreign";
+        change: (template: PreparationTemplate) => {
+          const labels = template.metadata?.labels;
+          assert.ok(labels);
+          labels["openclaw.dev/revision"] = "foreign";
         },
       },
     ]) {
       await t.test(scenario.name, async () => {
         const { driver, gateway, api, resource, deployment, context, requirements } =
           await orphanedNativePreparation();
+        assert.ok(deployment.spec);
         scenario.change(deployment.spec.template);
         const read = api.read;
         api.read = async (target) => (target.kind === "Deployment" ? deployment : read(target));
@@ -138,7 +81,9 @@ export function registerSandboxDriverPreparerCleanupCases({
           driver.provisionHarness({ ...context, requirements }),
           /foreign workspace preparation Deployment/,
         );
-        assert.equal((await api.read(resource)).metadata.uid, deployment.metadata.uid);
+        const uid = deployment.metadata?.uid;
+        assert.ok(uid);
+        assert.equal((await api.read(resource)).metadata?.uid, uid);
       });
     }
   });
@@ -157,8 +102,8 @@ export function registerSandboxDriverPreparerCleanupCases({
         gateway.calls.some(([method]) => method === "deleteSandbox"),
         false,
       );
-      assert.equal(args[0].metadata.name, resource.metadata.name);
-      assert.equal(args[0].metadata.namespace, context.namespace.name);
+      assert.equal(args[0].metadata?.name, resource.metadata.name);
+      assert.equal(args[0].metadata?.namespace, context.namespace.name);
       deletions++;
       await remove(...args);
     };
@@ -197,6 +142,7 @@ export function registerSandboxDriverPreparerCleanupCases({
       ].map((label) => ({
         name: label,
         change: (metadata: PreparationMetadata) => {
+          assert.ok(metadata.labels);
           metadata.labels[label] = "foreign";
         },
         error: /foreign workspace preparation/,
@@ -226,6 +172,7 @@ export function registerSandboxDriverPreparerCleanupCases({
     for (const scenario of changes) {
       await t.test(scenario.name, async () => {
         const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+        assert.ok(deployment.metadata);
         scenario.change(deployment.metadata);
         api.read = async () => structuredClone(deployment);
         api.delete = async () => assert.fail("foreign or unfenced Deployment must not be deleted");
@@ -241,23 +188,27 @@ export function registerSandboxDriverPreparerCleanupCases({
 
   test("OpenShell preparer cleanup preserves a same-name UID replacement", async () => {
     const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+    const { metadata } = deployment;
+    assert.ok(metadata?.uid);
     const conflict = Object.assign(new Error("UID precondition failed"), { code: 409 });
     api.delete = async (_resource, _pretty, _dryRun, _grace, _orphan, propagation, body) => {
       assert.equal(propagation, "Foreground");
-      assert.equal(body.preconditions.uid, deployment.metadata.uid);
+      assert.equal(body?.preconditions?.uid, metadata.uid);
       // Kubernetes refuses deletion after the resource is replaced between GET and DELETE.
-      deployment.metadata.uid = "replacement-uid";
+      metadata.uid = "replacement-uid";
       throw conflict;
     };
     await assert.rejects(driver.cleanup(context), (error) => error === conflict);
-    assert.equal(deployment.metadata.uid, "replacement-uid");
+    assert.equal(metadata.uid, "replacement-uid");
     assert.equal(gateway.providers.size, 1);
   });
 
   test("OpenShell preparer cleanup rejects a replacement observed while waiting for deletion", async () => {
     const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+    const { metadata } = deployment;
+    assert.ok(metadata);
     api.delete = async () => {
-      deployment.metadata.uid = "replacement-uid";
+      metadata.uid = "replacement-uid";
     };
     api.read = async () => structuredClone(deployment);
     await assert.rejects(driver.cleanup(context), /Deployment changed/);
@@ -272,9 +223,11 @@ export function registerSandboxDriverPreparerCleanupCases({
           const { driver, gateway, api, resource, deployment, context } =
             await orphanedNativePreparation();
           const remove = api.delete;
+          const { metadata } = deployment;
+          assert.ok(metadata?.uid);
           if (missingDeployment) {
             await remove(resource, undefined, undefined, undefined, undefined, "Foreground", {
-              preconditions: { uid: deployment.metadata.uid },
+              preconditions: { uid: metadata.uid },
             });
             api.delete = async () => assert.fail("an absent Deployment must not be deleted");
           } else {
@@ -297,7 +250,8 @@ export function registerSandboxDriverPreparerCleanupCases({
             assert.equal(version, "v1");
             assert.equal(kind, "Pod");
             assert.equal(namespace, context.namespace.name);
-            assert.deepEqual(labelSelectorLabels(selector), deployment.metadata.labels);
+            assert.ok(selector);
+            assert.deepEqual(labelSelectorLabels(selector), metadata.labels);
             assert.equal(gateway.providers.size, 1);
             assert.equal(
               gateway.calls.some(([method]) => method === "deleteSandbox"),
@@ -308,7 +262,7 @@ export function registerSandboxDriverPreparerCleanupCases({
             return {
               items:
                 observations === 1
-                  ? [{ metadata: { deletionTimestamp: "2026-10-12T00:00:00Z" } }]
+                  ? [{ metadata: { deletionTimestamp: new Date("2026-10-12T00:00:00Z") } }]
                   : [],
             };
           };
@@ -329,8 +283,10 @@ export function registerSandboxDriverPreparerCleanupCases({
       }
       throw { code: 404 };
     };
+    const { metadata } = deployment;
+    assert.ok(metadata);
     api.delete = async () => {
-      deployment.metadata.deletionTimestamp = "2026-10-12T00:00:00Z";
+      metadata.deletionTimestamp = new Date("2026-10-12T00:00:00Z");
     };
     api.list = async () => {
       assert.equal(gateway.providers.size, 1);

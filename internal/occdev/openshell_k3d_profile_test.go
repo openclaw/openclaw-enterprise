@@ -109,7 +109,7 @@ func jsonValue(t *testing.T, value any) any {
 
 func TestKubernetesOnlyClusterPinsItsNodeAndKeepsVerifiedImages(t *testing.T) {
 	state := kubernetesOnlyOpenShellState(t)
-	args := kubernetesOnlyClusterArgs(state, 41, 6443, 5, "/state/openshell-admission.yaml")
+	args := kubernetesOnlyClusterArgs(state, 41, 6443, 5)
 
 	value := func(flag string) string {
 		index := slices.Index(args, flag)
@@ -131,7 +131,6 @@ func TestKubernetesOnlyClusterPinsItsNodeAndKeepsVerifiedImages(t *testing.T) {
 		"--kubelet-arg=image-gc-low-threshold=99@server:*",
 		"127.0.0.1:3000:30080@loadbalancer",
 		"127.0.0.1:8443:30081@loadbalancer",
-		"/state/openshell-admission.yaml:" + openShellAdmissionContainerPath + ":ro@server:0",
 	} {
 		if !slices.Contains(args, required) {
 			t.Fatalf("missing %q in %v", required, args)
@@ -789,7 +788,9 @@ func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testin
 		t.Fatal("the launcher must wait for the PostgreSQL StatefulSet rollout")
 	}
 	// The chart admits PostgreSQL and the Kubernetes API only as /32 hosts, and
-	// both addresses change on restart. The launcher adds egress that does not.
+	// both addresses change on restart. The launcher adds egress that does not,
+	// also for the upgrade helper's startup preflight Pods, which read the
+	// candidate database and run Compute preflight as the API and worker do.
 	values := readJSONFile(t, filepath.Join(state.directory, "helm-values.json"))
 	if !reflect.DeepEqual(values["database"], jsonValue(t, map[string]any{"cidrs": []string{"10.42.0.20/32"}})) ||
 		!reflect.DeepEqual(values["cluster"], jsonValue(t, map[string]any{"cidrs": []string{"172.30.42.3/32"}, "port": 6443})) {
@@ -809,14 +810,14 @@ func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testin
 	component := func(spec map[string]any) any {
 		return spec["podSelector"].(map[string]any)["matchExpressions"].([]any)[0].(map[string]any)["values"]
 	}
-	if !reflect.DeepEqual(component(database), jsonValue(t, []string{"api", "worker", "initialization"})) ||
+	if !reflect.DeepEqual(component(database), jsonValue(t, []string{"api", "worker", "initialization", "upgrade-preflight"})) ||
 		!reflect.DeepEqual(database["egress"], jsonValue(t, []any{map[string]any{
 			"to":    []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]string{"app": "postgres"}}}},
 			"ports": []any{map[string]any{"protocol": "TCP", "port": 5432}},
 		}})) {
 		t.Fatalf("unexpected PostgreSQL restart egress: %#v", database)
 	}
-	if !reflect.DeepEqual(component(cluster), jsonValue(t, []string{"api", "worker", "initialization", "collector"})) ||
+	if !reflect.DeepEqual(component(cluster), jsonValue(t, []string{"api", "worker", "initialization", "upgrade-preflight", "collector"})) ||
 		!reflect.DeepEqual(cluster["egress"], jsonValue(t, []any{map[string]any{
 			"to":    []any{map[string]any{"ipBlock": map[string]any{"cidr": "172.30.42.0/24"}}},
 			"ports": []any{map[string]any{"protocol": "TCP", "port": 6443}},

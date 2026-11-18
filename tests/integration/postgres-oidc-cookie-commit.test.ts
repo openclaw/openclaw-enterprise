@@ -8,7 +8,7 @@ import {
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { oidcLoginConfiguration } from "../../apps/controller/src/auth/oidc.ts";
 import type { PostgresDevelopmentConfig } from "../../apps/controller/src/composition/development-postgres.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
@@ -31,7 +31,10 @@ import {
   readAccount,
 } from "../helpers/production-sign-in.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import {
+  databaseUrl as selectedDatabaseUrl,
+  requiresPostgres,
+} from "../helpers/postgres-database.mjs";
 
 type App = Awaited<ReturnType<typeof composePostgresDevelopment>>;
 type CommitAckProxy = Awaited<ReturnType<typeof commitAckProxy>>;
@@ -45,6 +48,7 @@ test(
     const password = "commit-recovery-long-password";
     const authSecret = "commit-cookie-test-secret-at-least-32-bytes";
     const origin = "https://console.oce.localhost";
+    const databaseUrl = selectedDatabaseUrl;
     assert.ok(databaseUrl);
     function injectLocalhost(
       target: App,

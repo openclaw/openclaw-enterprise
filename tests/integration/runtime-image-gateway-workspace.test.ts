@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -14,15 +14,15 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { codexGatewayModelConfiguration } from "../../apps/controller/src/drivers/compute/codex-model-configuration.ts";
 import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import type { WorkspaceNodeHotApplyReceipt } from "../fixtures/runtime-workspace-node-hot-apply.ts";
+import { runDocker, commandOutput } from "../helpers/runtime-image-docker.ts";
+import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   imageTestOptions,
-  runDocker,
-  commandOutput,
   createAdmittedRuntimeImageConfiguration,
-  jsonLogEntries,
   runGatewaySmoke,
   assertGatewayLogEntry,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 function requiredRecord(value: unknown): Record<string, unknown> {
   const record = asRecord(value);
@@ -45,7 +45,7 @@ function lastOutputRecord(stdout: string): Record<string, unknown> {
 }
 
 // Codex Gateway cases on the real runtime image, split from
-// runtime-image-startup.test.mjs by measured case durations so CI runs them
+// runtime-image-startup.test.ts by measured case durations so CI runs them
 // beside it: the Gateway hot-loads its workspace node binding in place,
 // custom-provider subagents keep their native model IDs in the remote workspace,
 // and a write-scoped run's native command approval reaches the reviewer.
@@ -108,9 +108,11 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
           "OPENCLAW_POD_UID=pod-workspace-node",
         ],
       });
-      const source = await readFile(
-        new URL("../fixtures/runtime-workspace-node-hot-apply.mjs", import.meta.url),
-        "utf8",
+      const source = stripTypeScriptTypes(
+        await readFile(
+          new URL("../fixtures/runtime-workspace-node-hot-apply.ts", import.meta.url),
+          "utf8",
+        ),
       );
       const { stdout } = await runDocker(
         [
@@ -125,9 +127,11 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         ],
         { timeout: 300_000 * imageSmokeTimeoutMultiplier },
       );
-      const result = lastOutputRecord(stdout);
+      const line = stdout.trim().split("\n").at(-1);
+      assert.ok(line, "expected workspace node receipt");
+      const result = JSON.parse(line) as WorkspaceNodeHotApplyReceipt;
       assert.equal(result.sameProcesses, true);
-      assert.equal(requiredRecord(result.fileTransferAfter).state, "active");
+      assert.equal(result.fileTransferAfter.state, "active");
       assert.equal(result.readBefore, "served by the Gateway host");
       assert.equal(result.readAfter, "served by the workspace node");
       const inspect = await runDocker([

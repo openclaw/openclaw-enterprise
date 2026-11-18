@@ -5,16 +5,16 @@ import pg from "pg";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerWorker, type ControllerWorker } from "../../apps/controller/src/worker.ts";
-import type {
-  Agent,
-  AgentRevision,
-  ComputeDriver,
-  InitialWorkspaceFiles,
-  Installation,
-  Principal,
-  WorkspaceSetup,
+import {
+  WORKSPACE_DEFAULTS_ID,
+  type Agent,
+  type AgentRevision,
+  type ComputeDriver,
+  type InitialWorkspaceFiles,
+  type Installation,
+  type Principal,
+  type WorkspaceSetup,
 } from "../../packages/contracts/src/index.ts";
-import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
 import {
   OpenClawController,
   PostgresPlatformState,
@@ -25,14 +25,14 @@ import {
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 import {
-  authorizedPrincipal,
   createBackendWorkerDrivers,
   databaseUrl,
   ensureInstallation,
   requiresPostgres,
 } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type WorkRow = {
   state: ControllerWorkState;
