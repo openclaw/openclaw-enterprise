@@ -40,7 +40,7 @@
     "tests/integration/agent-create-validate-api.test.ts",
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
-    "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner.test.ts",
     "tests/integration/ci-runner-native-child.test.ts",
     "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
@@ -282,7 +282,7 @@
       "path": "tests/integration/local-first-agent-session-identity.test.ts"
     },
     {
-      "path": "tests/integration/ci-runner.test.mjs",
+      "path": "tests/integration/ci-runner.test.ts",
       "expectedTests": [
         "complete lifecycle preserves phase failures and performs owned cleanup",
         "complete lifecycle drains interrupted preparation before cleanup and never starts tests",

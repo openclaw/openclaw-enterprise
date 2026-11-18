@@ -157,10 +157,8 @@ DELETE; POST does not replay configuration.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-Device authorization registers an empty source; paired Refresh fences the private
-session. `withSourceToken` may refresh during authorized callbacks. The
-[refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
-traces exchange and cancellation.
+OCC registers the source before login. The [refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
+traces polling, cancellation, and source use.
 
 ### 4. Bind the source to an Agent
 
@@ -377,6 +375,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 - 2026-11-18 06:42: Remove source-create protection selection and report admitted provider protection. (authoring-run/deb16d3b-e25e-4b06-b8b5-fa14f7121a08 - 73a9c6467899a076dc9e0a5f8162fcf4f2af0cf6)
 
 - 2026-11-18 05:30: Expose the recorded live model authorization profile in source metadata. (authoring-run/37e75cb4-4947-44ab-8be4-6a3f6726be01 - 514390283e7f2a3638eeee5427846e8215556c84)
+
+- 2026-11-17 19:24: Correct session ownership. (authoring-run/a1a47d55-3248-4349-81a2-ca786027b634 - c5ddcd80cb4cfcd0b969a52ef5c4cafff552a8e8)
 
 - 2026-11-13 15:44: Recheck the Git-only model lifecycle before Kubernetes attachment and release. (authoring-run/f3a542b0-ca6b-426f-8759-3ca2500f79ce - a14ccd99)
 

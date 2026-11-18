@@ -183,6 +183,7 @@ export async function composePostgresDevelopment(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(drivers?.installation),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,

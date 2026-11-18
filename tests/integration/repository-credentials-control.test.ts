@@ -1009,6 +1009,18 @@ async function boundControlFixture(
   const input = inputFor(firstBinding.repositoryRef);
   const receipts = await startReceiptState(receiptResources, fixture, bindings, deadlineWallMs);
   const freshId = () => `${fixture.clock.wallNow()}-${randomUUID()}`;
+  const prepareAdmission = async (input: RepositoryCredentialBoundSessionInput) => {
+    const id = freshId();
+    await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+    return id;
+  };
+  const readReceipt = async (id: string) => {
+    const value = await receipts.state.read((view) =>
+      view.repositorySessions.findBrokerReceipt(id),
+    );
+    assert.ok(value);
+    return value;
+  };
   const send = (value: object, id = freshId(), socketPath = fixture.config.gateway.controlSocket) =>
     control(
       socketPath,
@@ -1017,7 +1029,17 @@ async function boundControlFixture(
       { ...value, durableAdmission: true },
       { "x-admission-id": id },
     );
-  return { ...fixture, resources, input, inputFor, freshId, send, receipts };
+  return {
+    ...fixture,
+    resources,
+    input,
+    inputFor,
+    freshId,
+    prepareAdmission,
+    readReceipt,
+    send,
+    receipts,
+  };
 }
 
 test(
@@ -1234,12 +1256,7 @@ test(
       ...defaultRegistryRepositories,
       { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
     ]);
-    const { inputFor, send, freshId, clock } = fixture;
-    const prepared = async (input: RepositoryCredentialBoundSessionInput) => {
-      const id = freshId();
-      await fixture.receipts.prepare(id, input.repositoryRef, input.durationSeconds);
-      return id;
-    };
+    const { inputFor, send, freshId, prepareAdmission, clock } = fixture;
     const first = inputFor("repo-a");
     const retried = inputFor("repo-b");
     const recovered = inputFor("repo-c");
@@ -1248,11 +1265,11 @@ test(
       status: 503,
       body: { error: "unavailable" },
     });
-    const opened = await send(first, await prepared(first));
+    const opened = await send(first, await prepareAdmission(first));
     assert.equal(opened.status, 201);
     // Session capacity refuses these opens; neither may strand a durable reservation.
-    const retriedId = await prepared(retried);
-    const recoveredId = await prepared(recovered);
+    const retriedId = await prepareAdmission(retried);
+    const recoveredId = await prepareAdmission(recovered);
     for (const [input, id] of [
       [retried, retriedId],
       [recovered, recoveredId],
@@ -1351,29 +1368,17 @@ test(
       { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
       { repositoryRef: "repo-d", repository: "fixture/fourth", repositoryId: "76" },
     ]);
-    const { inputFor, send, freshId, receipts } = fixture;
-    const receipt = async (id: string) => {
-      const value = await receipts.state.read((view) =>
-        view.repositorySessions.findBrokerReceipt(id),
-      );
-      assert.ok(value);
-      return value;
-    };
-    const prepared = async (input: RepositoryCredentialBoundSessionInput) => {
-      const id = freshId();
-      await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
-      return id;
-    };
+    const { inputFor, send, prepareAdmission, readReceipt, receipts } = fixture;
     const missing = { status: 404, body: { error: "admission-missing" } };
 
     // The journal reserves an admission the broker then refuses as invalid.
     const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
-    const invalidId = await prepared(invalid);
+    const invalidId = await prepareAdmission(invalid);
     assert.deepEqual(await send(invalid, invalidId), {
       status: 400,
       body: { error: "invalid-request" },
     });
-    assert.equal((await receipt(invalidId)).state, "fenced");
+    assert.equal((await readReceipt(invalidId)).state, "fenced");
     assert.deepEqual(await send(invalid, invalidId), missing);
     assert.deepEqual(await send({ ...invalid, recoverOnly: true }, invalidId), missing);
 
@@ -1401,46 +1406,46 @@ test(
       return result;
     };
     const unbound = inputFor("repo-b");
-    const unboundId = await prepared(unbound);
+    const unboundId = await prepareAdmission(unbound);
     calls = 0;
     outcome = "refused";
     assert.deepEqual(await send(unbound, unboundId), {
       status: 503,
       body: { error: "unavailable" },
     });
-    assert.equal((await receipt(unboundId)).state, "fenced");
+    assert.equal((await readReceipt(unboundId)).state, "fenced");
     assert.deepEqual(await send(unbound, unboundId), missing);
     assert.deepEqual(await send({ ...unbound, recoverOnly: true }, unboundId), missing);
 
     // The journal is away for the bind and the fence; a retry fences instead.
     const away = inputFor("repo-d");
-    const awayId = await prepared(away);
+    const awayId = await prepareAdmission(away);
     calls = 0;
     outcome = "away";
     assert.deepEqual(await send(away, awayId), { status: 503, body: { error: "unavailable" } });
-    assert.equal((await receipt(awayId)).state, "reserved");
+    assert.equal((await readReceipt(awayId)).state, "reserved");
     outcome = undefined;
     assert.deepEqual(await send(away, awayId), missing);
-    assert.equal((await receipt(awayId)).state, "fenced");
+    assert.equal((await readReceipt(awayId)).state, "fenced");
     assert.deepEqual(await send({ ...away, recoverOnly: true }, awayId), missing);
 
     // The bind is recorded but its answer is lost: the fence cannot apply, and the
     // closed session's disposal is recorded instead.
     const lost = inputFor("repo-c");
-    const lostId = await prepared(lost);
+    const lostId = await prepareAdmission(lost);
     calls = 0;
     outcome = "lost";
     assert.deepEqual(await send(lost, lostId), { status: 503, body: { error: "unavailable" } });
     outcome = undefined;
     await waitUntil(
       "the lost session's receipt to be disposed",
-      async () => (await receipt(lostId)).state === "disposed",
+      async () => (await readReceipt(lostId)).state === "disposed",
       { timeoutMs: 5000, intervalMs: 10 },
     );
     const recovered = await send({ ...lost, recoverOnly: true }, lostId);
     assert.equal(recovered.status, 200);
     assert.equal(recovered.body.state, "DISPOSED");
-    assert.equal(recovered.body.sessionId, (await receipt(lostId)).sessionId);
+    assert.equal(recovered.body.sessionId, (await readReceipt(lostId)).sessionId);
   },
 );
 
@@ -1449,14 +1454,7 @@ test(
   { timeout: 15000 },
   async (t) => {
     const fixture = await boundControlFixture(t, {}, defaultRegistryRepositories);
-    const { inputFor, send, freshId, receipts } = fixture;
-    const receipt = async (id: string) => {
-      const value = await receipts.state.read((view) =>
-        view.repositorySessions.findBrokerReceipt(id),
-      );
-      assert.ok(value);
-      return value;
-    };
+    const { inputFor, send, freshId, readReceipt, receipts } = fixture;
     const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
     const id = freshId();
     await receipts.prepare(id, invalid.repositoryRef, invalid.durationSeconds);
@@ -1482,10 +1480,10 @@ test(
       status: 400,
       body: { error: "invalid-request" },
     });
-    assert.equal((await receipt(id)).state, "reserved");
+    assert.equal((await readReceipt(id)).state, "reserved");
     receipts.state.transact = transact;
     assert.deepEqual(await send({ ...invalid, recoverOnly: true }, id), missing);
-    assert.equal((await receipt(id)).state, "fenced");
+    assert.equal((await readReceipt(id)).state, "fenced");
     assert.deepEqual(await send(invalid, id), missing);
   },
 );
@@ -1501,19 +1499,7 @@ test(
       ...defaultRegistryRepositories,
       { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
     ]);
-    const { inputFor, send, freshId, clock, receipts } = fixture;
-    const receipt = async (id: string) => {
-      const value = await receipts.state.read((view) =>
-        view.repositorySessions.findBrokerReceipt(id),
-      );
-      assert.ok(value);
-      return value;
-    };
-    const prepared = async (input: RepositoryCredentialBoundSessionInput) => {
-      const id = freshId();
-      await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
-      return id;
-    };
+    const { inputFor, send, freshId, prepareAdmission, readReceipt, clock, receipts } = fixture;
     const transact = receipts.state.transact;
     // Each entry decides one transaction: true fails it. Past the plan, `down` decides.
     let plan: boolean[] = [];
@@ -1532,7 +1518,7 @@ test(
     const refused: [RepositoryCredentialBoundSessionInput, string][] = [];
     // A refused open: the reservation commits, then the fence transaction fails.
     const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
-    const invalidId = await prepared(invalid);
+    const invalidId = await prepareAdmission(invalid);
     plan = [false, true];
     assert.deepEqual(await send(invalid, invalidId), {
       status: 400,
@@ -1542,7 +1528,7 @@ test(
     // A failed bind: the reservation commits, then the bind and the fence fail. The
     // broker closes the session it never handed out.
     const unbound = inputFor("repo-b");
-    const unboundId = await prepared(unbound);
+    const unboundId = await prepareAdmission(unbound);
     plan = [false, true, true];
     assert.deepEqual(await send(unbound, unboundId), {
       status: 503,
@@ -1550,7 +1536,7 @@ test(
     });
     refused.push([unbound, unboundId]);
     for (const [, id] of refused) {
-      assert.equal((await receipt(id)).state, "reserved");
+      assert.equal((await readReceipt(id)).state, "reserved");
     }
     const valid = inputFor("repo-c");
     // Both records fill capacity inside their admission window.
@@ -1568,15 +1554,15 @@ test(
       body: { error: "overloaded" },
     });
     for (const [, id] of refused) {
-      assert.equal((await receipt(id)).state, "reserved");
+      assert.equal((await readReceipt(id)).state, "reserved");
     }
     // Once a fence commits, its record is forgotten and the next admission opens.
     down = false;
-    const opened = await send(valid, await prepared(valid));
+    const opened = await send(valid, await prepareAdmission(valid));
     assert.equal(opened.status, 201);
     assert.equal(sessionResult(opened.body).session.state, "OPEN");
     for (const [input, id] of refused) {
-      assert.equal((await receipt(id)).state, "fenced");
+      assert.equal((await readReceipt(id)).state, "fenced");
       assert.deepEqual(await send(input, id), {
         status: 404,
         body: { error: "admission-missing" },

@@ -116,13 +116,10 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preRestartContinuation";
   }
   if (count === 81 && completedCount > 81) {
-    return "preRequestCredentialApprovals";
+    return "preAuthenticationStates";
   }
   if (count === 82 && completedCount > 82) {
-    return "preRequestModelDriverIdentity";
-  }
-  if (count === 83 && completedCount > 83) {
-    return "preControllerWorkReadiness";
+    return "preRequestCredentialApprovals";
   }
   if (count === completedCount) {
     return "completed";
