@@ -316,7 +316,7 @@ export function postgresConnectionTemplates(
           "code" in error &&
           (error.code === "23001" || error.code === "23503") &&
           "constraint" in error &&
-          (error.constraint === "connection_sessions_template_version" ||
+          (error.constraint === "authentication_states_template_version" ||
             error.constraint === "saved_connections_template_version")
         ) {
           throw new ResourceStateConflictError("The connection template is in use.");

@@ -2686,22 +2686,22 @@ export const authenticationStates = occSchema.table(
   },
   (table) => [
     check(
-      "connection_sessions_selected_scopes_valid",
+      "authentication_states_selected_scopes_valid",
       sql`array_position(${table.selectedScopes},NULL) IS NULL`,
     ),
     check(
-      "connection_sessions_expiry_after_creation",
+      "authentication_states_expiry_after_creation",
       sql`${table.expiresAt} > ${table.createdAt}`,
     ),
     foreignKey({
-      name: "connection_sessions_source_owner",
+      name: "authentication_states_source_owner",
       columns: [table.namespaceId, table.credentialSourceId],
       foreignColumns: [credentialSources.namespaceId, credentialSources.id],
     })
       .onDelete("cascade")
       .onUpdate("restrict"),
     foreignKey({
-      name: "connection_sessions_template_version",
+      name: "authentication_states_template_version",
       columns: [table.connectionTemplateId, table.connectionTemplateVersion],
       foreignColumns: [
         oauthConnectionTemplateVersions.templateId,
