@@ -34,6 +34,7 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   assertReleasedControllerCompatibility,
@@ -1272,7 +1273,7 @@ const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 
 // A revision admitted before 0060 carries no execution admission. The upgrade records
 // the unprotected decision it was admitted under. Existing revisions have no first-deployment
-// recovery binding; every other stored field stays identical.
+// recovery binding or explicit network egress mode.
 function upgradedCanonicalData(data) {
   return {
     ...data,
@@ -1283,6 +1284,7 @@ function upgradedCanonicalData(data) {
       value: {
         ...value,
         first_deployment_digest: null,
+        network_egress_mode: null,
         admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
           ? value.admitted_spec
           : {
@@ -1313,10 +1315,15 @@ async function assertUpgradedRevisionReadable(db) {
     assert.equal(found?.id, id, "findRevision must decode the pre-upgrade revision");
     assert.deepEqual(found.executionAdmission, legacyExecutionAdmission);
     assert.equal(found.egressPlan, undefined);
+    assert.equal(found.networkEgressMode, undefined);
     const listed = await state.read((view) => view.revisions.listRevisions(namespaceId, agentId));
     assert.deepEqual(
-      listed.map((revision) => [revision.id, revision.executionAdmission]),
-      [[id, legacyExecutionAdmission]],
+      listed.map((revision) => [
+        revision.id,
+        revision.executionAdmission,
+        revision.networkEgressMode,
+      ]),
+      [[id, legacyExecutionAdmission, undefined]],
       "listRevisions must decode the pre-upgrade revision",
     );
   } finally {
@@ -1391,6 +1398,45 @@ async function assertUpgradedRevisionReadable(db) {
       .count,
     1,
   );
+
+  const modelDriver = { id: "model", implementation: "test", configurationId: "a".repeat(64) };
+  const insertRequestModel = (driver) => insertRequestModelRevision(db, id, driver);
+  await assert.rejects(insertRequestModel({ ...modelDriver, id: false }), invalidAdmission);
+  await assert.rejects(insertRequestModel({ ...modelDriver, id: " \t\u00a0" }), invalidAdmission);
+  await assert.rejects(
+    insertRequestModel({ ...modelDriver, implementation: {} }),
+    invalidAdmission,
+  );
+  await db.app.query("BEGIN");
+  try {
+    assert.equal((await insertRequestModel(modelDriver)).rowCount, 1);
+  } finally {
+    await db.app.query("ROLLBACK");
+  }
+}
+
+async function insertRequestModelRevision(db, existingRevision, driver) {
+  const id = `rev_${randomUUID()}`;
+  const plan = {
+    authorization: "online-request",
+    driver,
+    routes: [
+      { binding: { grant: { kind: "inference" }, source: { source: { id: "model-source" } } } },
+    ],
+  };
+  return db.app.query(
+    `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+     SELECT $1, namespace_id, agent_id, 2,
+       jsonb_set(admitted_spec, '{harness}', (admitted_spec->'harness') || '{"overrides":{},"configuration":{}}'::jsonb)
+       || jsonb_build_object(
+         'harness_auth', (admitted_spec->'harness_auth') || '{"protectedExecutionVersion":8}'::jsonb,
+         'execution_admission', '{"version":8,"mode":"protected"}'::jsonb,
+         'egress_plan', $3::jsonb || jsonb_build_object('execution', jsonb_build_object(
+           'namespaceId', namespace_id, 'agentId', agent_id, 'revisionId', $1::text))
+       ),
+       NULL, now() FROM occ.agent_revisions WHERE id=$2`,
+    [id, existingRevision, plan],
+  );
 }
 
 /**
@@ -1412,7 +1458,7 @@ async function canonicalData(db) {
       "gateway_managed_mode",
     ],
     agent_revisions: ["gateway_managed_mode"],
-    controller_work: ["work_kind", "audit_attempt_id"],
+    controller_work: ["work_kind", "audit_attempt_id", "readiness_deferred"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -1545,13 +1591,14 @@ test(
           history,
         });
         await assertCompletedHistory(db, receipts);
-        // Public 0077 adds the audit-attempt column without changing queued work.
+        // The later migrations add bounded audit and readiness fields without changing queued work.
         const upgradedCustody = {
           ...before,
-          work:
-            prefix === 76
-              ? before.work.map((row) => ({ ...row, audit_attempt_id: null }))
-              : before.work,
+          work: before.work.map((row) => ({
+            ...row,
+            ...(prefix === 76 && { audit_attempt_id: null }),
+            readiness_deferred: false,
+          })),
         };
         const manifest = JSON.parse(
           await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
@@ -1602,6 +1649,108 @@ test(
         }
       });
     }
+  },
+);
+
+test(
+  "Canonical readiness migration defaults historical work to ineligible and constrains ownership",
+  requiresHistoryPostgres,
+  async (context) => {
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "readiness", {
+      prefix: 82,
+    });
+    const namespaceId = `ns_${randomUUID()}`;
+    const { agent: agentId, revision: revisionId } = await seedCanonicalAgent(db, namespaceId, {
+      computeAdmission: true,
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    const idempotencyKey = `agent_revision:${revisionId}:reconcile`;
+    const actorId = `service-agent-${agentId}`;
+    // Historical readiness evidence must not backfill authority during migration.
+    await db.app.query(
+      `INSERT INTO occ.controller_work
+       (idempotency_key,namespace_id,agent_id,revision_id,actor_id,state,available_at,created_at,updated_at)
+       VALUES($1,$2,$3,$4,$5,'queued',now(),now(),now())`,
+      [idempotencyKey, namespaceId, agentId, revisionId, actorId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.audit_events
+       (id,occurred_at,kind,actor_id,action,namespace_id,resource_kind,resource_id,outcome,details)
+       VALUES($1,clock_timestamp(),'mutation',$2,'reconcile',$3,'agent_revision',$4,'success',$5)`,
+      [
+        `aud_${randomUUID()}`,
+        actorId,
+        namespaceId,
+        revisionId,
+        { workId: idempotencyKey, reasonCode: "REVISION_INCOMPLETE" },
+      ],
+    );
+    const receipts = await historyReceipts(db.migrator);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preControllerWorkReadiness",
+    });
+    await assertCompletedHistory(db, receipts);
+    assert.deepEqual(await runHistoryCommand(db, "production", "--require-current"), {
+      ok: true,
+      history: "completed",
+    });
+    const queue = new PostgresWorkQueue(db.app);
+    const owner = { namespaceId, agentId, revisionId };
+    const marker = async () =>
+      (
+        await db.app.query(
+          "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+          [idempotencyKey],
+        )
+      ).rows[0].readiness_deferred;
+    assert.equal(await marker(), false);
+    assert.equal(await queue.requestCredentialCandidateEligible(owner), false);
+    const claim = await queue.claim();
+    assert.ok(claim);
+    await queue.defer(claim, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    assert.equal(await marker(), true);
+    await queue.enqueue({ ...owner, actorId, idempotencyKey });
+    assert.equal(await marker(), true, "idempotent enqueue preserves current readiness");
+    const invalidReadiness = (error) =>
+      error.code === "23514" && error.constraint === "controller_work_readiness_deferred_owner";
+    // These work shapes are valid independently of readiness eligibility.
+    for (const rewrite of [
+      "state='succeeded', completed_at=now(), reason_code='DONE'",
+      "work_kind='provisioning', agent_id=NULL, revision_id=NULL",
+      "agent_target='credentials_withdrawn'",
+      "idempotency_key='other'",
+      "agent_id=NULL, revision_id=NULL, namespace_target='ready'",
+    ]) {
+      await assert.rejects(
+        db.migrator.query(`UPDATE occ.controller_work SET ${rewrite} WHERE idempotency_key=$1`, [
+          idempotencyKey,
+        ]),
+        invalidReadiness,
+      );
+    }
+    // With both owners NULL the key equality is UNKNOWN, which a CHECK alone accepts.
+    const cleanupKey = repositoryRemovalWorkKey(revisionId);
+    await db.app.query(
+      `INSERT INTO occ.controller_work
+       (idempotency_key,namespace_id,actor_id,available_at,created_at,updated_at)
+       VALUES($1,$2,$3,now()+interval '1 hour',now(),now())`,
+      [cleanupKey, namespaceId, actorId],
+    );
+    await assert.rejects(
+      db.app.query(
+        "UPDATE occ.controller_work SET readiness_deferred=true WHERE idempotency_key=$1",
+        [cleanupKey],
+      ),
+      invalidReadiness,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const again = await queue.claim();
+    assert.ok(again);
+    assert.equal(await marker(), false);
+    await queue.complete(again);
+    assert.equal(await queue.requestCredentialCandidateEligible(owner), false);
   },
 );
 
@@ -1760,6 +1909,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRequestCredentialApprovals"],
+      [81, "preRequestModelDriverIdentity"],
+      [82, "preControllerWorkReadiness"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1786,6 +1938,14 @@ test(
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+        if (history === "preRequestCredentialApprovals") {
+          const completed = await historySnapshot(db);
+          assert.deepEqual(await runHistoryCommand(db, "production", "--require-current"), {
+            ok: true,
+            history: "completed",
+          });
+          assert.deepEqual(await historySnapshot(db), completed);
+        }
         // Upgrading an existing revision must never invent a recoverable first-deployment intent.
         const existingBindings = await db.app.query(
           "SELECT first_deployment_digest FROM occ.agent_revisions",
@@ -2061,6 +2221,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRequestCredentialApprovals"],
+      [81, "preRequestModelDriverIdentity"],
+      [82, "preControllerWorkReadiness"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2260,6 +2423,10 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRequestCredentialApprovals"],
+      [81, "preRequestModelDriverIdentity"],
+      [82, "preControllerWorkReadiness"],
+      [83, "preNetworkEgressMode"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2422,6 +2589,226 @@ test(
           history,
         });
         await assertCompletedHistory(db, before.receipts);
+      });
+    }
+
+    await context.test(
+      "a pending migration refuses a stored malformed request-model Driver",
+      async (child) => {
+        const db = await historyDatabase(child, fixture, "malformedmodel", { prefix: 81 });
+        const { revision } = await seedCanonicalAgent(db, `ns_${randomUUID()}`, {
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: true,
+        });
+        const malformed = { id: false, implementation: "test", configurationId: "a".repeat(64) };
+        assert.equal((await insertRequestModelRevision(db, revision, malformed)).rowCount, 1);
+        const before = await historySnapshot(db);
+        assert.equal(before.receipts.length, 81);
+        assert.deepEqual(
+          await runHistoryMigration(db, "development", undefined, undefined, (error) => {
+            const failure = error?.cause ?? error;
+            assert.equal(failure?.code, "23514");
+            assert.equal(failure?.constraint, "agent_revisions_execution_admission");
+          }),
+          { ok: false, code: "MIGRATION_FAILED" },
+        );
+        assert.deepEqual(await historySnapshot(db), before);
+        const stored = await db.app.query(
+          "SELECT admitted_spec #> '{egress_plan,driver,id}' AS driver FROM occ.agent_revisions WHERE revision_number=2",
+        );
+        assert.deepEqual(stored.rows, [{ driver: false }]);
+      },
+    );
+
+    for (const { provider, restored } of [
+      { provider: false, restored: false },
+      { provider: true, restored: false },
+      { provider: false, restored: true },
+    ]) {
+      const lineage = provider ? "Provider" : "canonical";
+      const history = restored ? "restored early" : "early";
+      await context.test(`${history} approvals after a ${lineage} prefix`, async (child) => {
+        const source = await historyDatabase(child, fixture, "earlyapprovals");
+        if (provider) {
+          await installProviderCompletedHistory(source);
+        }
+        const manifest = JSON.parse(
+          await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+        );
+        const entries = manifest.entries.map(({ sha256: _hash, ...entry }) => entry);
+        const approval = entries.find(({ tag }) => tag === "0081_request_credential_approvals");
+        assert.ok(approval);
+        // The approval SQL kept its exact bytes when it moved to 0081. Run it
+        // through stock Drizzle with its original identity on the shared 76-entry prefix.
+        const approvalTime = 1787000000077;
+        await installCanonicalPrefix(source, 77, {
+          entries: [...entries.slice(0, 76), { ...approval, idx: 77, when: approvalTime }],
+        });
+        const namespace = `ns_${randomUUID()}`;
+        const { agent, revision } = await seedCanonicalAgent(source, namespace, {
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: true,
+        });
+        await source.app.query(
+          `INSERT INTO occ.request_credential_approvals
+             (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at,consumed)
+           VALUES
+             ('recipient','request','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes',false),
+             ('recipient','consumed','binding',$1,$2,$3,repeat('a',64),'{}',now()+interval '1 minute',now()+interval '2 minutes',true)`,
+          [namespace, agent, revision],
+        );
+        const db = restored
+          ? await restoreHistoryArchive(child, fixture, await dumpHistoryArchive(fixture, source))
+          : source;
+        const approvalRows = () =>
+          db.app.query("SELECT * FROM occ.request_credential_approvals ORDER BY request_id");
+        const populated = (await approvalRows()).rows;
+        const before = await historySnapshot(db);
+        assert.equal(before.receipts.length, 77);
+        assert.equal(Number(before.receipts.at(-1).created_at), approvalTime);
+        assert.equal(
+          before.receipts.at(-1).hash,
+          "2eecf64b4368f3f1a9122dfefbbf55ea93b25f98f656bd8c81fb7943688b027d",
+        );
+        const run = (flag) => runHistoryCommand(db, "production", flag);
+        assert.deepEqual(await run("--check"), {
+          ok: true,
+          history: "legacyRequestCredentialApprovals",
+        });
+        assert.deepEqual(await run("--require-current"), {
+          ok: false,
+          code: "MIGRATION_HISTORY_PENDING",
+        });
+        assert.deepEqual(await run("--expect-empty"), {
+          ok: false,
+          code: "MIGRATION_HISTORY_NOT_EMPTY",
+        });
+        assert.deepEqual(await historySnapshot(db), before);
+
+        const stockAudit = manifest.entries[76];
+        const { rows: partial } = await db.migrator.query(
+          "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2) RETURNING id",
+          [stockAudit.sha256, stockAudit.when],
+        );
+        const partialHistory = await historySnapshot(db);
+        assert.deepEqual(await run(), { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" });
+        assert.deepEqual(await historySnapshot(db), partialHistory);
+        await db.migrator.query("DELETE FROM drizzle.__drizzle_migrations WHERE id=$1", [
+          partial[0].id,
+        ]);
+
+        // Fail on 0080 only after its three predecessors have executed and recorded receipts.
+        await historyAdmin(
+          db,
+          db.name,
+          `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN
+             IF (SELECT max(created_at) FROM drizzle.__drizzle_migrations) = 1787000000079 THEN
+               RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000';
+             END IF;
+           END $$;
+           CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION public.reject_migration_ddl()`,
+        );
+        assert.deepEqual(
+          await runHistoryMigration(db, "development", undefined, undefined, (error) => {
+            assert.equal(error.code, "55000");
+            assert.equal(error.message, "migration rollback fixture");
+          }),
+          { ok: false, code: "MIGRATION_FAILED" },
+        );
+        assert.deepEqual(await historySnapshot(db), before);
+        assert.deepEqual((await approvalRows()).rows, populated);
+        await historyAdmin(
+          db,
+          db.name,
+          "DROP EVENT TRIGGER reject_migration_ddl; DROP FUNCTION public.reject_migration_ddl()",
+        );
+
+        const results = await Promise.all([run(), run()]);
+        assert.deepEqual(
+          results.map((result) => result.ok),
+          [true, true],
+        );
+        assert.deepEqual(results.map((result) => result.history).sort(), [
+          "completed",
+          "legacyRequestCredentialApprovals",
+        ]);
+        const completed = await historySnapshot(db);
+        assert.deepEqual(completed.receipts.slice(0, 77), before.receipts);
+        assert.deepEqual(
+          completed.receipts.slice(77).map(({ hash, created_at }) => [hash, Number(created_at)]),
+          [...manifest.entries.slice(76, 80), ...manifest.entries.slice(81)].map(
+            ({ sha256, when }) => [sha256, when],
+          ),
+        );
+        assert.deepEqual(await run("--require-current"), { ok: true, history: "completed" });
+        assert.deepEqual(await run(), { ok: true, history: "completed" });
+        assert.deepEqual(await historySnapshot(db), completed);
+        assert.deepEqual(
+          (await approvalRows()).rows,
+          populated.map((approval) => ({ ...approval, approved: approval.consumed })),
+        );
+        await assertUpgradedRevisionReadable(db);
+        await assert.rejects(
+          db.app.query(
+            "UPDATE occ.request_credential_approvals SET consumed=true WHERE NOT consumed",
+          ),
+          { code: "23514", constraint: "request_credential_approval_requires_decision" },
+        );
+        await db.app.query(
+          "UPDATE occ.request_credential_approvals SET approved=true WHERE NOT consumed",
+        );
+        assert.equal(
+          (
+            await db.app.query(
+              "UPDATE occ.request_credential_approvals SET consumed=true WHERE NOT consumed",
+            )
+          ).rowCount,
+          1,
+        );
+        await assert.rejects(
+          db.app.query("UPDATE occ.request_credential_approvals SET binding_id='replacement'"),
+          { code: "42501" },
+        );
+        assert.equal(
+          (await db.migrator.query("DELETE FROM occ.agent_revisions WHERE id=$1", [revision]))
+            .rowCount,
+          1,
+        );
+        const retained = (await approvalRows()).rows;
+        assert.deepEqual(
+          retained.map(({ recipient_id, request_id, consumed, replay_until_at }) => [
+            recipient_id,
+            request_id,
+            consumed,
+            replay_until_at,
+          ]),
+          populated.map(({ recipient_id, request_id, replay_until_at }) => [
+            recipient_id,
+            request_id,
+            true,
+            replay_until_at,
+          ]),
+        );
+        const nextNamespace = `ns_${randomUUID()}`;
+        const next = await seedCanonicalAgent(db, nextNamespace, {
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: true,
+        });
+        assert.equal(
+          (
+            await db.app.query(
+              `INSERT INTO occ.request_credential_approvals
+                 (recipient_id,request_id,binding_id,namespace_id,agent_id,revision_id,policy_digest,driver_ref,expires_at,replay_until_at)
+               SELECT recipient_id,request_id,binding_id,$1,$2,$3,policy_digest,driver_ref,expires_at,replay_until_at
+               FROM occ.request_credential_approvals ON CONFLICT DO NOTHING`,
+              [nextNamespace, next.agent, next.revision],
+            )
+          ).rowCount,
+          0,
+        );
       });
     }
   },

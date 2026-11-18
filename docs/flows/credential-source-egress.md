@@ -8,8 +8,10 @@ last_updated_session: authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes the supervisor to release GitHub identity replies. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+OpenClaw Control Plane (OCC) authorizes GitHub identity replies.
+See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
+[Online model requests](credential-source-egress/model-requests.md) have their own approval and release flow.
 
 ## Entry Points
 
@@ -24,8 +26,7 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ### Follow the metadata GET
 
-For an admitted `github-app-metadata` route to repository `12345`,
-`acme/widgets`, at `https://api.github.com`:
+This route admits `github-app-metadata` for `acme/widgets` (ID `12345`) at `https://api.github.com`.
 
 1. **Match.** The supervisor binds the bodyless `GET /repos/acme/widgets` reply
    to its exchange. The adapter checks method, URL, headers and body against the route.
@@ -40,9 +41,8 @@ For an admitted `github-app-metadata` route to repository `12345`,
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-ID `67890` under the same name is withheld after GitHub receives the request.
-The credential-free profile applies the same filters, records
-`no_material_required` and sends no credential header.
+The supervisor withholds ID `67890`. Credential-free requests use the same filters,
+record `no_material_required`, and omit credential headers.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
@@ -317,15 +317,12 @@ verifies the original fence, recipient, material, policy and request without rea
 
 ## Debugging and Verification
 
-Follow the [testing guide](../testing/static-egress.md) to qualify model execution,
-response custody and NetworkPolicy; observe origin and caller separately.
-`openclaw.egress.authorize` rows describe attempts. Pre-reservation refusals
-can reuse `requestId`; correlate actor, source, revision and time.
-Responses `classificationRule` maps to
+Verify model execution, custody, and NetworkPolicy with [separate origin and caller checks](../testing/static-egress.md).
+Correlate `openclaw.egress.authorize` by actor, source, revision, and time. Refusals before reservation may reuse `requestId`.
+Responses `classificationRule` comes from
 `apps/controller/src/drivers/egress-proxy/openai-responses.ts:responsesRequestFailure`
-after route and model eligibility checks. Numbers identify root slots; audit rule 1
-hides unknown names. Values are excluded; absent rules identify no slot.
-Caller refusals stay generic.
+after route and model checks. Numbers identify root slots. Rule 1 hides unknown names.
+Absent rules name no slot. Audit excludes values. Caller refusals stay generic.
 
 ## Related docs
 
@@ -361,6 +358,8 @@ None.
 - 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
 
 - 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
+
+- 2026-11-10 02:54: Link the separate online model request flow. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - a6ebd816924d1669911a07e09ecdebc3d8b3176e)
 
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 

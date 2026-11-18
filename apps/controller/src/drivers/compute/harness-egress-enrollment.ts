@@ -8,7 +8,28 @@ const gitProbePath = new RegExp(
 
 // This runs in the generated Harness, before Codex, login or its first model probe. The transport
 // bearer may read this challenge; only Compute can sign its release.
-export const HARNESS_EGRESS_ENROLLMENT_HELPER = String.raw`
+export const HARNESS_EGRESS_ENROLLMENT_HELPER = renderEnrollmentHelper(true);
+export const LEGACY_HARNESS_EGRESS_ENROLLMENT_HELPER = renderEnrollmentHelper(false);
+
+// These programs are embedded in immutable Sandbox commands. Choose the admitted
+// protocol before rendering, so earlier commands keep their original bytes.
+function renderEnrollmentHelper(modelRequests: boolean): string {
+  const gitMode = modelRequests ? "onlineGit" : "online";
+  const enrollmentModes = modelRequests
+    ? `const onlineGit = preview || enrollment?.repositoryGitAuthorization === "online-request";
+  const onlineModel = enrollment?.authorization === "online-request";
+  const online = onlineGit || onlineModel;`
+    : 'const online = preview || enrollment?.repositoryGitAuthorization === "online-request";';
+  const enrollmentShape = modelRequests
+    ? `4 + Number(onlineGit) + Number(onlineModel) ||
+      (Object.hasOwn(enrollment, "authorization") && !onlineModel)`
+    : "(online ? 5 : 4)";
+  const recipientMismatch = modelRequests
+    ? `(onlineGit && installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization) ||
+            (online && Object.hasOwn(installation, "peerKeyId"))`
+    : `(online && (installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization ||
+              Object.hasOwn(installation, "peerKeyId")))`;
+  return String.raw`
 function waitForHarnessEgressEnrollment(enrollment) {
   const { createHash, createPublicKey, randomUUID, timingSafeEqual, verify } = require("node:crypto");
   const { isDeepStrictEqual } = require("node:util");
@@ -16,11 +37,11 @@ function waitForHarnessEgressEnrollment(enrollment) {
   const verifier = process.env.APP_TOKEN_SHA;
   const port = Number(process.env.APP_SERVER_PORT);
   const preview = enrollment?.repositoryGitAuthorization === "request-hook-observed";
-  const online = preview || enrollment?.repositoryGitAuthorization === "online-request";
+  ${enrollmentModes}
   const executionKeys = ["installationId", "namespaceId", "agentId", "servicePrincipalId", "revisionId", "executionId"];
   if (typeof verifier !== "string" || !/^[a-f0-9]{64}$/.test(verifier) ||
       !Number.isSafeInteger(port) || port < 1 || port > 65535 ||
-      !isPlainObject(enrollment) || Object.keys(enrollment).length !== (online ? 5 : 4) ||
+      !isPlainObject(enrollment) || Object.keys(enrollment).length !== ${enrollmentShape} ||
       (typeof enrollment.inference !== "boolean" && enrollment.inference !== "credential_source") ||
       !Number.isSafeInteger(enrollment.routeCount) || enrollment.routeCount < 0 ||
       !isPlainObject(enrollment.plan) || Object.keys(enrollment.plan).length !== 2 ||
@@ -107,7 +128,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
           chunks.push(chunk);
         }
         const release = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if (online && Object.hasOwn(release, "probePath")) {
+        if (${gitMode} && Object.hasOwn(release, "probePath")) {
           const {probePath, startupId} = release;
           if (probeSent || startupId !== challenge.startupId ||
               typeof probePath !== "string" || !${gitProbePath}.test(probePath)) {
@@ -156,8 +177,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
         const now = Date.now();
         if (settled || released || performance.now() >= deadline ||
             !isDeepStrictEqual(release.challenge, challenge) || !isPlainObject(installation) ||
-            (online && (installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization ||
-              Object.hasOwn(installation, "peerKeyId"))) ||
+            ${recipientMismatch} ||
             (probeSent && !observed) ||
             (preview && (!observed || installation.repositoryGitRecipient?.observedHook?.startupId !== challenge.startupId)) ||
             !["sandboxId", "instanceId", "configurationId", ...(online ? [] : ["peerKeyId"])].every((k) =>
@@ -189,3 +209,4 @@ function waitForHarnessEgressEnrollment(enrollment) {
   });
 }
 `;
+}

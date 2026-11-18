@@ -34,6 +34,10 @@ sender actually enforces.
 Use the [upgrade procedure](deploy/credential-proxy-upgrade.md) for an existing
 installation, including when a Gateway source or its owner must remain.
 
+For explicitly selected online model authorization, use
+[model request setup](credential-proxy/model-requests.md). It has separate
+identity prerequisites and withdrawal guarantees.
+
 ## Prepare enforcement, trust, and custody
 
 For a reviewed development candidate, follow

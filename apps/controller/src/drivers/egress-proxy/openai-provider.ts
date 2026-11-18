@@ -13,7 +13,7 @@ import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 import { validChatRequest, responsesRequestFailure } from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
-import { parseUnambiguousJson } from "../repo/access/json-members.ts";
+import { parseUnambiguousJson } from "../json-members.ts";
 
 const maximumResponseBytes = 4 * 1024 * 1024;
 
@@ -274,5 +274,24 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
     },
     protectResponse: (response, value, request, operation) =>
       value === undefined ? undefined : protectedResponse(response, value, request, operation),
+  });
+}
+
+/** The same bounded request policy, with online release instead of dispatch/response custody. */
+export function createOpenAiRequestProvider(): CredentialProviderDefinition {
+  const strict = createOpenAiStaticProvider();
+  return Object.freeze({
+    ...strict,
+    ref: { id: "openai-online-request", generation: 1 },
+    authorization: "online-request" as const,
+    routes(...args: Parameters<CredentialProviderDefinition["routes"]>) {
+      return strict
+        .routes(...args)
+        .filter((route) => route.path.endsWith("/responses"))
+        .map((route) => ({
+          ...route,
+          responsePolicy: { id: "online-request-no-response-custody", generation: 1 },
+        }));
+    },
   });
 }

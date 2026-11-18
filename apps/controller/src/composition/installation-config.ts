@@ -1,3 +1,4 @@
+import type { OpenShellTokenGrantConfiguration } from "../drivers/egress-proxy/openshell-token-grant.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -22,6 +23,7 @@ import {
   type InstallationFieldDetail,
   requireChartGatewayRouting,
   requireChartListener,
+  requireChartTokenGrant,
 } from "./installation-fields.ts";
 import {
   requireConfiguration,
@@ -829,6 +831,8 @@ export async function loadInstallationConfiguration(options: {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly packageRoot?: string;
   readonly startupConfiguration?: StartupConfigurationSnapshot;
+  /** The Helm preflight mounts the API's public JWT trust bundle. Workers do not. */
+  readonly validateTokenGrantBundle?: boolean;
   /** Real-runtime tests replace the transport or the Driver; never a production path. */
   readonly createOpenShellBackend?: (
     definition: OpenShellBackendDefinition,
@@ -1015,6 +1019,7 @@ async function composeInstallationConfiguration(
   let proxySelection: SelectedDriverConfiguration | undefined;
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
+  let requestTokenGrant: OpenShellTokenGrantConfiguration | undefined;
   let credentialProxyCapacity: CredentialProxyCapacity | undefined;
   let preparedGitHubKeyPath: string | undefined;
   let preparedGitHubOrigin: string | undefined;
@@ -1049,6 +1054,7 @@ async function composeInstallationConfiguration(
       }
       repositoryTransportConfiguration = configuredProxy.repository;
       egressAuthority = configuredProxy.authority;
+      requestTokenGrant = configuredProxy.tokenGrant;
       preparedGitHubKeyPath = configuredProxy.prepared?.custodyKeyPath;
       preparedGitHubOrigin = configuredProxy.prepared?.apiOrigin;
       if (configuredProxy.prepared?.issuerCaPath) {
@@ -1068,6 +1074,12 @@ async function composeInstallationConfiguration(
   }
 
   requireChartListener(egressAuthority, environment, chartListeners.egressAuthority);
+  requireChartTokenGrant(requestTokenGrant, egressAuthority, environment);
+  if (options.validateTokenGrantBundle && requestTokenGrant) {
+    const { validateOpenShellTokenGrantBundle } =
+      await import("../drivers/egress-proxy/openshell-token-grant.ts");
+    await validateOpenShellTokenGrantBundle(requestTokenGrant.bundlePath);
+  }
   requireChartListener(
     repositoryTransportConfiguration?.authority,
     environment,
@@ -1523,6 +1535,7 @@ async function composeInstallationConfiguration(
               configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
               preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
               ...(egressAuthority && { exchangeAuthority: egressAuthority }),
+              ...(requestTokenGrant && { tokenGrant: requestTokenGrant }),
             },
           }),
     });

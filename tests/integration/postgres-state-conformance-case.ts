@@ -184,23 +184,33 @@ export async function verifyPostgresStateConformance(context: TestContext) {
       id: `rev_${randomUUID()}`,
       revision: fixture.revision.revision + 1,
       sandboxDriverId,
+      networkEgressMode: "public",
     }),
   );
-  const reloadedSandboxRevision = await state.read((unit) =>
-    unit.revisions.findRevision(
-      sandboxRevision.namespaceId,
-      sandboxRevision.agentId,
-      sandboxRevision.id,
-    ),
+  const restrictedRevision = await state.transact((unit) =>
+    unit.revisions.createRevision({
+      ...fixture.revision,
+      id: `rev_${randomUUID()}`,
+      revision: fixture.revision.revision + 2,
+      sandboxDriverId,
+      networkEgressMode: "restricted",
+    }),
   );
-  assert.ok(reloadedSandboxRevision);
-  assert.equal(reloadedSandboxRevision.sandboxDriverId, sandboxDriverId);
-  assert.equal(Object.isFrozen(reloadedSandboxRevision), true);
-  const durableSandboxRevision = await pool.query<Record<string, unknown>>(
-    "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",
-    [sandboxRevision.id],
+  const egressCases = [
+    [fixture.revision.id, null],
+    [sandboxRevision.id, "public"],
+    [restrictedRevision.id, "restricted"],
+  ] as const;
+  const durableSandboxRevisions = await pool.query<Record<string, unknown>>(
+    `SELECT id, admitted_spec, network_egress_mode
+     FROM occ.agent_revisions WHERE id = ANY($1::text[]) ORDER BY revision_number`,
+    [egressCases.map(([id]) => id)],
   );
-  const admittedSpec = durableSandboxRevision.rows[0]?.admitted_spec;
+  assert.deepEqual(
+    durableSandboxRevisions.rows.map((row) => [row.id, row.network_egress_mode]),
+    egressCases,
+  );
+  const admittedSpec = durableSandboxRevisions.rows[1]?.admitted_spec;
   assert.ok(
     typeof admittedSpec === "object" &&
       admittedSpec !== null &&
@@ -208,6 +218,26 @@ export async function verifyPostgresStateConformance(context: TestContext) {
   );
   assert.equal(admittedSpec.sandbox_driver_id, sandboxDriverId);
   assert.equal(Object.hasOwn(admittedSpec, "sandbox"), false);
+
+  // Both read paths must preserve explicit egress policies and omit the field for legacy NULL.
+  const { namespaceId, agentId } = sandboxRevision;
+  await state.read(async ({ revisions }) => {
+    const listed = await revisions.listRevisions(namespaceId, agentId);
+    for (const [id, mode] of egressCases) {
+      const found = await revisions.findRevision(namespaceId, agentId, id);
+      const listedRevision = listed.find((row) => row.id === id);
+      assert.ok(found);
+      assert.ok(listedRevision);
+      assert.equal(found.networkEgressMode, mode ?? undefined);
+      assert.equal(listedRevision.networkEgressMode, mode ?? undefined);
+      assert.equal(Object.hasOwn(found, "networkEgressMode"), mode !== null);
+      assert.equal(Object.hasOwn(listedRevision, "networkEgressMode"), mode !== null);
+      if (id === sandboxRevision.id) {
+        assert.equal(found.sandboxDriverId, sandboxDriverId);
+        assert.equal(Object.isFrozen(found), true);
+      }
+    }
+  });
 
   // The database accepts only a nonempty SandboxDriver identity, not descriptors or blank values.
   for (const [offset, invalid] of [null, "", " ", 1, { id: sandboxDriverId }].entries()) {

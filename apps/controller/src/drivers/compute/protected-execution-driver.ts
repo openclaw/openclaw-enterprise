@@ -182,7 +182,8 @@ export class ProtectedExecutionDriver {
       !!enforcement.instanceId &&
       !!enforcement.configurationId &&
       !!enforcement.policyHash &&
-      (context.plan.repositoryGitAuthorization !== undefined
+      (context.plan.repositoryGitAuthorization !== undefined ||
+      context.plan.authorization === "online-request"
         ? enforcement.peerKeyId === undefined
         : !!enforcement.peerKeyId) &&
       (!installed.plan.repositoryGit ||

@@ -7,6 +7,7 @@ import {
   isConfiguredRoleId,
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
+import { postgresRequestCredentialApprovals } from "./request-credential-approvals.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
@@ -89,6 +90,7 @@ import {
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
+  RequestCredentialWorkBusyError,
   PersistedStateInvalidError,
   EGRESS_REVISION_INSTALLED_CONFLICT,
   IAMPolicyValidationError,
@@ -1953,6 +1955,8 @@ export class PostgresPlatformState implements PlatformStateStore {
       "recoverStale",
       "findWork",
       "findWorkAttempt",
+      "lockRequestCredentialWork",
+      "requestCredentialCandidateEligible",
       "hasRepositoryExecutionRedeployRequired",
       "repositoryExpiryState",
       "latestRevisionMaintenanceKey",
@@ -1986,6 +1990,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     let committing = false;
     let acknowledged = false;
     let failed = false;
+    let credentialWorkBusy = false;
     let discard = false;
     // A statement the client abandoned (query_timeout) may still run on this connection;
     // a ROLLBACK would only queue behind it, so the connection is discarded instead.
@@ -2092,6 +2097,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       return result;
     } catch (error) {
       failed = true;
+      credentialWorkBusy = error instanceof RequestCredentialWorkBusyError;
       discard ||= committing || transportError !== undefined || abandoned;
       await lifetime.finish();
       // An uncertain COMMIT, broken transport or abandoned statement must not be queried again.
@@ -2132,8 +2138,16 @@ export class PostgresPlatformState implements PlatformStateStore {
       }
       // Preserve the original failure. A failure after acknowledged COMMIT can
       // never be reported as definite rollback or authorize an automatic replay.
-      if (!failed && (cleanupFailed || transportError !== undefined) && acknowledged) {
-        throw new PostgresCommitOutcomeUnknownError();
+      const failedBusyCleanup =
+        credentialWorkBusy && (discard || cleanupFailed || transportError !== undefined);
+      if (
+        failedBusyCleanup ||
+        (!failed && (cleanupFailed || transportError !== undefined) && acknowledged)
+      ) {
+        // Retry only after confirmed rollback and client release on a healthy connection.
+        throw failedBusyCleanup
+          ? new DependencyUnavailableError("The platform persistence repository is unavailable.")
+          : new PostgresCommitOutcomeUnknownError();
       }
     }
   }
@@ -4771,6 +4785,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       iamPolicy,
       repositorySessions: postgresRepositorySessions(client),
       preparedTokenProof: this.preparedTokenProof(client),
+      requestCredentialApprovals: postgresRequestCredentialApprovals(client),
       egressSendReceipts: postgresEgressSendReceipts(client),
       provisioning: {
         findByWorkId: async (workId) => {
@@ -5736,6 +5751,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         findWork: async (idempotencyKey) => {
           await this.requireInitialized(context);
           return queue.findWork(idempotencyKey);
+        },
+        lockRequestCredentialWork: async (owner) => {
+          await this.requireInitialized(context);
+          return queue.lockRequestCredentialWork(owner);
+        },
+        requestCredentialCandidateEligible: async (owner) => {
+          await this.requireInitialized(context);
+          return queue.requestCredentialCandidateEligible(owner);
         },
         findWorkAttempt: async (idempotencyKey) => {
           await this.requireInitialized(context);

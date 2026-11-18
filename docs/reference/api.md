@@ -10176,6 +10176,7 @@ Register a credential source with the selected Credential Gateway
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `authorization` | `"online-request"` | No | Explicitly select an offered request-authorization profile. With a Credential Proxy selected, omission retains exact-dispatch admission for eligible static sources. Existing sources retain their original profile. |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |

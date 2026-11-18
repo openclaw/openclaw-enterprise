@@ -27,18 +27,23 @@ Kubernetes namespace.
 
 ### Register the Harness model source first
 
-For a fresh local k3d installation, use the authenticated
-[Gateway setup](#prepare-an-authenticated-local-gateway).
+Choose the model delivery profile before creating a source.
 
-Select the OpenShell Gateway and Sandbox, then
-[register one static model source using the OpenAI API-key example](../deploy/openshell-credential-sources.md#register-the-key).
-You can register it before or after enabling the validated bundled `repository.openShell`
-Git-only transport. Keep a separately selected OCE Credential Gateway for model
-delivery; the OpenShell gateway service alone does not select that capability. Verify that
-its state and Gateway status are ready and that it has no `egress`. Reuse an existing
-Gateway-owned source only if it meets these same static-source requirements.
-The selected Gateway catalog must declare Harness authentication without refresh,
-device authorization or ChatGPT OAuth. Bind only this one model source to the Agent.
+- **Combined model and Git through Proxy (v9).** Follow [per-request model setup](../credential-proxy/model-requests.md)
+  for trust, Proxy configuration, and an explicit `online-request` model source. Keep the
+  Credential Gateway selected for source metadata. Continue with repository configuration
+  below and preserve the model authority and token-grant settings.
+- **Git-only Proxy with a Gateway model source.** For a fresh local k3d installation, start
+  with the authenticated [Gateway setup](#prepare-an-authenticated-local-gateway). Select
+  the OpenShell Gateway and Sandbox and [register one static model source](../deploy/openshell-credential-sources.md#register-the-key).
+  You can register it before or after enabling the bundled `repository.openShell`
+  Git-only transport. Select the OCE Credential Gateway for model delivery. Use a ready
+  Gateway-owned source without `egress`. The selected Gateway catalog must declare Harness
+  authentication without refresh, device authorization, or ChatGPT OAuth. Bind that one
+  source to the Agent.
+
+Installed v9 acceptance requires proof that model IAM denial leaves authorized Git usable.
+Removing Git standing approval can retire the whole runtime.
 
 Keep the Gateway selected and use the source with
 `harnessAuth.method: credential_source`. Configure the repository Credential Proxy
@@ -46,7 +51,7 @@ as described below. Changing an existing installation can affect running Agents.
 
 ### Prepare an authenticated local Gateway
 
-Complete [local setup](../deploy/local-setup.md) before adding repository access.
+For the Git-only profile, complete [local setup](../deploy/local-setup.md) before adding repository access.
 The Kubernetes-only launcher enables Gateway TLS, mTLS and authentication before
 its first startup. It keeps Credential Gateway selected for model access.
 
@@ -63,8 +68,8 @@ Start with the shipped
 and [repository registry](../../../deploy/examples/repository-credentials/openshell.registry.json).
 Merge the fragment into your Installation, preserving other Backends and Drivers.
 Set the existing OpenShell Backend's `drivers.credential_proxy` to the same ID as
-`drivers.sandbox.id`. For example, when the Sandbox ID is `openshell-sandbox`,
-add this selection to the Installation:
+`drivers.sandbox.id`. For the Git-only profile, when the Sandbox ID is
+`openshell-sandbox`, use:
 
 ```yaml
 drivers:
@@ -73,11 +78,13 @@ drivers:
     configuration: {}
 ```
 
-Keep `drivers.credential_gateway` and its Backend member for model authentication.
-`repository.openShell` configures the selected Credential Proxy's connection to
-OpenShell. To grant repository access, configure the Namespace registry and
-grant access to the Agent separately. Keep this Driver's `configuration: {}`
-empty; do not copy the static-inference Proxy configuration into it.
+Keep `drivers.credential_gateway` and its Backend member: v9 uses them for metadata
+ownership; the Git-only profile uses them for model authentication. For v9,
+preserve the model setup's `middlewareName`, `authority` and `tokenGrant` in the
+Proxy configuration instead of the empty object above. The Git-only profile
+keeps that object empty. `repository.openShell` configures Git delivery separately.
+Configure the Namespace registry and grant repository access to the Agent;
+Driver selection alone grants no access.
 Use the normal [production Installation and Helm procedure](../deploy/production-installation.md).
 The development launcher's native repository input is a separate path and does
 not accept this protected registry.
@@ -245,7 +252,7 @@ must share the registry's App and installation and the same approved permissions
 The worker prepares a token restricted to exactly the selected numeric IDs.
 Repository availability in the registry alone does not authorize an Agent.
 
-Save the Agent with the selected repositories and the Gateway model source, provision
+Save the Agent with the selected repositories and model source, provision
 its runtime credentials, and deploy. Once the revision is ready, run these commands
 inside the Agent. Replace `example/project` with a selected repository that has at
 least one commit and for which the Agent has Contents read or write permission.

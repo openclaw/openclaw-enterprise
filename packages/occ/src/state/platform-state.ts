@@ -6,6 +6,11 @@ import {
   MAX_AGENT_CREDENTIAL_SOURCES,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
+import type { RequestCredentialApprovalRepository } from "../ports/request-credential-approvals.ts";
+import {
+  memoryRequestCredentialApprovals,
+  type StoredRequestCredentialApproval,
+} from "./request-credential-approvals.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -1166,6 +1171,13 @@ export interface PlatformOperationReadRepository {
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
+  /** Hold exact candidate work without waiting; busy work throws before credential effects. */
+  lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean>;
+  /**
+   * Read the current exact work row for a live database-clock lease or queued readiness marker.
+   * The caller must hold its work lock through authorization or credential release.
+   */
+  requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean>;
   append(operation: PlatformOperation, requestId?: string): Promise<void>;
   /**
    * Requeue the exact deleting Agent's terminal teardown initiated by
@@ -1221,6 +1233,7 @@ export interface PlatformReadView {
 
 export interface PlatformUnitOfWork extends PlatformReadView {
   readonly preparedTokenProof: PreparedTokenCurrentProof;
+  readonly requestCredentialApprovals: RequestCredentialApprovalRepository;
   readonly egressSendReceipts: EgressSendReceiptRepository;
   readonly sandboxPolicies: SandboxPolicyRepository;
   readonly installations: InstallationRepository;
@@ -1245,6 +1258,8 @@ export interface PlatformUnitOfWork extends PlatformReadView {
 export interface PlatformStateStore {
   read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T>;
   transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
+  /** Observe committed changes after acquiring locks, independent of connection defaults. */
+  transactReadCommitted?<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
 }
 
 export interface TransactionalAuditWriter {
@@ -1278,6 +1293,7 @@ interface IAMSubjectSource {
 }
 
 interface PlatformSnapshot {
+  readonly requestCredentialApprovals: Map<string, StoredRequestCredentialApproval>;
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
@@ -1425,6 +1441,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     presets: copyStoredMap(snapshot.presets),
     secrets: copyStoredMap(snapshot.secrets),
     egressRejected: new Set(snapshot.egressRejected),
+    requestCredentialApprovals: new Map(snapshot.requestCredentialApprovals),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
     egressInstallations: copyStoredMap(snapshot.egressInstallations),
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
@@ -3749,6 +3766,17 @@ function repositories(
     },
   };
 
+  const findMemoryRevision = (namespaceId: string, agentId: string, revisionId: string) => {
+    if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+      return undefined;
+    }
+    const candidate = snapshot.revisions
+      .get(agentKey(namespaceId, agentId))
+      ?.find((revision) => revision.id === revisionId);
+    return candidate?.namespaceId === namespaceId && candidate.agentId === agentId
+      ? candidate
+      : undefined;
+  };
   const revisions: AgentRevisionRepository = {
     findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
       if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
@@ -3773,15 +3801,8 @@ function repositories(
     listRevisionsForBrowsing: async (namespaceId, agentId) =>
       revisions.listRevisions(namespaceId, agentId),
     findRevision: async (namespaceId, agentId, revisionId) => {
-      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
-        return undefined;
-      }
-      const candidate = snapshot.revisions
-        .get(agentKey(namespaceId, agentId))
-        ?.find((revision) => revision.id === revisionId);
-      return candidate?.namespaceId === namespaceId && candidate.agentId === agentId
-        ? immutableCopy(candidate)
-        : undefined;
+      const candidate = findMemoryRevision(namespaceId, agentId, revisionId);
+      return candidate && immutableCopy(candidate);
     },
     listRevisions: async (namespaceId, agentId) =>
       Object.freeze(
@@ -4300,6 +4321,11 @@ function repositories(
     iamPolicy,
     repositorySessions,
     preparedTokenProof,
+    requestCredentialApprovals: memoryRequestCredentialApprovals(
+      snapshot.requestCredentialApprovals,
+      ({ namespaceId, agentId, revisionId }) =>
+        findMemoryRevision(namespaceId, agentId, revisionId) !== undefined,
+    ),
     egressSendReceipts: memoryEgressSendReceipts(snapshot.egressSendReceipts),
     provisioning: {
       findByWorkId: provisioningAbsent,
@@ -4411,6 +4437,9 @@ function repositories(
       retryFailedAgentDeletion: async () => false,
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
+      // This adapter never executes queued work, so it cannot establish startup authority.
+      lockRequestCredentialWork: async () => false,
+      requestCredentialCandidateEligible: async () => false,
       findWorkAttempt: async () => undefined,
       hasRepositoryExecutionRedeployRequired: async () => false,
       // Recorded work never executes here, so every recorded withdrawal stays outstanding.
@@ -4598,6 +4627,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),
     egressRejected: new Set(),
+    requestCredentialApprovals: new Map(),
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
@@ -4659,6 +4689,11 @@ export class InMemoryPlatformState implements PlatformStateStore {
         ),
       ),
     );
+  }
+
+  /** Serialized writers clone the current committed snapshot only after taking their turn. */
+  async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.transact(work);
   }
 
   /**
