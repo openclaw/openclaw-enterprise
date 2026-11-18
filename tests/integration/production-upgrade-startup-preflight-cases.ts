@@ -127,11 +127,23 @@ export function registerStartupPreflightCases({
       return;
     }
     assert.ok(realHelm);
-    for (const scenario of [
-      "configuration change",
-      "different CA key",
-      "empty history",
-      "lost create",
+    const checked = (history: string | null) =>
+      JSON.stringify({ event: "migration.checked", history }) + "\n";
+    // Kubernetes combines the migrator's result with its structured stderr log.
+    const telemetry = JSON.stringify({
+      severity: "INFO",
+      time: "2026-01-01T00:00:00.000Z",
+      service: "occ-migration",
+      event: "migration.checked",
+    });
+    const valid = checked("providerCompleted");
+    for (const [scenario, log] of [
+      ["configuration change", "Starting migration check\n" + valid + telemetry + "\n"],
+      ["different CA key", null],
+      ["empty history", checked("empty")],
+      ["empty history with a trailing newline", checked("empty\n")],
+      ["malformed and valid check results", checked(null) + valid],
+      ["lost create", null],
     ] as const) {
       await t.test(scenario, async (t) => {
         const f = await fixture(t, {
@@ -144,15 +156,7 @@ export function registerStartupPreflightCases({
             installation: (installation) => installation,
           },
           environment: { OCC_URL: "", OCC_SERVICE_KEY_FILE: "", OCC_CA_BUNDLE: "/missing-occ-ca" },
-          preflightResults:
-            scenario === "empty history"
-              ? {
-                  migration: {
-                    phase: "Succeeded",
-                    log: '{"event":"migration.checked","history":"empty"}\n',
-                  },
-                }
-              : null,
+          preflightResults: log === null ? null : { migration: { phase: "Succeeded", log } },
           preflightFault: scenario === "lost create" ? { target: "migration", mode: "lost" } : null,
         });
         const valuesPath = join(f.directory, "values.json");
@@ -215,9 +219,6 @@ export function registerStartupPreflightCases({
             false,
             "the refusal must precede Job creation",
           );
-        } else if (scenario === "empty history") {
-          await assert.rejects(check, /did not report one nonempty, recognized migration history/);
-          await assertStoppedBeforeWriters(f);
         } else if (scenario === "lost create") {
           await assert.rejects(
             check,
@@ -231,6 +232,13 @@ export function registerStartupPreflightCases({
           const preflight = requireRecoveryPreflight(await f.state());
           assert.equal(Object.keys(evidenceObject(preflight.jobs, "retained Jobs")).length, 1);
           assert.deepEqual(preflight.deleted ?? [], []);
+        } else if (scenario !== "configuration change") {
+          await assert.rejects(check, {
+            code: 1,
+            stderr: /did not report one nonempty, recognized migration history/,
+          });
+          const preflight = requireRecoveryPreflight(await assertStoppedBeforeWriters(f));
+          assert.equal(evidenceArray(preflight.created, "preflight creations").length, 1);
         } else {
           const { stdout } = await check;
           assert.match(stdout, /Migration check passed \(history: providerCompleted\)/);

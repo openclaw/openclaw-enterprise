@@ -1518,11 +1518,19 @@ check_migration() {
   run_preflight_jobs migration
   cleanup_preflight || die "migration check Job cleanup is incomplete; inspect $evidence_dir."
   recheck_migration_release after
-  # The image's check validates history. Refuse empty history for an installed
-  # release and keep only its single safe history identifier in the summary.
+  # kubectl combines stdout with the migrator's stderr telemetry. Ignore only
+  # the stock telemetry record, then count result events before checking history.
   history=$(jq -Rser '
-    split("\n") | [.[] | try (fromjson | select(.event == "migration.checked") | .history | strings) catch empty] |
-    select(length == 1) | .[0] | select(. != "empty" and test("^[A-Za-z][A-Za-z0-9]{0,79}$"))
+    def stock_telemetry:
+      keys == ["event", "service", "severity", "time"] and
+      .service == "occ-migration" and .severity == "INFO" and
+      (.time | type == "string" and
+        test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z\\z"));
+    [split("\n")[] | (try fromjson catch empty) |
+      select(type == "object" and .event == "migration.checked") |
+      select(stock_telemetry | not)] |
+    select(length == 1) | .[0].history |
+    select(type == "string" and . != "empty" and test("\\A[A-Za-z][A-Za-z0-9]{0,79}\\z"))
   ' "$evidence_dir/preflight-migration.log") ||
     die "the installed database check did not report one nonempty, recognized migration history. See preflight-migration.log in $evidence_dir."
   printf '%s\n' "$history" >"$upgrade_evidence_dir/migration-check-passed"
