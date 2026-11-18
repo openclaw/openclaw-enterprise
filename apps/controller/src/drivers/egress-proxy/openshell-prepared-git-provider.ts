@@ -13,6 +13,7 @@ import {
   type GitHubRepositoryGrant,
 } from "../repo/github/access/repository-grant.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
+import { preparedGitPullScope } from "../repo/github/access/prepared-git-redemption.ts";
 import {
   matchesOpenShellGatewayAssertionGrant,
   OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
@@ -213,6 +214,30 @@ function matchesWorkloadGrant(
   );
 }
 
+function matchesApprovedNativeGitGrant(
+  grant: NonNullable<OpenShellPreparedGitScope["tokenGrant"]>,
+): boolean {
+  const workload = grant.workloadGrant;
+  if (!workload) {
+    return false;
+  }
+  const permissions: Record<string, string> = Object.create(null);
+  for (const scope of workload.scopes) {
+    const match = /^([a-z_]+):(read|write)$/.exec(scope);
+    if (!match || Object.hasOwn(permissions, match[1]!)) {
+      return false;
+    }
+    permissions[match[1]!] = match[2]!;
+  }
+  const repositories = grant.selectedRepositories ?? [{ repository: grant.repository }];
+  const approved = preparedGitPullScope({ repositories, permissions }, false);
+  return (
+    approved?.resource === workload.resource &&
+    isDeepStrictEqual(approved.scopes, workload.scopes) &&
+    (!grant.allowPush || permissions.contents === "write")
+  );
+}
+
 /**
  * Private operator-plane provisioning, prior to Sandbox attachment/admission. The supplied
  * client must use the installation's authenticated gateway connection; never expose it to
@@ -268,6 +293,7 @@ export class OpenShellPreparedGitProvider {
         repositories[0] !== grant.repository ||
         repositories.length > maxSelectedGitHubRepositories ||
         (grant.pullApi && (repositories.length !== 1 || grant.allowPush)) ||
+        (grant.workloadGrant && !grant.pullApi && !matchesApprovedNativeGitGrant(grant)) ||
         new Set(repositories.map((repo) => repo.toLowerCase())).size !== repositories.length ||
         repositories.some(
           (repo) =>
@@ -312,6 +338,8 @@ export class OpenShellPreparedGitProvider {
                   ...(grant.allowPush ? ["write"] : []),
                   ...(grant.pullApi ? ["pull-api"] : []),
                   ...(grant.workloadGrant ? [grant.workloadGrant] : []),
+                  // Native Git profiles are immutable; older profiles admitted every discovery service.
+                  ...(grant.workloadGrant && !grant.pullApi ? ["git-service-query-v1"] : []),
                 ],
               ]
             : []),
@@ -387,10 +415,31 @@ export class OpenShellPreparedGitProvider {
                   ...repositories.flatMap((repository) => {
                     const path = "/" + repository + ".git";
                     return [
-                      { allow: { method: "GET", path: path + "/info/refs" } },
+                      {
+                        allow: {
+                          method: "GET",
+                          path: path + "/info/refs",
+                          ...(grant?.workloadGrant && {
+                            query: { service: { glob: "git-upload-pack" } },
+                          }),
+                        },
+                      },
                       { allow: { method: "POST", path: path + "/git-upload-pack" } },
                       ...(grant?.allowPush
-                        ? [{ allow: { method: "POST", path: path + "/git-receive-pack" } }]
+                        ? [
+                            ...(grant.workloadGrant
+                              ? [
+                                  {
+                                    allow: {
+                                      method: "GET",
+                                      path: path + "/info/refs",
+                                      query: { service: { glob: "git-receive-pack" } },
+                                    },
+                                  },
+                                ]
+                              : []),
+                            { allow: { method: "POST", path: path + "/git-receive-pack" } },
+                          ]
                         : []),
                     ];
                   }),

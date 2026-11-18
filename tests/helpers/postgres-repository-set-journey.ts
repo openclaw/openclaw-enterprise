@@ -264,7 +264,8 @@ async function repositoryGitJourney(
     ? ({
         metadata: "read",
         contents: selectedGrant?.scope?.contents ?? "read",
-        ...(pullPreview && { pull_requests: "write" as const }),
+        ...(pullPreview &&
+          selectedGrant?.scope?.contents === "write" && { pull_requests: "write" as const }),
       } as const)
     : repositorySetPermissions;
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
@@ -665,7 +666,7 @@ async function repositoryGitJourney(
               resource: "https://github.com/" + selectedRepositories[0]!.repository,
               scopes: api
                 ? ["metadata:read", "pull_requests:write"]
-                : ["contents:write", "metadata:read"],
+                : [`contents:${selectedPermissions.contents}`, "metadata:read"],
             });
             return importProfile(input, metadata);
           };

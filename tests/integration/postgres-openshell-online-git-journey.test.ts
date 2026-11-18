@@ -733,11 +733,14 @@ for (const [contents, set, pullPreview] of [
   ["write", false, false],
   ["read", true, false],
   ["write", true, false],
+  ["read", false, true],
   ["write", false, true],
 ] as const) {
   test(
     pullPreview
-      ? "workload credential pull sends a large stock Git push through the controlled origin"
+      ? contents === "read"
+        ? "read-only workload credential pull refuses receive before issuance and fetches through upload"
+        : "workload credential pull sends a large stock Git push through the controlled origin"
       : set
         ? `selected repository set authorizes native Git ${contents}`
         : `selected ${contents} grant bounds ordinary Git push`,
@@ -764,7 +767,7 @@ for (const [contents, set, pullPreview] of [
           );
           assert.ok(route?.installed.route);
           const { providerId } = route.installed.route.observed as { providerId: string };
-          const scope = "contents:write metadata:read";
+          const scope = `contents:${contents} metadata:read`;
           const resource = "https://github.com/" + fixtureRepository;
           const { assertion, grant } = signedGitRedemption(
             authority,
@@ -782,6 +785,13 @@ for (const [contents, set, pullPreview] of [
           const installed: OpenShellProviderProfile | undefined = runtime["states"].get(revision.id)
             ?.entry?.provider["profile"];
           assert.ok(installed);
+          if (pullPreview && contents === "read") {
+            assert.equal(
+              (route.installed.route.observed as { pullApi?: unknown }).pullApi,
+              undefined,
+              "read-only grant has no API attachment",
+            );
+          }
           if (set) {
             for (const repository of [secondRepository, outside]) {
               origins.set(
@@ -836,6 +846,20 @@ for (const [contents, set, pullPreview] of [
                         endpoint.rules?.some(({ allow }) => {
                           if (allow.method !== incoming.method || allow.path === undefined) {
                             return false;
+                          }
+                          // Apply the emitted L7 query matcher before requesting a credential.
+                          for (const [key, matcher] of Object.entries(allow.query ?? {})) {
+                            const values = target.searchParams.getAll(key);
+                            if (
+                              values.length === 0 ||
+                              values.some((value) =>
+                                matcher.glob !== undefined
+                                  ? value !== matcher.glob
+                                  : !matcher.any.includes(value),
+                              )
+                            ) {
+                              return false;
+                            }
                           }
                           const [prefix, suffix, extra] = allow.path.split("*");
                           if (suffix === undefined) {
@@ -1014,6 +1038,40 @@ for (const [contents, set, pullPreview] of [
             );
           assert.equal(peer.gh.issuesOfTokens.length, 0, "the installed route starts cold");
           if (pullPreview) {
+            // Invalid discovery services must stop before credential acquisition, issuance, or origin traffic.
+            const discovery = `/${fixtureRepository}.git/info/refs`;
+            for (const query of ["", "?service=other", "?service=git-upload-pack&service=other"]) {
+              const response = await fetch(peerUrl + discovery + query, {
+                headers: {
+                  authorization:
+                    "Basic " + Buffer.from("x-access-token:" + placeholder).toString("base64"),
+                },
+              });
+              assert.equal(response.status, 403);
+              assert.equal(refusals.pop(), discovery);
+              assert.equal(workloadPullRequests, 0);
+              assert.equal(peer.gh.issuesOfTokens.length, 0);
+              assert.equal(calls(), before);
+            }
+            if (contents === "read") {
+              for (const [method, path] of [
+                ["GET", discovery + "?service=git-receive-pack"],
+                ["POST", `/${fixtureRepository}.git/git-receive-pack`],
+              ] as const) {
+                const response = await fetch(peerUrl + path, {
+                  method,
+                  headers: {
+                    authorization:
+                      "Basic " + Buffer.from("x-access-token:" + placeholder).toString("base64"),
+                  },
+                });
+                assert.equal(response.status, 403);
+                assert.equal(refusals.pop(), path.split("?", 1)[0]);
+                assert.equal(workloadPullRequests, 0, "receive refusal precedes acquisition");
+                assert.equal(peer.gh.issuesOfTokens.length, 0);
+                assert.equal(calls(), before);
+              }
+            }
             const probe = `/${fixtureRepository}.git/oce-observe-request/probe/info/refs`;
             const result = await git(
               [
@@ -1043,6 +1101,26 @@ for (const [contents, set, pullPreview] of [
             assert.deepEqual(refusals, [`/${fixtureRepository}.git/info/refs`]);
             assert.equal(calls(), before);
             assert.equal(peer.gh.issuesOfTokens.length, 0);
+            if (pullPreview) {
+              const sha = await peer.origin.ref("main");
+              await git([
+                "fetch",
+                `https://github.com/${fixtureRepository}.git`,
+                "refs/heads/main",
+              ]);
+              assert.equal((await git(["rev-parse", "FETCH_HEAD"])).stdout.trim(), sha);
+              assert.ok(
+                peer.origin.trace.some(
+                  ({ path, method }) =>
+                    method === "POST" && path === `/${fixtureRepository}.git/git-upload-pack`,
+                ),
+              );
+              assert.equal(peer.gh.issuesOfTokens.length, 1);
+              assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+                metadata: "read",
+                contents: "read",
+              });
+            }
             if (set) {
               assert.notEqual((await push(secondRepository, true)).code, 0);
               assert.equal(calls(), before);
