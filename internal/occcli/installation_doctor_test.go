@@ -31,6 +31,19 @@ func installationCheckArg(t *testing.T) string {
 	return string(checkArg)
 }
 
+func selectedMigrationArg(t *testing.T) string {
+	t.Helper()
+	program, err := os.ReadFile("../../deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(string(program))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return `"-e",` + string(encoded) + `,"--"`
+}
+
 func installationCheckContainer(checkArg string) string {
 	return `{"name":"installation-check","command":["node"],"args":["--input-type=module","-e",` + checkArg + `]}`
 }
@@ -48,6 +61,7 @@ func TestInstallationDoctor(t *testing.T) {
 	job := strings.Replace(unchecked, `"initContainers":[`, `"initContainers":[`+check+`,`, 1)
 	const migration = `"scripts/migrate-production.mjs"`
 	const currentMigration = `"scripts/migrate-production.ts"`
+	selectedMigration := selectedMigrationArg(t)
 	failed := strings.Replace(strings.Replace(job, `"type":"Complete"`, `"type":"Failed"`, 1), `"succeeded":1`, `"failed":1`, 1)
 	wrongRelease := strings.Replace(job, `io/instance":"demo"`, `io/instance":"other"`, 1)
 	upgrade := strings.Replace(job, migration+`,"--expect-empty"`, migration, 1)
@@ -61,6 +75,11 @@ func TestInstallationDoctor(t *testing.T) {
 		success    bool
 		uid        string
 	}{
+		{"selected-install", 200, strings.Replace(job, migration, selectedMigration, 1), "Initialization Job (install hook): complete", true, ""},
+		{"selected-upgrade", 200, strings.Replace(upgrade, migration, selectedMigration, 1), "upgrade hook): complete", true, ""},
+		{"selected-separate-upgrade", 200, strings.Replace(upgrade, migration, selectedMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
+		{"altered-selected-program", 200, strings.Replace(job, migration, `"-e","process.exit(0)","--"`, 1), "steps do not match", false, ""},
+		{"selected-extra-arg", 200, strings.Replace(job, migration, selectedMigration+`,"unexpected"`, 1), "steps do not match", false, ""},
 		{"typed-install", 200, strings.Replace(job, migration, currentMigration, 1), "Initialization Job (install hook): complete", true, ""},
 		{"typed-upgrade", 200, strings.Replace(upgrade, migration, currentMigration, 1), "upgrade hook): complete", true, ""},
 		{"separate-upgrade", 200, strings.Replace(upgrade, migration, currentMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},

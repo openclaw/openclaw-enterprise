@@ -149,7 +149,9 @@ spec:
         - name: migration
           image: {{ .Values.images.controller | quote }}
           args:
-            - scripts/migrate-production.ts
+            - -e
+            - {{ required "chart is missing files/migrate-selected-image.cjs" (.Files.Get "files/migrate-selected-image.cjs") | quote }}
+            - --
             {{- if .Release.IsInstall }}
             - --expect-empty
             {{- else if eq .Values.database.upgradeMigration "separate" }}

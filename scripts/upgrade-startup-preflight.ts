@@ -4,8 +4,8 @@
 // Installation and runs the bundled Kubernetes Compute preflight exactly as the
 // API and worker do at startup, and checks migration compatibility against the database.
 import { readFileSync, writeFileSync } from "node:fs";
-import { isDeepStrictEqual } from "node:util";
 import { gzipSync } from "node:zlib";
+import { migrationEntry } from "./lib/selected-image-migration.ts";
 
 // Printed before the image's own message when Compute preflight stops startup:
 // a refusal is the Driver's ConfigurationFailure (such as split-layout storage);
@@ -729,13 +729,8 @@ function migrationJob(
   if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
     fail("the initialization Job contains invalid migration arguments.");
   }
-  const option = args.at(-1);
-  const entry =
-    option === "--expect-empty" || option === "--require-current" ? args.slice(0, -1) : args;
-  if (
-    !isDeepStrictEqual(entry, ["scripts/migrate-production.ts"]) &&
-    !isDeepStrictEqual(entry, ["scripts/migrate-production.mjs"])
-  ) {
+  const entry = migrationEntry(args);
+  if (!entry) {
     fail("the initialization Job contains invalid migration arguments.");
   }
   const container: Container = selectFields(initializer, containerFields);

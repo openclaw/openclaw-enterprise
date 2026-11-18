@@ -66,10 +66,8 @@ pnpm install --frozen-lockfile
 pnpm db:migrate:production --check
 ```
 
-An image-only install runs the release controller image with
-`node scripts/migrate-production.ts --check` instead; on Kubernetes, the
-[maintenance procedure](auth-maintenance.md#run-the-command) provides the image, the
-migrator credential and the database CA.
+For an image-only install, use the [selected controller image check](separate-database-upgrade.md#run-a-selected-image-migration).
+On Kubernetes, the maintenance Job supplies the migrator credential and database CA.
 
 If the check fails, stop. Exit 0 and `migration.checked` with
 `history: "completed"` mean no migration is pending for that release.
@@ -82,8 +80,8 @@ pnpm db:migrate:production
 pnpm db:migrate:production --check
 ```
 
-In the controller image, run `node scripts/migrate-production.ts`, then run
-`node scripts/migrate-production.ts --check`.
+With a controller image, use the same selected-image program without `--check`, then
+repeat it with `--check`.
 
 Migration reports its **starting** history; the last check must use the same
 release and report `completed`. Upgrade the control plane without mixed-version

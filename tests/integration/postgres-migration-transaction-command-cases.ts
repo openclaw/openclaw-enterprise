@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -223,13 +224,13 @@ export function registerPostgresMigrationTransactionCommandCases({
       // The documented direct invocation receives --check as its own argument.
       const checked = await run(
         process.execPath,
-        ["scripts/migrate-production.ts", "--check"],
+        [...selectedImageMigrationEntry, "--check"],
         options,
       );
       assert.match(checked.stdout, /"event":"migration.checked","history":"empty"/);
       // An operator who adds the old task-runner separator must get a refusal, never an apply.
       await assert.rejects(
-        run(process.execPath, ["scripts/migrate-production.ts", "--", "--check"], options),
+        run(process.execPath, [...selectedImageMigrationEntry, "--", "--check"], options),
         (error: unknown) =>
           error instanceof Error &&
           "code" in error &&
@@ -251,7 +252,7 @@ export function registerPostgresMigrationTransactionCommandCases({
       const url = new URL(db.migrationUrl);
       await db.migrator.query("SELECT pg_advisory_lock(1868785005, 1835624306)");
       // Hold the real migration lock until the command has a waiting PostgreSQL session.
-      const child = spawn(process.execPath, ["scripts/migrate-production.ts"], {
+      const child = spawn(process.execPath, selectedImageMigrationEntry, {
         stdio: "ignore",
         env: { ...process.env, NODE_ENV: "production", OCC_MIGRATION_DATABASE_URL: url.toString() },
       });
@@ -283,6 +284,8 @@ export function registerPostgresMigrationTransactionCommandCases({
           true,
           "migration did not wait for the advisory lock",
         );
+        child.kill("SIGTERM");
+        await delay(5);
         child.kill("SIGTERM");
         const [code, signal] = await exited;
         assert.equal(code, 143);

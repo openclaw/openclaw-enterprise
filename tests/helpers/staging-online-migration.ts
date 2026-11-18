@@ -1,3 +1,4 @@
+import { migrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -206,8 +207,7 @@ export async function rehearseOnlineMigration({
   assert.equal(migration.image, candidate.reference);
   // Both generations of chart must request an apply with no migration mode flags.
   assert.ok(
-    isDeepStrictEqual(migration.args, ["scripts/migrate-production.ts"]) ||
-      isDeepStrictEqual(migration.args, ["scripts/migrate-production.mjs"]),
+    migration.args && isDeepStrictEqual(migrationEntry(migration.args), migration.args),
     "the candidate chart did not render its migration apply command",
   );
   const mounts = new Set(migration.volumeMounts?.map(({ name }) => name));

@@ -1,5 +1,8 @@
+import {
+  migrationEntry,
+  selectedImageMigrationEntry,
+} from "../../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
-import { isDeepStrictEqual } from "node:util";
 import { verifyCompletedMigrationHistory } from "../staging-upgrade-return.ts";
 
 export function runtimeProof({
@@ -59,14 +62,7 @@ export function runtimeProof({
       await custody.assertPostgres();
       const template = (await get("job/" + release + "-initialization")).spec.template;
       const migration = template.spec.initContainers.find((c) => c.name === "migration");
-      const args = migration.args;
-      const mode = args.at(-1);
-      const entry =
-        mode === "--expect-empty" || mode === "--require-current" ? args.slice(0, -1) : args;
-      assert(
-        isDeepStrictEqual(entry, ["scripts/migrate-production.ts"]) ||
-          isDeepStrictEqual(entry, ["scripts/migrate-production.mjs"]),
-      );
+      assert(migrationEntry(migration.args));
       const db = migration.env.find((e) => e.name === "OCC_MIGRATION_DATABASE_URL")?.valueFrom
         .secretKeyRef;
       assert.deepEqual(db, { name: "occ-database", key: "migration-url" });
@@ -93,7 +89,7 @@ export function runtimeProof({
               ...migration,
               image: image.reference,
               // The target image may be older than the retained initializer.
-              args: ["--run", "db:migrate:production", "--", "--check"],
+              args: [...selectedImageMigrationEntry, "--check"],
             },
           ],
         },

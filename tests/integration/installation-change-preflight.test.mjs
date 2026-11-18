@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -108,7 +109,7 @@ test(
         ["installation-check", "migration"],
       );
       assert.deepEqual(install.hook.initContainers[1].args, [
-        "scripts/migrate-production.ts",
+        ...selectedImageMigrationEntry,
         "--expect-empty",
       ]);
       assert.deepEqual(install.hook.containers, hook.containers);
@@ -121,7 +122,7 @@ test(
       );
       const [check, migration] = hook.initContainers;
       const server = api.containers.find(({ name }) => name === "api");
-      assert.deepEqual(migration.args, ["scripts/migrate-production.ts"]);
+      assert.deepEqual(migration.args, selectedImageMigrationEntry);
       assert.equal(check.image, server.image);
       assert.deepEqual(check.command, ["node"]);
       assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
@@ -191,7 +192,7 @@ test(
       const { hook } = await render(values, isUpgrade);
       const migration = hook.initContainers.find(({ name }) => name === "migration");
       assert.deepEqual(migration.args, [
-        "scripts/migrate-production.ts",
+        ...selectedImageMigrationEntry,
         isUpgrade ? "--require-current" : "--expect-empty",
       ]);
     }

@@ -92,6 +92,8 @@ Confirm target and authorization before running `pnpm db:migrate` or
 roles, receipts, definitions and grants. Drizzle applies pending SQL and receipts
 transactionally.
 
+The chart runs the [selected image's migration](../../guides/deploy/separate-database-upgrade.md#run-a-selected-image-migration) in one Node process.
+
 Production `--check` inspects recognized history. [Separate service deployment](../../guides/deploy/separate-database-upgrade.md)
 uses `--require-current`: pending history returns `MIGRATION_HISTORY_PENDING`,
 drift returns `MIGRATION_HISTORY_UNSUPPORTED`. Neither check applies SQL or authorizes a retry.

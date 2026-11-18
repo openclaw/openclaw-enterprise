@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
@@ -123,7 +124,7 @@ test(
         const [probe] = generated.spec.template.spec.containers;
         assert.ok(probe);
         assert.deepEqual(probe.command, ["node"]);
-        assert.deepEqual(probe.args, ["scripts/migrate-production.ts", "--check"]);
+        assert.deepEqual(probe.args, [...selectedImageMigrationEntry, "--check"]);
 
         // A candidate from a historical chart must keep that image's real entry point.
         migration.args = ["scripts/migrate-production.mjs", "--require-current"];
@@ -132,6 +133,8 @@ test(
         );
         probe.args = ["scripts/migrate-production.mjs", "--check"];
         assert.deepEqual(historical, generated);
+        migration.args = ["-e", "process.exit(0)", "--"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
         migration.args = ["--run", "db:migrate", "--"];
         await refuses(action, withInitializer(selected), /invalid migration arguments/);
         migration.args = ["scripts/migrate-production.ts", "--expect-empty", "unexpected"];

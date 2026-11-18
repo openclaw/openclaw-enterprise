@@ -21,6 +21,8 @@ let pool: Pool | undefined;
 let cancellation: Promise<void> | undefined;
 let interrupted = false;
 let migrationFinished = false;
+let onInterrupt: (() => void) | undefined;
+let onTerminate: (() => void) | undefined;
 let logger = createOccLogger({ component: "occ-migration", level: "info", destination: "stderr" });
 
 try {
@@ -80,10 +82,10 @@ try {
       emitOccLogEvent(logger, { event: "migration.cancellation-failed", code: "MIGRATION_FAILED" });
     });
   };
-  const onInterrupt = () => interrupt("SIGINT");
-  const onTerminate = () => interrupt("SIGTERM");
-  process.once("SIGINT", onInterrupt);
-  process.once("SIGTERM", onTerminate);
+  onInterrupt = () => interrupt("SIGINT");
+  onTerminate = () => interrupt("SIGTERM");
+  process.on("SIGINT", onInterrupt);
+  process.on("SIGTERM", onTerminate);
   let history: Awaited<ReturnType<typeof migrateWithHistory>>;
   try {
     history = await migrateWithHistory(pool, { checkOnly, expectEmpty, requireCurrent });
@@ -93,8 +95,6 @@ try {
   } finally {
     migrationFinished = true;
     await cancellation;
-    process.removeListener("SIGINT", onInterrupt);
-    process.removeListener("SIGTERM", onTerminate);
   }
   const event = checkOnly ? "migration.checked" : "migration.completed";
   process.stdout.write(`${JSON.stringify({ event, history })}\n`);
@@ -126,7 +126,17 @@ try {
     process.exitCode = 1;
   }
 } finally {
-  if (pool !== undefined) {
-    await pool.end();
+  try {
+    if (pool !== undefined) {
+      await pool.end();
+    }
+    await cancellation;
+  } finally {
+    if (onInterrupt) {
+      process.removeListener("SIGINT", onInterrupt);
+    }
+    if (onTerminate) {
+      process.removeListener("SIGTERM", onTerminate);
+    }
   }
 }

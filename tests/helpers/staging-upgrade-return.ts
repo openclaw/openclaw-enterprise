@@ -1,3 +1,4 @@
+import { migrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import type { Agent } from "../../packages/contracts/src/index.ts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
@@ -1143,11 +1144,8 @@ export async function rehearsePopulatedReturn({
     assert.ok(migration, "initializer is missing its migration container");
     assert.equal(migration.image, image.reference, "migration probe must use the selected image");
     assert.ok(migration.env, "initializer migration container is missing its environment");
-    const entry = migration.args?.[0];
-    assert.ok(
-      entry === "scripts/migrate-production.ts" || entry === "scripts/migrate-production.mjs",
-      "initializer has an unsupported migration entry point",
-    );
+    const entry = migration.args && migrationEntry(migration.args);
+    assert.ok(entry, "initializer has an unsupported migration entry point");
     const probeSecret = {
       apiVersion: "v1",
       kind: "Secret",
@@ -1174,7 +1172,7 @@ export async function rehearsePopulatedReturn({
         containers: [
           {
             ...migration,
-            args: [entry, "--check"],
+            args: [...entry, "--check"],
             env: [
               ...migration.env.filter(({ name }) => name !== "OCC_MIGRATION_DATABASE_URL"),
               {
