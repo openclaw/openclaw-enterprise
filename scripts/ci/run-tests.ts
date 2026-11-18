@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { availableParallelism, cpus } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -322,6 +322,8 @@ async function runFile(
         const escaped = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         args.push("--test-name-pattern", new RegExp(`^${escaped}$`).toString());
       }
+      // Node reports physical case locations but names its file wrapper after the argument.
+      const reporterRoot = await realpath(root);
       args.push(absolutePath);
       nodeResult = await runNode(args, {
         cwd: root,
@@ -351,10 +353,11 @@ async function runFile(
       readFileEvidence(
         nodeResult,
         {
-          root,
+          root: reporterRoot,
           absolutePath,
           relativePath,
           laneName: lane.name,
+          expectedTests: file.expectedTests,
           env,
           focused: testName !== undefined,
         },
@@ -421,6 +424,7 @@ async function runFile(
     details,
     measurements,
     unfinishedStage,
+    openShellReplacement,
     testRunExercised,
   } = evidence;
   if (
@@ -541,6 +545,7 @@ async function runFile(
         firstTest.name === file.expectedTests[0]))
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
+    ...(openShellReplacement ? { openShellReplacement } : {}),
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,

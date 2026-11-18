@@ -174,6 +174,7 @@ import type {
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
+  AgentChatCompletionsResolution,
   Configuration,
   ConfigurationDriver,
   ConfigurationValidationOptions,
@@ -304,7 +305,7 @@ import {
   requireFallbackProviders,
   resolveConfiguredHarnessId,
 } from "./configured-harness.ts";
-import type { ClaimedWork } from "./controller-work.ts";
+import type { ClaimedWork, ControllerWork } from "./controller-work.ts";
 import { requireDeployableRoster, withAgentIdentityName } from "./openclaw-roster.ts";
 import {
   capability,
@@ -360,6 +361,7 @@ import {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   QualifiedAuthorizationDeniedError,
+  HiddenResourceAuthorizationDeniedError,
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
@@ -543,6 +545,7 @@ export {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   QualifiedAuthorizationDeniedError,
+  HiddenResourceAuthorizationDeniedError,
   quotedSettingKey,
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
@@ -1729,6 +1732,17 @@ const FIXED_PROTECTED_SOURCE_REFUSALS = Object.freeze({
   rotate:
     "This credential source holds a prepared or credential-free protected grant, which is not rotated in place. To replace it, create a new source, bind it in place of this one, then delete this one.",
 });
+
+function workMatchesRevision(
+  work: ControllerWork,
+  revision: Pick<AgentRevision, "id" | "namespaceId" | "agentId">,
+): boolean {
+  return (
+    work.namespaceId === revision.namespaceId &&
+    work.agentId === revision.agentId &&
+    work.revisionId === revision.id
+  );
+}
 
 /**
  * The provisioning status message for a worker failure. Only the shared duplicate-name,
@@ -3368,6 +3382,73 @@ export class OpenClawController {
     });
   }
 
+  /** Resolve stored ownership and authorize before consulting the selected Compute Driver. */
+  async resolveAgentChat(
+    principalId: string,
+    agentId: string,
+    namespaceScope?: string,
+  ): Promise<{
+    readonly agent: Readonly<Agent>;
+    readonly revision?: Readonly<AgentRevision>;
+    readonly endpoint: AgentChatCompletionsResolution;
+  }> {
+    const reference = await this.resolveAgentReference((candidate) => candidate.id === agentId);
+    if (!reference) {
+      throw new ScopeViolationError("The requested Agent was not found.");
+    }
+    const resource = { kind: "agent", id: agentId, namespaceId: reference.namespaceId } as const;
+    const outsideCredentialScope =
+      namespaceScope !== undefined && reference.namespaceId !== namespaceScope;
+    try {
+      const authorization = await this.authorize(principalId, "operate", resource);
+      if (outsideCredentialScope) {
+        throw new AuthorizationDeniedError(
+          "The Agent is outside the service credential's Namespace.",
+          authorization.decision.evidence,
+          { action: "operate", resource },
+          principalId,
+        );
+      }
+    } catch (error) {
+      if (
+        error instanceof AuthorizationDeniedError &&
+        (outsideCredentialScope ||
+          !(await this.authorizationDecision(principalId, "read", resource)).decision.allowed)
+      ) {
+        throw new HiddenResourceAuthorizationDeniedError(error);
+      }
+      throw error;
+    }
+    const compute = this.selectedDriver("compute");
+    return this.read(async (state) => {
+      const { agent } = await this.exactAgent(state, reference.namespaceId, agentId);
+      // Capability absence precedes lifecycle checks, including for a stopped Agent.
+      if (!compute.getChatCompletionsEndpoint) {
+        return { agent, endpoint: { status: "unsupported" } };
+      }
+      if (
+        agent.status !== "active" ||
+        agent.desiredRuntimeState !== "running" ||
+        !agent.activeRevisionId
+      ) {
+        return { agent, endpoint: { status: "unavailable" } };
+      }
+      const revision = await state.revisions.findRevision(
+        agent.namespaceId,
+        agent.id,
+        agent.activeRevisionId,
+      );
+      if (
+        !revision ||
+        revision.compute.id !== compute.id ||
+        revision.compute.implementation !== compute.implementation
+      ) {
+        return { agent, endpoint: { status: "unavailable" } };
+      }
+      return { agent, revision, endpoint: compute.getChatCompletionsEndpoint(revision) };
+    });
+  }
+
   async getAdministerableAgent(
     principalId: string,
     namespaceId: string,
@@ -4049,9 +4130,11 @@ export class OpenClawController {
     const deployment = await state.operations.findWork(key);
     if (
       deployment === undefined ||
-      deployment.namespaceId !== record.namespaceId ||
-      deployment.agentId !== record.agentId ||
-      deployment.revisionId !== revisionId ||
+      !workMatchesRevision(deployment, {
+        namespaceId: record.namespaceId,
+        agentId: record.agentId,
+        id: revisionId,
+      }) ||
       !(await this.canRead(principalId, {
         kind: "agent_revision",
         id: revisionId,
@@ -5251,10 +5334,11 @@ export class OpenClawController {
     }
     try {
       return await this.mutate(async (state) => {
+        await holdSession?.(state);
+        await this.holdAuthority(state);
         await this.lockNamespace(state, namespaceId);
         await this.authorizeConnectionCreation(principalId, namespaceId);
         await this.assertConnectionTemplateScope(session.connectionTemplateId, namespaceId);
-        await holdSession?.(state);
         await this.grantConnectionOwner(state, namespaceId, principalId, credentialSourceId);
         const ready = await state.credentialSources.markCredentialSourceReady(
           namespaceId,
@@ -6134,11 +6218,7 @@ export class OpenClawController {
         for (const revision of readable) {
           const key = `agent_revision:${revision.id}:reconcile`;
           const work = await state.operations.findWork(key);
-          const matches =
-            work !== undefined &&
-            work.namespaceId === revision.namespaceId &&
-            work.agentId === revision.agentId &&
-            work.revisionId === revision.id;
+          const matches = work !== undefined && workMatchesRevision(work, revision);
           // Only queued work no claim has counted needs its evidence to tell a waiting deploy
           // from a started one; a counted attempt already reads as running.
           const attempt =
@@ -6357,12 +6437,7 @@ export class OpenClawController {
     return this.read(async (state) => {
       const idempotencyKey = `agent_revision:${revision.id}:reconcile`;
       const work = await state.operations.findWork(idempotencyKey);
-      if (
-        work === undefined ||
-        work.namespaceId !== revision.namespaceId ||
-        work.agentId !== revision.agentId ||
-        work.revisionId !== revision.id
-      ) {
+      if (work === undefined || !workMatchesRevision(work, revision)) {
         throw new DependencyUnavailableError(
           "The deployment reconciliation record is unavailable.",
         );
@@ -6401,11 +6476,7 @@ export class OpenClawController {
     if (cleanup === undefined) {
       return null;
     }
-    if (
-      cleanup.namespaceId !== revision.namespaceId ||
-      cleanup.agentId !== revision.agentId ||
-      cleanup.revisionId !== revision.id
-    ) {
+    if (!workMatchesRevision(cleanup, revision)) {
       throw new ScopeViolationError("Deployment cleanup does not match its revision.");
     }
     // A started cleanup stays running between its attempts, as a deployment does (finding 2466).
@@ -6887,6 +6958,7 @@ export class OpenClawController {
     }
     const skip = options.skipRefusedRefresh ?? "none";
     await this.mutate(async (state) => {
+      await this.holdAuthority(state);
       await this.authorize(principalId, "administer", {
         kind: "installation",
         id: this.installation.id,
@@ -12621,6 +12693,9 @@ export class OpenClawController {
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      if (input.repositoryStandingApproval !== undefined) {
+        await this.holdAuthority(state);
+      }
       const target = { kind: "agent", id: input.agentId, namespaceId: input.namespaceId } as const;
       await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
@@ -13892,16 +13967,24 @@ export class OpenClawController {
         throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
       }
       const computeAdmission = compute.admitRevision?.(freezeAgentRevision(revisionDraft));
+      const admittedDraft = freezeAgentRevision({
+        ...revisionDraft,
+        compute: {
+          ...revisionDraft.compute,
+          ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
+        },
+      });
+      const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
-          ...revisionDraft,
+          ...admittedDraft,
           compute: {
-            ...revisionDraft.compute,
-            ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
+            ...admittedDraft.compute,
+            ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
           },
         }),
         first?.digest,

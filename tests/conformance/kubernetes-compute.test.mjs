@@ -72,6 +72,7 @@ import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-k
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
+  createDedicatedDeployEnrollmentFixture,
   createDedicatedDeployKubernetesFixture,
   nativeHarnessResource,
   nativeSandboxIdentity,
@@ -585,32 +586,7 @@ function dedicatedFirstDeployFixture({
   splitCluster = false,
   revision: revisionOverrides = {},
 } = {}) {
-  const state = {
-    setupCalls: 0,
-    connected: false,
-    // A retained setup receipt can name a device that is currently disconnected.
-    redeemedDeviceId: undefined,
-    setupDelivery: "confirmed",
-    // Registry presence does not imply a completed token-authenticated connection.
-    possessionAvailable: undefined,
-    possessionDevices: [],
-    enrollmentAvailable: true,
-    // The node OpenClaw reports applied through the wrapper's runtime status,
-    // or the reason it has not.
-    gatewayWorkspaceNodeId: undefined,
-    gatewayWorkspaceNodeFailure: undefined,
-    gatewayAppliesBinding: true,
-    // With a fake clock: when set, the node host pairs this long after its setup
-    // reaches the Harness.
-    pairAfterSetupMs: undefined,
-    // The wait each setup observation was given.
-    observeWaits: [],
-    // With a fake clock: when the node pairs, and when a waiting observation fails.
-    pairAtMs: undefined,
-    failAtMs: undefined,
-    // With a fake clock: observe poll by poll, asking `stopWaiting` between reads.
-    stepObservations: false,
-  };
+  const { state, nodeEnrollment } = createDedicatedDeployEnrollmentFixture(clock);
   const driver = new KubernetesComputeDriver(
     routedOptions({
       ...(splitCluster ? { executionCluster: twoClusterOptions().executionCluster } : {}),
@@ -637,77 +613,7 @@ function dedicatedFirstDeployFixture({
       sandboxDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
-      nodeEnrollment: {
-        async createSetup() {
-          state.setupCalls++;
-          return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
-        },
-        async observeSetup(_url, _setupId, signal, options) {
-          if (!state.enrollmentAvailable) {
-            throw new Error("Gateway is restarting after the Harness replacement");
-          }
-          // Like the client: one connection, re-read until connected or the wait ends.
-          state.observeWaits.push(options?.waitMs ?? 0);
-          if (state.redeemedDeviceId !== undefined) {
-            return {
-              deviceId: state.redeemedDeviceId,
-              connected: state.connected,
-              delivery: state.setupDelivery,
-            };
-          }
-          if (clock !== undefined && state.stepObservations) {
-            // Like the client, poll by poll: read, then ask whether other Work
-            // is waiting for the worker before the next read.
-            const deadline = clock.now + (options?.waitMs ?? 0);
-            for (;;) {
-              if (state.pairAtMs !== undefined && state.pairAtMs <= clock.now) {
-                state.connected = true;
-              }
-              if (
-                state.connected ||
-                clock.now + 250 > deadline ||
-                (options?.stopWaiting !== undefined && (await options.stopWaiting()))
-              ) {
-                return state.connected
-                  ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-                  : undefined;
-              }
-              clock.now += 250;
-            }
-          }
-          if (clock !== undefined) {
-            const deadline = clock.now + (options?.waitMs ?? 0);
-            if (state.failAtMs !== undefined && state.failAtMs <= deadline) {
-              clock.now = Math.max(clock.now, state.failAtMs);
-              throw new Error("Gateway connection closed");
-            }
-            if (!state.connected && state.pairAtMs !== undefined && state.pairAtMs <= deadline) {
-              clock.now = Math.max(clock.now, state.pairAtMs);
-              state.connected = true;
-            } else if (!state.connected) {
-              clock.now = deadline;
-            }
-            return state.connected
-              ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-              : undefined;
-          }
-          const deadline = Date.now() + (options?.waitMs ?? 0);
-          while (!state.connected && Date.now() < deadline) {
-            if (options?.stopWaiting !== undefined && (await options.stopWaiting())) {
-              break;
-            }
-            signal.throwIfAborted();
-            await new Promise((resolve) => setTimeout(resolve, 2));
-          }
-          return state.connected
-            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-            : undefined;
-        },
-        async isConnected(_url, deviceId) {
-          state.possessionDevices.push(deviceId);
-          return state.possessionAvailable ?? state.connected;
-        },
-      },
+      nodeEnrollment,
     },
   );
   if (clock === undefined) {
@@ -919,7 +825,112 @@ test("shared OpenAI provider leaves a roster-selected Anthropic provider unchang
   const providers = JSON.parse(document.data["openclaw.json"]).models.providers;
   assert.equal(providers.anthropic.baseUrl, "https://api.anthropic.com");
   assert.equal(providers.openai.baseUrl, "https://unselected.example.test/v1");
-  assert.equal(fixture.revision.compute.admission, undefined);
+  assert.doesNotMatch(fixture.revision.compute.admission ?? "", /model-provider:/);
+});
+
+test("invalid runtime snapshots cannot fall back to current images", async () => {
+  for (const runtimeInputs of ["planned-runtime:v2:{}", "planned-runtime:v1:{}", "malformed"]) {
+    const fixture = dedicatedFirstDeployFixture();
+    fixture.revision.compute.runtimeInputs = runtimeInputs;
+    await assert.rejects(fixture.prepare(), /runtime admission is invalid/);
+    assert.equal(fixture.templates.length, 0);
+  }
+});
+
+test("admitted dedicated runtimes keep their images across maintenance and activation", async () => {
+  const fixture = dedicatedFirstDeployFixture();
+  await fixture.prepare();
+  fixture.markReady(fixture.gatewayName);
+  await fixture.prepare();
+  fixture.markReady(fixture.agentName);
+  fixture.state.connected = true;
+  assert.equal((await fixture.prepare()).ready, true);
+  const starts = fixture.templates.length;
+  const before = [fixture.gatewayName, fixture.agentName].map((name) =>
+    structuredClone(fixture.read("Deployment", name).spec.template),
+  );
+  const reloaded = new KubernetesComputeDriver(
+    {
+      ...fixture.driver.options,
+      images: {
+        ...fixture.driver.options.images,
+        gateway: "openclaw-enterprise/gateway-fixture:candidate",
+        agent: "openclaw-enterprise/agent-fixture:candidate",
+      },
+    },
+    { nodeEnrollment: fixture.driver.nodeEnrollment },
+  );
+  reloaded.apiClients = Promise.resolve(fixture.clients);
+  assert.equal(
+    (await reloaded.prepareRevision(fixture.revision, authContext(fixture.revision))).ready,
+    true,
+  );
+  await reloaded.activateRevision(fixture.revision, authContext(fixture.revision));
+  assert.deepEqual(
+    [fixture.gatewayName, fixture.agentName].map(
+      (name) => fixture.read("Deployment", name).spec.template,
+    ),
+    before,
+  );
+  assert.equal(fixture.templates.length, starts, "maintenance must not restart either workload");
+});
+
+test("an enforced digest policy rejects previously admitted tags before reconciliation", async () => {
+  const fixture = dedicatedFirstDeployFixture();
+  const pinned = "registry.example.test/runtime@sha256:" + "a".repeat(64);
+  const reloaded = new KubernetesComputeDriver(
+    {
+      ...fixture.driver.options,
+      images: { gateway: pinned, agent: pinned, requireImmutableDigest: true },
+    },
+    { nodeEnrollment: fixture.driver.nodeEnrollment },
+  );
+  reloaded.apiClients = Promise.resolve(fixture.clients);
+  for (const operation of ["prepareRevision", "activateRevision"]) {
+    await assert.rejects(
+      reloaded[operation](fixture.revision, authContext(fixture.revision)),
+      /saved runtime images.*digest.*new Agent revision/i,
+    );
+    assert.equal(fixture.templates.length, 0);
+  }
+});
+
+test("admitted workspace initialization retains the Gateway image after defaults change", async () => {
+  const fixture = workspaceSetupFixture(false);
+  fixture.state.ready = true;
+  assert.equal(
+    (await fixture.driver.prepareRevision(fixture.revision, fixture.context)).ready,
+    true,
+  );
+  // Finish the initial node binding before comparing an established runtime.
+  assert.equal(
+    (await fixture.driver.prepareRevision(fixture.revision, fixture.context)).ready,
+    true,
+  );
+  const templates = () =>
+    [...fixture.objects.values()]
+      .filter((object) => object.kind === "Deployment")
+      .map((object) => object.spec.template);
+  const before = structuredClone(templates());
+  assert.ok(
+    before.some((template) =>
+      template.spec.initContainers?.some((container) => container.name === "initialize-workspace"),
+    ),
+  );
+  const reloaded = new KubernetesComputeDriver(
+    {
+      ...fixture.driver.options,
+      images: {
+        ...fixture.driver.options.images,
+        gateway: "openclaw-enterprise/gateway-fixture:candidate",
+        agent: "openclaw-enterprise/agent-fixture:candidate",
+      },
+    },
+    { nodeEnrollment: fixture.driver.nodeEnrollment },
+  );
+  reloaded.apiClients = fixture.driver.apiClients;
+  assert.equal((await reloaded.prepareRevision(fixture.revision, fixture.context)).ready, true);
+  assert.deepEqual(templates(), before);
 });
 
 test("prepared direct-Secret workloads retain their provider across default changes during activation", async () => {
@@ -3521,6 +3532,44 @@ test(
   checkTrustedProxyIdentities,
 );
 
+test("HTTP completion resolution preserves scope, opt-out and revision-specific routing", () => {
+  const configured = routedOptions({
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  const driver = createKubernetesComputeDriver(configured);
+  const revision = routedRevision(driver);
+  // Auth and HTTP defaults are derived from the saved admission, not required in authored settings.
+  delete revision.configuration.gateway.auth.mode;
+  assert.equal(driver.getChatCompletionsEndpoint(revision).status, "available");
+  const old = structuredClone(revision);
+  delete old.compute.admission;
+  assert.deepEqual(driver.getChatCompletionsEndpoint(old), { status: "unavailable" });
+  revision.configuration.gateway.http = { endpoints: { chatCompletions: { enabled: false } } };
+  revision.configuration.gateway.auth.mode = "token";
+  // Opt-out cannot qualify an incompatible authentication mode.
+  assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "unsupported" });
+  revision.configuration.gateway.auth.mode = "trusted-proxy";
+  assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "disabled" });
+  revision.configuration.gateway.http.endpoints.chatCompletions.enabled = true;
+  const endpoint = driver.getChatCompletionsEndpoint(revision);
+  assert.equal(endpoint.status, "available");
+  assert.equal(endpoint.model, "openclaw:main");
+  assert.equal(
+    new URL(endpoint.url).pathname,
+    `/http-chat/namespaces/${tenant.id}/agents/${revision.agentId}/revisions/${revision.id}/v1/chat/completions`,
+  );
+  assert.notEqual(
+    driver.getChatCompletionsEndpoint({ ...revision, id: "replacement-revision" }).url,
+    endpoint.url,
+  );
+  assert.deepEqual(
+    createKubernetesComputeDriver(
+      options({ runtime: configured.runtime }),
+    ).getChatCompletionsEndpoint(revision),
+    { status: "unavailable" },
+  );
+});
+
 test("gateway chat routes enforce a distinct exact-Agent scope ceiling", () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -3926,7 +3975,10 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       gatewayName,
       gatewayOwnership,
       { name: namespace, plane: "execution" },
-      "openclaw-enterprise/gateway-fixture:local",
+      {
+        runtime: "openclaw-enterprise/gateway-fixture:local",
+        workspaceSetup: gatewayDriver.options.images.gateway,
+      },
       gatewayName,
       "gateway",
       {},
@@ -4425,52 +4477,17 @@ test("gateway routing startup validation and namespace membership fail closed", 
       SharedConfigurationValidationError,
     );
   }
-  for (const gatewayRouting of [
-    {
-      hostname: "agents.example.internal:443",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "https://agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: " ",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: 42,
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "OCE",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw/system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy/system",
-    },
+  for (const invalidGatewayRouting of [
+    { ...gatewayRouting, hostname: "agents.example.internal:443" },
+    { ...gatewayRouting, hostname: "https://agents.example.internal" },
+    { ...gatewayRouting, hostname: " " },
+    { ...gatewayRouting, hostname: 42 },
+    { ...gatewayRouting, gatewayName: "OCE" },
+    { ...gatewayRouting, gatewayNamespace: "openclaw/system" },
+    { ...gatewayRouting, envoyNamespace: "envoy/system" },
   ]) {
     assert.throws(
-      () => createKubernetesComputeDriver(routedOptions({ gatewayRouting })),
+      () => createKubernetesComputeDriver(routedOptions({ gatewayRouting: invalidGatewayRouting })),
       SharedConfigurationValidationError,
     );
   }
@@ -4808,7 +4825,7 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
     "codex-agent",
     ownership,
     { name: namespace, plane: "execution" },
-    "agent:local",
+    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
     "codex-agent",
     "agent",
     {},
@@ -4844,7 +4861,7 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
     "codex-gateway",
     ownership,
     { name: namespace, plane: "execution" },
-    "gateway:local",
+    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
     "codex-gateway",
     "gateway",
     {},
@@ -5074,7 +5091,7 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
     "gateway-native-approvers",
     { namespaceId: tenant.id, agentId },
     namespaceAddress,
-    "gateway:local",
+    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
     "gateway-native-approvers",
     "gateway",
     {},
@@ -5457,7 +5474,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     "gateway-native-worker",
     ownership,
     namespaceAddress,
-    "gateway:local",
+    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
     "gateway-native-worker",
     "gateway",
     {},
@@ -5475,7 +5492,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     "agent-native-worker",
     { ...ownership, revisionId: revision.id },
     namespaceAddress,
-    "gateway:local",
+    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
     "agent-native-worker",
     "agent",
     {},
@@ -5740,7 +5757,10 @@ test("native channel providers require Secret bindings and project them only to 
       `gateway-${suffix}`,
       { namespaceId: tenant.id, agentId },
       { name: namespace, plane: "execution" },
-      "openclaw-enterprise/gateway-fixture:local",
+      {
+        runtime: "openclaw-enterprise/gateway-fixture:local",
+        workspaceSetup: driver.options.images.gateway,
+      },
       `gateway-${suffix}`,
       "gateway",
       {},
@@ -5813,7 +5833,10 @@ test("native channel providers require Secret bindings and project them only to 
         revisionId: revision.id,
       },
       { name: namespace, plane: "execution" },
-      "openclaw-enterprise/agent-fixture:local",
+      {
+        runtime: "openclaw-enterprise/agent-fixture:local",
+        workspaceSetup: driver.options.images.gateway,
+      },
       `agent-${suffix}`,
       "agent",
       {},
@@ -5867,7 +5890,10 @@ test("native channel providers require Secret bindings and project them only to 
     `gateway-${suffix}`,
     { namespaceId: tenant.id, agentId },
     { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
+    {
+      runtime: "openclaw-enterprise/gateway-fixture:local",
+      workspaceSetup: managedDriver.options.images.gateway,
+    },
     `gateway-${suffix}`,
     "gateway",
     {},
@@ -6393,7 +6419,10 @@ async function exerciseEmbeddedReplacement(scenario) {
       gatewayName,
       gatewayOwnership,
       { name: namespace, plane: "execution" },
-      "openclaw-enterprise/gateway-fixture:local",
+      {
+        runtime: "openclaw-enterprise/gateway-fixture:local",
+        workspaceSetup: driver.options.images.gateway,
+      },
       agentName,
       "gateway",
       {},
@@ -6411,7 +6440,10 @@ async function exerciseEmbeddedReplacement(scenario) {
         gatewayName,
         gatewayOwnership,
         { name: namespace, plane: "execution" },
-        "openclaw-enterprise/gateway-fixture:local",
+        {
+          runtime: "openclaw-enterprise/gateway-fixture:local",
+          workspaceSetup: driver.options.images.gateway,
+        },
         agentName,
         "gateway",
         {},
@@ -6505,6 +6537,19 @@ async function exerciseEmbeddedReplacement(scenario) {
   const replaced = objects.get(key("Deployment", gatewayName));
   assert.equal(replaced.metadata.annotations["openclaw.dev/agent-revision-id"], replacement.id);
   assert.equal(replaced.spec.strategy.type, "Recreate");
+  // The shared Gateway keeps its state across the replacement, but a turn the predecessor
+  // was cut in resumes only under its own revision's scope (finding 3347).
+  for (const [deployment, revision] of [
+    [predecessor, oldRevision],
+    [replaced, replacement],
+  ]) {
+    assert.equal(
+      deployment.spec.template.spec.containers[0].env.find(
+        ({ name }) => name === "OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE",
+      )?.value,
+      revision.id,
+    );
+  }
   for (const [deployment, managed] of [
     [predecessor, predecessorManagedMode],
     [replaced, true],
@@ -6908,7 +6953,7 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     "agent-projected-identity",
     ownership,
     { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
-    "agent:local",
+    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
     "agent-projected-identity",
     "agent",
     {},
@@ -6988,7 +7033,7 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     "agent-projected-identity",
     ownership,
     { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
-    "agent:local",
+    { runtime: "agent:local", workspaceSetup: withoutProjection.options.images.gateway },
     "agent-projected-identity",
     "agent",
     {},
@@ -7057,7 +7102,7 @@ test("the OpenShell gateway allowlist admits every label Compute puts on a Harne
       servicePrincipalId: "service-agent-agt_00000000-0000-4000-8000-000000000002",
     },
     { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
-    "agent:local",
+    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
     "agent-label-admission",
     "agent",
     {},
@@ -7233,7 +7278,7 @@ test("provider Harness public trust rejects invalid material and composes with e
         `gateway-${digest(revision.agentId)}`,
         ownership,
         target,
-        configured.images.gateway,
+        { runtime: configured.images.gateway, workspaceSetup: driver.options.images.gateway },
         "gateway-account",
         "gateway",
         {},
@@ -7450,7 +7495,10 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     `gateway-${agentHash.slice(0, 12)}`,
     { namespaceId: tenant.id, agentId: revision.agentId },
     { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
+    {
+      runtime: "openclaw-enterprise/gateway-fixture:local",
+      workspaceSetup: production.options.images.gateway,
+    },
     `agent-${agentHash.slice(0, 12)}`,
     "gateway",
     {},
@@ -7921,7 +7969,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
       "gateway",
       ownership,
       { name: namespace, plane: "execution" },
-      "gateway:local",
+      { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
       "gateway",
       "gateway",
       {},
@@ -8011,7 +8059,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
         "gateway",
         ownership,
         { name: namespace, plane: "execution" },
-        "gateway:local",
+        { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
         "gateway",
         "gateway",
         {},
@@ -8077,7 +8125,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
     "agent",
     { ...ownership, revisionId: "revision-render" },
     { name: namespace, plane: "execution" },
-    "agent:local",
+    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
     "agent",
     "agent",
     {},

@@ -16,14 +16,11 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.ts";
-import { loadTestSuites } from "./test-suites.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
-import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
@@ -82,18 +79,31 @@ import {
 } from "./repository-credentials.ts";
 import { prepareCodexSeccompProfile } from "../lib/codex-seccomp-k3d.ts";
 import { prepareOpenShell, validateOpenShellSelection } from "./openshell.ts";
+import { runPreparationCli } from "./prepare-cli.ts";
+import {
+  assertLane,
+  effectiveLaneEnv,
+  laneDefaults,
+  laneDefinition,
+  laneName,
+  lanePrepare,
+  nativeIAMBarrierFile,
+  normalizeFile,
+  productionUpgradeImages,
+  repositoryCredentialsFileNeedsBinary,
+  repositoryRoot,
+  requireEnv,
+  selectedLaneFile,
+  suiteView,
+  validateLaneInputsBeforeSideEffects,
+} from "./prepare-inputs.ts";
 
-const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const runtimeDockerfile = join(repositoryRoot, "deploy/runtime/Dockerfile");
 const fixtureDockerContext = join(repositoryRoot, "tests/fixtures/kubernetes");
-const testSuitesManifestPath = join(repositoryRoot, "scripts/ci/test-suites.json");
 const defaultStatePath = join(
   process.env.RUNNER_TEMP ?? tmpdir(),
   "openclaw-enterprise-ci-state.json",
 );
-const suiteView = process.env.OCC_CI_SUITE_VIEW;
-const laneDefinitions = loadTestSuites(testSuitesManifestPath, suiteView).lanes ?? {};
-const allowedLanes = new Set(Object.keys(laneDefinitions));
 const fixtureLanes = new Set([
   "k3d-fixture-configuration",
   "k3d-fixture-state",
@@ -120,39 +130,6 @@ const lanesWithoutK3sAddons = new Set([
 // checks they match).
 const defaultK3sImage =
   "docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc";
-const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.ts";
-const productionUpgradeImages = {
-  OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
-  OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
-};
-
-function laneDefinition(name) {
-  return laneDefinitions[name] ?? {};
-}
-
-function lanePrepare(name) {
-  return laneDefinition(name).prepare ?? {};
-}
-
-function laneDefaults(name, env) {
-  const defaults = { ...laneDefinition(name).env };
-  const effective = { ...env, ...defaults };
-  for (const [envName, defaultValue] of Object.entries(lanePrepare(name).defaultEnv ?? {})) {
-    defaults[envName] = process.env[envName] || effective[envName] || defaultValue;
-  }
-  return defaults;
-}
-
-function applyLaneEnv(name, env) {
-  Object.assign(env, laneDefaults(name, env));
-}
-
-function effectiveLaneEnv(name, env = {}) {
-  const effective = { ...process.env, ...env };
-  applyLaneEnv(name, effective);
-  return effective;
-}
-
 /** @typedef {import("./k3d-preparation.ts").PreparationResource} PreparationResource */
 /** @typedef {import("./k3d-preparation.ts").PreparationState & {
  *   version: 1,
@@ -165,47 +142,9 @@ function effectiveLaneEnv(name, env = {}) {
  *   env?: Record<string, string>,
  *   defaults?: Record<string, string>,
  * }} CiState */
-/** @typedef {Record<string, string | undefined>} Environment */
-/** @typedef {string | { name: string }} LaneSelection */
-/** @typedef {string | { path: string }} FileSelection */
+/** @typedef {import("./prepare-inputs.ts").LaneSelection} LaneSelection */
 /** @typedef {{ cleanup: () => Promise<boolean | void>, env: Record<string, string> }} PreparedLane */
-/** @typedef {{ cleanup: (options?: { lockTimeoutMs?: number | undefined }) => Promise<void>, env: Record<string, string>, defaults: Record<string, string> }} PreparedFile */
-
-function parseArgs(argv) {
-  const args = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith("--")) {
-      throw new Error(`Unexpected argument: ${arg}`);
-    }
-    const name = arg.slice(2);
-    if (
-      /^(?:warm-image-cache|require-cache-export|node-base-image|validate-node-base-image)(?:=|$)/u.test(
-        name,
-      )
-    ) {
-      throw new Error("Image cache warming uses scripts/ci/warm-image-cache.ts.");
-    }
-    const value = argv[index + 1];
-    if (value === undefined || value.startsWith("--")) {
-      args[name] = "1";
-    } else {
-      args[name] = value;
-      index += 1;
-    }
-  }
-  return args;
-}
-
-function laneName(lane) {
-  if (typeof lane === "string") {
-    return lane;
-  }
-  if (typeof lane?.name === "string") {
-    return lane.name;
-  }
-  throw new Error("CI lane must be a string or an object with a name.");
-}
+/** @typedef {{ cleanup: ((options?: { lockTimeoutMs?: number | undefined }) => Promise<void>) | null, env: Record<string, string>, defaults: Record<string, string> }} PreparedFile */
 
 /** @param {LaneSelection} lane @param {string} message */
 function progress(lane, message) {
@@ -283,31 +222,6 @@ export function timedK3dModelPreparation(lane, phase, operation) {
   return lane === "k3d-model" ? timedPreparation(lane, phase, operation) : operation();
 }
 
-function filePath(file) {
-  if (typeof file === "string") {
-    return file;
-  }
-  if (typeof file?.path === "string") {
-    return file.path;
-  }
-  throw new Error("CI file must be a string or an object with a path.");
-}
-
-function assertLane(lane) {
-  const name = laneName(lane);
-  if (!allowedLanes.has(name)) {
-    throw new Error(`Unknown CI lane: ${name}`);
-  }
-  return name;
-}
-
-function requireEnv(names, env = process.env) {
-  const missing = names.filter((name) => !env[name] || env[name].trim?.() === "");
-  if (missing.length > 0) {
-    throw new Error(`Missing required CI input(s): ${missing.join(", ")}`);
-  }
-}
-
 function fileStem(file) {
   return slug(basename(file).replace(/\.test\.(?:mjs|ts)$/, ""), "_") || "test_file";
 }
@@ -318,15 +232,6 @@ function normalizeStatePath(statePath) {
     throw new Error("CI state path must be absolute after resolution.");
   }
   return path;
-}
-
-function toRepositoryRelative(path) {
-  const resolved = isAbsolute(path) ? resolve(path) : resolve(repositoryRoot, path);
-  const relativePath = relative(repositoryRoot, resolved);
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`Path escapes repository root: ${path}`);
-  }
-  return relativePath.split(sep).join("/");
 }
 
 function runPrefix(lane) {
@@ -472,25 +377,6 @@ async function prepareTogether(operations, concurrency = operations.length) {
   return results;
 }
 
-// The Actions runner refuses NODE_OPTIONS in $GITHUB_ENV, compared without case, and logs an
-// ##[error] for it. A lane's own env, such as the checks lanes' heap limit, needs no export:
-// run-tests.ts sets it on each test process.
-const GITHUB_ENV_REFUSED = new Set(["NODE_OPTIONS"]);
-
-async function appendGithubEnv(path, env) {
-  if (!path) {
-    return;
-  }
-  const lines = Object.entries(env)
-    .filter(([name]) => !GITHUB_ENV_REFUSED.has(name.toUpperCase()))
-    .map(([name, value]) => `${name}=${value}`);
-  if (lines.length === 0) {
-    return;
-  }
-  await writeFile(path, `${lines.join("\n")}\n`, { flag: "a", mode: 0o600 });
-  await chmod(path, 0o600);
-}
-
 /**
  * @template {string} Kind
  * @template {object} Details
@@ -539,117 +425,6 @@ function repositoryCredentialsImageJournal(statePath, state) {
       };
     },
   };
-}
-
-function assertImmutableEnvImages(names, env = process.env) {
-  for (const name of names) {
-    assertImmutableImageReference(env[name], name);
-  }
-}
-
-function assertImmutableOptionalEnvImages(names, env = process.env) {
-  for (const name of names) {
-    if (env[name]) {
-      assertImmutableImageReference(env[name], name);
-    }
-  }
-}
-
-async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors } = {}) {
-  const name = laneName(lane);
-  const prepare = lanePrepare(name);
-  const effectiveEnv = effectiveLaneEnv(name);
-  const modelEnv = modelSelectors ?? {
-    ...effectiveEnv,
-    ...laneDefinition(name).files?.find((entry) => entry.path === file)?.env,
-  };
-  const harnessError = openShellHarnessError(name, file, modelEnv);
-  if (harnessError) {
-    throw new Error(harnessError);
-  }
-  if (prepare.k3d && !isOpenShellLane(name) && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
-    assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
-  }
-  const openShellApiKeyWorkflowFile = [
-    "tests/integration/openshell-upstream-real.test.ts",
-    "tests/integration/openshell-refresh-real.test.ts",
-    "tests/integration/openshell-withdrawal-real.test.ts",
-    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-  ].includes(file);
-  // Custom keys must not reach sibling tests that register the public provider.
-  if (isOpenShellLane(name)) {
-    const endpoint = effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
-    const parsedEndpoint = endpoint ? URL.parse(endpoint) : null;
-    if (endpoint && !parsedEndpoint) {
-      throw new Error("The OpenShell model endpoint must be a valid absolute URL.");
-    }
-    const customEndpoint =
-      parsedEndpoint && parsedEndpoint.href.replace(/\/$/u, "") !== "https://api.openai.com/v1";
-    if (customEndpoint && !openShellApiKeyWorkflowFile) {
-      throw new Error("Custom OpenShell model endpoints require a focused gateway workflow file.");
-    }
-    if (effectiveEnv.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE) {
-      if (
-        ![
-          "tests/integration/local-first-agent-openshell-real.test.mjs",
-          "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
-        ].includes(file)
-      ) {
-        throw new Error("Custom native providers require a focused first-Agent file.");
-      }
-      requireEnv(["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"], effectiveEnv);
-    }
-  }
-  const requiredInputs =
-    isOpenShellLane(name) && file === undefined
-      ? [
-          ...new Set(
-            laneDefinition(name).files.flatMap((entry) =>
-              openShellRequiredEnv(name, entry.path, prepare.requireEnv ?? [], {
-                ...modelEnv,
-                ...entry.env,
-              }),
-            ),
-          ),
-        ]
-      : openShellRequiredEnv(name, file, prepare.requireEnv ?? [], modelEnv);
-  requireEnv(requiredInputs, effectiveEnv);
-  if (prepare.nodeBaseImage) {
-    assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
-  }
-  assertImmutableEnvImages(prepare.immutableEnvImages ?? [], effectiveEnv);
-  assertImmutableOptionalEnvImages(prepare.immutableOptionalEnvImages ?? [], effectiveEnv);
-  const runtimeImageInputs = [
-    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
-    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
-  ];
-  if (
-    runtimeImageInputs.every((input) => prepare.immutableOptionalEnvImages?.includes(input)) &&
-    runtimeImageInputs.filter((input) => effectiveEnv[input]).length === 1
-  ) {
-    throw new Error(
-      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together; omit both to build the runtime images.",
-    );
-  }
-  if (name === "production-tui") {
-    const candidates = Object.keys(productionUpgradeImages);
-    if (candidates.some((variable) => effectiveEnv[variable])) {
-      const baselines = Object.values(productionUpgradeImages);
-      assertImmutableEnvImages([...baselines, ...candidates], effectiveEnv);
-      for (let index = 0; index < baselines.length; index++) {
-        if (
-          effectiveEnv[baselines[index]].split(/@sha256:/i)[1].toLowerCase() ===
-          effectiveEnv[candidates[index]].split(/@sha256:/i)[1].toLowerCase()
-        ) {
-          throw new Error(
-            `${candidates[index]} must select a different digest from ${baselines[index]}.`,
-          );
-        }
-      }
-    } else {
-      assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
-    }
-  }
 }
 
 /**
@@ -1473,7 +1248,7 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
 }
 
 /**
- * @param {{ lane: LaneSelection, statePath?: string | undefined, file?: FileSelection | undefined, cleanupOwner?: string | undefined }} options
+ * @param {import("./prepare-inputs.ts").PrepareLaneOptions} options
  * @returns {Promise<PreparedLane>}
  */
 async function prepareLane({ lane, statePath, file, cleanupOwner }) {
@@ -1484,13 +1259,7 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
     throw new Error("Invalid CI cleanup owner.");
   }
   const name = assertLane(lane);
-  const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
-  if (
-    relativeFile !== undefined &&
-    !laneDefinition(name).files.some((entry) => entry.path === relativeFile)
-  ) {
-    throw new Error("Selected file must belong to the lane manifest.");
-  }
+  const relativeFile = selectedLaneFile(name, file);
   const runtimeArtifact = runtimeArtifactSelection(process.env);
   if (runtimeArtifact) {
     if (
@@ -1526,7 +1295,7 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
       throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
     }
   }
-  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   // The lane receives source inputs. File preparation later receives its
   // chart paths and imported image references through the prepared environment.
   if (isOpenShellLane(name) && !lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
@@ -2135,12 +1904,6 @@ async function prepareK3dModelLane(statePath, state, env, options) {
   if (cluster.kubectl) {
     env.OCC_KUBECTL_BIN = cluster.kubectl;
   }
-  if (cluster.runtimeClass) {
-    env.OCC_TEST_OPENSHELL_RUNTIME_CLASS = cluster.runtimeClass;
-  }
-  if (cluster.runtimeHandler) {
-    env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER = cluster.runtimeHandler;
-  }
   await timedK3dModelPreparation(state.lane, "runtime-image-preparation", () =>
     prepareK3dRuntimeImages(statePath, state, cluster, env, options),
   );
@@ -2153,8 +1916,7 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 // revision suite copies the database the runner prepared for its file, one copy per test.
 // Defaults remain overridable by a file; env contains preparation-owned outputs.
 /**
- * @param {{ lane: LaneSelection, file: FileSelection, statePath?: string | undefined, template?: string | undefined,
- *   modelSelectors?: Environment | undefined }} options
+ * @param {import("./prepare-inputs.ts").PrepareFileOptions} options
  * @returns {Promise<PreparedFile>}
  */
 async function prepareFile({ lane, file, statePath, template, modelSelectors }) {
@@ -2162,8 +1924,8 @@ async function prepareFile({ lane, file, statePath, template, modelSelectors }) 
   if (!file) {
     throw new Error("prepareFile requires a file.");
   }
-  const relativeFile = toRepositoryRelative(filePath(file));
-  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile, modelSelectors });
+  const relativeFile = normalizeFile(file);
+  validateLaneInputsBeforeSideEffects(name, { file: relativeFile, modelSelectors });
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.
@@ -2227,11 +1989,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (state?.lane !== name) {
       throw new Error("Repository credential images require their own lane state.");
     }
-    const registeredFile = laneDefinition(name).files.find(({ path }) => path === relativeFile);
-    if (
-      registeredFile &&
-      !registeredFile.requiredEnv?.includes("REPOSITORY_CREDENTIALS_GH_BINARY")
-    ) {
+    if (!repositoryCredentialsFileNeedsBinary(relativeFile)) {
       return {
         defaults: laneDefaults(name, { ...state.defaults, ...env }),
         env,
@@ -2373,7 +2131,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
 /** @param {string | undefined} statePath */
 export async function prepareImageCacheBuilds(statePath) {
   const lane = "images-packaging";
-  await validateLaneInputsBeforeSideEffects(lane);
+  validateLaneInputsBeforeSideEffects(lane);
   const resolvedStatePath = normalizeStatePath(statePath);
   if (await readState(resolvedStatePath)) {
     throw new Error(`CI state already exists at ${resolvedStatePath}; run cleanup first.`);
@@ -2407,33 +2165,6 @@ export async function prepareImageCacheBuilds(statePath) {
   };
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  if (!args.lane) {
-    throw new Error("--lane is required.");
-  }
-  if (
-    args.file &&
-    toRepositoryRelative(args.file) === nativeIAMBarrierFile &&
-    (args["github-env"] || process.env.GITHUB_ENV)
-  ) {
-    throw new Error(
-      "The selected private PostgreSQL fixture must be prepared within the test runner.",
-    );
-  }
-  const result = args.file
-    ? await prepareFile({ lane: args.lane, file: args.file, statePath: args.state })
-    : await prepareLane({
-        lane: args.lane,
-        statePath: args.state,
-        file: args["selected-file"],
-        cleanupOwner: args["cleanup-owner"],
-      });
-  const env = { ...result.defaults, ...result.env };
-  await appendGithubEnv(args["github-env"] ?? process.env.GITHUB_ENV, env);
-  process.stdout.write(`${JSON.stringify({ envNames: Object.keys(env).sort() }, null, 2)}\n`);
-}
-
 export {
   devUpUnrelatedImage,
   prepareDevUpImage,
@@ -2445,7 +2176,7 @@ export {
 };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
+  runPreparationCli(process.argv.slice(2), { prepareFile, prepareLane }).catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
   });

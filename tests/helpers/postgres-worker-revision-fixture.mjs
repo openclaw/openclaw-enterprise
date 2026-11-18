@@ -306,6 +306,7 @@ export function createWorkerRevisionFixtures(
    *   leaseDurationMs?: number,
    *   maxAttempts?: number,
    *   onHealthy?: ControllerWorkerOptions["onHealthy"],
+   *   healthClock?: ControllerWorkerOptions["healthClock"],
    *   onProgress?: ControllerWorkerOptions["onProgress"],
    *   metrics?: ControllerWorkerOptions["metrics"],
    *   repoDriver?: RepositoryWorkerDriver,
@@ -322,6 +323,7 @@ export function createWorkerRevisionFixtures(
       leaseDurationMs = 30_000,
       maxAttempts = 5,
       onHealthy,
+      healthClock,
       onProgress,
       metrics,
       repoDriver,
@@ -748,6 +750,10 @@ export function createWorkerRevisionFixtures(
         if (admission !== undefined) {
           candidate.compute = { ...candidate.compute, admission };
         }
+        const runtimeInputs = compute.snapshotRuntimeInputs?.(candidate);
+        if (runtimeInputs !== undefined) {
+          candidate.compute = { ...candidate.compute, runtimeInputs };
+        }
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,
@@ -866,6 +872,7 @@ export function createWorkerRevisionFixtures(
         leaseDurationMs,
         maxAttempts,
         onHealthy,
+        ...(healthClock === undefined ? {} : { healthClock }),
         onProgress,
         ...(drivers === undefined ? { computeDriver } : { drivers }),
         ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),

@@ -89,6 +89,19 @@ default runtime pin is not advanced before the candidate runtime is qualified.
   test passed, including control reconnect and new-message rejection.
   Full runtime and release-path validation remains outstanding.
 
+- Runtime image foundation: preserve the original `admitRevision` string interface.
+  An optional `snapshotRuntimeInputs` capability saves private image identities and
+  non-image compatibility in existing revision JSON. Maintenance and activation
+  use the frozen Gateway/agent/init images; unknown snapshot formats fail closed.
+  Real PostgreSQL testing and independent review caught the old CHECK rejecting
+  this additional key. Migration 0078 updates that constraint; no new table or
+  column is added. Eleven measured fresh/upgrade/restore paths, 13 populated
+  PostgreSQL cases and one actual admission/restart case passed. The original
+  reader decoded 73 new stored snapshots without changing their admission facts.
+  Driver regressions passed 699 cases with one Linux-only skip; 261 admission
+  regressions passed. Three unrelated Darwin wrapper failures also reproduce on
+  the prior source. This slice still does not enable the worker completion wait.
+
 - Reused clean, inactive worktrees after verifying their earlier PRs were merged.
   Retained previous branches and the isolated runtime baseline.
 - #1045 is a proposal, not an implemented second coordinator. Its future

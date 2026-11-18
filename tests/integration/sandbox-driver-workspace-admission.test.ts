@@ -471,8 +471,8 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
         assert.equal(
           createHash("sha256").update(JSON.stringify(command)).digest("hex"),
           hasSetup
-            ? "b491545115bb907a872b0fe34b56cfc850dd684cd495ec280bb86e4a3f1cf3bc"
-            : "a0d8025d10aeb7dbf26ca8271ad2cecb0eacb3ef1cd0bfafbf22ce251d9bd1fa",
+            ? "e4057b5edd839cf3e74144811355ebdba0db1c1ca2baa3283a6afc17706c1dfb"
+            : "424dc1ed99948bd4bde884a6521bc8fa6e139ab1233aa67982a3cb3c19833781",
         );
       }
       const startup = loader + supervisor;

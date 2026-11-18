@@ -14,7 +14,7 @@ Install OpenClaw Enterprise (OCE) with OpenShell on an existing Kubernetes clust
 
 Use separate pools (`oce-role=control`, `oce-role=agents`) and encrypted RWO storage with `WaitForFirstConsumer`.
 
-Install the matching Agent Sandbox controller and `openshell-sandbox` `runc` RuntimeClass; verify [kernel/isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security.
+Install Agent Sandbox; verify [kernel/isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security. OCE configures no RuntimeClass or admission exemption.
 
 Use a fresh application database.
 
