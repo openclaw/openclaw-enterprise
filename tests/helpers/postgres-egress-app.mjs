@@ -8,6 +8,7 @@ export async function postgresApp(t, options, transportDatabaseUrl = undefined) 
     transportDatabaseUrl,
     poolOptions: options.poolOptions,
     controllerOptions: {
+      backends: options.backends,
       preparedTokens: options.preparedTokens,
       credentialProxyCapacity: options.credentialProxyCapacity,
       namespaceLifecycleBindings: options.namespaceLifecycleBindings,

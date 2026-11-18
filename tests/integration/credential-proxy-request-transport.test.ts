@@ -3,6 +3,15 @@ import type { OpenClawController } from "../../packages/occ/src/index.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { openShellModelRequestPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
 import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import {
+  createGitHubRepositoryDeliveryResolver,
+  validateGitHubRepositoryRegistry,
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import {
+  OpenShellGitRuntime,
+  openShellRepositoryAccess,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -38,6 +47,7 @@ import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { invoke, openShellMiddlewareClient, token } from "../helpers/openshell-online-wire.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { waitFor } from "../helpers/qa-wait.ts";
 
 const { SignJWT } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
@@ -498,6 +508,130 @@ test(
     f.observed.available = false;
     const unavailable = await f.request("POST", path);
     assert.equal(unavailable.status, 503, JSON.stringify(unavailable.body));
+  },
+);
+
+test(
+  "API-admitted model and Git revision requires its original worker (PostgreSQL)",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    const backendId = "restart-github";
+    const f = await staticEgressFixture(t, {
+      admitRevision: false,
+      requestCredentials: true,
+      appFactory: (context, options, database) =>
+        postgresApp(
+          context,
+          {
+            ...options,
+            backends: [
+              {
+                id: backendId,
+                type: "github",
+                configuration: { registryPath: "/unused/restart-registry.json" },
+                drivers: { repo: backendId },
+              },
+            ],
+          },
+          database,
+        ),
+    });
+    assert.ok("credentialProxy" in f);
+    const controller: OpenClawController = f.controller;
+    const registry = validateGitHubRepositoryRegistry(
+      {
+        version: 1,
+        backendId,
+        providerInstanceId: "restart-fixture",
+        appId: "123",
+        githubInstallationId: "456",
+        maximumDurationSeconds: 600,
+        repositories: [
+          {
+            repositoryRef: "selected",
+            repositoryId: "789",
+            repository: "example/selected",
+            namespaces: [
+              {
+                namespaceId: f.namespace.id,
+                profiles: ["github-repository"],
+                permissions: { metadata: "read", contents: "write" },
+              },
+            ],
+          },
+        ],
+      },
+      backendId,
+    );
+    const repo = new GitHubRepositoryPolicy({ driverId: backendId, backendId }, registry, {
+      sessionDurationSeconds: 600,
+    });
+    controller.registerDriver(repo);
+    controller.selectDriver(repo.capability, repo.id);
+    const git = new OpenShellGitRuntime(
+      {
+        registrationName: "git-fixture",
+        authority: {
+          host: "127.0.0.1",
+          port: 8445,
+          certificatePath: "/unused/restart-certificate",
+          privateKeyPath: "/unused/restart-key",
+          issuerPublicKeyPath: "/unused/restart-issuer",
+          issuer: "https://gateway.example.test",
+          audience: "git-fixture",
+          keyId: "fixture",
+        },
+      },
+      createGitHubRepositoryDeliveryResolver(registry),
+    );
+    t.after(() => git.close());
+    const access = openShellRepositoryAccess(git, () => undefined);
+    Object.assign(f.sandboxDriver, { repositoryAccess: access });
+    const compute = controller.selectedDriver("compute");
+    const placement = createTestKubernetesComputeDriver(compute.id, {
+      gatewayRuntime: true,
+      sandboxDriver: f.sandboxDriver,
+    });
+    Object.assign(compute, {
+      validateRepositoryCredentials: placement.validateRepositoryCredentials.bind(placement),
+    });
+    const sourceControl = f.credentialProxy.sourceControl;
+    // Model registration is observed over the Gateway RPC fixture. Supply
+    // the Git sender's separate capability observation at its Driver boundary.
+    const selected: CredentialProxyDriver["sourceControl"] = {
+      ...sourceControl,
+      async assertAvailable(signal, profile) {
+        if (profile === "github_repository") {
+          signal.throwIfAborted();
+          return { profile, authorization: "online-request" };
+        }
+        return sourceControl.assertAvailable(signal, profile);
+      },
+    };
+    Object.assign(f.credentialProxy, { sourceControl: selected });
+
+    const agentPath = `/namespaces/${f.namespace.id}/agents/${f.agent.id}`;
+    const binding = { repositoryRef: "selected", profile: "github-repository" };
+    const saved = await f.request("PATCH", agentPath, {
+      body: { configurationId: f.agent.configurationId, repositoryBindings: [binding] },
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const deployed = await f.request("POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+    const revision = await controller.transact((unit) =>
+      unit.revisions.findRevision(f.namespace.id, f.agent.id, deployed.data.id),
+    );
+    assert.ok(revision?.egressPlan);
+    assert.deepEqual(revision.executionAdmission, { mode: "protected", version: 9 });
+    assert.equal(revision.egressPlan.authorization, "online-request");
+    assert.equal(revision.egressPlan.routes.length, 1);
+    assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
+    assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
+    assert.equal(revision.repositoryCredentials?.bindings[0]?.repositoryRef, binding.repositoryRef);
+    assert.equal(
+      await git.repositoryWorkerRestartDisposition(revision, t.signal),
+      "original-worker-required",
+    );
   },
 );
 
