@@ -12,6 +12,8 @@ import { isAbsolute } from "node:path";
 import { readPublicFile } from "../../composition/repository-credentials/public-file.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/installation-fields.ts";
 
+const tokenGrantAlgorithms = ["ES256", "ES384", "RS256", "PS256"];
+
 export interface OpenShellTokenGrantConfiguration {
   readonly endpoint: string;
   readonly port: number;
@@ -105,10 +107,34 @@ async function loadJwtAuthorities(path: string) {
 /** Check the API's public trust input without starting its listeners. */
 export async function validateOpenShellTokenGrantBundle(path: string): Promise<void> {
   try {
-    await loadJwtAuthorities(path);
+    const authorities = await loadJwtAuthorities(path);
+    // JOSE resolves and imports keys lazily. Use the same resolver and algorithm
+    // list as verification to require a usable key before startup or migration.
+    for (const { kid } of authorities.jwks().keys) {
+      if (!kid) {
+        continue;
+      }
+      for (const alg of tokenGrantAlgorithms) {
+        const key = await authorities({ alg, kid }).catch(() => undefined);
+        if (!key) {
+          continue;
+        }
+        const algorithm = key.algorithm;
+        if (
+          alg === "ES256" ||
+          alg === "ES384" ||
+          ("modulusLength" in algorithm &&
+            typeof algorithm.modulusLength === "number" &&
+            algorithm.modulusLength >= 2048)
+        ) {
+          return;
+        }
+      }
+    }
+    throw new Error("The SPIFFE trust bundle contains no usable JWT signing authority.");
   } catch (error) {
     throw new Error(
-      "The OpenShell token grant JWT trust bundle must be readable and contain a JWT signing authority.",
+      "The OpenShell token grant JWT trust bundle must be readable and contain a usable JWT signing authority.",
       { cause: error },
     );
   }
@@ -179,7 +205,7 @@ export async function bindOpenShellTokenGrant(
   if (!validTokenGrantConfiguration(config)) {
     throw new Error("Invalid OpenShell token grant configuration.");
   }
-  await loadJwtAuthorities(config.bundlePath);
+  await validateOpenShellTokenGrantBundle(config.bundlePath);
   const path = new URL(config.endpoint).pathname;
   const prefix = `spiffe://${config.trustDomain}/openshell/sandbox/`;
   let pendingBodies = 0;
@@ -213,7 +239,7 @@ export async function bindOpenShellTokenGrant(
     try {
       const keys = await loadJwtAuthorities(config.bundlePath);
       const jwt = await jwtVerify(grant.assertion, keys, {
-        algorithms: ["ES256", "ES384", "RS256", "PS256"],
+        algorithms: tokenGrantAlgorithms,
         audience: config.endpoint,
         requiredClaims: ["sub", "exp"],
       }).catch(() => undefined);

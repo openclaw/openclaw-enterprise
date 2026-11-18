@@ -353,7 +353,16 @@ test("the upgrade hook checks the public token grant bundle before migration", a
   assert.match(result.stderr, /token grant JWT trust bundle/i);
   assert.equal(result.stdout, "");
 
-  for (const invalid of ['{"private-fixture-marker":', JSON.stringify({ keys: [] })]) {
+  const invalidKey = { use: "jwt-svid", kty: "EC", kid: "private-fixture-marker", crv: "P-256" };
+  const { publicKey: weakKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
+  for (const invalid of [
+    '{"private-fixture-marker":',
+    JSON.stringify({ keys: [] }),
+    JSON.stringify({ keys: [invalidKey] }),
+    JSON.stringify({
+      keys: [{ ...weakKey.export({ format: "jwk" }), kid: "weak", use: "jwt-svid" }],
+    }),
+  ]) {
     await writeFile(bundlePath, invalid, "utf8");
     const result = await runCheck(t, configuration);
     assert.equal(result.status, 1, result.stderr || result.stdout);
@@ -366,7 +375,7 @@ test("the upgrade hook checks the public token grant bundle before migration", a
   await writeFile(
     bundlePath,
     JSON.stringify({
-      keys: [{ ...publicKey.export({ format: "jwk" }), kid: "test", use: "jwt-svid" }],
+      keys: [invalidKey, { ...publicKey.export({ format: "jwk" }), kid: "test", use: "jwt-svid" }],
     }),
     "utf8",
   );

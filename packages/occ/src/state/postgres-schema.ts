@@ -1921,15 +1921,15 @@ export const requestCredentialApprovals = occSchema.table(
     driverRef: jsonb("driver_ref").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     replayUntilAt: timestamp("replay_until_at", { withTimezone: true }).notNull(),
+    approved: boolean("approved").notNull().default(false),
     consumed: boolean("consumed").notNull().default(false),
   },
   (table) => [
     primaryKey({ columns: [table.recipientId, table.requestId] }),
-    foreignKey({
-      name: "request_credential_approval_revision",
-      columns: [table.namespaceId, table.agentId, table.revisionId],
-      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
-    }).onDelete("cascade"),
+    check(
+      "request_credential_approval_requires_decision",
+      sql`${table.approved} OR NOT ${table.consumed}`,
+    ),
     check("request_credential_approval_digest", sql`${table.policyDigest} ~ '^[a-f0-9]{64}$'`),
     check(
       "request_credential_approval_horizon",

@@ -157,6 +157,9 @@ the latter remain per process.
 `apps/controller/src/drivers/egress-proxy/openshell-token-grant.ts:bindOpenShellTokenGrant`
 independently verifies a SPIFFE JWT-SVID against the configured trust bundle and
 exact token-endpoint audience, accepting only keys marked `use: "jwt-svid"`.
+The Helm preflight and API startup require at least one usable public
+verification key for a supported algorithm. Redemption rereads the mounted
+bundle so key rotation and removal apply without restarting the API.
 Its subject identifies the Sandbox. Request ID and
 binding are separately correlated protocol fields, not signed SVID claims.
 The supervisor's Workload API socket and registration must be inaccessible to
