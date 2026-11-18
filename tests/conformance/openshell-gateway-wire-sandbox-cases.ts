@@ -382,8 +382,7 @@ export function registerSandboxCases(): void {
 
   test("OpenShell client reads an existing Sandbox and its service endpoint", async () => {
     const requests: (
-      | ["GetSandbox", WireRequest<"GetSandbox">]
-      | ["DeleteService", WireRequest<"DeleteService">]
+      ["GetSandbox", WireRequest<"GetSandbox">] | ["DeleteService", WireRequest<"DeleteService">]
     )[] = [];
     const notFound = (callback: (error: { code: number }) => void) =>
       callback(Object.assign(new Error("not found"), { code: grpc.status.NOT_FOUND }));
