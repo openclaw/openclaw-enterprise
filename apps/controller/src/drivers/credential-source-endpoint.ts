@@ -1,3 +1,4 @@
+import { normalizeInferenceBaseUrl } from "@openclaw-enterprise/contracts";
 import { numericLastLabel } from "@openclaw-enterprise/utils";
 
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "./openai-endpoint.ts";
@@ -15,7 +16,7 @@ export function exactDnsName(host: string): boolean {
 }
 
 const SOURCE_ENDPOINT_REQUIREMENTS =
-  "The OpenShell endpoint requires HTTPS, a DNS host name, a nonzero port, and a /v1 path. Wildcards, IP addresses, bracketed IPv6 hosts, empty hostname labels, braces, URL credentials, query, and fragment are unsupported.";
+  "The OpenShell endpoint requires HTTPS, a DNS host name or private IPv4 address, a nonzero port, and a /v1 path. Wildcards, other IP addresses, bracketed IPv6 hosts, empty hostname labels, braces, URL credentials, query, and fragment are unsupported.";
 
 /** Strict source rule; request and stored-source callers adapt failures separately. */
 export function validateOpenAiSourceBaseUrl(
@@ -40,7 +41,13 @@ export function validateOpenAiSourceBaseUrl(
     return { error: SOURCE_ENDPOINT_REQUIREMENTS };
   }
   if (!exactDnsName(hostname)) {
-    return { error: "The openai authorized_base_url host must be an exact DNS name." };
+    try {
+      normalizeInferenceBaseUrl(value);
+    } catch {
+      return {
+        error: "The openai authorized_base_url host must be an exact DNS name or private IPv4 address.",
+      };
+    }
   }
   return { baseUrl };
 }
