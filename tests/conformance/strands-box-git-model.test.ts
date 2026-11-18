@@ -168,7 +168,7 @@ test("the stock-form steps cd into their clone and run bare git and gh, as a rea
   const dir = stock.match(clone)?.[1];
   assert.match(
     stock,
-    /&& git config user\.name oce-dogfood-agent && git config user\.email agent@example\.invalid && /,
+    /&& git config user\.name oce-agent && git config user\.email agent@example\.invalid && /,
   );
   for (const step of ["hook", "outside-read", "codex-write"] as const) {
     const parts = gitCommand(plan, nonce, step).split("; ");

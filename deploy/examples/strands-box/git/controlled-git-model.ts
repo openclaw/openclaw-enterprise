@@ -171,7 +171,7 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
     `git -C ${dir} switch -q -c ${plan.branch}`,
     `printf '%s\\n' ${nonce} > ${dir}/x5-${tag}.txt`,
     `git -C ${dir} add x5-${tag}.txt`,
-    `git -C ${dir} -c user.name=oce-dogfood-agent -c user.email=agent@example.invalid commit -q -m 'x5 dry run ${tag}'`,
+    `git -C ${dir} -c user.name=oce-agent -c user.email=agent@example.invalid commit -q -m 'x5 dry run ${tag}'`,
   ].join(" && ");
   switch (step) {
     case "push":
@@ -267,7 +267,7 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
         `cd ${stock}`,
         `(git switch -q ${plan.branch} 2>/dev/null || git switch -q -c ${plan.branch})`,
         // Repo-local identity: no global git configuration is visible to the git tool.
-        "git config user.name oce-dogfood-agent",
+        "git config user.name oce-agent",
         "git config user.email agent@example.invalid",
         `printf '%s\\n' ${nonce} > x5-stock-${tag}.txt`,
         `git add x5-stock-${tag}.txt`,

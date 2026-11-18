@@ -10,7 +10,7 @@ export const CONTROLLED_INFERENCE_MARKER = "openclaw-strands-controlled-inferenc
 export const EXECUTION_BEARER = /^[A-Za-z0-9_-]{43}$/;
 
 /**
- * Stage B (strands-gh design note, section 3): Box injects GitHub auth itself and asks OCE for
+ * Box injects GitHub auth itself and asks OCE for
  * each request through its request-time credential source. Stock `gh` reads `GITHUB_TOKEN` and
  * sends `Authorization: token <value>`, so Box swaps its placeholder there. Stock Git sends no
  * credential on its first request and waits for a 401, which a placeholder-only route would

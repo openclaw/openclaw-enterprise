@@ -1,5 +1,5 @@
 /**
- * Stage B (strands-gh design note, section 3): the Box host answers Box's request-time
+ * The Box host answers Box's request-time
  * credential source, `[gateway.credential_source.oce]`, for this execution's two GitHub routes.
  * Box asks only after its own policy permits the request. The host authenticates Box's
  * per-execution bearer, checks the ask, and relays it to the paired Driver in the Worker over the
