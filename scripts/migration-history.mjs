@@ -194,7 +194,7 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preRevisionRuntimeInputs";
   }
   if (count === 80 && completedCount > 80) {
-    return "preDeviceAuthorizations";
+    return "preAuthenticationStates";
   }
   if (count === completedCount) {
     return "completed";

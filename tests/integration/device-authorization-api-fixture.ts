@@ -183,7 +183,7 @@ export async function createFixture(
     },
     async stored(login: Pick<DeviceLogin, "session">) {
       const record = await controller.transact((unit) =>
-        unit.deviceAuthorizations.find(namespace.id, login.session.id),
+        unit.authenticationStates.findDeviceAuthorization(namespace.id, login.session.id),
       );
       assert.ok(record, "the login session must exist");
       return record.session;

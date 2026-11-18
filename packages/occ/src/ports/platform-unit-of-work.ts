@@ -87,15 +87,15 @@ export function bindPlatformUnitOfWork(
       "requestConnectionRevocation",
       "confirmConnectionRevocation",
       "deleteSavedConnection",
+    ]),
+    authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
+      "findDeviceAuthorization",
+      "createDeviceAuthorization",
+      "replaceDeviceAuthorization",
+      "expireDeviceAuthorizations",
       "createConnectionSession",
       "consumeConnectionSession",
       "takeExpiredConnectionSessions",
-    ]),
-    deviceAuthorizations: bindRepository(repositories.deviceAuthorizations, lifetime, [
-      "find",
-      "create",
-      "replace",
-      "expire",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",

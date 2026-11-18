@@ -228,7 +228,7 @@ test(
     const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
     assert.equal(removed.statusCode, 204, removed.body);
     const pendingSession = await pool.query(
-      "SELECT 1 FROM occ.connection_sessions WHERE credential_source_id=$1",
+      "SELECT 1 FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1",
       [pendingId],
     );
     assert.equal(pendingSession.rowCount, 0);
@@ -929,7 +929,7 @@ test(
     try {
       await lock.query("BEGIN");
       const held = await lock.query(
-        "DELETE FROM occ.connection_sessions WHERE credential_source_id=$1 RETURNING pg_backend_pid() AS pid, pkce_verifier",
+        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1 RETURNING pg_backend_pid() AS pid, pkce_verifier",
         [waiting.id],
       );
       verifier = held.rows[0].pkce_verifier;

@@ -156,7 +156,10 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
   }
   async function snapshot(login: Login) {
     return controller.transact(async (unit: PlatformUnitOfWork) => {
-      const record = await unit.deviceAuthorizations.find(namespace.id, login.id);
+      const record = await unit.authenticationStates.findDeviceAuthorization(
+        namespace.id,
+        login.id,
+      );
       assert.ok(record, "the actual start must own a session");
       const { session, version } = record;
       const sourceId = string(session.sourceId);

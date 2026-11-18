@@ -223,7 +223,7 @@ export async function composeProduction(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
-        deviceAuthorizationSecret: config.authSecret,
+        authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(config.drivers.installation),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,

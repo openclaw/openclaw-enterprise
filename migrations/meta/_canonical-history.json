@@ -646,9 +646,9 @@
       "idx": 81,
       "version": "7",
       "when": 1787000000081,
-      "tag": "0081_device_authorizations",
+      "tag": "0081_authentication_states",
       "breakpoints": true,
-      "sha256": "beefc80f0c829d485ab5735301ea2fe25c0aae6fd18eb90783ef181f2b0368f6"
+      "sha256": "642b8a3679f5dd36cd9ac935ca132935561e3331e26bc451223d7230192ced37"
     }
   ],
   "initialSchemaStates": {
@@ -766,15 +766,15 @@
       "78b2e95f6b363174498fbf9d11b4cbe728641081fa840fb1a7b01f4b7fbfe781",
       "8689d8385dd83d6ee536176954e7d3ab59ee1a793f1bdf834a1a072c685d0d79"
     ],
-    "d205e006eabed515d014638a998e112557a656496aaf0efe9742724909ee68c9": [
-      "06992fa4452c504bd073bc73c5e23b54a73ac44d28a49f0d5cadb68d4e376419",
-      "5ee7775a028e63b9d2d4f7ade9e0889fca1622481043fd8b055d1b27af88886b",
-      "bf3a6b25ca5d4ac6e71dfe9e669079ad84de86a86b9f4a2043454609fe3269b0",
-      "f5decf8b10bebd9fe7fa7a11f7c64035a40ed17a8d9be58ba33374dd2ef4e56b"
+    "62b18df90c5398226f94ab24a23a54057277a01cbb594791a2b1e1ce81c51a66": [
+      "3adfc03364733873d3b1a74c2e012bfd122544828a52dbfba7de31b1d9a018ed",
+      "6f2b995820ca619cb6ec9357c91be83ca760997bdecdfb74d3d1f1e7da0fafaf",
+      "b038d8f3d6628d4c5072af41a42c52db997c17df15a92bea06a584e88fa11c04",
+      "e33c54cdb46d216d76d4aedf43169518136a033d67756235602b6c52efa26983"
     ]
   },
   "catalogs": {
-    "completed": "d205e006eabed515d014638a998e112557a656496aaf0efe9742724909ee68c9",
+    "completed": "62b18df90c5398226f94ab24a23a54057277a01cbb594791a2b1e1ce81c51a66",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -830,7 +830,7 @@
     "prePendingSandboxPolicyApplication": "025fa63491e14fb1f90c09d7405bd1fa8b39f7e1bb919d17572b58436391794e",
     "prePredecessorReplacement": "4368f8db721cd6b233dc2c65895de016de99af92f87919db5ba17153c8aba229",
     "preRevisionRuntimeInputs": "a78f05679e8ef8432c94d3bdffeb21681297793829c78efef7278f1b29337128",
-    "preDeviceAuthorizations": "c8639ab415c7d833c777d79a526357de1021552a731b873b32ba79a9b4e81f1b"
+    "preAuthenticationStates": "c8639ab415c7d833c777d79a526357de1021552a731b873b32ba79a9b4e81f1b"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

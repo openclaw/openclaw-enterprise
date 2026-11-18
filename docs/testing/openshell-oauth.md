@@ -176,10 +176,13 @@ browser case exercises those routes through the actual controls; Storybook is
 separate simulated UI evidence. Neither proves external token refresh or injection.
 
 `tests/integration/postgres-device-authorization.test.ts` exercises device login
-through two API instances sharing PostgreSQL. It checks the stored row for
-plaintext login material, polls across instances, authorizes an exact Secret
-IAM grant on the session, and rejects a late poll after cancellation. The test supplies a fixture
-Refresh Driver for the external exchange.
+and browser OAuth consent through two API instances sharing PostgreSQL. It checks
+that both kinds coexist in `authentication_states`, a browser attempt can be
+consumed once only by its starting session, and expiry removes its unfinished
+source. It also checks encrypted device state, polling across instances, absence
+of a session IAM grant, and cancellation fencing. The external device exchange
+uses a fixture Refresh Driver; the consent-refusal callback makes no provider
+request.
 
 `tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute
 preparation path with Driver transport fixtures. It checks source matching,

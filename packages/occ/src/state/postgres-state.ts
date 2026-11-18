@@ -1,4 +1,3 @@
-import type { DeviceAuthorizationSession } from "../device-authorization.ts";
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
@@ -26,6 +25,7 @@ import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import { postgresSavedConnections } from "./postgres-saved-connections.ts";
+import { postgresAuthenticationStates } from "./postgres-authentication-states.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
 import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
@@ -110,7 +110,6 @@ import type {
   AgentRevisionRepository,
   ConfigurationOwnership,
   ConfigurationRepository,
-  DeviceAuthorizationRepository,
   CredentialSourceRepository,
   InstallationRepository,
   IAMPolicyRepository,
@@ -2389,9 +2388,10 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         )[0];
         if (updated !== undefined) {
-          await client.query("DELETE FROM occ.device_authorizations WHERE namespace_id = $1", [
-            namespaceId,
-          ]);
+          await client.query(
+            "DELETE FROM occ.authentication_states WHERE kind = 'device_authorization' AND namespace_id = $1",
+            [namespaceId],
+          );
           return namespaceFromRow(updated);
         }
         const existing = rows(
@@ -2714,91 +2714,6 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
-    const deviceAuthorizations: DeviceAuthorizationRepository = {
-      find: async (namespaceId, id) => {
-        const result = await client.query(
-          "SELECT * FROM occ.device_authorizations WHERE namespace_id = $1 AND id = $2",
-          [namespaceId, id],
-        );
-        const row = rows(result.rows)[0];
-        if (!row) {
-          return undefined;
-        }
-        return {
-          version: Number(row.version),
-          session: {
-            namespaceId,
-            actorId: text(row, "actor_id"),
-            ...(row.agent_id === null ? {} : { agentId: text(row, "agent_id") }),
-            harnessId: text(row, "harness_id"),
-            credentialGatewayId: text(row, "credential_gateway_id"),
-            credentialRefreshId: text(row, "credential_refresh_id"),
-            sourceId: text(row, "source_id"),
-            phase: row.phase as DeviceAuthorizationSession["phase"],
-            expiresAt: timestamp(row, "expires_at"),
-            nextPollAt: timestamp(row, "next_poll_at"),
-            intervalSeconds: Number(row.interval_seconds),
-            ...(row.encrypted_challenge === null
-              ? {}
-              : { encryptedChallenge: text(row, "encrypted_challenge") }),
-            ...(row.private_state === null ? {} : { privateState: text(row, "private_state") }),
-          },
-        };
-      },
-      create: async (id, session) => {
-        await client.query(
-          `INSERT INTO occ.device_authorizations
-           (namespace_id, id, actor_id, agent_id, harness_id, credential_gateway_id, credential_refresh_id,
-            source_id, encrypted_challenge, interval_seconds, phase, expires_at, next_poll_at, private_state)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-          [
-            session.namespaceId,
-            id,
-            session.actorId,
-            session.agentId,
-            session.harnessId,
-            session.credentialGatewayId,
-            session.credentialRefreshId,
-            session.sourceId,
-            session.encryptedChallenge,
-            session.intervalSeconds,
-            session.phase,
-            session.expiresAt,
-            session.nextPollAt,
-            session.privateState,
-          ],
-        );
-      },
-      replace: async (namespaceId, id, version, session) => {
-        const result = await client.query(
-          `UPDATE occ.device_authorizations SET version = version + 1, phase = $4, expires_at = $5,
-             next_poll_at = $6, private_state = $7, encrypted_challenge = $8
-           WHERE namespace_id = $1 AND id = $2 AND version = $3`,
-          [
-            namespaceId,
-            id,
-            version,
-            session.phase,
-            session.expiresAt,
-            session.nextPollAt,
-            session.privateState,
-            session.encryptedChallenge,
-          ],
-        );
-        return result.rowCount === 1;
-      },
-      expire: async (at, limit) => {
-        await client.query(
-          `WITH expired AS (
-             SELECT id FROM occ.device_authorizations WHERE expires_at <= $1 AND phase <> 'cancelled'
-             ORDER BY expires_at, id LIMIT $2 FOR UPDATE SKIP LOCKED
-           )
-           UPDATE occ.device_authorizations d SET version = d.version + 1, phase = 'cancelled', private_state = NULL, encrypted_challenge = NULL
-           FROM expired WHERE d.id = expired.id`,
-          [at, limit],
-        );
-      },
-    };
     const secrets: SecretRepository = {
       findSecret,
       listSecrets,
@@ -4838,7 +4753,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         this.requireInitialized(context),
       ),
       presets,
-      deviceAuthorizations,
+      authenticationStates: postgresAuthenticationStates(client, () =>
+        this.requireInitialized(context),
+      ),
       secrets,
       credentialSources,
       serviceAccounts,

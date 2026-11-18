@@ -2655,25 +2655,40 @@ export const savedConnections = occSchema.table(
   ],
 );
 
-export const connectionSessions = occSchema.table(
-  "connection_sessions",
+export const authenticationStates = occSchema.table(
+  "authentication_states",
   {
-    stateHash: text("state_hash").primaryKey(),
+    id: text("id").primaryKey(),
     namespaceId: text("namespace_id").notNull(),
-    credentialSourceId: text("credential_source_id").notNull(),
-    pkceVerifier: text("pkce_verifier").notNull(),
-    selectedScopes: text("selected_scopes").array().notNull(),
-    issuerRequired: boolean("issuer_required").notNull(),
-    sessionId: text("session_id").notNull(),
-    redirectUri: text("redirect_uri").notNull(),
+    credentialSourceId: text("credential_source_id"),
+    pkceVerifier: text("pkce_verifier"),
+    selectedScopes: text("selected_scopes").array(),
+    issuerRequired: boolean("issuer_required"),
+    sessionId: text("session_id"),
+    redirectUri: text("redirect_uri"),
     actorId: text("actor_id").notNull(),
-    connectionTemplateId: text("connection_template_id").notNull(),
-    connectionTemplateVersion: integer("connection_template_version").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    connectionTemplateId: text("connection_template_id"),
+    connectionTemplateVersion: integer("connection_template_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    kind: text("kind").notNull(),
+    agentId: text("agent_id"),
+    harnessId: text("harness_id"),
+    credentialGatewayId: text("credential_gateway_id"),
+    credentialRefreshId: text("credential_refresh_id"),
+    deviceSourceId: text("device_source_id"),
+    encryptedChallenge: text("encrypted_challenge"),
+    intervalSeconds: integer("interval_seconds"),
+    phase: text("phase"),
+    nextPollAt: timestamp("next_poll_at", { withTimezone: true }),
+    privateState: text("private_state"),
+    version: integer("version"),
   },
   (table) => [
-    check("connection_sessions_state_hash_format", sql`${table.stateHash} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "connection_sessions_selected_scopes_valid",
+      sql`array_position(${table.selectedScopes},NULL) IS NULL`,
+    ),
     check(
       "connection_sessions_expiry_after_creation",
       sql`${table.expiresAt} > ${table.createdAt}`,
@@ -2695,11 +2710,49 @@ export const connectionSessions = occSchema.table(
     })
       .onDelete("restrict")
       .onUpdate("restrict"),
+    foreignKey({
+      name: "authentication_states_namespace",
+      columns: [table.namespaceId],
+      foreignColumns: [namespaces.id],
+    }).onDelete("cascade"),
     check(
-      "connection_sessions_selected_scopes_valid",
-      sql`array_position(${table.selectedScopes},NULL) IS NULL`,
+      "authentication_states_kind",
+      sql`${table.kind} IN ('oauth_connection','device_authorization')`,
     ),
-    index("connection_sessions_expiry_idx").on(table.expiresAt),
+    check(
+      "authentication_states_oauth_shape",
+      sql`${table.kind} <> 'oauth_connection' OR (
+      ${table.id} ~ '^[0-9a-f]{64}$' AND ${table.credentialSourceId} IS NOT NULL AND ${table.pkceVerifier} IS NOT NULL
+      AND ${table.selectedScopes} IS NOT NULL AND ${table.issuerRequired} IS NOT NULL AND ${table.sessionId} IS NOT NULL
+      AND ${table.redirectUri} IS NOT NULL AND ${table.connectionTemplateId} IS NOT NULL
+      AND ${table.connectionTemplateVersion} IS NOT NULL AND ${table.createdAt} IS NOT NULL
+      AND ${table.agentId} IS NULL AND ${table.harnessId} IS NULL AND ${table.credentialGatewayId} IS NULL
+      AND ${table.credentialRefreshId} IS NULL AND ${table.deviceSourceId} IS NULL AND ${table.encryptedChallenge} IS NULL
+      AND ${table.intervalSeconds} IS NULL AND ${table.phase} IS NULL AND ${table.nextPollAt} IS NULL
+      AND ${table.privateState} IS NULL AND ${table.version} IS NULL
+    )`,
+    ),
+    check(
+      "authentication_states_device_shape",
+      sql`${table.kind} <> 'device_authorization' OR (
+      ${table.id} ~ ${identifierPatterns.secret} AND ${table.credentialSourceId} IS NULL AND ${table.pkceVerifier} IS NULL
+      AND ${table.selectedScopes} IS NULL AND ${table.issuerRequired} IS NULL AND ${table.sessionId} IS NULL
+      AND ${table.redirectUri} IS NULL AND ${table.connectionTemplateId} IS NULL
+      AND ${table.connectionTemplateVersion} IS NULL AND ${table.createdAt} IS NULL
+      AND ${table.harnessId} IS NOT NULL AND ${table.credentialGatewayId} IS NOT NULL AND ${table.credentialRefreshId} IS NOT NULL
+      AND ${table.deviceSourceId} IS NOT NULL AND ${table.intervalSeconds} IS NOT NULL AND ${table.intervalSeconds} > 0
+      AND ${table.phase} IS NOT NULL AND ${table.phase} IN ('pending','polling','cancelled','ready')
+      AND ${table.nextPollAt} IS NOT NULL AND ${table.version} IS NOT NULL AND ${table.version} > 0
+      AND ((${table.phase} IN ('pending','polling')) = (${table.privateState} IS NOT NULL))
+      AND ((${table.phase} <> 'cancelled') = (${table.encryptedChallenge} IS NOT NULL))
+    )`,
+    ),
+    index("authentication_states_oauth_expiry")
+      .on(table.expiresAt, table.id)
+      .where(sql`${table.kind} = 'oauth_connection'`),
+    index("authentication_states_device_expiry")
+      .on(table.expiresAt, table.id)
+      .where(sql`${table.kind} = 'device_authorization' AND ${table.phase} <> 'cancelled'`),
   ],
 );
 
@@ -2794,48 +2847,5 @@ export const nativeBrowserHandles = occSchema.table(
     ),
     index("native_browser_handle_parent").on(table.parentSessionId),
     index("native_browser_handle_expiry").on(table.installationId, table.expiresAt),
-  ],
-);
-
-export const deviceAuthorizations = occSchema.table(
-  "device_authorizations",
-  {
-    id: text("id").primaryKey(),
-    namespaceId: text("namespace_id")
-      .notNull()
-      .references(() => namespaces.id, { onDelete: "cascade" }),
-    actorId: text("actor_id").notNull(),
-    agentId: text("agent_id"),
-    harnessId: text("harness_id").notNull(),
-    credentialGatewayId: text("credential_gateway_id").notNull(),
-    credentialRefreshId: text("credential_refresh_id").notNull(),
-    sourceId: text("source_id").notNull(),
-    encryptedChallenge: text("encrypted_challenge"),
-    intervalSeconds: integer("interval_seconds").notNull(),
-    phase: text("phase").notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    nextPollAt: timestamp("next_poll_at", { withTimezone: true }).notNull(),
-    privateState: text("private_state"),
-    version: integer("version").notNull().default(1),
-  },
-  (table) => [
-    check("device_authorizations_id_check", sql`${table.id} ~ ${identifierPatterns.secret}`),
-    check("device_authorizations_interval_seconds_check", sql`${table.intervalSeconds} > 0`),
-    check("device_authorizations_version_check", sql`${table.version} > 0`),
-    check(
-      "device_authorizations_phase_check",
-      sql`${table.phase} IN ('pending','polling','cancelled','ready')`,
-    ),
-    check(
-      "device_authorizations_check",
-      sql`(${table.phase} IN ('pending','polling')) = (${table.privateState} IS NOT NULL)`,
-    ),
-    check(
-      "device_authorizations_check1",
-      sql`(${table.phase} <> 'cancelled') = (${table.encryptedChallenge} IS NOT NULL)`,
-    ),
-    index("device_authorizations_expiry")
-      .on(table.expiresAt, table.id)
-      .where(sql`${table.phase} <> 'cancelled'`),
   ],
 );

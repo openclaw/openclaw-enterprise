@@ -263,7 +263,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   assert.equal(updated.status, 409, JSON.stringify(updated.body));
   assert.deepEqual(operations, settled);
   const sessionRecord = await fixture.controller.transact((unit) =>
-    unit.deviceAuthorizations.find(namespace.id, started.data.session.id),
+    unit.authenticationStates.findDeviceAuthorization(namespace.id, started.data.session.id),
   );
   assert.ok(sessionRecord);
   const { session } = sessionRecord;
@@ -304,7 +304,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   );
   assert.equal(exchanges, 2);
   const failedRecord = await fixture.controller.transact((unit) =>
-    unit.deviceAuthorizations.find(namespace.id, interrupted.data.session.id),
+    unit.authenticationStates.findDeviceAuthorization(namespace.id, interrupted.data.session.id),
   );
   assert.ok(failedRecord);
   const failedSession = failedRecord.session;

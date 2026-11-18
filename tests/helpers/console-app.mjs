@@ -510,7 +510,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
-        deviceAuthorizationSecret: authSecret,
+        authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
           options.namespaceLifecycleBindings ??
           (options.sandboxDriver?.ensureNamespace === undefined

@@ -869,7 +869,8 @@ export interface InstallationIAMConfiguration {
 }
 
 export interface ControllerOptions {
-  readonly deviceAuthorizationSecret?: string;
+  /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
+  readonly authenticationStateEncryptionSecret?: string;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[] | undefined;
   /** Code-only composition binding for the bundled retained-source plugin reader. */
   readonly pluginSourceReader?: {
@@ -2395,8 +2396,10 @@ export class OpenClawController {
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
-    if (options.deviceAuthorizationSecret) {
-      this.deviceLoginCipher = deviceAuthorizationCipher(options.deviceAuthorizationSecret);
+    if (options.authenticationStateEncryptionSecret) {
+      this.deviceLoginCipher = deviceAuthorizationCipher(
+        options.authenticationStateEncryptionSecret,
+      );
     }
     this.agentAuditState = options.agentAuditState;
     this.shouldRecordOperations = options.recordOperations ?? true;
@@ -5169,7 +5172,7 @@ export class OpenClawController {
       const started = startBrowserAuthorization(
         browserAuthorizationRequest(version, client, input.redirectUri, selectedScopes),
       );
-      await state.savedConnections.createConnectionSession({
+      await state.authenticationStates.createConnectionSession({
         stateHash: createHash("sha256").update(started.state).digest("hex"),
         namespaceId,
         credentialSourceId: source.id,
@@ -5195,11 +5198,11 @@ export class OpenClawController {
     });
   }
 
-  async expireConnectionSessions(limit: number): Promise<void> {
+  async expireAuthenticationStates(limit: number): Promise<void> {
     await this.mutate(async (state) => {
       const now = this.timestamp();
-      await state.deviceAuthorizations.expire(now, limit);
-      for (const attempt of await state.savedConnections.takeExpiredConnectionSessions(
+      await state.authenticationStates.expireDeviceAuthorizations(now, limit);
+      for (const attempt of await state.authenticationStates.takeExpiredConnectionSessions(
         now,
         limit,
       )) {
@@ -5222,7 +5225,7 @@ export class OpenClawController {
     }
     const stateHash = createHash("sha256").update(input.state).digest("hex");
     const session = await this.mutate((state) =>
-      state.savedConnections.consumeConnectionSession(
+      state.authenticationStates.consumeConnectionSession(
         stateHash,
         principalId,
         input.sessionId,
@@ -10371,7 +10374,7 @@ export class OpenClawController {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      await state.deviceAuthorizations.create(sessionId, {
+      await state.authenticationStates.createDeviceAuthorization(sessionId, {
         ...session,
         encryptedChallenge,
         privateState: encrypted,
@@ -10396,7 +10399,12 @@ export class OpenClawController {
     session: DeviceAuthorizationSession,
   ) {
     return this.mutate((state) =>
-      state.deviceAuthorizations.replace(session.namespaceId, id, version, session),
+      state.authenticationStates.replaceDeviceAuthorization(
+        session.namespaceId,
+        id,
+        version,
+        session,
+      ),
     );
   }
 
@@ -10408,7 +10416,7 @@ export class OpenClawController {
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     const stored = await this.read((state) =>
-      state.deviceAuthorizations.find(namespaceId, sessionId),
+      state.authenticationStates.findDeviceAuthorization(namespaceId, sessionId),
     );
     if (stored === undefined) {
       throw new ScopeViolationError("The login does not belong to the exact Namespace.");

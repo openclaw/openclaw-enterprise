@@ -654,7 +654,7 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
     // The real start committed. Lose its session reference only in the reply reaching the page.
     const sessionId = jsonString(jsonObject(data.session).id);
     const stored = await fixture.controller.transact((state) =>
-      state.deviceAuthorizations.find(namespace.id, sessionId),
+      state.authenticationStates.findDeviceAuthorization(namespace.id, sessionId),
     );
     assert.equal(stored?.session.phase, "pending");
     delete data.session;
@@ -734,7 +734,7 @@ for (const savedAgent of [false, true]) {
     const sessionId = jsonString(jsonObject(responseData(await committed.json()).session).id);
     assert.equal(gateway.sources.size, 1);
     const stored = await fixture.controller.transact((state) =>
-      state.deviceAuthorizations.find(namespace.id, sessionId),
+      state.authenticationStates.findDeviceAuthorization(namespace.id, sessionId),
     );
     assert.equal(stored?.session.phase, "pending");
     await page.getByRole("link", { name: "Credentials", exact: true }).click();

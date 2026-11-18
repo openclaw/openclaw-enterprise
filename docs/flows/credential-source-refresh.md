@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-18
-last_updated_session: authoring-run/422adac7-ed17-4891-a192-172d70a85dbc
+updated: "2026-11-18"
+last_updated_session: "authoring-run/0e501248-a309-4913-b4df-122e4c3783c2"
 ---
 
 # Credential source refresh Flow
@@ -119,26 +119,26 @@ failure code. Otherwise OCC commits `ready` with audit.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-`deviceAuthorization.harnessId` sources register before login under current Agent
-scope and Namespace `credential_source:create`, rechecked after registration before
-the provider challenge. OCC audits `source_registering` and `source_ready`; failed
-starts retain the source. It encrypts the provider
-handle and challenge before committing `session_pending`. Events identify actor,
-request, scope and source without exposing login material.
+OCC registers the source under current Agent scope and Namespace
+`credential_source:create`, rechecks authority before the challenge, and audits
+`source_registering` and `source_ready`. Failed starts retain the source. OCC
+seals the provider handle and challenge with its authentication-state encryption
+key and commits `session_pending` as kind `device_authorization` in
+`occ.authentication_states`. Browser OAuth attempts share that store; human
+sign-in attempts remain separate. Audit excludes login material.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` retains
 `start_unconfirmed` across navigation. Agent detail keeps Credentials open for
-late replies unless a newer tab owns the draft. A `501` or unavailable login type
-disables Sign in. See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
+replies unless another tab owns the draft. A `501` or unavailable type disables
+Sign in. See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
-`readAgentDeviceAuthorization` checks current Agent authority and actor,
-Namespace and saved-Agent ownership. The PostgreSQL session has no IAM grant.
-Poll requires exact source `operate` before session changes and after provider
-I/O; cancel requires no source grant. Scope mismatches audit
-`DEVICE_AUTHORIZATION_SCOPE_MISMATCH` and return generic `404`, or `503` if
-audit fails. Conditional PostgreSQL updates serialize polling and fence late
-completion after cancellation. OCC rechecks both Driver selections after provider
-I/O. Cancellation and expiry clear the encrypted handle and challenge.
+`readAgentDeviceAuthorization` checks Agent authority and actor, Namespace and
+saved-Agent ownership; the session has no IAM grant. Poll checks source
+`operate` before changes and after I/O; cancel needs no source grant.
+Scope mismatches audit `DEVICE_AUTHORIZATION_SCOPE_MISMATCH` and return `404`,
+or `503` if audit fails. Version-checked updates serialize polls and fence
+cancelled exchanges. OCC rechecks both Drivers after I/O. Cancellation and expiry
+clear encrypted state.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
 sends start, poll, and exchange requests from API Pods to fixed `auth.openai.com`
@@ -314,6 +314,8 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 16:20: Trace device login through shared OCC authentication state in the accompanying change. (authoring-run/0e501248-a309-4913-b4df-122e4c3783c2 - 5dfbd6c1db67024917c79790ee7b6155e6f753e1)
 
 - 2026-11-18 15:41: Authorize device login through Agent and credential source permissions. (authoring-run/422adac7-ed17-4891-a192-172d70a85dbc - b589e9fcf314a096cdcc89bb1af83d6a09c80630)
 

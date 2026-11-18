@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
@@ -11,7 +13,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { deviceTestSandbox } from "./device-authorization-api-fixture.ts";
 
 test(
-  "device login survives an API replica change and fences a cancelled exchange in PostgreSQL",
+  "shared authentication state isolates browser consent from device login across API replicas",
   requiresPostgres,
   async (t) => {
     const clock = createControlledClock();
@@ -26,6 +28,7 @@ test(
     });
     const authSecret = "postgres-device-login-test-signing-secret";
     const secretDriver = createTestSecretDriver();
+    const preparedTokens = new TokenService();
     const options = {
       label: "device-login",
       sandboxDriver: deviceTestSandbox(),
@@ -33,12 +36,21 @@ test(
       authSecret,
       controllerOptions: {
         now: () => new Date(clock.wallNow()),
-        deviceAuthorizationSecret: authSecret,
+        authenticationStateEncryptionSecret: authSecret,
+        preparedTokens,
         iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
       },
+      appOptions: { publicOrigin: "https://console.oce.localhost" },
     };
     const first = await createPostgresAgentApp(t, options);
     const second = await createPostgresAgentApp(t, options);
+    preparedTokens.registerIssuer(
+      new OAuthAccountTokens(
+        first.state,
+        secretDriver,
+        first.controller.resolveConnectionClient.bind(first.controller),
+      ),
+    );
     await first.controller.applyIAMConfiguration();
     for (const { controller } of [first, second]) {
       controller.registerDriver(gateway);
@@ -53,6 +65,39 @@ test(
     const namespaceId = created.json().data.id;
     await first.controller.handleNamespaceLifecycle(first.principal.id, namespaceId, "ready");
     const path = `/namespaces/${namespaceId}/agents/device-authorizations`;
+    const issuer = "https://accounts.example.test";
+    const template = await first.inject("POST", "/connection-templates", {
+      namespaceId,
+      displayName: "Shared state OAuth",
+      mode: "manual",
+      issuer,
+      authorizationUrl: `${issuer}/authorize`,
+      tokenUrl: `${issuer}/token`,
+      scopes: [],
+      destinations: [{ host: "api.example.test", path: "/v1/**" }],
+    });
+    assert.equal(template.statusCode, 201, template.body);
+    const client = await first.inject("POST", "/oauth-clients", {
+      connectionTemplateId: template.json().data.id,
+      connectionTemplateVersion: template.json().data.current.version,
+      displayName: "Public test client",
+      clientId: randomUUID(),
+      tokenEndpointAuthMethod: "none",
+    });
+    assert.equal(client.statusCode, 201, client.body);
+    async function startOAuth() {
+      const response = await first.inject("POST", `/namespaces/${namespaceId}/connections`, {
+        connectionTemplateId: template.json().data.id,
+      });
+      assert.equal(response.statusCode, 201, response.body);
+      const data = response.json().data;
+      const state = new URL(data.authorizationUrl).searchParams.get("state");
+      assert.ok(state);
+      return {
+        sourceId: data.credentialSourceId as string,
+        callback: `/oauth/callback?${new URLSearchParams({ state, error: "access_denied" })}`,
+      };
+    }
     async function start() {
       const reply = await first.inject("POST", path, { harnessId: "codex" });
       assert.equal(reply.statusCode, 200, reply.body);
@@ -65,7 +110,7 @@ test(
     }
     async function row(id: string) {
       const result = await first.pool.query(
-        "SELECT phase, source_id, private_state, encrypted_challenge, to_jsonb(s)::text AS contents FROM occ.device_authorizations s WHERE namespace_id = $1 AND id = $2",
+        "SELECT phase, device_source_id, private_state, encrypted_challenge, to_jsonb(s)::text AS contents FROM occ.authentication_states s WHERE kind = 'device_authorization' AND namespace_id = $1 AND id = $2",
         [namespaceId, id],
       );
       assert.equal(result.rowCount, 1);
@@ -73,6 +118,53 @@ test(
     }
     const { id, userCode, verificationUrl } = await start();
     const pending = await row(id);
+    const consent = await startOAuth();
+    // Both supported entry points write to the same physical store without sharing private fields.
+    const coexisting = await first.pool.query(
+      `SELECT kind, credential_source_id, device_source_id FROM occ.authentication_states
+       WHERE namespace_id = $1 AND (id = $2 OR credential_source_id = $3) ORDER BY kind`,
+      [namespaceId, id, consent.sourceId],
+    );
+    assert.deepEqual(coexisting.rows, [
+      {
+        kind: "device_authorization",
+        credential_source_id: null,
+        device_source_id: pending.device_source_id,
+      },
+      { kind: "oauth_connection", credential_source_id: consent.sourceId, device_source_id: null },
+    ]);
+    // A different browser session cannot consume the owner's attempt. Concurrent owner callbacks
+    // then race on the same database row: exactly one consumes it before classifying the refusal.
+    const stolen = await second.inject("GET", consent.callback);
+    assert.match(String(stolen.headers.location), /reason=unknown_session/);
+    const callbacks = await Promise.all([
+      first.inject("GET", consent.callback),
+      first.inject("GET", consent.callback),
+    ]);
+    assert.deepEqual(
+      callbacks
+        .map((reply) =>
+          new URL(String(reply.headers.location), "https://console.oce.localhost").searchParams.get(
+            "reason",
+          ),
+        )
+        .sort(),
+      ["consent_denied", "unknown_session"],
+    );
+    assert.equal(
+      (
+        await first.inject(
+          "GET",
+          `/namespaces/${namespaceId}/credential-sources/${consent.sourceId}`,
+        )
+      ).statusCode,
+      404,
+    );
+    assert.equal(
+      (await row(id)).phase,
+      "pending",
+      "OAuth consumption must not change the device login",
+    );
     assert.equal(pending.phase, "pending");
     assert.ok(pending.private_state);
     assert.ok(pending.encrypted_challenge);
@@ -89,10 +181,10 @@ test(
     const ownedSource = await first.pool.query(
       `SELECT resource_kind, resource_id FROM occ.iam_access_bindings
        WHERE identity_subject_id = $1 AND role_id = 'role_config_owner' AND resource_id = $2`,
-      [first.principal.id, pending.source_id],
+      [first.principal.id, pending.device_source_id],
     );
     assert.deepEqual(ownedSource.rows, [
-      { resource_kind: "credential_source", resource_id: pending.source_id },
+      { resource_kind: "credential_source", resource_id: pending.device_source_id },
     ]);
     const policy = `/namespaces/${namespaceId}/iam`;
     const role = await first.inject("POST", `${policy}/roles`, {
@@ -156,9 +248,25 @@ test(
     assert.equal(replay.json().data.verificationUrl, next.verificationUrl);
 
     const { id: abandoned } = await start();
+    const abandonedConsent = await startOAuth();
     await clock.advance(15 * 60 * 1000);
     // Abandon the challenge: the periodic expiry operation must clear private state without a poll.
-    await second.controller.expireConnectionSessions(32);
+    await second.controller.expireAuthenticationStates(32);
+    assert.equal(
+      (
+        await first.inject(
+          "GET",
+          `/namespaces/${namespaceId}/credential-sources/${abandonedConsent.sourceId}`,
+        )
+      ).statusCode,
+      404,
+      "expiry removes the unfinished OAuth credential source",
+    );
+    const expiredConsent = await first.pool.query(
+      "SELECT id FROM occ.authentication_states WHERE kind = 'oauth_connection' AND credential_source_id = $1",
+      [abandonedConsent.sourceId],
+    );
+    assert.equal(expiredConsent.rowCount, 0);
     const abandonedRow = await row(abandoned);
     assert.equal(abandonedRow.private_state, null);
     assert.equal(abandonedRow.encrypted_challenge, null);
@@ -175,13 +283,20 @@ test(
       );
       assert.equal(deleted.statusCode, 204, deleted.body);
     }
+    const removedTemplate = await first.inject(
+      "DELETE",
+      `/connection-templates/${template.json().data.id}`,
+    );
+    assert.equal(removedTemplate.statusCode, 204, removedTemplate.body);
+    const removedClient = await first.inject("DELETE", `/oauth-clients/${client.json().data.id}`);
+    assert.equal(removedClient.statusCode, 204, removedClient.body);
     const deleting = await first.inject("DELETE", namespacePath);
     assert.equal(deleting.statusCode, 202, deleting.body);
     await first.controller.handleNamespaceLifecycle(first.principal.id, namespaceId, "deleted");
     const missing = await first.inject("GET", namespacePath);
     assert.equal(missing.statusCode, 404, missing.body);
     const sessions = await first.pool.query(
-      "SELECT id FROM occ.device_authorizations WHERE namespace_id = $1",
+      "SELECT id FROM occ.authentication_states WHERE kind = 'device_authorization' AND namespace_id = $1",
       [namespaceId],
     );
     assert.equal(sessions.rowCount, 0);
