@@ -671,7 +671,9 @@ interface GatewayConfigurationSnapshot {
 }
 
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
+const PROXY_CODEX_LAUNCH = "explicit-proxy-codex-launch:v1:";
 const OPENSHELL_CODEX_LAUNCH = "openshell-codex-launch:v1:";
+const CODEX_LAUNCH_PREFIXES = [OPENSHELL_CODEX_LAUNCH, PROXY_CODEX_LAUNCH];
 
 interface PluginRuntimeSnapshot {
   readonly name: string;
@@ -14816,27 +14818,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   private runtimeAdmission(revision: Readonly<AgentRevision>): string | undefined {
     const saved = this.savedRuntimeAdmission(revision);
-    return saved?.startsWith(OPENSHELL_CODEX_LAUNCH)
-      ? saved.slice(OPENSHELL_CODEX_LAUNCH.length) || undefined
-      : saved;
+    const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
+    return prefix === undefined ? saved : saved?.slice(prefix.length) || undefined;
   }
 
-  private usesOpenShellCodexLaunch(
+  private providerCodexLaunchPrefix(
     revision: Readonly<AgentRevision>,
     sandbox: SandboxDriver | undefined,
-  ): boolean {
-    return (
-      this.options.runtime !== undefined &&
-      sandbox?.implementation === "openshell" &&
-      sandbox.provisionHarness !== undefined &&
-      revision.harness.id === "codex" &&
-      revision.harness.mode === "dedicated"
-    );
+  ): string | undefined {
+    if (
+      this.options.runtime === undefined ||
+      sandbox?.provisionHarness === undefined ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated"
+    ) {
+      return undefined;
+    }
+    return sandbox.implementation === "openshell" ? OPENSHELL_CODEX_LAUNCH : PROXY_CODEX_LAUNCH;
   }
 
   private codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch {
-    const updated = this.savedRuntimeAdmission(revision)?.startsWith(OPENSHELL_CODEX_LAUNCH);
-    if (updated && !this.usesOpenShellCodexLaunch(revision, sandbox)) {
+    const saved = this.savedRuntimeAdmission(revision);
+    const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
+    if (prefix !== undefined && prefix !== this.providerCodexLaunchPrefix(revision, sandbox)) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const auth = revision.harnessAuth;
@@ -14844,11 +14848,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
-      // Another provider's Sandbox may route egress through an explicit proxy it names in
-      // the Harness environment. OpenShell's egress is transparent and its commands keep
-      // their admitted bytes, so its launches never select this.
-      ...(providerOwned && sandbox?.implementation !== "openshell" && { explicitProxy: true }),
-      ...(updated && {
+      ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
+      ...(prefix === OPENSHELL_CODEX_LAUNCH && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
           auth.method === "credential_source" &&
@@ -14871,10 +14872,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // Select the updated renderer only when admitting a new revision.
     if (
       revision.sandboxDriverId !== undefined &&
-      revision.sandboxDriverId === this.sandboxDriver?.id &&
-      this.usesOpenShellCodexLaunch(revision, this.sandboxDriver)
+      revision.sandboxDriverId === this.sandboxDriver?.id
     ) {
-      runtime = OPENSHELL_CODEX_LAUNCH + (runtime ?? "");
+      const prefix = this.providerCodexLaunchPrefix(revision, this.sandboxDriver);
+      if (prefix !== undefined) {
+        runtime = prefix + (runtime ?? "");
+      }
     }
     const provider = this.providerAdmission(revision);
     const admission =

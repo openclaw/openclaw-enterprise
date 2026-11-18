@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   codexLaunchEntrypoint,
-  EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { startSupervisor } from "./workspace-node-supervisor-fixture.ts";
 import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   checkCodexStartup,
@@ -841,40 +846,118 @@ test("Codex authentication probe carries proxy settings only for an explicit-pro
   }
 });
 
-test("Compute selects the explicit-proxy Codex program only outside OpenShell", () => {
-  const launch = { providerOwned: true, protected: false, explicitProxy: true };
-  assert.equal(
-    codexLaunchEntrypoint({ ...launch, withNode: true }),
-    EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
-  );
-  assert.ok(
-    codexLaunchEntrypoint({ ...launch, withNode: false }).includes('"HTTPS_PROXY", "https_proxy"'),
-  );
-  for (const programLaunch of [
-    { withNode: false },
-    { withNode: false, protected: true },
-    { withNode: true, protected: true },
+test("Compute preserves admitted Codex commands and forwards proxy settings on new provider launches", async (t) => {
+  const environment = {
+    HTTPS_PROXY: "http://127.0.0.1:3128",
+    https_proxy: "http://127.0.0.1:3129",
+    FTP_PROXY: "ignored",
+  };
+  for (const [label, implementation, legacy, forwards] of [
+    ["existing non-OpenShell Sandbox", "fixture-provider", true, false],
+    ["new non-OpenShell Sandbox", "fixture-provider", false, true],
+    ["new OpenShell Sandbox", "openshell", false, false],
   ]) {
-    assert.notEqual(
-      codexLaunchEntrypoint({ ...launch, ...programLaunch }),
-      codexLaunchEntrypoint({ ...launch, ...programLaunch, explicitProxy: false }),
-    );
+    await t.test(label, async (t) => {
+      const fixture = providerEndpointFixture();
+      // The fixture's original revision was admitted for OpenShell. Its pre-marker
+      // provider snapshot is the same one non-OpenShell revisions used before this change.
+      const prior = fixture.revision.compute.admission;
+      assert.ok(prior?.endsWith("openshell-codex-launch:v1:"));
+      const legacyAdmission = prior.slice(0, -"openshell-codex-launch:v1:".length);
+      Object.assign(fixture.sandbox, { implementation });
+      const revision = {
+        ...fixture.revision,
+        compute: {
+          ...fixture.revision.compute,
+          admission: legacy ? legacyAdmission : fixture.driver.admitRevision(fixture.revision),
+        },
+      };
+      await fixture.prepare(revision);
+      fixture.setGatewayServing();
+      await fixture.prepare(revision);
+      assert.equal(fixture.provisions.length, 1);
+      const { command } = fixture.provisions[0].requirements;
+      if (legacy) {
+        // Retry must replay the entire old command, not merely omit a proxy.
+        const expected = nodeProgramArguments(AGENT_WITH_NODE_ENTRYPOINT);
+        assert.ok(
+          command.slice(7).length === expected.length &&
+            expected.every((part, i) => part === command[7 + i]),
+          "legacy provider command bytes changed",
+        );
+      }
+      const { supervisor, codex } = inspectOpenShellCodexCommand(t, command, {
+        compact: false,
+        current: false,
+      });
+      const runtime = createCodexStartup(t, {
+        environment,
+        native: [
+          login(),
+          probe([
+            { type: "turn.started" },
+            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+            { type: "turn.completed" },
+          ]),
+        ],
+      });
+      runtime.start(codex);
+      runtime.assertNativeScriptConsumed();
+      assert.equal(runtime.appServerStarts, 1);
+      const [{ env }] = runtime.probeSpawns;
+      assert.equal(env.HTTPS_PROXY, forwards ? environment.HTTPS_PROXY : undefined);
+      assert.equal(env.https_proxy, forwards ? environment.https_proxy : undefined);
+      assert.equal(env.FTP_PROXY, undefined);
+      if (forwards) {
+        // Observe both children of the delivered supervisor, before native code
+        // runs. Only Codex should inherit the provider's proxy, not the file worker.
+        const directory = await mkdtemp(join(tmpdir(), "codex-proxy-supervisor-"));
+        const observed = await startSupervisor(t, directory, {
+          entrypoint: supervisor,
+          env: { ...environment, OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup" },
+          child: [
+            "const [events, kind] = process.argv.slice(2);",
+            "const args = Object.keys(process.env).filter(key => /_proxy$/i.test(key)).sort();",
+            'require("node:fs").appendFileSync(events, JSON.stringify({ kind, args, pid: process.pid }) + "\\n");',
+            "setInterval(() => {}, 60_000);",
+          ],
+        });
+        const rows = await observed.waitFor("Codex and file worker reported proxy keys", (events) =>
+          ["codex", "node"].every((kind) => events.some((event) => event.kind === kind)),
+        );
+        assert.deepEqual(rows.find((row) => row.kind === "node")?.args, []);
+        assert.deepEqual(
+          rows.find((row) => row.kind === "codex")?.args,
+          Object.keys(environment).sort(),
+        );
+      }
+    });
   }
-  // An admitted OpenShell program and every Compute-owned program keep their bytes.
-  for (const programLaunch of [
-    { openShellProgram: "ordinary" },
-    { openShellProgram: "ordinary", withNode: true, workspaceSetup: true },
-    { openShellProgram: "pat" },
-    { providerOwned: false },
-    { providerOwned: false, withNode: true, protected: true },
-  ]) {
-    assert.equal(
-      codexLaunchEntrypoint({ ...launch, ...programLaunch }),
-      codexLaunchEntrypoint({ ...launch, ...programLaunch, explicitProxy: false }),
-    );
-  }
-  assert.equal(AGENT_RUNTIME_ENTRYPOINT.includes('"HTTPS_PROXY"'), false);
-  assert.notEqual(AGENT_WITH_NODE_ENTRYPOINT, EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT);
+});
+
+test("a rejected Codex proxy credential stays out of diagnostics and the held failure", (t) => {
+  const sentinel = ["invented", "proxy", "password"].join("-");
+  const url = new URL("http://127.0.0.1:3128");
+  url.username = "fixture";
+  url.password = sentinel;
+  const message = "unexpected status 407 Proxy Authentication Required: " + url.href;
+  const runtime = createCodexStartup(t, {
+    environment: { HTTPS_PROXY: url.href },
+    native: [
+      login(),
+      probe([{ type: "turn.started" }, failedTurn(message)], { status: 1, stderr: message }),
+    ],
+  });
+  runtime.start(
+    codexLaunchEntrypoint({ providerOwned: true, protected: false, explicitProxy: true }),
+  );
+  runtime.assertNativeScriptConsumed();
+  assert.equal(runtime.appServerStarts, 0);
+  assert.equal(runtime.probeSpawns[0].env.HTTPS_PROXY, url.href);
+  const failure = runtime.status().runtimeFailure;
+  assert.equal(failure?.code, "MODEL_PROBE_FAILED");
+  assert.deepEqual(failure.cause, { kind: "PROBE_STATUS", detail: "turn-failed" });
+  assert.ok(!(JSON.stringify(failure) + runtime.diagnostics.join("\n")).includes(sentinel));
 });
 
 test("Codex runtime retries a transient startup model probe failure once", async (t) => {

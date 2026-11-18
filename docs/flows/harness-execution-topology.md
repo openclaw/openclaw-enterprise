@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-11
-last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
+updated: 2026-11-18
+last_updated_session: authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6
 ---
 
 # Harness Execution Topology Flow
@@ -221,6 +221,13 @@ Kubernetes Compute records admitted inference launch behavior in new protected C
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
 original retry settings.
 
+For a new dedicated Codex revision on a provider-owned Sandbox other than OpenShell,
+Kubernetes Compute also records which probe command to use. That probe inherits the
+Harness's nonempty `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings in either case, just
+as the serving Codex process already did. Codex decides how to use them; the Sandbox
+still enforces egress. Retrying a revision admitted before this change reuses its
+original command. Deploy a new revision to pick up the fix.
+
 For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
 to clone the admitted document and qualify chat selections checked by
@@ -358,6 +365,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
 
 - 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
 

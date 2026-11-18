@@ -5356,11 +5356,6 @@ export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(protectedProviderCodexChild),
 );
-// A provider-owned Sandbox other than OpenShell gets the explicit-proxy child; existing
-// OpenShell Sandboxes compare AGENT_WITH_NODE_ENTRYPOINT's bytes on every retry.
-export const EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, explicitProxy: true })),
-);
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, computeOwned: true })),
 );
@@ -5371,9 +5366,7 @@ export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypo
 );
 
 let patEntrypoint: string | undefined;
-let explicitProxyLaunch: string | undefined;
-let explicitProxyProtectedLaunch: string | undefined;
-let explicitProxyProtectedWithNodeLaunch: string | undefined;
+const explicitProxyLaunches = new Map<string, string>();
 let compactPatLaunch: string | undefined;
 let compactProviderLaunch: string | undefined;
 let compactProtectedLaunch: string | undefined;
@@ -5415,21 +5408,19 @@ export function codexLaunchEntrypoint(
     return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
   }
   if (explicitProxy && openShellProgram === undefined) {
-    if (!protectedLaunch) {
-      return withNode
-        ? EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT
-        : (explicitProxyLaunch ??= agentRuntimeEntrypoint({ explicitProxy: true }));
+    const key = `${protectedLaunch}:${Boolean(withNode)}`;
+    const cached = explicitProxyLaunches.get(key);
+    if (cached !== undefined) {
+      return cached;
     }
-    return withNode
-      ? (explicitProxyProtectedWithNodeLaunch ??= agentWithNodeEntrypoint(
-          nodeProgramArguments(
-            agentRuntimeEntrypoint({ withNode: true, protected: true, explicitProxy: true }),
-          ),
-        ))
-      : (explicitProxyProtectedLaunch ??= agentRuntimeEntrypoint({
-          protected: true,
-          explicitProxy: true,
-        }));
+    const child = agentRuntimeEntrypoint({
+      protected: protectedLaunch,
+      withNode: Boolean(withNode),
+      explicitProxy: true,
+    });
+    const program = withNode ? agentWithNodeEntrypoint(nodeProgramArguments(child)) : child;
+    explicitProxyLaunches.set(key, program);
+    return program;
   }
   if (!protectedLaunch && openShellProgram === "pat") {
     if (withNode) {
