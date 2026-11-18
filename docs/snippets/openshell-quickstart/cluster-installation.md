@@ -84,9 +84,10 @@ values for `auth-secret` (OCC sessions) and `routing-key` (private routing).
 Store each value as 64 hexadecimal characters without a trailing newline.
 Keep files mode 0600 and retain the keys for redeployment.
 
-From the matching release checkout, use jq, yq v4, and Node.js matching
-`engines.node` in `package.json`. Check that the OpenShell PKI job’s
-`openshell-client-tls` Secret exists before creating the bootstrap claim and Secrets.
+From the matching release checkout, use jq, yq v4 and Node.js matching
+`engines.node` in `package.json`. The install command generates bootstrap
+credentials and their Secret. Check that the OpenShell PKI job’s
+`openshell-client-tls` Secret exists before creating the OCC inputs.
 
 ```bash
 : "${OCC_SECRET_DIR:?Set OCC_SECRET_DIR to the protected input directory}"
@@ -107,14 +108,6 @@ fi
 
 platform_kube=(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$PLATFORM_NS")
 "${platform_kube[@]}" get secret openshell-client-tls -o name
-bootstrap_claim=$(jq -er '.bootstrap.password.claimName' "$RUN_DIR/values.json")
-bootstrap_image=$(jq -er '.images.controller' "$RUN_DIR/values.json")
-BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
-  .metadata.namespace = strenv(PLATFORM_NS) |
-  .metadata.name = strenv(BOOTSTRAP_CLAIM) |
-  .spec.storageClassName = strenv(STORAGE_CLASS)
-' deploy/examples/production/bootstrap-pvc.yaml > "$RUN_DIR/bootstrap-pvc.yaml"
-"${platform_kube[@]}" create -f "$RUN_DIR/bootstrap-pvc.yaml"
 "${platform_kube[@]}" create secret generic occ-database \
   --from-file="application-url=$OCC_SECRET_DIR/application-url" \
   --from-file="migration-url=$OCC_SECRET_DIR/migration-url"
@@ -126,18 +119,16 @@ BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
   --from-file="occ=$OCC_SECRET_DIR/routing-key"
 ```
 
-Prepare the fresh claim on the OCC initialization Job’s `oce-role=control` pool.
-If cluster policy forbids the preparation Pod or you cannot verify its network
-isolation, skip the helper. Have the storage administrator set the same fresh
-volume’s root to UID/GID 1000 and mode 0700.
-
-```bash
-scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
-  --namespace "$PLATFORM_NS" --claim "$bootstrap_claim" --image "$bootstrap_image" \
-  --node-selector oce-role=control
-```
-
-Continue after helper success or storage administrator confirmation that the root is ready.
+The installer creates the bootstrap Secret before the pre-install hook and
+prints the protected recovery directory. It never overwrites an existing Secret;
+[existing-Secret mode](production-installation-preparation.md#optional-supply-bootstrap-credentials)
+is available for deliberately preprovisioned inputs. Only bootstrap receives the
+read-only projection on installation, not on upgrade. Retain the local inputs
+outside the checkout. The service
+key expires 30 days after registration; changing the Secret does not rotate it.
+If a create or installation attempt fails or has an unknown outcome, stop and
+[reconcile that attempt](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
+before continuing. Do not regenerate credentials or repeat confirmed creates.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.

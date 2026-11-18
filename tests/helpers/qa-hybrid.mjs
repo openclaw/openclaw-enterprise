@@ -170,11 +170,13 @@ export async function prepareHybridInstallation(f) {
   const services = yamlMapping(compose, "services");
   const controllerEnv = yamlMapping(services, "controller", "environment");
   const bootstrapEnv = yamlMapping(services, "bootstrap", "environment");
+  // The mount copy belongs to the container UID; read the retained host-owned input.
+  const passwordFile = join(f.stateDirectory, "initial-admin-password");
   f.consoleUrl = controllerEnv.OCC_AUTH_BASE_URL;
   f.browserCA = join(f.stateDirectory, "browser-ca.crt");
   f.credentials = {
     email: bootstrapEnv.OPENCLAW_DEV_EMAIL,
-    password: bootstrapEnv.OPENCLAW_DEV_PASSWORD,
+    password: await readFile(passwordFile, "utf8"),
   };
   // Use the same pinned controllers as the shipped Kubernetes-only launcher.
   for (const pin of Object.values(gatewayRoutingPins)) {
@@ -233,7 +235,11 @@ export async function prepareHybridInstallation(f) {
   const values = {
     images: { controller: f.controllerChartImage },
     auth: { baseUrl: f.consoleUrl },
-    bootstrap: { adminEmail: f.credentials.email, password: { claimName: "bootstrap-password" } },
+    // This routing-only render creates no initializer or credential projection.
+    bootstrap: {
+      adminEmail: f.credentials.email,
+      credentials: { secretName: "bootstrap-credentials" },
+    },
     api: {
       clients: [
         { namespace: "envoy-gateway-system", podLabels: { "app.kubernetes.io/name": "envoy" } },

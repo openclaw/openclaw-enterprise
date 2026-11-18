@@ -127,12 +127,10 @@ controlPlaneAudit:
 
 bootstrap:
   adminEmail: ""
-  password:
-    claimName: ""
-    mountPath: /var/lib/openclaw/bootstrap
-    fileName: initial-admin-password
-  serviceKey:
-    fileName: initial-admin-service-key.json
+  credentials:
+    secretName: ""
+    passwordKey: admin-password
+    serviceKeyKey: admin-service-key
 
 backend:
   openshell:

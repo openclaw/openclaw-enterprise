@@ -263,7 +263,8 @@
         "first-Agent requires dedicated Codex for OpenShell before external calls",
         "first-Agent admits dedicated Codex Control UI with OpenShell development state",
         "first-Agent validates launcher-owned HTTPS endpoints before external calls",
-        "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
+        "first-Agent runs psql through the k3d PostgreSQL StatefulSet",
+        "first-Agent refuses missing or mismatched confirmed Installation state"
       ]
     },
     {

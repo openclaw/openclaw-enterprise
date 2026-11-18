@@ -12,6 +12,7 @@ import { NamespaceId } from "../../packages/contracts/src/index.ts";
 import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
+import { canonicalizeDumpRows } from "../helpers/postgres-dump.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
@@ -122,19 +123,30 @@ test(
     await f.run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
     const source = (await f.run("git", ["rev-parse", "HEAD"])).trim();
     const keyPath = join(f.directory, "service-key.json");
-    const key = await f.kubectl(
-      "-n",
-      f.system,
-      "exec",
-      "operator",
-      "--",
-      "cat",
-      "/bootstrap/initial-admin-service-key.json",
+    // The fixture has already removed the fresh-install credential Secret.
+    // Resolve the real administrator identity from auth storage, then issue a
+    // normal CLI key through the API instead of extracting bootstrap output.
+    const principalId = (
+      await sql("SELECT reference_id FROM occ.apikey WHERE name = 'bootstrap-admin'")
+    ).trim();
+    assert.ok(
+      principalId && !principalId.includes("\n"),
+      "one bootstrap service identity is required",
     );
-    const serviceKey = record(record(JSON.parse(key)).data);
+    const serviceKey = record(
+      await f.api(
+        "POST",
+        "/api/auth/service-keys",
+        {
+          servicePrincipalId: principalId,
+          name: "migration-preflight",
+        },
+        201,
+      ),
+    );
     const serviceKeyId = string(serviceKey.id);
     f.secrets.push(string(serviceKey.key));
-    await writeFile(keyPath, key, { mode: 0o600 });
+    await writeFile(keyPath, JSON.stringify({ data: serviceKey }), { mode: 0o600 });
     const startup = record(await f.get("secret", "occ-installation-startup"));
     const installationPath = join(f.directory, "installation.json");
     await writeFile(
@@ -245,8 +257,9 @@ test(
         },
       );
     // Keep full dumps private. Authenticating the real CLI updates exactly this
-    // key's last_request and updated_at; compare every other byte, including all
-    // other keys, and verify the two expected timestamps independently.
+    // key's last_request and updated_at. Ignore COPY row order, but retain every
+    // value, duplicate and non-COPY byte, including all other keys' timestamps.
+    // Verify the two expected timestamps independently.
     const databaseSnapshot = async (name: string) => {
       // Decode only after complete byte capture: pipe chunks can split UTF-8 characters.
       // Keep command failures generic because both streams may contain private data.
@@ -271,7 +284,7 @@ test(
       await writeFile(join(f.directory, `${name}.sql`), bytes, { mode: 0o600 });
       const dump = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
       const captured: { timestamps?: number[] } = {};
-      const normalized = dump.replace(
+      const timestampNormalized = dump.replace(
         /^COPY occ\.apikey \(([^\n]+)\) FROM stdin;\n([\s\S]*?)\n\\\.\n/m,
         (_section: string, header: string, data: string) => {
           const columns = header.split(", ");
@@ -298,8 +311,10 @@ test(
         },
       );
       assert.ok(captured.timestamps, "full dump must include the exact CLI service key");
+      const normalized = canonicalizeDumpRows(timestampNormalized);
       return {
         hash: createHash("sha256").update(normalized).digest("hex"),
+        normalized,
         timestamps: captured.timestamps,
       };
     };
@@ -308,10 +323,26 @@ test(
       name: string,
     ) => {
       const after = await databaseSnapshot(name);
+      // Report table names and ordering only; snapshot values remain private.
+      const sections = (dump: string) =>
+        new Map(
+          Array.from(dump.matchAll(/^COPY ([^\n]+) FROM stdin;\n([\s\S]*?)\n\\\.\n/gm)).map(
+            ([, header, rows]) => [header, (rows ?? "").split("\n").sort().join("\n")] as const,
+          ),
+        );
+      const previous = sections(before.normalized);
+      const current = sections(after.normalized);
+      const changed = [...new Set([...previous.keys(), ...current.keys()])].filter(
+        (header) => previous.get(header) !== current.get(header),
+      );
+      const nonCopy = (dump: string) =>
+        dump.replace(/^COPY [^\n]+ FROM stdin;\n[\s\S]*?\n\\\.\n/gm, "");
+      const orderingOnly =
+        changed.length === 0 && nonCopy(before.normalized) === nonCopy(after.normalized);
       assert.equal(
         after.hash,
         before.hash,
-        "only the CLI key's authentication timestamps may change",
+        `only the CLI key's authentication timestamps may change; COPY ordering only: ${orderingOnly}; changed COPY contents: ${changed.join("; ") || "none"}`,
       );
       after.timestamps.forEach((timestamp, index) =>
         assert.ok(timestamp >= number(before.timestamps[index])),
