@@ -353,6 +353,8 @@ removal.
 ## Changelog
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+
+- 2026-11-18 22:54: Move older entries to the existing documentation history. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - 12d5ea4858a3257c1cec84d21142f705a15faa92)
 - 2026-11-18 22:35: Retain native scope policy (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
 
 - 2026-11-18 20:10: Remove the recovery-generation boundary; later Gateway startup uses native eligibility (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9)
@@ -360,9 +362,5 @@ removal.
 - 2026-11-18 03:53: Preserve the merged proxy-probe trace and both source histories. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - b3a67847915ca3d9884bc0b4b14bd7f63f79ff1e)
 
 - 2026-11-18 03:05: Refresh restart-resume source provenance. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - f98453d0adf83a53c549c5198c3c388a5ca7fc95)
-
-- 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
-
-- 2026-11-17 23:51: A turn cut by stop, replacement or deletion does not resume; the Gateway's restart recovery is scoped to its revision. (finding 3347)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.
