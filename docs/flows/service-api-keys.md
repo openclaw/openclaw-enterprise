@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-10
-last_updated_session: authoring-run/edc4984b-d876-4ddc-af2b-42f3d3b0a4c4
+updated: 2026-11-12
+last_updated_session: authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98
 ---
 
 # Service API Keys Flow
@@ -146,14 +146,21 @@ The controller records storage exceptions from the composed Better Auth adapter
 for the active key verification. A failed key read, usage update, or expiry
 deletion returns `503 DEPENDENCY_UNAVAILABLE`, even if Better Auth reports an
 invalid key. Each concurrent verification retains its own failure state. Better
-Auth still owns key hashing, validity, expiry, and revocation decisions.
+Auth still owns key hashing, validity, expiry, and revocation decisions. Its log
+calls go to the structured log: a refused key is one INFO
+`authentication.request-refused` line with its `reasonCode`, never the key; other
+library errors log `authentication.library-error` at ERROR.
 
-Successful verification supplies the service-principal ID and stored scope to
-`resolveIdentity`. The selected IAM Driver looks up the current identity by ID.
-The controller rejects a missing identity, Agent ownership, changed scope, or
-another requested Namespace with `403`. A Namespace key cannot enter an
-Installation-level resource operation. Better Auth neither creates a human
-session nor authorizes this request.
+`resolveIdentity` looks up the verified service-principal ID through the selected
+IAM Driver. The controller returns `403` for a missing identity, Agent ownership,
+changed scope, or a request outside the key's stored scope. A Namespace key
+cannot enter an Installation-level resource operation. Better Auth verifies
+the key without creating a human session or authorizing the resource request.
+
+If a Namespace key calls `GET /namespaces/:namespaceId/agent-capabilities`
+in another Namespace, the controller returns `403` before OCC authorization.
+The audit records `create` on the requested Agent collection with
+`details.actorServiceKeyId`.
 
 ### 4. Authorize the exact read with current IAM policy
 
@@ -210,9 +217,9 @@ schedule rotation.
   invalid, expired, revoked, unauthorized, and cross-Namespace requests;
   IAM-authorized service-key management; session preservation; Agent exclusion;
   and audit attribution without keys.
-- [PostgreSQL integration](../../tests/integration/postgres-service-api-keys.test.mjs):
+- [PostgreSQL integration](../../tests/integration/postgres-service-api-keys.test.ts):
   with `OCC_TEST_DATABASE_URL` selecting a disposable application-role database,
-  run `node --test tests/integration/postgres-service-api-keys.test.mjs`.
+  run `node --test tests/integration/postgres-service-api-keys.test.ts`.
   This separately checks stored hashing, foreign-Installation rejection,
   cross-instance revocation, and deletion during concurrent verification.
   Use the existing [test environment instructions](../testing/postgresql.md#postgresql-test-environment).
@@ -221,7 +228,7 @@ schedule rotation.
   the prepared `postgres-auth` lane. It checks a closed authentication pool, a
   failed key-use update, and isolation from a concurrent successful verification.
   Invalid, expired, and revoked keys retain `401`; State and IAM remain healthy.
-- [IAM conformance](../../tests/conformance/iam.test.mjs) verifies identity lookup.
+- [IAM conformance](../../tests/conformance/iam.test.ts) verifies identity lookup.
   Run `pnpm openapi:check` to check that the OpenAPI contract, HTTP API reference,
   and API cheat sheet remain current with the controller routes.
 - Investigate `401` as credential rejection and `403` as identity, scope, or
@@ -247,6 +254,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 16:13: Trace the audit target for a cross-Namespace Agent capability denial. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
 
 - 2026-11-10 15:43: Preserve key-store operation failures through verification and trace concurrent-request isolation. (authoring-run/edc4984b-d876-4ddc-af2b-42f3d3b0a4c4 - a8742611463ea306e85a543b11887ea038d9cfb0)
 

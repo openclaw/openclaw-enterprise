@@ -5,11 +5,11 @@ import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import {
   assertWriteAuthorizationDenial,
   partialWrite,
-} from "../helpers/partial-write-authorization.mjs";
+} from "../helpers/partial-write-authorization.ts";
 import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
 
 // The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,
@@ -119,6 +119,32 @@ test("Configuration writes admit every Configuration the Kubernetes Driver store
   }
   const stored = await fixture.request("GET", configurationPath(namespace.id, created.data.id));
   assert.equal(stored.data.generation, 3);
+});
+
+test("Configuration writes refuse a serialized wide body without changing stored state", async (t) => {
+  const fixture = await createFixture(t);
+  const { namespace } = fixture;
+  const existing = await fixture.createConfiguration(namespace.id, notes("retained"));
+  const session = await fixture.signIn();
+  const values = notes(["\u0000", ...Array(100000).fill(0), "\ud800"]);
+  const text = JSON.stringify({ values });
+  assert.ok(Buffer.byteLength(text) < CONFIGURATION_BODY_LIMIT);
+
+  // The first array value is invalid. The later surrogate must not replace its detail, and the
+  // ordinary serialized HTTP path must refuse before the Configuration generation changes.
+  const refused = await sendRaw(
+    fixture,
+    "PATCH",
+    configurationPath(namespace.id, existing.id),
+    text,
+    session,
+  );
+  assertApiError(refused, 400, "INVALID_REQUEST");
+  assert.deepEqual(refused.body.error.details, [
+    { path: "/values/plugins/entries/knowledge/config/notes/0", code: "INVALID_FORMAT" },
+  ]);
+  const unchanged = await fixture.request("GET", configurationPath(namespace.id, existing.id));
+  assert.deepEqual(unchanged.data, existing);
 });
 
 test("Configuration writes refuse a caller without the grant before reading the body", async (t) => {

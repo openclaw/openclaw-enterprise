@@ -57,9 +57,10 @@ replacement, fence the old writer before allowing another.
 
 A stop deletes the Gateway and waits for its Pod to disappear before stopping the
 Harness, which finishes active work meanwhile; a refused candidate's stop deletes
-both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup. Idle Gateways exit promptly. Forced
-termination can leave native Gateway locks and an owner lease on retained state.
+both at once. Gateways get up to 330 seconds to drain and clean up. If OpenClaw
+exits non-zero, as when stopped during startup, its running container releases
+its locks; force-terminated or killed after that grace, the container leaves
+them and an owner lease, which the next Pod cannot verify.
 
 If the kubelet restarts an embedded Gateway container in the same Pod, OpenClaw
 can recover locks held by the **first container instance**. Before configurable
@@ -216,22 +217,22 @@ After OCC accepts a newer version that requires earlier workloads to stop, the
 worker stops their reconciliation and maintenance;
 see the [Compute replacement contract](../compute.md#production-revision-stages).
 
-RWX Harness or Gateway claims are rejected during reconciliation and final
-Agent deletion.
-
-As with the Gateway claim, RWO does not fence writers on a partitioned node. Pod
-termination and the storage provider's safe detach/attach behavior remain
-required; the Driver never force detaches a disk. A local-path PV keeps its node
-affinity and cannot move its data to another node. Cross-node rescheduling needs
-an appropriate portable StorageClass, not RWX.
+Reconciliation and final Agent deletion refuse RWX workspace or Gateway claims.
+RWO cannot fence writers on a partitioned node. Terminate the Pod and allow safe
+provider detach/attach. The Driver never force-detaches disks. Local-path PVs retain
+node affinity; moving data across nodes requires a portable StorageClass.
 
 Both claims retain Namespace and Agent ownership across replacements.
-Reconciliation rejects foreign, terminating or incompatible claims without
-mutation. Claims precede Pods; waiting for `Bound` first would deadlock
-`WaitForFirstConsumer`. Workload readiness gates activation. Stop and retirement
-retain both claims. Agent deletion retires all revisions, then deletes owned
-claims by UID. Failed cleanup keeps deletion pending and preserves the Agent's
-database identity for retry.
+Reconciliation leaves foreign, terminating or incompatible claims untouched and refuses reuse.
+Create claims before Pods. Waiting for binding would deadlock `WaitForFirstConsumer`.
+Workload readiness gates activation. Stop and retirement retain both claims.
+Agent deletion retires all revisions, then deletes owned claims by UID.
+On cleanup failure, deletion stays pending and the Agent keeps its database identity for retry.
+
+## Optional scratch storage
+
+For `/sandbox/scratch` storage, see [configuration](configuration.md#scratch-volumes)
+and [setup](../../../guides/topics/remote-harness.md#add-operator-owned-scratch-storage).
 
 ## Managed native configuration
 

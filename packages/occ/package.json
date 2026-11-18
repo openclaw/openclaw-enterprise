@@ -16,7 +16,7 @@
     "typecheck": "tsc --build tsconfig.json --pretty false"
   },
   "dependencies": {
-    "@azure/identity": "4.14.0",
+    "@azure/identity": "4.14.1",
     "@openclaw-enterprise/contracts": "workspace:*",
     "@openclaw-enterprise/iam": "workspace:*",
     "@openclaw-enterprise/utils": "workspace:*",

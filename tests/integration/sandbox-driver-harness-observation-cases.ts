@@ -22,6 +22,10 @@ type GatewayReads = Pick<
   OpenShellGatewayClient,
   "getService" | "getServiceDocument" | "serviceWebSocketHandshake" | "serviceCodexReadinessStatus"
 >;
+type GatewayReadCall = {
+  [Operation in keyof GatewayReads]: [Operation, ...Parameters<GatewayReads[Operation]>];
+}[keyof GatewayReads];
+type ServiceResponse = Omit<OpenShellServiceResponse, "sandbox">;
 type ObservationGateway = Omit<ReturnType<typeof workspaceGatewayClient>, keyof GatewayReads> &
   GatewayReads;
 type SandboxConfiguration = ConstructorParameters<typeof OpenShellSandboxDriver>[0];
@@ -49,37 +53,39 @@ export async function verifySandboxDriverHarnessObservation({
   sandboxInstallation,
   TransientDependencyError,
 }: FixtureDependencies): Promise<void> {
-  const service: OpenShellServiceResponse = {
-    sandbox: "",
+  const bearerPassthroughService: ServiceResponse = {
     name: "",
     targetPort: 8080,
     authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
     advertisedUrl: "http://codex.example.test:8080/",
     url: "http://codex.example.test:9443/",
   };
-  const observed: string[][] = [];
+  let service = bearerPassthroughService;
+  const observed: GatewayReadCall[] = [];
   let document: Awaited<ReturnType<GatewayReads["getServiceDocument"]>> = { status: 502 };
   let handshake = false;
   const reads: GatewayReads = {
-    getService: async (_workspace, sandbox, name) => {
-      observed.push(["getService", sandbox, name]);
+    getService: async (...args) => {
+      observed.push(["getService", ...args]);
+      const [, sandbox] = args;
       return { ...service, sandbox };
     },
-    getServiceDocument: async (url, path, bearer) => {
-      observed.push(["getServiceDocument", url, path, bearer]);
+    getServiceDocument: async (...args) => {
+      observed.push(["getServiceDocument", ...args]);
       return document;
     },
-    serviceWebSocketHandshake: async (url, bearer) => {
-      observed.push(["serviceWebSocketHandshake", url, bearer]);
+    serviceWebSocketHandshake: async (...args) => {
+      observed.push(["serviceWebSocketHandshake", ...args]);
       return handshake;
     },
-    serviceCodexReadinessStatus: async (url, bearer, requirePat) => {
+    serviceCodexReadinessStatus: async (...args) => {
+      const [, , requirePat] = args;
       assert.equal(requirePat, false);
-      observed.push(["serviceCodexReadinessStatus", url, bearer]);
+      observed.push(["serviceCodexReadinessStatus", ...args]);
       return handshake ? "serving" : "unavailable";
     },
   };
-  const gatewayClient: ObservationGateway = Object.assign(workspaceGatewayClient(), reads);
+  const gatewayClient: ObservationGateway = { ...workspaceGatewayClient(), ...reads };
   const driver = openShellDriver(gatewayClient);
   const { context, revision: fixtureRevision, requirements } = runtimeSandboxFixture(driver);
   const revision = completeWorkspaceRevision(fixtureRevision, requirements);
@@ -87,17 +93,26 @@ export async function verifySandboxDriverHarnessObservation({
 
   // Nothing listens yet: a refused handshake and OpenShell's own 502 mean starting.
   assert.deepEqual(await driver.harnessStatus(statusContext), { state: "starting" });
-  const sandboxName = observed[0]?.[1];
+  const [lookup] = observed;
+  assert.ok(lookup?.[0] === "getService");
+  const [, , sandboxName] = lookup;
   assert.deepEqual(observed, [
-    ["getService", sandboxName, ""],
-    ["serviceCodexReadinessStatus", "http://codex.example.test:9443/", "transport-token"],
+    ["getService", context.namespace.name, sandboxName, "", context.signal],
+    [
+      "serviceCodexReadinessStatus",
+      "http://codex.example.test:9443/",
+      "transport-token",
+      false,
+      context.signal,
+    ],
     [
       "getServiceDocument",
       "http://codex.example.test:9443/",
       "/openclaw/runtime/status",
       "transport-token",
+      context.signal,
     ],
-  ]);
+  ] satisfies GatewayReadCall[]);
 
   // A serving app-server is never sent a plain request.
   handshake = true;
@@ -136,13 +151,17 @@ export async function verifySandboxDriverHarnessObservation({
   }
 
   // The same exactness as harnessEndpoint: wrong port, mode, or a missing service fail closed.
+  const numericBearerPassthroughService: ServiceResponse = {
+    ...bearerPassthroughService,
+    authorizationMode: 2,
+  };
   for (const changed of [
     { targetPort: 8081 },
     { authorizationMode: "SERVICE_AUTHORIZATION_MODE_STRIP" },
-  ]) {
-    Object.assign(service, changed);
+  ] satisfies Partial<ServiceResponse>[]) {
+    service = { ...service, ...changed };
     await assert.rejects(driver.harnessStatus(statusContext), /exact Codex bearer-passthrough/);
-    Object.assign(service, { targetPort: 8080, authorizationMode: 2 });
+    service = numericBearerPassthroughService;
   }
   // A dedicated OpenClaw worker (finding 1642) is observed through the same exposure, with
   // the same exactness: wrong port or a missing service fail closed.
@@ -158,13 +177,12 @@ export async function verifySandboxDriverHarnessObservation({
     state: "failed",
     runtimeFailure,
   });
-  Object.assign(service, { targetPort: 8081 });
+  service = { ...numericBearerPassthroughService, targetPort: 8081 };
   await assert.rejects(
     driver.harnessStatus(nativeContext),
     /exact OpenClaw worker bearer-passthrough/,
   );
-  Object.assign(service, { targetPort: 8080 });
-  const getService = gatewayClient.getService;
+  service = numericBearerPassthroughService;
   gatewayClient.getService = async () => undefined;
   observed.length = 0;
   await assert.rejects(
@@ -173,7 +191,7 @@ export async function verifySandboxDriverHarnessObservation({
   );
   await assert.rejects(driver.harnessStatus(statusContext), /exact Codex bearer-passthrough/);
   assert.deepEqual(observed, []);
-  gatewayClient.getService = getService;
+  gatewayClient.getService = reads.getService;
   await assert.rejects(
     driver.harnessStatus({
       ...statusContext,
@@ -190,62 +208,59 @@ export async function verifySandboxDriverHarnessObservation({
   // rechecks until the deadline without spending attempts, with the transport's own reason.
   // Refusals, invalid answers and the gateway's own transient classes keep their classes.
   document = { status: 200, json: { runtimeFailure } };
-  for (const [fail, reason] of [
+  for (const [overrides, reason] of [
     [
-      () =>
-        Object.assign(gatewayClient, {
-          serviceCodexReadinessStatus: async () => {
-            throw new OpenShellServiceTransportError("timeout");
-          },
-          serviceWebSocketHandshake: async () => {
-            throw new OpenShellServiceTransportError("timeout");
-          },
-        }),
+      {
+        serviceCodexReadinessStatus: async () => {
+          throw new OpenShellServiceTransportError("timeout");
+        },
+        serviceWebSocketHandshake: async () => {
+          throw new OpenShellServiceTransportError("timeout");
+        },
+      },
       "timeout",
     ],
     [
-      () =>
-        (gatewayClient.getServiceDocument = async () => {
+      {
+        getServiceDocument: async () => {
           throw new OpenShellServiceTransportError("unreachable");
-        }),
+        },
+      },
       "unreachable",
     ],
     [
-      () =>
-        (gatewayClient.getService = async () => {
+      {
+        getService: async () => {
           throw new DependencyUnavailableError("OpenShell GetService failed with gRPC status 14.");
-        }),
+        },
+      },
       "unavailable",
     ],
-  ] as const) {
-    const restore = {
-      serviceWebSocketHandshake: gatewayClient.serviceWebSocketHandshake,
-      serviceCodexReadinessStatus: gatewayClient.serviceCodexReadinessStatus,
-      getServiceDocument: gatewayClient.getServiceDocument,
-      getService: gatewayClient.getService,
-    };
-    fail();
-    for (const target of [statusContext, nativeContext]) {
-      await assert.rejects(driver.harnessStatus(target), (error) => {
-        assert.ok(error instanceof TransientDependencyError, String(error));
-        assert.equal(error.dependency, "sandbox_gateway");
-        assert.equal(error.reason, reason);
-        assert.equal(error.code, "SANDBOX_GATEWAY_UNAVAILABLE");
-        assert.ok(error.cause instanceof DependencyUnavailableError);
-        return true;
-      });
+  ] satisfies [Partial<GatewayReads>, TransientDependencyError["reason"]][]) {
+    Object.assign(gatewayClient, overrides);
+    try {
+      for (const target of [statusContext, nativeContext]) {
+        await assert.rejects(driver.harnessStatus(target), (error) => {
+          assert.ok(error instanceof TransientDependencyError, String(error));
+          assert.equal(error.dependency, "sandbox_gateway");
+          assert.equal(error.reason, reason);
+          assert.equal(error.code, "SANDBOX_GATEWAY_UNAVAILABLE");
+          assert.ok(error.cause instanceof DependencyUnavailableError);
+          return true;
+        });
+      }
+    } finally {
+      Object.assign(gatewayClient, reads);
     }
-    Object.assign(gatewayClient, restore);
   }
   const transient = new TransientDependencyError("sandbox_admission", "unavailable", "limit");
   const refused = new Error("OpenShell GetService refused: PERMISSION_DENIED");
   for (const thrown of [transient, refused]) {
-    const getService = gatewayClient.getService;
     gatewayClient.getService = async () => {
       throw thrown;
     };
     await assert.rejects(driver.harnessStatus(statusContext), (error) => error === thrown);
-    gatewayClient.getService = getService;
+    gatewayClient.getService = reads.getService;
   }
   assert.deepEqual(await driver.harnessStatus(statusContext), {
     state: "failed",
@@ -272,9 +287,7 @@ export async function verifySandboxDriverHarnessObservation({
 
   // Even an already-cancelled lookup must not initialize a cold gRPC client.
   const cold = new GrpcOpenShellGatewayClient({ endpoint: "http://127.0.0.1:1" });
-  Object.assign(cold, {
-    createClient: async () => assert.fail("cancelled status initialized the client"),
-  });
+  cold["createClient"] = async () => assert.fail("cancelled status initialized the client");
   const cancelled = new Error("cancel Harness observation");
   await assert.rejects(
     openShellDriver(cold).harnessStatus({
@@ -335,7 +348,7 @@ export async function verifySandboxDriverHarnessObservation({
         (error) => error === reason,
       );
       await entered.promise;
-      const beforeAbort: string[][] = [...observed];
+      const beforeAbort: GatewayReadCall[] = [...observed];
       caller.abort(reason);
       release.resolve();
       await rejected;

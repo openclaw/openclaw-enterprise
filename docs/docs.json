@@ -130,6 +130,14 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/interrupted-turns",
+                    "label": "Interrupted turns"
+                  },
+                  {
+                    "page": "reference/agents/planned-replacement",
+                    "label": "Planned replacement"
+                  },
+                  {
                     "page": "reference/agents/gateway-managed-mode",
                     "label": "Gateway managed mode"
                   },
@@ -197,6 +205,8 @@
                     "page": "reference/console/create-and-deploy",
                     "label": "Create and Deploy in the Console"
                   },
+                  { "page": "guides/agent-http-chat", "label": "HTTP Chat" },
+                  { "page": "reference/agent-http-chat", "label": "HTTP Chat Contract" },
                   {
                     "page": "reference/agent-native-admin",
                     "label": "Native Admin UI"
@@ -973,6 +983,7 @@
               }
             ],
             "hidden": [
+              "testing/agent-http-chat",
               "testing/postgresql",
               "testing/docker",
               "testing/ssh",
@@ -988,6 +999,7 @@
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
+              "testing/static-egress-upgrade",
               "testing/protected-repository-custody"
             ]
           },
@@ -1288,6 +1300,7 @@
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
+              "flows/agent-http-chat",
               "flows/kubernetes-existing-namespace-placement",
               "flows/production-tui",
               "flows/production-tui/native-client",

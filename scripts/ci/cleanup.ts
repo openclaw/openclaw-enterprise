@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { removeImageFileContainer } from "../lib/image-file.mjs";
+import { removeImageFileContainer, type ImageFileContainerReceipt } from "../lib/image-file.ts";
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.ts";
-import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
+import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.ts";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
 import { constants, type Dirent } from "node:fs";
@@ -10,6 +10,7 @@ import {
   access,
   chmod,
   lstat,
+  open,
   readFile,
   readdir,
   rename,
@@ -20,7 +21,7 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.mjs";
+import { quoteIdentifier, runPostgresAdmin } from "./postgres-admin.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -32,6 +33,8 @@ type K3dCleanupIdentity = {
   volumes: { name: string; createdAt: string }[];
 };
 type CleanupAuthority = {
+  expectedCleanupOwner?: string;
+  expectedCleanupLane?: string;
   expectedStateSha256?: string;
   k3dIdentity?: K3dCleanupIdentity;
 };
@@ -74,7 +77,7 @@ function errorMessage(error: unknown): unknown {
   return isRecord(error) ? error.message : undefined;
 }
 
-function isSupervisorResult(value: unknown): value is SupervisorResult {
+export function isSupervisorResult(value: unknown): value is SupervisorResult {
   return (
     isRecord(value) &&
     (value.code === null || typeof value.code === "number") &&
@@ -145,7 +148,7 @@ function execFile(
     // The supervisor remains the group leader until command and pipes settle.
     // It also owns termination when this caller exits without running JS hooks.
     const child = processGroup
-      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+      ? fork(new URL("./cleanup-command.ts", import.meta.url), [], {
           ...spawnOptions,
           detached: true,
           execArgv: [],
@@ -299,8 +302,23 @@ function assertCleanupState(state: unknown): asserts state is CleanupState {
   }
 }
 
-async function readState(path: string, expectedHash?: string): Promise<CleanupState> {
-  const bytes = await readFile(path);
+async function readState(
+  path: string,
+  expectedHash?: string,
+  regularFile = false,
+): Promise<CleanupState> {
+  let bytes: Buffer;
+  if (regularFile) {
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      assert.ok((await file.stat()).isFile(), "Child cleanup requires a regular journal");
+      bytes = await file.readFile();
+    } finally {
+      await file.close();
+    }
+  } else {
+    bytes = await readFile(path);
+  }
   if (expectedHash !== undefined) {
     assert.match(expectedHash, /^[a-f0-9]{64}$/);
     assert.equal(
@@ -401,13 +419,6 @@ function composeArgs(resource: CleanupResource, state: CleanupState, ...args: st
     throw new Error("Refusing to clean developer PostgreSQL port 55432.");
   }
   return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
-}
-
-function quoteIdentifier(value: string) {
-  if (!/^[a-z0-9_]+$/.test(value)) {
-    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
-  }
-  return `"${value.replaceAll('"', '""')}"`;
 }
 
 async function cleanupComposePostgres(
@@ -853,6 +864,19 @@ async function cleanupFirstAgentImages(resource: CleanupResource, state: Cleanup
   }
 }
 
+function assertImageFileName(
+  resource: CleanupResource,
+  prefix: string,
+): asserts resource is CleanupResource & ImageFileContainerReceipt {
+  if (
+    typeof resource.name !== "string" ||
+    !resource.name.startsWith(`${prefix}-provenance-`) ||
+    !/^openclaw-ci-[a-z0-9-]+-provenance-[a-f0-9]{12}$/.test(resource.name)
+  ) {
+    throw new Error("Refusing to remove an unowned image extraction container.");
+  }
+}
+
 async function cleanupResource(
   resource: CleanupResource,
   state: CleanupState,
@@ -860,21 +884,15 @@ async function cleanupResource(
   identity?: K3dCleanupIdentity,
 ) {
   switch (resource.kind) {
-    case "image-file":
+    case "image-file": {
       if (resource.owner !== state.prefix) {
         throw new Error("Refusing to clean an image extraction container owned by another prefix.");
       }
-      if (
-        typeof resource.name !== "string" ||
-        !resource.name.startsWith(`${state.prefix}-provenance-`) ||
-        !/^openclaw-ci-[a-z0-9-]+-provenance-[a-f0-9]{12}$/.test(resource.name)
-      ) {
-        throw new Error("Refusing to remove an unowned image extraction container.");
-      }
+      assertImageFileName(resource, state.prefix);
       await removeImageFileContainer({
         resource,
         persist: () => writeState(statePath, state),
-        command: async (_docker: string, args: string[], options: { timeout?: number } = {}) => {
+        command: async (_docker, args, options = {}) => {
           try {
             return (
               await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
@@ -887,6 +905,7 @@ async function cleanupResource(
         },
       });
       break;
+    }
     case "first-agent-image-registry":
       await cleanupFirstAgentImages(resource, state);
       break;
@@ -894,6 +913,24 @@ async function cleanupResource(
       assertResourceOwner(resource, state);
       const loggingOptions = { env: process.env, execFile };
       await cleanupLogging(resource, loggingOptions);
+      break;
+    }
+    case "child-state": {
+      assertResourceOwner(resource, state);
+      assert.match(state.prefix, /^openclaw-ci-[a-z0-9-]+$/);
+      assertString(resource.name, "child state name");
+      const suffix = resource.name.slice(`${state.prefix}-child-`.length);
+      if (!resource.name.startsWith(`${state.prefix}-child-`) || !/^[a-f0-9]{12}$/.test(suffix)) {
+        throw new Error("Refusing an unowned child state path.");
+      }
+      const childPath = join(dirname(statePath), `${resource.name}.json`);
+      assert.notEqual(childPath, statePath, "A child state cannot own its parent.");
+      assertString(resource.id, "child state identity");
+      assert.match(resource.id, /^child-state-[a-f0-9]{12}$/);
+      await cleanupState(childPath, {
+        expectedCleanupOwner: resource.id,
+        expectedCleanupLane: "postgres-auth",
+      });
       break;
     }
     case "postgres-database":
@@ -943,14 +980,19 @@ async function cleanupResourceIds(
     authority.k3dIdentity !== undefined,
     "bound cleanup requires both state digest and resource custody",
   );
-  if (authority.k3dIdentity) {
+  assert.equal(
+    authority.expectedCleanupOwner !== undefined,
+    authority.expectedCleanupLane !== undefined,
+    "bound cleanup requires both owner and lane",
+  );
+  if (authority.k3dIdentity || authority.expectedCleanupOwner !== undefined) {
     assert.equal(resourceIds, undefined, "bound cleanup requires the complete prepared state");
   }
   const path = resolve(statePath);
   if (!isAbsolute(path)) {
     throw new Error("Cleanup state path must resolve to an absolute path.");
   }
-  if (!(await stateExists(path))) {
+  if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
     assert.equal(authority.expectedStateSha256, undefined, "bound cleanup state is missing");
     return false;
   }
@@ -1004,9 +1046,13 @@ async function dropDatabases(path: string, resourceIds: readonly unknown[]) {
   return results;
 }
 
-async function stateExists(path: string) {
+async function stateExists(path: string, regularFile = false) {
   try {
-    await access(path, constants.F_OK);
+    if (regularFile) {
+      await lstat(path);
+    } else {
+      await access(path, constants.F_OK);
+    }
     return true;
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
@@ -1023,11 +1069,20 @@ async function cleanupLockedResourceIds(
   dropped: Map<unknown, DropResult> = new Map(),
   authority: CleanupAuthority = {},
 ) {
-  if (!(await stateExists(path))) {
+  if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
     assert.equal(authority.expectedStateSha256, undefined, "bound cleanup state is missing");
     return false;
   }
-  const state = await readState(path, authority.expectedStateSha256);
+  const state = await readState(
+    path,
+    authority.expectedStateSha256,
+    authority.expectedCleanupOwner !== undefined,
+  );
+  if (authority.expectedCleanupOwner !== undefined) {
+    assert.equal(state.cleanupOwner, authority.expectedCleanupOwner, "CI cleanup owner mismatch");
+    assert.equal(state.statePath, path, "CI cleanup state path mismatch");
+    assert.equal(state.lane, authority.expectedCleanupLane, "CI cleanup lane mismatch");
+  }
   if (authority.k3dIdentity) {
     assert.equal(state.resources.length, 1, "bound cleanup requires exactly one cluster resource");
     const resource = resourceFields(state.resources[0]);
@@ -1108,14 +1163,26 @@ async function recordLaneCleanup(
   await rename(temporary, path);
 }
 
-export async function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.state) {
     throw new Error("--state is required.");
   }
   let processedState: boolean;
   try {
-    processedState = await cleanupState(args.state);
+    const owner = args["cleanup-owner"];
+    const lane = args.lane;
+    assert.equal(
+      owner !== undefined,
+      lane !== undefined,
+      "bound cleanup requires both owner and lane",
+    );
+    processedState = await cleanupState(
+      args.state,
+      owner !== undefined && lane !== undefined
+        ? { expectedCleanupOwner: owner, expectedCleanupLane: lane }
+        : {},
+    );
   } catch (error) {
     if (args.results) {
       await recordLaneCleanup(args.results, "failed");
@@ -1128,3 +1195,10 @@ export async function main() {
 }
 
 export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster, stopCleanupCommands };
+
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error: unknown) => {
+    console.error(errorMessage(error));
+    process.exitCode = 1;
+  });
+}

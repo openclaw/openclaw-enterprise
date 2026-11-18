@@ -103,7 +103,8 @@ the new schema. A match cannot establish backup completeness or provenance.
 
 Confirm target and authorization before running `pnpm db:migrate` or
 `pnpm db:migrate:production`. Under one advisory lock, both verify source,
-roles, receipts, definitions and grants. Drizzle applies SQL and receipts transactionally.
+roles, receipts, definitions and grants. Drizzle applies pending SQL and receipts
+transactionally.
 
 Production `--check` inspects recognized history. [Separate service deployment](../../guides/deploy/separate-database-upgrade.md)
 uses `--require-current`: pending history returns `MIGRATION_HISTORY_PENDING`,

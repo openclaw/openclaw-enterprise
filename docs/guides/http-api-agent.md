@@ -4,6 +4,8 @@ Create an Agent with a dedicated Codex Harness, give its ServicePrincipal access
 to a model Secret, and request deployment. Use the [API explorer](../reference/api-explorer.md)
 to inspect complete request and response examples for each operation.
 
+After deployment, [submit work over HTTP](agent-http-chat.md).
+
 ## Before you start
 
 Use an existing Installation with Kubernetes Compute and the dedicated Codex

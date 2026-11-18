@@ -9,6 +9,9 @@ reports whether cleanup completed.
 This command applies only to runs with a versioned `preflight-journal.json`. For
 older or uncertain evidence, follow [manual reconciliation](#reconcile-unsupported-or-uncertain-evidence).
 Never create a journal or fill missing receipts from current resource names.
+The journal is bound to hashes of the original helper files. A newer checkout
+cannot clean up older evidence merely because it recognizes that journal shape.
+Retain the original checkout; do not update recorded hashes to bypass this check.
 
 ## Prepare the cleanup
 
@@ -25,7 +28,8 @@ private evidence directory and `.upgrade-lock`. Before proceeding:
    kubeconfig path and contents, context, namespace and release from
    `parameters.json`. Current credentials must still authorize the cleanup.
 
-The command requires Python 3, Node.js, `jq`, `kubectl` and `mktemp`. Kubernetes
+The command requires Python 3, Node.js matching the release checkout's
+`package.json` engine range, `jq`, `kubectl` and `mktemp`. Kubernetes
 access must permit reading and deleting the recorded Jobs, Secrets and
 NetworkPolicies, plus listing Pods and reading any recorded child Pod. No OCC
 service key or candidate image is required. Cleanup does not run Helm, migrate

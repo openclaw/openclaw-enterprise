@@ -6,17 +6,17 @@ last_verified: "2026-11-04"
 
 # What the OpenShell Sandbox suite proves
 
-These checks share [OpenShell workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs)
-and run through the separate files listed in [advisory coverage](ci/qa-advisory.md#openshell-file-coverage).
-Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
-Unless a section says otherwise, the checks run in the default Codex scenario.
+Use [OpenShell tests](openshell.md#openshell-sandbox) to run the files in
+[advisory coverage](ci/qa-advisory.md#openshell-file-coverage). They share
+[workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs).
+Unless stated otherwise, checks use the default Codex scenario.
 
 ## Gateway tool policy
 
 The dedicated Agent policy scenario uses the existing production deployment owner
-for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. With an explicit
-`OCC_TEST_OPENSHELL_MODEL_BASE_URL`, both use `OPENAI_API_KEY`; the full lane still
-requires `CODEX_ACCESS_TOKEN` for its other owners.
+for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. Both use
+`OPENAI_API_KEY`; the full lane still requires `CODEX_ACCESS_TOKEN` for its
+PAT-specific owners.
 
 The scenario deploys the first revision with Gateway managed mode off so a human
 administrator can run the command-job control. The dedicated model tool policy
@@ -49,26 +49,43 @@ that excluded declarations are omitted, not that an old callback was retained an
 denied. The retained/fallback callback paths also have focused OpenClaw owner tests.
 Harness-local configuration, credentials and process protection remain separate work.
 
+The tool-policy proof reports structured worker failures while it runs. If an
+initial or replacement revision fails to activate, it also reports persisted
+work state and a bounded summary of recent worker events before cleanup. Compute
+preparation summaries retain the step, error class, status, and cleanup cause;
+they exclude provider responses and chat text. Its bounded teardown attempts every
+registered cleanup and emits an `openshell-fixture-teardown` outcome, so a failed
+deployment and an incomplete cleanup remain distinguishable.
+Cached provisioning failures print before diagnostic reads; a fixed notice reports budget expiry.
+Both failure paths use one 60-second diagnostic budget and preserve the original
+error if evidence collection fails. Printed `ACCESS_DENIED` means the worker's
+fixed `AUTHORIZATION_DENIED` code; this spelling survives the log exporter's
+credential redaction. Queue rows print separately to avoid line clipping.
+
 ## Credential source and Harness
 
-Both modes compose the `openshell` Backend with the Sandbox and Credential
-Gateway Drivers. Through the production API they register a `codex-pat` source
-from `CODEX_ACCESS_TOKEN` for Codex, or an `openai` source from `OPENAI_API_KEY`
-for native OpenClaw and custom model endpoints. They check its live
-`ready` status, and bind the Agent with `credential_source`. The Agent service
-principal receives `operate` on the source only, not on the Secret.
+Both modes compose the `openshell` Backend, Sandbox and Credential Gateway
+Drivers. The production API registers a `codex-pat` source from
+`CODEX_ACCESS_TOKEN`, or an `openai` source from `OPENAI_API_KEY`. Once `ready`,
+the tests bind the Agent with `credential_source` and grant it `operate` on the
+source, not the Secret.
 
-The default Codex scenario uses the production Driver path. Compute sends only
-`APP_TOKEN_SHA`; OpenShell supplies `runtime.json`, `config.toml`, and the
-one-shot node setup credential through a provider for that Agent revision. The test
-checks that the raw app-server token and model key are absent from Pod specs and
-nonsecret provider data. It then verifies missing, incorrect, and correct bearer
-requests through the exposed route. Two HTTP chat turns through the Agent Gateway
-exercise the OpenClaw bridge, with successful shell commands verified from the
-native Codex session records. Direct app-server probes then check filesystem,
-network, and credential enforcement. Exact workload identity, approved mounts
-and privileges, source withdrawal, replacement, and cleanup remain required.
-Missing prerequisites fail rather than skip.
+After tenant readiness, both modes require restricted Pod Security Admission to
+reject server-side dry runs of privileged and `NET_ADMIN` Pods without relabeling
+the tenant. Admitted OpenShell workloads and model turns supply positive evidence
+in the same journey.
+
+The refresh, withdrawal, and Gateway tool-policy files select the API-key endpoint before loading their shared workflow. They retain the native Codex Harness and their lifecycle and policy checks. Credential-route, Sandbox-policy, and curated-plugin files retain PAT coverage.
+
+Compute sends only `APP_TOKEN_SHA`; OpenShell supplies `runtime.json`,
+`config.toml`, and the one-shot node setup credential for that Agent revision.
+The Codex scenario checks that Pod specs and nonsecret provider data contain no
+raw app-server token or model key. It verifies missing, incorrect, and correct
+bearer requests. Two HTTP chat turns through the Agent Gateway exercise the
+OpenClaw bridge; native Codex session records verify shell commands. Direct
+app-server probes check filesystem, network, and credential enforcement.
+Workload identity, approved mounts and privileges, withdrawal, replacement, and
+cleanup remain required. Missing prerequisites fail rather than skip.
 
 The refresh case's initial Codex turns also emit `openshell-initial-turnover` measurements.
 The fixture enables structured supervisor logs and waits for the configuration to be
@@ -259,7 +276,7 @@ PostgreSQL and the queued worker. It renders gateway configuration without
 installing gateway workloads. Selected Drivers create the gateway, signing key,
 and Workspace. The test checks zero persisted Agents, actual Pod readiness,
 gateway health, Workspace ownership, and distinct resources for a later Namespace.
-Operator-installed CRDs, RuntimeClass, RBAC and Envoy Agent routing are prerequisites.
+Prerequisites: operator-installed CRDs, RBAC and Envoy Agent routing. Retain restricted tenant PSA; OCE configures no RuntimeClass or exemption.
 They do not create the namespace-owned OpenShell gateway or Workspace.
 
 Select `OCC_TEST_NAMESPACE_OPENSHELL_REAL=1` with the prepared `openshell` lane

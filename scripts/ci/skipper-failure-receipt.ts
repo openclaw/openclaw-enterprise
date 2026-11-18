@@ -1,3 +1,4 @@
+import { constants } from "node:os";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 
 import {
@@ -20,11 +21,34 @@ const stages = [
 ] as const;
 const cleanups = ["passed", "failed", "unknown"] as const;
 
+const installerPrefix = "install/occ-dev-up/";
+
+function installerExit(status: string) {
+  const code = Number(status);
+  if (Number.isInteger(code) && code > 0 && code <= 255 && String(code) === status) {
+    return { component: "occ-dev-up", exitCode: code };
+  }
+  if (Object.hasOwn(constants.signals, status)) {
+    return { component: "occ-dev-up", signal: status };
+  }
+}
+
 type Checkpoint =
   | ["skipper_test_operation", (typeof skipperOperations)[number] | "unknown"]
   | ["skipper_last_test_checkpoint", string]
   | ["skipper_gateway_chat_phase", (typeof skipperGatewayChatPhases)[number]]
-  | ["skipper_stage", (typeof stages)[number]]
+  | ["skipper_gateway_exec_exit_code", number]
+  | ["skipper_gateway_exec_signal", string]
+  | ["skipper_gateway_exec_code", string]
+  | ["skipper_gateway_exec_helper_entered", true]
+  | ["skipper_http_status", number]
+  | ["skipper_gateway_category", string]
+  | ["skipper_gateway_transport_cause", string]
+  | ["skipper_gateway_fetch_elapsed_ms", number]
+  | ["skipper_runtime_signal", string]
+  | ["skipper_model_request_observation", string]
+  | ["skipper_model_fixture_selected_terminal_success", true]
+  | ["skipper_stage", (typeof stages)[number] | `${typeof installerPrefix}${string}`]
   | ["skipper_installed_cleanup", (typeof cleanups)[number]];
 
 export async function recordSkipperCheckpoint(...[key, value]: Checkpoint): Promise<void> {
@@ -32,6 +56,24 @@ export async function recordSkipperCheckpoint(...[key, value]: Checkpoint): Prom
   if (process.env.GITHUB_ACTIONS === "true" && output) {
     // A failure to record evidence must leave the original proof and cleanup in charge.
     await appendFile(output, key + "=" + value + "\n").catch(() => {});
+  }
+}
+
+/** Append the observed process termination before cleanup can fail or the owner exits. */
+export async function recordSkipperInstallerExit(result?: {
+  code: number | null;
+  signal: string | null;
+}) {
+  if (!result) {
+    return;
+  }
+  const status = String(result.code ?? result.signal);
+  const exit = installerExit(status);
+  if (exit) {
+    await recordSkipperCheckpoint("skipper_stage", `${installerPrefix}${status}`);
+    return exit.exitCode === undefined
+      ? `occ dev up terminated by ${exit.signal}`
+      : `occ dev up exited ${exit.exitCode}`;
   }
 }
 
@@ -65,20 +107,64 @@ export async function recordSkipperTestFailure(
   ledgerPath: string,
   teamReview: boolean,
 ) {
-  let operation: (typeof skipperOperations)[number] | "unknown" = "unknown";
-  let gatewayChatPhase: (typeof skipperGatewayChatPhases)[number] | undefined;
+  let diagnostic: ReturnType<typeof skipperOperationDiagnostic>;
   try {
-    const diagnostic = skipperOperationDiagnostic(
-      skipperSelectedFailure(resultText).error.diagnostic,
-    );
-    operation = diagnostic?.operation ?? "unknown";
-    gatewayChatPhase = diagnostic?.gatewayChatPhase;
+    diagnostic = skipperOperationDiagnostic(skipperSelectedFailure(resultText).error.diagnostic);
   } catch {
     // Missing or malformed runner evidence does not establish an operation.
   }
-  await recordSkipperCheckpoint("skipper_test_operation", operation);
-  if (gatewayChatPhase) {
-    await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
+  await recordSkipperCheckpoint("skipper_test_operation", diagnostic?.operation ?? "unknown");
+  if (diagnostic?.modelRequestObservation !== undefined) {
+    await recordSkipperCheckpoint(
+      "skipper_model_request_observation",
+      diagnostic.modelRequestObservation,
+    );
+  }
+  if (diagnostic?.operation === "gateway-exec") {
+    const { exitCode, signal, code, helperEntered } = diagnostic;
+    if (exitCode !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_exit_code", exitCode);
+    }
+    if (signal !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_signal", signal);
+    }
+    if (code !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_code", code);
+    }
+    if (helperEntered) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_helper_entered", helperEntered);
+    }
+  }
+  if (diagnostic?.operation === "gateway-chat") {
+    const {
+      gatewayChatPhase,
+      httpStatus,
+      gatewayCategory,
+      runtimeSignal,
+      gatewayTransportCause,
+      gatewayFetchElapsedMs,
+    } = diagnostic;
+    if (diagnostic.modelFixtureSelectedTerminalSuccess) {
+      await recordSkipperCheckpoint("skipper_model_fixture_selected_terminal_success", true);
+    }
+    if (gatewayChatPhase) {
+      await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
+    }
+    if (httpStatus !== undefined) {
+      await recordSkipperCheckpoint("skipper_http_status", httpStatus);
+    }
+    if (runtimeSignal !== undefined) {
+      await recordSkipperCheckpoint("skipper_runtime_signal", runtimeSignal);
+    }
+    if (gatewayTransportCause !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_transport_cause", gatewayTransportCause);
+    }
+    if (gatewayFetchElapsedMs !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_fetch_elapsed_ms", gatewayFetchElapsedMs);
+    }
+    if (gatewayCategory !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_category", gatewayCategory);
+    }
   }
   const entries = await readSkipperJourney(ledgerPath, true);
   const known = skipperTestCheckpoints(teamReview);
@@ -88,7 +174,11 @@ export async function recordSkipperTestFailure(
       .filter((phase): phase is string => typeof phase === "string" && known.includes(phase))
       .at(-1) ?? "unknown";
   await recordSkipperCheckpoint("skipper_last_test_checkpoint", last);
-  return { entries, last };
+  return {
+    entries,
+    last,
+    gatewayChat: diagnostic?.operation === "gateway-chat" ? diagnostic : undefined,
+  };
 }
 
 function selected<T extends string>(
@@ -113,11 +203,57 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
     console.error("Invalid installed Skipper failure receipt identity.");
     process.exitCode = 1;
   } else {
-    const lastStage = selected(stages, process.env.SKIPPER_STAGE);
+    const stage = process.env.SKIPPER_STAGE;
+    const installer = stage?.startsWith(installerPrefix)
+      ? installerExit(stage.slice(installerPrefix.length))
+      : undefined;
+    const lastStage = installer ? "install" : selected(stages, stage);
     const testOperation = selected(skipperOperations, process.env.SKIPPER_TEST_OPERATION);
-    const gatewayChatPhase = skipperGatewayChatPhases.find(
-      (phase) => phase === process.env.SKIPPER_GATEWAY_CHAT_PHASE,
-    );
+    const statusText = process.env.SKIPPER_HTTP_STATUS;
+    const status = Number(statusText);
+    const elapsedText = process.env.SKIPPER_GATEWAY_FETCH_ELAPSED_MS;
+    const elapsed = Number(elapsedText);
+    const gatewayChat =
+      lastStage === "selected-test" && testOperation === "gateway-chat"
+        ? skipperOperationDiagnostic({
+            kind: "skipper-operation",
+            operation: testOperation,
+            gatewayChatPhase: process.env.SKIPPER_GATEWAY_CHAT_PHASE,
+            // Accept only the canonical text emitted by the recorder.
+            httpStatus: String(status) === statusText ? status : undefined,
+            gatewayCategory: process.env.SKIPPER_GATEWAY_CATEGORY,
+            gatewayTransportCause: process.env.SKIPPER_GATEWAY_TRANSPORT_CAUSE,
+            gatewayFetchElapsedMs: String(elapsed) === elapsedText ? elapsed : undefined,
+            runtimeSignal: process.env.SKIPPER_RUNTIME_SIGNAL,
+            modelFixtureSelectedTerminalSuccess:
+              process.env.SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS === "true",
+            modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
+          })
+        : undefined;
+    const exitText = process.env.SKIPPER_GATEWAY_EXEC_EXIT_CODE;
+    const exitCode = Number(exitText);
+    const execDiagnostic =
+      lastStage === "selected-test" && testOperation === "gateway-exec"
+        ? skipperOperationDiagnostic({
+            kind: "skipper-operation",
+            operation: testOperation,
+            // Accept only the canonical text emitted by the recorder.
+            exitCode: String(exitCode) === exitText ? exitCode : undefined,
+            modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
+            signal: process.env.SKIPPER_GATEWAY_EXEC_SIGNAL,
+            code: process.env.SKIPPER_GATEWAY_EXEC_CODE,
+            helperEntered: process.env.SKIPPER_GATEWAY_EXEC_HELPER_ENTERED === "true",
+          })
+        : undefined;
+    const gatewayExec = {
+      ...(execDiagnostic?.modelRequestObservation
+        ? { modelRequestObservation: execDiagnostic.modelRequestObservation }
+        : {}),
+      ...(execDiagnostic?.exitCode !== undefined ? { exitCode: execDiagnostic.exitCode } : {}),
+      ...(execDiagnostic?.signal !== undefined ? { signal: execDiagnostic.signal } : {}),
+      ...(execDiagnostic?.code !== undefined ? { code: execDiagnostic.code } : {}),
+      ...(execDiagnostic?.helperEntered ? { helperEntered: execDiagnostic.helperEntered } : {}),
+    };
     const receipt = {
       version: 1,
       runId,
@@ -125,10 +261,33 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
       sourceSha,
       outcome: "failed",
       lastStage,
+      ...(installer ? { installer } : {}),
+      ...(Object.keys(gatewayExec).length > 0 ? { gatewayExec } : {}),
       ...(lastStage === "selected-test"
         ? {
             testOperation,
-            ...(testOperation === "gateway-chat" && gatewayChatPhase ? { gatewayChatPhase } : {}),
+            ...(gatewayChat?.gatewayChatPhase
+              ? { gatewayChatPhase: gatewayChat.gatewayChatPhase }
+              : {}),
+            ...(gatewayChat?.httpStatus !== undefined
+              ? { httpStatus: gatewayChat.httpStatus }
+              : {}),
+            ...(gatewayChat?.gatewayCategory !== undefined
+              ? { gatewayCategory: gatewayChat.gatewayCategory }
+              : {}),
+            ...(gatewayChat?.gatewayTransportCause
+              ? { gatewayTransportCause: gatewayChat.gatewayTransportCause }
+              : {}),
+            ...(gatewayChat?.gatewayFetchElapsedMs !== undefined
+              ? { gatewayFetchElapsedMs: gatewayChat.gatewayFetchElapsedMs }
+              : {}),
+            ...(gatewayChat?.runtimeSignal ? { runtimeSignal: gatewayChat.runtimeSignal } : {}),
+            ...(gatewayChat?.modelFixtureSelectedTerminalSuccess
+              ? { modelFixtureSelectedTerminalSuccess: true }
+              : {}),
+            ...(gatewayChat?.modelRequestObservation
+              ? { modelRequestObservation: gatewayChat.modelRequestObservation }
+              : {}),
             lastTestCheckpoint: selected(
               [...skipperTestCheckpoints(false), ...skipperTestCheckpoints(true)],
               process.env.SKIPPER_LAST_TEST_CHECKPOINT,
