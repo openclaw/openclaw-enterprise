@@ -6,7 +6,7 @@ import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/re
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
 import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
-import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
+import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.ts";
 import {
   startGitHubFixture,
   fixtureAppId,
@@ -21,10 +21,7 @@ import type {
   TokenMaterial,
   TokenFamily,
 } from "../../apps/controller/src/backends/token-service/custody.ts";
-import type {
-  GitHubPreparationAdmission,
-  GitHubPreparationStore,
-} from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
+import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
 import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/access/provider-diagnostics.ts";
 
 type FixtureOptions = GitHubFixtureOptions & {
@@ -38,41 +35,6 @@ function requireFirst<T>(values: readonly T[]): T {
   const value = values[0];
   assert.ok(value !== undefined, "fixture observation exists");
   return value;
-}
-
-// Check the JavaScript fixture's callback result only after its locked operation settles.
-function preparedConnection(
-  database: ReturnType<typeof createPreparedStore>,
-): GitHubPreparationStore {
-  const connection = database.connect();
-  return {
-    async readCurrent<T>(familyId: string, select: (row: Family | undefined) => T): Promise<T> {
-      let selected: { value: T } | undefined;
-      const result: unknown = await connection.readCurrent(familyId, (row: Family | undefined) => {
-        selected = { value: select(row) };
-        return selected.value;
-      });
-      assert.ok(selected, "fixture read selector ran");
-      assert.strictEqual(result, selected.value, "fixture returns the selected value");
-      return selected.value;
-    },
-    async transact<T>(
-      familyId: string,
-      update: (row: Family | undefined, allocateMaterialVersion: () => string) => T,
-    ): Promise<T> {
-      let updated: { value: T } | undefined;
-      const result: unknown = await connection.transact(
-        familyId,
-        (row: Family | undefined, allocateMaterialVersion: () => string) => {
-          updated = { value: update(row, allocateMaterialVersion) };
-          return updated.value;
-        },
-      );
-      assert.ok(updated, "fixture transaction callback ran");
-      assert.strictEqual(result, updated.value, "fixture returns the committed value");
-      return updated.value;
-    },
-  };
 }
 
 function withWriteProfile(admission: Admission): Admission {
@@ -127,14 +89,14 @@ async function setup(t: TestContext, options: FixtureOptions = {}) {
     },
   };
   const database = createPreparedStore(admission);
-  const store = preparedConnection(database);
+  const store = database.connect();
   const key = createGitHubKeyOwner({ privateKey: github.privateKey, appId: fixtureAppId, clock });
   t.after(() => key.close());
   let keyReads = 0;
   const owner = (target: Admission = admission, duringKeyLookup?: () => void | Promise<void>) =>
     createGitHubPreparationOwner({
       admission: target,
-      store: preparedConnection(database),
+      store: database.connect(),
       clock,
       apiOrigin: github.origin,
       ca: github.tls.ca,
@@ -406,9 +368,6 @@ test("warm return waits for commit and rejects withdrawal of already committed m
   const producing = f.run("commit-gated");
   await paused.promise;
   assert.ok(gate);
-  assert.ok(gate.entered instanceof Promise, "fixture commit gate has an entered promise");
-  const release: unknown = gate.release;
-  assert.ok(typeof release === "function", "fixture commit gate can be released");
   await gate.entered;
   let returned = false;
   const reading = f.warm().then((result) => {
@@ -418,7 +377,7 @@ test("warm return waits for commit and rejects withdrawal of already committed m
   // A reader cannot observe a transaction draft, even when the token exists upstream.
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(returned, false);
-  release();
+  gate.release();
   assert.equal(await producing, "committed");
   const result = await reading;
   assert.equal(result.kind, "warm");
@@ -433,7 +392,7 @@ test("warm return waits for commit and rejects withdrawal of already committed m
 
 test("quarantining this attempt during key lookup prevents any GitHub issuance", async (t) => {
   const { admission, database, owner, github, bounds } = await setup(t);
-  const store = preparedConnection(database);
+  const store = database.connect();
   const superseded = owner(admission, async () => {
     await store.transact(admission.familyId, (row) => {
       const attempt = family(row).attempts.find((entry) => entry.id === "withdraw-during-key");
