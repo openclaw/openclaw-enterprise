@@ -504,6 +504,34 @@ export async function requestCredentialFixture(
     grant,
     restartController,
     principalId,
+    pauseNativeAuthorization(skip = 0) {
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const policyState = state;
+      assert.ok(policyState instanceof PostgresPlatformState);
+      const original = policyState.loadNativeIAMState.bind(policyState);
+      let remaining = skip;
+      let released = false;
+      policyState.loadNativeIAMState = async (...args) => {
+        const policy = await original(...args);
+        if (remaining-- === 0) {
+          reached.resolve();
+          await release.promise;
+        }
+        return policy;
+      };
+      return {
+        reached: reached.promise,
+        release() {
+          if (released) {
+            return;
+          }
+          released = true;
+          policyState.loadNativeIAMState = original;
+          release.resolve();
+        },
+      };
+    },
     pauseCandidateWorkRetry() {
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
@@ -705,7 +733,9 @@ export async function requestCredentialFixture(
       return {
         reached: reached.promise,
         release() {
-          if (released) return;
+          if (released) {
+            return;
+          }
           released = true;
           policyState.transact = original;
           release.resolve();

@@ -363,6 +363,105 @@ test(
     assert.equal((await redeem(input)).status, 403, "an approval is single use");
     assert.equal((await evaluate(input)).decision, 2, "a consumed ID cannot be approved again");
 
+    const controller: OpenClawController = f.controller;
+    const { selected: credentialGateway, alternate } = registerAlternateGateway(controller);
+    const control = fixture.owner.require("credential_proxy").sourceControl;
+    const backend = control.backend;
+    const duringAuthorization = fixture.request();
+    const authorization = fixture.pauseNativeAuthorization(1);
+    t.after(authorization.release);
+    const beforeAuthorizationReads = f.secretReads;
+    const pendingAuthorization = evaluate(duringAuthorization);
+    await Promise.race([
+      authorization.reached,
+      pendingAuthorization.then(() => {
+        throw new Error("authorization completed before the IAM barrier");
+      }),
+      delay(5_000, undefined, { ref: false }).then(() => {
+        throw new Error("IAM barrier timed out");
+      }),
+    ]);
+    controller.selectDriver("credential_gateway", alternate.id);
+    authorization.release();
+    let denied;
+    try {
+      denied = await pendingAuthorization;
+    } finally {
+      controller.selectDriver("credential_gateway", credentialGateway.id);
+    }
+    const authorizationReads = f.secretReads - beforeAuthorizationReads;
+    const reserved = await f.pool.query(
+      "SELECT approved,consumed FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
+      [duringAuthorization.recipient.id, duringAuthorization.requestId],
+    );
+    const restoredAuthorization = await redeem(duringAuthorization);
+    const observations = {
+      authorization: {
+        decision: denied.decision,
+        reads: authorizationReads,
+        approval: reserved.rows,
+        redemptionStatus: restoredAuthorization.status,
+        tokenReturned: typeof restoredAuthorization.body.access_token === "string",
+      },
+      release: [] as { status: number; tokenReturned: boolean; replayStatus: number }[],
+    };
+
+    for (const change of [
+      {
+        apply: () => controller.selectDriver("credential_gateway", alternate.id),
+        restore: () => controller.selectDriver("credential_gateway", credentialGateway.id),
+      },
+      {
+        apply: () =>
+          Reflect.set(control, "backend", { ...backend, generation: backend.generation + 1 }),
+        restore: () => Reflect.set(control, "backend", backend),
+      },
+    ]) {
+      const request = fixture.request();
+      assert.equal((await evaluate(request)).decision, 1);
+      const read = fixture.pauseFinalMaterialRead();
+      t.after(() => read.release());
+      const pending = redeem(request);
+      await Promise.race([
+        read.reached,
+        pending.then(() => {
+          throw new Error("redemption completed before the final read");
+        }),
+        delay(5_000, undefined, { ref: false }).then(() => {
+          throw new Error("final read timed out");
+        }),
+      ]);
+      change.apply();
+      read.release();
+      let refused;
+      try {
+        refused = await pending;
+      } finally {
+        change.restore();
+      }
+      observations.release.push({
+        status: refused.status,
+        tokenReturned: typeof refused.body.access_token === "string",
+        replayStatus: (await redeem(request)).status,
+      });
+    }
+    const afterRestore = fixture.request();
+    assert.equal((await evaluate(afterRestore)).decision, 1);
+    assert.equal((await redeem(afterRestore)).status, 200);
+    assert.deepEqual(observations, {
+      authorization: {
+        decision: 2,
+        reads: 0,
+        approval: [{ approved: false, consumed: false }],
+        redemptionStatus: 403,
+        tokenReturned: false,
+      },
+      release: [
+        { status: 403, tokenReturned: false, replayStatus: 403 },
+        { status: 403, tokenReturned: false, replayStatus: 403 },
+      ],
+    });
+
     const late = fixture.request();
     const committed = fixture.pauseNextApprovalCommit("after");
     const cancel = new AbortController();

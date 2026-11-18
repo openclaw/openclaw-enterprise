@@ -75,6 +75,10 @@ before that release decision rejects old material. Direct external Secret writes
 do not share this lock; they are observed only at the final read. The approved request ID and binding are correlated with the SVID's
 Sandbox identity; they are not themselves SVID claims.
 
+The source Gateway, paired Proxy owner, provider registration and admitted transport
+references must remain current through authorization and the final material read.
+Changed dependencies cannot produce an approval or return credential material.
+
 The Workload API socket and registration must belong only to the trusted
 supervisor. Verify that the guest cannot access them or obtain the same identity.
 The request middleware uses the existing Gateway-signed extension identity;

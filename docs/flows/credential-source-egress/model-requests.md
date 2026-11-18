@@ -193,6 +193,11 @@ An OCC rotation committed before that decision therefore rejects the old
 selection. Direct external Secret writes share no OCC lock: they are observed
 only through the final read, not serialized with release.
 
+OCC also checks the source's selected Gateway, paired Sandbox and Proxy, provider,
+and admitted backend, sender and resolver before and after material reads. A change
+during authorization or the final observation refuses approval or release; the
+consumed request ID remains spent.
+
 Expiry, withdrawal, cancellation, stale installation and ambiguous outcomes
 fail closed; a consumed approval is not retried. If the final read ignores
 cancellation, abort releases policy locks while its operation slot remains
