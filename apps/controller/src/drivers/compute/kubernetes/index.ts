@@ -1377,6 +1377,8 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   // Session records retain linked worktree paths and their shared Git metadata.
   ["worktrees", "/home/node/.openclaw/worktrees"],
   ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
+  // The library database lives in state/openclaw.sqlite; keep its immutable bundle trees with it.
+  ["skill-library", "/home/node/.openclaw/skill-library"],
 ] as const);
 const HARNESS_WORKSPACE_VOLUME = "openclaw-workspace";
 const HARNESS_WORKSPACE_SIZE = "40Gi";

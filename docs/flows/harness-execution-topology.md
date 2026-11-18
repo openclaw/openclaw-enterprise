@@ -281,8 +281,10 @@ Gateway state survives replacements.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.gatewayPrivateStateClaim`
 uses `runtime.gatewayStorageSizeGiB`, default 10. `verifyPersistentVolumeClaim`
 compares storage quantities exactly, accepting equivalent units while rejecting
-different capacities during reuse and deletion without resizing. Claims
-precede Pods for `WaitForFirstConsumer`; the
+different capacities during reuse and deletion without resizing. Each start,
+`privateStateInitContainer` creates every `GATEWAY_PRIVATE_STATE_CATEGORIES`
+directory, existing claims included; `gatewayPrivateStateVolumeMounts` mounts
+them. Claims precede Pods for `WaitForFirstConsumer`; the
 [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 owns sizing, recovery and mounts.
 
