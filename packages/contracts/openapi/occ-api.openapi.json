@@ -22493,7 +22493,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
       "get": {
-        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.",
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API, worker, and runtime audit metadata from the preceding 24 hours.",
         "operationId": "listAgentAuditEvents",
         "parameters": [
           {
@@ -22666,6 +22666,63 @@
                                   }
                                 },
                                 "required": ["id", "occurredAt", "outcome", "event"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "action": {
+                                    "enum": [
+                                      "openclaw.agents.create",
+                                      "openclaw.agents.update",
+                                      "openclaw.agents.stop",
+                                      "openclaw.agents.lifecycle.stop",
+                                      "openclaw.agents.provision.checkpoint",
+                                      "openclaw.agents.deploy",
+                                      "openclaw.agents.lifecycle.activate",
+                                      "openclaw.agents.lifecycle.supersede",
+                                      "openclaw.agents.provision.failure"
+                                    ]
+                                  },
+                                  "actorId": {
+                                    "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                    "type": "string"
+                                  },
+                                  "agentRevisionId": {
+                                    "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "event": { "const": "agent_lifecycle", "type": "string" },
+                                  "id": {
+                                    "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "occurredAt": {
+                                    "format": "date-time",
+                                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                    "type": "string"
+                                  },
+                                  "outcome": {
+                                    "anyOf": [
+                                      { "const": "success", "type": "string" },
+                                      { "const": "denied", "type": "string" },
+                                      { "const": "failure", "type": "string" }
+                                    ]
+                                  },
+                                  "provisioningPhase": {
+                                    "anyOf": [
+                                      { "const": "admitted", "type": "string" },
+                                      { "const": "configuration", "type": "string" },
+                                      { "const": "transport", "type": "string" },
+                                      { "const": "handoff", "type": "string" }
+                                    ]
+                                  },
+                                  "requestId": {
+                                    "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["id", "occurredAt", "outcome", "event", "action"],
                                 "type": "object"
                               },
                               {
@@ -23881,7 +23938,7 @@
                             { "type": "null" }
                           ]
                         },
-                        "projectionVersion": { "const": 2, "type": "number" },
+                        "projectionVersion": { "const": 3, "type": "number" },
                         "window": {
                           "additionalProperties": false,
                           "properties": {

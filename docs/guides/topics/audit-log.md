@@ -263,10 +263,18 @@ with the `read_audit` permission directly to your Principal and the Agent.
 OCC checks the grant each time you request a page.
 
 Send `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`.
-The response lists selected API reads, worker events, and runtime activity
-from the preceding 24 hours, newest first. A work ID connects events for the
-same job. A runtime record includes its action, revision, and the fields
-approved for that action.
+The response lists selected events from the preceding 24 hours, newest first.
+
+- `agent_lifecycle` shows success records for Agent creation, draft updates,
+  stop requests and completed stops, and revision deployment admission,
+  activation, and supersession. It also shows provisioning checkpoints and
+  failures linked to the Agent. OCC returns the saved `action`. A
+  provisioning record can include `provisioningPhase`. Records with a verified
+  revision include `agentRevisionId`.
+- API read and worker records show selected Control Plane activity. A work ID
+  connects records for the same job.
+- `runtime_activity` records include the action, revision, and fields for that
+  action.
 
 The default page contains up to 50 records. Set `limit` to a number from
 1 through 100 to change the size. If the response includes a `nextCursor`,
@@ -279,10 +287,10 @@ Give your platform operator the request ID if the error persists.
 
 ## Access and limitations
 
-For other audit events, use your organization's approved database access
-procedure. Give your platform operator the approximate time, Namespace,
-resource ID, and OCC request ID when available. Console browsing, automatic
-retention, and export are outside this workflow.
+For deleted Agents or events outside this view, use your organization's approved
+database access procedure. Give your platform operator the approximate time,
+Namespace, resource ID, and OCC request ID when available. Console browsing,
+automatic retention, and export are outside this workflow.
 
 For metrics and operational troubleshooting, see
 [Observability](../observability.md). For the platform’s audit and logging

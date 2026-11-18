@@ -20,6 +20,7 @@ import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs
 import { selfSigned } from "../helpers/certificates.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 
@@ -132,9 +133,10 @@ test(
         },
       });
     t.after(() => proxy.close());
-    const { agent, namespace, revision } = await deployAgent("Agent Audit Reader", {
-      dedicated: true,
-    });
+    const { agent, namespace, revision, secretRef, createRequestId } = await deployAgent(
+      "Agent Audit Reader",
+      { dedicated: true },
+    );
     const other = await deployAgent("Other Agent");
     const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const otherPath = `/namespaces/${other.namespace.id}/agents/${other.agent.id}`;
@@ -322,7 +324,7 @@ test(
       assert.equal(completed?.workState, "failed_permanent");
       assert.equal(completed?.outcome, "failure");
       assert.equal(completed?.attemptId, claimed?.attemptId);
-      assert.ok(!response.body.includes(deploymentId));
+      assert.ok(!JSON.stringify([queued, claimed, completed]).includes(deploymentId));
       assert.ok(!response.body.includes(workKey));
       assert.ok(!response.body.includes("SECRET_DRIVER_MISMATCH"));
       assert.ok(!response.body.includes(readOther.json().meta.requestId));
@@ -462,6 +464,7 @@ test(
     assert.equal(replacement.statusCode, 202, replacement.body);
     const replacementId = replacement.json().data.id as string;
     assert.notEqual(replacementId, revision.id);
+    assert.notEqual(replacementId, deploymentId);
     const replacementToken = randomBytes(32).toString("base64url");
     const replacementGrant = {
       ...harnessGrant,
@@ -665,11 +668,50 @@ test(
       assert.equal(admitted.rawPayload.length, 0);
     }
 
+    // A peer in the same Namespace has its own create and deployment evidence. The
+    // exact Agent audit grant must neither admit its read nor include its events.
+    const peer = await inject("POST", `/namespaces/${namespace.id}/agents`, {
+      name: "Agent audit peer",
+      executionMode: "dedicated",
+      configurationId: agent.configurationId,
+      harnessAuth: { method: "api_key", source: secretRef },
+    });
+    assert.equal(peer.statusCode, 201, peer.body);
+    const peerAgent = peer.json().data;
+    const peerPath = `/namespaces/${namespace.id}/agents/${peerAgent.id}`;
+    await grantAgentSecretOperate(pool, peerAgent, secretRef.id);
+    const peerDeployment = await inject("POST", `${peerPath}/deploy`);
+    assert.equal(peerDeployment.statusCode, 202, peerDeployment.body);
+    const deniedPeer = await inject("GET", `${peerPath}/audit-events`);
+    assert.equal(deniedPeer.statusCode, 403, deniedPeer.body);
     assert.equal((await inject("GET", otherAuditPath)).statusCode, 403);
     const runtimeRead = await inject("GET", `${auditPath}?limit=100`);
     assert.equal(runtimeRead.statusCode, 200, runtimeRead.body);
     const runtimePage: AgentAuditPage = runtimeRead.json().data;
-    assert.equal(runtimePage.projectionVersion, 2);
+    const lifecycle = runtimePage.events
+      .filter((entry) => entry.event === "agent_lifecycle")
+      .filter(
+        (entry) =>
+          entry.action === "openclaw.agents.create" || entry.action === "openclaw.agents.deploy",
+      );
+    assert.equal(lifecycle.length, 3);
+    assert.ok(
+      lifecycle.every((entry) => entry.actorId === principal.id && entry.outcome === "success"),
+    );
+    const created = lifecycle.find((entry) => entry.requestId === createRequestId);
+    assert.equal(created?.action, "openclaw.agents.create");
+    assert.equal(created.agentRevisionId, undefined);
+    for (const [requestId, revisionId] of [
+      [deploy.json().meta.requestId, deploymentId],
+      [replacement.json().meta.requestId, replacementId],
+    ]) {
+      const deployment = lifecycle.find((entry) => entry.requestId === requestId);
+      assert.equal(deployment?.action, "openclaw.agents.deploy");
+      assert.equal(deployment.agentRevisionId, revisionId);
+    }
+    const peerRequestIds = [peer.json().meta.requestId, peerDeployment.json().meta.requestId];
+    assert.ok(runtimePage.events.every((entry) => !peerRequestIds.includes(entry.requestId)));
+    assert.equal(runtimePage.projectionVersion, 3);
     const networkDecisions = runtimePage.events.filter(
       (entry) =>
         entry.event === "runtime_activity" &&

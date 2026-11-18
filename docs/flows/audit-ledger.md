@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: "2026-11-18"
-last_updated_session: "authoring-run/4b6e27d3-fbfc-4030-9235-6ec1011de508"
+last_updated_session: "authoring-run/6a1e940c-115b-4fd9-b4e0-be3e1602d5d8"
 ---
 
 # Audit ledger flow
@@ -215,9 +215,9 @@ copies and array are immutable.
 
 ### 6. The Agent audit API saves a disclosure for each page
 
-`apps/controller/src/http/agent-audit.ts:createAgentAuditReader` and
+`apps/controller/src/http/agent-audit.ts:createAgentAuditReader`,
 `packages/occ/src/index.ts:OpenClawController.listAgentAuditEvents`, and
-`apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
+`packages/occ/src/state/postgres-agent-audit.ts:SELECT_AGENT_AUDIT`
 
 When audit is enabled, composition supplies the PostgreSQL audit reader. The
 reader checks that the selected Native IAM Driver uses the same State as the
@@ -226,12 +226,19 @@ Native IAM checks for a direct `read_audit` binding for the human Principal, the
 Agent, and its Namespace. The same rule applies when Native IAM checks which
 grants an account or service-key manager must hold. The reader locks the active
 Agent, its ready Namespace, and the policy tables through commit. It checks the
-grant again under these locks. The query selects approved event types for that
-Agent and limits the time window and page size.
+grant again under these locks. The query selects approved events for the Agent
+within the first page's time window. It requests the page size plus one to
+check whether another page exists. For lifecycle records that target a
+revision, PostgreSQL checks that the revision belongs to the Agent in the same
+Namespace. Provisioning checkpoints and failures qualify once the saved record
+names the Agent.
 
 State builds the page from named fields. It derives a public work ID from the
-stored key. Runtime events include the revision and the fields for the
-registered action. The same transaction appends
+stored key. A lifecycle record includes `agent_lifecycle` as its event type and
+the saved `action`. State adds `agentRevisionId` when PostgreSQL confirms the
+revision and `provisioningPhase` for provisioning checkpoints and failures.
+Runtime events include the revision and the fields for the registered action.
+The same transaction appends
 `openclaw.audit.agent.read` with the actor, Agent, request ID, time window,
 projection version, and number of returned records. The API releases the
 page after it confirms commit. The next-page cursor is encrypted and bound
@@ -311,6 +318,8 @@ batch before it returns the OTLP response.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 14:48: Trace how the Agent audit API selects and returns lifecycle records. (authoring-run/6a1e940c-115b-4fd9-b4e0-be3e1602d5d8 - fcf72c27b375405d62e6e64015a36d7637018387)
 
 - 2026-11-18 13:56: Trace automatic enrollment and live grant checks for a managed Gateway. (authoring-run/4b6e27d3-fbfc-4030-9235-6ec1011de508 - 3943a3fcf3da51a1558cd66cc762eee63f73b964)
 

@@ -72,7 +72,8 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose
  *   ServicePrincipal may operate that Secret, deploys it, and returns
- *   `{ namespace, secretRef, agent, revision }`. Pass `{ dedicated: true }` for dedicated Codex.
+ *   `{ namespace, secretRef, agent, revision, createRequestId }`. Pass `{ dedicated: true }`
+ *   for dedicated Codex.
  */
 export async function createPostgresAgentApp(
   t,
@@ -209,7 +210,10 @@ export async function createPostgresAgentApp(
       configurationId: configuration.json().data.id,
       harnessAuth: { method: "api_key", source: secretRef },
     });
-    const { data: agent } = fixtureResponse(
+    const {
+      data: agent,
+      meta: { requestId: createRequestId },
+    } = fixtureResponse(
       { status: createdAgent.statusCode, body: /** @type {unknown} */ (createdAgent.json()) },
       201,
       AgentResponse,
@@ -221,7 +225,7 @@ export async function createPostgresAgentApp(
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedHarness,
     );
-    return { namespace, secretRef, agent, revision };
+    return { namespace, secretRef, agent, revision, createRequestId };
   }
 
   return {

@@ -6,10 +6,26 @@ import {
   RUNTIME_AUDIT_DETAIL_SCHEMAS,
   type RuntimeAuditAction,
 } from "../runtime-audit.ts";
-import { AuditId, Meta, RequestId, Timestamp } from "./common.ts";
+import { AuditId, Meta, RequestId, RevisionId, Timestamp } from "./common.ts";
 
 export const AGENT_AUDIT_PAGE_LIMIT = 100;
-export const AGENT_AUDIT_PROJECTION_VERSION = 2;
+export const AGENT_AUDIT_PROJECTION_VERSION = 3;
+
+export const AGENT_LIFECYCLE_AUDIT_ACTIONS = {
+  agent: [
+    "openclaw.agents.create",
+    "openclaw.agents.update",
+    "openclaw.agents.stop",
+    "openclaw.agents.lifecycle.stop",
+    "openclaw.agents.provision.checkpoint",
+  ],
+  revision: [
+    "openclaw.agents.deploy",
+    "openclaw.agents.lifecycle.activate",
+    "openclaw.agents.lifecycle.supersede",
+  ],
+  provisioningFailure: "openclaw.agents.provision.failure",
+} as const;
 
 const AgentAuditCursor = Type.String({
   minLength: 1,
@@ -68,6 +84,46 @@ const ControlPlaneAgentAuditEntry = Type.Object(
   { additionalProperties: false },
 );
 
+const AgentLifecycleAuditDetails = Type.Object(
+  {
+    event: Type.Literal("agent_lifecycle"),
+    action: Type.Enum([
+      ...AGENT_LIFECYCLE_AUDIT_ACTIONS.agent,
+      ...AGENT_LIFECYCLE_AUDIT_ACTIONS.revision,
+      AGENT_LIFECYCLE_AUDIT_ACTIONS.provisioningFailure,
+    ]),
+    agentRevisionId: Type.Optional(RevisionId),
+    provisioningPhase: Type.Optional(
+      Type.Union([
+        Type.Literal("admitted"),
+        Type.Literal("configuration"),
+        Type.Literal("transport"),
+        Type.Literal("handoff"),
+      ]),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const AgentLifecycleAuditEntry = Type.Object(
+  { ...auditEntryFields, ...AgentLifecycleAuditDetails.properties },
+  { additionalProperties: false },
+);
+
+export function projectAgentLifecycleAuditDetails(
+  action: unknown,
+  agentRevisionId: unknown,
+  provisioningPhase: unknown,
+): Type.Static<typeof AgentLifecycleAuditDetails> | undefined {
+  const projected = {
+    event: "agent_lifecycle",
+    action,
+    ...(agentRevisionId === null ? {} : { agentRevisionId }),
+    ...(provisioningPhase === null ? {} : { provisioningPhase }),
+  };
+  return Check(AgentLifecycleAuditDetails, projected) ? projected : undefined;
+}
+
 function runtimeAgentAuditEntry<Action extends RuntimeAuditAction>(action: Action) {
   return Type.Object(
     {
@@ -83,7 +139,11 @@ function runtimeAgentAuditEntry<Action extends RuntimeAuditAction>(action: Actio
 const RuntimeAgentAuditEntry = Type.Union(
   Object.values(RUNTIME_AUDIT_ACTIONS).map(runtimeAgentAuditEntry),
 );
-const AgentAuditEntry = Type.Union([ControlPlaneAgentAuditEntry, RuntimeAgentAuditEntry]);
+const AgentAuditEntry = Type.Union([
+  ControlPlaneAgentAuditEntry,
+  AgentLifecycleAuditEntry,
+  RuntimeAgentAuditEntry,
+]);
 
 type ControlPlaneAgentAuditEntry = Type.Static<typeof ControlPlaneAgentAuditEntry>;
 type RuntimeAgentAuditDetails = {
@@ -137,6 +197,12 @@ export const AgentAuditResponse = Type.Object(
 
 export type AgentAuditEntry =
   | ControlPlaneAgentAuditEntry
+  | (Type.Static<typeof AgentLifecycleAuditEntry> & {
+      operationId?: never;
+      workId?: never;
+      attemptId?: never;
+      workState?: never;
+    })
   | (Omit<
       ControlPlaneAgentAuditEntry,
       "event" | "operationId" | "workId" | "attemptId" | "workState"

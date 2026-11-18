@@ -1625,6 +1625,8 @@ export * from "./api/common.ts";
 export {
   AGENT_AUDIT_PAGE_LIMIT,
   AGENT_AUDIT_PROJECTION_VERSION,
+  AGENT_LIFECYCLE_AUDIT_ACTIONS,
+  projectAgentLifecycleAuditDetails,
   projectRuntimeAgentAuditDetails,
   type AgentAuditEntry,
   type AgentAuditPage,

@@ -6285,7 +6285,7 @@ List audit metadata for one Agent
 
 **Operation ID:** `listAgentAuditEvents`
 
-**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.
+**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API, worker, and runtime audit metadata from the preceding 24 hours.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -6318,9 +6318,9 @@ List audit metadata for one Agent
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.events` | `array<object or object or object or object or object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
+| `data.events` | `array<object or object or object or object or object or object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
 | `data.nextCursor` | `string or null` | Yes | — |
-| `data.projectionVersion` | `2` | Yes | — |
+| `data.projectionVersion` | `3` | Yes | — |
 | `data.window` | `object` | Yes | — |
 | `data.window.end` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.window.start` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
