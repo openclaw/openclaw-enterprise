@@ -93,7 +93,6 @@ test("session inspection stays optional and never exposes session or credential 
 
   const authenticated = await injectedRequest(fixture.app, "GET", "/api/auth/session");
   const authenticatedData = checkedInjectedBody(authenticated, 200, SessionResponse).data;
-  assert.notEqual(authenticatedData, null);
   assert.ok(authenticatedData);
   // Match secret-bearing field names at every depth, not serialized values: the
   // generated user ID and random sessionKey can spell "token" by chance (finding 725).
