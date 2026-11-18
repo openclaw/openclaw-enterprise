@@ -29,7 +29,6 @@
     "resolveJsonModule": true
   },
   "include": [
-    "helpers/preset-upgrade-process.ts",
     "integration/ci-prepare-advisory-cases.ts",
     "integration/docker-compute-compose-cases.ts",
     "integration/credential-source-endpoint-cases.ts",
