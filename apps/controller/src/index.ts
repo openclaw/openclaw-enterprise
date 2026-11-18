@@ -1387,8 +1387,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
+  const tokenServiceSourceSchemas = {
+    RegisterTokenServiceSourceBody,
+    UpdateTokenServiceSourceBody,
+    TokenServiceSourceMetadata,
+  };
   void app.register(swagger, {
     convertConstToEnum: false,
+    refResolver: {
+      buildLocalReference(schema, _baseUri, _fragment, index) {
+        // Standalone contracts have public names. Keep Swagger's names and titles for route schemas.
+        if (typeof schema.$id === "string") {
+          schema.title ??= schema.$id;
+          if (Object.hasOwn(tokenServiceSourceSchemas, schema.$id)) {
+            return schema.$id;
+          }
+        }
+        return `def-${index}`;
+      },
+    },
     openapi: {
       openapi: "3.1.0",
       info: {
@@ -4799,9 +4816,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(CredentialSourceResponse);
     routes.addSchema(OAuthConnectionTemplateVersionSchema);
     routes.addSchema(ConnectionTemplateSchema);
-    routes.addSchema(RegisterTokenServiceSourceBody);
-    routes.addSchema(UpdateTokenServiceSourceBody);
-    routes.addSchema(TokenServiceSourceMetadata);
+    for (const schema of Object.values(tokenServiceSourceSchemas)) {
+      routes.addSchema(schema);
+    }
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {

@@ -400,11 +400,11 @@ export const CredentialSourceReference = Type.Object(
   },
 );
 
-const CredentialSourceFieldName = Type.String({
+const credentialSourceFieldName = {
   minLength: 1,
   maxLength: 64,
   pattern: "^[a-z][a-z0-9_]{0,63}$",
-});
+};
 
 export const CredentialSourceType = Type.String({
   minLength: 1,
@@ -415,19 +415,24 @@ export const CredentialSourceType = Type.String({
 });
 
 export const CredentialSourceConfig = Type.Record(
-  CredentialSourceFieldName,
+  Type.String(),
   Type.String({ minLength: 1, maxLength: 2048 }),
   {
+    propertyNames: credentialSourceFieldName,
     maxProperties: 32,
     description: "Non-secret source configuration keyed by catalog field name.",
   },
 );
 
-export const CredentialSourceSecrets = Type.Record(CredentialSourceFieldName, SecretReference, {
-  maxProperties: 16,
-  description:
-    "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-});
+export const CredentialSourceSecrets = Type.Record(
+  Type.String(credentialSourceFieldName),
+  SecretReference,
+  {
+    maxProperties: 16,
+    description:
+      "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+  },
+);
 
 export const CreateCredentialSourceBody = Type.Object(
   {

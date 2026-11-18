@@ -35,15 +35,19 @@ export const RegisterTokenServiceSourceBody = Type.Object(
   },
 );
 
-export const UpdateTokenServiceSourceBody = Type.Object(
-  {
-    config: Type.Optional(CredentialSourceConfig),
-    secret: Type.Optional(material),
-  },
+export const UpdateTokenServiceSourceBody = Type.Union(
+  [
+    Type.Object(
+      { config: CredentialSourceConfig, secret: Type.Optional(material) },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      { config: Type.Optional(CredentialSourceConfig), secret: material },
+      { additionalProperties: false },
+    ),
+  ],
   {
     $id: "UpdateTokenServiceSourceBody",
-    additionalProperties: false,
-    minProperties: 1,
     description:
       "Proposed update to the recorded owner's credential material, mutable lifecycle settings, or both. Omitted fields retain their values.",
   },

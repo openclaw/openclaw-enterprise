@@ -13042,6 +13042,9 @@ Reusable schema names are referenced by operation request and response tables.
 
 | Schema | Type |
 | --- | --- |
+| `RegisterTokenServiceSourceBody` | `object` |
+| `TokenServiceSourceMetadata` | `object` |
+| `UpdateTokenServiceSourceBody` | `object or object` |
 | `SafeJsonValue` | `string or boolean or number or null or array<SafeJsonValue> or object<string, SafeJsonValue>` |
 | `PluginDriverIdentity` | `object` |
 | `AgentRuntimeLogsResponse` | `object` |
@@ -13050,9 +13053,6 @@ Reusable schema names are referenced by operation request and response tables.
 | `CredentialSourceResponse` | `object` |
 | `OAuth connection template version` | `object` |
 | `OAuth connection template` | `object` |
-| `RegisterTokenServiceSourceBody` | `object` |
-| `UpdateTokenServiceSourceBody` | `object` |
-| `TokenServiceSourceMetadata` | `object` |
 | `PluginApprovers` | `array<object>` |
 | `PluginToolPolicy` | `object` |
 | `PluginToolDefaults` | `object` |
