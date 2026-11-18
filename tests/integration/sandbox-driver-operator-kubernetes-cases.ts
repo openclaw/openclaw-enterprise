@@ -151,7 +151,6 @@ function operatorGateway(): Gateway {
     ...workspaceGatewayClient(),
     getProviderProfile: unexpectedGatewayOperation,
     listProviderProfiles: unexpectedGatewayOperation,
-    getServiceUrl: unexpectedGatewayOperation,
     deleteService: unexpectedGatewayOperation,
     execSandbox: unexpectedGatewayOperation,
     getServiceDocument: unexpectedGatewayOperation,

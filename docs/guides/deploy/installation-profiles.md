@@ -217,6 +217,8 @@ existing `recoveryUserId`. Google disables native access; OIDC supports it. To u
 set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
 same-site HTTPS Console and Agent domains.
 
+For Keycloak, start with the [production profile example](oidc-keycloak.md#render-the-production-profile).
+
 Use `controlPlane.oidc.enrollment` for the
 [enrollment policy](../../reference/authentication/team-enrollment.md), including
 admission, initial Role and Group selection. `controlPlane.github` is rejected;

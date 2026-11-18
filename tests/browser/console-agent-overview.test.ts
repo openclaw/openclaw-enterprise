@@ -2058,6 +2058,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "RUNTIME_MODEL_PROBE_FAILED",
       "RUNTIME_MODEL_PROBE_TIMEOUT",
       "RUNTIME_STARTUP_FAILED",
+      "RUNTIME_STATE_LOCK_UNVERIFIED",
       "UNKNOWN_FAILURE",
     ],
     // A setting, grant or stored record must change first.

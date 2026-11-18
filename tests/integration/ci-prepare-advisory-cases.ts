@@ -6,33 +6,14 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { fixture } from "../helpers/ci-prepare-fixture.ts";
+import { getJob, getSteps, parseWorkflow } from "./ci-prepare-inputs.ts";
 
 const matrixJobs = ["local-installation", "qa", "openshell"] as const;
-type Step = Partial<Record<"id" | "name" | "uses" | "run" | "if", string>> & {
-  env?: unknown;
-  with?: unknown;
-};
-type Job = {
-  if: string;
-  environment?: string;
-  "runs-on": string;
-  strategy: { "fail-fast": boolean; matrix: string };
-  steps: Step[];
-};
-type Workflow = {
-  jobs: Record<(typeof matrixJobs)[number], Job> & {
-    "oidc-agent-chat": { if: string };
-    qa: Job & { env: Record<`OCC_TEST_${string}`, string> };
-    eligibility: { steps: Step[]; if: string; outputs: Record<string, string> };
-  };
-  concurrency: { group: string };
-};
-type Manifest = { files: { path: string }[] };
 type EventName = "pull_request" | "push" | "schedule" | "workflow_dispatch";
 
 // Only the Actions expression syntax and functions used by this workflow.
-function evaluate(expression: string | undefined, context: object): unknown {
-  assert.ok(expression, "Missing workflow expression");
+function evaluate(expression: unknown, context: object): unknown {
+  assert.ok(typeof expression === "string" && expression, "Missing workflow expression");
   return runInNewContext(
     expression
       .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
@@ -72,6 +53,22 @@ const fullQa = [
 
 const manifestDirectory = "scripts/ci/test-suites";
 
+function parseManifest(text: string): { files: { path: string }[] } {
+  const value: unknown = JSON.parse(text);
+  const manifest = asRecord(value);
+  const files = manifest?.files;
+  assert.ok(manifest && Array.isArray(files));
+  return {
+    ...manifest,
+    files: files.map((file: unknown) => {
+      const entry = asRecord(file);
+      const path = entry?.path;
+      assert.ok(entry && typeof path === "string");
+      return { ...entry, path };
+    }),
+  };
+}
+
 async function createPrMerge(repo: string, root: string) {
   const source = join(root, "source");
   await mkdir(source);
@@ -86,7 +83,7 @@ async function createPrMerge(repo: string, root: string) {
     const path = join(manifestDirectory, lane + ".json");
     const text = await readFile(join(repo, path), "utf8");
     await writeFile(join(source, path), text);
-    const manifest: Manifest = JSON.parse(text);
+    const manifest = parseManifest(text);
     return manifest.files.map(({ path }) => path);
   }
   const full = {
@@ -106,16 +103,39 @@ async function createPrMerge(repo: string, root: string) {
   const sha = git(source, "rev-parse", "HEAD");
   // Checkout uses shallow history: parent identity must come from the commit headers.
   const checkout = join(root, "checkout");
-  git(root, "clone", "--depth=1", `file://${source}`, checkout);
+  await mkdir(checkout);
+  git(checkout, "init", "-b", "main");
+  const copyObject = (type: string, object: string) => {
+    const bytes = execFileSync("git", ["cat-file", type, object], { cwd: source });
+    const written = execFileSync("git", ["hash-object", "-t", type, "-w", "--stdin"], {
+      cwd: checkout,
+      input: bytes,
+      encoding: "utf8",
+    }).trim();
+    assert.equal(written, object);
+  };
+  copyObject("commit", sha);
+  copyObject("tree", git(source, "rev-parse", `${sha}^{tree}`));
+  for (const row of git(source, "ls-tree", "-r", "-t", sha).split("\n")) {
+    const [, type, object] = row.split(/\s+/, 3);
+    assert.ok(type && object);
+    copyObject(type, object);
+  }
+  await writeFile(join(checkout, ".git", "shallow"), sha + "\n");
+  git(checkout, "checkout", "--detach", sha);
   assert.equal(git(checkout, "rev-parse", "--is-shallow-repository"), "true");
+  for (const parent of [base, head]) {
+    assert.notEqual(spawnSync("git", ["cat-file", "-e", parent], { cwd: checkout }).status, 0);
+  }
   return { checkout, base, head, sha, full };
 }
 
-export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => Workflow) {
+export function registerAdvisoryCases(repo: string) {
   async function loadAdvisoryWorkflow() {
     const yaml = await readFile(join(repo, ".github/workflows/qa-advisory.yml"), "utf8");
-    const workflow = loadYaml(yaml);
-    const { steps } = workflow.jobs.qa;
+    const workflow = parseWorkflow(yaml);
+    const qa = getJob(workflow, "qa");
+    const steps = getSteps(qa);
     const selected = steps.find(({ name }) => name === "Materialize focused OpenClaw credentials");
     const ordinary = steps.find(({ name }) => name === "Materialize selected QA credentials");
     assert.ok(selected && ordinary);
@@ -123,16 +143,17 @@ export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => 
   }
   test("advisory labels select only requested jobs and bind focused proof to the PR merge", async (t) => {
     const { workflow, selected, ordinary } = await loadAdvisoryWorkflow();
-    const { eligibility, qa } = workflow.jobs;
-    const selector = eligibility.steps.find(({ id }) => id === "selection")?.run;
-    assert.ok(selector);
+    const eligibility = getJob(workflow, "eligibility");
+    const qa = getJob(workflow, "qa");
+    const selector = getSteps(eligibility).find(({ id }) => id === "selection")?.run;
+    assert.ok(typeof selector === "string" && selector);
     const prEnv = "integration-qa-pr";
-    const local = workflow.jobs["local-installation"];
+    const local = getJob(workflow, "local-installation");
     const shard = "${{ matrix.shard }}";
     const file = "${{ matrix.file }}";
     // Matrix selection must reach the same narrow leaf invocation and isolated evidence.
     for (const [job, runner, env, lane, testFile, artifact] of [
-      [workflow.jobs.openshell, "ubuntu-24.04", prEnv, "openshell", file, shard],
+      [getJob(workflow, "openshell"), "ubuntu-24.04", prEnv, "openshell", file, shard],
       [local, "ubuntu-22.04", undefined, "dev-up-k3d", file, "local-installation-" + shard],
       [
         qa,
@@ -145,8 +166,8 @@ export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => 
     ] as const) {
       assert.equal(job["runs-on"], runner);
       assert.equal(job.environment, env);
-      assert.equal(job.strategy["fail-fast"], false);
-      const action = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane");
+      assert.equal(asRecord(job.strategy)?.["fail-fast"], false);
+      const action = getSteps(job).find((step) => step.uses === "./.github/actions/run-ci-lane");
       const prefix = "qa-advisory-" + artifact;
       assert.partialDeepStrictEqual(action?.with, {
         lane,
@@ -255,20 +276,22 @@ export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => 
         stepOutputs[entry.slice(0, at)] = entry.slice(at + 1);
       }
       const selection = { ...ctx, steps: { selection: { outputs: stepOutputs } } };
+      const declaredOutputs = asRecord(eligibility.outputs);
+      assert.ok(declaredOutputs);
       const outputs = Object.fromEntries(
-        Object.entries(eligibility.outputs).map(([key, expr]) => [key, evaluate(expr, selection)]),
+        Object.entries(declaredOutputs).map(([key, expr]) => [key, evaluate(expr, selection)]),
       );
       const jobContext = { ...ctx, needs: { eligibility: { outputs } } };
-      assert.equal(evaluate(workflow.jobs["oidc-agent-chat"].if, jobContext), isFull);
+      assert.equal(evaluate(getJob(workflow, "oidc-agent-chat").if, jobContext), isFull);
       for (const group of matrixJobs) {
-        const job = workflow.jobs[group];
+        const job = getJob(workflow, group);
         const label = [name, ...labels, group].join("/");
         const enabled = Boolean(expected[group]?.length);
         assert.equal(evaluate(job.if, jobContext), enabled, label);
         if (!enabled) {
           continue;
         }
-        const rows = asRecord(evaluate(job.strategy.matrix, jobContext))?.include;
+        const rows = asRecord(evaluate(asRecord(job.strategy)?.matrix, jobContext))?.include;
         assert.ok(Array.isArray(rows), label);
         if (group !== "qa") {
           const files = rows.map(asRecord);
@@ -288,7 +311,11 @@ export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => 
             ["OCC_TEST_QA_SOURCE_SHA", matrix.focused ? sha : "working-tree"],
             ["OCC_TEST_BROWSER_EXECUTABLE", matrix.focused ? "/usr/bin/google-chrome" : ""],
           ] as const) {
-            assert.equal(evaluate(qa.env[variable], rowContext), value, label + ": " + variable);
+            assert.equal(
+              evaluate(asRecord(qa.env)?.[variable], rowContext),
+              value,
+              label + ": " + variable,
+            );
           }
           assert.equal(evaluate(selected.if, rowContext), matrix.focused, label);
           assert.equal(evaluate(ordinary.if, rowContext), !matrix.focused, label);
@@ -301,12 +328,14 @@ export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => 
       }
     }
     // Admission and cancellation use the added label, while selection uses all current labels.
+    const concurrencyGroup = asRecord(workflow.concurrency)?.group;
+    assert.ok(typeof concurrencyGroup === "string", "Missing advisory concurrency group");
     for (const label of [keycloak, model, compose, "full-qa", "unrelated"]) {
       const payload = { ...event([keycloak, label]), action: "labeled", label: { name: label } };
       const ctx = context(payload);
       const allowed = label !== "unrelated";
       assert.equal(evaluate(eligibility.if, ctx), allowed);
-      const group = workflow.concurrency.group.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expression) =>
+      const group = concurrencyGroup.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expression) =>
         String(evaluate(expression, ctx)),
       );
       assert.match(group, allowed ? /pr-7/ : /run-123/);
@@ -341,7 +370,7 @@ export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => 
       const path = join(checkout, manifestDirectory, lane + ".json");
       const original = await readFile(path, "utf8");
       try {
-        const manifest: Manifest = JSON.parse(original);
+        const manifest = parseManifest(original);
         manifest.files = manifest.files.filter(({ path }) => keep(path));
         await writeFile(path, JSON.stringify(manifest));
         await assertRefused(run(event(labels)), reason);
@@ -361,7 +390,7 @@ export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => 
     });
     assert.equal(selected.if, "matrix.focused");
     assert.equal(ordinary.if, "${{ !matrix.focused }}");
-    assert.partialDeepStrictEqual(workflow.jobs.qa.env, {
+    assert.partialDeepStrictEqual(getJob(workflow, "qa").env, {
       OCC_TEST_QA_OPENAI_MODEL: "${{ matrix.focused && vars.OCC_TEST_OPENAI_MODEL || '' }}",
       OCC_TEST_QA_SOURCE_SHA: "${{ matrix.focused && github.sha || 'working-tree' }}",
     });
@@ -371,7 +400,7 @@ export function registerAdvisoryCases(repo: string, loadYaml: (text: string) => 
       ["key", " ", 1],
       ["synthetic-key", "synthetic-model", 0],
     ] as const;
-    assert.ok(selected.run);
+    assert.ok(typeof selected.run === "string" && selected.run);
     for (const [index, [key, model, expected]] of cases.entries()) {
       const runRoot = join(root, String(index));
       await mkdir(runRoot);

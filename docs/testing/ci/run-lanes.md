@@ -28,6 +28,13 @@ lane/group definitions. Registration does not mean a test runs on every PR:
 the check pages distinguish ordinary CI, manual/advisory workflows, and lanes
 with [no GitHub workflow](../manual-tests.md). Each manifest is the exact file and selector inventory.
 
+On eligible pull requests and main pushes, Checks and Conformance 2 emits a test-graph
+advisory after the required workspace typecheck. It reports TypeScript owner hints,
+index coverage, fallback reasons, and zero test omissions. The notice is untrusted
+evidence from the tested checkout. Type-only edges can overselect; JavaScript and
+runtime relationships remain incomplete. CI Impact still selects actual checks. If
+the graph is missing or incomplete, retain ordinary coverage.
+
 To find the owning lane for a file name or path fragment, run from the repository root:
 
 ```sh
@@ -284,7 +291,7 @@ with its `state.json`. Do not remove another attempt's resources. SIGKILL or hos
 failure can prevent a final result; a missing result is not cleanup evidence.
 
 The [runner](../../../scripts/ci/run-tests.ts) starts each phase through a private IPC channel.
-[Preparation](../../../scripts/ci/prepare.mjs) and
+[Preparation](../../../scripts/ci/prepare.ts) and
 [cleanup](../../../scripts/ci/cleanup.ts) report their owned command groups.
 The runner checks that these groups have stopped before it starts cleanup.
 
@@ -298,7 +305,7 @@ From the checkout root on a disposable host, prepare the lane and keep its priva
 state file until cleanup completes.
 
 ```sh
-corepack pnpm exec node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>
+corepack pnpm exec node scripts/ci/prepare.ts --lane <lane> --state <private-state-file>
 node scripts/ci/run-tests.ts run <lane> --state <private-state-file> --results <results-file>
 node scripts/ci/cleanup.ts --state <private-state-file>
 ```

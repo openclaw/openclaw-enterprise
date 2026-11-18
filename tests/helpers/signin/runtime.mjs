@@ -1,3 +1,7 @@
+import {
+  migrationEntry,
+  selectedImageMigrationEntry,
+} from "../../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { verifyCompletedMigrationHistory } from "../staging-upgrade-return.ts";
 
@@ -58,7 +62,7 @@ export function runtimeProof({
       await custody.assertPostgres();
       const template = (await get("job/" + release + "-initialization")).spec.template;
       const migration = template.spec.initContainers.find((c) => c.name === "migration");
-      assert(migration.args[0] === "scripts/migrate-production.mjs");
+      assert(migrationEntry(migration.args));
       const db = migration.env.find((e) => e.name === "OCC_MIGRATION_DATABASE_URL")?.valueFrom
         .secretKeyRef;
       assert.deepEqual(db, { name: "occ-database", key: "migration-url" });
@@ -81,7 +85,12 @@ export function runtimeProof({
             migration.volumeMounts.some((m) => m.name === v.name),
           ),
           containers: [
-            { ...migration, image: image.reference, args: [migration.args[0], "--check"] },
+            {
+              ...migration,
+              image: image.reference,
+              // The target image may be older than the retained initializer.
+              args: [...selectedImageMigrationEntry, "--check"],
+            },
           ],
         },
       });

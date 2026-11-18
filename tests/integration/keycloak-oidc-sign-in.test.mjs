@@ -27,7 +27,7 @@ import {
   registerKeycloakSessionLifecycleCases,
 } from "./keycloak-session-lifecycle-cases.ts";
 
-// Real Keycloak, prepared by scripts/ci/prepare.mjs for the keycloak-oidc lane
+// Real Keycloak, prepared by scripts/ci/prepare.ts for the keycloak-oidc lane
 // (docs/testing/kubernetes.md#keycloak-oidc-tests): it imports tests/fixtures/keycloak/realm-oce.json and serves
 // https://keycloak.oce.localhost on 127.0.0.1:443 under a per-run CA that this process
 // trusts through NODE_EXTRA_CA_CERTS. Nothing here is stubbed: the browser fills Keycloak's
@@ -74,7 +74,7 @@ test(
 
     // OCE does no runtime discovery: an operator copies these four values into its
     // configuration. Production parsing must accept them as Keycloak publishes them, which
-    // is the endpoint rule (HTTPS, port 443, one DNS host, issuer without a port).
+    // follows the endpoint rules (HTTPS, port 443, DNS hosts, issuer without a port).
     const config = oidcLoginConfiguration({
       OCC_AUTH_OIDC_ISSUER: discovery.issuer,
       OCC_AUTH_OIDC_AUTHORIZATION_URL: discovery.authorization_endpoint,

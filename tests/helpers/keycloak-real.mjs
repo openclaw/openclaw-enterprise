@@ -14,7 +14,7 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 
 /**
  * Keycloak's own release, pinned by digest in tests/fixtures/keycloak/image.json and shared
- * with the Keycloak sign-in lane. CI imports it into k3d before the test runs (prepare.mjs
+ * with the Keycloak sign-in lane. CI imports it into k3d before the test runs (prepare.ts
  * sets OCC_TEST_KEYCLOAK_IMAGE), so the cluster never pulls it.
  */
 export const defaultKeycloakImage = await readKeycloakImage();

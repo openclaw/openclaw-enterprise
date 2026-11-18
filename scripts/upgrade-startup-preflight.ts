@@ -5,6 +5,7 @@
 // API and worker do at startup, and checks migration compatibility against the database.
 import { readFileSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
+import { migrationEntry } from "./lib/selected-image-migration.ts";
 
 // Printed before the image's own message when Compute preflight stops startup:
 // a refusal is the Driver's ConfigurationFailure (such as split-layout storage);
@@ -717,9 +718,24 @@ function migrationJob(
   if (podLabels != null && !isLabelMap(podLabels)) {
     fail("the rendered initialization Job contains invalid Pod labels.");
   }
-  const container: Container = selectFields(preflightContainer(migration), containerFields);
+  const initializer = preflightContainer(migration);
+  const { command, args } = initializer;
+  if (
+    command !== undefined &&
+    (!Array.isArray(command) || command.length !== 1 || command[0] !== "node")
+  ) {
+    fail("the initialization Job contains an invalid migration command.");
+  }
+  if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  const entry = migrationEntry(args);
+  if (!entry) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  const container: Container = selectFields(initializer, containerFields);
   container.command = ["node"];
-  container.args = ["scripts/migrate-production.mjs", "--check"];
+  container.args = [...entry, "--check"];
   const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
   return {
     apiVersion: "batch/v1",

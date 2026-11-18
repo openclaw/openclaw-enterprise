@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import vm from "node:vm";
 
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   bodyShapes as helperBodyShapes,
