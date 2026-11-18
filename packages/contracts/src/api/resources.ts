@@ -713,7 +713,6 @@ export const CredentialSourceSchema = Type.Object(
           connectionTemplateVersion: Type.Integer({ minimum: 1 }),
           baseUrl: Type.String(),
           protocol: InferenceProtocolSchema,
-          privatePeer: Type.Optional(Type.Ref("InferencePrivatePeer")),
         },
         { additionalProperties: false },
       ),

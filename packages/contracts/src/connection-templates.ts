@@ -1,5 +1,4 @@
-import { isDeepStrictEqual } from "node:util";
-import type { InferencePrivatePeer, InferenceProtocol } from "./model-providers.ts";
+import type { InferenceProtocol } from "./model-providers.ts";
 
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
@@ -62,7 +61,6 @@ export interface ConnectionTemplateValues {
 
 export interface StaticKeyTemplateValues {
   readonly mode: "static_bearer";
-  readonly privatePeer?: InferencePrivatePeer;
   readonly baseUrl: string;
   readonly protocol: InferenceProtocol;
   readonly destinations: readonly (ConnectionEndpoint & { readonly method: "POST" })[];
@@ -239,8 +237,7 @@ export function connectionValuesChanged(
       current.mode !== "static_bearer" ||
       next.mode !== "static_bearer" ||
       current.baseUrl !== next.baseUrl ||
-      current.protocol !== next.protocol ||
-      !isDeepStrictEqual(current.privatePeer, next.privatePeer)
+      current.protocol !== next.protocol
     );
   }
   return (
