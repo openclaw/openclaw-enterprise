@@ -18,7 +18,6 @@
     "tests/conformance/plugin-compute.test.ts",
     "tests/conformance/plugin-compute-codex-install.test.ts",
     "tests/conformance/protected-codex-artifact-policy.test.ts",
-    "tests/conformance/responses-reasoning-summary.test.ts",
     "tests/integration/openshell-quickstart-policy.test.ts",
     "tests/conformance/codex-native-startup.test.mjs",
     "tests/conformance/occ-api-security.test.ts",
@@ -672,9 +671,6 @@
     },
     {
       "path": "tests/conformance/protected-codex-artifact-policy.test.ts"
-    },
-    {
-      "path": "tests/conformance/responses-reasoning-summary.test.ts"
     },
     {
       "path": "tests/integration/openshell-quickstart-policy.test.ts"

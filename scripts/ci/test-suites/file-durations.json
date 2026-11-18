@@ -128,7 +128,6 @@
     "tests/conformance/repository-runtime-material.test.ts": 3200,
     "tests/conformance/repository-sessions-memory.test.ts": 300,
     "tests/conformance/repository-transactions.test.ts": 200,
-    "tests/conformance/responses-reasoning-summary.test.ts": 100,
     "tests/conformance/runtime-gateway-state-migration.test.ts": 400,
     "tests/conformance/runtime-logs-content.test.ts": 5800,
     "tests/conformance/runtime-logs-replay.test.ts": 200,

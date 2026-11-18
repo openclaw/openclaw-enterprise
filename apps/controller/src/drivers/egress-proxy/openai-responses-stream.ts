@@ -447,7 +447,12 @@ class ResponsesStream {
     if (!event.type.startsWith("response.reasoning_text")) {
       return false;
     }
-    return this.acceptIndexedTail(item.reasoningTails, event.content_index, event.delta, true);
+    return this.acceptIndexedTail(
+      item.reasoningTails,
+      event.content_index,
+      event.delta,
+      event.type === "response.reasoning_text.delta",
+    );
   }
 
   private acceptIndexedTail(

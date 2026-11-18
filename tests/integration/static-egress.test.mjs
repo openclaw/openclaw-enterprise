@@ -1007,6 +1007,13 @@ test("shipped exchange withholds material split across one reasoning part", asyn
     content_index: index,
     delta: text,
   });
+  const textDone = (index, text) => ({
+    type: "response.reasoning_text.done",
+    item_id: "rs_exchange",
+    output_index: 0,
+    content_index: index,
+    text,
+  });
   const stream = (inner, doneSummary) => {
     let sequence = 0;
     const numbered = (event) => ({ sequence_number: sequence++, ...event });
@@ -1052,6 +1059,23 @@ test("shipped exchange withholds material split across one reasoning part", asyn
           { type: "summary_text", text: "aside" },
         ],
       ),
+    },
+    {
+      label: "harmless-reasoning-text-completion",
+      blocked: false,
+      events: stream([textDelta(0, "ordinary response"), textDone(0, "ordinary response")], []),
+    },
+    {
+      label: "withheld-skipped-summary-index",
+      blocked: true,
+      // Summary parts append: skipping index zero cannot open a later part.
+      events: stream([part(1, "ok")], []),
+    },
+    {
+      label: "withheld-unopened-reasoning-text-completion",
+      blocked: true,
+      // A completion may finish an open index, but cannot open the next one.
+      events: stream([textDelta(0, "ordinary response"), textDone(1, "aside")], []),
     },
     {
       label: "withheld-summary",

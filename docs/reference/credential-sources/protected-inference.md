@@ -186,8 +186,8 @@ citations, but can build a streamed Plan from deltas across several assistant
 items. If pending parser tails could change their order, withhold the response.
 Reasoning summary parts open only by appending the next index. A summary delta for
 an index that was never opened, or that skips ahead, withholds the response.
-Reasoning text has no part event: the next content index opens on its first delta,
-and a gap still withholds the response. That index's accumulated text is scanned
+Reasoning text has no part event: only its first delta opens the next content index.
+A completion requires an open index, and a gap still withholds the response. That index's accumulated text is scanned
 on its own, so selected material split across one part is withheld when another
 part's delta arrives between the halves.
 These checks cover the named views of one finite response, not arbitrary future
