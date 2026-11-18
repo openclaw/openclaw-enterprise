@@ -16,9 +16,16 @@ rfc: ../rfcs/0043-native-restart-recovery.md
 
 Whenever a Gateway starts with retained state, let native OpenClaw detect and
 continue eligible interrupted work. Remove OCE's recovery generations,
-compatibility domains, persisted recovery metadata, and native scope patch.
-Do not replace them with a stop epoch, constant Agent token, startup scanner,
-or `chat.send` loop.
+compatibility domains, persisted recovery metadata, and scope projection.
+Leave pinned OpenClaw's optional restart-scope policy unchanged. Do not add a
+behavior patch, stop epoch, constant Agent token, compatibility shim, startup
+scanner, or `chat.send` loop.
+
+The user's revised instruction supersedes removal of upstream scope machinery
+and guaranteed continuation of old-scoped work. New work created without a scope
+uses normal native eligibility. Previously scoped unfinished work may be refused
+when a Gateway starts without a scope, including queued input and completion
+custody where applicable. OCE does not translate native session data.
 
 OpenClaw retains ownership of interruption detection, current authority checks,
 session identity, explicit turn cancellation, and continuation admission. A
@@ -42,25 +49,27 @@ stop-first, with downtime, no automatic rollback, and no exactly-once guarantee.
 
 ## Interface removal checklist
 
-Every recovery addition in the [PR #6442 diff](https://github.com/openclaw/openclaw-enterprise/compare/7a26281407d8a1416ceab0acb2e00bbf2c2eb1c5...e81afe226ffbcf0560bb270a9b7ab6930f209ab2)
-must be removed. Native continuation across redeployments remains the outcome.
+The OCE recovery additions in the [PR #6442 diff](https://github.com/openclaw/openclaw-enterprise/compare/7a26281407d8a1416ceab0acb2e00bbf2c2eb1c5...e81afe226ffbcf0560bb270a9b7ab6930f209ab2)
+must be removed. The upstream-native row is explicitly retained under the revised
+decision. Eligible new unscoped work can continue across redeployments.
 
-| Interface                                                            | Required result                                                                                                                                                                                                                 |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Deployment: `POST /namespaces/{namespaceId}/agents/{agentId}/deploy` | Remove generation allocation/reuse and domain matching. Keep the existing request, response, and running-state transition; #6500 owns stopped-Agent activation.                                                                 |
-| Stop: `POST /namespaces/{namespaceId}/agents/{agentId}/stop`         | Remove transactional generation clearing and the guarantee against pre-Stop recovery after a later startup. Keep the stopped-state transition and workload shutdown.                                                            |
-| HTTP wire contract                                                   | #6442 added no endpoint, request field, or public revision response field. Remove none and add no resume endpoint or recovery parameter.                                                                                        |
-| IAM                                                                  | Keep exact-Agent `deploy`/`operate`, configuration `read`, native current-authority checks, and audit attribution. #6442 added no IAM surface. SQL column grants are separate.                                                  |
-| Public resource types                                                | Remove exported `RestartContinuation`, its `generation`/`domain`, and optional `AgentRevision.restartContinuation` from `packages/contracts/src/index.ts`.                                                                      |
-| Compute Driver                                                       | Remove `restartContinuationDomain` and required generation enforcement from the interface, implementations, documentation, and fixtures. Remove unsupported-Driver revision-scope fallback.                                     |
-| Internal repositories                                                | Remove `findRestartContinuation` and `setRestartContinuation`, read-view/unit-of-work bindings, both adapters, the in-memory snapshot map, and recovery validators.                                                             |
-| `occ.agents`                                                         | Drop `restart_generation`, `restart_domain`, `agents_restart_continuation_valid`, recovery-column grants, schema declarations, queries, and lifecycle writes.                                                                   |
-| `occ.agent_revisions.admitted_spec`                                  | Remove `restart_continuation` with nested `generation`/`domain` from stored JSON, codecs, and allowed-key/type constraints. Preserve all other fields and immutability.                                                         |
-| Runtime configuration                                                | Remove `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, its shared constant, Kubernetes `restartResumeScope`, and Kubernetes/Docker/SSH launch wiring. No replacement setting.                                                          |
-| Native private session contract                                      | Remove patch-added `lifecycleRestartScope`, `resumeAfterRestart.scope`, read/write/projection preservation, and scope-specific graceful/crash/queued-input/child-custody checks. Preserve native identity and authority checks. |
-| Worker failure contract                                              | Remove `RestartContinuationEndedError`, `RESTART_CONTINUATION_ENDED`, and generation refusal branches. Keep desired-state, selected-revision, lease, and predecessor checks.                                                    |
+| Interface                                                            | Required result                                                                                                                                                                                                                         |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deployment: `POST /namespaces/{namespaceId}/agents/{agentId}/deploy` | Remove generation allocation/reuse and domain matching. Keep the existing request, response, and running-state transition; #6500 owns stopped-Agent activation.                                                                         |
+| Stop: `POST /namespaces/{namespaceId}/agents/{agentId}/stop`         | Remove transactional generation clearing and the guarantee against pre-Stop recovery after a later startup. Keep the stopped-state transition and workload shutdown.                                                                    |
+| HTTP wire contract                                                   | #6442 added no endpoint, request field, or public revision response field. Remove none and add no resume endpoint or recovery parameter.                                                                                                |
+| IAM                                                                  | Keep exact-Agent `deploy`/`operate`, configuration `read`, native current-authority checks, and audit attribution. #6442 added no IAM surface. SQL column grants are separate.                                                          |
+| Public resource types                                                | Remove exported `RestartContinuation`, its `generation`/`domain`, and optional `AgentRevision.restartContinuation` from `packages/contracts/src/index.ts`.                                                                              |
+| Compute Driver                                                       | Remove `restartContinuationDomain` and required generation enforcement from the interface, implementations, documentation, and fixtures. Remove unsupported-Driver revision-scope fallback.                                             |
+| Internal repositories                                                | Remove `findRestartContinuation` and `setRestartContinuation`, read-view/unit-of-work bindings, both adapters, the in-memory snapshot map, and recovery validators.                                                                     |
+| `occ.agents`                                                         | Drop `restart_generation`, `restart_domain`, `agents_restart_continuation_valid`, recovery-column grants, schema declarations, queries, and lifecycle writes.                                                                           |
+| `occ.agent_revisions.admitted_spec`                                  | Remove `restart_continuation` with nested `generation`/`domain` from stored JSON, codecs, and allowed-key/type constraints. Preserve all other fields and immutability.                                                                 |
+| Runtime configuration                                                | Remove OCE projection of `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, its OCE constant, Kubernetes `restartResumeScope`, and Kubernetes/Docker/SSH launch wiring. Upstream still supports its optional setting. No replacement OCE setting. |
+| Native private session contract                                      | Keep upstream `lifecycleRestartScope`, `resumeAfterRestart.scope`, and graceful/crash/queued-input/child-custody policy unchanged. OCE supplies no scope and promises no old-scoped continuation.                                       |
+| Worker failure contract                                              | Remove `RestartContinuationEndedError`, `RESTART_CONTINUATION_ENDED`, and generation refusal branches. Keep desired-state, selected-revision, lease, and predecessor checks.                                                            |
 
-Remove obsolete scope-patch build selectors, provenance, and checksums; apply the current-base adaptation below. Owners are
+Delete the inverse patch and its build wiring, provenance/checksum entries, and
+unique test selector. Keep upstream tests and all unrelated patches. Owners are
 [PostgreSQL state](../../packages/occ/src/state/postgres-state.ts),
 [schema](../../packages/occ/src/state/postgres-schema.ts),
 [admission](../../packages/occ/src/index.ts), and
@@ -89,18 +98,19 @@ Harness-readiness bridge. No replacement recovery interface is planned.
    [0060](../../migrations/0060_credential_proxy_admission.sql), restoring
    immutability after the rewrite. Update journal/catalog evidence and schema.
    Fresh and populated databases must converge, without dual-read formats or shims.
-4. **Use unscoped native recovery on every launch path.** Remove the runtime
-   constant and all environment projections, including SSH systemd. Remove the
-   entire scope patch, its checksums, provenance and scope-only selectors from
-   the Dockerfile and [asset builder](../../scripts/build-runtime-assets.ts).
-   Check remaining patches apply to pinned native source independently. Verify
-   reading existing scoped retained records without an OCE translator. Native
-   process restart and Kubernetes replacement mechanisms remain unchanged.
+4. **Leave upstream policy unchanged.** Keep all OCE scope projections removed,
+   including SSH systemd. Delete the inverse patch, Docker COPY/apply/checksum
+   wiring, asset provenance, expected packaging checksum, and unique test selector.
+   Keep the source pin and other patches, especially the Harness-readiness bridge
+   and improved expired-wait message. Select upstream's existing scope, recovery,
+   custody, and session-entry tests. Do not add a smaller behavior patch or native
+   state translator. Scope mismatch refusal is an accepted transition outcome.
 5. **Replace obsolete assertions with behavior proof.** Remove generation/domain
    cases from [PostgreSQL replacement coverage](../../tests/integration/postgres-worker-agent-revision-replacement.test.ts)
    and scope-only launch/build assertions. Keep Stop, concurrency, stale revision,
    and authorization coverage. In the [real helper](../../tests/helpers/harness-topology-k3d-real.mjs),
-   prove continuation after harmless configuration change on the same Harness.
+   prove continuation for new unscoped work after a harmless configuration change
+   on the same Harness.
    Replace Stop→Deploy refusal with native continuation; keep explicit
    `chat.abort`, completed-session, revoked-owner, and active-remote-turn controls.
    Register changed names in existing CI manifests and QA selection.
@@ -109,7 +119,8 @@ Harness-readiness bridge. No replacement recovery interface is planned.
    Compute/SSH references, [recovery flow](../../docs/flows/harness-restart-recovery.md),
    affected topology flow, [proof guide](../../docs/testing/harness-restart-recovery.md),
    and [database cheat sheet](../../docs/reference/cheatsheets/database-entities.md).
-   State Stop→Deploy behavior and link #6500. Preserve historical migrations and
+   State new-unscoped-work recovery, the accepted old-scope transition limit,
+   and Stop→Deploy behavior; link #6500. Preserve historical migrations and
    RFCs. No architecture-overview rewrite is needed. Image publication requires
    separate authorization and the normal verification workflow.
 
@@ -123,14 +134,13 @@ Documentation preparation runs documentation checks only. Implementation require
       and build metadata. Historical RFCs and applied migrations may retain names.
 - [x] Typecheck consumers and verify unchanged HTTP schemas with `pnpm openapi:check`.
 
-| Required outcome             | Real check and prerequisites                                                                                                                                       | Remaining proof                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| No recovery persistence      | Fresh install and populated upgrade in `postgres-migration-compatibility.test.mjs`; inspect actual columns/JSON, immutability and limited-role permissions         | 252-case PostgreSQL compatibility suite passed                         |
-| Stop and revision ownership  | PostgreSQL worker replacement suite, Stop during deployment and overlapping revisions without generation fixtures                                                  | 42-case PostgreSQL worker suite passed                                 |
-| Unscoped native continuation | `harness-topology-k3d-real.test.mjs` through Agent API, including retained data from previous scoped runtime; same session and final result without new user input | 48 native source tests passed; live model/previous-image proof pending |
-| Configuration change         | Same real suite: ordinary redeploy and harmless configuration-generation change with valid authority/storage                                                       | Not run                                                                |
-| Negative controls            | Explicit cancellation, completed work, revoked owner, active-remote-turn refusal/wait                                                                              | Not run                                                                |
-| Packaging and launch paths   | Native AMD64/ARM64 images, remaining patch application/startup, Kubernetes/Docker/SSH conformance; not live proof on every topology                                | 448 selected checks passed; native images pending                      |
+| Required outcome             | Check                                                                                                         | Current evidence                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| No OCE recovery persistence  | PostgreSQL fresh/populated removal, immutability and limited-role grants                                      | Earlier candidate: 252 checks passed; implementation unchanged in this revision |
+| Stop and revision ownership  | PostgreSQL replacement workflow, Stop during preparation, overlapping revisions                               | Earlier candidate: 42 tests passed; implementation unchanged in this revision   |
+| Ordinary native continuation | Real Agent API workflow for new unscoped work through restart, redeploy, configuration change and Stop→Deploy | Blocked by the local native sandbox probe; final-policy model proof pending     |
+| Native limits and authority  | Upstream scope/refusal tests; cancellation, completion, revoked owner and active-remote-turn controls         | 64 upstream source tests passed; real-model controls remain blocked             |
+| Packaging                    | Remaining patches apply; strict asset/provenance tests; both images on native AMD64/ARM64                     | Final-head qualification required; earlier inverse-patch images do not qualify  |
 
 Real proof requires an enforcing disposable k3d cluster, migrated PostgreSQL
 with a limited application role, digest-pinned native images, and authorized
@@ -138,76 +148,57 @@ model credentials. Keep the `k3d-model` lane and QA-matrix registration. Missing
 prerequisites remain a proof gap; fixtures cannot replace real execution. Run
 normal typecheck, lint, workspace, CI-selection, and documentation checks.
 
-## Current-base adaptation
-
-PR #6491 moved the former scope patch into the pinned OpenClaw source
-`f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9`. The implementation therefore applies a
-removal patch to that source. It removes the upstream scope checks and fields;
-it introduces no replacement recovery policy or state. Existing readiness and
-unrelated source updates remain in place.
-
-## Delivery record
+## Revised decision and delivery record
 
 RFC-0043 was submitted in [PR #6502](https://github.com/openclaw/openclaw-enterprise/pull/6502)
-at `11cef2cb9` before Driver implementation. The follow-up implementation removes
-the interfaces in the checklist and updates the current references and flows.
+at `11cef2cb9` before Driver implementation. The user has now explicitly approved
+using upstream restart-scope policy unchanged. The pin remains
+`f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9`. Its optional scope comparison, fields,
+and queued/custody behavior remain native responsibilities.
 
-Verification of implementation `8da0b518c` and the following test/doc cleanup:
+The earlier candidate removed those native checks and had patch-specific tests
+for old-scoped continuation. That design and its native results are superseded;
+they are not verification of this final policy. Previously scoped unfinished work
+may be refused on transition. No successful old-image continuation is promised or
+required. The existing readiness bridge and unrelated runtime integrations remain.
 
-- PostgreSQL compatibility: **252 passed, no failures or skips**, including fresh
-  and populated removal, immutable revisions, limited-role grants, rollback,
-  historical canonical/Provider upgrades, and real dump/restore catalogs.
-- PostgreSQL worker replacement: **42 passed, no failures or skips**. The former
-  generation-boundary test now proves Stop during preparation and subsequent
-  deployment. Existing overlap, supersession and authorization cases remain.
-- Selected Kubernetes/Docker/SSH conformance, startup, and runtime assets:
-  **448 passed, no failures or skips**. QA fixture checks: **127 passed**.
-- Pinned native source: **48 tests passed across five files**, including real
-  SQLite records with old scope metadata, repeated restart, graceful recovery,
-  child custody and pre-start lifecycle. Production and four affected test
-  typecheck graphs passed. These tests are not real-model cluster proof.
-- Consumer typecheck, lint, formatting, workspace isolation, unchanged OpenAPI,
-  CI selection audit, docs links/spec metadata/length, and flow validation passed.
-  The source archive checksum matched; all unchanged patches and the removal
-  patch apply in recipe order.
+The OCE removals and append-only migration are retained. The earlier candidate
+passed 252 PostgreSQL migration checks, 42 worker tests, 448 selected conformance,
+startup and asset tests, and 127 QA fixture checks. Those are recorded evidence
+for that candidate, not a replacement for final-tree CI and image qualification.
+Required CI passed on `3f273a16a` in
+[run 44402421814](https://github.com/openclaw/openclaw-enterprise/actions/runs/44402421814)
+before this policy revision. The updated head must pass required CI again.
 
-Required PR CI passed at `7f7b643fd` in
-[run 44394192551](https://github.com/openclaw/openclaw-enterprise/actions/runs/44394192551).
-[Native image qualification](https://github.com/openclaw/openclaw-enterprise/actions/runs/44394184541)
-continues on that revision. Both controller architectures passed; the runtime
-jobs remain separate proof. Do not cancel useful native verification solely for
-a documentation or test follow-up.
+Local validation of the revised policy passed: **64 upstream tests across five
+files**, including unscoped restart recovery and scoped-to-unset refusal;
+**3 runtime-asset tests**; native production and four affected test typecheck
+graphs; OCE typecheck, lint, formatting, workspace isolation, unchanged OpenAPI,
+CI selection, documentation links/spec metadata/length, and both flow validators.
+The native scope-policy module matches the pinned archive byte-for-byte, and the
+remaining 10 patch checksums match the build recipe. These are source and
+packaging checks, not real-model proof. Final-head CI and image qualification
+are recorded in PR #6502.
 
-Local native preparation built the candidate controller and runtime images after
-using the supported build-CA secret and rebuilding two damaged Docker cache
-stages. It then failed the real Codex sandbox probe:
+Local real-runtime preparation previously built the candidate images, then failed
+the stock Codex sandbox probe with
 `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
-No model-recovery test ran. The sandbox was not relaxed, and the owned cluster,
-PostgreSQL fixture, and image tags were cleaned up. Real-model continuation,
-configuration-change, Stop→Deploy, and prior-scoped-image upgrade remain unproved
-on this host. They require an environment where the reviewed native sandbox probe
-passes.
+No model-recovery case ran. Sandbox enforcement was not relaxed; owned cluster,
+PostgreSQL and image-tag resources were cleaned up. Removing the scope-policy
+patch does not change that sandbox. Real-model proof remains blocked until the
+reviewed probe passes on a supported host. This is not an integration-test waiver.
 
-Main advanced to `d2710fed4d1c33521acc3c832792d31db82eb983`. The authorized normal
-merge preserves published history and its readiness-wait message change. Conflict
-resolution retains the new readiness checksum, the removal patch's checksum,
-the deleted scope guard, and the unscoped recovery contract. Required CI must pass
-again on the published merged head. Issue #6500 remains separate.
+Independent implementation review previously failed to initialize in its isolated
+Codex process because of a read-only filesystem. It remains unverified. New image
+qualification must use the updated head; older runs cannot establish the revised
+scope policy. No PR merge, image publication or production deployment is authorized.
+Issue #6500 remains separate.
 
-PR CI at `8da0b518c` found one stale packaging assertion: the packaged-Codex
-fixture omitted the new removal patch from its expected provenance inventory.
-Commit `7f7b643fd` corrected the exact SHA-256 expectation; the equality check
-remains strict, and the next required CI run passed.
-
-Independent implementation review remains unavailable: the shared autoreview
-helper's isolated Codex process failed initialization on a read-only filesystem.
-Earlier RFC-only bot reviews do not cover the implementation. No merge, image
-publication or production deployment is authorized in this task.
-
-The proposed RFC number follows the pinned base. Other open proposals use 0043;
-recheck against main before merge. The current references own the new behavior:
-[interrupted turns](../../docs/reference/agents/interrupted-turns.md),
-[deployment](../../docs/reference/agents/deployment.md), and
+Main `d2710fed4` was incorporated with a normal merge, preserving published
+history and its improved readiness-wait message. Keep that integration unchanged.
+Other open RFCs propose 0043; recheck the number against main before merge.
+Current behavior belongs to [interrupted turns](../../docs/reference/agents/interrupted-turns.md),
+[deployment](../../docs/reference/agents/deployment.md), and the
 [recovery flow](../../docs/flows/harness-restart-recovery.md).
 
 ## Manual Notes
@@ -215,5 +206,7 @@ recheck against main before merge. The current references own the new behavior:
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18: Apply the explicit user decision to leave upstream restart-scope policy unchanged, delete the inverse patch, and accept old-scope transition refusal. Earlier patch-specific native proof is superseded. (`3f273a16a`)
 
 - 2026-11-18: Materialized the authorized TASK-0053 plan and complete interface inventory against `c51d6138ef7abbb637848e7f81b206ce6195d4eb`; linked successor RFC-0043. The original plan was prepared against `f682e612c26c6384fab2e0ec5f66074dd560fcc9`.

@@ -267,8 +267,9 @@ early when other Work is claimable.
 
 On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
 removal before stopping the Harness. The Gateway's graceful shutdown aborts
-active turns and records eligible work for native restart recovery. A later
-Gateway startup can continue that work, including after Stop followed by Deploy
+active turns and records eligible work for native recovery. Later startup may
+continue unscoped work after Stop then Deploy. Native policy can refuse previously
+scoped work
 ([interrupted turns](../reference/agents/interrupted-turns.md)). Idle
 Gateways and pre-start wrappers exit promptly. Forced termination requires proof
 the previous owner stopped before retained state can be reused.
@@ -360,6 +361,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 22:35: Retain native scope policy (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
 
 - 2026-11-18 20:10: Remove the recovery-generation boundary; later Gateway startup uses native eligibility (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9)
 

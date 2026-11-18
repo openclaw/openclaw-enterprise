@@ -260,11 +260,6 @@ RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp
 COPY deploy/runtime/openclaw-restart-harness-readiness.patch /tmp/openclaw-restart-harness-readiness.patch
 RUN echo 'fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-restart-harness-readiness.patch
-# TODO: Remove this patch when pinned OpenClaw drops supervisor recovery scopes.
-# Remove scope enforcement without changing native authority.
-COPY deploy/runtime/openclaw-unscoped-restart-recovery.patch /tmp/openclaw-unscoped-restart-recovery.patch
-RUN echo '82347be65f62f96c62d4b09eba4d728a6b754d645af3f67f9d42425a508efc19  /tmp/openclaw-unscoped-restart-recovery.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-unscoped-restart-recovery.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
@@ -332,7 +327,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.unscoped.test.ts \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.scope.test.ts \
     src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
     src/config/sessions/session-entry-json.test.ts \
     && rm -rf .artifacts

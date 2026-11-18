@@ -15,7 +15,9 @@ a resumed turn. An HTTP chat request is not in that queue; see
 
 ## Recovery boundary
 
-Native OpenClaw checks retained state whenever a Gateway starts. OCE does not
+Native OpenClaw checks retained state whenever a Gateway starts. The continuation
+cases below describe work created without a scope; see the
+[transition limit](#native-enforcement-and-limits) for previously scoped work. OCE does not
 allocate recovery generations, compare recovery compatibility domains, or supply
 a restart scope. Kubernetes, Docker, and SSH use their normal workload startup.
 SSH recovery depends on the operator-installed native runtime.
@@ -55,10 +57,15 @@ label to read it.
 ## Native enforcement and limits
 
 Native OpenClaw checks session identity, the owner's current authority, and
-explicit cancellation before admitting continuation. The OCE runtime removes the
-upstream supervisor-scope filter for graceful markers, crash recovery, queued
-inputs, and child completion custody. Previously recorded scope metadata does
-not authorize or prevent continuation.
+explicit cancellation before admitting continuation. Its optional restart-scope
+fields and policy remain unchanged. OCE does not set the scope; new work created
+without one uses normal native restart eligibility.
+
+A retained nonempty scope does not match an unset startup scope. Previously scoped
+unfinished work may therefore be refused during the transition, including queued
+input and child-completion recovery where applicable. This accepted limit does not
+prevent new unscoped work from using normal recovery. OCE does not translate native
+records or patch this policy.
 
 These are native Gateway authority checks. OCC's native browser proxy uses a
 shared native identity; it does not give each OCC user a distinct native profile.

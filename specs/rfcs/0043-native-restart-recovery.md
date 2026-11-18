@@ -16,15 +16,16 @@ author: kevinlin-openai
 
 Let native OpenClaw detect and continue eligible interrupted work whenever a
 Gateway starts with retained state. Remove OCE recovery generations, compatibility
-domains, persisted recovery metadata, runtime scope configuration, and the native
-scope patch. Do not replace them with another recovery token or controller loop.
+domains, persisted recovery metadata, and runtime scope projection. Use the pinned
+OpenClaw restart-scope policy unchanged. Do not add a behavior patch, recovery
+token, compatibility shim, or controller loop.
 
 ## Motivation
 
 OCE currently allocates a recovery generation during deployment, compares a
 Compute compatibility domain, and projects that generation into native recovery.
 Stop clears the generation. This duplicates recovery policy across admission,
-persistence, workers, Compute implementations, and a native patch. Native
+persistence, workers, and Compute implementations. Native
 OpenClaw already owns interruption detection and continuation admission.
 
 ## Proposal
@@ -35,19 +36,28 @@ and admitted JSON that store their values. An appended migration removes the
 stored data and restores revision immutability in the same transaction.
 
 Remove `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE` from Kubernetes, Docker, and SSH
-launches. Remove the former patch's session scope fields and checks from pinned native
-source, using the current-base adaptation below. Keep native session identity, current
-authority, explicit turn cancellation, and retained-state validity checks.
+launches. Keep pinned OpenClaw's optional scope fields and checks unchanged.
+New work created without a scope uses normal native restart recovery, subject to
+session identity, current authority, explicit cancellation, retained-state
+validity, and Harness support.
+
+A previously recorded nonempty scope does not match an unset startup scope.
+Upstream can refuse that unfinished work on the transition, including queued
+input and child-completion recovery where applicable. The user accepts this
+limit. OCE does not translate native records or patch the scope comparison.
+The earlier requirement to continue old-scoped work is superseded.
+
 Keep the Harness-readiness and reconnect bridge from
-[PR #6435](https://github.com/openclaw/openclaw-enterprise/pull/6435).
+[PR #6435](https://github.com/openclaw/openclaw-enterprise/pull/6435), including
+main's improved expired-wait message. Keep the source pin and unrelated patches.
 
 The existing deploy and stop endpoints, payloads, IAM actions, resource scopes,
 and audit attribution stay unchanged. Workers still enforce current desired
 state, selected revision, operation lease, and predecessor ownership. Independent
 runtime selection and planned-replacement compatibility remain in Compute.
 
-Stop requests workload shutdown. It no longer prevents eligible pre-Stop work
-from continuing at a later Gateway startup. Deploy currently starts a stopped
+Stop requests workload shutdown. For work created without a scope, it no longer
+prevents eligible pre-Stop work from continuing at a later Gateway startup. Deploy currently starts a stopped
 Agent; that deployment may resume interrupted work. Preserving stopped state
 across deployment is separately tracked by
 [issue #6500](https://github.com/openclaw/openclaw-enterprise/issues/6500).
@@ -69,13 +79,14 @@ This change does not implement issue #6500 or change production deployment polic
 
 ## Acceptance Criteria
 
-- All recovery-specific interfaces from PR #6442 are removed, including private
-  native scope fields, launch projections, and packaging metadata.
+- OCE recovery-specific interfaces and scope projections are removed. Upstream
+  native scope fields and policy remain unchanged, with no OCE policy patch.
 - Fresh and populated PostgreSQL databases converge without recovery columns or
   admitted JSON. Revision immutability and limited application grants still hold.
 - Supported Agent API workflows continue eligible native work after ordinary
-  redeployment and a harmless configuration change, including retained records
-  written by the scoped runtime, without a new user message.
+  redeployment and a harmless configuration change for work created without a
+  scope, without a new user message. Continuation of old-scoped work is not an
+  acceptance criterion; native transition refusal is accepted.
 - Explicit cancellation, completed work, revoked native ownership, and active
   remote turn handling remain covered by real runtime checks.
 - Stop during deployment, overlapping revisions, and stale lease/revision
@@ -83,16 +94,18 @@ This change does not implement issue #6500 or change production deployment polic
 - Native image checks cover both images on AMD64 and ARM64. Missing runtime,
   credentials, or infrastructure remains an explicit proof gap.
 
-## Current-base adaptation
+## Current decision
 
-The current pin includes the former scope patch upstream. Removing it requires
-an inverse source patch while retaining that pin and its unrelated updates.
-This removes the same scope fields and checks; it adds no recovery metadata.
+The pin `f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9` already includes upstream's
+optional restart-scope machinery. The user explicitly chose to leave that policy
+unchanged and remove the inverse patch. This supersedes the earlier proposal to
+remove native scope fields and guarantee continuity from previously scoped work.
+Only OCE bookkeeping and projection are removed.
 
 ## Delivery
 
-Submit this decision for human review before changing the Driver contract, then
-implement [TASK-0053](../plans/0053-native-restart-recovery.md) while review proceeds
+This RFC was submitted in PR #6502 before Driver implementation. The user
+explicitly approved the revised upstream-unchanged scope. Implement [TASK-0053](../plans/0053-native-restart-recovery.md) while review proceeds
 unless a specific hold applies. Preserve RFC-0042 and its completed evidence as
 historical records. The implementation updates current references and flows.
 

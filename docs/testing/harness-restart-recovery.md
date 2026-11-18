@@ -24,7 +24,8 @@ command afterward; preserve unrelated clusters and the default kubeconfig.
 
 ## What the case checks
 
-The model writes a marker in its Harness workspace and waits in a tool call.
+Each case starts new work without an OCE-projected restart scope. The model
+writes a marker in its Harness workspace and waits in a tool call.
 The test observes the write and active run, then exercises Gateway Pod replacement,
 replacement of both Pods within the same Agent revision, and native Gateway
 process loss with its wrapper alive, and Agent API redeployment. In the process-loss case, the finite remote
@@ -67,12 +68,20 @@ revision immutability, and limited application permissions.
 The [native recovery flow](../flows/harness-restart-recovery.md) describes the
 workspace reconnect and remote-turn waits, including their refusal conditions.
 
-Run against images built from this change, with unscoped native recovery and the
-Harness-readiness bridge. Earlier scoped runtime results do not qualify this
-contract. The native checks also need to exercise retained records written by
-the previous runtime. Real-model proof does not replace native container checks
-on both architectures before merge. The current delivery evidence and unrun
-checks belong to [TASK-0053](../../specs/plans/0053-native-restart-recovery.md).
+Run against images built from the final change, with unchanged upstream scope
+policy and the Harness-readiness bridge. The native image checks select upstream's
+`session-restart-resume.scope.test.ts`, recovery, custody, and session-entry tests.
+They cover normal unscoped eligibility and scope mismatch refusal, including
+previously scoped records. These source tests do not prove a real model workflow.
+
+Continuation of old-scoped unfinished work is not required. Upstream may refuse
+that work during transition, including queued input or completion custody where
+applicable. No scope translator or behavior patch is supplied. The earlier
+inverse-patch test results do not qualify this final policy.
+
+Real-model proof and native image checks on both architectures remain required.
+Current delivery evidence and gaps belong to
+[TASK-0053](../../specs/plans/0053-native-restart-recovery.md).
 
 ## Recovery boundaries
 

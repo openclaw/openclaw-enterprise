@@ -1,6 +1,6 @@
 ---
 created: "2026-11-17 17:20"
-updated: "2026-11-18 20:10"
+updated: "2026-11-18 22:29"
 last_updated_session: "authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1"
 ---
 
@@ -74,13 +74,16 @@ ordinary runtime inputs and enqueues the revision. It stores no recovery metadat
 lease, and predecessor checks during replacement. Compute runtime selection and
 planned-replacement compatibility remain independent of native continuation.
 
-`deploy/runtime/openclaw-unscoped-restart-recovery.patch` removes the supervisor
-scope checks that the pinned upstream source includes. It removes the private
-scope fields and their launch, discovery, queued-input, and child-custody filters.
-Native session identity, authority, and explicit cancellation remain enforced.
-Existing retained records need no OCE translator. The
-[interrupted-turn reference](../reference/agents/interrupted-turns.md) owns the
-Stop→Deploy behavior and its limits.
+Pinned native `src/config/sessions/session-restart-resume-scope.ts` retains its
+optional scope policy. OCE supplies no scope. Native discovery compares retained
+marker or lifecycle scope with the startup scope: an older nonempty value does
+not match the unset value. This can refuse old unfinished work, cancel affected
+queued input, or withhold child-completion custody. New unscoped work uses normal
+native recovery. Session identity, authority, and explicit cancellation remain
+enforced; no OCE translator or policy patch changes these decisions.
+
+The [interrupted-turn reference](../reference/agents/interrupted-turns.md) owns the
+transition limit and Stop→Deploy behavior.
 
 ### 2. Wait for a disconnected workspace before execution
 
@@ -149,6 +152,8 @@ show one continuation and a final result without another user message.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 22:29: Leave upstream restart-scope policy unchanged and document accepted transition refusal (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
 
 - 2026-11-18 20:10: Remove OCE recovery bookkeeping and document native startup ownership with accompanying changes (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9)
 

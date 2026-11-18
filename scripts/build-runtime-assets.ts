@@ -71,10 +71,6 @@ const appliedPatches: readonly AppliedPatch[] = [
     file: "openclaw-restart-harness-readiness.patch",
     sha256: "fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f",
   },
-  {
-    file: "openclaw-unscoped-restart-recovery.patch",
-    sha256: "82347be65f62f96c62d4b09eba4d728a6b754d645af3f67f9d42425a508efc19",
-  },
 ];
 const runtimePaths = [
   "dist",

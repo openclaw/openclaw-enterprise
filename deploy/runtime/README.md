@@ -59,9 +59,9 @@ or renewal under the same binding. Fresh setup comes first; a typed bootstrap re
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge once the source provides that contract.
-`openclaw-unscoped-restart-recovery.patch` removes upstream supervisor scope checks.
-Native identity, authority, cancellation, and the readiness bridge remain.
-See [interrupted turns](../../docs/reference/agents/interrupted-turns.md).
+OCE omits restart scopes and keeps upstream policy unchanged.
+Previously scoped work may be refused; see
+[interrupted turns](../../docs/reference/agents/interrupted-turns.md).
 Provenance `patches` records each patch's SHA-256 in order; tests compare
 `scripts/build-runtime-assets.ts` with the Dockerfile.
 
