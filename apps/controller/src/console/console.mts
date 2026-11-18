@@ -7,6 +7,7 @@ import type {
 import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-context.mjs";
 import { renderOAuthClients } from "./oauth-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
+import { renderModelProviders } from "./model-providers.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -2415,9 +2416,13 @@ async function loadPage({
       return;
     }
     if (current.feature === "settings") {
-      shell.view.append(settingsView(session.user));
+      const view = shell.view;
+      const account = settingsView(session.user);
+      view.append(account);
       if (installationAdmin) {
-        shell.view.append(
+        viewState.administrationEnded.add(() => view.replaceChildren(account));
+        view.append(
+          renderModelProviders({ request: viewRequest, isCurrent: viewIsCurrent }),
           renderInstallationConfigurations({
             request,
             isCurrent: viewIsCurrent,

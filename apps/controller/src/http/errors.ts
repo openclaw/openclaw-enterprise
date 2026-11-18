@@ -32,6 +32,7 @@ import {
   ModelCredentialValueError,
   ModelDiscoveryError,
   ModelProviderSettingError,
+  ModelProviderValidationError,
   PluginDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
@@ -812,6 +813,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       capped(error.message),
       pointerDetail(`/${error.group}`, error.field),
     );
+  }
+  if (error instanceof ModelProviderValidationError) {
+    return failure(400, "INVALID_REQUEST", error.message, [
+      { path: `/${error.field}`, code: "INVALID_VALUE" },
+    ]);
   }
   if (error instanceof ConnectionTemplateValidationError) {
     return failure(400, "INVALID_REQUEST", error.message, [

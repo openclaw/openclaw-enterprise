@@ -4,7 +4,7 @@ import {
   OpenShellCredentialGatewayFailure,
 } from "../sandbox/openshell-credential-attachments.ts";
 import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
-import { requireConfiguration } from "@openclaw-enterprise/contracts";
+import { inferenceKeyDestination, requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialAttachmentStatus,
@@ -13,6 +13,7 @@ import type {
   CredentialRevisionContext,
   CredentialWithdrawalContext,
   CredentialSourceAttachment,
+  CredentialSource,
   CredentialSourceContext,
   CredentialSourceInput,
   CredentialSourceStatus,
@@ -97,6 +98,7 @@ interface OpenShellSourceType {
     config: Readonly<Record<string, string>>,
     options: OpenShellCredentialGatewayOptions,
     gateway: () => OpenShellGatewayPlacement | undefined,
+    grant?: CredentialSource["staticKeyGrant"],
   ): Omit<OpenShellProviderProfile, "annotations">;
 }
 
@@ -471,6 +473,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   {
     catalog: Object.freeze({
       type: "openai",
+      staticKeyBaseUrlConfig: OPENAI_AUTHORIZED_BASE_URL_CONFIG,
       config: Object.freeze([
         Object.freeze({
           name: OPENAI_AUTHORIZED_BASE_URL_CONFIG,
@@ -505,7 +508,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
         : Object.freeze({ ...config, [OPENAI_AUTHORIZED_BASE_URL_CONFIG]: baseUrl });
     },
     credentials: () => Object.freeze({ api_key: "OPENAI_API_KEY" }),
-    profile: (sourceId, config, options) => {
+    profile: (sourceId, config, options, _gateway, grant) => {
       if (config.base_url !== undefined) {
         throw new StoredCredentialSourceConfigError("base_url");
       }
@@ -516,7 +519,11 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
         throw new StoredCredentialSourceConfigError("authorized_base_url");
       }
       const baseUrl = endpointResult.baseUrl;
+      if (grant && grant.baseUrl !== baseUrl) {
+        throw new StoredCredentialSourceConfigError(OPENAI_AUTHORIZED_BASE_URL_CONFIG);
+      }
       const endpoint = new URL(baseUrl);
+      const exact = grant ? inferenceKeyDestination(grant.baseUrl, grant.protocol) : undefined;
       return {
         id: openShellProviderName(sourceId),
         displayName:
@@ -538,7 +545,8 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
             host: endpoint.hostname,
             port: Number(endpoint.port || 443),
             protocol: "rest",
-            path: `${endpoint.pathname}/**`,
+            path: exact?.path ?? `${endpoint.pathname}/**`,
+            ...(exact ? { rules: [{ allow: { method: exact.method, path: exact.path } }] } : {}),
           },
         ],
         binaries: options.binaries,
@@ -880,8 +888,14 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         return {
           catalog: type.catalog,
           credentials: type.credentials,
-          profile: (sourceId, config, gateway) =>
-            type.profile(sourceId, config, attachmentOptions, gateway),
+          profile: (source, gateway) =>
+            type.profile(
+              source.id,
+              source.config,
+              attachmentOptions,
+              gateway,
+              source.staticKeyGrant,
+            ),
         };
       },
       requiredToolBinaries: (binary) => requiredToolBinaries(attachmentOptions, binary),
@@ -935,7 +949,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       client,
       workspace,
       type,
-      context.source.id,
+      context.source,
       input.config,
       () => this.placement(context),
       context.signal,
@@ -993,7 +1007,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       client,
       workspace,
       type,
-      context.source.id,
+      context.source,
       context.source.config,
       () => this.placement(context),
       context.signal,
@@ -1091,12 +1105,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     client: OpenShellGatewayClient,
     workspace: string,
     type: OpenShellSourceType,
-    sourceId: string,
+    source: Readonly<CredentialSource>,
     config: Readonly<Record<string, string>>,
     gateway: () => OpenShellGatewayPlacement | undefined,
     signal: AbortSignal,
   ): Promise<void> {
-    const base = type.profile(sourceId, config, this.options, gateway);
+    const base = type.profile(source.id, config, this.options, gateway, source.staticKeyGrant);
     await ensureOpenShellProviderProfile(client, workspace, base, signal);
   }
 }

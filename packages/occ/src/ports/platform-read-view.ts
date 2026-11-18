@@ -30,6 +30,10 @@ export function createPlatformReadView(
       "listPresets",
       "listPresetSummaries",
     ]),
+    modelProviders: bindRepository(repositories.modelProviders, lifetime, [
+      "findModelProvider",
+      "listModelProviders",
+    ]),
     connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [
       "findConnectionTemplate",
       "listConnectionTemplates",

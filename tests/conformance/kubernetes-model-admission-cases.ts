@@ -176,7 +176,8 @@ export async function validateDedicatedCodexModelEndpoint() {
       agentId: "agent-model-egress",
       servicePrincipalId: "service-principal-model-egress",
     });
-    const policy = driver["agentAuthenticationNetworkPolicy"](revision, target);
+    const policies = driver["agentNetworkPolicies"](revision, target);
+    const policy = driver["agentAuthenticationNetworkPolicy"](revision, target, policies);
     const egress = policy.spec?.egress;
     assert.ok(Array.isArray(egress) && egress.length > 0);
     return egress;

@@ -234,6 +234,29 @@ test("startup composes both OpenShell members from one Backend for static source
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");
   clients.objects = Object.assign(Object.create(KubernetesObjectApi.prototype), clients.objects);
+  const modelService = {
+    kind: "Service",
+    metadata: { namespace: "inference", name: "model", uid: randomUUID() },
+    spec: {
+      type: "ClusterIP",
+      clusterIP: "10.43.0.70",
+      selector: { app: "inference" },
+      ports: [{ port: 443, targetPort: 9443, protocol: "TCP" }],
+    },
+  };
+  const core = clients.core as typeof clients.core & {
+    readNamespacedService(request: {
+      readonly namespace: string;
+      readonly name: string;
+    }): Promise<unknown>;
+  };
+  const readService = core.readNamespacedService;
+  core.readNamespacedService = async (request) => {
+    if (request.namespace === "inference" && request.name === "model") {
+      return modelService;
+    }
+    return readService(request);
+  };
   const listPods = clients.core.listNamespacedPod;
   clients.core.listNamespacedPod = async (request) => {
     if (observed.sandbox && request.labelSelector?.includes("openclaw.dev/workload-role=agent")) {
@@ -363,6 +386,48 @@ test("startup composes both OpenShell members from one Backend for static source
     controller.registerDriver(selected);
     controller.selectDriver(selected.capability, selected.id);
   }
+  const endpoint = {
+    baseUrl: "https://model.inference.svc.cluster.local/v1",
+    protocol: "openai-responses" as const,
+  };
+  const template = await controller.createConnectionTemplate(
+    principal,
+    { displayName: "Inference key", mode: "static_bearer", ...endpoint },
+    async () => {
+      throw new Error("Static templates have no discovery");
+    },
+  );
+  const named = await controller.saveModelProvider(
+    principal,
+    undefined,
+    {
+      ...endpoint,
+      displayName: "Local inference",
+      connectionTemplateId: template.id,
+      models: [{ id: "gpt-5.6-sol" }],
+    },
+    (id) => ({
+      id: randomUUID(),
+      installationId: controller.installation.id,
+      occurredAt: tenant.createdAt,
+      kind: "mutation",
+      actorId: principal,
+      action: "openclaw.model_providers.create",
+      resource: { kind: "installation", id: controller.installation.id },
+      outcome: "success",
+      details: { providerId: id },
+    }),
+  );
+  for (const bound of [source, otherSource]) {
+    Object.assign(bound, {
+      config: { authorized_base_url: endpoint.baseUrl },
+      staticKeyGrant: {
+        ...endpoint,
+        connectionTemplateId: template.id,
+        connectionTemplateVersion: template.current.version,
+      },
+    });
+  }
   // The Kubernetes fixture represents an initialized Namespace and registered source.
   await controller.transact(async (unit) => {
     await unit.namespaces.createNamespace({ ...tenant, status: "ready" });
@@ -387,6 +452,7 @@ test("startup composes both OpenShell members from one Backend for static source
     name: "Static attachment",
     configurationId: saved.id,
     executionMode: "dedicated",
+    modelProviderId: named.id,
     harnessAuth: { method: "credential_source", sourceId: source.id },
     credentialSources: [{ sourceId: source.id }],
   });
@@ -430,6 +496,31 @@ test("startup composes both OpenShell members from one Backend for static source
   const workspace = openShellWorkspaceName({ ...tenant, status: "ready", name: namespace });
   assert.ok(observed.sandbox, "preparation creates the real Sandbox request");
   const sandbox = observed.sandbox;
+  const destinationPolicy = Array.from(objects.values()).find(
+    (obj) =>
+      obj.kind === "NetworkPolicy" && obj.metadata.name.startsWith("allow-model-destination-"),
+  );
+  assert.deepEqual(destinationPolicy?.spec, {
+    podSelector: {
+      matchLabels: {
+        "openshell.ai/sandbox-id": sandbox.id,
+        "openshell.ai/boundary-role": "supervisor",
+      },
+    },
+    policyTypes: ["Egress"],
+    egress: [
+      { to: [{ ipBlock: { cidr: "10.43.0.70/32" } }], ports: [{ protocol: "TCP", port: 443 }] },
+      {
+        to: [
+          {
+            namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "inference" } },
+            podSelector: { matchLabels: { app: "inference" } },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: 9443 }],
+      },
+    ],
+  });
   const providers = sandbox.spec?.providers;
   assert.ok(Array.isArray(providers));
   assert.deepEqual(
@@ -656,6 +747,43 @@ test("startup composes both OpenShell members from one Backend for static source
       }
     },
   );
+  await t.test("a templated inference key registers one exact POST endpoint", async () => {
+    const baseUrl = "https://inference.example.test/team/v1";
+    const scoped: CredentialSource = {
+      ...source,
+      id: "cs_00000000-0000-4000-8000-000000000003",
+      state: "registering",
+      config: { authorized_base_url: baseUrl },
+      staticKeyGrant: {
+        connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000001",
+        connectionTemplateVersion: 1,
+        baseUrl,
+        protocol: "openai-completions",
+      },
+    };
+    await gateway.registerSource(
+      {
+        source: scoped,
+        namespace: { ...tenant, name: namespace, status: "ready" },
+        signal: AbortSignal.timeout(2_000),
+      },
+      { type: scoped.type, config: scoped.config, secrets: { api_key: "fixture-inference-key" } },
+    );
+    const path = "/team/v1/chat/completions";
+    const imported = writes.find(
+      ([action, , profile]) =>
+        action === "importProviderProfile" && profile?.id === openShellProviderName(scoped.id),
+    );
+    assert.deepEqual(imported?.[2]?.endpoints, [
+      {
+        host: "inference.example.test",
+        port: 443,
+        protocol: "rest",
+        path,
+        rules: [{ allow: { method: "POST", path } }],
+      },
+    ]);
+  });
   await t.test(
     "selected handler refuses a provider without source ownership without fallback",
     async () => {

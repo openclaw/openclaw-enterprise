@@ -3733,7 +3733,7 @@ export async function renderAgentDetail(
       updateDeployControls();
     }
     function updateDeployControls() {
-      harnessControls.hidden = callerPermissions?.deploy !== true;
+      harnessControls.hidden = Boolean(agent.modelProviderId) || callerPermissions?.deploy !== true;
       harnessControls.toggleAttribute("inert", deployPending);
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
@@ -4042,6 +4042,9 @@ export async function renderAgentDetail(
       return {};
     }
     function requestedDestination(): string {
+      if (agent.modelProviderId) {
+        return "Use the Agent’s saved model provider at deployment.";
+      }
       if (harnessChoice.value === "custom") {
         return providerUrl.value
           ? `Requested destination: ${providerUrl.value}`
@@ -4093,7 +4096,6 @@ export async function renderAgentDetail(
         focusSaveOutcome(draftActions, [], deployStatus);
         let submitted = false;
         try {
-          const harnessOverrides = requestedHarnessOverrides();
           const freshAgent = await readAgent();
           if (!context.isCurrent()) {
             return;
@@ -4118,6 +4120,7 @@ export async function renderAgentDetail(
             return;
           }
           if (
+            freshAgent.modelProviderId !== agent.modelProviderId ||
             freshAgent.executionMode !== agent.executionMode ||
             freshAgent.gatewayManagedMode !== agent.gatewayManagedMode ||
             freshAgent.backendId !== agent.backendId ||
@@ -4164,7 +4167,12 @@ export async function renderAgentDetail(
           }
           submitted = true;
           const revision = revisionForPage(
-            await request(`${path}/deploy`, { method: "POST", body: { harnessOverrides } }),
+            await request(`${path}/deploy`, {
+              method: "POST",
+              body: freshAgent.modelProviderId
+                ? {}
+                : { harnessOverrides: requestedHarnessOverrides() },
+            }),
           );
           if (
             !("configurationGeneration" in revision) ||

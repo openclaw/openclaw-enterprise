@@ -52,6 +52,7 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     name: agent.name,
     servicePrincipalId: agent.servicePrincipalId,
     configurationId: agent.configurationId,
+    modelProviderId: agent.modelProviderId,
     backendId: agent.backendId,
     executionMode: agent.executionMode,
     gatewayManagedMode: agent.gatewayManagedMode,

@@ -6,6 +6,7 @@ import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   assertHarnessInferenceRoutes,
   exerciseHarnessOverrides,
+  exerciseNamedProvider,
 } from "../helpers/harness-overrides.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -22,6 +23,7 @@ test(
       { appFactory: postgresApp },
       true,
     );
+    await exerciseNamedProvider(fixture, "private_ipv4");
     assert.ok("pool" in fixture);
     // A fresh State reader and Compute instance cannot reconstruct old routes from new defaults.
     const restarted = new PostgresPlatformState(fixture.pool);

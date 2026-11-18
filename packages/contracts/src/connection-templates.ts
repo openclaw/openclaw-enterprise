@@ -83,7 +83,7 @@ export interface ConnectionTemplate {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
-  readonly current: Readonly<OAuthConnectionTemplateVersion>;
+  readonly current: Readonly<ConnectionTemplateVersion>;
   readonly createdAt: string;
 }
 

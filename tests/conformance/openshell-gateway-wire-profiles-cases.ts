@@ -102,7 +102,16 @@ export function registerProfilesCases(): void {
               environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
             },
           ],
-          endpoints: [{ host: "api.openai.com", port: 443, protocol: "rest", path: "/v1/**" }],
+          endpoints: [
+            { host: "api.openai.com", port: 443, protocol: "rest", path: "/v1/**" },
+            {
+              host: "inference.example.test",
+              port: 443,
+              protocol: "rest",
+              path: "/v1/responses",
+              rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+            },
+          ],
           binaries: ["/app/bin/codex"],
           inferenceCapable: true,
           annotations: { "openclaw.dev/profile-digest": "digest" },
@@ -171,6 +180,14 @@ export function registerProfilesCases(): void {
           path: "/v1/**",
           enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
           access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+        },
+        {
+          host: "inference.example.test",
+          port: 443,
+          protocol: "rest",
+          path: "/v1/responses",
+          rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
         },
       ]);
       assert.deepEqual(profileImport?.profiles?.[0]?.profile?.binaries, [

@@ -50,7 +50,7 @@ as the reason Dedicated OpenClaw is disabled.
    No model is preselected. Choose a starter model or **Enter model ID manually**.
    **Choose a model from the list** keeps listed models and other settings.
    Reselect unlisted IDs when you return.
-4. Check Installation, credential, and runtime model support. Primary and
+4. Check [provider](../../guides/console/secrets.md#reuse-an-inference-provider), credential, and runtime support. Primary and
    fallback models must share a supported provider and Harness. Model changes keep
    unrelated JSON edits. **Advanced settings** → **Reset template** replaces them.
    If a malformed provider list, malformed Codex `plugins.allow`, or a number

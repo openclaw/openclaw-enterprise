@@ -8,6 +8,8 @@ import type {
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import {
   openOAuthClientRegistration,
+  isOAuthTemplate,
+  type OAuthTemplate,
   advertisedClientMethods,
   availabilityLabel,
   availableInNamespace,
@@ -200,6 +202,15 @@ export function renderConnectionTemplates(
       showRows(
         savedTemplates.map((template) => {
           const scope = availabilityLabel(template, namespaces);
+          if (!isOAuthTemplate(template)) {
+            return {
+              name: template.displayName,
+              details: [scope, "Static API key (Bearer)", String(template.current.version)],
+              actions: [
+                oauthDeleteButton(context, "connection template", template, scope, refresh, create),
+              ],
+            };
+          }
           const registrationId = template.current.oauthClientId;
           let clientName: string | undefined;
           if (registrationId !== undefined) {
@@ -249,7 +260,7 @@ export function renderConnectionTemplates(
     }
   }
 
-  function edit(template?: ConnectionTemplate) {
+  function edit(template?: OAuthTemplate) {
     openConnectionTemplateEditor(context, {
       parent: section,
       namespaces,
@@ -272,7 +283,7 @@ export function renderConnectionTemplates(
               return;
             }
             const latest = savedTemplates.find((t) => t.id === saved.id);
-            if (latest && context.isCurrent() && section.isConnected) {
+            if (latest && isOAuthTemplate(latest) && context.isCurrent() && section.isConnected) {
               edit(latest);
             }
           },
@@ -291,10 +302,10 @@ export function openConnectionTemplateEditor(
     namespaces: readonly Namespace[];
     currentNamespace: string | null;
     clients: readonly OAuthClient[];
-    template?: ConnectionTemplate | undefined;
-    onSaved: (saved: ConnectionTemplate) => void;
+    template?: OAuthTemplate | undefined;
+    onSaved: (saved: OAuthTemplate) => void;
     onUnconfirmed: () => void;
-    onRegister?: (saved: ConnectionTemplate) => void;
+    onRegister?: (saved: OAuthTemplate) => void;
   },
 ) {
   const { parent, namespaces, currentNamespace, clients, template } = options;
@@ -649,6 +660,7 @@ export function openConnectionTemplateEditor(
         return;
       }
       if (
+        !isOAuthTemplate(saved) ||
         !saved.id ||
         (template &&
           (saved.id !== template.id || saved.current.version < template.current.version)) ||

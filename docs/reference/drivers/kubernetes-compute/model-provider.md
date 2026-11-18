@@ -49,6 +49,36 @@ or workload changes. An unavailable endpoint does not cause fallback to a defaul
 Stop the Agent or withdraw its credential authorization to revoke access; changing
 a default is not revocation.
 
+## Deploy with a named provider
+
+When editing a provider through the API, send its last `settingsFingerprint` as
+`expectedSettingsFingerprint`. If another administrator changed the settings,
+read the provider again and review the changes before retrying.
+
+Set `modelProviderId` on the Agent and select the model in Agent Configuration.
+Use the ID of a Namespace credential created from the provider's static-key
+Connection Template in `harnessAuth` and `credentialSources`. Deploy without
+`harnessOverrides`. Admission refuses a credential approved for a different
+template, destination or API format, even if the Secret is the same.
+
+Dedicated Codex accepts Responses. Dedicated OpenClaw also accepts Chat
+Completions and requires context and output limits and costs for each selected
+model. The revision saves the provider ID, resolved Harness settings, and the
+selected rows from the provider catalog. Updating that catalog affects future
+admissions. Existing revisions keep their saved values.
+
+### Private endpoints
+
+Set the inference base URL to the endpoint's HTTPS hostname or canonical private IPv4 address. For an in-cluster Kubernetes Service, use its full `<service>.<namespace>.svc.cluster.local` DNS name, such as `https://inference.research.svc.cluster.local/v1`. The Connection Template authorizes the host, port, method and path; it does not store a separate private network target or Service identity.
+
+At deployment, Kubernetes Compute resolves the approved host and permits the required private addresses and port. For a Service DNS name, Compute reads the named IPv4 ClusterIP Service and permits both its ClusterIP and its selected backend Pods, with their respective ports. The Service must have a Pod selector and a numeric TCP target port. Its owner must grant Compute permission to read it. The endpoint owner controls ingress, DNS and TLS trust. A hostname must present a certificate valid for that hostname; an IPv4 endpoint needs a certificate valid for its IP address.
+
+Aliases for a Service and custom cluster DNS suffixes are not supported. A NetworkPolicy that permits only the resolved ClusterIP can block traffic after Kubernetes translates the address to a backend Pod.
+
+Kubernetes combines the allowances of all NetworkPolicies that select a Pod. Stock OpenShell 0.1.8 also selects supervisor Pods with an allow-all egress policy. The generated destination policy therefore does not independently restrict supervisor egress. Credential injection still checks the approved HTTP destination.
+
+A changed DNS answer or Service backend does not change the credential's approved HTTP destination. Redeploy the Agent to refresh network reachability after an address or Service backend changes. Changing the destination URL or protocol requires a new Connection Template version and credential approval.
+
 ## Deployment overrides
 
 Ordinary and first-deployment requests accept optional `harnessOverrides`:
@@ -78,7 +108,7 @@ An ordinary deployment without overrides uses current defaults. Console and CLI
 submit overrides directly to admission; retaining previous requested overrides
 submits them explicitly. Console labels the requested URL or inherited default;
 the admitted revision records the resolved destination. Automated image upgrades submit the selected baseline revision's
-requested overrides. First-deployment identity includes normalized overrides;
+requested overrides. A new revision of an Agent with a named provider reads the current provider and credential grant. Retrying an existing revision uses its snapshot. First-deployment identity includes normalized overrides;
 receipt recovery must include the same values. See [Agent revisions](../../../guides/topics/agent-revisions.md).
 
 ## Credential destination authorization
@@ -97,8 +127,7 @@ See [Credential Sources](../../credential-sources.md) for operations and permiss
 ## Validation and recovery
 
 URLs reject credentials, `@`, wildcards, whitespace, controls, queries, fragments,
-port zero, and ambiguous IPv4 spellings. Gateway-backed sources require exact DNS
-hostnames. Dedicated native OpenClaw retains its HTTPS port 443 restriction.
+port zero, and ambiguous IPv4 spellings. Named providers accept exact DNS hostnames and canonical private IPv4 addresses. Dedicated native OpenClaw retains its HTTPS port 443 restriction.
 Existing [egress policies](networking-and-isolation.md) remain in force; endpoint
 configuration or authorization does not grant network access.
 

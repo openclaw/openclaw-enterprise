@@ -33,8 +33,16 @@ import {
   privateBootstrapDirectory,
 } from "./bootstrap-installation.mjs";
 import { databaseUrl } from "./kubernetes-compute-real.mjs";
+import {
+  ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
+} from "../../packages/contracts/src/api/connection-templates.ts";
 
 const responseSchemas = {
+  ConnectionTemplate: ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersion: OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersion: StaticKeyConnectionTemplateVersionSchema,
   PluginApprovers: PluginApproversSchema,
   PluginDesiredSelection: PluginDesiredSelectionSchema,
   PluginDesiredState: PluginDesiredStateSchema,

@@ -31,6 +31,7 @@ export interface AgentProvisioningConfigurationInput {
 }
 
 export interface ProvisionAgentInput {
+  readonly modelProviderId?: string;
   readonly requestId: string;
   readonly namespaceId: string;
   readonly name: string;

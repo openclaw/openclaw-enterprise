@@ -6,6 +6,8 @@ Use these desktop stories:
 - **Pages/Create Agent → Authorize shared model destination**
 - **Pages/Create Agent → Destination authorization refusal**
 
+In **Pages/Settings → Manage model providers**, edit **Internal vLLM** to see its inference URL and static-key template. Add a provider and select **Create a static-key template**. The allowed inference request is derived from the URL and API format.
+
 In Settings, expand Compute and inspect `runtime.modelProvider`. Switch between
 Fields and JSON. Confirm that the URL and protocol agree and that no credential
 value appears. The view is read-only; operators change Installation startup
@@ -21,6 +23,8 @@ Also check the existing default-source, missing-credential, registration-failure
 and uncertain-registration stories. An empty authorization uses OpenAI's default
 destination. Pending registration locks its configuration. Check registration before editing
 a refused request; uncertain registration reuses the same request. Switching to account authentication hides source configuration.
+
+In **Pages/Create Agent → Saved model provider without a credential**, select Internal vLLM and check that the picker directs the creator to Credentials for a key approved for the current template.
 
 ## Correct an edited model catalog
 

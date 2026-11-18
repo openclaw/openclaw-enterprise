@@ -6,7 +6,8 @@ import type {
   EgressRoute,
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
-import { staticEgressFixture } from "./static-egress.mjs";
+import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { staticEgressFixture, loadGatewayDefinition } from "./static-egress.mjs";
 
 interface HarnessInferenceExpectation {
   readonly namespaceId: string;
@@ -263,4 +264,227 @@ export async function exerciseHarnessOverrides(
   assert.equal(recovery.status, 200, JSON.stringify(recovery.body));
   assert.equal(recovery.data.revisionId, receipt.revisionId);
   return { fixture: f, revisions, expectedInference };
+}
+
+export async function exerciseNamedProvider(
+  f: Awaited<ReturnType<typeof staticEgressFixture>>,
+  kind: "private_ipv4" | "kubernetes_service",
+) {
+  assert.ok("grant" in f);
+  const root = `/namespaces/${f.namespace.id}`;
+  const request = async (method: string, path: string, body: unknown, status: number) => {
+    const result = await f.request(method, path, { body });
+    assert.equal(result.status, status, JSON.stringify(result.body));
+    return result.data;
+  };
+  const endpoint = {
+    ...f.modelProvider,
+    baseUrl:
+      kind === "private_ipv4"
+        ? "https://10.77.43.42:8443/v1"
+        : "https://model.inference.svc.cluster.local/v1",
+  };
+  const templateSettings = {
+    displayName: "Inference key",
+    mode: "static_bearer",
+    ...endpoint,
+  };
+  const template = await request("POST", "/connection-templates", templateSettings, 201);
+  const values = {
+    displayName: "Research models",
+    ...endpoint,
+    connectionTemplateId: template.id,
+    models: [{ id: "fixture-model", contextWindow: 8192, maxTokens: 512 }, { id: "another-model" }],
+  };
+  const provider = await request(
+    "POST",
+    "/model-providers",
+    { ...values, displayName: " Research models " },
+    201,
+  );
+  assert.equal(provider.displayName, "Research models");
+  const invalidName = await f.request("POST", "/model-providers", {
+    body: { ...values, displayName: "   " },
+  });
+  assert.equal(invalidName.status, 400);
+  assert.deepEqual(invalidName.body.error.details, [
+    { path: "/displayName", code: "INVALID_VALUE" },
+  ]);
+  const key = await request(
+    "POST",
+    root + "/credential-sources",
+    {
+      name: "research-key",
+      type: "openai",
+      secrets: f.source.secrets,
+      connectionTemplateId: template.id,
+      connectionTemplateVersion: template.current.version,
+    },
+    201,
+  );
+  const create = async (name: string, sourceId: string) => {
+    const agent = await request(
+      "POST",
+      root + "/agents",
+      {
+        name,
+        configurationId: f.agent.configurationId,
+        modelProviderId: provider.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId },
+        credentialSources: [{ sourceId }],
+      },
+      201,
+    );
+    assert.equal(agent.modelProviderId, provider.id);
+    await request(
+      "POST",
+      root + "/iam/access-bindings",
+      {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: f.grant.roleId,
+        resourceKind: "credential_source",
+        resourceId: sourceId,
+      },
+      201,
+    );
+    return root + "/agents/" + agent.id;
+  };
+  const first = await create("first-research-agent", key.id);
+  const second = await create("second-research-agent", key.id);
+  const revision = await request("POST", first + "/deploy", {}, 202);
+  assert.equal(revision.harness.modelProviderId, provider.id);
+  assert.equal(revision.harness.configuration.modelProvider.baseUrl, values.baseUrl);
+  assert.deepEqual(revision.configuration.models.providers.codex.models, [
+    { id: "fixture-model", name: "fixture-model", contextWindow: 8192, maxTokens: 512 },
+  ]);
+  const saved = await f.controller.transact((state: PlatformUnitOfWork) =>
+    state.revisions.findRevision(f.namespace.id, revision.agentId, revision.id),
+  );
+  assert.ok(saved?.egressPlan);
+  // Round-trip the admitted route through the stock protobuf to catch SDK fields lost on the wire.
+  const egressConfiguration = openShellEgressConfiguration(
+    saved.egressPlan,
+    { middlewareName: "oce-authority", authorityScope: "execution" },
+    saved,
+  );
+  const wire = loadGatewayDefinition()["openshell.v1.SandboxPolicy"];
+  const received = wire.deserialize(wire.serialize(egressConfiguration)).network_policies[
+    "oce-egress-0"
+  ].endpoints;
+  const dest = new URL(values.baseUrl);
+  assert.deepEqual(received, [
+    {
+      host: dest.hostname,
+      ports: [Number(dest.port || 443)],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      path: "/v1/responses",
+      rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+    },
+  ]);
+  // The request sender receives only the admitted protocol's operation, even though the legacy source permits both.
+  assert.deepEqual(
+    saved?.egressPlan?.routes.map((route: EgressRoute) => [
+      route.method,
+      route.origin + route.path,
+    ]),
+    [["POST", values.baseUrl + "/responses"]],
+  );
+  const next = await request("POST", second + "/deploy", {}, 202);
+  assert.deepEqual(next.harness, revision.harness);
+  await request(
+    "POST",
+    first + "/deploy",
+    { harnessOverrides: { modelProvider: f.modelProvider } },
+    400,
+  );
+  // A legacy credential approves the same URL but has no consent for this template.
+  const unapproved = await create("legacy-key-agent", f.source.id);
+  await request("POST", unapproved + "/deploy", {}, 409);
+  const modified = await request(
+    "PUT",
+    "/model-providers/" + provider.id,
+    {
+      ...values,
+      expectedSettingsFingerprint: provider.settingsFingerprint,
+      models: [{ id: "another-model" }],
+    },
+    200,
+  );
+  await request("POST", first + "/deploy", {}, 400);
+  const original = await request("GET", first + "/revisions/" + revision.id, undefined, 200);
+  assert.deepEqual(original.configuration, revision.configuration);
+  const restored = await request(
+    "PUT",
+    "/model-providers/" + provider.id,
+    {
+      ...values,
+      expectedSettingsFingerprint: modified.settingsFingerprint,
+    },
+    200,
+  );
+  const changedUrl = endpoint.baseUrl.replace("/v1", "/next/v1");
+  const edited = await request(
+    "PATCH",
+    "/connection-templates/" + template.id,
+    { ...templateSettings, baseUrl: changedUrl },
+    200,
+  );
+  assert.equal(edited.current.version, 2);
+  // A destination change requires a new credential approval; an old revision stays unchanged.
+  await request("POST", first + "/deploy", {}, 409);
+  assert.equal(
+    (await request("GET", first + "/revisions/" + revision.id, undefined, 200)).harness
+      .configuration.modelProvider.baseUrl,
+    endpoint.baseUrl,
+  );
+  await request(
+    "PUT",
+    "/model-providers/" + provider.id,
+    { ...values, baseUrl: changedUrl, expectedSettingsFingerprint: restored.settingsFingerprint },
+    200,
+  );
+  // Reapproval issues a new source. Rebind the draft and grant the Agent access before deploying.
+  const replacement = await request(
+    "POST",
+    root + "/credential-sources",
+    {
+      name: "research-key-reapproved",
+      type: "openai",
+      secrets: f.source.secrets,
+      connectionTemplateId: template.id,
+      connectionTemplateVersion: edited.current.version,
+    },
+    201,
+  );
+  const draft = await request("GET", first, undefined, 200);
+  await request(
+    "POST",
+    root + "/iam/access-bindings",
+    {
+      subjectKind: "identity",
+      subjectId: draft.servicePrincipalId,
+      roleId: f.grant.roleId,
+      resourceKind: "credential_source",
+      resourceId: replacement.id,
+    },
+    201,
+  );
+  const rebound = await request(
+    "PATCH",
+    first,
+    {
+      modelProviderId: provider.id,
+      harnessAuth: { method: "credential_source", sourceId: replacement.id },
+      credentialSources: draft.credentialSources.map((binding: { sourceId: string }) =>
+        binding.sourceId === key.id ? { ...binding, sourceId: replacement.id } : binding,
+      ),
+    },
+    200,
+  );
+  assert.equal(rebound.harnessAuth.sourceId, replacement.id);
+  const redeployed = await request("POST", first + "/deploy", {}, 202);
+  assert.equal(redeployed.harness.configuration.modelProvider.baseUrl, changedUrl);
 }

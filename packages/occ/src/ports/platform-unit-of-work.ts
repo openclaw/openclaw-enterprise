@@ -55,6 +55,13 @@ export function bindPlatformUnitOfWork(
       "updatePreset",
       "deletePreset",
     ]),
+    modelProviders: bindRepository(repositories.modelProviders, lifetime, [
+      "findModelProvider",
+      "listModelProviders",
+      "createModelProvider",
+      "lockModelProvider",
+      "updateModelProvider",
+    ]),
     connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [
       "findConnectionTemplate",
       "listConnectionTemplates",

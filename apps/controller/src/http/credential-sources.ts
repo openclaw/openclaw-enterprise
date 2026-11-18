@@ -15,6 +15,7 @@ function clientCredentialSource(
     name: source.name,
     type: source.type,
     ownerCapability: source.ownerCapability,
+    ...(source.staticKeyGrant && { staticKeyGrant: source.staticKeyGrant }),
     config: source.config,
     secrets: source.secrets,
     state: source.state,
@@ -59,6 +60,12 @@ export const credentialSourceHandlers = {
         namespaceId,
         name: body?.name as string,
         type: body?.type as string,
+        ...(body?.connectionTemplateId !== undefined && {
+          connectionTemplateId: body.connectionTemplateId as string,
+        }),
+        ...(body?.connectionTemplateVersion !== undefined && {
+          connectionTemplateVersion: body.connectionTemplateVersion as number,
+        }),
         ...(body?.config === undefined ? {} : { config: body.config as Record<string, string> }),
         ...(body?.secrets === undefined
           ? {}
@@ -70,7 +77,12 @@ export const credentialSourceHandlers = {
     reply.status(201).send({ data: source, meta: { requestId: request.id } });
   },
   async listCredentialSources({ controller, context, request, reply, namespaceId }) {
-    const sources = await controller.listCredentialSources(context.actorId, namespaceId);
+    const query = request.query as { modelProviderId?: string };
+    const sources = await controller.listCredentialSources(
+      context.actorId,
+      namespaceId,
+      query.modelProviderId,
+    );
     reply.send({ data: sources.map(clientCredentialSource), meta: { requestId: request.id } });
   },
   async getCredentialSource({

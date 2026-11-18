@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-12"
-last_updated_session: "authoring-run/4ce62d56-3932-48c4-8c2e-df863a7979cd"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/d5105cb3-87db-4550-8434-accaa1821d48"
 ---
 
 # How OCC saves an OAuth connection template
@@ -59,6 +59,14 @@ A template can exist before its OAuth client. OCC takes the registration's avail
 
 Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A template version that still references the client prevents deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
 
+### Save a static-key template and select it for inference
+
+`packages/occ/src/index.ts:saveModelProvider` and `packages/occ/src/index.ts:createCredentialSource`
+
+OCC checks Installation administration permission and locks the selected template before it saves a provider. To replace a provider, OCC also locks its row and compares the saved settings with the fingerprint the administrator reviewed. A stale edit returns `409` and preserves the other administrator’s changes. The template must be Installation-wide and approve the provider’s URL and protocol. A Namespace user with Agent creation permission can list the saved providers. For the credential picker, OCC returns ready sources the creator can read and operate. The current template version and the source grant must agree on the URL and protocol. Admission uses the same check.
+
+When the credential owner approves a static template version, OCC locks the template and checks the Namespace and current version before reading the Secret. The stored static-key grant references the approved version. PostgreSQL checks that its base URL and protocol match that version. Kubernetes Compute resolves the approved hostname or IPv4 address during Agent deployment and derives the required network rules. For a Service DNS name, Compute reads the Service to derive its ClusterIP, selected Pods and ports. The credential sender separately checks the approved POST host, port and path before it injects the key. [Kubernetes private endpoints](../reference/drivers/kubernetes-compute/model-provider.md#private-endpoints)
+
 ### 3. Authorize the account in the browser
 
 `packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`
@@ -100,6 +108,8 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 15:30: Derive private model networking from the approved endpoint during deployment. (authoring-run/d5105cb3-87db-4550-8434-accaa1821d48 - 58feec9ef6e669c822a3b5161982a67ef5e59788)
 
 - 2026-11-12 05:05: Record the callback audit authorization from the consumed Namespace. (authoring-run/4ce62d56-3932-48c4-8c2e-df863a7979cd - 31a99b1bc02340887cc875094b85ce5fa369cdf5)
 

@@ -34,6 +34,8 @@ import {
 import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mjs";
 import type { createNavigation } from "./navigation.mjs";
 
+import { renderInferenceCredential } from "./model-providers.mjs";
+
 type SecretSummary = Pick<SecretMetadata, "id" | "name">;
 type SecretDetail = SecretSummary & {
   consumers: SecretConsumers;
@@ -260,6 +262,7 @@ export function renderSecrets(
     toolbar,
     ...(createDeniedNote ? [createDeniedNote] : []),
     list,
+    ...(ready ? [renderInferenceCredential(context, context.namespaceId, () => items)] : []),
   );
   search.addEventListener("input", renderList);
   context.holdWhileWriting({

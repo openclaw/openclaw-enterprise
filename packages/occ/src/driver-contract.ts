@@ -181,6 +181,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     [
       "normalizeHarnessOverrides",
       "resolveHarnessConfiguration",
+      "resolveModelProvider",
       "validateHarnessCredentialSources",
     ].every(
       (method) => candidate[method] === undefined || typeof candidate[method] === "function",

@@ -595,6 +595,7 @@ async function buildStaticEgressFixture(
   });
   const computeDriver = {
     ...createDevelopmentComputeDriver(),
+    resolveModelProvider: placement.resolveModelProvider,
     normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
     resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
     validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
@@ -767,6 +768,8 @@ async function buildStaticEgressFixture(
   if (!admitRevision) {
     return {
       ...app,
+      namespace,
+      modelProvider,
       ...admissionControls,
       fixtureKind: /** @type {const} */ ("undeployed"),
       agent,
