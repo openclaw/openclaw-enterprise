@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { text } from "node:stream/consumers";
@@ -13,20 +13,99 @@ import {
   receiveThroughFin,
 } from "../fixtures/repository-credentials/socket-observer.ts";
 
-const { createRoutePolicy } = await appModule("drivers/repo/github/access/routes");
-const { createUpstreamSender } = await appModule("drivers/repo/access/transport/upstream");
-const { inspectRequestHead } = await appModule("drivers/repo/access/transport/request");
-const { sendError } = await appModule("drivers/repo/access/transport/errors");
-const { createSystemClock } = await appModule("drivers/repo/access/clock");
-const { validateServiceConfig } = await appModule("drivers/repo/access/configuration");
+type RuntimeExports = Pick<
+  typeof import("../../apps/controller/src/drivers/repo/github/access/routes.ts"),
+  "createRoutePolicy"
+> &
+  Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/transport/upstream.ts"),
+    "createUpstreamSender"
+  > &
+  Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/transport/request.ts"),
+    "inspectRequestHead"
+  > &
+  Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/transport/errors.ts"),
+    "sendError"
+  > &
+  Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/clock.ts"),
+    "createSystemClock"
+  > &
+  Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/configuration.ts"),
+    "validateServiceConfig"
+  >;
+
+function assertRuntimeExport<K extends keyof RuntimeExports>(
+  value: unknown,
+  name: K,
+): asserts value is Pick<RuntimeExports, K> {
+  assert.ok(typeof value === "object" && value !== null && name in value);
+  assert.equal(typeof Reflect.get(value, name), "function");
+}
+
+async function runtimeExport<K extends keyof RuntimeExports>(
+  path: string,
+  name: K,
+): Promise<RuntimeExports[K]> {
+  const value = await appModule(path);
+  assertRuntimeExport(value, name);
+  return value[name];
+}
+
+const createRoutePolicy = await runtimeExport(
+  "drivers/repo/github/access/routes",
+  "createRoutePolicy",
+);
+const createUpstreamSender = await runtimeExport(
+  "drivers/repo/access/transport/upstream",
+  "createUpstreamSender",
+);
+const inspectRequestHead = await runtimeExport(
+  "drivers/repo/access/transport/request",
+  "inspectRequestHead",
+);
+const sendError = await runtimeExport("drivers/repo/access/transport/errors", "sendError");
+const createSystemClock = await runtimeExport("drivers/repo/access/clock", "createSystemClock");
+const validateServiceConfig = await runtimeExport(
+  "drivers/repo/access/configuration",
+  "validateServiceConfig",
+);
+
+type OriginScenario = {
+  body?: string;
+  status?: number;
+  declaration?: boolean;
+  benignTrailer?: boolean;
+  trailer?: boolean;
+};
+type MetadataCase = { name: string; scenario: OriginScenario; accepted: boolean };
+type ParsedRequest = {
+  method: string | undefined;
+  target: string | undefined;
+  authorization: IncomingHttpHeaders["authorization"];
+  body: string;
+};
+type ExchangeOutcome =
+  import("../../apps/controller/src/drivers/repo/access/internal-contracts.ts").ExchangeOutcome;
+type Profile = Parameters<typeof createRoutePolicy>[0]["profile"];
+
+function portOf(server: Server): number {
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return address.port;
+}
 
 const target = "/repos/fixture/repository";
 const identity = { id: 73, full_name: "fixture/repository" };
 const credential = "Bearer synthetic-metadata-origin-only";
 const request = (path = target, framing = "Content-Length: 0", body = "") =>
   `GET ${path} HTTP/1.1\r\nHost: gateway.example\r\nConnection: close\r\n${framing}\r\n\r\n${body}`;
-function assertFixedResponse(raw, status, body) {
+function assertFixedResponse(raw: string, status: string, body: string) {
   const [head, receivedBody, ...extra] = raw.split("\r\n\r\n");
+  assert.ok(head);
   const [receivedStatus, ...headers] = head.split("\r\n");
   assert.equal(receivedStatus, `HTTP/1.1 ${status}`);
   assert.deepEqual(
@@ -52,8 +131,8 @@ test(
     const config = validateServiceConfig(
       serviceConfigurationData({ limits: { apiResponseBytes: 1024 } }),
     );
-    let scenario = {};
-    const parsedRequests = [];
+    let scenario: OriginScenario = {};
+    const parsedRequests: ParsedRequest[] = [];
     const originServer = createServer(async (req, res) => {
       parsedRequests.push({
         method: req.method,
@@ -80,8 +159,8 @@ test(
       res.end();
     });
     await listen(resources, originServer);
-    const observed = await observeTlsOrigin(resources, tls, originServer.address().port);
-    const policy = (profile) =>
+    const observed = await observeTlsOrigin(resources, tls, portOf(originServer));
+    const policy = (profile: Profile) =>
       createRoutePolicy({
         repository: identity.full_name,
         repositoryId: String(identity.id),
@@ -92,7 +171,7 @@ test(
         limits: config.limits,
       });
     let selected = policy("metadata-read");
-    const outcomes = [];
+    const outcomes: ExchangeOutcome[] = [];
     const gateway = createServer(async (req, res) => {
       res.sendDate = false;
       const parsed = inspectRequestHead(req, {
@@ -102,13 +181,18 @@ test(
         headerPairs: 64,
         targetBytes: 8192,
       });
-      const plan = parsed.kind === "denied" ? parsed : selected.plan(parsed.head);
-      if (plan.kind === "denied") {
+      if (parsed.kind === "denied") {
+        req.resume();
+        sendError(res, parsed.status, parsed.code);
+        return;
+      }
+      const plan = selected.plan(parsed.head);
+      if ("kind" in plan) {
         req.resume();
         sendError(res, plan.status, plan.code);
         return;
       }
-      const tracked = [];
+      const tracked: Promise<void>[] = [];
       const sender = createUpstreamSender({
         request: req,
         response: res,
@@ -144,8 +228,8 @@ test(
       }
     });
     await listen(resources, gateway);
-    const port = gateway.address().port;
-    const verifyOrigin = async (index) => {
+    const port = portOf(gateway);
+    const verifyOrigin = async (index: number) => {
       assert.ok(observed.connections[index], "origin connection was observed");
       const wire = await observed.connections[index];
       assert.ok(wire.request.startsWith(`GET ${target} HTTP/1.1\r\n`));
@@ -192,40 +276,72 @@ test(
       assert.equal(observed.connections.length, before);
       assert.equal(parsedRequests.length, before);
     });
-    for (const [name, value, accepted = false] of [
-      ["valid identity with zero actual trailers", { body: JSON.stringify(identity) }, true],
+    const cases: MetadataCase[] = [
+      {
+        name: "valid identity with zero actual trailers",
+        scenario: { body: JSON.stringify(identity) },
+        accepted: true,
+      },
       // GitHub answers with its own spelling; the configured one is released (finding 2239).
-      [
-        "GitHub's spelling of the full name",
-        { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository" }) },
-        true,
-      ],
-      [
-        "GitHub's all-caps spelling of the full name",
-        { body: JSON.stringify({ ...identity, full_name: "FIXTURE/REPOSITORY" }) },
-        true,
-      ],
-      ["a declaration alone is not an actual trailer", { declaration: true }, true],
-      ["undeclared last actual trailer", { trailer: true, body: JSON.stringify(identity) }],
-      [
-        "last actual trailer beyond declaration",
-        { trailer: true, declaration: true, body: JSON.stringify(identity) },
-      ],
-      ["non-200 success", { status: 201 }],
-      ["wrong repository id", { body: JSON.stringify({ ...identity, id: 74 }) }],
-      ["string repository id", { body: JSON.stringify({ ...identity, id: "73" }) }],
-      ["wrong full name", { body: JSON.stringify({ ...identity, full_name: "other/repository" }) }],
-      [
-        "full name with a suffix",
-        { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository.git" }) },
-      ],
-      ["non-string full name", { body: JSON.stringify({ ...identity, full_name: null }) }],
-      ["malformed JSON", { body: "{" }],
-      [
-        "response byte overflow",
-        { body: JSON.stringify({ ...identity, extra: "x".repeat(1024) }) },
-      ],
-    ]) {
+      {
+        name: "GitHub's spelling of the full name",
+        scenario: { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository" }) },
+        accepted: true,
+      },
+      {
+        name: "GitHub's all-caps spelling of the full name",
+        scenario: { body: JSON.stringify({ ...identity, full_name: "FIXTURE/REPOSITORY" }) },
+        accepted: true,
+      },
+      {
+        name: "a declaration alone is not an actual trailer",
+        scenario: { declaration: true },
+        accepted: true,
+      },
+      {
+        name: "undeclared last actual trailer",
+        scenario: { trailer: true, body: JSON.stringify(identity) },
+        accepted: false,
+      },
+      {
+        name: "last actual trailer beyond declaration",
+        scenario: { trailer: true, declaration: true, body: JSON.stringify(identity) },
+        accepted: false,
+      },
+      { name: "non-200 success", scenario: { status: 201 }, accepted: false },
+      {
+        name: "wrong repository id",
+        scenario: { body: JSON.stringify({ ...identity, id: 74 }) },
+        accepted: false,
+      },
+      {
+        name: "string repository id",
+        scenario: { body: JSON.stringify({ ...identity, id: "73" }) },
+        accepted: false,
+      },
+      {
+        name: "wrong full name",
+        scenario: { body: JSON.stringify({ ...identity, full_name: "other/repository" }) },
+        accepted: false,
+      },
+      {
+        name: "full name with a suffix",
+        scenario: { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository.git" }) },
+        accepted: false,
+      },
+      {
+        name: "non-string full name",
+        scenario: { body: JSON.stringify({ ...identity, full_name: null }) },
+        accepted: false,
+      },
+      { name: "malformed JSON", scenario: { body: "{" }, accepted: false },
+      {
+        name: "response byte overflow",
+        scenario: { body: JSON.stringify({ ...identity, extra: "x".repeat(1024) }) },
+        accepted: false,
+      },
+    ];
+    for (const { name, scenario: value, accepted } of cases) {
       await t.test(`${name}: exact response through recipient FIN`, async () => {
         scenario = value;
         const index = observed.connections.length;
@@ -247,7 +363,7 @@ test(
         // Exact local error bytes distinguish a safe error from leaked provider headers/body.
         const body = '{"error":{"code":"exchange-uncertain"}}';
         assertFixedResponse(raw, "502 Bad Gateway", body);
-        assert.equal(outcomes.at(-1).kind, "possibly-dispatched");
+        assert.equal(outcomes.at(-1)?.kind, "possibly-dispatched");
       });
     }
     await t.test("general git-read retains descriptions with a benign actual trailer", async () => {
@@ -263,7 +379,11 @@ test(
       const wire = await verifyOrigin(index);
       assert.ok(wire.response.endsWith("0\r\nx-declared: benign\r\n\r\n"));
       assert.match(raw, /^HTTP\/1.1 200 OK\r\n/);
-      assert.equal(JSON.parse(raw.split("\r\n\r\n")[1]).description, description);
+      const body = raw.split("\r\n\r\n")[1];
+      assert.ok(body);
+      const response: unknown = JSON.parse(body);
+      assert.ok(typeof response === "object" && response !== null && "description" in response);
+      assert.equal(response.description, description);
     });
   },
 );

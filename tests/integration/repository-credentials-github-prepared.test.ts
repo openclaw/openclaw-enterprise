@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import https, { get } from "node:https";
 import { syncBuiltinESMExports } from "node:module";
@@ -13,12 +13,63 @@ import {
   fixtureRepository,
   fixtureRepositoryId,
   fixtureInstallationId,
+  type GitHubFixture,
+  type GitHubFixtureOptions,
 } from "../fixtures/repository-credentials/github.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import type {
+  TokenMaterial,
+  TokenFamily,
+} from "../../apps/controller/src/backends/token-service/custody.ts";
+import type {
+  GitHubPreparationAdmission,
+  GitHubPreparationStore,
+} from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
+import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/access/provider-diagnostics.ts";
+
+type FixtureOptions = GitHubFixtureOptions & {
+  observeDiagnostic?: (diagnostic: GitHubPreparationDiagnostic) => void;
+};
+type Admission = GitHubPreparationAdmission;
+type Material = TokenMaterial<Admission>;
+type Family = TokenFamily<Admission>;
+type Pause = { entered: Promise<unknown>; release: () => void };
+type PreparedDatabase = {
+  connect(): GitHubPreparationStore;
+  pauseNextCommit(): Pause;
+  failNextCommit(mode: "before" | "after"): void;
+};
+
+function requireFirst<T>(values: readonly T[]): T {
+  const value = values[0];
+  assert.ok(value !== undefined, "fixture observation exists");
+  return value;
+}
+
+function assertPreparedDatabase(value: unknown): asserts value is PreparedDatabase {
+  assert.ok(typeof value === "object" && value !== null);
+  assert.ok("connect" in value && typeof value.connect === "function");
+  assert.ok("pauseNextCommit" in value && typeof value.pauseNextCommit === "function");
+  assert.ok("failNextCommit" in value && typeof value.failNextCommit === "function");
+  const connection: unknown = value.connect();
+  assert.ok(typeof connection === "object" && connection !== null);
+  assert.ok("readCurrent" in connection && typeof connection.readCurrent === "function");
+  assert.ok("transact" in connection && typeof connection.transact === "function");
+}
+
+function withWriteProfile(admission: Admission): Admission {
+  assert.ok("repositoryId" in admission.grant);
+  return { ...admission, grant: { ...admission.grant, profile: "git-write" } };
+}
+
+function family(row: Family | undefined): Family {
+  assert.ok(row, "fixture family exists");
+  return row;
+}
 
 // The trusted consumer injects only committed bytes into a real loopback request.
-function readRepository(github, material) {
-  return new Promise((resolve, reject) => {
+function readRepository(github: GitHubFixture, material: Material) {
+  return new Promise<number | undefined>((resolve, reject) => {
     const outgoing = get(
       `${github.origin}/repos/${fixtureRepository}`,
       {
@@ -36,12 +87,12 @@ function readRepository(github, material) {
   });
 }
 
-async function setup(t, options = {}) {
+async function setup(t: TestContext, options: FixtureOptions = {}) {
   const { observeDiagnostic, ...githubOptions } = options;
-  const diagnostics = [];
+  const diagnostics: GitHubPreparationDiagnostic[] = [];
   const clock = createControlledClock();
   const github = await startGitHubFixture(t, { clock, ...githubOptions });
-  const admission = {
+  const admission: Admission = {
     issuerAuthority: preparationIssuerAuthority(github.origin, github.tls.ca),
     familyId: "family",
     generation: 1,
@@ -57,12 +108,13 @@ async function setup(t, options = {}) {
       profile: "git-read",
     },
   };
-  const database = createPreparedStore(admission);
+  const database: unknown = createPreparedStore(admission);
+  assertPreparedDatabase(database);
   const store = database.connect();
   const key = createGitHubKeyOwner({ privateKey: github.privateKey, appId: fixtureAppId, clock });
   t.after(() => key.close());
   let keyReads = 0;
-  const owner = (target = admission, duringKeyLookup) =>
+  const owner = (target: Admission = admission, duringKeyLookup?: () => void | Promise<void>) =>
     createGitHubPreparationOwner({
       admission: target,
       store: database.connect(),
@@ -79,7 +131,7 @@ async function setup(t, options = {}) {
         keyReads++;
         // Secret resolution is downstream of the committed uncertainty marker.
         assert.equal(
-          await store.readCurrent(admission.familyId, (row) => row.attempts.at(-1)?.state),
+          await store.readCurrent(admission.familyId, (row) => family(row).attempts.at(-1)?.state),
           "issuing",
         );
         await duringKeyLookup?.();
@@ -102,15 +154,15 @@ async function setup(t, options = {}) {
     owner,
     reader,
     bounds,
-    warm: (target = admission) => reader.readWarm(target),
-    run: (id, options = bounds()) => owner().run(id, options),
+    warm: (target: Admission = admission) => reader.readWarm(target),
+    run: (id: string, options = bounds()) => owner().run(id, options),
     keyReads: () => keyReads,
   };
 }
 
 test("background issuance commits before warm reads; renewal preserves eligible material", async (t) => {
-  const atProvider = Promise.withResolvers();
-  const release = Promise.withResolvers();
+  const atProvider = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
   let renewing = false;
   const fixture = await setup(t, {
     async beforeIssueResponse() {
@@ -128,14 +180,13 @@ test("background issuance commits before warm reads; renewal preserves eligible 
   assert.equal(await run("first"), "committed");
   const first = await readWarm();
   assert.equal(first.kind, "warm");
-  assert.equal(first.material.providerExpiresAt, github.issuesOfTokens[0].expires);
+  assert.equal(first.material.providerExpiresAt, requireFirst(github.issuesOfTokens).expires);
   assert.equal(await readRepository(github, first.material), 200);
   assert.equal(await run("first"), "blocked");
   assert.equal(await run("not-due"), "ready");
   assert.equal(github.issuesOfTokens.length, 1);
-  const wrongGrant = structuredClone(admission);
-  wrongGrant.grant.profile = "git-write";
-  assert.equal((await readWarm(wrongGrant)).kind, "not_ready");
+  const wrongGrantWithProfile = withWriteProfile(structuredClone(admission));
+  assert.equal((await readWarm(wrongGrantWithProfile)).kind, "not_ready");
   assert.equal(github.issuesOfTokens.length, 1);
   assert.equal(fixture.keyReads(), 1);
   assert.equal(clock.pendingTimers(), 0);
@@ -145,6 +196,7 @@ test("background issuance commits before warm reads; renewal preserves eligible 
   const renewal = run("renew");
   await atProvider.promise;
   const duringRenewal = await readWarm();
+  assert.equal(duringRenewal.kind, "warm");
   assert.equal(duringRenewal.material.attemptId, "first");
   assert.equal(duringRenewal.material.materialVersion, first.material.materialVersion);
   duringRenewal.material.bytes.fill(0);
@@ -152,6 +204,7 @@ test("background issuance commits before warm reads; renewal preserves eligible 
   release.resolve();
   assert.equal(await renewal, "committed");
   const warm = await readWarm();
+  assert.equal(warm.kind, "warm");
   assert.equal(warm.material.attemptId, "renew");
   assert.notEqual(warm.material.materialVersion, first.material.materialVersion);
   assert.equal(await readRepository(github, warm.material), 200);
@@ -168,20 +221,20 @@ test("background issuance commits before warm reads; renewal preserves eligible 
 test("stale owners and changed admission quarantine late tokens, across takeover", async (t) => {
   for (const change of ["ownerEpoch", "inputVersion", "grant", "enabled", "admittedGrantCount"]) {
     await t.test(change, async (t) => {
-      let mutate;
       const f = await setup(t, { beforeIssueResponse: async () => mutate() });
-      mutate = () =>
-        f.store.transact(f.admission.familyId, (row) => {
+      const mutate = () =>
+        f.store.transact(f.admission.familyId, (current) => {
+          const row = family(current);
           if (change === "ownerEpoch") {
-            row.admission.ownerEpoch++;
+            row.admission = { ...row.admission, ownerEpoch: row.admission.ownerEpoch + 1 };
             // Takeover may quarantine the old intent before its late reply arrives.
-            row.attempts[0].state = "quarantined";
+            requireFirst(row.attempts).state = "quarantined";
           }
           if (change === "inputVersion") {
-            row.admission.inputVersion = "key-version-2";
+            row.admission = { ...row.admission, inputVersion: "key-version-2" };
           }
           if (change === "grant") {
-            row.admission.grant.profile = "git-write";
+            row.admission = withWriteProfile(row.admission);
           }
           if (change === "enabled") {
             row.enabled = false;
@@ -192,9 +245,9 @@ test("stale owners and changed admission quarantine late tokens, across takeover
         });
       assert.equal(await f.run("late"), "quarantined");
       assert.equal((await f.warm()).kind, "not_ready");
-      const row = await f.store.readCurrent(f.admission.familyId, (row) => row);
-      assert.equal(row.attempts[0].state, "quarantined");
-      assert.ok(row.attempts[0].candidate.length > 0);
+      const row = await f.store.readCurrent(f.admission.familyId, (row) => family(row));
+      assert.equal(requireFirst(row.attempts).state, "quarantined");
+      assert.ok((requireFirst(row.attempts).candidate?.length ?? 0) > 0);
       assert.equal(
         await f.owner(row.admission).run("takeover", f.bounds()),
         row.enabled && row.admittedGrantCount === 1 ? "blocked" : "fenced",
@@ -206,12 +259,12 @@ test("stale owners and changed admission quarantine late tokens, across takeover
 
 // In every case the fixture issuer minted a token. Quarantine must preserve exactly the
 // identifiable cleanup material, publish nothing, and block both replay and replacement.
-async function assertQuarantined(f, hasCleanupToken = true) {
+async function assertQuarantined(f: Awaited<ReturnType<typeof setup>>, hasCleanupToken = true) {
   assert.equal(await f.run("invalid"), "quarantined");
   assert.equal((await f.warm()).kind, "not_ready");
   const candidate = await f.store.readCurrent(
     f.admission.familyId,
-    (row) => row.attempts[0].candidate,
+    (row) => requireFirst(family(row).attempts).candidate,
   );
   assert.equal(candidate !== undefined, hasCleanupToken);
   if (candidate) {
@@ -226,7 +279,9 @@ async function assertQuarantined(f, hasCleanupToken = true) {
 }
 
 test("provider scope and expiry are verified without invented lifetime", async (t) => {
-  const cases = {
+  type Packet = Parameters<NonNullable<GitHubFixtureOptions["tokenResponse"]>>[0];
+  type Change = Record<string, unknown> | ((packet: Packet) => Record<string, unknown>);
+  const cases: Record<string, Change> = {
     "extra permission": {
       permissions: { contents: "read", metadata: "read", administration: "write" },
     },
@@ -258,8 +313,8 @@ test("provider scope and expiry are verified without invented lifetime", async (
 test("an omitted optional repository selection preserves a valid single-repository grant", async (t) => {
   const f = await setup(t, {
     tokenResponse(packet) {
-      delete packet.repository_selection;
-      return packet;
+      const { repository_selection: _selection, ...response } = packet;
+      return response;
     },
   });
   assert.equal(await f.run("optional-selection"), "committed");
@@ -271,9 +326,9 @@ test("an omitted optional repository selection preserves a valid single-reposito
 
 test("lost transaction receipts never replay issuance and readiness requires committed material", async (t) => {
   for (const phase of ["begin", "publish"]) {
-    for (const failure of ["before", "after"]) {
+    for (const failure of ["before", "after"] satisfies ("before" | "after")[]) {
       await t.test(`${phase}-${failure}`, async (t) => {
-        let fail;
+        let fail: (() => void) | undefined;
         const f = await setup(t, { beforeIssueResponse: async () => fail?.() });
         if (phase === "begin") {
           f.database.failNextCommit(failure);
@@ -281,11 +336,9 @@ test("lost transaction receipts never replay issuance and readiness requires com
           fail = () => f.database.failNextCommit(failure);
         }
         assert.equal(await f.run("ambiguous"), "quarantined");
-        assert.equal(
-          f.diagnostics[0].firstFailureStage,
-          phase === "begin" ? "intent" : "publication",
-        );
-        assert.equal(f.diagnostics[0].publication, "unknown");
+        const diagnostic = requireFirst(f.diagnostics);
+        assert.equal(diagnostic.firstFailureStage, phase === "begin" ? "intent" : "publication");
+        assert.equal(diagnostic.publication, "unknown");
         assert.equal(JSON.stringify(f.diagnostics).includes("fixture commit"), false);
         const warm = await f.warm();
         assert.equal(warm.kind, phase === "publish" && failure === "after" ? "warm" : "not_ready");
@@ -311,20 +364,22 @@ test("lost provider reply and cancellation quarantine issuance; no takeover repl
     "quarantined",
   );
   assert.equal((await f.warm()).kind, "not_ready");
-  assert.equal(f.diagnostics[0].error, "cancelled");
-  assert.equal(f.diagnostics[0].requestEndCalled, true);
-  assert.equal(f.diagnostics[0].outcome, "quarantined");
-  await f.store.transact(f.admission.familyId, (row) => {
-    row.admission.ownerEpoch++;
+  const diagnostic = requireFirst(f.diagnostics);
+  assert.equal(diagnostic.error, "cancelled");
+  assert.equal(diagnostic.requestEndCalled, true);
+  assert.equal(diagnostic.outcome, "quarantined");
+  await f.store.transact(f.admission.familyId, (current) => {
+    const row = family(current);
+    row.admission = { ...row.admission, ownerEpoch: row.admission.ownerEpoch + 1 };
   });
-  const admission = await f.store.readCurrent(f.admission.familyId, (row) => row.admission);
+  const admission = await f.store.readCurrent(f.admission.familyId, (row) => family(row).admission);
   assert.equal(await f.owner(admission).run("replacement", f.bounds()), "blocked");
   assert.equal(f.github.issuesOfTokens.length, 1);
 });
 
 test("warm return waits for commit and rejects withdrawal of already committed material", async (t) => {
-  let gate;
-  const paused = Promise.withResolvers();
+  let gate: Pause | undefined;
+  const paused = Promise.withResolvers<void>();
   const f = await setup(t, {
     beforeIssueResponse: () => {
       gate = f.database.pauseNextCommit();
@@ -333,6 +388,7 @@ test("warm return waits for commit and rejects withdrawal of already committed m
   });
   const producing = f.run("commit-gated");
   await paused.promise;
+  assert.ok(gate);
   await gate.entered;
   let returned = false;
   const reading = f.warm().then((result) => {
@@ -348,7 +404,7 @@ test("warm return waits for commit and rejects withdrawal of already committed m
   assert.equal(result.kind, "warm");
   result.material.bytes.fill(0);
   await f.store.transact(f.admission.familyId, (row) => {
-    row.enabled = false;
+    family(row).enabled = false;
   });
   assert.equal((await f.warm()).kind, "not_ready");
   assert.equal(await f.run("after-withdrawal"), "fenced");
@@ -360,7 +416,8 @@ test("quarantining this attempt during key lookup prevents any GitHub issuance",
   const store = database.connect();
   const superseded = owner(admission, async () => {
     await store.transact(admission.familyId, (row) => {
-      const attempt = row.attempts.find((entry) => entry.id === "withdraw-during-key");
+      const attempt = family(row).attempts.find((entry) => entry.id === "withdraw-during-key");
+      assert.ok(attempt);
       assert.equal(attempt.state, "issuing");
       attempt.state = "quarantined";
     });
@@ -375,15 +432,15 @@ test("quarantining this attempt during key lookup prevents any GitHub issuance",
 });
 
 test("closing the signing key after minting preserves cleanup custody without publishing", async (t) => {
-  let closeKey;
   const f = await setup(t, { beforeIssueResponse: () => closeKey() });
-  closeKey = () => f.key.close();
+  const closeKey = () => f.key.close();
   await assertQuarantined(f);
   assert.equal(f.diagnostics.length, 1);
-  assert.equal(f.diagnostics[0].validationKind, "validated");
-  assert.equal(f.diagnostics[0].candidateIdentified, true);
-  assert.equal(f.diagnostics[0].requestEndCalled, true);
-  assert.equal(f.diagnostics[0].outcome, "quarantined");
+  const diagnostic = requireFirst(f.diagnostics);
+  assert.equal(diagnostic.validationKind, "validated");
+  assert.equal(diagnostic.candidateIdentified, true);
+  assert.equal(diagnostic.requestEndCalled, true);
+  assert.equal(diagnostic.outcome, "quarantined");
   assert.equal(f.clock.pendingTimers(), 0);
 });
 
@@ -398,13 +455,32 @@ test("warm reader wipes its detached selection when it cannot return it", async 
     "invalid clock",
   ]) {
     await t.test(failure, async () => {
-      let selected;
-      let selectedLiveBytes;
+      let selectedBytes: Uint8Array | undefined;
+      let selectedUsableUntil: number | undefined;
+      let selectedLiveBytes: boolean | undefined;
       const interrupted = createWarmTokenReader(
         {
           async readCurrent(familyId, select) {
-            selected = await store.readCurrent(familyId, select);
-            selectedLiveBytes = selected.material.bytes.some((byte) => byte !== 0);
+            const selected = await store.readCurrent(familyId, select);
+            assert.ok(
+              typeof selected === "object" &&
+                selected !== null &&
+                "kind" in selected &&
+                selected.kind === "warm" &&
+                "material" in selected,
+            );
+            const material = selected.material;
+            assert.ok(
+              typeof material === "object" &&
+                material !== null &&
+                "bytes" in material &&
+                material.bytes instanceof Uint8Array &&
+                "usableUntil" in material &&
+                typeof material.usableUntil === "number",
+            );
+            selectedBytes = material.bytes;
+            selectedUsableUntil = material.usableUntil;
+            selectedLiveBytes = selectedBytes.some((byte) => byte !== 0);
             if (failure === "read receipt lost") {
               throw new Error("fixture lost read receipt after selection");
             }
@@ -413,13 +489,13 @@ test("warm reader wipes its detached selection when it cannot return it", async 
         },
         () => {
           // Only the final validity check sees the clock failure or advanced time.
-          if (!selected) {
+          if (selectedUsableUntil === undefined) {
             return clock.wallNow();
           }
           if (failure === "clock threw") {
             throw new Error("fixture clock unavailable on return");
           }
-          return failure === "invalid clock" ? NaN : selected.material.usableUntil;
+          return failure === "invalid clock" ? NaN : selectedUsableUntil;
         },
       );
 
@@ -427,7 +503,7 @@ test("warm reader wipes its detached selection when it cannot return it", async 
       assert.equal(selectedLiveBytes, true, "selection held live bytes before the failure");
       assert.deepEqual(result, { kind: "not_ready" });
       assert.ok(
-        selected.material.bytes.every((byte) => byte === 0),
+        selectedBytes?.every((byte) => byte === 0),
         "discarded selection was wiped",
       );
     });
@@ -451,6 +527,7 @@ test("ambiguous issuance retains only identifiable cleanup material and never re
     await t.test(variation, async (t) => {
       const f = await setup(t, {
         encodeIssueResponse(packet) {
+          assert.ok(typeof packet === "object" && packet !== null && "token" in packet);
           const encoded = JSON.stringify(packet);
           // Issue a real fixture token first, then send an ambiguous raw response.
           if (variation === "permissions") {
@@ -520,14 +597,14 @@ test("prepared issuance settles only at request close and preserves earlier evid
       if (expected.name === "ambiguous refusal then error") {
         f.github.setIssueStatus(401, '{"message":"refused","token":null}');
       }
-      const events = [];
+      const events: string[] = [];
       let returned = false;
-      let returnedAtClose;
-      let publicationAtClose;
-      let deadlineAtConsumption;
-      let advancing;
+      let returnedAtClose: boolean | undefined;
+      let publicationAtClose: Promise<boolean> | undefined;
+      let deadlineAtConsumption: number[] | undefined;
+      let advancing: Promise<void> | undefined;
       const originalRequest = https.request;
-      t.mock.method(https, "request", (...args) => {
+      t.mock.method(https, "request", (...args: Parameters<typeof https.request>) => {
         const request = originalRequest(...args);
         request.once("socket", () =>
           request.once("response", (response) => {
@@ -549,7 +626,7 @@ test("prepared issuance settles only at request close and preserves earlier evid
           returnedAtClose = returned;
           publicationAtClose = f.store.readCurrent(
             f.admission.familyId,
-            (row) => row.committed !== undefined,
+            (row) => family(row).committed !== undefined,
           );
           events.push("request-close");
         });
@@ -579,13 +656,14 @@ test("prepared issuance settles only at request close and preserves earlier evid
         false,
         "publication must wait for actual request close",
       );
+      const diagnostic = requireFirst(f.diagnostics);
       if (expected.fault === "deadline") {
         assert.deepEqual(deadlineAtConsumption, [30000]);
-        assert.equal(f.diagnostics[0].error, "deadline");
+        assert.equal(diagnostic.error, "deadline");
       }
-      const row = await f.store.readCurrent(f.admission.familyId, (row) => row);
+      const row = await f.store.readCurrent(f.admission.familyId, (row) => family(row));
       assert.equal(row.attempts.length, 1);
-      const attempt = row.attempts[0];
+      const attempt = requireFirst(row.attempts);
       assert.equal(attempt.id, "interval");
       if (expected.fault === "none") {
         assert.equal(outcome, "committed");
@@ -603,14 +681,11 @@ test("prepared issuance settles only at request close and preserves earlier evid
           );
           attempt.candidate.fill(0);
         }
-        assert.equal(
-          f.diagnostics[0].firstFailureStage,
-          expected.issued ? "complete" : "validation",
-        );
+        assert.equal(diagnostic.firstFailureStage, expected.issued ? "complete" : "validation");
         assert.equal(await f.run("replacement"), "blocked");
       }
-      assert.equal(f.diagnostics[0].candidateIdentified, expected.candidate);
-      assert.equal(f.diagnostics[0].validationKind, expected.validation);
+      assert.equal(diagnostic.candidateIdentified, expected.candidate);
+      assert.equal(diagnostic.validationKind, expected.validation);
       assert.equal(f.github.trace.length, 1);
       assert.equal(f.github.issuesOfTokens.length, expected.issued);
       assert.equal(f.clock.pendingTimers(), 0);
