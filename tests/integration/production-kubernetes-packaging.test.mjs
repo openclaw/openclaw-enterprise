@@ -2014,14 +2014,14 @@ test(
         stdout: "",
         stderr: /does not declare support for production migration mode arguments/,
       });
-      await assert.rejects(lstat(imported), { code: "ENOENT" });
+      await assert.rejects(readFile(imported, "utf8"), { code: "ENOENT" });
     }
     // Omitting Node's separator must fail before a legacy apply can start.
     await assert.rejects(
       execute(process.execPath, [...invocation.slice(0, -1), "--check"], { cwd: legacy }),
       { code: 9, stdout: "" },
     );
-    await assert.rejects(lstat(imported), { code: "ENOENT" });
+    await assert.rejects(readFile(imported, "utf8"), { code: "ENOENT" });
     await execute(process.execPath, invocation, { cwd: legacy });
     assert.equal(await readFile(imported, "utf8"), "entered");
 
