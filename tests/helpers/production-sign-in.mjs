@@ -121,8 +121,8 @@ export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
 }
 
 /**
- * An Auth0-shaped OIDC issuer for the fixtures: the trailing slash is part of `iss`, and all
- * four URLs share its host, as the parser and chart require.
+ * This Auth0-shaped OIDC fixture uses one host for all four URLs and includes the trailing
+ * slash in `iss`.
  */
 export const fixtureOidcIssuer = Object.freeze({
   issuer: "https://tenant.idp.example.test/",
