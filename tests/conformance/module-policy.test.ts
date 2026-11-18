@@ -13,21 +13,29 @@ const policyPath = join(repositoryRoot, "scripts/module-boundaries/policy.json")
 const exceptionsPath = join(repositoryRoot, "scripts/module-boundaries/exceptions.json");
 
 // The real CI check: the CLI over the whole repository with its policy and exceptions.
-async function check(root) {
+async function check(root: string) {
+  const options = { cwd: repositoryRoot, encoding: "utf8" };
   const { status, signal, stdout, stderr } = await captureChild(
     process.execPath,
     [checker, "--root", root, "--policy", policyPath, "--exceptions", exceptionsPath, "--json"],
-    { cwd: repositoryRoot },
+    options,
   );
   assert.equal(signal, null, stderr);
   assert.equal(stderr, "");
-  return { status, report: JSON.parse(stdout) };
+  const report: { violations: unknown } = JSON.parse(stdout);
+  return { status, report };
 }
+
+type PolicyFixture = { sourceRoots: string[]; packages: string[] };
 
 // A small tree under the repository policy: every package manifest, every source root, and
 // placeholder sources at the real paths `sources` names (each must exist in the repository).
 // Policy rules match paths and manifests, so probes need no copy of the whole source tree.
-async function policyTree(t, policy, sources) {
+async function policyTree(
+  t: import("node:test").TestContext,
+  policy: PolicyFixture,
+  sources: Record<string, string>,
+) {
   const root = await temporaryDirectory(t, "occ-module-policy-");
   await Promise.all([
     ...policy.sourceRoots.map((sourceRoot) => mkdir(join(root, sourceRoot), { recursive: true })),
@@ -46,7 +54,7 @@ async function policyTree(t, policy, sources) {
   return root;
 }
 
-async function writeProbe(root, source, text) {
+async function writeProbe(root: string, source: string, text: string) {
   const probe = join(root, source);
   await mkdir(dirname(probe), { recursive: true });
   await writeFile(probe, text);
@@ -60,7 +68,7 @@ describe("module policy", { concurrency: true }, () => {
   });
 
   test("repository policy allows a public root and rejects a new HTTP Driver import", async (t) => {
-    const policy = JSON.parse(await readFile(policyPath, "utf8"));
+    const policy: PolicyFixture = JSON.parse(await readFile(policyPath, "utf8"));
     const contracts = "packages/contracts/src/index.ts";
     const driver = "apps/controller/src/drivers/compute/docker/index.ts";
     const root = await policyTree(t, policy, {
@@ -92,9 +100,10 @@ describe("module policy", { concurrency: true }, () => {
     }
     assert.equal(report.ok, false);
     assert.equal(report.violations.length, 1, JSON.stringify(report.violations));
-    const diagnostic = report.violations[0];
-    assert.equal(diagnostic.rule, "http-to-provider");
-    assert.equal(diagnostic.from, rejectedSource);
-    assert.equal(diagnostic.to, driver);
+    for (const diagnostic of report.violations) {
+      assert.equal(diagnostic.rule, "http-to-provider");
+      assert.equal(diagnostic.from, rejectedSource);
+      assert.equal(diagnostic.to, driver);
+    }
   });
 });
