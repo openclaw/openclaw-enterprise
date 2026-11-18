@@ -154,19 +154,16 @@ AGENT_ID --source gateway` quotes the holder. If the holder stops cleanly, the
 Gateway restarts within 5 minutes; otherwise use the same procedure, which stops
 the Agent first.
 
-A dedicated Harness Pod killed while Doctor or native setup holds its workspace
-node state, for example on a node failure or during an upgrade, can leave the lock
-there. Each later version then fails the check `gateway-state-lock`, and `occ agent
-logs AGENT_ID --source agent` quotes the holder after `The Harness cannot start`.
-If OCE already deleted the version's Pods, only `RUNTIME_STARTUP_FAILED` remains;
-the inspection in step 2 names the holder. This applies to the Harness Deployment that
-Kubernetes Compute creates; a Harness run by a SandboxDriver has no such
-Deployment. Use the same procedure, with these changes:
+A dedicated Harness Pod killed during Doctor or native setup (on a node failure)
+can leave its workspace node state locked. Later versions then fail the check
+`gateway-state-lock`; `occ agent logs AGENT_ID --source agent` quotes the holder.
+After OCE deletes their Pods, only `RUNTIME_STARTUP_FAILED` remains. This applies
+to the Harness Deployment that Kubernetes Compute creates; a Harness run by a
+SandboxDriver has no such Deployment. Use the same procedure, with these changes:
 
-- Step 1: The holder is usually an earlier version's Pod that is already
-  deleted. Record the Pod name from the log's `holder N at POD_NAME/pid-ns`
-  text, not the current Pod. Before you stop the Agent (stopping deletes the
-  Harness Deployment), find the Deployment's volume mount at
+- Step 1: The holder is usually an earlier version's deleted Pod. Record the Pod
+  name from the log's `holder N at POD_NAME/pid-ns` text, not the current Pod.
+  Before you stop the Agent (stopping deletes the Harness Deployment), find the Deployment's volume mount at
   `/home/node/.openclaw-node` and record its claim, `workspace-node-…` subPath
   and the Pod's `securityContext`. After the stop, `kubectl get pods -A -l openclaw.dev/agent=AGENT_ID`
   must list no Pod, including `Terminating` Pods, and the holder Pod must not

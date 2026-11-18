@@ -152,6 +152,18 @@ export function registerGatewayStateLockCases(): void {
     assert.equal(property(gateway.runtimeStatus(), "runtimeFailure"), undefined);
   });
 
+  test("Kubernetes Gateway that exits 0 has nothing to release", async (t) => {
+    const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, {
+      runtimeStatus: true,
+    });
+    liveNamespace(gateway);
+    gateway.exitRelease = () => released;
+    required(gateway.children[0]).exit(0, null);
+    // A clean exit released its own records: no recovery runs, live namespace or not.
+    assert.deepEqual(gateway.exitReleaseCalls, []);
+    assert.deepEqual(gateway.exits, [0]);
+  });
+
   test("Kubernetes Gateway held on the state lock retries a failed exit release", async (t) => {
     const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, {
       runtimeStatus: true,

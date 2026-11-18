@@ -28,6 +28,9 @@ const workspace = `${home}/workspace`;
 // (resolveGatewayLockPaths), for the runtime user 1000.
 const stateLock = `${nodeState}/tmp/openclaw-1000/gateway.state.lock`;
 const timeoutMs = cpuScaledImageTimeoutMs(60_000);
+// Doctor waits this long for a holder it cannot verify ("Waiting up to 95 seconds for the
+// previous Gateway to release state") before it gives up on maintenance.
+const unverifiableHolderWaitMs = 95_000;
 
 // Acts on the first OpenClaw process that holds the state lock: native setup, or Doctor
 // when maintenance is pending. "stop" sends SIGTERM to the container's PID 1, as the
@@ -148,8 +151,9 @@ async function waitForOutput(
   pod: { name: string; follower: ReturnType<typeof followContainer> },
   description: string,
   predicate: (output: string, running: boolean) => boolean,
+  limitMs = timeoutMs,
 ) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + limitMs;
   for (;;) {
     const version = pod.follower.changes.version;
     const observed = pod.follower.read();
@@ -293,7 +297,7 @@ test(
 
 test(
   "a Harness Pod killed during Doctor holds the next Pod on the named state lock",
-  { ...imageTestOptions, timeout: 6 * timeoutMs + 60_000 },
+  { ...imageTestOptions, timeout: 6 * timeoutMs + unverifiableHolderWaitMs + 60_000 },
   async (t) => {
     const claim = await initializedClaim(t);
     // The whole Pod is killed while Doctor holds the lock (node loss, a forced delete):
@@ -305,8 +309,11 @@ test(
     // The next Pod's Doctor refuses the holder it cannot verify stopped. The Harness holds
     // the named check's line with OpenClaw's holders instead of only the failed migration.
     const next = await startHarnessPod(t, claim);
-    const held = await waitForOutput(next, "next Pod held the state lock", (output) =>
-      /The Harness cannot start/.test(output),
+    const held = await waitForOutput(
+      next,
+      "next Pod held the state lock",
+      (output) => /The Harness cannot start/.test(output),
+      timeoutMs + unverifiableHolderWaitMs,
     );
     assert.deepEqual(phaseOutcomes(held.output, "state-migration"), ["failed"], held.output);
     assert.match(
