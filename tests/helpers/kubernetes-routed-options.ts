@@ -16,6 +16,8 @@ export const gatewayRouting = {
   envoyNamespace: "envoy-gateway-system",
 } satisfies KubernetesGatewayRoutingOptions;
 
+export function options(): ReturnType<typeof conformanceKubernetesOptions>;
+export function options(overrides: OptionsOverrides): KubernetesComputeDriverOptions;
 export function options(overrides: OptionsOverrides = {}): KubernetesComputeDriverOptions {
   return {
     ...conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
