@@ -29,6 +29,7 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - scripts/*.mjs
+      - scripts/migrate-production.ts
       - scripts/auth-maintain.ts
       - scripts/build-repository-credentials.ts
       - scripts/build-runtime-assets.ts

@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -201,7 +202,7 @@ export async function standInChart(
               {
                 name: "migration",
                 image,
-                args: ["scripts/migrate-production.mjs"],
+                args: [...selectedImageMigrationEntry],
                 ...(initializationResources ? { resources: initializationResources } : {}),
                 securityContext: { capabilities: { drop: ["ALL"] } },
               },
