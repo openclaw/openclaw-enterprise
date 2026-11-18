@@ -5,6 +5,7 @@ same target, image selection, and rendered installation files across preflight,
 upgrade, and recovery. Complete the [production upgrade prerequisites](production-upgrade.md#prepare-the-release)
 first. This command runs `scripts/upgrade-production-images`; it keeps that
 command's authorization, compatibility, locking, evidence, and recovery checks.
+It upgrades selected images; the canonical command still refuses protected settings changes.
 
 Create an owner-only JSON file outside the checkout. `installationDirectory`
 points to the protected directory containing the current `values.yaml` and
@@ -35,9 +36,15 @@ out of the profile. Set `OCC_URL`, `OCC_SERVICE_KEY_FILE`, and, if needed,
 The optional `occ` field names the matching CLI file; omit it to use `occ` on
 `PATH`.
 
+Before the first preflight, [bind the Installation Secret](production-upgrade.md#bind-the-installation-once)
+so it carries the required Installation ID annotation.
+
 ```bash
 scripts/upgrade-production preflight --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/preflight-1
 ```
+
+The canonical `--preflight-only` flag maps to the `preflight` operation. When
+preflight tells you to omit that flag to deploy, use `upgrade` with fresh evidence.
 
 Continue only after preflight succeeds and confirms cleanup. Compare the candidate
 manifests and enter the maintenance window. Freeze Helm changes and scaling
@@ -55,6 +62,13 @@ before using the same profile, checkout, and upgrade evidence directory:
 
 ```bash
 scripts/upgrade-production resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
+```
+
+If the canonical command requests `--resume --migration-history-checked`, finish
+its migration-history check before resuming with the original evidence directory:
+
+```bash
+scripts/upgrade-production resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1 -- --migration-history-checked
 ```
 
 For interrupted preflight cleanup, follow the [cleanup procedure](production-preflight-cleanup.md)

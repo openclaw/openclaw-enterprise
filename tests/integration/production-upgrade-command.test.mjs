@@ -154,6 +154,28 @@ test("upgrade commands reach the canonical source, mode, and recovery checks", a
   assert.match(settled.stderr, /evidence path must be a directory/);
 });
 
+test("canonical operation flags direct operators to usable profiled commands", async (t) => {
+  const f = await fixture(t);
+
+  // Follow the canonical migration handoff through the profiled entry point.
+  const rawResume = run("upgrade", f, ["--", "--resume", "--migration-history-checked"]);
+  assert.equal(rawResume.status, 2);
+  assert.match(
+    rawResume.stderr,
+    /scripts\/upgrade-production resume --profile PROFILE --evidence-dir ORIGINAL -- --migration-history-checked/,
+  );
+  const resume = run("resume", f, ["--", "--migration-history-checked"]);
+  assert.equal(resume.status, 1);
+  assert.match(resume.stderr, /checkout commit does not match --source-revision/);
+
+  const rawPreflight = run("upgrade", f, ["--", "--preflight-only"]);
+  assert.equal(rawPreflight.status, 2);
+  assert.match(
+    rawPreflight.stderr,
+    /scripts\/upgrade-production preflight --profile PROFILE --evidence-dir FRESH/,
+  );
+});
+
 test("private profiles reject credentials and target overrides without disclosure", async (t) => {
   const f = await fixture(t);
   const override = run("upgrade", f, ["--", "--context", "another-context"]);
