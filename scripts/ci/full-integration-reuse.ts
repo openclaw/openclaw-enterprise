@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { exercisedLaneStatus } from "./full-integration-coverage.ts";
 import { loadTestSuites } from "./test-suites.ts";
+import { optionalRecord as record } from "./records.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const repository = "openclaw/openclaw-enterprise";
@@ -19,12 +20,6 @@ type Artifact = { lane: string; id: number };
 type Producer = { runId: number; attempt: number; workflowId: number; artifacts: Artifact[] };
 type StepOutputs = { artifact_ids: string; run_id?: string } | { lanes: string[] } | FreshLanePlan;
 type GetMetadata = (path: string, deadline?: number) => Promise<unknown>;
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-}
 
 function isArray(value: unknown): value is unknown[] {
   return Array.isArray(value);

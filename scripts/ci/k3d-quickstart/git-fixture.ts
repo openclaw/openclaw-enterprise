@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { sign } from "node:crypto";
 import { closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { record } from "../records.ts";
 
 type FixturePermissions = {
   contents: "read" | "write";
@@ -17,11 +18,6 @@ type InstallationTokenRequest =
   | { method: "DELETE" };
 
 const repositoryId = 1412618387;
-
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
-  return value as Record<string, unknown>;
-}
 
 const [action, mode] = process.argv.slice(2);
 assert.ok(action === "issue" || action === "revoke");

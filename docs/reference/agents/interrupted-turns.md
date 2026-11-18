@@ -3,9 +3,16 @@
 A Gateway that shuts down gracefully aborts its active turns and records them for
 restart recovery. A Gateway that later starts on the same retained state resumes a
 recorded turn with one hidden system message. That message asks the Agent to check
-the current state and continue. Chat messages that a signed-in user sent from the
-Agent UI while the turn ran wait in the session's queue, and they follow it.
-An HTTP chat request is not in that queue; see [HTTP chat callers](#http-chat-callers).
+the current state and continue.
+
+A message that a signed-in user sends from the Agent UI while a turn runs steers
+that turn: OCE keeps OpenClaw's default queue mode, `steer`.
+Embedded OpenClaw adds the message after the running tool calls finish. Codex adds
+it at the next model step: a command that is still running continues detached,
+and the reply can answer only the new message, so ask for the command's output
+again. A message the turn cannot take waits in the session's queue and follows
+a resumed turn. An HTTP chat request is not in that queue; see
+[HTTP chat callers](#http-chat-callers).
 
 OCE scopes that record to the Agent revision with
 `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`. Every deployment creates a new revision
@@ -35,12 +42,15 @@ different configuration, policy and credentials.
 ## HTTP chat callers
 
 An [HTTP chat](../agent-http-chat.md) request that waits behind the turn is not
-kept when the Gateway ends, in every case in the table. The caller gets an error
-from OCC: `502` with code `BAD_GATEWAY` when the connection closes before a
-response, or the runtime's own error status. A streamed response that already
-started closes without `[DONE]`. Send the request again. The caller of the
-interrupted turn gets the same error. If that turn resumes, its reply goes to the
-conversation: continue with the same `user` label to read it.
+kept when the Gateway ends, in every case in the table. The caller gets an error:
+`502` with code `BAD_GATEWAY` when the connection closes before a response, or an
+error status that OCC passes on. On Kubernetes a graceful Gateway Pod deletion
+usually gives a non-stream caller `503` with a `text/plain` body from the proxy in
+front of the Gateway: `upstream connect error or disconnect/reset before headers`.
+A streamed response that already started closes without `[DONE]`. Send the
+request again. The caller of the interrupted turn gets the same error. If that
+turn resumes, its reply goes to the conversation: send again with the same `user`
+label to read it.
 
 ## Limits
 
