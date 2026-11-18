@@ -11,6 +11,7 @@ import type {
   PluginCatalogEntry,
   PluginDriver,
   SandboxDriver,
+  SecretDriver,
 } from "../../packages/contracts/src/index.ts";
 import {
   InMemoryPlatformState,
@@ -53,7 +54,7 @@ type TestSecretDriver = ReturnType<typeof createTestSecretDriver>;
 type ConsoleOptions = {
   state?: InMemoryPlatformState;
   auditSink?: InMemoryAuditSink;
-  secretDriver?: TestSecretDriver;
+  secretDriver?: SecretDriver;
   logger?: OccLogger;
   onSend?: (request: { raw: IncomingMessage }) => Promise<void>;
   credentialGatewayDriver?: CredentialGatewayDriver;
@@ -95,19 +96,25 @@ type DiscoveryOptions = Omit<ConsoleOptions, "state" | "auditSink"> & {
   onCatalogDetails?: () => Promise<void>;
 };
 
-export async function createFixture(
+export async function createFixture<T extends SecretDriver = TestSecretDriver>(
   t: TestContext,
   {
     supported = true,
     additionalPluginDriver,
     onCatalogDetails,
-    secretDriver = createTestSecretDriver(),
+    secretDriver,
     ...options
-  }: DiscoveryOptions = {},
+  }: Omit<DiscoveryOptions, "secretDriver"> & { secretDriver?: T } = {},
 ) {
   const auditSink = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink });
-  const fixture = await createDiscoveryConsole(t, { ...options, state, auditSink, secretDriver });
+  const selectedSecretDriver = secretDriver ?? createTestSecretDriver();
+  const fixture = await createDiscoveryConsole(t, {
+    ...options,
+    state,
+    auditSink,
+    secretDriver: selectedSecretDriver,
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Plugin discovery", { ready: true });
   const calls: DiscoveryCall[] = [];
@@ -165,7 +172,7 @@ export async function createFixture(
     namespace,
     calls,
     auditSink,
-    secretDriver,
+    secretDriver: selectedSecretDriver,
     path: `/namespaces/${namespace.id}/agents/plugins`,
     failWith(error: Error) {
       failure = error;

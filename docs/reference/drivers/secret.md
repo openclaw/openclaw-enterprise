@@ -164,8 +164,6 @@ model API keys go only to the Harness that executes the model.
 | Updated credentials are not visible     | Restart or redeploy the consuming workload and verify the new process became active; updating storage does not refresh existing environments.                           |
 | Deletion is rejected                    | Remove Configuration and deployment references through OCC before retrying.                                                                                             |
 
-<a id="aws-secrets-manager"></a>
-
 ## Implementations
 
 - [AWS Secrets Manager](aws-secrets-manager.md) for storage, workload IAM and trusted server-side reads.

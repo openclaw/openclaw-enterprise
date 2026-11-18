@@ -1,4 +1,7 @@
-import { AwsSecretsManagerSecretDriver, type AwsSecretsManagerOptions } from "../drivers/secret/aws-secrets-manager/index.ts";
+import {
+  AwsSecretsManagerSecretDriver,
+  type AwsSecretsManagerOptions,
+} from "../drivers/secret/aws-secrets-manager/index.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -1437,7 +1440,10 @@ async function composeInstallationConfiguration(
     );
   }
   const secretDriver = awsSecrets
-    ? new AwsSecretsManagerSecretDriver(secret.configuration as unknown as AwsSecretsManagerOptions, { id: secret.id })
+    ? new AwsSecretsManagerSecretDriver(
+        secret.configuration as unknown as AwsSecretsManagerOptions,
+        { id: secret.id },
+      )
     : new KubernetesSecretDriver(secret.configuration as unknown as KubernetesSecretDriverOptions, {
         id: secret.id,
         implementation: secret.implementation,

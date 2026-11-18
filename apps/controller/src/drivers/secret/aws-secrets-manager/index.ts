@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { Agent } from "node:https";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
@@ -24,18 +24,12 @@ import {
   type VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enterprise/occ";
-import { currentMutationDeadline } from "../../../admission/mutation-deadline.ts";
-import {
-  currentComputeAbortSignal,
-  withComputeOperationDeadline,
-} from "../../compute/operation-context.ts";
+import { withComputeOperationDeadline } from "../../compute/operation-context.ts";
 
-export interface AwsSecretsManagerOptions {
-  readonly region: string;
-  readonly accountId: string;
-  readonly prefix: string;
-  readonly kmsKeyId?: string;
-}
+import { AwsSecretBinding, type AwsSecretsManagerOptions } from "./binding.ts";
+import { awsRequest } from "./request.ts";
+
+export type { AwsSecretsManagerOptions } from "./binding.ts";
 
 /** AWS resource tags must also be protected by the operator's IAM policy. */
 export class AwsSecretsManagerSecretDriver implements SecretDriver {
@@ -59,6 +53,7 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
   readonly capability = "secret" as const;
   readonly implementation = "occ/aws-secrets-manager";
   readonly id: string;
+  private readonly ownership: AwsSecretBinding;
   private readonly options: Readonly<AwsSecretsManagerOptions>;
   private readonly client: Pick<SecretsManagerClient, "send">;
   private readonly credentials: SecretsManagerClient["config"]["credentials"];
@@ -83,6 +78,7 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
       ...requireConfiguration(AwsSecretsManagerSecretDriver, options),
     });
     this.id = selection.id ?? "secret-aws-secrets-manager";
+    this.ownership = new AwsSecretBinding(this.options, this.id);
     // Explicit regional endpoints override environment/shared-config endpoints. The HTTPS
     // agent explicitly verifies certificates even if NODE_TLS_REJECT_UNAUTHORIZED is set.
     const common = {
@@ -97,7 +93,7 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     };
     const defaults = new SecretsManagerClient({
       ...common,
-      endpoint: this.endpoint("secretsmanager"),
+      endpoint: this.ownership.endpoint("secretsmanager"),
     });
     this.client = selection.client ?? defaults;
     this.credentials = defaults.config.credentials;
@@ -107,162 +103,20 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
         new SecretsManagerClient({
           ...common,
           credentials: { ...credentials },
-          endpoint: this.endpoint("secretsmanager"),
+          endpoint: this.ownership.endpoint("secretsmanager"),
         }),
       identity:
         selection.identityClient ??
         new STSClient({
           ...common,
           credentials: { ...credentials },
-          endpoint: this.endpoint("sts"),
+          endpoint: this.ownership.endpoint("sts"),
         }),
     });
   }
 
-  private endpoint(service: "sts" | "secretsmanager"): string {
-    const domain = this.partition() === "aws-cn" ? "amazonaws.com.cn" : "amazonaws.com";
-    return `https://${service}.${this.options.region}.${domain}`;
-  }
-
-  private namespace(identity: SecretIdentity): string {
-    if (
-      !/^ns_[A-Za-z0-9_-]+$/.test(identity.namespaceId) ||
-      !/^sec_[A-Za-z0-9_-]+$/.test(identity.id) ||
-      !identity.name?.trim()
-    ) {
-      throw new ScopeViolationError("Invalid Secret identity.");
-    }
-    return `${this.options.prefix}/${identity.namespaceId}`;
-  }
-
-  private tags(identity: SecretIdentity) {
-    return [
-      { Key: "openclaw:managed-by", Value: "openclaw-enterprise" },
-      { Key: "openclaw:namespace", Value: identity.namespaceId },
-      { Key: "openclaw:secret", Value: identity.id },
-      { Key: "openclaw:driver", Value: this.id },
-    ];
-  }
-
-  private validateValue(value: string): void {
-    if (
-      typeof value !== "string" ||
-      !value.length ||
-      value.includes("\0") ||
-      !value.isWellFormed() ||
-      Buffer.byteLength(value, "utf8") > 65_536
-    ) {
-      throw new ScopeViolationError("Invalid Secret value.");
-    }
-  }
-
-  private digest(value: string): string {
-    return createHash("sha256").update(value).digest("hex");
-  }
-
-  private location(identity: SecretIdentity): string {
-    return `aws-sm-${this.digest(JSON.stringify([this.options.region, this.options.accountId, this.namespace(identity)])).slice(0, 48)}`;
-  }
-
-  private partition(): string {
-    if (this.options.region.startsWith("cn-")) {
-      return "aws-cn";
-    }
-    if (this.options.region.startsWith("us-gov-")) {
-      return "aws-us-gov";
-    }
-    return "aws";
-  }
-
-  // OCC persists DNS-shaped names and a UUID. Bind the reconstructed complete ARN
-  // without broadening that shared format or accepting a replacement AWS suffix.
-  private binding(secret: Secret): { arn: string; name: string } {
-    const ref = secret.backendRef;
-    const name = `${this.namespace(secret)}/${secret.id}/${ref.uid}`;
-    const match = /^aws-sm-([0-9a-f]{12})\.([0-9a-f]{32})\.([0-9a-f]{32})$/.exec(ref.name);
-    if (
-      secret.driverId !== this.id ||
-      ref.namespaceName !== this.location(secret) ||
-      ref.key !== "SecretString" ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(ref.uid) ||
-      !match
-    ) {
-      throw new ScopeViolationError("Secret ownership binding changed.");
-    }
-    const suffix = Buffer.from(match[1]!, "hex").toString("ascii");
-    const arn = `arn:${this.partition()}:secretsmanager:${this.options.region}:${this.options.accountId}:secret:${name}-${suffix}`;
-    this.checkArn(arn, name);
-    if (this.digest(arn) !== `${match[2]}${match[3]}`) {
-      throw new ScopeViolationError("Secret ARN binding changed.");
-    }
-    return { arn, name };
-  }
-
-  private checkArn(arn: string | undefined, name: string): asserts arn is string {
-    const parts = arn?.split(":");
-    if (
-      !parts ||
-      parts.length !== 7 ||
-      parts[0] !== "arn" ||
-      parts[1] !== this.partition() ||
-      parts[2] !== "secretsmanager" ||
-      parts[3] !== this.options.region ||
-      parts[4] !== this.options.accountId ||
-      parts[5] !== "secret" ||
-      !parts[6]?.startsWith(`${name}-`) ||
-      parts[6].slice(name.length + 1).match(/^[A-Za-z0-9]{6}$/) === null
-    ) {
-      throw new ScopeViolationError("Secret ARN does not match its binding.");
-    }
-  }
-
-  private async request<T>(
-    operation: (signal: AbortSignal) => Promise<T>,
-    mutation = false,
-  ): Promise<T> {
-    const parent = currentComputeAbortSignal();
-    const deadline = Math.min(Date.now() + 30_000, currentMutationDeadline() ?? Infinity);
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      throw new DependencyUnavailableError(
-        "AWS Secret operation failed; no mutation was submitted.",
-      );
-    }
-    const signal = AbortSignal.any([AbortSignal.timeout(remaining), ...(parent ? [parent] : [])]);
-    let submitted = false;
-    let abort: (() => void) | undefined;
-    try {
-      signal.throwIfAborted();
-      const cancelled = new Promise<never>((_resolve, reject) => {
-        abort = () => reject(signal.reason);
-        signal.addEventListener("abort", abort, { once: true });
-      });
-      // Mutation callbacks submit immediately; their response verification remains
-      // inside this boundary. Pre-aborted requests never reach submission.
-      submitted = mutation;
-      const result = await Promise.race([operation(signal), cancelled]);
-      signal.throwIfAborted();
-      // The event loop can deliver a response before it runs an overdue abort timer.
-      if (Date.now() >= deadline) {
-        throw new Error("AWS request deadline elapsed.");
-      }
-      return result;
-    } catch {
-      // Do not expose AWS diagnostics, values, or credentials. Never recover by name.
-      throw new DependencyUnavailableError(
-        submitted
-          ? "AWS Secret mutation may have applied; reconciliation required."
-          : "AWS Secret operation failed; no mutation was submitted.",
-      );
-    } finally {
-      if (abort) {
-        signal.removeEventListener("abort", abort);
-      }
-    }
-  }
-
   private async signingCredentials() {
-    return this.request(async () => {
+    return awsRequest(async () => {
       const credentials = { ...(await this.credentials()) };
       if (
         typeof credentials.accessKeyId !== "string" ||
@@ -280,8 +134,8 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
   }
 
   async create(identity: SecretIdentity, value: string): Promise<SecretBackendRef> {
-    const namespaceName = this.namespace(identity);
-    this.validateValue(value);
+    const namespaceName = this.ownership.namespace(identity);
+    this.ownership.validateValue(value);
     const uid = identity.id.slice(4);
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uid)) {
       throw new ScopeViolationError("Invalid Secret identity.");
@@ -292,32 +146,33 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     // even if its refreshable provider changes accounts between requests.
     const credentials = await this.signingCredentials();
     const clients = this.createClients(credentials);
-    const caller = await this.request((abortSignal) =>
+    const caller = await awsRequest((abortSignal) =>
       clients.identity.send(new GetCallerIdentityCommand({}), { abortSignal }),
     );
     if (caller.Account !== this.options.accountId) {
       throw new ScopeViolationError("AWS caller account does not match Secret configuration.");
     }
-    return this.request(async (abortSignal) => {
+    return awsRequest(async (abortSignal) => {
       const result = await clients.secrets.send(
         new CreateSecretCommand({
           Name: name,
           SecretString: value,
           ClientRequestToken: token,
-          Tags: this.tags(identity),
+          Tags: this.ownership.tags(identity),
           ...(this.options.kmsKeyId ? { KmsKeyId: this.options.kmsKeyId } : {}),
         }),
         { abortSignal },
       );
       abortSignal.throwIfAborted();
-      this.checkArn(result.ARN, name);
+      this.ownership.checkArn(result.ARN, name);
       if (result.Name !== name || result.VersionId !== token) {
         throw new ScopeViolationError("Secret create response does not match its binding.");
       }
       const suffix = Buffer.from(result.ARN.slice(-6), "ascii").toString("hex");
+      const digest = this.ownership.digest(result.ARN);
       const reference = Object.freeze({
-        namespaceName: this.location(identity),
-        name: `aws-sm-${suffix}.${this.digest(result.ARN).slice(0, 32)}.${this.digest(result.ARN).slice(32)}`,
+        namespaceName: this.ownership.location(identity),
+        name: `aws-sm-${suffix}.${digest.slice(0, 32)}.${digest.slice(32)}`,
         uid,
         key: "SecretString",
       });
@@ -345,18 +200,20 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     deleting = false,
     client = this.client,
   ): Promise<DescribeSecretCommandOutput> {
-    const { arn, name } = this.binding(secret);
-    const result = await this.request((abortSignal) =>
+    const { arn, name } = this.ownership.resource(secret);
+    const result = await awsRequest((abortSignal) =>
       client.send(new DescribeSecretCommand({ SecretId: arn }), { abortSignal }),
     );
     if (
       result.ARN !== arn ||
       result.Name !== name ||
-      this.tags(secret).some(
-        (tag) =>
-          result.Tags?.filter((actual) => actual.Key === tag.Key && actual.Value === tag.Value)
-            .length !== 1,
-      )
+      this.ownership
+        .tags(secret)
+        .some(
+          (tag) =>
+            result.Tags?.filter((actual) => actual.Key === tag.Key && actual.Value === tag.Value)
+              .length !== 1,
+        )
     ) {
       throw new ScopeViolationError("Secret backend ownership changed.");
     }
@@ -382,7 +239,7 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
   }
 
   async update(secret: Secret, value: string): Promise<void> {
-    this.validateValue(value);
+    this.ownership.validateValue(value);
     const observed = await this.owned(secret);
     const current = this.current(observed);
     if (
@@ -393,9 +250,9 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
       throw new DependencyUnavailableError("Secret rotation is pending.");
     }
     const token = randomUUID();
-    const binding = this.binding(secret);
+    const binding = this.ownership.resource(secret);
     const client = this.createClients(await this.signingCredentials()).secrets;
-    await this.request(async (abortSignal) => {
+    await awsRequest(async (abortSignal) => {
       const result = await client.send(
         new PutSecretValueCommand({
           SecretId: binding.arn,
@@ -421,9 +278,9 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     if (result.DeletedDate) {
       return;
     }
-    const binding = this.binding(secret);
+    const binding = this.ownership.resource(secret);
     const client = this.createClients(await this.signingCredentials()).secrets;
-    await this.request(async (abortSignal) => {
+    await awsRequest(async (abortSignal) => {
       const deleted = await client.send(
         new DeleteSecretCommand({
           SecretId: binding.arn,
@@ -441,10 +298,11 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
 
   private async read(secret: Secret): Promise<VersionedSecretValue> {
     const version = this.current(await this.owned(secret));
-    const result = await this.request((abortSignal) =>
+    const binding = this.ownership.resource(secret);
+    const result = await awsRequest((abortSignal) =>
       this.client.send(
         new GetSecretValueCommand({
-          SecretId: this.binding(secret).arn,
+          SecretId: binding.arn,
           VersionId: version,
           VersionStage: "AWSCURRENT",
         }),
@@ -452,8 +310,8 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
       ),
     );
     if (
-      result.ARN !== this.binding(secret).arn ||
-      result.Name !== this.binding(secret).name ||
+      result.ARN !== binding.arn ||
+      result.Name !== binding.name ||
       result.VersionId !== version ||
       !result.VersionStages?.includes("AWSCURRENT") ||
       typeof result.SecretString !== "string" ||
@@ -463,7 +321,7 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
         "Secret read response does not match its current version.",
       );
     }
-    this.validateValue(result.SecretString);
+    this.ownership.validateValue(result.SecretString);
     if (this.current(await this.owned(secret)) !== version) {
       throw new DependencyUnavailableError("Secret rotated during the read.");
     }

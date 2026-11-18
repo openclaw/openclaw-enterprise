@@ -14,6 +14,10 @@ kind: reference/driver/impl
 
 ## Overview
 
+This Driver is a draft proposal. Its selector and configuration require an RFC
+and human review before landing. Installed discovery against live AWS has not
+been verified.
+
 Select this [Secret Driver](secret.md) to store Namespace Secrets in AWS and read them in trusted controller operations. For example, saved-Agent hosted plugin discovery uses the Agent's bound Secret after OCC checks the caller's and Agent's grants. Protected static sources can read the AWS version with the value.
 
 ## Lifecycle
@@ -68,7 +72,7 @@ The fixed-inventory policy covers existing ARNs. AWS assigns the ARN suffix at c
 
 ## Limits
 
-The AWS Driver supports server-side reads. Kubernetes Compute requires tenant-local Kubernetes Secret references for environment and Harness projections. SSH does not deliver AWS references either. Use Kubernetes Secret storage for these projections. Workflows that require atomic compare-and-swap, including device login, cannot use this Driver. External rotation is visible on subsequent successful reads. The Driver does not provision rotation functions.
+The AWS Driver supports server-side reads. Kubernetes Compute requires tenant-local Kubernetes Secret references for environment and Harness projections. SSH does not deliver AWS references either. Use Kubernetes Secret storage for these projections. Workflows that require atomic compare-and-swap, including device login, cannot use this Driver. Installation-private OAuth client credentials also require a Driver that implements Installation Secret storage. External rotation is visible on subsequent successful reads. The Driver does not provision rotation functions.
 
 ## Troubleshooting
 
