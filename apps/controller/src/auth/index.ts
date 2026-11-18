@@ -1,5 +1,5 @@
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { APIError, betterAuth, type Auth, type BetterAuthOptions } from "better-auth";
 import { splitSetCookieHeader } from "better-auth/cookies";
@@ -254,8 +254,7 @@ export interface ControllerAuthOptions {
   readonly passwordHasher?: PasswordHasher;
   /**
    * The password-only profile's known-device account state (see known-device.ts). Without
-   * it, and without an external provider, entries are bound to the user and a hash of its
-   * stored password hash, read through Better Auth.
+   * it, and without an external provider, no known-device entries are issued.
    */
   readonly knownDeviceState?: KnownDeviceAccountState;
   /**
@@ -1054,11 +1053,6 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   }
 
   const expectedBrowserOrigin = new URL(options.baseURL).origin;
-  if (Object.hasOwn(options, "sharedCookieDomain")) {
-    throw new Error(
-      "sharedCookieDomain has been removed; session cookie scope is derived from Console and Agent hostnames.",
-    );
-  }
   const sessionMode = options.sessionMode ?? "shared-cookie";
   if (sessionMode !== "shared-cookie" && sessionMode !== "host-only-exchange") {
     throw new Error("Session mode must be shared-cookie or host-only-exchange.");
@@ -1180,26 +1174,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   // external provider its name follows the curated endpoints that issue it.
   const knownDeviceSecure = humanLogin?.knownDeviceSecure ?? true;
   // What a known-device entry is bound to: with an external provider, the guarded account
-  // state (versions and enabled state); otherwise the composition's password state.
+  // state (versions and enabled state); otherwise the composition's password state. Without
+  // either, no entry is issued.
   const knownDeviceState: KnownDeviceAccountState =
-    humanLogin?.knownDeviceState ??
-    options.knownDeviceState ??
-    (async (email) => {
-      const found = await (
-        await auth.$context
-      ).internalAdapter.findUserByEmail(email, { includeAccounts: true });
-      const credentials = (found?.accounts ?? []).filter(
-        (account) =>
-          account.providerId === "credential" &&
-          typeof account.password === "string" &&
-          account.password.length > 0,
-      );
-      if (found === null || credentials.length !== 1) {
-        return undefined;
-      }
-      const passwordHash = createHash("sha256").update(credentials[0]!.password!).digest("hex");
-      return `adapter\0${found.user.id}\0${credentials[0]!.id}\0${passwordHash}`;
-    });
+    humanLogin?.knownDeviceState ?? options.knownDeviceState ?? (async () => undefined);
   // Bound fresh proof reads before account access. Signed keys constrain resources only;
   // a refused or failed proof retains those constraints on the ordinary shared lane.
   const knownDeviceReads = keyedAdmission(

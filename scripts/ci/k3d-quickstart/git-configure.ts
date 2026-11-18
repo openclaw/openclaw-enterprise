@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { record } from "../records.ts";
 
 // The controller owns the Kubernetes client dependency and its YAML codec.
 const {
@@ -19,11 +20,6 @@ const { RUN_DIR, PLATFORM_NS, TENANT_NAMESPACE, RELEASE, INSTALLATION_FILE, VALU
 function requiredPath(value: string | undefined, name: string): string {
   assert.ok(value !== undefined, `${name} is required`);
   return value;
-}
-
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
-  return value as Record<string, unknown>;
 }
 
 function array(value: unknown): unknown[] {

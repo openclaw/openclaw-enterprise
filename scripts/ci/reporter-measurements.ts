@@ -3,7 +3,7 @@ import {
   projectOpenShellGitRetention,
 } from "./openshell-git-retention.mjs";
 import { openShellProgress } from "./openshell-progress.mjs";
-import { isRecord } from "./reporter-diagnostics.ts";
+import { isRecord } from "./records.ts";
 
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
 // allowlisted shape below is retained in ordinary results.

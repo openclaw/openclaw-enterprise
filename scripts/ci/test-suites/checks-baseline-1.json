@@ -55,6 +55,7 @@
     "tests/integration/dependency-unavailable-log.test.ts",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.ts",
+    "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.ts",
@@ -69,6 +70,7 @@
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
+    "tests/integration/production-upgrade-command.test.ts",
     "tests/conformance/test-files.test.ts",
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
@@ -144,7 +146,6 @@
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
-    "tests/integration/credential-free-online-grant.test.ts",
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/agent-grant-rehearsal.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
@@ -426,6 +427,12 @@
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
+      "path": "tests/integration/production-keycloak-profile.test.ts",
+      "expectedTests": [
+        "production Keycloak example renders an attached-only pilot through the chart"
+      ]
+    },
+    {
       "path": "tests/integration/profile-public-github-read.test.mjs",
       "expectedTests": [
         "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer"
@@ -536,6 +543,9 @@
     },
     {
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
+    },
+    {
+      "path": "tests/integration/production-upgrade-command.test.ts"
     },
     {
       "path": "tests/integration/secret-api.test.ts"
@@ -927,15 +937,6 @@
       "expectedTests": [
         "a per-start denial joins the authenticated request to the refusal actually returned; neither side can substitute",
         "observed-hook preview has its own durable admission and cannot reinterpret v4, v5, or narrow Git"
-      ]
-    },
-    {
-      "path": "tests/integration/credential-free-online-grant.test.ts",
-      "expectedTests": [
-        "signed stock request observes an OCC credential-free grant and its withdrawal",
-        "a signed stock request cannot carry a credential-free grant across revision replacement",
-        "a signed stock request loses a credential-free grant when OCC IAM access is removed",
-        "OCC cannot observe a live credential grant as credential-free metadata"
       ]
     },
     {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { isObject } from "../../scripts/ci/runner-inputs.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 import type openShellLane from "../../scripts/ci/test-suites/openshell.json";
 import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import {
@@ -37,12 +37,12 @@ type FocusedSelection = {
 );
 
 function jsonObject(value: unknown) {
-  assert.ok(isObject(value), "expected a JSON object");
+  assert.ok(isRecord(value), "expected a JSON object");
   return value;
 }
 
 function jsonObjects(value: unknown): Record<string, unknown>[] {
-  assert.ok(Array.isArray(value) && value.every(isObject), "expected an array of JSON objects");
+  assert.ok(Array.isArray(value) && value.every(isRecord), "expected an array of JSON objects");
   return value;
 }
 

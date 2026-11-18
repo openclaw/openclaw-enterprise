@@ -2,6 +2,7 @@ import { Type } from "typebox";
 
 import {
   BackendId,
+  ConnectionTemplateId,
   CREDENTIAL_SOURCE_FIELD_NAME_PATTERN,
   CredentialSourceConfig,
   CredentialSourceId,
@@ -11,7 +12,6 @@ import {
   NamespaceId,
   SecretValue,
 } from "./common.ts";
-import { ConnectionTemplateId } from "./connection-templates.ts";
 import { CredentialSourceStatusSchema } from "./resources.ts";
 
 const connectionTemplateApproval = Type.Object(

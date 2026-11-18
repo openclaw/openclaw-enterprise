@@ -770,6 +770,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/production-upgrade-command",
+                    "label": "Upgrade Commands"
+                  },
+                  {
                     "page": "guides/deploy/separate-database-upgrade",
                     "label": "Separate Database Deployment"
                   },

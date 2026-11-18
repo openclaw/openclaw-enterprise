@@ -18,15 +18,9 @@ import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { refreshPinnedOAuthGrant } from "./oauth-token-endpoint.ts";
 export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { CredentialDeliveries } from "./state/credential-deliveries.ts";
-export type {
-  CredentialDeliveryKey,
-  CredentialDeliverySnapshot,
-} from "./state/credential-deliveries.ts";
+export type { CredentialDeliveryKey } from "./state/credential-deliveries.ts";
 export { CredentialDeliveryReductions } from "./state/credential-delivery-reductions.ts";
-export type {
-  CredentialDeliveryReduction,
-  CredentialDeliveryReductionProgress,
-} from "./state/credential-delivery-reductions.ts";
+export type { CredentialDeliveryReduction } from "./state/credential-delivery-reductions.ts";
 export {
   eligibleRepositoryApprovalScope,
   repositoryApprovalFingerprint,
@@ -72,7 +66,6 @@ import type {
   ExecutionAdmission,
   StaticEgressSource,
   ProxyPlan,
-  EgressBinding,
   EgressRefusal,
   EgressRoute,
   EgressSelectionEvidence,
@@ -476,7 +469,6 @@ import type {
 
 export {
   accessBindingsRemovedWithAgent,
-  accessBindingsTargeting,
   removeNamespacePolicy,
   removedPolicyDetails,
   restrictionsRemovedWithAgent,
@@ -511,7 +503,6 @@ export {
   ChannelCredentialError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
-  ComputeRepositoryCredentialsUnsupportedError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   ConfigurationSizeError,
@@ -552,7 +543,6 @@ export {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
-  RepositoryDriverNotConfiguredError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -570,7 +560,6 @@ export {
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
-  SavedRepositorySelectionError,
   RepositorySessionWithdrawnError,
   ScopeViolationError,
   SecretBindingDriverError,
@@ -584,23 +573,17 @@ export {
   StoredCredentialSourceConfigError,
   TransientDependencyError,
   WorkClaimLostError,
-  type ActivationFailedCode,
-  type ActivationPendingCode,
   type CodexPermissionDenial,
   type RuntimeLogsErrorCode,
-  type TransientDependency,
-  type TransientDependencyReason,
 } from "./errors.ts";
 export {
   createRuntimeLogCursorCodec,
   maskRuntimeEventText,
   redactRuntimeLogText,
   RUNTIME_LOG_DEFAULT_TAIL_LINES,
-  RUNTIME_LOG_LIMIT_BYTES,
   RUNTIME_LOG_MAX_TAIL_LINES,
   sanitizeRuntimeLogChunk,
   sanitizeSandboxLogLines,
-  type RuntimeLogCursorCodec,
   type RuntimeLogPage,
   type RuntimeLogQuery,
   type RuntimeLogViewAdmission,
@@ -611,7 +594,6 @@ export {
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,
   provisionsDedicatedOpenClaw,
   type NativeWorkerSupport,
-  type NativeWorkerSupportSource,
 } from "./native-worker-support.ts";
 export {
   backendDefinitionMap,
@@ -623,35 +605,22 @@ export {
 export {
   provisioningEffectReceipt,
   provisioningPendingEffect,
-  settleProvisioningEffect,
   type ProvisioningEffectReceipt,
-  type ProvisioningEffectKind,
   type ProvisioningEffectTarget,
   type ProvisioningPendingEffect,
 } from "./provisioning-effects.ts";
 export {
   InMemoryPlatformState,
-  type AgentReadRepository,
-  type AgentRepository,
   type PredecessorReplacement,
   type AgentRevisionReadRepository,
-  type AgentRevisionRepository,
   type InMemoryPlatformStateOptions,
-  type InstallationReadRepository,
-  type InstallationRepository,
-  type NamespaceReadRepository,
-  type NamespaceRepository,
-  type PlatformAuditRepository,
   type PlatformAuditSink,
   type PlatformOperation,
-  type PlatformOperationRepository,
   type ConnectionTokenCustody,
   type PlatformReadView,
   type PlatformStateStore,
   type PlatformUnitOfWork,
   type ServiceAccountReadRepository,
-  type ServiceAccountRepository,
-  type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export { imageReferenceProblem } from "./image-reference.ts";
@@ -699,7 +668,6 @@ export {
   requireChannelSecretBindings,
   slackAccountTargets,
 } from "./channel-secret-bindings.ts";
-export type { SlackAccountTarget } from "./channel-secret-bindings.ts";
 export {
   CODEX_APPROVAL_POLICY_SETTING,
   codexApprovalPolicy,
@@ -717,19 +685,12 @@ export {
 export type {
   HumanAuthenticationActivation,
   HumanAuthenticationActivationHooks,
-  HumanAuthenticationEnrolment,
   PreparedPasswordAccount,
   HumanAuthenticationActor,
   HumanAuthenticationAccount,
   HumanAuthenticationRecovery,
-  HumanAuthenticationUser,
   HumanAuthenticationProof,
-  HumanAuthenticationSnapshot,
   HumanAuthenticationSession,
-  HumanAuthenticationAttemptKey,
-  HumanAuthenticationAttempt,
-  HumanAuthenticationDenial,
-  PostgresHumanAuthenticationOptions,
 } from "./state/human-authentication.ts";
 export type { NativeBrowserAccess } from "./state/native-browser-access.ts";
 export {
@@ -737,16 +698,9 @@ export {
   PostgresHumanAuthenticationMaintenance,
   WritersNotStoppedError,
 } from "./state/human-authentication-maintenance.ts";
-export type {
-  HumanAuthenticationMaintenanceAccount,
-  HumanAuthenticationMaintenanceBackend,
-  HumanAuthenticationMaintenanceRefusal,
-  HumanAuthenticationMaintenanceStatus,
-} from "./state/human-authentication-maintenance.ts";
 export { createPostgresPool } from "./state/postgres-pool.ts";
-export type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
+export type { AgentAuditState } from "./ports/agent-audit.ts";
 export type {
-  RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
   RepositorySessionAttempt,
   RepositorySessionPhase,
@@ -757,7 +711,6 @@ export type {
 export {
   PostgresCertificateRejectedError,
   PostgresPlatformState,
-  PostgresPlatformStateStore,
   type PersistedNativeIAMState,
   type PostgresClient,
   type PostgresPlatformStateOptions,
@@ -799,17 +752,8 @@ export {
   type RuntimeFailureCause,
   type RuntimeFailureEvidence,
 } from "./state/controller-work.ts";
-export {
-  type AgentProvisioningConfigurationInput,
-  type AgentProvisioningProgress,
-  type ProvisionAgentInput,
-  type ProvisionAgentResult,
-} from "./agent-provisioning.ts";
-export type {
-  AgentProvisioningRecord,
-  AgentProvisioningRepository,
-  AgentProvisioningStatus,
-} from "./state/agent-provisioning.ts";
+export { type AgentProvisioningProgress, type ProvisionAgentInput } from "./agent-provisioning.ts";
+export type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
 
 export { createPostgresAuthBinding } from "./auth-persistence/postgres-auth-binding.ts";
 export type {
@@ -2846,19 +2790,24 @@ export class OpenClawController {
     return this.read(async (state) => {
       const revisions = new Map<string, Readonly<AgentRevision> | undefined>();
       const deploymentsInProgress = new Set<string>();
-      for (const operation of await state.operations.list()) {
-        // Credential withdrawal work (CREDENTIAL_WITHDRAWAL_TARGET) targets an active revision
-        // without deploying it; PlatformOperation types the literal.
-        if (operation.kind !== "agent_revision" || operation.target === "credentials_withdrawn") {
-          continue;
-        }
-        const work = await state.operations.findWork(
-          `agent_revision:${operation.resourceId}:reconcile`,
-        );
+      // Credential withdrawal targets an active revision without deploying it.
+      const deployments = (await state.operations.list())
+        .filter(
+          (operation) =>
+            operation.kind === "agent_revision" && operation.target !== "credentials_withdrawn",
+        )
+        .map(({ namespaceId, resourceId }) => ({
+          namespaceId,
+          revisionId: resourceId,
+          key: `agent_revision:${resourceId}:reconcile`,
+        }));
+      const workByKey = await state.operations.findWorkByKeys(deployments.map(({ key }) => key));
+      for (const { namespaceId, revisionId, key } of deployments) {
+        const work = workByKey.get(key);
         if (
           work === undefined ||
-          work.namespaceId !== operation.namespaceId ||
-          work.revisionId !== operation.resourceId ||
+          work.namespaceId !== namespaceId ||
+          work.revisionId !== revisionId ||
           !isNonEmptyString(work.agentId)
         ) {
           throw new DependencyUnavailableError("The Agent deployment inventory is incomplete.");
@@ -3972,7 +3921,7 @@ export class OpenClawController {
       );
       // Provisioning creates the Agent before it has tool sources. Bind the account
       // on the saved Agent after the initial install.
-      this.validatePluginCredentialSources(driver, plugins, []);
+      await this.validatePluginCredentialSources(driver, plugins, []);
       await this.authorizeProvisioningSources(
         state,
         principalId,
@@ -7935,85 +7884,6 @@ export class OpenClawController {
       },
       this.credentialProxyCapacity,
     );
-  }
-
-  /**
-   * Observe current policy for one already-admitted credential-free metadata binding. The caller
-   * owns the association with the execution; reported target fields do not authenticate it.
-   * This is neither execution admission nor authority to release material, dispatch a request, or
-   * release its response. Never substitute this observation for the protected exchange below.
-   */
-  async observeCredentialFreeMetadataGrant(
-    admittedBinding: EgressBinding,
-    target: Readonly<{ method: "GET"; origin: string; path: string }>,
-  ): Promise<"current" | "not_current"> {
-    if (this.transactionContext.getStore() !== undefined) {
-      return "not_current"; // Never reuse a policy snapshot from an enclosing request.
-    }
-    const { binding, method, origin, path } = immutableCopy({
-      ...target,
-      binding: admittedBinding,
-    });
-    const execution = binding.execution;
-    return this.transact(async (state) => {
-      const { namespaceId, agentId, revisionId, servicePrincipalId } = execution;
-      const namespace = await state.namespaces.findNamespace(namespaceId);
-      const agent = await state.agents.findAgent(namespaceId, agentId);
-      if (
-        execution.installationId !== this.installation.id ||
-        namespace?.status !== "ready" ||
-        agent?.status !== "active" ||
-        agent.executionMode !== "dedicated" ||
-        agent.desiredRuntimeState !== "running" ||
-        agent.servicePrincipalId !== servicePrincipalId ||
-        agent.activeRevisionId !== revisionId
-      ) {
-        return "not_current";
-      }
-      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
-      const plan = revision?.egressPlan;
-      const route = plan?.routes.length === 1 ? plan.routes[0] : undefined;
-      if (
-        revision?.executionAdmission?.mode !== "protected" ||
-        !route ||
-        !isDeepStrictEqual(plan?.execution, execution) ||
-        !isDeepStrictEqual(route.binding, binding) ||
-        route.method !== method ||
-        route.origin !== origin ||
-        route.path !== path
-      ) {
-        return "not_current";
-      }
-      const id = binding.source.source.id;
-      const source = await state.credentialSources.findCredentialSource(namespaceId, id);
-      if (
-        source?.state !== "ready" ||
-        !this.currentCredentialSourceOwner(source, revision) ||
-        !matchesCredentialFreeMetadataGrant(source, route) ||
-        (await state.credentialSources.findCredentialWithdrawal(namespaceId, revisionId, id)) !==
-          undefined
-      ) {
-        return "not_current";
-      }
-      const driver = this.selectedDriver("credential_proxy");
-      const { backend, sender, resolver } = driver.sourceControl;
-      const { egress } = source;
-      if (
-        !plan ||
-        !this.selectedProxyOwner().ownsProxyPlan(plan) ||
-        !isDeepStrictEqual(egress?.key.backend, backend) ||
-        !isDeepStrictEqual(egress?.sender, sender) ||
-        !isDeepStrictEqual(egress?.resolver, resolver)
-      ) {
-        return "not_current";
-      }
-      const { decision } = await this.authorizationDecision(servicePrincipalId, "operate", {
-        kind: "credential_source",
-        namespaceId,
-        id,
-      });
-      return decision.allowed ? "current" : "not_current";
-    });
   }
 
   private async checkEgressUse(
@@ -12373,7 +12243,7 @@ export class OpenClawController {
         pluginApprovers,
         async () => (await savedConfiguration()).values,
       );
-      this.validatePluginCredentialSources(driver, plugins, sources, harnessAuth);
+      await this.validatePluginCredentialSources(driver, plugins, sources, harnessAuth);
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
       await this.validateSavedAgentTopology(
         state,
@@ -12816,7 +12686,7 @@ export class OpenClawController {
         );
       }
       if (sources !== undefined) {
-        this.validatePluginCredentialSources(driver, selections, sources, auth);
+        await this.validatePluginCredentialSources(driver, selections, sources, auth);
       }
       const backendId = this.backendId(input.backendId, agent.backendId);
       const repositoryChange =
@@ -13991,14 +13861,34 @@ export class OpenClawController {
           ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
         },
       });
-      const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
+      const domain = compute.restartContinuationDomain?.(admittedDraft);
+      const currentContinuation = await state.agents.findRestartContinuation(
+        namespace.id,
+        lockedAgent.id,
+      );
+      const restartContinuation =
+        domain === undefined
+          ? undefined
+          : {
+              generation:
+                lockedAgent.desiredRuntimeState === "running" &&
+                currentContinuation?.domain === domain
+                  ? currentContinuation.generation
+                  : crypto.randomUUID(),
+              domain,
+            };
+      const continuationDraft = freezeAgentRevision({
+        ...admittedDraft,
+        ...(restartContinuation === undefined ? {} : { restartContinuation }),
+      });
+      const runtimeInputs = compute.snapshotRuntimeInputs?.(continuationDraft);
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
-          ...admittedDraft,
+          ...continuationDraft,
           compute: {
             ...admittedDraft.compute,
             ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
@@ -14039,6 +13929,7 @@ export class OpenClawController {
       if (running === undefined) {
         throw new ResourceStateConflictError("The Agent lifecycle changed during deployment.");
       }
+      await state.agents.setRestartContinuation(namespace.id, lockedAgent.id, restartContinuation);
       await this.record(state, {
         kind: "agent_revision",
         action: "reconcile",
@@ -15573,14 +15464,14 @@ export class OpenClawController {
     return sources;
   }
 
-  private validatePluginCredentialSources(
+  private async validatePluginCredentialSources(
     driver: PluginDriver | undefined,
     plugins: PluginDesiredState | undefined,
     sources: readonly CredentialSource[],
     harnessAuth?: HarnessAuthBinding | null,
-  ): void {
+  ): Promise<void> {
     if (plugins && Object.keys(plugins).length) {
-      driver?.credentials?.validate(
+      await driver?.credentials?.validate(
         plugins,
         sources,
         harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
@@ -15603,7 +15494,7 @@ export class OpenClawController {
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
-      this.validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
+      await this.validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
       return [];
     }
     // A state refusal, so HTTP keeps the message instead of the generic "already exists".
@@ -15619,7 +15510,7 @@ export class OpenClawController {
       bindings,
       agent.harnessAuth,
     );
-    this.validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
+    await this.validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const { sourceId } of bindings) {
       await this.authorizeAgentPrincipal(principalId, agent, "operate", {

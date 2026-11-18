@@ -20,7 +20,7 @@ is described in the [channel directory flow](agent-channel-directory.md).
   or deploys an Agent with plugin approvers.
 - Assumptions: the actor has Agent create or exact Agent update permission, and
   the selected PluginDriver supports approvers.
-- Source: `apps/controller/src/console/agents/slack-approvers.mjs:createSlackApproverField`,
+- Source: `apps/controller/src/console/agents/slack-approvers.mts:createSlackApproverField`,
   `packages/occ/src/index.ts:OpenClawController.updateAgent`, and
   `apps/controller/src/drivers/plugin/runtime-translator.ts:pluginApprovalOverlay`.
 

@@ -13,8 +13,7 @@ test("published TokenService source schemas accept registration material and ser
   const id = `cs_${uuid}`;
   const namespaceId = `ns_${uuid}`;
 
-  // A request to the existing source collection exposes the compiler configuration
-  // of the plugin that registered the standalone components.
+  // Use the source route's validator and serializer to verify that it can resolve the shared schemas.
   const route = { method: "POST", url: `/namespaces/${namespaceId}/credential-sources` } as const;
   let validatorCompiler: typeof app.validatorCompiler;
   let serializerCompiler: typeof app.serializerCompiler;

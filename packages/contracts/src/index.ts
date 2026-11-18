@@ -161,8 +161,12 @@ export type {
   OAuthClientAuthMethod,
   McpAuthorizationMetadata,
   ConnectionEndpoint,
+  StaticKeyDestination,
   ConnectionTemplate,
   ConnectionTemplateValues,
+  ConnectionTemplateSettings,
+  ConnectionTemplateVersion,
+  StaticKeyTemplateValues,
   OAuthConnectionTemplateVersion,
   ConnectionSession,
   SavedConnection,
@@ -173,6 +177,7 @@ export {
   isFlowOwnedOAuthParameter,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
+  normalizeStaticKeyDestinations,
   validateConnectionTemplateAuthorization,
   validateConnectionTemplateDestinations,
 } from "./connection-templates.ts";
@@ -413,6 +418,18 @@ export interface ResourceRef extends Scope {
   readonly id: string;
 }
 
+export type {
+  ModelProvider,
+  ModelProviderSettings,
+  ModelProviderView,
+  ModelProviderModel,
+  InferenceProtocol,
+} from "./model-providers.ts";
+export {
+  inferenceKeyDestination,
+  modelProviderRequestApproved,
+  normalizeInferenceBaseUrl,
+} from "./model-providers.ts";
 export interface Installation {
   readonly id: string;
   readonly name: string;
@@ -1037,6 +1054,8 @@ export type AgentDesiredRuntimeState = "running" | "stopped";
  */
 export type AgentStatus = "active" | "deleting";
 export interface Agent extends Scope {
+  /** Installation provider selected for future deployments. */
+  readonly modelProviderId?: string;
   readonly sandboxPolicyEditing?: boolean;
   readonly id: string;
   readonly namespaceId: string;
@@ -1117,6 +1136,8 @@ export interface HarnessDescriptor {
 }
 
 export interface RevisionHarnessDescriptor extends HarnessDescriptor {
+  /** Catalog identity at admission; execution uses the saved settings below. */
+  readonly modelProviderId?: string;
   readonly mode: HarnessExecutionMode;
   /** Requested settings, normalized by the selected Compute Driver. */
   readonly overrides?: Readonly<Record<string, unknown>>;
@@ -1124,7 +1145,14 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
   readonly configuration?: Readonly<Record<string, unknown>>;
 }
 
+/** Server-owned permission to continue interrupted work within a compatible lifecycle. */
+export interface RestartContinuation {
+  readonly generation: string;
+  readonly domain: string;
+}
+
 export interface AgentRevision extends Scope {
+  readonly restartContinuation?: RestartContinuation;
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
   readonly id: string;
@@ -1591,7 +1619,9 @@ export {
 export {
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
+export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-providers.ts";
 export {
   RegisterTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
