@@ -1256,18 +1256,22 @@ test(
         await requests.authorize({
           route,
           profile: "repository_git",
-          authorization: "online-request",
           request,
           signal: t.signal,
         }),
       );
-    // Name each material's header, so no assertion message prints a token.
-    const headers = new Map<string, string>();
-    const nameHeader = (name: string, value: string) =>
-      headers.set("Basic " + Buffer.from("x-access-token:" + value).toString("base64"), name);
+    // Name each material's token, so no assertion message prints one.
+    const tokens = new Map<string, string>();
+    const nameHeader = (name: string, value: string) => tokens.set(value, name);
     const outcome = (decision: GitHubRequestDecision) =>
       decision.kind === "allow"
-        ? { allow: decision.operation, header: headers.get(decision.inject.value) ?? "unknown" }
+        ? {
+            allow: decision.operation,
+            header:
+              decision.credential.scheme === "basic"
+                ? (tokens.get(decision.credential.token) ?? "unknown")
+                : "bearer",
+          }
         : { reasonCode: decision.reasonCode, refusal: decision.refusal };
     const fetch: GitHubRequestView = {
       target: {
