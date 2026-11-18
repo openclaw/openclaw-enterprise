@@ -130,8 +130,8 @@ ownership and read-only views; the [worker flow](flows/controller-worker.md)
 traces dispatch and persistence.
 
 Compose and Helm initialize the Installation after database migration and before
-starting the API and worker. Only the initializer mounts bootstrap credential
-output. See [startup](flows/platform-startup.md) and
+starting the API and worker. Only the initializer mounts operator-supplied
+bootstrap credential input; upgrades need no retained input. See [startup](flows/platform-startup.md) and
 [bootstrap recovery](guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 
 | Component            | Responsibility                                                |

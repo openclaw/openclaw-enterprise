@@ -32,7 +32,7 @@ function passiveComputeDriver(id) {
   });
 }
 
-/** Runs the chart's initialization Job command and returns the generated administrator password.
+/** Runs the chart's initialization Job command and returns the supplied administrator password.
  * @param {Pick<import("node:test").TestContext, "after">} context
  * @param {{databaseUrl: string | undefined, email: string, authSecret: string}} options
  */
@@ -49,7 +49,7 @@ export async function bootstrapProductionInstallation(context, { databaseUrl, em
   if (!result.ok) {
     throw new Error(`Production bootstrap failed:\n${result.stderr || result.stdout}`);
   }
-  return (await readFile(environment.OCC_BOOTSTRAP_PASSWORD_FILE, "utf8")).trim();
+  return await readFile(environment.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE, "utf8");
 }
 
 /** Collects structured controller log events, as the API Pod would emit them. */

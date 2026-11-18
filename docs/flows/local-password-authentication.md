@@ -8,8 +8,8 @@ last_updated_session: "authoring-run/71818c11-eeb5-4a34-8231-ea32f513c574"
 
 ## Overview
 
-Native IAM bootstrap commits administrators with the Installation and protects
-their credentials. Human sign-in leads to exact IAM authorization.
+Native IAM bootstrap commits Installation administrators and protects credentials.
+Human sign-in requires exact IAM authorization.
 
 ## Entry Points
 
@@ -21,9 +21,8 @@ their credentials. Human sign-in leads to exact IAM authorization.
   [`apps/controller/src/auth/index.ts:createControllerAuth`](../../apps/controller/src/auth/index.ts),
   and [`apps/controller/src/index.ts:createFastifyApp`](../../apps/controller/src/index.ts).
 - Assumptions: Migrated PostgreSQL, configured Better Auth, native IAM bootstrap,
-  protected output storage, disabled public signup, and exact IAM authorization.
-  Production requires sibling private password and service-key paths.
-  Development requires only the service-key path.
+  protected credential input files, disabled public signup, and exact IAM authorization.
+  Fresh development and production initialization require both input paths.
 
 ## Flow
 
@@ -31,10 +30,10 @@ their credentials. Human sign-in leads to exact IAM authorization.
 graph TD
   subgraph Bootstrap["Shared installation initializer: one attempt"]
     A["Load Installation"] -->|Existing| B["Verify persisted identity; retain credentials"]
-    A -->|Fresh| C["Create human and native IAM seed with service administrator"]
-    C --> D["Better Auth persists service-key hash"]
-    D --> E["Sync private key JSON and production password file"]
-    E --> F["Commit Installation, IAM seed, and audit"]
+    A -->|Fresh| I["Read and validate both supplied credential files"]
+    I --> C["Create human and native IAM seed with service administrator"]
+    C --> D["Better Auth registers supplied service-key hash"]
+    D --> F["Commit Installation, IAM seed, and audit"]
   end
   F --> G["Complete startup"]
   B --> G
@@ -63,52 +62,52 @@ graph TD
 ### 1. Load state and create the fresh administrator identities
 
 [`scripts/bootstrap-installation.mjs`](../../scripts/bootstrap-installation.mjs)
-loads the singleton Installation. For existing Installations, including those
-predating service-administrator bootstrap, it verifies the administrator's
-immutable account/IAM identity without issuing keys, changing output, or repairing
-grants. Both paths check the base URL; `verifiedWithoutAuth` checks the administrator's `occ."user"` row and IAM Principal before loading
-Better Auth. Success logs `installation.already-bootstrapped` with `step: "fast-path"`.
-A miss or error runs the full Better Auth check.
+loads the singleton Installation. Existing Installations, including those predating
+service administrators, verify immutable account/IAM identity without reading
+inputs, issuing keys or repairing grants. Both paths first check the base URL.
+`verifiedWithoutAuth` checks the administrator's `occ."user"` row and IAM Principal
+before Better Auth. Success logs `installation.already-bootstrapped` with
+`step: "fast-path"`; misses or errors use the full check.
 
-`apps/controller/src/composition/bootstrap-output.ts:bootstrapOutputPath` rejects
-output basenames over 255 UTF-8 bytes before credential creation. Better Auth
-creates the production account with a random password or the development account
-with `OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD`.
+`scripts/lib/bootstrap-credentials.ts:bootstrapCredentials` validates both inputs
+before authentication writes, following Secret symlinks under the
+[input contract](../reference/authentication.md#installation-and-account-ownership).
+Both modes use the supplied password.
 `packages/iam/src/index.ts:createBootstrapAdministratorSeed` adds a non-Agent
-`spn_<uuid>` with no Namespace and its own unrestricted binding to the human's
-administrator Role. See [exact IAM actions](../reference/authorization.md#supported-policy-surface).
-Additional-account provisioning creates no service administrator.
+`spn_<uuid>` without a Namespace, with a separate unrestricted binding to the human's
+administrator Role ([exact actions](../reference/authorization.md#supported-policy-surface)).
+Additional accounts create no service administrator.
 
-### 2. Issue private output, then commit the Installation
+### 2. Register the supplied key, then commit the Installation
 
-[`apps/controller/src/auth/index.ts:createServiceKey`](../../apps/controller/src/auth/index.ts)
-persists the Better Auth key `bootstrap-admin` outside the OCC transaction. The key
-defaults to 30 days, scoped to the Installation and service principal.
-OCC operations and controller startup require committed IAM.
+[`apps/controller/src/auth/index.ts:registerBootstrapServiceKey`](../../apps/controller/src/auth/index.ts)
+uses initializer-only auth and the API-key plugin's supported `customKeyGenerator`.
+The plugin hashes and persists the supplied `bootstrap-admin` key with a 30-day
+expiry and this Installation's service principal. The database's unique key
+constraint rejects duplicate ownership. Auth writes remain outside the OCC
+transaction. Uncommitted IAM cannot authorize OCC operations; startup waits for
+bootstrap success.
 
-[`bootstrap-output.ts:writeProtectedBootstrapFile`](../../apps/controller/src/composition/bootstrap-output.ts)
-exclusively creates and syncs owner-only output before OCC commit. Key JSON contains
-the key response and attempt Installation ID. Production writes both files to the
-same protected PVC. Development writes key JSON to its bootstrap-only volume or
-explicit direct-initialization path. No plaintext reaches logs, audit, bootstrap
-HTTP responses or the worker.
+The initializer writes no credential output. Helm projects the precreated Secret
+only during install, read-only at `/run/openclaw-bootstrap`; Compose mounts input
+files as secrets. Migration, API and worker containers receive neither input.
+No plaintext reaches logs, audit or the bootstrap result.
 
-The initializer commits Installation, IAM and audit once; singleton constraints
-reject competitors. API startup verifies committed state without
-calling `POST /installation/bootstrap`.
+Singleton constraints reject competing Installation/IAM/audit commits. API startup
+verifies committed state without `POST /installation/bootstrap`.
 
-On error the initializer logs `installation.bootstrap-failed` with available
-non-secret IDs and paths, exits nonzero, and retains tracked accounts, keys and
-partial files for inspection. Helm sets `backoffLimit: 0`. If password `linkAccount`
-fails before `createAccount` returns, the helper attempts to delete the new user and rethrows.
+Errors record `installation.bootstrap-failed` with available non-secret IDs and
+then exit nonzero. Helm sets `backoffLimit: 0`. Tracked accounts and keys
+remain for inspection. If password `linkAccount` fails before
+`createAccount` returns, the helper attempts to delete the new user and rethrows.
 The initializer never automatically revokes, retries, repairs or resets uncertain
 or committed state.
 
 [Recovery](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
-requires confirming the transaction outcome and exact attempt IDs. Files alone
-cannot prove seed commit. Identify the disposable Installation and storage before
-reset. Import successful output and retain its IDs. Lost output is never
-regenerated. See [service-key replacement and revocation](service-api-keys.md).
+requires confirming transaction completion and exact attempt IDs; source files
+cannot prove commit or rotate credentials. Identify the disposable Installation
+and storage before reset. Retain confirmed attempt IDs.
+[Service-key management](service-api-keys.md) covers replacement and revocation.
 
 ### 3. Construct session authentication
 
@@ -313,28 +312,29 @@ issuing its cookie.
 - `node --test tests/integration/native-admin-access.test.mjs` covers trusted and
   untrusted origins on session mutations and sign-out, plus service-key admission.
 - `postgres-production-wireup.test.ts` with `OCC_PRODUCTION_WIREUP_DATABASE_URL`
-  proves bootstrap, protected password/key delivery, human/service access and no reissue.
+  covers bootstrap, human/service access and no reissue.
 - `postgres-auth-accounts.test.ts` with `OCC_TEST_DATABASE_URL` covers provisioning,
   rollback, lost COMMIT replies and password-only logout under contention. Its
-  fresh-bootstrap case verifies service identity, output and access, skipping
-  existing Installations.
-- `node --test tests/integration/bootstrap-output.test.ts` covers exclusive
-  output, unsafe-path refusal, and file retention on write failure.
-  Database proofs require [disposable PostgreSQL](../testing/postgresql.md#postgresql-test-environment).
+  fresh-bootstrap case verifies service identity and access, skipping existing Installations.
+- `tests/integration/bootstrap-credentials.test.ts` covers local parsing,
+  symlinks, spaces and invalid inputs, not Kubernetes or persistence. Database
+  cases require [disposable PostgreSQL](../testing/postgresql.md#postgresql-test-environment);
+  skipped suites provide no runtime proof.
 - `postgres-bootstrap-failures.test.ts` with `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`
   uses a dedicated loopback database for concurrent production bootstrap,
   credential preservation after lost COMMIT acknowledgement in both modes, and
   fast/full-path selection.
-- Check copied output is `0600` without printing it. Check authority with a key-authenticated `GET /installation` and Namespace create/read.
-  `401` means credential rejection. `403` means identity, scope or policy denial.
-  After bootstrap failure, follow
+- Verify retained host credentials are private without printing them; use a key-authenticated
+  `GET /installation` and Namespace create/read to check current authority.
+  A `401` indicates credential rejection; `403` indicates identity/scope/policy
+  denial. For a failed bootstrap, follow
   [operator recovery](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 - `postgres-oidc-recovery-replacement.test.ts` uses real routes to exercise
   recovery-only sign-in, both session/replacement lock orders, retained sessions
   and lost COMMIT replies. The two-controller fixture checks the State invariant
   only. Production multi-controller qualification is separate.
-- `pnpm typecheck`, `pnpm format:check`, and `pnpm check:workspace` check source
-  and workspace structure. Compose/PVC storage permissions require runtime evidence.
+- `pnpm typecheck`, `pnpm format:check`, and `pnpm check:workspace` check source/workspace
+  structure. Only real Compose/Kubernetes execution proves input access; chart rendering does not.
 
 ## Related docs
 
@@ -360,6 +360,11 @@ issuing its cookie.
 
 - 2026-11-18 07:50: Condense the bootstrap and authentication trace. (authoring-run/ecdff9cc-850a-496d-a883-2485233e72ab - 4657570be473fd721dc059021d0f6dda1f9451eb)
 - 2026-11-18 03:10: Order recovery-only password-session creation with online replacement. (authoring-run/99c6c84d-1684-4d25-9675-3414cb6273cf - 4657570be473fd721dc059021d0f6dda1f9451eb)
+
+- 2026-11-16 09:42: Align verification pointers with supplied-input parsing; no runtime suites run for this documentation pass. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
+
+- 2026-11-16 09:39: Trace supplied bootstrap inputs and server-only key registration in the accompanying changes. (pi/01a1e4f4-3138-71b5-b224-7ecf7ed57406 - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
+
 - 2026-11-12 09:36: Clarify the Native IAM account-creation guarantee. (authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37 - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
 - 2026-11-12 09:25: Retain account authority through commit. (authoring-run/276118f6-2838-4088-8f68-2deba06ca89d - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
 

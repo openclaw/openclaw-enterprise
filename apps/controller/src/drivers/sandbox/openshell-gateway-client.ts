@@ -157,9 +157,18 @@ export interface OpenShellProviderProfileEndpoint {
   readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
   readonly mcp?: { readonly strict_tool_names: boolean; readonly versions: readonly string[] };
   readonly rules?: readonly {
-    readonly allow: { readonly method: string; readonly path?: string };
+    readonly allow: {
+      readonly method: string;
+      readonly path?: string;
+      /** `L7Allow.query` uses matcher messages, not the authored-policy string shorthand. */
+      readonly query?: Readonly<Record<string, OpenShellL7QueryMatcher>>;
+    };
   }[];
 }
+
+export type OpenShellL7QueryMatcher =
+  | { readonly glob: string; readonly any?: never }
+  | { readonly any: readonly string[]; readonly glob?: never };
 
 /** Exact stock endpoint sent at import and compared when the provider is observed. */
 export function openShellProfileEndpoint(endpoint: OpenShellProviderProfileEndpoint) {
