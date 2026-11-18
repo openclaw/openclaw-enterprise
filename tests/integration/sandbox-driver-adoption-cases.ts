@@ -78,12 +78,15 @@ export async function verifyPublicEgressSupervisorReadback(): Promise<void> {
   let creationCount = 0;
   let appliedMode: boolean | undefined;
   let configInstance = "supervisor-one";
+  let mainProcessInstanceId = "supervisor-one";
+  let phase = "SANDBOX_PHASE_READY";
   const sandbox = () =>
     created &&
     storedSandbox(created, {
       id: "sandbox-one",
       serviceUrls: {},
-      mainProcessInstanceId: "supervisor-one",
+      mainProcessInstanceId,
+      phase,
       configurationAdmission: {
         state: 2,
         instance_id: "supervisor-one",
@@ -140,7 +143,10 @@ export async function verifyPublicEgressSupervisorReadback(): Promise<void> {
     return true;
   });
   configInstance = "supervisor-one";
+  mainProcessInstanceId = "control-session-one";
   assert.equal((await driver.provisionHarness(harness)).revisionId, revision.id);
+  phase = "SANDBOX_PHASE_STARTING";
+  await assert.rejects(driver.provisionHarness(harness), SandboxPolicyObservationPendingError);
   assert.equal(creationCount, 1, "policy observation must keep the original Sandbox");
 }
 

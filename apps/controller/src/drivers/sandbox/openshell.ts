@@ -409,6 +409,7 @@ async function observeNetworkEgress(
     !currentAdmission ||
     currentAdmission.state === 1 ||
     !sandbox?.mainProcessInstanceId ||
+    harnessObservation(sandbox).state !== "running" ||
     currentConfig?.configuration_admitted !== true
   ) {
     return {
@@ -416,12 +417,13 @@ async function observeNetworkEgress(
       message: "OpenShell is waiting for the supervisor to confirm active public network egress.",
     };
   }
+  // OpenShell issues separate identities for its running main process and its
+  // configuration admission. Compare the admission with the effective policy.
   if (
     typeof status.policyHash === "string" &&
     /^[0-9a-f]{64}$/.test(status.policyHash) &&
     currentConfig.workspace === request.workspace &&
     currentAdmission.state === 2 &&
-    sandbox.mainProcessInstanceId === currentAdmission.instance_id &&
     currentConfig.policy_source === 1 &&
     matchesCurrentConfiguration
   ) {
