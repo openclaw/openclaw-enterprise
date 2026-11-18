@@ -72,17 +72,26 @@ export function portsCovered(ports: PortRanges, allowed: readonly Destination[])
   });
 }
 
-// Compare paths in their wire form. A space is always %20. Other escapes can
-// change segment boundaries or acquire a different meaning after decoding.
+// Match the original wire path. Only spaces and non-ASCII UTF-8 bytes may be escaped.
 function validPath(path: unknown, allowSubtree: boolean): path is string {
   if (typeof path !== "string" || !path.startsWith("/") || path.includes("//")) {
     return false;
   }
   const base = allowSubtree && path.endsWith("/**") ? path.slice(0, -3) : path;
-  return (
-    /^(?:[A-Za-z0-9._~!$&'()+,:=@/-]|%20)*$/.test(base) &&
-    !base.split("/").some((part) => part === "." || part === "..")
-  );
+  if (!/^(?:[A-Za-z0-9._~!$&'()+,:=@/-]|%20|%[89A-F][0-9A-F])*$/.test(base)) {
+    return false;
+  }
+  try {
+    return decodeURIComponent(base)
+      .split("/")
+      .every((segment) => {
+        // A segment must remain one ordinary segment even if the origin normalizes Unicode.
+        const normalized = segment.normalize("NFKC");
+        return normalized !== "." && normalized !== ".." && !/[/%\\?#;*\p{Cc}]/u.test(normalized);
+      });
+  } catch {
+    return false;
+  }
 }
 
 /** A terminal subtree includes its base and descendants separated by a slash. */
@@ -161,21 +170,14 @@ export function disjointRequests(
 }
 
 function conflictingAllowances(a: DeploymentRequestMatch, b: DeploymentRequestMatch): boolean {
-  const left = a.requestPolicy;
-  const right = b.requestPolicy;
-  if (
-    a.binary !== b.binary ||
-    !destinationsOverlap(a, b) ||
-    sameRequest(left, right) ||
-    disjointRequests(left, right)
-  ) {
-    return false;
-  }
-  // A nested HTTP allowance adds no access if the wider rule also covers its host and ports.
-  if (left?.type === "http" && right?.type === "http") {
-    return !requestCovered(a, [b]) && !requestCovered(b, [a]);
-  }
-  return true;
+  // Same-kind allowances retain their own ports and requests. Mixing selector kinds on
+  // the same traffic can leave an HTTP or MCP restriction unenforced.
+  return (
+    a.binary === b.binary &&
+    a.requestPolicy?.type !== b.requestPolicy?.type &&
+    destinationsOverlap(a, b) &&
+    !disjointRequests(a.requestPolicy, b.requestPolicy)
+  );
 }
 
 export function validateMatches(

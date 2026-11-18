@@ -19,16 +19,19 @@ function calendarAccount(connection: string, environment: string) {
   } as const;
 }
 
-function credentialPolicyFixture<Policy extends DeploymentRequestPolicy>(requestPolicy: Policy) {
+function credentialPolicyFixture<Policy extends DeploymentRequestPolicy>(
+  requestPolicy: Policy,
+  port = 443,
+) {
   const destination = {
     binary: "/usr/bin/node",
     host: "api.example.org",
-    ports: [{ from: 443, to: 443 }],
+    ports: [{ from: port, to: port }],
   };
   const request = { ...destination, requestPolicy };
   const binding = calendarAccount("work", "WORK_TOKEN");
   const authority = {
-    destinations: [{ host: destination.host, port: 443, path: requestPolicy.path }],
+    destinations: [{ host: destination.host, port, path: requestPolicy.path }],
     allowedRequests: [request],
     projection: { environment: "WORK_TOKEN", presentation: "bearer" } as const,
   };
@@ -159,13 +162,38 @@ export function registerDeploymentPolicyCases(): void {
     }
   });
 
-  test("MCP admission preserves encoded spaces in exact recipient paths", () => {
+  test("MCP admission preserves canonical UTF-8 in exact recipient paths", () => {
     const operation = { type: "mcp", method: "tools/list" } as const;
-    const { input } = credentialPolicyFixture({ ...operation, path: "/team%20space/mcp" });
-    assert.deepEqual(policyRefusals(input), []);
+    for (const path of ["/caf%C3%A9/mcp", "/team%20space/mcp"]) {
+      const { input } = credentialPolicyFixture({ ...operation, path });
+      assert.deepEqual(policyRefusals(input), [], path);
+    }
 
-    // An encoded separator or a second level of encoding stays invalid even when all policies agree.
-    for (const path of ["/team%2Fspace/mcp", "/team%2520space/mcp"]) {
+    // The source consented to the composed spelling. An equivalent display name is a different wire path.
+    const { input, authority } = credentialPolicyFixture({ ...operation, path: "/cafe%CC%81/mcp" });
+    assert.deepEqual(
+      policyRefusals({
+        ...input,
+        authorityForBinding: () => ({
+          ...authority,
+          destinations: authority.destinations.map((endpoint) => ({
+            ...endpoint,
+            path: "/caf%C3%A9/mcp",
+          })),
+        }),
+      }),
+      [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]],
+    );
+
+    // All three policies agree. Invalid UTF-8, ambiguous path segments and alternate encodings still fail.
+    for (const path of [
+      "/caf%C3/mcp",
+      "/caf%c3%a9/mcp",
+      "/team%2Fspace/mcp",
+      "/team%2520space/mcp",
+      "/%2E%2E/mcp",
+      "/%EF%BC%8E%EF%BC%8E/mcp", // Two fullwidth dots normalize to a parent segment.
+    ]) {
       const invalid = credentialPolicyFixture({ ...operation, path });
       assert.deepEqual(policyRefusals(invalid.input), [["/bindings/0", "INVALID_VALUE"]], path);
     }
@@ -207,17 +235,28 @@ export function registerDeploymentPolicyCases(): void {
     }
   });
 
-  test("credentialless access needs a Sandbox that can enforce the complete network policy", () => {
-    const { input, request } = credentialPolicyFixture({
-      type: "http",
-      method: "GET",
-      path: "/events",
-    });
+  test("the Sandbox must qualify the exact union of overlapping HTTP grants", () => {
+    const { input, request, binding } = credentialPolicyFixture(
+      { type: "http", method: "GET", path: "/calendar/**" },
+      8443,
+    );
+    const { binary, host, ports } = request;
+    const https = [{ from: 443, to: 443 }];
+    const bothPorts = [...https, ...ports];
+    const events = {
+      ...request,
+      requestPolicy: { ...request.requestPolicy, path: "/calendar/events" },
+    };
+    const network = {
+      allowed: [
+        { ...request, ports: https },
+        { ...events, ports: bothPorts },
+      ],
+    };
     const policy = {
-      targetMayHoldPlaceholders: false,
-      ceiling: input.ceiling,
-      sandbox: input.sandbox,
-      networkAccessPolicy: input.networkAccessPolicy,
+      ...input,
+      ceiling: [{ id: "api", binary, host, ports: bothPorts }],
+      networkAccessPolicy: network,
       bindings: [],
       injectionPolicies: [],
     };
@@ -230,7 +269,6 @@ export function registerDeploymentPolicyCases(): void {
       [["/networkAccessPolicy/allowed", "INVALID_VALUE"]],
     );
     // An unrestricted rule at the same endpoint could also allow every unselected operation.
-    const { binary, host, ports } = request;
     assert.deepEqual(
       policyRefusals({
         ...policy,
@@ -238,17 +276,23 @@ export function registerDeploymentPolicyCases(): void {
       }),
       [["/networkAccessPolicy/allowed/1", "INVALID_VALUE"]],
     );
-    // The exact path also allows a second port, so the subtree does not contain the whole rule.
-    const bothPorts = [...ports, { from: 8443, to: 8443 }];
-    const subtree = { ...request, requestPolicy: { ...request.requestPolicy, path: "/**" } };
+    // The source and consumer permit the subtree on 8443. Only its events path has network access there.
+    const bound = {
+      ...input,
+      ceiling: policy.ceiling,
+      networkAccessPolicy: network,
+      proxy: { ...input.proxy, distinguishesPort: true },
+    };
     assert.deepEqual(
       policyRefusals({
-        ...policy,
-        ceiling: [{ id: "api", binary, host, ports: bothPorts }],
-        networkAccessPolicy: { allowed: [subtree, { ...request, ports: bothPorts }] },
+        ...bound,
+        injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [events] }],
       }),
-      [["/networkAccessPolicy/allowed/1", "INVALID_VALUE"]],
+      [],
     );
+    assert.deepEqual(policyRefusals(bound), [
+      ["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"],
+    ]);
   });
 
   test("a proxy must distinguish every reachable executable and port outside the binding", () => {

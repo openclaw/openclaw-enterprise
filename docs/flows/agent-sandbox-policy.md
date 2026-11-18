@@ -61,21 +61,21 @@ use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
 `validateAgentSandboxPolicy` authorizes the Agent and policy, checks editing,
-version and pending work, then validates grants against the shared schema and
-the Driver's narrower rules. `packages/contracts/src/deployment-policy.ts:networkGrantAdmissionDetails`
-checks each executable, hostname and complete port range against the Installation
-ceiling and the Sandbox's wildcard and port-range capabilities. Preview writes
-nothing. Save and deploy repeat admission.
+version and pending work, then validates grants against the schema and Driver rules.
+`packages/contracts/src/deployment-policy.ts:networkGrantAdmissionDetails` checks
+executables, hosts and port ranges against the Installation ceiling and Sandbox
+support for wildcards and ranges. Preview writes nothing. Save and deploy repeat admission.
 
-Validation errors identify the field and the violated ceiling or capability.
+Validation errors identify the field and failed check.
 Stale and unauthorized requests retain their resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
 omitting records with Unicode control characters.
 
-The staged `deploymentPolicyAdmissionDetails` checks each binding's source destinations,
-reviewed requests, environment name and presentation. HTTP rules can contain narrower
-allowances. MCP paths match `%20` literally. Same-host discovery can remain credentialless.
-OCC still needs to supply binding authority at revision admission. The provider enforces OAuth scopes.
+Staged `deploymentPolicyAdmissionDetails` checks each binding's source destinations,
+reviewed requests, environment name and presentation. The Sandbox qualifies HTTP rules together,
+preserving each rule's path and ports. MCP matches canonical percent-encoded UTF-8 paths literally.
+Same-host discovery can remain credentialless. Revision admission still needs OCC's binding
+authority. The provider enforces OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -273,6 +273,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 15:56: Trace HTTP unions and UTF-8 paths. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 2fcc0a88cc29bbdc5c3a744ebdd15c6d62ad8934)
 
 - 2026-11-18 15:37: Clarify projection and request matching. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - f099db22a50b4929601520d156b5b14d6bb63613)
 
