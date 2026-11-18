@@ -17,8 +17,11 @@ branch check before merge; complete the authorized publication after merge.
 
 Run focused checks and the required browser/runtime scenarios first. Fix failures
 and settle the candidate before dispatching the two-architecture image workflow.
-Do not dispatch it after every intermediate test-only correction. Passing focused
-checks does not replace final image qualification.
+Do not dispatch it after every intermediate test-only correction. This order
+follows [PR #5323](https://github.com/openclaw/openclaw-enterprise/pull/5323),
+where an [intermediate image run](https://github.com/openclaw/openclaw-enterprise/actions/runs/44215952085)
+was canceled before qualification when main integration required another candidate.
+Passing focused checks does not replace final image qualification.
 
 1. Identify every consumer of the changed default: Dockerfiles, upstream source
    and lockfiles, workspace templates, version and sandbox gates, startup checks,
