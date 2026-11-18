@@ -1695,6 +1695,7 @@ export type {
   DeploymentWorkloadRequirement,
   DeploymentRequestPolicy,
   DeploymentRequestMatch,
+  PluginDeploymentRequestMatch,
   NetworkAccessPolicy,
   CredentialInjectionPolicy,
   CredentialProxyRouting,

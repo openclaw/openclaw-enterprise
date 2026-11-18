@@ -1,25 +1,45 @@
+import type { ConnectionEndpoint } from "./connection-templates.ts";
 import type { RepositoryGitDeliveryProfile } from "./drivers/credential-proxy/index.ts";
 import type { CredentialSourceReference } from "./index.ts";
 import type { RegisteredTokenServiceSource } from "./drivers/token-service/index.ts";
 import type { SandboxNetworkGrant } from "./sandbox-policy.ts";
 
-/** HTTP paths are exact. An evaluator refers to reviewed policy pinned with the revision. */
-export type DeploymentRequestPolicy =
+/** HTTP paths are exact. */
+type StaticRequestPolicy =
   | { readonly type: "http"; readonly method: string; readonly path: string }
   | {
       readonly type: "mcp";
       readonly path: string;
       readonly method: string;
       readonly toolName?: string;
-    }
-  | { readonly type: "evaluator"; readonly id: string; readonly digest: string };
+    };
 
-export interface DeploymentRequestMatch extends Pick<
-  SandboxNetworkGrant,
-  "binary" | "host" | "ports"
-> {
-  readonly requestPolicy?: DeploymentRequestPolicy;
+interface EvaluatorReference {
+  readonly type: "evaluator";
+  readonly id: string;
+  readonly digest: string;
 }
+
+interface RequestMatch<Policy> extends Pick<SandboxNetworkGrant, "binary" | "host" | "ports"> {
+  readonly requestPolicy?: Policy;
+}
+
+/** The plugin names reviewed evaluator code. Only OCC supplies the selected connection's bounds. */
+export type PluginDeploymentRequestMatch = RequestMatch<
+  StaticRequestPolicy | (EvaluatorReference & { readonly admittedSource?: never })
+>;
+
+export type DeploymentRequestPolicy =
+  | StaticRequestPolicy
+  | (EvaluatorReference & {
+      /** The source endpoint can differ from the request destination for credentialless discovery. */
+      readonly admittedSource: ConnectionEndpoint & {
+        readonly bindingRef: string;
+        readonly scopes: readonly string[];
+      };
+    });
+
+export type DeploymentRequestMatch = RequestMatch<DeploymentRequestPolicy>;
 
 export interface NetworkAccessPolicy {
   readonly allowed: readonly DeploymentRequestMatch[];
@@ -27,6 +47,8 @@ export interface NetworkAccessPolicy {
 
 export interface CredentialInjectionPolicy {
   readonly bindingRef: string;
+  /** For an evaluator, require the same bindingRef and intersect its decision with the admitted
+   * source host, port and path. Discovery outside that endpoint stays credentialless. */
   readonly allowedRequests: readonly DeploymentRequestMatch[];
 }
 

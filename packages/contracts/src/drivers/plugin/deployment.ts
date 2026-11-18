@@ -1,11 +1,24 @@
-import type { CredentialSourceReference, PluginDesiredState } from "../../index.ts";
+import type {
+  CredentialSourceReference,
+  PluginDesiredState,
+  PluginToolDefaults,
+  PluginToolPolicy,
+} from "../../index.ts";
 import type {
   BearerCredentialProjection,
-  DeploymentRequestMatch,
   DeploymentWorkloadRequirement,
+  PluginDeploymentRequestMatch,
 } from "../../credential-deployment.ts";
 
 type ConsumerRole = "gateway" | "harness";
+
+/** An explicit native default for all tools would bypass Codex's destructive-tool filter. */
+type CodexAppDefaults =
+  | { readonly toolDefaults?: PluginToolDefaults; readonly destructiveEnabled?: never }
+  | {
+      readonly toolDefaults?: PluginToolDefaults & { readonly enabled?: never };
+      readonly destructiveEnabled: boolean;
+    };
 
 type ToolInstallation =
   | { readonly kind: "image-skill"; readonly path: string; readonly sha256: string }
@@ -36,18 +49,31 @@ type ToolInstallation =
           };
     };
 
-export interface PluginDeploymentTool {
-  readonly id: string;
-  readonly role: ConsumerRole;
-  readonly installation: ToolInstallation;
-  readonly selectedTools: readonly string[];
-}
+export type PluginDeploymentTool =
+  | {
+      readonly kind: "installation";
+      readonly id: string;
+      readonly role: ConsumerRole;
+      readonly installation: ToolInstallation;
+      readonly selectedTools: readonly string[];
+    }
+  | (CodexAppDefaults & {
+      readonly kind: "codex-hosted-app";
+      readonly id: string;
+      readonly role: "harness";
+      readonly installation?: never;
+      /** One connector ID from the admitted catalog. The Harness disables unselected apps. */
+      readonly appId: string;
+      readonly enabled: boolean;
+      /** Resolve each scoped tool ID against this app's authenticated tool inventory. */
+      readonly tools?: Readonly<Record<string, Pick<PluginToolPolicy, "enabled" | "approval">>>;
+    });
 
 export interface PluginDeploymentNetworkRequirement {
   readonly id: string;
   readonly toolId: string;
   readonly purpose: "installation" | "invocation";
-  readonly match: DeploymentRequestMatch;
+  readonly match: PluginDeploymentRequestMatch;
 }
 
 export interface PluginCredentialConnection {
