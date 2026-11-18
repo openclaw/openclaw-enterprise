@@ -12,7 +12,7 @@ once, [authenticate to the API](#authenticate-to-the-production-api), and
 [deploy a production Agent](production-agents.md).
 
 Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
-[prerequisites below](#before-you-start), and
+[requirements below](#requirements), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
 Private routing is enabled by default. The chart does not install Envoy Gateway,
 Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
@@ -27,7 +27,9 @@ Use a clean checkout matching the image source commit. Follow
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
 
-## Before you start
+<span id="before-you-start"></span>
+
+## Requirements
 
 <Snippet file="../../snippets/kubernetes-prerequisites.md" />
 
