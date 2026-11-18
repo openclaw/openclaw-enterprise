@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { within } from "../helpers/wait-for.mjs";
@@ -14,6 +14,11 @@ import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/re
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../apps/controller/src/drivers/repo/github/access/prepared-retirement.ts";
 import type { PreparedRepositoryGitSource } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import { resolveSelectedRepositoryGrant } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { SharedPreparedRepositoryGit } from "../../apps/controller/src/drivers/repo/github/access/shared-prepared-git.ts";
 import {
   seedSessionRevision,
@@ -619,5 +624,277 @@ test(
       successor,
     );
     assert.equal(gh.issuesOfTokens.length, 5);
+  },
+);
+
+test(
+  "PostgreSQL separates renamed repository grants through the installed Driver enrollment",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    const namespaceId = `ns_${randomUUID()}`;
+    const id = "repository-rename-fixture";
+    const { directory } = await protectedDriverPackage(t, id, "repository-git");
+    const { cert } = await harnessTlsFixture(t);
+    const certFile = join(directory, "peer.pem");
+    const registryPath = join(directory, "registry.json");
+    await writeFile(certFile, cert);
+    const registry = (repository: string) => ({
+      version: 1,
+      backendId: "github-primary",
+      providerInstanceId: "github-com-primary",
+      appId: fixtureAppId,
+      githubInstallationId: fixtureInstallationId,
+      maximumDurationSeconds: 3600,
+      repositories: [
+        {
+          repositoryRef: "source",
+          repositoryId: fixtureRepositoryId,
+          repository,
+          namespaces: [
+            {
+              namespaceId,
+              profiles: ["github-repository"],
+              permissions: { contents: "read", metadata: "read" },
+            },
+          ],
+        },
+      ],
+    });
+    const base = createInstallationDriverConfiguration();
+    const configuration = {
+      ...base,
+      presets: { includeDefaults: false },
+      backend: [
+        {
+          id: "github-primary",
+          type: "github",
+          configuration: { registryPath },
+          drivers: { repo: "repo" },
+        },
+      ],
+      repository: {
+        id: "repo",
+        configuration: { sessionDurationSeconds: 600 },
+        preparedGitHub: {
+          custodyKeyPath: join(directory, "custody"),
+          privateKeyPath: join(directory, "signer"),
+        },
+      },
+      drivers: {
+        ...base.drivers,
+        sandbox: {
+          id,
+          package: id,
+          configuration: {
+            origin: "https://127.0.0.1:41001",
+            peerOrigin: "https://127.0.0.1:41002",
+            capabilityOrigin: "https://127.0.0.1:41003",
+            certFile,
+            releaseKey: "fixture-release-key",
+          },
+        },
+        credential_proxy: { id, configuration: {} },
+      },
+    };
+    const configPath = join(directory, "installation.json");
+    await writeFile(configPath, JSON.stringify(configuration));
+    const load = async (repository: string) => {
+      await writeFile(registryPath, JSON.stringify(registry(repository)), { mode: 0o600 });
+      const runtime = await loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: configPath },
+        packageRoot: directory,
+      });
+      assert.ok(
+        runtime?.repositoryGitDriver && runtime.repositoryRegistry && runtime.repositoryAdmission,
+      );
+      t.after(() => runtime.protectedDriver?.close());
+      const resolution = runtime.repositoryAdmission.policy.resolveBindings({
+        namespaceId,
+        bindings: [{ repositoryRef: "source", profile: "github-repository" }],
+      });
+      return { runtime, binding: resolution.bindings[0]! };
+    };
+    const original = await load(fixtureRepository);
+    const unchanged = await load(fixtureRepository);
+    const renamed = await load("example/renamed");
+    assert.deepEqual(
+      unchanged.runtime.repositoryGitDriver!.ref,
+      original.runtime.repositoryGitDriver!.ref,
+    );
+    assert.deepEqual(unchanged.binding, original.binding);
+    assert.equal(renamed.binding.grant.repositoryId, original.binding.grant.repositoryId);
+    assert.notEqual(renamed.binding.grant.grantId, original.binding.grant.grantId);
+    assert.notEqual(
+      renamed.runtime.repositoryGitDriver!.ref.configurationId,
+      original.runtime.repositoryGitDriver!.ref.configurationId,
+    );
+    assert.throws(
+      () =>
+        resolveSelectedRepositoryGrant(
+          renamed.runtime.repositoryRegistry!,
+          namespaceId,
+          "revision",
+          [original.binding],
+        ),
+      /selected-repository-grant-changed/,
+    );
+
+    const pool = testPool(t, { connectionString: databaseUrl!, max: 4 });
+    const platform = new PostgresPlatformState(pool);
+    const createdAt = new Date().toISOString();
+    const credentials = (binding: typeof original.binding) => ({
+      driver: { id: "repo", implementation: "github" },
+      bindings: [binding],
+      deadlineWallMs: Date.now() + 600_000,
+    });
+    const first = await seedSessionRevision(platform, credentials(original.binding), {
+      namespaceId,
+      createdAt,
+      executionMode: "dedicated",
+    });
+    // The rename requires a newly admitted revision and grant in the same Namespace.
+    const second = await platform.transact(async (unit) => {
+      const config = { ...first.configuration, id: `cfg_${randomUUID()}` };
+      const agent = {
+        ...first.agent,
+        id: `agt_${randomUUID()}`,
+        name: "renamed source",
+        configurationId: config.id,
+        servicePrincipalId: `test-agent-${randomUUID()}`,
+        desiredRuntimeState: "stopped",
+        status: "active",
+      };
+      const revision = {
+        ...first.revision,
+        id: `rev_${randomUUID()}`,
+        agentId: agent.id,
+        configurationId: config.id,
+        servicePrincipalId: agent.servicePrincipalId,
+        repositoryCredentials: credentials(renamed.binding),
+      } as typeof first.revision;
+      await unit.configurations.createConfiguration(
+        config as Parameters<typeof unit.configurations.createConfiguration>[0],
+      );
+      await unit.agents.createAgent(agent as Parameters<typeof unit.agents.createAgent>[0]);
+      await unit.revisions.createRevision(
+        revision as Parameters<typeof unit.revisions.createRevision>[0],
+      );
+      await unit.agents.transitionAgentDesiredRuntimeState(
+        namespaceId,
+        agent.id,
+        "stopped",
+        "running",
+      );
+      return revision;
+    });
+    const source = async (
+      selection: typeof original,
+      revision: typeof first.revision,
+    ): Promise<PreparedRepositoryGitSource> => {
+      const attempt = sessionAttempt(revision);
+      const sessionId = randomUUID();
+      await platform.transact(async (unit) => {
+        await unit.agents.compareAndSetActiveRevision(
+          namespaceId,
+          revision.agentId,
+          undefined,
+          revision.id,
+        );
+        await unit.repositorySessions.createAttempt(attempt);
+        assert.ok(
+          await unit.repositorySessions.advanceAttempt({
+            admissionId: attempt.admissionId,
+            expectedPhase: "opening",
+            phase: "open",
+            sessionId,
+            updatedAt: createdAt,
+          }),
+        );
+      });
+      return {
+        adoption: "credential_proxy_github_repository",
+        key: { source: { id: "repository-git:" + attempt.admissionId } },
+        session: {
+          namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          admissionId: attempt.admissionId,
+          sessionId,
+          driver: revision.repositoryCredentials.driver,
+          binding: selection.binding,
+          bindings: [selection.binding],
+        },
+        grant: resolveSelectedRepositoryGrant(
+          selection.runtime.repositoryRegistry!,
+          namespaceId,
+          revision.id,
+          [selection.binding],
+        ),
+      };
+    };
+    const oldSource = await source(original, first.revision);
+    const newSource = await source(renamed, second);
+    const custodyKey = randomBytes(32);
+    t.after(() => custodyKey.fill(0));
+    const owner = (selection: typeof original) =>
+      new SharedPreparedRepositoryGit({
+        pool,
+        custodyKey,
+        issuerAuthority: "fixture-authority",
+        apiOrigin: "https://api.github.com",
+        driver: selection.runtime.repositoryGitDriver!.ref,
+        repositoryBackendId: "github-primary",
+        providerInstanceId: "github-com-primary",
+        issuerGeneration: 1,
+        liveSessions: "SELECT '{}'::jsonb AS session WHERE false",
+      });
+    const oldOwner = owner(original);
+    const sameOwner = owner(unchanged);
+    const newOwner = owner(renamed);
+    const inputVersion = "b".repeat(64);
+    assert.equal(await oldOwner.observeIssuer(inputVersion), true);
+    assert.equal(await newOwner.observeIssuer(inputVersion), true);
+    const attach = async (
+      selectedOwner: SharedPreparedRepositoryGit,
+      selection: typeof original,
+      member: PreparedRepositoryGitSource,
+    ) => {
+      const db = await pool.connect();
+      try {
+        await db.query("BEGIN");
+        await db.query("SELECT set_config('occ.repository_git_driver', $1, true)", [
+          JSON.stringify(selection.runtime.repositoryGitDriver!.ref),
+        ]);
+        await db.query(
+          "SELECT FROM occ.repository_session_attempts WHERE admission_id=$1 AND phase='open' FOR SHARE",
+          [member.session.admissionId],
+        );
+        const result = await selectedOwner.attach(
+          db as unknown as PostgresClient,
+          member,
+          inputVersion,
+        );
+        await db.query("COMMIT");
+        return result;
+      } catch (error) {
+        await db.query("ROLLBACK");
+        throw error;
+      } finally {
+        db.release();
+      }
+    };
+    const oldFamily = await attach(oldOwner, original, oldSource);
+    const sameFamily = await attach(sameOwner, unchanged, oldSource);
+    const newFamily = await attach(newOwner, renamed, newSource);
+    assert.ok(oldFamily && sameFamily && newFamily);
+    assert.equal(sameFamily.admission.familyId, oldFamily.admission.familyId);
+    assert.notEqual(newFamily.admission.familyId, oldFamily.admission.familyId);
+    assert.deepEqual(oldFamily.admission.grant.repositories, [
+      { repositoryId: fixtureRepositoryId, repository: fixtureRepository },
+    ]);
+    assert.deepEqual(newFamily.admission.grant.repositories, [
+      { repositoryId: fixtureRepositoryId, repository: "example/renamed" },
+    ]);
   },
 );

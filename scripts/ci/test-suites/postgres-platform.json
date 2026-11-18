@@ -426,7 +426,8 @@
     {
       "path": "tests/integration/postgres-shared-github-issuance.test.ts",
       "expectedTests": [
-        "PostgreSQL shares one mint across admitted source members and retains it after one withdrawal"
+        "PostgreSQL shares one mint across admitted source members and retains it after one withdrawal",
+        "PostgreSQL separates renamed repository grants through the installed Driver enrollment"
       ]
     },
     {
