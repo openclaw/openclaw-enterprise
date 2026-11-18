@@ -320,7 +320,7 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
   // the runner's parent, as the cancellation kills the shell, and then fails, as the racing
   // cleanup step makes it.
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     `export async function prepareFile({ file }) {
   if (file.path.endsWith('plain.test.mjs')) {
     return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };

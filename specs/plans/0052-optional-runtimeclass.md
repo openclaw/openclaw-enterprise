@@ -55,7 +55,7 @@ Externally supplied Driver packages are outside this source audit.
   selects the class.
 - [CI OpenShell setup](../../scripts/ci/openshell.ts),
   [cluster preparation](../../scripts/ci/k3d-preparation.ts), and
-  [environment assembly](../../scripts/ci/prepare.mjs) create the class, inject
+  [environment assembly](https://github.com/openclaw/openclaw-enterprise/blob/f5ac2329754d41a36a6cc47950cd3a95eae1ebfc/scripts/ci/prepare.mjs) create the class, inject
   the exemption, export settings, and probe exempt admission.
 - [OpenShell fixture](../../tests/helpers/openshell-kubernetes-real.mjs),
   [workflow helper](../../tests/helpers/openshell-sandbox-workflows.mjs), namespace,

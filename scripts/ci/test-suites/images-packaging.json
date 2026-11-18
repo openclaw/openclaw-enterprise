@@ -101,6 +101,7 @@
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
+        "the chart runs the migration selected by each controller image in the same process",
         "the staged sign-in chart preserves the historical worker probes for both Helm operations",
         "the production image executes the chart worker probes as the worker user",
         "the plugin request guard installs beside OpenShell without control-plane access",

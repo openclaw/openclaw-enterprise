@@ -702,6 +702,9 @@ function deploymentErrorMessage(code: string): string {
       return "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
+    // The runtime holds unready on check `gateway-state-lock`; its log names the holder.
+    case "RUNTIME_STATE_LOCK_UNVERIFIED":
+      return "Runtime failed startup check gateway-state-lock: it cannot verify that the earlier holder of its state lock stopped. To see the holder, run 'occ agent logs AGENT_ID --source gateway' (Harness: '--source agent'). Recover it per the troubleshooting guide.";
     case "EXECUTION_ADMISSION_WITHDRAWN":
       return "This version can no longer run with its admitted access. The controller closed that access and observed the workload stopped. Deploy a new version to use the current installation.";
     case "REVISION_SUPERSEDED":

@@ -321,7 +321,7 @@ Then run the runtime startup smoke from the repository root with host Node.js
 [Image and Helm tests](../../docs/testing/docker.md#runtime-image-startup-test-environment):
 
 ```bash
-node scripts/ci/prepare.mjs --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
+node scripts/ci/prepare.ts --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
 set -a
 . /tmp/images-runtime-startup.env
 set +a

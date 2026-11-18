@@ -175,7 +175,7 @@
     "tests/integration/ci-prepare-k3d.test.ts": 7500,
     "tests/integration/ci-prepare-postgres-diagnostics.test.ts": 3500,
     "tests/integration/ci-prepare-image-cache.test.ts": 22200,
-    "tests/integration/ci-prepare.test.mjs": 109400,
+    "tests/integration/ci-prepare.test.ts": 109400,
     "tests/integration/ci-prepare-lane-action.test.ts": 10900,
     "tests/integration/ci-runner-process-ownership.test.ts": 19900,
     "tests/integration/ci-runner.test.mjs": 328200,

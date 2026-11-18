@@ -3,7 +3,9 @@
 A Gateway that shuts down gracefully aborts its active turns and records them for
 restart recovery. A Gateway that later starts on the same retained state resumes a
 recorded turn with one hidden system message. That message asks the Agent to check
-the current state and continue, and messages queued behind the turn follow it.
+the current state and continue. Chat messages that a signed-in user sent from the
+Agent UI while the turn ran wait in the session's queue, and they follow it.
+An HTTP chat request is not in that queue; see [HTTP chat callers](#http-chat-callers).
 
 OCE scopes that record to the Agent revision with
 `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`. Every deployment creates a new revision
@@ -29,6 +31,16 @@ The table applies where the scope is in effect.
 
 A replacement does not resume the turn because the next revision can carry
 different configuration, policy and credentials.
+
+## HTTP chat callers
+
+An [HTTP chat](../agent-http-chat.md) request that waits behind the turn is not
+kept when the Gateway ends, in every case in the table. The caller gets an error
+from OCC: `502` with code `BAD_GATEWAY` when the connection closes before a
+response, or the runtime's own error status. A streamed response that already
+started closes without `[DONE]`. Send the request again. The caller of the
+interrupted turn gets the same error. If that turn resumes, its reply goes to the
+conversation: continue with the same `user` label to read it.
 
 ## Limits
 
