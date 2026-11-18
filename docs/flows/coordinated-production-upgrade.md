@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-18"
-last_updated_session: "authoring-run/251425f8-895a-4c1e-ac56-e666545f89ab"
+last_updated_session: "authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd"
 ---
 
 # Production image upgrade flow
@@ -12,7 +12,7 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 
 ## Entry Points
 
-- Run `scripts/upgrade-production-images` with reviewed inputs, or use `scripts/upgrade-production` with a private operator profile.
+- Run `scripts/upgrade-production-images` with reviewed inputs, or use `occ installation upgrade` with a private operator profile.
 - Stderr phases are advisory; `--verbose` shows native output.
 - Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
@@ -24,7 +24,8 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 
 ```mermaid
 graph TD
-    OP["Private operator profile"] --> AD["Translate operation and options"]
+    OP["Private operator profile"] --> CLI["Installation upgrade CLI"]
+    CLI --> AD["Translate operation and options"]
     AD --> A
     A["Validate inputs/inventory"] --> RR{"Repository retention permitted?"}
     RR -->|"No or unknown"| X["Retain recovery evidence"]
@@ -79,7 +80,7 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`scripts/upgrade-production:main` validates the private profile, operation and checkout, then execs `scripts/upgrade-production-images` with canonical arguments.
+`internal/occcli/installation_upgrade.go:installationUpgradeCommand` launches `scripts/upgrade-production:main`. Plan checks profile, image selection and source HEAD offline; status observes private markers without authority. Other operations exec `scripts/upgrade-production-images`.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
@@ -117,13 +118,7 @@ unqualified; see [qualification limits](../guides/deploy/production-upgrade.md#u
 and runtime inspection. Agent reads bracket explicit-revision runtime reads,
 freezing identity and Driver-declared roles in `agent-continuity.json`, not editable topology.
 
-Repository credentials require immutable images and one architecture across all
-matching control-plane nodes. `scripts/upgrade-image-identity.py:read_platform`
-verifies the platform and OCI metadata hashes (2 MiB per blob, 32 MiB total).
-`scripts/upgrade-repository-image-probe.ts:main` qualifies admission with synthetic
-requests before preparation and again on resume. It reports a nonzero broker exit
-only if the socket stayed absent and Docker confirms the owned container exited
-without an OOM kill or daemon error. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
+Repository credentials require immutable images and one architecture across matching nodes. `scripts/upgrade-image-identity.py:read_platform` verifies platform/OCI hashes (2 MiB per blob, 32 MiB total). `scripts/upgrade-repository-image-probe.ts:main` probes before preparation and resume; a nonzero broker exit requires an absent socket and Docker-confirmed owned-container exit without OOM or daemon error. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
 
 For immutable switches, `prepare_upgrade` validates identities, unrelated data and
 candidate YAML, then hashes staged bytes; `upgrade-evidence.py` binds both snapshots.
@@ -182,12 +177,7 @@ Startup Jobs retain default-deny labels and a copy of
 `openclaw-enterprise-dependency-egress`, including execution-cluster API rules.
 Controller ownership addresses EKS's standalone-Pod limitation; verify enforcement.
 
-Initial preflight failures leave writers serving. Before creates,
-`scripts/upgrade-preflight-state.py` registers complete attempt plans and started
-markers; acknowledgements retain original UIDs. Shared
-`scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight` removes Jobs and
-children before dependencies, confirming disappearance. Unknown consumers retain
-dependencies. [Interrupted preflight cleanup](coordinated-production-upgrade/preflight-cleanup.md)
+Initial preflight failures leave writers serving. `scripts/upgrade-preflight-state.py` records attempt plans and started markers before creates; acknowledgements retain UIDs. `scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight` confirms Jobs and children disappear before dependencies; unknown consumers retain dependencies. [Interrupted preflight cleanup](coordinated-production-upgrade/preflight-cleanup.md)
 uses these same records and deletion rules without resuming the upgrade.
 
 Reference switches recheck Secrets after cleanup.
@@ -374,6 +364,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 10:52: Trace Installation CLI planning, status and handoff. (authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd - aeb385b97974a6bd729f58dd73a44d518aec1edc)
 
 - 2026-11-18 10:33: Reconcile profile/inventory traces. (authoring-run/251425f8-895a-4c1e-ac56-e666545f89ab - 98f60a1b965aa7129256c0802b60969519bc8a86)
 
