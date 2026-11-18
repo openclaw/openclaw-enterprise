@@ -146,7 +146,7 @@ test(
     const script = join(directory, "entrypoint.cjs");
     assert.match(
       f.revision.compute.admission,
-      /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+      /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
     );
     const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
     const program = (revision) =>
@@ -158,7 +158,7 @@ test(
       egressPlan: undefined,
       sandboxDriverId: undefined,
     };
-    assert.match(compute.admitRevision(ordinary), /^model-provider:v1:[a-f0-9]{64}:$/);
+    assert.match(compute.admitRevision(ordinary), /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:$/);
     for (const revision of [
       { ...ordinary, compute: f.revision.compute },
       { ...legacy, compute: { ...legacy.compute, admission: "unknown:v1" } },

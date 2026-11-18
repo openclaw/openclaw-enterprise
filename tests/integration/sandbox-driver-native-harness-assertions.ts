@@ -476,13 +476,13 @@ export function verifyNativeOpenClawCreateRequest({
   gatewayClient: Pick<ReturnType<typeof workspaceGatewayClient>, "providers" | "profiles">;
 }): string {
   const template = record(request.spec.template);
-  const pod = structFields(fields(template.driver_config).kubernetes).pod;
+  const kubernetes = structFields(fields(template.driver_config).kubernetes);
   const command = stringArray(request.spec.command);
   const environment = record(request.spec.environment);
   const policy = record(request.spec.policy);
   const filesystem = record(policy.filesystem);
-  assert.equal(template.runtime_class_name, "openshell-skipper");
-  assert.equal(record(structFields(pod).runtime_class_name).stringValue, "openshell-skipper");
+  assert.equal(template.runtime_class_name, undefined);
+  assert.equal(kubernetes.pod, undefined);
   assert.deepEqual(request.serviceExposures, []);
   assert.deepEqual(command.slice(0, RUNTIME_WRAPPER_COMMAND.length), RUNTIME_WRAPPER_COMMAND);
   const wrapper = command[RUNTIME_WRAPPER_COMMAND.length];

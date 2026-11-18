@@ -43,6 +43,17 @@ import type {
 import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
+export interface AgentChatCompletionsEndpoint {
+  readonly url: string;
+  readonly model: string;
+}
+
+export type AgentChatCompletionsResolution =
+  | ({ readonly status: "available" } & AgentChatCompletionsEndpoint)
+  | { readonly status: "disabled" }
+  | { readonly status: "unavailable" }
+  | { readonly status: "unsupported" };
+
 export interface ComputeRevisionContext {
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
@@ -399,6 +410,8 @@ export interface ComputeDriver extends Driver {
    * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
    */
   getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  /** Resolve only the private HTTP completion route for this exact revision. */
+  getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   checkNamespaceDeletion?(

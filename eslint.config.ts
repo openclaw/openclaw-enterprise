@@ -59,6 +59,13 @@ const assertRebindSelector = [
 const weakAssertMessage =
   'Name the expected error as the second argument: an error class narrower than Error, a { name, message, code } object (a RegExp value there tests that property), or a validation function that checks the error; not nothing, only a message, null, Error, Object, an always-true function or a catch-all RegExp. A bare RegExp is tested against String(error), "Name: message".';
 
+const unusedBindings = {
+  argsIgnorePattern: "^_",
+  caughtErrorsIgnorePattern: "^_",
+  varsIgnorePattern: "^_",
+  ignoreRestSiblings: true,
+};
+
 export default defineConfig(
   globalIgnores([
     "**/node_modules/**",
@@ -90,15 +97,7 @@ export default defineConfig(
         { blankLine: "always", prev: "import", next: "*" },
         { blankLine: "any", prev: "import", next: "import" },
       ],
-      "no-unused-vars": [
-        "error",
-        {
-          argsIgnorePattern: "^_",
-          caughtErrorsIgnorePattern: "^_",
-          varsIgnorePattern: "^_",
-          ignoreRestSiblings: true,
-        },
-      ],
+      "no-unused-vars": ["error", unusedBindings],
     },
   },
   {
@@ -130,15 +129,7 @@ export default defineConfig(
     files: ["**/*.{ts,mts}"],
     extends: [tseslint.configs.recommended],
     rules: {
-      "@typescript-eslint/no-unused-vars": [
-        "error",
-        {
-          argsIgnorePattern: "^_",
-          caughtErrorsIgnorePattern: "^_",
-          varsIgnorePattern: "^_",
-          ignoreRestSiblings: true,
-        },
-      ],
+      "@typescript-eslint/no-unused-vars": ["error", unusedBindings],
     },
   },
   {

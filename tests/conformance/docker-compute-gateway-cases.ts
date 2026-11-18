@@ -8,7 +8,7 @@ import type {
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
 } from "../../packages/contracts/src/index.ts";
-import { unreadableGatewayPasswordRefusal } from "../helpers/refusal-text.mjs";
+import { unreadableGatewayPasswordRefusal } from "../helpers/refusal-credential-diagnostics.ts";
 import {
   dockerDriver,
   dockerGatewayRevision,
@@ -29,6 +29,11 @@ export function registerGatewayLaunchCases() {
     const defaultLaunch = await gatewayContainerLaunch();
     assert.match(defaultLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "", /^[0-9a-f]{64}$/);
     assert.equal(defaultLaunch.environment.OPENCLAW_GATEWAY_PORT, "8080");
+    // Only a restart of the same revision resumes a turn its shutdown interrupted.
+    assert.equal(
+      defaultLaunch.environment.OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE,
+      defaultLaunch.revision.id,
+    );
     assert.equal(defaultLaunch.gateway.auth.mode, "password");
     assert.equal(defaultLaunch.gateway.auth.password, "${OPENCLAW_GATEWAY_PASSWORD}");
     assert.equal(defaultLaunch.revision.configuration.gateway, undefined);
@@ -181,11 +186,14 @@ export function registerGatewayLaunchCases() {
             "OPENCLAW_GATEWAY_PASSWORD",
           ],
           [passwordAuth({ source: "vault", provider: "default", id: "X" }), "shape"],
-        ] satisfies [OpenClawConfigurationDocument, string, ...string[]][]
-      ).map(([configuration, held, ...shown]): [OpenClawConfigurationDocument, string, RegExp] => [
+        ] satisfies [
+          OpenClawConfigurationDocument,
+          ...Parameters<typeof unreadableGatewayPasswordRefusal>,
+        ][]
+      ).map(([configuration, ...diagnostic]): [OpenClawConfigurationDocument, string, RegExp] => [
         configuration,
         "gateway.auth.password",
-        exactly(unreadableGatewayPasswordRefusal(held, ...shown)),
+        exactly(unreadableGatewayPasswordRefusal(...diagnostic)),
       ]),
     ];
     for (const [configuration, setting, expected] of refusals) {

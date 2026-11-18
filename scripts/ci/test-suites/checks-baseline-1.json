@@ -130,6 +130,7 @@
     "tests/conformance/url-authority.test.ts",
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
+    "tests/integration/egress-custody-observer.test.ts",
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/credential-proxy-provider-pin.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
@@ -765,6 +766,12 @@
       ]
     },
     {
+      "path": "tests/integration/egress-custody-observer.test.ts",
+      "expectedTests": [
+        "the dispatch observer rejects malformed selections before arming its one fault"
+      ]
+    },
+    {
       "path": "tests/integration/egress-stock-online-authority.test.ts"
     },
     {
@@ -777,6 +784,7 @@
         "held Git startup observes a denial inside its provider endpoint without credential access",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
         "protected Git replies to this online decision before its authority deadline",
+        "an allow or denial that settles after the call ends is not acted on",
         "shipped gh metadata stays within selected-repository authority",
         "bounded selected REST bodies retain transport and authority limits"
       ]
@@ -1004,6 +1012,9 @@
       "expectedTests": [
         "controller topology keeps API-only fixture inputs separate from the worker"
       ]
+    },
+    {
+      "path": "tests/integration/agent-http-chat.test.ts"
     }
   ]
 }

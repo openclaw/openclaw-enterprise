@@ -1,26 +1,45 @@
+---
+created: 2026-09-09
+updated: "2026-11-18 02:08"
+last_updated_session: "authoring-run/3d960c94-5e42-4c7d-9cff-d0eb63beceb4"
+---
+
 # CI resource preparation
 
-[Parent flow](../github-actions-testing.md).
+## Overview
 
-## Execution trace
+CI prepares lane and file resources before the runner starts selected tests.
+
+## Entry Points
+
+- `scripts/ci/prepare-cli.ts:runPreparationCli`
+- `scripts/ci/prepare.mjs:prepareFile`
+
+## Flow
+
+```mermaid
+graph TD
+  A["Action or runner"] --> G{"Inputs valid?"}
+  G -->|no| F["Refuse before state"]
+  G -->|yes| P["Prepare owned resources"]
+  P --> T["Hand outputs to runner"]
+```
+
+## Execution Trace
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
+Static Checks restores the documentation pnpm store and saves misses after
+Pagefind succeeds; Baseline and browser part 1 only restore it. Keys include OS,
+architecture, Node.js, pnpm and lockfile hash; prefix matches can cross lockfiles.
+Frozen installation fetches missing packages.
 
-Static Checks restores the documentation pnpm store before installation. On
-cache misses, it saves the store after Pagefind succeeds. Baseline part 1 and
-browser part 1 only restore it. Keys include OS, architecture, Node.js, pnpm,
-and lockfile hash. Prefix matches can cross lockfiles. Frozen installation
-fetches missing packages.
-
-First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
-downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
-checked-in platform checksum. `scripts/ci/download-pinned.sh` verifies installed
-or cached bytes in private staging before atomic publication with mode 0755.
-Missing or corrupt entries use pinned downloads; cache outages do not fail setup. Hits preserve cached bytes.
-PostgreSQL, image and Kubernetes profiles share OS-, architecture- and
-installer-source-keyed caches. Direct callers can reuse verified installed bytes.
+First Agent Smoke and `run-ci-lane` restore yq and k3d outside `PATH`.
+`scripts/ci/setup-tools.sh` selects platform checksums;
+`scripts/ci/download-pinned.sh` verifies bytes in private staging before atomic
+0755 publication. Missing or corrupt entries trigger pinned downloads; cache
+outages do not fail setup. PostgreSQL, image and Kubernetes profiles share
+platform- and installer-keyed caches. Direct callers can reuse verified bytes.
 
 For packaging and shared-runtime artifact consumers using `run-ci-lane`,
 `scripts/ci/setup-registry-transport.sh:verify_skopeo` reuses working `PATH` tools;
@@ -32,23 +51,21 @@ each APT command allows 120 plus 10 seconds, three acquisition retries and
 installation. APT output and failure status are preserved.
 The final probe must pass.
 
-`scripts/ci/image-pull.ts:pullImage` logs each failed pull attempt before deciding
-whether to retry, including the final attempt. It reports elapsed time, timeout status and up to eight layer states from captured output tails.
-The summary includes only known Docker phases and hexadecimal layer IDs;
-it omits unmatched output and leading partial lines at the tail cutoff.
-The First Agent smoke adapter forwards both captured streams to this parser.
-Diagnostic emission is best effort and cannot replace the terminal pull error.
-Docker suppresses numeric progress on non-terminal
-output, so these states provide partial evidence, not the current transfer phase. If no progress matches, the
-summary says so. Diagnostics change no timeouts, backoff, concurrency or digest verification, and establish neither registry health nor stall causes.
+`scripts/ci/image-pull.ts:pullImage` logs failed attempts, elapsed time, timeout
+status and up to eight known Docker layer states with hexadecimal IDs. It omits
+unmatched and partial lines. First Agent Smoke forwards both streams. Diagnostics
+are best effort; Docker's non-terminal output can omit progress. The summary
+reports missing matches. Diagnostics do not change retries, timeouts or digest
+checks, or establish registry health or stall causes.
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
-For lanes declaring both optional immutable image inputs,
-`scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` rejects partial
-Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` imports the
-selected artifact or builds source when both are absent; selected pairs retain their immutable references.
-Controller build selection is independent.
+`scripts/ci/prepare-inputs.ts` rejects malformed manifest preparation objects
+and policy flags at load time. `runPreparationCli` dispatches lane and file
+requests from `prepare.mjs`. Lane and file preparation validate selected
+OpenShell credentials and optional Gateway/Agent image pairs before locking or
+creating state. The CLI validates environment names and rejects CR/LF values
+before appending any assignment. It excludes `NODE_OPTIONS`.
 
 `scripts/ci/image-build-cache.ts:imageBuildArgs` restores read-only caches, including
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
@@ -220,13 +237,12 @@ The Repository Credentials lane writes the service, client, and qualification ID
 and source commit to a mode-0600 receipt. Production Observability builds the
 service for k3d import and verification on each node.
 
-`scripts/ci/prepare.mjs:prepareFileWithState` checks the file's manifest
-requirements before calling `scripts/ci/repository-credentials.ts:prepareRepositoryCredentialsFile`.
-The helper extracts the delivered `gh` in a container with no network and a
-read-only root. It checks the binary's pinned version before returning its path
-for the test environment. Invalid image IDs, source commits, and binary versions
-produce fixed errors without the command output. File cleanup removes the extracted
-binary. Lane cleanup removes its journaled image tags.
+`scripts/ci/prepare.mjs:prepareFileWithState` extracts the delivered `gh`
+only for manifest consumers, using a networkless, read-only container. It checks
+the pinned version before returning the path and cleanup callback. Nonconsumers
+return no callback. The standalone CLI refuses consumers before extraction;
+the runner owns their callback. Lane cleanup removes journaled image tags.
+Invalid images, source commits, or binary versions produce fixed errors.
 
 The suite map owns fixed selection flags, required input names, and the resources each lane needs. Preparation consumes those descriptors instead of maintaining parallel lane lists. External model, ChatGPT and Slack credentials come only from the selected protected environment. Missing selected inputs fail rather than turning the lane into a skipped success.
 
@@ -235,13 +251,16 @@ Gateway v1.6.7 controllers and creates a private test CA. It imports immutable
 controller and runtime references so OCC can reach Envoy through its ClusterIP
 Service.
 
-OpenShell preparation uses digest-pinned K3s v1.36.4 with `runc`, installs
-matching kubectl and Agent Sandbox resources, obtains the OpenShell CLI and chart,
-and imports gateway, sandbox, and supervisor images. During cluster creation,
-k3d mounts the private admission file read-only on the server. The file exempts
-only the selected RuntimeClass. It exempts no namespaces or users. The API must reject a violating ordinary Pod in a restricted
-namespace and admit it with the selected class. A smoke Pod checks that the class
-runs. The full lane checks filesystem, privilege, and binary-scoped Layer 7
+OpenShell preparation uses digest-pinned K3s v1.36.4, installs matching kubectl
+and Agent Sandbox resources, obtains the OpenShell CLI and chart, and imports
+gateway, sandbox, and supervisor images. `prepareOpenShellClusterBootstrap` returns
+only the pinned node image and kubectl selection; `createK3dPreparation` creates
+the cluster without an OCE admission file or API server admission override.
+`prepareOpenShell` requires PSA to reject privileged and forbidden-capability Pods
+in a restricted probe namespace, then runs a default-runtime smoke Pod. The
+privileged probe omits `allowPrivilegeEscalation: false` so core validation does
+not reject it before PSA. OCE creates no RuntimeClass or
+PSA exemption. The full lane checks filesystem, privilege, and binary-scoped Layer 7
 network policy enforcement by the supervisor. The Harness and supervisor receive
 neither `SYS_PTRACE` nor `DAC_READ_SEARCH`.
 
@@ -256,6 +275,18 @@ for hosted proof and remaining coverage.
 
 The OpenShell test owns management port-forwards throughout the test. Teardown stops the worker, drains forwards, then attempts app, database, namespace and directory cleanup even after an earlier failure. Forward shutdown allows two seconds after `SIGTERM`, then sends `SIGKILL` if necessary and waits two more seconds. Cleanup errors fail the test.
 
-## Related
+## Debugging and Verification
 
-- [Return to the parent flow](../github-actions-testing.md).
+Preparation errors go to stderr; successful CLI output lists exported names.
+See [lane verification](../../testing/ci/run-lanes.md).
+
+## Related docs
+
+- [Parent flow](../github-actions-testing.md).
+
+## Manual Notes
+
+## Changelog
+
+- 2026-11-18 02:08: Reject malformed preparation policy and preserve cleanup ownership. (authoring-run/3d960c94-5e42-4c7d-9cff-d0eb63beceb4 - 886eacfe0fce0e18c03a0f01d5f8dc9476efdfc2)
+- 2026-11-18 01:27: Trace input admission and dispatch. (authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef - 86c25391636e35f3d4bbdc88e2acd52e03aaa7a7)

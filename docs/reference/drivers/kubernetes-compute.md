@@ -36,6 +36,10 @@ SandboxDriver that provisions the Harness and declares networking, filesystem, a
 process containment. Stock OpenShell cannot provide required credential and
 workload-identity projections; Agent deployment with OpenShell remains unsupported.
 
+HTTP chat defaults on for new single-cluster runtime revisions and uses a
+private exact-POST route with trusted-proxy chat authority. Explicit opt-out
+requires a new revision. See [HTTP chat configuration](../agent-http-chat.md#kubernetes-configuration-and-audit).
+
 Operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
@@ -154,10 +158,9 @@ Agent revision cleanup runs even when Compute's ordinary Harness Deployment is a
 and a failed provider Namespace cleanup keeps the Kubernetes namespace.
 Provider-owned Harness removal stays with the provider, so Compute needs no
 Sandbox custom-resource permissions.
-Allow privileged OpenShell init or sidecar containers only through an
-operator-approved RuntimeClass or equivalent admission exemption with a matching
-fail-closed policy ([admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements));
-the Harness container itself remains unprivileged.
+OpenShell workloads retain restricted tenant Pod Security Admission without an
+OCE-configured exemption. OCE leaves runtime selection to Kubernetes and the
+independently managed provider; see [admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements).
 
 A provider-owned dedicated Harness is ready only when exactly one live Pod in
 the resolved namespace carries the Agent ID, Agent revision ID, and `agent` workload-role
@@ -260,9 +263,9 @@ before replacing the controller images.
 
 <a id="failure-conditions"></a>
 
-- **Namespace provisioning fails:** A `worker.completed` log for `namespace.ensure` with
-  `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes returned HTTP 403 while the
-  worker reconciled the tenant's quota, limits, or network policies. Check the worker's
+- **Namespace provisioning or deletion fails:** A `worker.completed` log for `namespace.ensure`
+  or `namespace.delete` with `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes
+  returned HTTP 403 while the worker reconciled or cleaned up the tenant's resources. Check the worker's
   [tenant-local RoleBinding](../../guides/deploy/production-agents.md#grant-tenant-rolebindings) in the affected target.
   Also verify namespace ownership labels, restricted Pod Security labels, and enforced
   NetworkPolicies in each selected tenant target. Existing

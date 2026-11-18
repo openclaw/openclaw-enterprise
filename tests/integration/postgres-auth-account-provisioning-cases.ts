@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -78,7 +78,7 @@ export async function accountProvisioning(
     authBaseURL,
     nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-  };
+  } satisfies Parameters<typeof composePostgresDevelopment>[0];
   await ensureDevelopmentBootstrap(context, {
     databaseUrl,
     email: adminEmail,

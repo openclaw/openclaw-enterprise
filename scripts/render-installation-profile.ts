@@ -1381,6 +1381,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
       "apiClients",
       "databaseCidrs",
       "clusterCidrs",
+      "clusterPort",
       "dns",
       "gatewayClassName",
       "gatewayApiKeySecretName",
@@ -1841,6 +1842,13 @@ function buildRendered(
     );
   }
 
+  const clusterPort = optionalPositiveInteger(
+    controlPlane,
+    ["controlPlane", "clusterPort"],
+    diagnostics,
+    { max: 65535 },
+  );
+
   // Same rule the controller applies to Installation observability.url at startup, including
   // its refusal of any @ before the host (http://@host).
   // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
@@ -1987,6 +1995,7 @@ function buildRendered(
         validate: (value) => isIpv4Cidr(value, 32),
         description: "an IPv4 /32 CIDR",
       }),
+      ...(clusterPort === undefined ? {} : { port: clusterPort }),
     },
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined

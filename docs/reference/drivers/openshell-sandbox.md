@@ -86,7 +86,6 @@ drivers:
         operatorWorkspaceResources: []
         networkPolicyResources: []
       kubernetes:
-        runtimeClassName: openshell-sandbox
         userNamespaces: false
         serviceAccount:
           mode: gatewayConfigured
@@ -123,11 +122,11 @@ ephemeral storage on the rendered Agent container.
 
 `kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
 pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
-`agentResources`. Optional `runtimeClassName` applies to the Agent Pod and
-native OpenClaw's workspace preparation Pod. Startup rejects malformed IDs,
-duplicates, and requests above limits. Before replacement, check scheduling and
-the provider ServiceAccount's `get` access to that RuntimeClass. Redeploy after
-changes. Adoption checks the exact Sandbox spec.
+`agentResources`. Startup rejects malformed IDs, duplicates, and requests above
+limits. Before replacement, check scheduling. Redeploy after changes. Adoption
+checks the exact Sandbox spec. OCE does not accept installation-wide or per-Agent
+RuntimeClass settings; runtime selection belongs to Kubernetes and the independently
+managed OpenShell deployment.
 
 Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs
 Sandbox processes as the workload identity, normally `10001:10001`.
@@ -226,10 +225,13 @@ session releases its slot; idle workers are not retired automatically.
 
 ## Kubernetes and admission requirements
 
-OpenShell's trusted privileged components require an operator-installed RuntimeClass
-or equivalent admission exemption. Pod Security Admission exempts the whole Pod;
-a fail-closed policy must restrict it to digest-pinned OpenShell images, expected
-ServiceAccounts, Namespaces, labels, and capabilities.
+Keep tenant namespaces under restricted Pod Security Admission. OCE does not
+create a RuntimeClass, select a node runtime, or configure PSA exemptions or API
+server admission flags. The supported OpenShell workload, bootstrap, and supervisor
+containers run non-root without added capabilities or privilege escalation.
+Retain approved images, ServiceAccounts, namespace ownership, and default-deny
+networking. A compatible node runtime and the qualification checks below remain
+required; omitting runtime selection does not establish runtime compatibility.
 
 ### Gateway Kubernetes authority
 
