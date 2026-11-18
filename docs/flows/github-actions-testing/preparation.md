@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-16
-last_updated_session: 01a1e535-91ca-7273-913f-aaacfd69c1c2
+updated: "2026-11-18 01:27"
+last_updated_session: "authoring-run/e8f2d1a8-8c76-495f-a77d-cfae21e183ef"
 ---
 
 # CI resource preparation
@@ -50,11 +50,12 @@ summary says so. Diagnostics change no timeouts, backoff, concurrency or digest 
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
-For lanes declaring both optional immutable image inputs,
-`scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` rejects partial
-Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` imports the
-selected artifact or builds source when both are absent; selected pairs retain their immutable references.
-Controller build selection is independent.
+`scripts/ci/prepare-cli.ts:runPreparationCli` dispatches requests from
+`prepare.mjs`. Lane and file preparation call
+`scripts/ci/prepare-inputs.ts:validateLaneInputsBeforeSideEffects` before
+locking or creating state. It checks selected OpenShell credentials and rejects
+incomplete optional Gateway/Agent image pairs. Runtime preparation imports the
+selected artifact or builds source; controller build selection is independent.
 
 `scripts/ci/image-build-cache.ts:imageBuildArgs` restores read-only caches, including
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;

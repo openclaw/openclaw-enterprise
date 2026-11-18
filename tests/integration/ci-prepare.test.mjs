@@ -8,6 +8,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  rm,
   stat,
   symlink,
   writeFile,
@@ -1173,40 +1174,132 @@ for (let index = 0; index < Number(times); index += 1) {
     const root = await fixture(t);
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
     assert.equal(Object.hasOwn(manifest.lanes, "repository-credentials-installed"), false);
+    const commandLog = join(root, "commands.log");
+    const commandGuard = join(root, "must-not-run");
+    const statePath = join(root, "state.json");
+    const githubEnv = join(root, "github.env");
+    await writeFile(
+      commandGuard,
+      `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(commandLog)}, "called\\n");
+process.exit(97);
+`,
+      { mode: 0o700 },
+    );
+    const isolatedEnv = {
+      HOME: root,
+      PATH: root,
+      OCC_DOCKER_BIN: commandGuard,
+      OPENCLAW_CI_K3D_BIN: commandGuard,
+      OCC_KUBECTL_BIN: commandGuard,
+      OCC_HELM_BIN: commandGuard,
+    };
+    const control = await spawnResult(commandGuard, [], { env: isolatedEnv });
+    assert.equal(control.status, 97);
+    assert.equal(await readFile(commandLog, "utf8"), "called\n");
+    await rm(commandLog);
+    // Retirement must apply to both dispatch paths before provisioning or exporting state.
+    for (const fileArgs of [
+      [],
+      ["--file", "tests/integration/repository-credentials-k3d-real.test.mjs"],
+    ]) {
+      const result = await spawnResult(
+        process.execPath,
+        [
+          preparePath,
+          "--lane",
+          "repository-credentials-installed",
+          "--state",
+          statePath,
+          "--github-env",
+          githubEnv,
+          ...fileArgs,
+        ],
+        {
+          env: isolatedEnv,
+        },
+      );
+      assert.equal(result.status, 1);
+      assert.equal(result.stderr.trim(), "Unknown CI lane: repository-credentials-installed");
+      assert.equal(result.stdout, "");
+      assert.deepEqual(await readdir(root), ["must-not-run"]);
+    }
+  });
+
+  test("repository credential file preparation extracts the binary only for manifest consumers and cleans it", async (t) => {
+    const root = await fixture(t);
+    const bin = join(root, "bin");
+    const commandLog = join(root, "commands.jsonl");
+    const statePath = join(root, "state.json");
+    await mkdir(bin);
+    const docker = join(bin, "docker");
+    await writeFile(
+      docker,
+      `#!${process.execPath}
+import { appendFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(args) + "\\n");
+if (args[0] === "image" && args[1] === "inspect") {
+  console.log("sha256:" + "a".repeat(64));
+} else if (args[0] === "run") {
+  const mount = args[args.indexOf("--mount") + 1];
+  const directory = /(?:^|,)src=([^,]+)/.exec(mount)?.[1];
+  if (!directory) process.exit(2);
+  writeFileSync(join(directory, "gh"), ${JSON.stringify(`#!${process.execPath}\nconsole.log("gh version 2.103.2");\n`)});
+}
+`,
+      { mode: 0o700 },
+    );
+    await writeFile(join(bin, "pnpm"), `#!${process.execPath}\n`, { mode: 0o700 });
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      OCC_DOCKER_BIN: docker,
+      RUNNER_TEMP: root,
+    };
+    delete env.REPOSITORY_CREDENTIALS_GH_BINARY;
+    // Build commands are controlled peers. The real lane journals its images and the
+    // real file preparer decides which manifest files need delivered-binary extraction.
+    const lane = await spawnResult(
+      process.execPath,
+      [preparePath, "--lane", "repository-credentials-container", "--state", statePath],
+      { env },
+    );
+    assert.equal(lane.status, 0, lane.stderr);
     const program = `
 import assert from "node:assert/strict";
-import childProcess from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
-let commands = 0;
-childProcess.spawn = () => {
-  commands += 1;
-  throw new Error("Preparation must not run commands");
-};
-syncBuiltinESMExports();
-const { prepareLane, prepareFile } = await import(process.argv[1]);
-for (const prepare of [prepareLane, prepareFile]) {
-  await assert.rejects(
-    prepare({
-      lane: "repository-credentials-installed",
-      ...(prepare === prepareFile
-        ? { file: "tests/integration/repository-credentials-k3d-real.test.mjs" }
-        : {}),
-      statePath: process.argv[2],
-    }),
-    { message: "Unknown CI lane: repository-credentials-installed" },
-  );
-}
-assert.equal(commands, 0);
+import { stat } from "node:fs/promises";
+const { prepareFile } = await import(process.argv[1]);
+const lane = "repository-credentials-container";
+const consumer = await prepareFile({
+  lane, statePath: process.argv[2],
+  file: "tests/conformance/repository-credentials-backend-conformance.test.ts",
+});
+assert.ok(consumer.env.REPOSITORY_CREDENTIALS_GH_BINARY);
+assert.ok((await stat(consumer.env.REPOSITORY_CREDENTIALS_GH_BINARY)).isFile());
+await consumer.cleanup();
+await assert.rejects(stat(consumer.env.REPOSITORY_CREDENTIALS_GH_BINARY), { code: "ENOENT" });
+const sibling = await prepareFile({
+  lane, statePath: process.argv[2],
+  file: "tests/integration/repository-credentials-gh.test.ts",
+});
+assert.equal(sibling.env.REPOSITORY_CREDENTIALS_GH_BINARY, undefined);
+assert.equal(sibling.cleanup, null);
 `;
-    const result = await runProgram(
-      program,
-      join(root, "state.json"),
-      // No ambient credentials or real input files; even command lookup is isolated.
-      { PATH: root },
-      10_000,
+    const prepared = await runProgram(program, statePath, env);
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const calls = await readJsonLines(commandLog);
+    assert.equal(calls.filter(([command]) => command === "run").length, 1);
+    assert.equal(calls.filter(([command]) => command === "rm").length, 1);
+    const cleanup = await spawnResult(
+      process.execPath,
+      [join(repositoryRoot, "scripts/ci/cleanup.ts"), "--state", statePath],
+      { env },
     );
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(await readdir(root), []);
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await assert.rejects(stat(statePath), { code: "ENOENT" });
   });
 
   test("production upgrade preparation requires two distinct immutable image pairs before creating resources", async (t) => {
@@ -1294,6 +1387,17 @@ assert.equal(commands, 0);
       "OPENCLAW_ENTERPRISE_CI_PREFIX",
       "OPENCLAW_ENTERPRISE_CI_STATE",
     ]);
+    assert.equal((await stat(githubEnv)).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(prepared.stdout), {
+      envNames: ["NODE_OPTIONS", "OPENCLAW_ENTERPRISE_CI_PREFIX", "OPENCLAW_ENTERPRISE_CI_STATE"],
+    });
+    const cleaned = await spawnResult(process.execPath, [
+      join(repositoryRoot, "scripts/ci/cleanup.ts"),
+      "--state",
+      statePath,
+    ]);
+    assert.equal(cleaned.status, 0, cleaned.stderr);
+    await assert.rejects(stat(statePath), { code: "ENOENT" });
   });
 
   test("ordinary CI groups require controlled repository coverage and exclude installed live repository writes", async () => {
