@@ -6,24 +6,25 @@
 // secrets.defaults.<source> names `alias`; `providerAlias`: a provider outside the alias grammar;
 // `id`: an env id outside the grammar, with the `example` the step offers, if any. A null `alias`
 // is one too long to offer by name.
+type SecretRefSource = "env" | "file" | "exec" | "store";
 type SecretRefDiagnostic = [problem: string, step: string];
 
-const useDefaultAlias = (alias: string | null, source = "env"): string =>
+const useDefaultAlias = (alias: string | null, source: SecretRefSource = "env"): string =>
   alias === null ? `use the secrets.defaults.${source} alias` : `use provider ${alias}`;
 const UNREADABLE_SECRET_REFS = {
-  providerless: (source = "env", alias = "default"): SecretRefDiagnostic => [
+  providerless: (source: SecretRefSource = "env", alias = "default"): SecretRefDiagnostic => [
     "is a SecretRef without a provider",
     ["env", "store"].includes(source)
       ? `add provider ${alias}`
       : `add a provider that secrets.providers configures for ${source}`,
   ],
-  substitutedAlias: (source = "env"): SecretRefDiagnostic => [
+  substitutedAlias: (source: SecretRefSource = "env"): SecretRefDiagnostic => [
     "is a SecretRef without a provider",
     `add the provider secrets.defaults.${source} names`,
   ],
   provider: (
     provider: string,
-    source = "env",
+    source: SecretRefSource = "env",
     alias: string | null = "default",
   ): SecretRefDiagnostic => [
     `uses secret provider ${provider}, not configured for ${source}`,
@@ -31,7 +32,7 @@ const UNREADABLE_SECRET_REFS = {
   ],
   defaultAlias: (
     alias: string,
-    source = "env",
+    source: SecretRefSource = "env",
     offered: string | null = alias,
   ): SecretRefDiagnostic => [
     `uses secret provider default, but secrets.defaults.${source} names ${alias}`,
@@ -102,11 +103,11 @@ export const unboundUnreadablePluginSecretRefusal = (
 ): string =>
   `Configuration setting ${setting} ${unreadableSecretRefProblem(...diagnostic)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
 // The same refusal of a whole `${APP_SERVER_*}` there on an embedded or Dedicated OpenClaw Agent
-// (`agent`: "an embedded" or "a Dedicated OpenClaw"), which never sets it (finding 3060).
+// that never sets it (finding 3060).
 export const appServerUnreadablePluginSecretRefusal = (
   setting: string,
   plugin: string,
-  agent: string,
+  agent: "an embedded" | "a Dedicated OpenClaw",
   ...diagnostic: SecretRefArguments
 ): string =>
   `Configuration setting ${setting} ${unreadableSecretRefProblem(...diagnostic)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
@@ -151,7 +152,7 @@ export const unreadableGatewayPasswordRefusal = (...diagnostic: GatewayPasswordA
 type ProviderDefaultsDiagnostic = [setting: string, requirement: string];
 
 const INVALID_SECRET_PROVIDER_DEFAULTS = {
-  alias: (source: string, shown?: string, fixed?: string): ProviderDefaultsDiagnostic => [
+  alias: (source: SecretRefSource, shown?: string, fixed?: string): ProviderDefaultsDiagnostic => [
     `secrets.defaults.${source}`,
     `${shown === undefined ? "is " : `is ${shown}, `}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters): ${fixed === undefined ? "" : `use ${fixed}, or `}remove it`,
   ],
