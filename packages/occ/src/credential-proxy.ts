@@ -560,9 +560,7 @@ export class CredentialProxy implements CredentialProxyExchange {
           ? selection
           : undefined,
     );
-    return selected?.isCurrent() &&
-      !signal.aborted &&
-      this.ports.now() < Date.parse(request.deadlineAt)
+    return selected && !signal.aborted && this.ports.now() < Date.parse(request.deadlineAt)
       ? ("credential" as const)
       : undefined;
   }

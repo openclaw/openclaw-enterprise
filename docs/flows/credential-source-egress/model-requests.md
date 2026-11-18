@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-18
-last_updated_session: authoring-run/deb16d3b-e25e-4b06-b8b5-fa14f7121a08
+last_updated_session: authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e
 ---
 
 # Authorize model credentials per request
@@ -147,9 +147,12 @@ within the original deadline. Exhaustion and replay still refuse.
 PostgreSQL's `clock_timestamp()` governs pruning,
 admission deadlines, the one-hour replay limit and redemption expiry; replica
 clocks cannot shorten shared retention. The second transaction rechecks policy
-before promoting the reservation with the middleware's acceptance. Cancellation
-before acceptance leaves only the replay reservation. If the activation commit
-is uncertain after acceptance, the RPC fails without a decision. The ID stays spent.
+before the middleware accepts the affirmative decision and OCC promotes the reservation.
+After an acknowledged commit, OCC returns that accepted decision; a later Driver selection
+change does not replace it with a failure. Redemption still checks current authority.
+Cancellation before acceptance leaves only the replay reservation. Cancellation or an
+uncertain commit after acceptance can interrupt delivery: an approval may be redeemable,
+and OCC does not report a denial. The request ID remains reserved.
 Online approval consumption
 and policy checks explicitly use State's `transactReadCommitted`, regardless of
 the connection pool's default isolation. PostgreSQL starts `READ COMMITTED`
@@ -254,6 +257,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-18 11:10: Return an accepted approval after acknowledged commit and distinguish interrupted delivery from denial. (authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e - a59efd23c9cf5e7381d24dd0a4ef053fa624b29e)
 
 - 2026-11-18 06:42: Select new model sources through installed provider eligibility. (authoring-run/deb16d3b-e25e-4b06-b8b5-fa14f7121a08 - 73a9c6467899a076dc9e0a5f8162fcf4f2af0cf6)
 

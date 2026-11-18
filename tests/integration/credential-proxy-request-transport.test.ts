@@ -533,23 +533,33 @@ test(
         replay: (await redeem(request)).status,
       });
     }
-    const approvalRequest = fixture.request();
-    const approvalPause = fixture.pausePolicyCompletion("approval");
-    t.after(approvalPause.release);
-    const pendingApproval = evaluate(approvalRequest).then(
-      (response) => ({ decision: response.decision, code: 0 }),
-      (error: { code?: number }) => ({ decision: undefined, code: error.code }),
-    );
-    await reachBarrier(approvalPause.reached, pendingApproval, "approval policy completion");
-    controller.selectDriver("credential_gateway", alternate.id);
-    approvalPause.release();
-    let approvalResult;
-    let staleGrant;
-    try {
-      approvalResult = await pendingApproval;
-      staleGrant = await redeem(approvalRequest);
-    } finally {
-      controller.selectDriver("credential_gateway", credentialGateway.id);
+    const approvalObservations = [];
+    for (const restoreBeforeRedeem of [false, true]) {
+      const approvalRequest = fixture.request();
+      const approvalPause = fixture.pausePolicyCompletion("approval");
+      t.after(approvalPause.release);
+      const pendingApproval = evaluate(approvalRequest).then(
+        (response) => ({ decision: response.decision, code: 0 }),
+        (error: { code?: number }) => ({ decision: undefined, code: error.code }),
+      );
+      await reachBarrier(approvalPause.reached, pendingApproval, "accepted approval completion");
+      controller.selectDriver("credential_gateway", alternate.id);
+      approvalPause.release();
+      try {
+        const response = await pendingApproval;
+        if (restoreBeforeRedeem) {
+          controller.selectDriver("credential_gateway", credentialGateway.id);
+        }
+        const grant = await redeem(approvalRequest);
+        approvalObservations.push({
+          response,
+          status: grant.status,
+          tokenReturned: typeof grant.body.access_token === "string",
+          replay: (await redeem(approvalRequest)).status,
+        });
+      } finally {
+        controller.selectDriver("credential_gateway", credentialGateway.id);
+      }
     }
     const healthyAgain = fixture.request();
     assert.equal((await evaluate(healthyAgain)).decision, 1);
@@ -558,12 +568,7 @@ test(
       {
         metadataObservations,
         completionObservations,
-        approvalResult,
-        staleGrant: {
-          status: staleGrant.status,
-          tokenReturned: typeof staleGrant.body.access_token === "string",
-        },
-        replay: (await redeem(approvalRequest)).status,
+        approvalObservations,
       },
       {
         metadataObservations: [
@@ -574,9 +579,10 @@ test(
           { status: 403, tokenReturned: false, replay: 403 },
           { status: 403, tokenReturned: false, replay: 403 },
         ],
-        approvalResult: { decision: undefined, code: 14 },
-        staleGrant: { status: 403, tokenReturned: false },
-        replay: 403,
+        approvalObservations: [
+          { response: { decision: 1, code: 0 }, status: 403, tokenReturned: false, replay: 403 },
+          { response: { decision: 1, code: 0 }, status: 200, tokenReturned: true, replay: 403 },
+        ],
       },
     );
 

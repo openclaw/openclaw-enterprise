@@ -8143,6 +8143,12 @@ export class OpenClawController {
           expected,
         );
         if (result !== "quota-busy") {
+          // Approval already handed an affirmative decision to the transport while
+          // policy was current. Acknowledged COMMIT makes that decision final;
+          // redemption independently checks the selection that is current then.
+          if (typeof step === "object") {
+            return result;
+          }
           return result?.isCurrent() && (expected === undefined || expected()) ? result : undefined;
         }
       } catch (error) {
