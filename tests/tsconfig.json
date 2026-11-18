@@ -331,6 +331,7 @@
     "helpers/openshell-worker-diagnostics.ts",
     "helpers/protected-static-secret-read.ts",
     "../scripts/observe-worker-terminations.ts",
+    "conformance/native-admin-upgrade-audit-cases.ts",
     "conformance/native-admin-upgrade-recovery-cases.ts",
     "helpers/native-admin-postgres.ts",
     "integration/native-admin-http-integrity-cases.ts",
