@@ -386,8 +386,8 @@ packages:
   }
 });
 
-// OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway so that only a restart of the same
-// revision resumes a cut turn. The Kubernetes and Docker Drivers set the shared constant; the
+// OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway to bound native recovery to its
+// admitted lifecycle. The Kubernetes and Docker Drivers set the shared constant; the
 // standalone SSH helper spells it out. A runtime patch adds the name until the pinned OpenClaw
 // reads it; the patched tests run only in the manual image check. Record a pinned commit here
 // only after checking that its own restart resume reads the name.
@@ -430,5 +430,8 @@ test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", 
     runtimeLines.some((line) => line.includes(`"${name}"`)),
     `${patch} must read ${name}`,
   );
-  assert.match(dockerfile, /session-restart-resume\.test\.ts \\\n\s+-t "interrupted under scope"/u);
+  assert.match(
+    dockerfile.replace(/\\\n\s*/gu, " "),
+    /session-restart-resume\.test\.ts\s+src\/config\/sessions\/session-entry-json\.test\.ts\s+-t "interrupted under scope\|keeps a graceful resume marker"/u,
+  );
 });
