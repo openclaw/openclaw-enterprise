@@ -1,7 +1,8 @@
-import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "./kubernetes-compute.mjs";
+
+export { selectorMatches } from "./kubernetes-rendered-resources.ts";
 
 export const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000001",
@@ -174,26 +175,4 @@ export function routedRevision(driver, overrides = {}) {
 /** The labels an equality-only Kubernetes `labelSelector` string ("key=value,key=value") names. */
 export function labelSelectorLabels(selector) {
   return Object.fromEntries(selector.split(",").map((entry) => entry.split("=")));
-}
-
-export function selectorMatches(selector, labels) {
-  const labelsMatch = Object.entries(selector.matchLabels ?? {}).every(
-    ([key, value]) => labels[key] === value,
-  );
-  const expressionsMatch = (selector.matchExpressions ?? []).every(({ key, operator, values }) => {
-    if (operator === "In") {
-      return labels[key] !== undefined && values.includes(labels[key]);
-    }
-    if (operator === "NotIn") {
-      return labels[key] === undefined || !values.includes(labels[key]);
-    }
-    if (operator === "Exists") {
-      return labels[key] !== undefined;
-    }
-    if (operator === "DoesNotExist") {
-      return labels[key] === undefined;
-    }
-    assert.fail(`unsupported selector operator ${operator}`);
-  });
-  return labelsMatch && expressionsMatch;
 }

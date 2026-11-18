@@ -10,7 +10,7 @@ import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
+const preparePath = join(repositoryRoot, "scripts/ci/prepare.ts");
 
 async function readJson(path: string): Promise<unknown> {
   const decoded: unknown = JSON.parse(await readFile(path, "utf8"));

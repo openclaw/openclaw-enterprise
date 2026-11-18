@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
@@ -17,7 +18,12 @@ import {
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const labels = Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Null()]));
-const container = Type.Object({ name: Type.String(), envFrom: Type.Optional(Type.Unknown()) });
+const container = Type.Object({
+  name: Type.String(),
+  envFrom: Type.Optional(Type.Unknown()),
+  args: Type.Optional(Type.Array(Type.String())),
+  command: Type.Optional(Type.Array(Type.String())),
+});
 const jobShape = Type.Intersect([
   namedChartResource,
   Type.Object({
@@ -115,6 +121,28 @@ test(
           [{ name: "migration", envFrom: null }],
         );
         assert.equal(generated.spec.template.spec.initContainers, undefined);
+        const [probe] = generated.spec.template.spec.containers;
+        assert.ok(probe);
+        assert.deepEqual(probe.command, ["node"]);
+        assert.deepEqual(probe.args, [...selectedImageMigrationEntry, "--check"]);
+
+        // A candidate from a historical chart must keep that image's real entry point.
+        migration.args = ["scripts/migrate-production.mjs", "--require-current"];
+        const historical: unknown = JSON.parse(
+          (await generate(action, withInitializer(selected))).stdout,
+        );
+        probe.args = ["scripts/migrate-production.mjs", "--check"];
+        assert.deepEqual(historical, generated);
+        migration.args = ["-e", "process.exit(0)", "--"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["--run", "db:migrate", "--"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["scripts/migrate-production.ts", "--expect-empty", "unexpected"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["scripts/migrate-production.ts"];
+        migration.command = ["sh"];
+        await refuses(action, withInitializer(selected), /invalid migration command/);
+        delete migration.command;
 
         // Count both release and component matches before validating their other labels.
         const duplicate = structuredClone(initializer);

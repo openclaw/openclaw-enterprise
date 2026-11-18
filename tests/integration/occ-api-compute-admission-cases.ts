@@ -27,10 +27,10 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.ts";
 import {
-  KUBERNETES_ALLOW_USERS_REFUSAL,
   sshGatewayPasswordRefusal,
-  unreadableSecretRefProblem as formatSecretRefProblem,
-} from "../helpers/refusal-text.mjs";
+  unreadableSecretRefProblem,
+} from "../helpers/refusal-credential-diagnostics.ts";
+import { KUBERNETES_ALLOW_USERS_REFUSAL } from "../helpers/refusal-text.mjs";
 import { INVALID_ALLOW_USERS_SAMPLE } from "../helpers/trusted-proxy-shapes.ts";
 import {
   bindHarnessKey,
@@ -53,12 +53,6 @@ function checkApiError(reply: InjectedReply, status: number, code: ErrorCode) {
   const { error } = checkedInjectedBody(reply, status, ErrorResponse);
   assert.equal(error.code, code, JSON.stringify(reply.body));
   return error;
-}
-
-function unreadableSecretRefProblem(kind: "defaultAlias" | "allowlist", input: string): string {
-  const text: unknown = formatSecretRefProblem(kind, input);
-  assert(typeof text === "string", "the refusal fixture must return text");
-  return text;
 }
 
 async function createAdmissionController(options: FixtureOptions) {

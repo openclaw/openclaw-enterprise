@@ -262,12 +262,20 @@ export function registerConnectedEgressInputPreflightCases(): void {
     const directory = await temporaryDirectory(t, "connected-source-");
     const git = (...args: string[]) =>
       execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: "pipe" }).trim();
+    const driverPath = "apps/controller/src/drivers/sandbox/openshell.ts";
     const commit = (name: string) => {
-      git("add", "source.txt");
+      git("add", "source.txt", driverPath);
       git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", name);
       return git("rev-parse", "HEAD");
     };
     git("init", "--quiet");
+    await mkdir(`${directory}/apps/controller/src/drivers/sandbox`, { recursive: true });
+    // These Git blobs model the removed and current configuration contracts.
+    // No historical controller is executed by this checkout-preflight test.
+    await writeFile(`${directory}/${driverPath}`, "interface Options { runtimeClassName: string }");
+    await writeFile(`${directory}/source.txt`, "historical");
+    const historical = commit("historical RuntimeClass configuration");
+    await writeFile(`${directory}/${driverPath}`, "interface Options {}");
     await writeFile(`${directory}/source.txt`, "initial");
     const initial = commit("initial");
     await writeFile(`${directory}/source.txt`, "product");
@@ -309,6 +317,17 @@ export function registerConnectedEgressInputPreflightCases(): void {
       assert.notEqual(check(input), 0, "untracked source fails");
       await rm(`${directory}/untracked.txt`);
     }
+    // Ancestry alone admits older A/B pairs. Reject either legacy controller
+    // before accessing the installed stack, without restoring removed inputs.
+    assert.notEqual(check({ oceCommit: historical, harnessCommit: harness }), 0);
+    assert.notEqual(
+      check({
+        oceCommit: product,
+        harnessCommit: harness,
+        controllerUpgrade: { fromCommit: historical },
+      }),
+      0,
+    );
     assert.equal(check({ oceCommit: harness, harnessCommit: harness }), 0);
     assert.notEqual(
       check({
@@ -332,7 +351,6 @@ export function registerConnectedEgressInputPreflightCases(): void {
       controllerSelector: "app=controller",
       openShellGatewayNamespace: "openshell",
       openShellGatewaySelector: "app=gateway",
-      runtimeClass: "openshell",
       oceCommit: "a".repeat(40),
       harnessCommit: "d".repeat(40),
       supplierCommit: "b".repeat(40),
