@@ -29,9 +29,12 @@ async function exchange(path: string, first: string, last = ""): Promise<string>
     response += data;
   });
   socket.once("connect", () => {
-    socket.write(first, () => {
+    if (last) {
+      socket.write(first);
       socket.end(last);
-    });
+    } else {
+      socket.end(first);
+    }
   });
   try {
     await once(socket, "end");
