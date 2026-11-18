@@ -27,14 +27,17 @@ recorded the App's bot as the author. Each pull request was closed afterwards:
   [#6](https://github.com/freeqaz/oce-cp-dogfood/pull/6) and
   [#7](https://github.com/freeqaz/oce-cp-dogfood/pull/7), the last on this
   branch after it was merged with OCE main.
+- 2026-11-18: [#8](https://github.com/freeqaz/oce-cp-dogfood/pull/8), on this
+  branch as handed off, with the [Box build below](#which-box-build).
 
 Each run used a real model whose key Box injected per request, and a search of
 the workload's environment, files, Box's runtime directory and the logs found
 neither the model key nor a GitHub token nor the App key.
 
 They ran on one Linux x86-64 virtual machine with K3s: OCE's API, Worker and
-images built from this branch, and the Box host on the Worker's node, running
-the Box build below with Box's experimental x86-64 support.
+images built from this branch, and the Box host on the Worker's node, with
+Box's experimental x86-64 support. Runs #4 to #7 used earlier builds of these
+fork branches on an older upstream base; #8 used the build below.
 
 Not proven:
 
