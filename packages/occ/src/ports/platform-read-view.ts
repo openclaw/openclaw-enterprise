@@ -12,6 +12,7 @@ export function createPlatformReadView(
     operations: bindRepository(repositories.operations, lifetime, [
       "list",
       "findWork",
+      "findWorkByKeys",
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
@@ -70,6 +71,7 @@ export function createPlatformReadView(
     ]),
     workspaceSetups: bindRepository(repositories.workspaceSetups, lifetime, ["find"]),
     agents: bindRepository(repositories.agents, lifetime, [
+      "findRestartContinuation",
       "findPredecessorReplacement",
       "findAgent",
       "listAgents",

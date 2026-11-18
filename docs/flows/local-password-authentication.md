@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-12 09:36"
-last_updated_session: "authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37"
+updated: "2026-11-18 09:44"
+last_updated_session: "authoring-run/05059b24-93d6-4c07-b659-2d0b084a3070"
 ---
 
 # Bootstrap and human authentication flow
@@ -167,14 +167,17 @@ Better Auth releases the cookie. Session reads check the current account, method
 version, and Principal; sessions expire after eight hours without refresh. HTTPS uses the [shared session cookie](../reference/authentication.md#native-admin-shared-sessions);
 session reads and logout reject duplicates.
 
-For OIDC, the Console reads provider discovery and posts to
-`/api/auth/providers/oidc/start`. `auth/human-login.ts:oidcProvider` binds the
-five-minute attempt to the provider instance, client-secret digest, and effective
-enrollment-policy digest. `createPostgresControllerAuth` resolves omitted Group
-IDs from the Installation defaults before computing that digest.
-The attempt stores state and browser-secret digests, callback and PKCE verifier.
-A host-only HttpOnly cookie binds the browser. Callback consumption commits before
-code exchange, so an invalid or consumed attempt cannot exchange a code.
+OIDC start reaches `auth/human-login.ts:oidcProvider`. It binds the five-minute
+attempt to the provider instance, client-secret digest, and enrollment-policy
+digest; `createPostgresControllerAuth` resolves default Groups first. The attempt
+stores state and browser-secret digests, callback, and PKCE verifier. A host-only
+HttpOnly cookie binds the browser. Callback consumption commits before exchange;
+invalid or consumed attempts cannot exchange codes.
+
+`auth/oidc.ts:oidcLoginConfiguration` pins the selected HTTPS endpoints.
+`exchangeOidcSubject` sends client authentication only to the token URL, fetches
+the selected JWKS, and checks the issuer exactly;
+`auth/provider-transport.ts:providerJSON` refuses redirects.
 
 `apps/controller/src/auth/oidc.ts:exchangeOidcSubject` verifies the ID token and,
 when configured, its admission claim. A string is one group; an array must contain
@@ -227,22 +230,20 @@ in one State transaction before serving resumes. Unsupported or incomplete
 populations fail activation. See the
 [deployment procedure](../guides/deploy/production-installation.md#enable-external-browser-sign-in).
 
-Account routes enforce the
-[session and recovery controls](../reference/authentication/external-sign-in.md#session-and-recovery-controls):
-State locks actor and target and checks `expectedVersion`. After method/recovery locks,
-`human-authentication.ts:guardAuthority` holds all six IAM tables through commit
-using `0073_account_administration_policy.sql`, awaits the selected IAM Driver through
-the route's actor callback, then rechecks the session. `READ COMMITTED` sees grants changed
-during lock waits; `NOWAIT` contention returns retryable `503`. Denials roll back
-before HTTP audit.
-Attachment, disablement and account-wide revocation advance the version and invalidate
-target sessions and proofs without changing IAM.
-Guarded reads return current account and method state, not operation receipts.
-Unknown completion returns a dependency failure without replay or compensation. Resolve uncertainty before proceeding.
-Without an external sign-in provider, composition omits account operations; routes
-still authorize the caller, then return `409 RESOURCE_CONFLICT`.
-Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#external-sign-in-profile)
-owns configuration, recovery limits, and operator-visible behavior.
+`apps/controller/src/index.ts:humanAccountActor` requires a current human session,
+Native IAM Installation `administer`, and the configured `Origin`. For a GET without
+`Origin`, it requires the configured Console `Host` and same-origin browser Fetch
+Metadata. Reads return present state. The [session and recovery controls](../reference/authentication/external-sign-in.md#session-and-recovery-controls)
+define the headers. Authorized calls without an external provider return `409 RESOURCE_CONFLICT`.
+
+State locks actor and target to check `expectedVersion`. After method or recovery
+locks, `human-authentication.ts:guardAuthority` holds six IAM tables through commit
+(`0073_account_administration_policy.sql`), rechecks IAM through the actor
+callback, then rechecks the session. `READ COMMITTED` sees grant changes during
+waits. `NOWAIT` contention returns retryable `503`. HTTP audits after denial rollback.
+Attaching, disabling or revoking advances the account version and ends target sessions
+and proofs. IAM grants persist. Resolve unknown outcomes before another action.
+Logout commits deletion and audit before clearing the cookie.
 
 ### 4. Admit and authorize protected API calls
 
@@ -352,6 +353,10 @@ rechecks the resulting proof before issuing its cookie.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 09:44: Trace same-origin browser reads of account and recovery state. (authoring-run/05059b24-93d6-4c07-b659-2d0b084a3070 - 43194d2b141b43d5da490c21661c85a91662ec83)
+
+- 2026-11-18 06:03: Trace OIDC endpoint routing. (authoring-run/9be587a9-79fa-49ca-9b7c-c0a743b5a058 - d8d985bc57d5d6861f244bac8b3f18d070658ca2)
 
 - 2026-11-12 09:36: Clarify the Native IAM account-creation guarantee. (authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37 - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
 - 2026-11-12 09:25: Retain account authority through commit. (authoring-run/276118f6-2838-4088-8f68-2deba06ca89d - affc6f39cf54a1da65b7f1121c83fb74f55c433e)

@@ -5,13 +5,13 @@ import { sanitizeError } from "./failure-redaction.ts";
 import { exercisedLaneStatus } from "./full-integration-coverage.ts";
 import {
   exists,
-  isObject,
   issue,
   laneNamesForTarget,
   type loadRunnerManifest,
   selectedLaneNames,
   sourceEvidence,
 } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 import { validateExpectedTests } from "./runner-reporter-output.ts";
 import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 
@@ -46,7 +46,7 @@ function evidenceRecord(value: unknown): Record<string, unknown> {
   if (value == null) {
     throw new TypeError("Missing receipt record");
   }
-  return isObject(value) ? value : {};
+  return isRecord(value) ? value : {};
 }
 
 function validateLaneEvidence(
@@ -132,7 +132,7 @@ function validateLaneEvidence(
           }),
         );
       }
-      const total = isObject(observed.counts) ? observed.counts.total : undefined;
+      const total = isRecord(observed.counts) ? observed.counts.total : undefined;
       const tests: unknown = observed.tests;
       if (
         typeof total !== "number" ||
@@ -152,7 +152,7 @@ function validateLaneEvidence(
       }
       if (
         observed.cleanup != null &&
-        (!isObject(observed.cleanup) || observed.cleanup.status !== "passed")
+        (!isRecord(observed.cleanup) || observed.cleanup.status !== "passed")
       ) {
         issues.push(
           issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
@@ -214,11 +214,11 @@ export async function aggregateGroup(
   if (needsPath) {
     try {
       needs = await readJson(needsPath);
-      if (!isObject(needs)) {
+      if (!isRecord(needs)) {
         issues.push(issue("invalid-needs", "needs JSON must be an object"));
       } else {
         for (const [needName, need] of Object.entries(needs)) {
-          const job = isObject(need) ? need : undefined;
+          const job = isRecord(need) ? need : undefined;
           const result = job?.result;
           if (result !== "success") {
             issues.push(
@@ -254,14 +254,14 @@ export async function aggregateGroup(
   for (const laneName of laneNames ?? []) {
     if (needs) {
       const jobs =
-        isObject(needs) || Array.isArray(needs) || typeof needs === "string"
+        isRecord(needs) || Array.isArray(needs) || typeof needs === "string"
           ? Object.entries<unknown>(needs)
           : [];
       const owners = jobs.filter(([name, need]) => {
         if (name === laneName) {
           return true;
         }
-        const jobLanes = isObject(need) ? need.lanes : undefined;
+        const jobLanes = isRecord(need) ? need.lanes : undefined;
         return Array.isArray(jobLanes) && jobLanes.includes(laneName);
       });
       if (owners.length === 0) {
@@ -381,8 +381,8 @@ export async function aggregateGroup(
         return false;
       }
       const need =
-        isObject(needs) && typeof entry.need === "string" ? needs[entry.need] : undefined;
-      const ownedLanes = (isObject(need) ? need.lanes : undefined) ?? [entry.need];
+        isRecord(needs) && typeof entry.need === "string" ? needs[entry.need] : undefined;
+      const ownedLanes = (isRecord(need) ? need.lanes : undefined) ?? [entry.need];
       return (
         Array.isArray(ownedLanes) &&
         ownedLanes.length > 0 &&

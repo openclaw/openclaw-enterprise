@@ -1,7 +1,8 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { TestEvent } from "node:test/reporters";
-import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
+import { projectFailureDiagnostic } from "./reporter-diagnostics.ts";
+import { isRecord } from "./records.ts";
 import {
   boundedProgressLines,
   openShellProgress,

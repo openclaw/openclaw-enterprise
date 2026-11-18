@@ -409,22 +409,13 @@ class ResponsesStream {
       item.textTails.push(partText(event.part).slice(-this.policy.fragmentOverlap));
       return true;
     }
-    const previous = item.textTails[event.content_index];
-    if (previous === undefined) {
-      return false;
-    }
-    if (
-      (event.type === "response.output_text.delta" || event.type === "response.refusal.delta") &&
-      event.delta !== undefined
-    ) {
-      const snapshot = previous + event.delta;
-      if (this.policy.leaked(snapshot)) {
-        return false;
-      }
-      item.textTails[event.content_index] = snapshot.slice(-this.policy.fragmentOverlap);
-    }
     // Completion events do not replace the SDK's accumulated snapshot.
-    return true;
+    return this.acceptIndexedTail(
+      item.textTails,
+      event.content_index,
+      assistantDelta ? event.delta : undefined,
+      false,
+    );
   }
 
   // Summary parts are opened by part events. Reasoning text has no part event;
@@ -439,7 +430,7 @@ class ResponsesStream {
         if (index !== item.summaryTails.length || !event.part) {
           return false;
         }
-        item.summaryTails.push(partText(event.part).slice(-this.policy.fragmentOverlap));
+        item.summaryTails.push(event.part.text.slice(-this.policy.fragmentOverlap));
         return true;
       }
       return this.acceptIndexedTail(item.summaryTails, index, event.delta, false);

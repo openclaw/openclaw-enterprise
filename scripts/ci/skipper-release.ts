@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { basename, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { teamReviewProof } from "../../tests/fixtures/skipper-team-review-journey.mjs";
+import { record } from "./records.ts";
 
 export const skipperImageScope = "checkout-images-with-synthetic-model-trust-layer";
 const installedTestPath = "tests/integration/skipper-prepared-git-installed.test.mjs";
@@ -46,11 +47,6 @@ export function skipperSelectedFailure(resultText: string) {
   const failed = file.tests.map(record).find((entry) => entry.status === "failed");
   const fileFailure = failed?.error == null ? record(file.fileFailure) : undefined;
   return { error: record(failed?.error ?? fileFailure?.error), fileFailure };
-}
-
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
-  return value as Record<string, unknown>;
 }
 
 /** Publish the passed runner result without copying diagnostics or inventing coverage. */

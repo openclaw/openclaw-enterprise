@@ -4,7 +4,8 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { failureInputLimit, failureSecrets, redactFailureDetail } from "./failure-redaction.ts";
-import { exists, isObject, issue, type selectLane } from "./runner-inputs.ts";
+import { exists, issue, type selectLane } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 
 type RunnerLane = NonNullable<ReturnType<typeof selectLane>["lane"]>;
 
@@ -146,7 +147,7 @@ export async function loadPrepare(root: string): Promise<PrepareFile | null> {
     return null;
   }
   const module: unknown = await import(pathToFileURL(preparePath).href);
-  if (!isObject(module) || !isPrepareFile(module.prepareFile)) {
+  if (!isRecord(module) || !isPrepareFile(module.prepareFile)) {
     throw new Error("scripts/ci/prepare.ts must export prepareFile");
   }
   return module.prepareFile;
@@ -248,8 +249,8 @@ export async function preparationFailureText(
       failureSecrets([
         process.env,
         lane.env,
-        isObject(stateField("defaults")) ? stateField("defaults") : {},
-        isObject(stateField("env")) ? stateField("env") : {},
+        isRecord(stateField("defaults")) ? stateField("defaults") : {},
+        isRecord(stateField("env")) ? stateField("env") : {},
       ]),
       root,
     ) ?? {}
@@ -274,7 +275,7 @@ export function validatePreparedEnv(value: unknown): Record<string, string> {
   if (value === undefined) {
     return {};
   }
-  if (!isObject(value)) {
+  if (!isRecord(value)) {
     throw new Error("prepareFile env must be an object");
   }
   assertPreparedEnv(value);
