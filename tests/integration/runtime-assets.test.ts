@@ -14,7 +14,6 @@ import {
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import {
   parseRuntimeDownloadClientSelection,
   readRuntimeDownloadClients,
@@ -388,11 +387,7 @@ packages:
 
 // OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway to bound native recovery to its
 // admitted lifecycle. The Kubernetes and Docker Drivers set the shared constant; the
-// standalone SSH helper spells it out. A runtime patch adds the name until the pinned OpenClaw
-// reads it; the patched tests run only in the manual image check. Record a pinned commit here
-// only after checking that its own restart resume reads the name.
-const NATIVE_RESTART_RESUME_SCOPE_COMMITS: readonly string[] = [];
-
+// standalone SSH helper spells it out.
 test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", async () => {
   const name = GATEWAY_RESTART_RESUME_SCOPE;
   const sshHelper = await readFile(
@@ -403,35 +398,14 @@ test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", 
     sshHelper.includes(`\nEnvironment=${name}=\${revision.id}\n`),
     `SSH Compute must set ${name}`,
   );
-  const patch = "openclaw-restart-resume-scope.patch";
-  const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
-  if (!dockerfile.includes(`COPY deploy/runtime/${patch} /tmp/${patch}\n`)) {
-    // A pin bump dropped the patch: unless OpenClaw reads the name, a turn cut by stop resumes
-    // at the next deployment again.
-    const { commit } = await readOpenclawSource();
-    assert.ok(
-      NATIVE_RESTART_RESUME_SCOPE_COMMITS.includes(commit),
-      `${patch} is no longer applied: check that OpenClaw ${commit} reads ${name}, then record the commit here`,
-    );
-    assert.doesNotMatch(dockerfile, /interrupted under scope/u);
-    return;
-  }
-  // The patch's runtime lines, not only its tests, must read the name the Drivers set.
-  let file = "";
-  const runtimeLines: string[] = [];
-  for (const line of (await readFile(join("deploy/runtime", patch), "utf8")).split("\n")) {
-    if (line.startsWith("+++ b/")) {
-      file = line.slice("+++ b/".length);
-    } else if (line.startsWith("+") && file.startsWith("src/") && !file.endsWith(".test.ts")) {
-      runtimeLines.push(line);
-    }
-  }
-  assert.ok(
-    runtimeLines.some((line) => line.includes(`"${name}"`)),
-    `${patch} must read ${name}`,
+  // The manual image check runs the native scope, crash and custody tests. The scope test
+  // file exists only from upstream #201186, so a pin without native scoping fails that check.
+  const dockerfile = (await readFile("deploy/runtime/Dockerfile", "utf8")).replace(
+    /\\\n\s*/gu,
+    " ",
   );
   assert.match(
-    dockerfile.replace(/\\\n\s*/gu, " "),
-    /session-restart-resume\.test\.ts\s+src\/config\/sessions\/session-entry-json\.test\.ts\s+-t "interrupted under scope\|keeps a graceful resume marker"/u,
+    dockerfile,
+    /session-restart-resume\.scope\.test\.ts\s.*session-restart-resume-custody\.test\.ts\s.*-t "only at startup scope\|in scope across a second restart\|/u,
   );
 });

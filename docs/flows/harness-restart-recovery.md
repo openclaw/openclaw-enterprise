@@ -78,10 +78,11 @@ and activation, including retries after stop followed by another deployment.
 
 Kubernetes Compute projects the immutable generation into
 `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`. Unsupported topologies use the revision ID.
-`deploy/runtime/openclaw-restart-resume-scope.patch` stamps native lifecycle starts
-and checks both graceful markers and crash evidence before continuation. It also
-refuses child completion custody from an ended scope. Public session projections
-omit the private scope and preserve it only within the same session incarnation.
+Native OpenClaw (#201060, #201186) records the scope at `chat.send` admission and
+lifecycle start, and checks both graceful markers and crash evidence before
+continuation. It also refuses child completion custody from an ended scope. Public
+session projections omit the private scope and preserve it only within the same
+session incarnation.
 The [interrupted-turn reference](../reference/agents/interrupted-turns.md) owns the
 compatibility and stop contract.
 
@@ -102,7 +103,7 @@ Cancelled staged input can be reclaimed only by the same occurrence.
 
 ### 3. Transfer to the regular turn owner
 
-`deploy/runtime/Dockerfile:268` applies the bridge and leaves native
+`deploy/runtime/Dockerfile:262` applies the bridge and leaves native
 `acceptRestartResumeReceipt` ownership unchanged. Acceptance transfers the
 continuation to the normal reply lifecycle; the admission owner no longer retries it. Codex
 preflight can still wait as described below.
