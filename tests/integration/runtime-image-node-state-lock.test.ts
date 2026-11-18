@@ -28,11 +28,15 @@ const workspace = `${home}/workspace`;
 // (resolveGatewayLockPaths), for the runtime user 1000.
 const stateLock = `${nodeState}/tmp/openclaw-1000/gateway.state.lock`;
 const timeoutMs = cpuScaledImageTimeoutMs(60_000);
+// Doctor waits this long for a holder it cannot verify ("Waiting up to 95 seconds for the
+// previous Gateway to release state") before it gives up on maintenance.
+const unverifiableHolderWaitMs = 95_000;
 
-// Acts on native setup as soon as it holds the state lock. "stop" sends SIGTERM to the
-// container's PID 1, as the kubelet does when the Pod is deleted. "pause" stops every
-// setup process (SIGSTOP: OpenClaw's launcher and the CLI it starts), so the lock stays
-// held by a live process.
+// Acts on the first OpenClaw process that holds the state lock: native setup, or Doctor
+// when maintenance is pending. "stop" sends SIGTERM to the container's PID 1, as the
+// kubelet does when the Pod is deleted. "pause" stops every setup process (SIGSTOP:
+// OpenClaw's launcher and the CLI it starts), so the lock stays held by a live process.
+// "report" only says that the lock is taken, for the test to kill the whole container.
 const watcher = String.raw`
 const fs = require("node:fs");
 const [lock, action, limit] = process.argv.slice(1);
@@ -46,6 +50,10 @@ const timer = setInterval(() => {
     return;
   }
   clearInterval(timer);
+  if (action === "report") {
+    console.error("LOCK_TAKEN");
+    return;
+  }
   if (action === "stop") {
     process.kill(1, "SIGTERM");
     return;
@@ -64,7 +72,11 @@ const timer = setInterval(() => {
 }, 1);
 `;
 
-function harnessProgram(action?: "stop" | "pause"): string {
+type LockAction = "stop" | "pause" | "report";
+// Maintenance a run left unfinished: the Harness runs Doctor before native setup.
+const maintenanceMarker = `${nodeState}/state/.oce-maintenance-pending`;
+
+function harnessProgram(action?: LockAction, maintenance = false): string {
   return [
     'const cp = require("node:child_process");',
     "const realSpawn = cp.spawn;",
@@ -72,6 +84,12 @@ function harnessProgram(action?: "stop" | "pause"): string {
     "  ? realSpawn(command, args, options)",
     '  : new (require("node:events").EventEmitter)();',
     `require("node:fs").mkdirSync(${JSON.stringify(workspace)}, { recursive: true });`,
+    ...(maintenance
+      ? [
+          `require("node:fs").mkdirSync(${JSON.stringify(`${nodeState}/state`)}, { recursive: true, mode: 0o700 });`,
+          `require("node:fs").writeFileSync(${JSON.stringify(maintenanceMarker)}, "", { mode: 0o600 });`,
+        ]
+      : []),
     ...(action === undefined
       ? []
       : [
@@ -83,7 +101,12 @@ function harnessProgram(action?: "stop" | "pause"): string {
 
 type WorkspaceClaim = { volume: string; pods: string[] };
 
-async function startHarnessPod(t: TestContext, claim: WorkspaceClaim, action?: "stop" | "pause") {
+async function startHarnessPod(
+  t: TestContext,
+  claim: WorkspaceClaim,
+  action?: LockAction,
+  maintenance = false,
+) {
   const name = `oce-node-state-lock-${randomUUID()}`;
   claim.pods.push(name);
   await runDocker([
@@ -118,7 +141,7 @@ async function startHarnessPod(t: TestContext, claim: WorkspaceClaim, action?: "
     RUNTIME_WRAPPER_COMMAND[0]!,
     image!,
     ...RUNTIME_WRAPPER_COMMAND.slice(1),
-    ...nodeProgramArguments(harnessProgram(action)),
+    ...nodeProgramArguments(harnessProgram(action, maintenance)),
   ]);
   return { name, follower: followContainer(t, name) };
 }
@@ -128,8 +151,9 @@ async function waitForOutput(
   pod: { name: string; follower: ReturnType<typeof followContainer> },
   description: string,
   predicate: (output: string, running: boolean) => boolean,
+  limitMs = timeoutMs,
 ) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + limitMs;
   for (;;) {
     const version = pod.follower.changes.version;
     const observed = pod.follower.read();
@@ -145,18 +169,35 @@ async function waitForOutput(
   }
 }
 
-// The Pod's workspace-baseline startup phase outcomes, in order.
-function baselineOutcomes(output: string): string[] {
+// The Pod's outcomes of one startup phase, in order.
+function phaseOutcomes(output: string, phase: string): string[] {
   return output.split("\n").flatMap((line) => {
     try {
       const event = JSON.parse(line);
-      return event.event === "runtime.startup_phase" && event.phase === "workspace-baseline"
+      return event.event === "runtime.startup_phase" && event.phase === phase
         ? [event.outcome]
         : [];
     } catch {
       return [];
     }
   });
+}
+function baselineOutcomes(output: string): string[] {
+  return phaseOutcomes(output, "workspace-baseline");
+}
+
+// A first Pod initializes the node state on the claim, so a later Pod with pending
+// maintenance runs Doctor on state that native setup created. Once setup has finished no
+// OpenClaw process holds the lock, so ending the Pod, if its stand-in children have not
+// already, leaves none.
+async function initializedClaim(t: TestContext) {
+  const claim = await workspaceClaim(t);
+  const first = await startHarnessPod(t, claim);
+  await waitForOutput(first, "first Pod finished native setup", (output) =>
+    baselineOutcomes(output).includes("ok"),
+  );
+  await runDocker(["stop", "--time", "0", first.name]);
+  return claim;
 }
 
 // One cleanup removes the Pods, then the claim they mount. It is registered before the
@@ -221,5 +262,65 @@ test(
     assert.deepEqual(baselineOutcomes(refused.output), ["failed"], refused.output);
     assert.match(refused.output, /cannot verify Gateway ownership/);
     assert.equal(refused.running, true, refused.output);
+  },
+);
+
+test(
+  "a Harness Pod stopped during Doctor leaves the node state to the next Pod",
+  { ...imageTestOptions, timeout: 6 * timeoutMs + 60_000 },
+  async (t) => {
+    const claim = await initializedClaim(t);
+    // A revision stopped or superseded while its Harness runs Doctor, as a rolled old
+    // revision's Pod does on an upgrade that moves the state schema (finding 3345).
+    // OpenClaw's launchers exit about 2 s after the forwarded stop; the Doctor CLI outlives
+    // them while it cleans up, and the wrapper waits for it.
+    const stopped = await startHarnessPod(t, claim, "stop", true);
+    const stop = await waitForOutput(stopped, "stopped Pod exited", (_, running) => !running);
+    assert.equal(stop.exitCode, 0, stop.output);
+    assert.doesNotMatch(stop.output, /WATCHER_TIMEOUT/);
+    assert.deepEqual(phaseOutcomes(stop.output, "state-migration"), [], stop.output);
+    assert.doesNotMatch(stop.output, /OpenClaw kept the exited process's state locks/);
+
+    // Its maintenance is still pending, so the next Pod runs Doctor again, in another PID
+    // namespace on the same claim, and must not meet a lock no later process can verify.
+    const next = await startHarnessPod(t, claim);
+    const started = await waitForOutput(
+      next,
+      "next Pod finished native setup",
+      (output) => baselineOutcomes(output).length > 0,
+    );
+    assert.deepEqual(phaseOutcomes(started.output, "state-migration"), ["ok"], started.output);
+    assert.deepEqual(baselineOutcomes(started.output), ["ok"], started.output);
+    assert.doesNotMatch(started.output, /cannot verify Gateway ownership/);
+  },
+);
+
+test(
+  "a Harness Pod killed during Doctor holds the next Pod on the named state lock",
+  { ...imageTestOptions, timeout: 6 * timeoutMs + unverifiableHolderWaitMs + 60_000 },
+  async (t) => {
+    const claim = await initializedClaim(t);
+    // The whole Pod is killed while Doctor holds the lock (node loss, a forced delete):
+    // nothing in it can release that lock.
+    const killed = await startHarnessPod(t, claim, "report", true);
+    await waitForOutput(killed, "Doctor took the lock", (output) => /LOCK_TAKEN/.test(output));
+    await runDocker(["kill", killed.name]);
+
+    // The next Pod's Doctor refuses the holder it cannot verify stopped. The Harness holds
+    // the named check's line with OpenClaw's holders instead of only the failed migration.
+    const next = await startHarnessPod(t, claim);
+    const held = await waitForOutput(
+      next,
+      "next Pod held the state lock",
+      (output) => /The Harness cannot start/.test(output),
+      timeoutMs + unverifiableHolderWaitMs,
+    );
+    assert.deepEqual(phaseOutcomes(held.output, "state-migration"), ["failed"], held.output);
+    assert.match(
+      held.output,
+      /The Harness cannot start: this container cannot verify that the holder of the workspace node's state lock stopped; .* OpenClaw reported: \S+\/tmp\/openclaw-1000\/state\.[0-9a-f]+\.lock: holder \d+ at [^ ]+\/pid-ns \d+/,
+    );
+    assert.deepEqual(baselineOutcomes(held.output), [], held.output);
+    assert.equal(held.running, true, held.output);
   },
 );
