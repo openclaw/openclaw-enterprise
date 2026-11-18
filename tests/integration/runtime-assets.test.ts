@@ -14,7 +14,6 @@ import {
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import {
   parseRuntimeDownloadClientSelection,
   readRuntimeDownloadClients,
@@ -388,13 +387,7 @@ packages:
 
 // OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway to bound native recovery to its
 // admitted lifecycle. The Kubernetes and Docker Drivers set the shared constant; the
-// standalone SSH helper spells it out. Record a pinned commit here only after checking that
-// OpenClaw scopes crash, parked and legacy recovery and child completion custody, and stamps
-// the scope at chat.send admission (#201186), not only graceful markers (#201060).
-const NATIVE_RESTART_RESUME_SCOPE_COMMITS: readonly string[] = [
-  "f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9",
-];
-
+// standalone SSH helper spells it out.
 test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", async () => {
   const name = GATEWAY_RESTART_RESUME_SCOPE;
   const sshHelper = await readFile(
@@ -405,12 +398,8 @@ test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", 
     sshHelper.includes(`\nEnvironment=${name}=\${revision.id}\n`),
     `SSH Compute must set ${name}`,
   );
-  const { commit } = await readOpenclawSource();
-  assert.ok(
-    NATIVE_RESTART_RESUME_SCOPE_COMMITS.includes(commit),
-    `check that OpenClaw ${commit} scopes crash recovery and custody by ${name}, then record the commit here`,
-  );
-  // The manual image check runs the native crash and custody scope tests, which #201060 lacks.
+  // The manual image check runs the native scope, crash and custody tests. The scope test
+  // file exists only from upstream #201186, so a pin without native scoping fails that check.
   const dockerfile = (await readFile("deploy/runtime/Dockerfile", "utf8")).replace(
     /\\\n\s*/gu,
     " ",
