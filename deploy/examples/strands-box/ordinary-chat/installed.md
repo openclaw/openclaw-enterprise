@@ -102,8 +102,11 @@ that Helm references.
 
 After the empty export checks pass, [mount it read-only in one Worker](../driver/worker-control.md#mount-the-empty-control-directory).
 Verify the actual Worker mount, then submit the stopped Agent's first
-deployment once through [the guarded OCE workflow](../../../../docs/guides/deploy/production-agents.md#prepare-transport-credentials-and-deploy). The Worker creates the
-Harness claim before it calls the Box host. A copy of the workspace volume
+deployment once through [the guarded OCE workflow](../../../../docs/guides/deploy/production-agents.md#prepare-transport-credentials-and-deploy). Compute creates the
+Harness claim within seconds, and only the Agent's first deployment waits for
+a Box host that is not listening yet. A later deployment first stops the
+earlier revision through the host and fails within seconds without one: start the
+host before deploying again. A copy of the workspace volume
 cannot serve the Agent's live file operations.
 
 Track that deployment and revision through OCE. Continue only while the
@@ -142,7 +145,7 @@ Enter the staged image directory and its device and inode as
 the SHA-256 of the installed `workspace-node-runtime.mjs`.
 
 Use the Gateway listener configured above. Set `workspaceNode.url` to its
-DNS name and port with the `/node` suffix.
+DNS name and port with the path `/namespaces/<namespace-id>/agents/<agent-id>/node`.
 Set the listener's exact private IPv4 address in `workspaceNode.address`.
 When Compute projects a Gateway CA, set `caSha256` to the SHA-256 of those
 PEM bytes. The host connector forwards TLS bytes to the configured address
@@ -188,7 +191,9 @@ Driver, Namespace, Agent and revision identities, actual image, endpoint,
 and verified workspace. Use `controlSocketMode: worker-directory` and the
 same `runtimeDir` and export checked above. Select held mode: use a fresh
 mode-`0700` `approvalDir` outside the Worker mount and all Box grants, and
-omit `profileSha256`. As the original nonroot owner, set
+omit `profileSha256`. For the chat below, add `nativeHookRelay: { caSha256 }`
+with the `upstreamCa` digest; without it the turn fails: "Could not deliver
+the native hook relay credential to Codex". As the original nonroot owner, set
 `BOX_INSTALLED_CONFIG` to the absolute path of the mode-`0600` file.
 
 ```bash

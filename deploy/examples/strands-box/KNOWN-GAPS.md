@@ -4,17 +4,17 @@ What an operator deploying this example must know.
 
 ## Upstream TLS trusts only Box's built-in public roots
 
-- **Symptom:** the first model request from Box fails its upstream TLS
-  handshake when the controlled inference endpoint uses a private IPv4
-  address, a `.svc.cluster.local` name, or a private CA's certificate.
+- **Symptom:** Box's first model request fails its TLS handshake when the
+  controlled inference endpoint uses a private IPv4 address, a
+  `.svc.cluster.local` name, or a private CA's certificate.
 - **Cause:** released Box (v0.2.3 and earlier) verifies every upstream
   certificate against public roots compiled into it, and no setting adds
   another CA.
 - **Workaround:** use an operator DNS name pinned to one private IPv4 address
-  with a publicly trusted certificate, or a Box build that reads `[gateway]
-upstream_ca_file` (the [Box build](README.md#which-box-build)). Box trusts that bundle for
-  every upstream, so every route Box dials must declare its digest. See
-  [Controlled inference route](driver/README.md#controlled-inference-route).
+  with a publicly trusted certificate, or the [Box build](README.md#which-box-build),
+  which reads `[gateway] upstream_ca_file`. Box trusts that bundle for every
+  upstream, so every route Box dials must declare its digest
+  ([Controlled inference route](driver/README.md#controlled-inference-route)).
 - **Upstream status:** reported as
   [strands-agents/box#54](https://github.com/strands-agents/box/issues/54);
   [strands-agents/box#147](https://github.com/strands-agents/box/pull/147) (open)
@@ -28,7 +28,7 @@ upstream_ca_file` (the [Box build](README.md#which-box-build)). Box trusts that 
   authentication.
 - **Workaround:** none for mutual TLS; the paired registration uses a
   per-execution bearer instead.
-- **Upstream status:** not reported upstream.
+- **Upstream status:** not reported.
 
 ## GitHub access needs the Box fork's request-time credential source
 
@@ -40,11 +40,9 @@ upstream_ca_file` (the [Box build](README.md#which-box-build)). Box trusts that 
   request its policy permits; `requests.authorize` decides and records it.
   Released Box has no such hook.
 - **Workaround:** use the [Box build](README.md#which-box-build) from the
-  public fork. On Linux x86-64 the host sets `EXPERIMENTAL_X86_SUPPORT=TRUE`
-  for `box run`. Use only on a dogfood host with a test repository.
-- **Upstream status:** the source is the fork's
-  `feature/request-credential-source`. Nothing is filed with
-  strands-agents/box yet.
+  public fork, only on a dogfood host with a test repository.
+- **Upstream status:** the fork's `feature/request-credential-source`; not
+  filed with strands-agents/box.
 
 ## OCE applies no draft or branch rule to gh's GitHub API requests
 
@@ -74,8 +72,8 @@ by its source: route_not_ready`. The chat keeps running.
 
 ## Box connects upstream before it asks the source
 
-- **Symptom:** a request that OCE refuses still opens a TCP connection to the
-  upstream, with no request bytes and no credential.
+- **Symptom:** a request OCE refuses still opens a TCP connection upstream,
+  without request bytes or credential.
 - **Cause:** Box dials the upstream when the workload's `CONNECT` arrives; its
   policy and credential sources see the request only inside the tunnel.
 - **Workaround:** none needed. Count refusals from OCE's use records.
@@ -218,7 +216,7 @@ by its source: route_not_ready`. The chat keeps running.
   `protectedModel.revocationDir`, running execution or not, and every start of
   that revision loads it.
 - **Workaround:** deploy a new revision. To undo a mistaken withdrawal, stop the
-  host and move the `model-revoked-*.json` file out of that directory.
+  host and move its `model-revoked-*.json` file out.
 - **Upstream status:** by design in this example.
 
 ## Withdrawing a model source needs an active revision
@@ -233,10 +231,21 @@ by its source: route_not_ready`. The chat keeps running.
 - **Upstream status:** an OCE change: accept it for the last revision that held
   the source.
 
+## A new Agent's first deployment cannot be a protected one
+
+- **Symptom:** with the Credential Gateway and Git delivery selected, a
+  never-deployed Agent is refused.
+- **Cause:** a protected workspace needs file node setup retained from an
+  earlier deployment; the Credential Gateway refuses the marker such a
+  deployment uses.
+- **Workaround:** deploy once without them, then select them
+  ([runbook steps 7 to 9](RUNBOOK.md#step-7-select-the-driver-and-upgrade)).
+- **Upstream status:** an OCE gap.
+
 ## Protected model requests are limited to 16 MiB
 
-- **Symptom:** a model request body over 16 MiB fails inside Box, before any
-  byte reaches the provider.
+- **Symptom:** a model request body over 16 MiB fails inside Box, before
+  reaching the provider.
 - **Cause:** Box sends the whole body to the host's model source, capped at
   16 MiB.
 - **Workaround:** keep conversations under the cap; compact long ones.
@@ -244,15 +253,14 @@ by its source: route_not_ready`. The chat keeps running.
 
 ## Optional history injection into a Codex thread fails in Box
 
-- **Symptom:** a feature that injects history into a Codex thread fails with
+- **Symptom:** history seeding, settled-turn finalization, conversation
+  binding transfer and the progress-card restore after compaction fail with
   `The provider Box refused a Codex request before dispatch
 (rpc-thread-inject-items)`. Ordinary chat, including sessions from before a
   redeploy, works.
 - **Cause:** the runtime image's provider-Box fence admits `thread/inject_items`
   only for the Gateway's session policy handoff: one developer-role text message
-  into a thread the same connection opened. History seeding, settled-turn
-  finalization, conversation binding transfer and the progress-card restore
-  after compaction stay refused.
+  into a thread the same connection opened.
 - **Workaround:** leave these features off; a failed progress-card restore is
   only logged.
 - **Upstream status:** by design in OCE's runtime image.
@@ -287,21 +295,19 @@ code-mode host ... Permission denied (os error 13)`; the model then uses its
 - **Workaround:** the file-only workspace node runs outside Box on its own route
   to the Agent Gateway, and the Harness reaches the Gateway through the
   installed relay. See [Connect the installation](README.md#connect-the-installation).
-- **Upstream status:** not reported upstream.
+- **Upstream status:** not reported.
 
 ## Box releases ship for Linux ARM64 only
 
 - **Symptom:** no Box release up to v0.2.3 has a Linux x86-64 build.
-- **Cause:** the releases have Linux and macOS ARM64 builds only. Upstream
+- **Cause:** releases have only Linux and macOS ARM64 builds; upstream
   builds Linux x86-64 as experimental, behind `EXPERIMENTAL_X86_SUPPORT=TRUE`.
 - **Workaround:** on Linux x86-64, use the [Box build](README.md#which-box-build);
-  the host sets the switch. The proven runs used this. On ARM64, use a Linux
-  host or a full-system ARM64 virtual machine (Box needs namespaces and
-  Bubblewrap from its kernel) with API, Worker and the workspace volume on
-  that node; no installed OCE run has been made there.
+  the host sets the switch. On ARM64, use a Linux
+  host or a full-system ARM64 virtual machine with API, Worker and the
+  workspace volume on that node; no installed OCE run has been made there.
 - **Upstream status:** upstream added x86-64 release downloads
-  ([strands-agents/box#475](https://github.com/strands-agents/box/pull/475));
-  v0.2.3 ships none.
+  ([strands-agents/box#475](https://github.com/strands-agents/box/pull/475)).
 
 ## Ubuntu 24.04 restricts unprivileged user namespaces
 

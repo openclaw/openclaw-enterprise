@@ -35,8 +35,7 @@ What the existing checks prove: [Troubleshooting](RUNBOOK-TROUBLESHOOTING.md#wha
 
 - **GitHub App**: Contents and Pull requests read and write, Metadata read;
   installed on **only** the test repository; one private key (`.pem`).
-  - App ID: on the App's settings page (`gh api apps/<app-slug>` answers
-    only for a public App)
+  - App ID: on the App's settings page
   - repository ID and default branch:
     `gh api repos/<owner>/<repo> --jq '.id, .default_branch'`
   - installation ID: the number ending the installation's settings URL,
@@ -155,8 +154,7 @@ and [Prepare each Namespace](../../../docs/guides/deploy/production-agents.md#pr
   [stage-session.sh](../../../docs/snippets/openshell-quickstart/stage-session.sh)
   does. Set `KUBECONFIG`, `CONTEXT`, `PLATFORM_NS`, `RELEASE`, `RUN_DIR`,
   `OCC_SERVICE_KEY_FILE`, `namespace=<namespace-id>`, `base=/namespaces/$namespace`,
-  and `agent` after step 8. Bodies go on stdin (`--data-binary @-`) or as
-  `--data '<json>'`.
+  and `agent` after step 8.
 
 **Check:** `request GET "$base"` shows `"status":"ready"`.
 
@@ -179,8 +177,7 @@ In the Agent's Kubernetes namespace `<agent-ns>` (release namespace here
    `box-harness.<agent-ns>.svc.cluster.local` and, if the model is privately
    signed, one for `model.example.test`.
 
-**Check:** the control claim checks 1 to 3 pass (before step 7: checks 2
-and 3 need the Worker at zero).
+**Check:** the control claim checks 1 to 3 pass.
 
 ### Step 6. Register the GitHub App
 
@@ -221,10 +218,9 @@ worker:
   strandsBoxControlClaimName: <control PVC>
 ```
 
-Leave `preparedProviderCaConfigMapName` and `issuerCaPath` unset: an issuer CA
-replaces public trust, and real `api.github.com` is refused. The Worker
-resolves through CoreDNS, Box through the host's `/etc/hosts`: neither may pin
-`github.com`.
+Leave `preparedProviderCaConfigMapName` and `issuerCaPath` unset, and pin
+`github.com` neither in CoreDNS nor in the host's `/etc/hosts`
+([why](RUNBOOK-TROUBLESHOOTING.md#when-it-fails), step 6).
 
 **Check:** the key Secret has no `kubectl.kubernetes.io/last-applied-configuration`
 annotation; after step 7, only the Worker Pod mounts it (through a
@@ -233,7 +229,11 @@ projected volume).
 ### Step 7. Select the Driver and upgrade
 
 Merge into the Installation, keeping your other Compute settings
-([Driver fields](driver/README.md)):
+([Driver fields](driver/README.md)). A new Agent's first deployment cannot be
+a protected one ([known gap](KNOWN-GAPS.md#a-new-agents-first-deployment-cannot-be-a-protected-one)),
+so upgrade first in the **pairing form**: without the six entries marked
+`# protected`, each with its children ([not fewer](RUNBOOK-TROUBLESHOOTING.md#when-it-fails),
+step 7). Step 8 adds them.
 
 ```yaml
 drivers:
@@ -260,10 +260,10 @@ drivers:
         modelBaseUrl: https://model.example.test:<port>/v1
         address: <model-ip>
         caSha256: <bundle sha256>
-      protectedRepository: { provider: github }
-      modelGateway: { secretNamespace: oce-strands-model }
-  credential_proxy: { id: strands-box, configuration: {} }
-  credential_gateway: { id: strands-box, configuration: {} }
+      protectedRepository: { provider: github } # protected
+      modelGateway: { secretNamespace: oce-strands-model } # protected
+  credential_proxy: { id: strands-box, configuration: {} } # protected
+  credential_gateway: { id: strands-box, configuration: {} } # protected
   compute:
     configuration:
       images: { gateway: <runtime@sha256>, agent: <runtime@sha256>, requireImmutableDigest: true }
@@ -280,12 +280,12 @@ drivers:
           protocol: openai-responses
           baseUrl: https://model.example.test:<port>/v1
       servicePrincipalCredentials: { mode: disabled }
-backend:
+backend: # protected
   - id: repository-backend
     type: github
     configuration: { registryPath: /etc/openclaw/repository-registry/registry.json }
     drivers: { repo: repository-credentials }
-repository:
+repository: # protected
   id: repository-credentials
   configuration: { sessionDurationSeconds: <seconds> } # both one hour in the runs
   preparedGitHub:
@@ -298,14 +298,7 @@ Upgrade, mount the control claim in the single Worker, and run its
 
 **Check:** the Worker is Ready with no Driver load error.
 
-### Step 8. Create the Agent and give it the model
-
-**Pair the Agent first.** Its first deployment must be
-[installed ordinary chat](ordinary-chat/installed.md), which creates its
-workspace claim and node setup; under the step 7 Installation a new Agent's
-first deployment is refused ([troubleshooting](RUNBOOK-TROUBLESHOOTING.md#when-it-fails),
-step 8). The runs reused an Agent paired that way; pairing before step 7 adds
-`credential_proxy` and `credential_gateway` is not verified.
+### Step 8. Create and pair the Agent, then give it the model
 
 Follow [Configure the Agent runtime](../../../docs/guides/deploy/production-agents.md#configure-the-agent-runtime) with what ran:
 
@@ -325,6 +318,21 @@ Follow [Configure the Agent runtime](../../../docs/guides/deploy/production-agen
   The workspace claim names no StorageClass, so the cluster must have no
   default one (the runs' K3s had none).
 
+Pair it: its first deployment is [installed ordinary chat](ordinary-chat/installed.md),
+in that page's order. `request POST "$base/agents/<agent>/deploy"`; once the
+claims are `Bound`, bind the four volume subpaths; seed the marker and serve
+the marker model at the step 7 model name, address and port (the runs
+freed that port for it); within about 3 minutes write the
+step 9 host configuration without `protectedRepository` and `protectedModel`
+and start the host; approve; start ingress.
+
+**Check:** the revision is active (the runs: under a minute), and `turn` on a
+file holding `BOX_WORKSPACE_REPRO_V1 <nonce>: use the operator-approved workspace verifier.`
+(`nonce` from the run's `expected.json`) leaves a `tool_verified` receipt.
+
+Stop the Agent while the host still runs (the stop goes through it), then
+stop ingress, host and marker model, and reset as in step 9. Upgrade with the
+whole step 7 fragment; check the Worker again.
 Then store the model key (from a file, never a command line), register the
 source, and bind:
 
@@ -343,13 +351,14 @@ request GET "$base/agents/<agent>" | jq --arg s <source-id> '.data | {configurat
 
 ### Step 9. Start the host and deploy
 
-1. Reset: `runtimeDir` holds only `worker-control` and the four mount
-   targets are unmounted (else the host refuses `runtime_already_used`).
-2. As in [Start the held host and approve](ordinary-chat/installed.md#start-the-held-host-and-approve):
-   `request POST "$base/agents/<agent>/deploy"`; bind the four volume subpaths
-   once the claims are `Bound`. Within about 3 minutes, write the host
-   configuration and start the host (below).
-3. Host configuration, from [installed.example.json](host/installed.example.json):
+1. Reset: the four mount targets are unmounted, `runtimeDir` holds only
+   `worker-control` (a protected run also leaves `source`) and `approvalDir`
+   is empty. Else the host refuses `runtime_already_used` or does not start.
+2. Bind the four volume subpaths, write the host configuration (below) and
+   start the host **before** `request POST "$base/agents/<agent>/deploy"`: a
+   later deployment first stops the earlier revision through the host.
+3. Host configuration, from [installed.example.json](host/installed.example.json)
+   and [installed ordinary chat](ordinary-chat/installed.md):
    `owner` `{driverId: strands-box, implementation: "@openclaw-enterprise/example-strands-box-driver@0.1.6", namespaceId, namespaceName: <agent-ns>, agentId}`;
    `codexBin` `$CODEX`; `image` the runtime digest; `workspaceClaim`
    `workspace-<h12>` (first 12 hex digits of the SHA-256 of the Agent ID);
@@ -362,7 +371,7 @@ request GET "$base/agents/<agent>" | jq --arg s <source-id> '.data | {configurat
    and `separateWorkspaceNode.caSha256` (the Gateway root CA). Pin
    `model.example.test` and the Gateway route's name in the host's `/etc/hosts`.
 4. Keep `node deploy/examples/strands-box/host/control.ts <host.json>` running
-   under a service manager (the runs: `systemd-run --user`); run the live
+   under a service manager; run the live
    mount check; approve with
    `node deploy/examples/strands-box/host/control.ts approve <host.json> <revision> <digest>`,
    `owner.revisionId` and `requirementsDigest` from `<runtimeDir>/pending.json`.
@@ -388,8 +397,6 @@ Rules: work only with https://github.com/<owner>/<repo> and the branch review/<b
 ```
 
 The identity is repository-local: no global Git identity exists inside Box.
-The model may try Codex Code Mode first and fall back to its shell
-([known gap](KNOWN-GAPS.md#codex-code-mode-cannot-run-in-box)).
 
 ### Step 11. Verify
 
@@ -398,11 +405,11 @@ gh pr view <url> --json isDraft,author,headRefName
 sudo -u postgres psql -d <database> -c "SELECT state, custody, admission->>'issuerAuthority'
   FROM occ.prepared_github_attempts ORDER BY started_at DESC LIMIT 1"
 sudo -u postgres psql -d <database> -c "SELECT operation FROM occ.prepared_repository_git_uses
-  ORDER BY authorization_reply_by DESC LIMIT 10"
+  ORDER BY authorization_reply_by DESC LIMIT 20"
 ```
 
-The turn has eight uses: `advertise-upload-pack`, two `upload-pack`,
-`advertise-receive-pack`, `receive-pack`, three `github-graphql`. Then, before
+Expect `advertise-upload-pack`, `upload-pack`, `advertise-receive-pack`,
+`receive-pack` and `github-graphql` uses; counts vary (the runs: 8 and 10). Then, before
 step 13 deletes the model key and as root, search Box's process environments
 (`/proc/<pid>/environ`), `/home/node`, the runtime directory, the host journal
 and the Worker, API and Agent namespace logs for `gh[pousr]_` token shapes,
@@ -413,28 +420,22 @@ workspace.
 
 ### Step 12. Optional refusals
 
-In later turns (`turn` opens a new chat each call),
-`git ls-remote https://github.com/<owner>/<other-repo>.git` fails with `403`
-and `gh api repos/<owner>/<other-repo>` prints
-`credential refused by its source: request_not_allowed`, with no use row. A
-PATCH to `repositoryBindings: []` while running sets the attempt's `custody`
-to `revoked`; the next `git ls-remote` of your repository fails with `403`
-while chat still answers.
+In later turns, try [the refusals](RUNBOOK-TROUBLESHOOTING.md#optional-refusals):
+another repository, then a withdrawn binding.
 
 ### Step 13. Clean up, in this order
 
 1. From your own machine: `gh pr close <url>`, delete the branch, check the
    default branch is unchanged.
 2. Stop the Agent (`request POST "$base/agents/<agent>/stop"`) while GitHub is
-   still wired (or after the step 12 withdrawal). The newest prepared attempt
-   must read `custody` `revoked`; `unknown` delays the next revision up to 72
-   minutes.
+   still wired (or after the step 12 withdrawal) and the host still runs. The
+   newest prepared attempt must read `custody` `revoked`
+   ([else](RUNBOOK-TROUBLESHOOTING.md#when-it-fails), step 13).
 3. PATCH the Agent back to the marker `harnessAuth` with
    `credentialSources: []`, then `DELETE` the source and its Secret. A
    referenced source returns `409`.
    For a revoke receipt, withdraw before step 2
    ([known gap](KNOWN-GAPS.md#withdrawing-a-model-source-needs-an-active-revision)).
 4. Revoke the model key at its issuer.
-5. When done with the App, delete the key and custody Secrets. K3s keeps old
-   Secret revisions until it compacts its datastore (every 5 minutes); search
-   again after that.
+5. When done with the App, delete the key and custody Secrets, and search
+   again after K3s compacts its datastore (every 5 minutes).
