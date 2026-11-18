@@ -1123,13 +1123,6 @@ function integrationGatewayClient(
       observeServiceUrl(created.serviceUrls[""]);
       return created;
     },
-    async getServiceUrl(request, signal) {
-      const serviceUrl = await gateway.getServiceUrl(request, signal);
-      if (serviceUrl !== undefined) {
-        observeServiceUrl(serviceUrl);
-      }
-      return serviceUrl;
-    },
   };
   return new Proxy(gateway, {
     get(target, property) {

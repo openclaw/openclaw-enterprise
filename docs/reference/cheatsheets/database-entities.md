@@ -67,6 +67,8 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `harness_auth_credential_source_id`
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
+- `restart_generation`, `restart_domain` (nullable pair defining current
+  [restart continuity](../agents/interrupted-turns.md); cleared on explicit stop)
 - `predecessor_replacement` (nullable JSONB with the predecessor and candidate
   revision IDs and the `pre-stop` or `stopping` phase). See the
   [common stop boundary](../agents/planned-replacement.md#common-stop-boundary).
@@ -89,7 +91,8 @@ See [per-Agent policies](../sandbox-policies.md).
 ### `agent_revisions`
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
-`admitted_spec` includes the explicit v2
+`admitted_spec` includes the optional immutable `restart_continuation` generation/domain
+snapshot and the explicit v2
 [execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
 
 - `id`

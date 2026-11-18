@@ -1277,7 +1277,12 @@ function upgradedCanonicalData(data) {
   return {
     ...data,
     agents: data.agents.map(({ value }) => ({
-      value: { ...value, predecessor_replacement: value.predecessor_replacement ?? null },
+      value: {
+        ...value,
+        predecessor_replacement: value.predecessor_replacement ?? null,
+        restart_generation: null,
+        restart_domain: null,
+      },
     })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
@@ -1457,6 +1462,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
+      [80, "preRestartContinuation"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1760,8 +1766,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preInstallationNetworkPolicyCeiling"],
-      [81, "preDynamicInstallationNetworkPolicyCeiling"],
+      [80, "preRestartContinuation"],
+      [81, "preInstallationNetworkPolicyCeiling"],
+      [82, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2063,8 +2070,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preInstallationNetworkPolicyCeiling"],
-      [81, "preDynamicInstallationNetworkPolicyCeiling"],
+      [80, "preRestartContinuation"],
+      [81, "preInstallationNetworkPolicyCeiling"],
+      [82, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2264,8 +2272,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preInstallationNetworkPolicyCeiling"],
-      [81, "preDynamicInstallationNetworkPolicyCeiling"],
+      [80, "preRestartContinuation"],
+      [81, "preInstallationNetworkPolicyCeiling"],
+      [82, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2277,10 +2286,18 @@ test(
         ok: true,
         history,
       });
-      assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
-        ok: true,
-        history: "completed",
-      });
+      context.diagnostic(
+        `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+      );
+      await context.test(
+        `restored prefix ${prefix} passes the completed history check`,
+        async () => {
+          assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+            ok: true,
+            history: "completed",
+          });
+        },
+      );
     }
   },
 );
@@ -2341,8 +2358,9 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
-      [80, "preInstallationNetworkPolicyCeiling"],
-      [81, "preDynamicInstallationNetworkPolicyCeiling"],
+      [80, "preRestartContinuation"],
+      [81, "preInstallationNetworkPolicyCeiling"],
+      [82, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2366,11 +2384,10 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
-        // 0081 grants access after creating the ceiling table; abort that final GRANT.
-        // 0082 removes startup ownership columns; abort its ALTER TABLE.
+        // Ceiling creation grants access last; dynamic ownership removes columns in one ALTER.
         const rollbackTag = [
-          [81, "ALTER TABLE"],
-          [80, "GRANT"],
+          [82, "ALTER TABLE"],
+          [81, "GRANT"],
           [79, "ALTER TABLE"],
           [78, "GRANT"],
           [77, "CREATE FUNCTION"],

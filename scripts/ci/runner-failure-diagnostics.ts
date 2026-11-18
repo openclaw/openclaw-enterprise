@@ -6,7 +6,7 @@ import {
   redactOutputLines,
   type RedactionSecrets,
 } from "./failure-redaction.ts";
-import { isObject } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 
 // The private reporter emits projected fields. JSON syntax alone does not establish
 // their types. Read each field where its consumer uses it, including on primitives.
@@ -147,7 +147,7 @@ export async function recordFailure(
     try {
       const previous: unknown = JSON.parse(await readFile(diagnosticsPath, "utf8"));
       if (
-        isObject(previous) &&
+        isRecord(previous) &&
         previous.lane === lane &&
         previous.preparationId === preparationId
       ) {

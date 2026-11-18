@@ -126,9 +126,9 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
   assert.equal(slackSlot.id, "account");
   assert.equal(slackSlot.label, "Slack user account");
   assert.deepEqual(slackSlot.sources, [{ id: source.id, name: source.name }]);
-  driver.credentials.validate(selections, [source]);
-  assert.throws(
-    () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
+  await driver.credentials.validate(selections, [source]);
+  await assert.rejects(
+    async () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
     /Select a ready Slack account/,
   );
   const mixedPlacement = { ...selections, ...occSelection() };

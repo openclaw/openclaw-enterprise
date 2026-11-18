@@ -297,6 +297,13 @@ resolved passive Drivers; its real stored-name API/worker refusal passes 1/1.
 Typecheck, lint, formatting, boundaries, OpenAPI, both CI inventories and
 documentation checks pass. These checks retain the earlier runtime and media gaps.
 
+## Migration numbering refresh, 2026-11-18
+
+Main at `749ffa37b` owns migration 0081 for restart continuation. Ceiling creation
+and dynamic ownership now use 0082 and 0083, with unchanged SQL bytes. Combined
+snapshots retain both schemas; PostgreSQL catalog and restore qualification is
+repeated. RFC-0043 status and published history remain unchanged.
+
 ## Manual Notes
 
 ## Changelog

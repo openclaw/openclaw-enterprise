@@ -417,11 +417,6 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   } = options;
   const exchangeMode = options.nativeAdmin?.sessionMode === "host-only-exchange";
   const nativeBrowser = options.auth?.nativeBrowser;
-  if (options.nativeAdmin && Object.hasOwn(options.nativeAdmin, "sharedCookieDomain")) {
-    throw new Error(
-      "nativeAdmin.sharedCookieDomain was removed; the shared cookie domain is derived from the Console and Agent domains.",
-    );
-  }
   const nativeAdminDomain = normalizeNativeAdminDomain(options.nativeAdmin?.domain);
   if (options.nativeAdmin?.enabled === true) {
     if (publicOrigin === undefined) {
