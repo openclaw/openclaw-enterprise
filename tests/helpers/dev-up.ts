@@ -306,6 +306,9 @@ function engineCommand(
     exit(0);
   }
   if (command === "ps") {
+    if (engine === "podman" && args.at(-1) === "bootstrap") {
+      exit(2, "podman-compose ps does not accept a service argument");
+    }
     if (args.includes("--quiet")) {
       stdout("bootstrap-container");
       exit(0);

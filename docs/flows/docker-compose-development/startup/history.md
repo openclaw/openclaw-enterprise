@@ -8,6 +8,18 @@ This record preserves the dated changes to the Compose development startup page.
 
 ## Changelog
 
+- 2026-11-25 07:01: Prepare TokenService custody before hybrid API startup in the accompanying fix. (authoring-run/db490261-6cbc-4662-9f41-d9fa970a7ef4 - 9179a24e4202bf26da0f2c75fdc94db4cc753315)
+
+- 2026-11-18 22:31: Fix native bootstrap container discovery. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - cd9e0ae68e78e7004ce9e93039ccc2ebd2dfb757)
+
+- 2026-11-18 22:15: Drain bootstrap Compose providers before rollback. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - 1b0e6c3e0cfea0532b55e8d1f815e4a939ead034)
+
+- 2026-11-18 21:57: Reconcile native Compose configuration and cancellation with precreated bootstrap credentials in the accompanying uncommitted integration. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - 5783a737f848b6ab7780225e33bf6a5e54d87b5d)
+
+- 2026-11-14 03:39: Remove repeated startup explanations after the Podman refresh. (authoring-run/1ced20ff-7099-45bc-9dd0-f2f3a617b2dc - f5bb87eba48ce7d8d41e520a8e9c0ccc497284ba)
+
+- 2026-11-13 17:08: Trace the resolved Compose snapshot, image retention, and provider cancellation. (authoring-run/807a71f5-237d-4e19-97e2-adeb12df0c2c - ecca730b4bf065962763f7b5aae79c89c2cb7958)
+
 - 2026-11-12 00:24: Correct readiness ownership. (authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291 - 6b44940d40419e4cd9889cf4b0316d95a798be56)
 
 - 2026-11-12 00:18: Handle checkout aliases and clean incomplete pre-start state. (authoring-run/40b08b7d-d158-4f4d-8a93-1e53f45a5999 - 2d5cf2bf7138c2d7bd40b3fa630a4c9d8b9dafe4)
@@ -63,8 +75,6 @@ This record preserves the dated changes to the Compose development startup page.
 - 2026-10-04 01:12: Pointed the API startup step at the existing composition function. (authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76 - 7a8a64046ac8ef3e7b5a4ed46b1d4cef9f1573f3)
 
 - 2026-10-02 11:01: Polled CRD status instead of `kubectl wait`. (authoring-run/20771b6e-d59b-4737-8a63-cb33c420218e - 67302dd99e03d28053dbb72ba2569418f6aca1d0)
-
-- 2026-10-02: Treated an absent initial CRD condition as pending.
 
 - 2026-09-30 00:26: Tightened startup prose without changing its behavior. (authoring-run/6c4c7a4c-4674-456a-b1c4-69cec0c52c70 - 282ab1031ff2dd86af00c0c3ff304c9ad442fec1)
 
