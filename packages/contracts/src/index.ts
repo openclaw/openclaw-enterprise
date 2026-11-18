@@ -422,8 +422,6 @@ export type {
   ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
-  InferencePrivatePeer,
-  InferencePrivatePeerInput,
   StaticKeyGrant,
 } from "./model-providers.ts";
 export { inferenceKeyDestination, normalizeInferenceBaseUrl } from "./model-providers.ts";
@@ -1137,8 +1135,6 @@ export interface HarnessDescriptor {
 }
 
 export interface RevisionHarnessDescriptor extends HarnessDescriptor {
-  /** Approved private receiver frozen at admission for this revision's trusted sender. */
-  readonly privateInferencePeer?: import("./model-providers.ts").InferencePrivatePeer;
   /** Catalog identity at admission; execution uses the saved settings below. */
   readonly modelProviderId?: string;
   readonly mode: HarnessExecutionMode;
@@ -1533,7 +1529,6 @@ export type {
 export type {
   CredentialRefreshDriver,
   CredentialRefreshInput,
-  CredentialRefreshStatus,
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "./drivers/credential-refresh/index.ts";
@@ -1700,3 +1695,49 @@ export type {
   NamespaceLifecycleHooks,
   NamespaceLifecycleParticipant,
 } from "./drivers/namespace-lifecycle.ts";
+
+export type {
+  TokenServiceSourceRef,
+  InstallationClientSecretRef,
+  TokenServiceRegistration,
+  RegisteredTokenServiceSource,
+  SourceLifecycleConfig,
+  SourceRegistrationInput,
+  SourceUpdate,
+  ResolvedCredential,
+  CredentialRefreshStatus,
+  SourceRefreshOperation,
+  TokenServiceDriver,
+} from "./drivers/token-service/index.ts";
+
+export type {
+  BearerCredentialProjection,
+  CredentialProjection,
+  DeploymentWorkloadRequirement,
+  DeploymentRequestPolicy,
+  DeploymentRequestMatch,
+  NetworkAccessPolicy,
+  CredentialInjectionPolicy,
+  CredentialProxyRouting,
+  CredentialDeploymentRef,
+  CredentialDeploymentTarget,
+  CredentialDeploymentConfiguration,
+  CredentialDeploymentReadiness,
+  DeploymentCredentialBinding,
+} from "./credential-deployment.ts";
+
+export type {
+  PluginDeploymentTool,
+  PluginDeploymentNetworkRequirement,
+  PluginCredentialConnection,
+  PluginDeploymentDescription,
+  PluginDeploymentContract,
+} from "./drivers/plugin/deployment.ts";
+
+export type {
+  HarnessStartupObservation,
+  HarnessStartupRef,
+  SandboxDeploymentContract,
+} from "./drivers/sandbox/deployment.ts";
+
+export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";

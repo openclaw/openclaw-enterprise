@@ -993,7 +993,7 @@ test("live static source validation does not consult backend Gateway placement",
     ]);
     assert.equal(
       denied.body.error.message,
-      "The openai authorized_base_url host must be an exact DNS name.",
+      "The openai authorized_base_url host must be an exact DNS name or private IPv4 address.",
     );
     assert.equal(f.secretReads - reads, 1);
     assert.equal(placement.mock.callCount(), 0);

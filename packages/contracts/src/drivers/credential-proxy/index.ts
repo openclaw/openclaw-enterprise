@@ -110,8 +110,6 @@ export interface EgressBinding {
 }
 
 export interface EgressRoute {
-  /** Exact resolved address allowed for a private inference origin. */
-  readonly privateInferenceAddress?: string;
   readonly route: EgressRef;
   readonly binding: EgressBinding;
   readonly origin: string;

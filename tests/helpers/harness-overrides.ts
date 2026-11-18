@@ -277,22 +277,17 @@ export async function exerciseNamedProvider(
     assert.equal(result.status, status, JSON.stringify(result.body));
     return result.data;
   };
-  const service = f.modelService;
-  const privatePeer =
-    kind === "private_ipv4"
-      ? { kind, address: "10.77.43.42" }
-      : { kind, namespace: service.metadata.namespace, name: service.metadata.name };
   const endpoint = {
     ...f.modelProvider,
-    ...(kind === "kubernetes_service"
-      ? { baseUrl: "https://model.inference.svc.cluster.local/v1" }
-      : {}),
+    baseUrl:
+      kind === "private_ipv4"
+        ? "https://10.77.43.42:8443/v1"
+        : "https://model.inference.svc.cluster.local/v1",
   };
   const templateSettings = {
     displayName: "Inference key",
     mode: "static_bearer",
     ...endpoint,
-    privatePeer,
   };
   const template = await request("POST", "/connection-templates", templateSettings, 201);
   const values = {
@@ -371,9 +366,6 @@ export async function exerciseNamedProvider(
   const saved = await f.controller.transact((state: PlatformUnitOfWork) =>
     state.revisions.findRevision(f.namespace.id, revision.agentId, revision.id),
   );
-  const approved = template.current.privatePeer;
-  assert.deepEqual(revision.harness.privateInferencePeer, approved);
-  assert.deepEqual(saved?.harness.privateInferencePeer, approved);
   assert.ok(saved?.egressPlan);
   // Round-trip the admitted route through the stock protobuf to catch SDK fields lost on the wire.
   const egressConfiguration = openShellEgressConfiguration(
@@ -393,7 +385,6 @@ export async function exerciseNamedProvider(
       protocol: "rest",
       enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
       path: "/v1/responses",
-      allowed_ips: [approved.address],
       rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
     },
   ]);
@@ -466,7 +457,7 @@ export async function exerciseNamedProvider(
   await request("POST", first + "/deploy", {}, 400);
   const original = await request("GET", first + "/revisions/" + revision.id, undefined, 200);
   assert.deepEqual(original.configuration, revision.configuration);
-  await request(
+  const restored = await request(
     "PUT",
     "/model-providers/" + provider.id,
     {
@@ -475,39 +466,26 @@ export async function exerciseNamedProvider(
     },
     200,
   );
-  if (kind === "kubernetes_service") {
-    const servicePort = service.spec.ports[0]!;
-    Object.assign(servicePort, { targetPort: "model" });
-    await request("PATCH", "/connection-templates/" + template.id, templateSettings, 409);
-    Object.assign(servicePort, { targetPort: 9443 });
-    await request(
-      "POST",
-      "/connection-templates",
-      {
-        ...templateSettings,
-        ...f.modelProvider,
-        privatePeer: { kind: "private_ipv4", address: "169.254.99.4" },
-      },
-      400,
-    );
-    // The same Service FQDN and IP now route to a different workload.
-    service.spec.selector.app = "replaced";
-    await request("POST", first + "/deploy", {}, 409);
-  }
-  const changedPeer = kind === "private_ipv4" ? { kind, address: "10.77.43.43" } : privatePeer;
+  const changedUrl = endpoint.baseUrl.replace("/v1", "/next/v1");
   const edited = await request(
     "PATCH",
     "/connection-templates/" + template.id,
-    { ...templateSettings, privatePeer: changedPeer },
+    { ...templateSettings, baseUrl: changedUrl },
     200,
   );
   assert.equal(edited.current.version, 2);
-  // The URL and protocol still match, but the credential owner has not approved the new peer.
+  // A destination change requires a new credential approval; an old revision stays unchanged.
   await request("POST", first + "/deploy", {}, 409);
-  assert.deepEqual(
+  assert.equal(
     (await request("GET", first + "/revisions/" + revision.id, undefined, 200)).harness
-      .privateInferencePeer,
-    approved,
+      .configuration.modelProvider.baseUrl,
+    endpoint.baseUrl,
+  );
+  await request(
+    "PUT",
+    "/model-providers/" + provider.id,
+    { ...values, baseUrl: changedUrl, expectedSettingsFingerprint: restored.settingsFingerprint },
+    200,
   );
   // Reapproval issues a new source. Rebind the draft and grant the Agent access before deploying.
   const replacement = await request(
@@ -549,5 +527,5 @@ export async function exerciseNamedProvider(
   );
   assert.equal(rebound.harnessAuth.sourceId, replacement.id);
   const redeployed = await request("POST", first + "/deploy", {}, 202);
-  assert.deepEqual(redeployed.harness.privateInferencePeer, edited.current.privatePeer);
+  assert.equal(redeployed.harness.configuration.modelProvider.baseUrl, changedUrl);
 }

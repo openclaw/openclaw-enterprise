@@ -773,7 +773,6 @@
                     "type": "string"
                   },
                   "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
-                  "privatePeer": { "$ref": "#/components/schemas/def-18" },
                   "protocol": {
                     "anyOf": [
                       { "const": "openai-responses", "type": "string" },
@@ -1038,7 +1037,7 @@
         "additionalProperties": false,
         "properties": {
           "baseUrl": {
-            "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+            "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
             "maxLength": 2048,
             "pattern": "^https://",
             "type": "string"
@@ -1061,7 +1060,6 @@
             "type": "array"
           },
           "mode": { "const": "static_bearer", "type": "string" },
-          "privatePeer": { "$ref": "#/components/schemas/def-18" },
           "protocol": {
             "anyOf": [
               { "const": "openai-responses", "type": "string" },
@@ -1087,102 +1085,6 @@
         "type": "object"
       },
       "def-17": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "address": {
-                "description": "One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname.",
-                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                "type": "string"
-              },
-              "kind": { "const": "private_ipv4", "type": "string" }
-            },
-            "required": ["kind", "address"],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "kind": { "const": "kubernetes_service", "type": "string" },
-              "name": {
-                "maxLength": 63,
-                "minLength": 1,
-                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                "type": "string"
-              },
-              "namespace": {
-                "maxLength": 63,
-                "minLength": 1,
-                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                "type": "string"
-              }
-            },
-            "required": ["kind", "namespace", "name"],
-            "type": "object"
-          }
-        ],
-        "title": "Private inference destination"
-      },
-      "def-18": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "address": {
-                "description": "One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname.",
-                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                "type": "string"
-              },
-              "kind": { "const": "private_ipv4", "type": "string" }
-            },
-            "required": ["kind", "address"],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "address": {
-                "description": "One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname.",
-                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                "type": "string"
-              },
-              "kind": { "const": "kubernetes_service", "type": "string" },
-              "name": {
-                "maxLength": 63,
-                "minLength": 1,
-                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                "type": "string"
-              },
-              "namespace": {
-                "maxLength": 63,
-                "minLength": 1,
-                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                "type": "string"
-              },
-              "podSelector": {
-                "additionalProperties": { "type": "string" },
-                "minProperties": 1,
-                "type": "object"
-              },
-              "targetPort": { "maximum": 65535, "minimum": 1, "type": "integer" },
-              "uid": { "minLength": 1, "type": "string" }
-            },
-            "required": [
-              "kind",
-              "namespace",
-              "name",
-              "uid",
-              "address",
-              "targetPort",
-              "podSelector"
-            ],
-            "type": "object"
-          }
-        ],
-        "title": "Approved private inference receiver"
-      },
-      "def-19": {
         "additionalProperties": false,
         "properties": {
           "contextWindow": { "minimum": 1, "type": "integer" },
@@ -1211,36 +1113,11 @@
         "title": "Model offered by this provider",
         "type": "object"
       },
-      "def-2": {
-        "items": {
-          "additionalProperties": false,
-          "properties": {
-            "channel": {
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[a-z][a-z0-9_-]*$",
-              "type": "string"
-            },
-            "id": {
-              "maxLength": 200,
-              "minLength": 1,
-              "pattern": "^[^\\u0000-\\u0020\\u007f]+$",
-              "type": "string"
-            }
-          },
-          "required": ["channel", "id"],
-          "type": "object"
-        },
-        "maxItems": 64,
-        "title": "PluginApprovers",
-        "type": "array",
-        "uniqueItems": true
-      },
-      "def-20": {
+      "def-18": {
         "additionalProperties": false,
         "properties": {
           "baseUrl": {
-            "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+            "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
             "maxLength": 2048,
             "pattern": "^https://",
             "type": "string"
@@ -1264,7 +1141,7 @@
           },
           "models": {
             "description": "Models offered by this provider. Each model ID must be unique.",
-            "items": { "$ref": "#/components/schemas/def-19" },
+            "items": { "$ref": "#/components/schemas/def-17" },
             "maxItems": 256,
             "minItems": 1,
             "type": "array"
@@ -1292,6 +1169,31 @@
         ],
         "title": "Model Provider",
         "type": "object"
+      },
+      "def-2": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "id": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u0020\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": ["channel", "id"],
+          "type": "object"
+        },
+        "maxItems": 64,
+        "title": "PluginApprovers",
+        "type": "array",
+        "uniqueItems": true
       },
       "def-3": {
         "additionalProperties": false,
@@ -11937,7 +11839,7 @@
                     "additionalProperties": false,
                     "properties": {
                       "baseUrl": {
-                        "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+                        "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
                         "maxLength": 2048,
                         "pattern": "^https://",
                         "type": "string"
@@ -11948,7 +11850,6 @@
                         "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
-                      "privatePeer": { "$ref": "#/components/schemas/def-17" },
                       "protocol": {
                         "anyOf": [
                           { "const": "openai-responses", "type": "string" },
@@ -12766,14 +12667,13 @@
                     "additionalProperties": false,
                     "properties": {
                       "baseUrl": {
-                        "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+                        "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
                         "maxLength": 2048,
                         "pattern": "^https://",
                         "type": "string"
                       },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                       "mode": { "const": "static_bearer", "type": "string" },
-                      "privatePeer": { "$ref": "#/components/schemas/def-17" },
                       "protocol": {
                         "anyOf": [
                           { "const": "openai-responses", "type": "string" },
@@ -14389,7 +14289,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "items": { "$ref": "#/components/schemas/def-20" }, "type": "array" },
+                    "data": { "items": { "$ref": "#/components/schemas/def-18" }, "type": "array" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -14495,7 +14395,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "baseUrl": {
-                    "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+                    "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
                     "maxLength": 2048,
                     "pattern": "^https://",
                     "type": "string"
@@ -14515,7 +14415,7 @@
                   "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                   "models": {
                     "description": "Models offered by this provider. Each model ID must be unique.",
-                    "items": { "$ref": "#/components/schemas/def-19" },
+                    "items": { "$ref": "#/components/schemas/def-17" },
                     "maxItems": 256,
                     "minItems": 1,
                     "type": "array"
@@ -14565,7 +14465,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "$ref": "#/components/schemas/def-20" },
+                    "data": { "$ref": "#/components/schemas/def-18" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -14724,7 +14624,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "$ref": "#/components/schemas/def-20" },
+                    "data": { "$ref": "#/components/schemas/def-18" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -14848,7 +14748,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "baseUrl": {
-                    "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+                    "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
                     "maxLength": 2048,
                     "pattern": "^https://",
                     "type": "string"
@@ -14873,7 +14773,7 @@
                   },
                   "models": {
                     "description": "Models offered by this provider. Each model ID must be unique.",
-                    "items": { "$ref": "#/components/schemas/def-19" },
+                    "items": { "$ref": "#/components/schemas/def-17" },
                     "maxItems": 256,
                     "minItems": 1,
                     "type": "array"
@@ -14924,7 +14824,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "$ref": "#/components/schemas/def-20" },
+                    "data": { "$ref": "#/components/schemas/def-18" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -23602,7 +23502,6 @@
                               "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                               "type": "object"
                             },
-                            "privateInferencePeer": { "$ref": "#/components/schemas/def-18" },
                             "version": { "minLength": 1, "type": "string" }
                           },
                           "required": ["id", "version", "mode", "overrides", "configuration"],
@@ -30499,7 +30398,6 @@
                                 "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                                 "type": "object"
                               },
-                              "privateInferencePeer": { "$ref": "#/components/schemas/def-18" },
                               "version": { "minLength": 1, "type": "string" }
                             },
                             "required": ["id", "version", "mode"],
@@ -30866,7 +30764,6 @@
                                   "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                                   "type": "object"
                                 },
-                                "privateInferencePeer": { "$ref": "#/components/schemas/def-18" },
                                 "version": { "minLength": 1, "type": "string" }
                               },
                               "required": ["id", "version", "mode", "overrides", "configuration"],
@@ -37448,7 +37345,6 @@
                                 "type": "string"
                               },
                               "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
-                              "privatePeer": { "$ref": "#/components/schemas/def-18" },
                               "protocol": {
                                 "anyOf": [
                                   { "const": "openai-responses", "type": "string" },
@@ -40646,7 +40542,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "items": { "$ref": "#/components/schemas/def-20" }, "type": "array" },
+                    "data": { "items": { "$ref": "#/components/schemas/def-18" }, "type": "array" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {

@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import {
-  connectionValuesChanged,
-  type StaticKeyTemplateValues,
+  inferenceKeyDestination,
+  normalizeInferenceBaseUrl,
   CONFIGURATION_KINDS,
   DRIVER_CAPABILITIES,
   LOGGING_LEVELS,
@@ -22,6 +22,7 @@ import {
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
   ConfigurationValidationError,
+  ConnectionTemplateValidationError,
   sandboxNetworkGrantsWithinCeiling,
   validateSandboxNetworkGrants,
   type AgentRevision,
@@ -34,35 +35,21 @@ import {
 import { registerConfigurationCases } from "./contracts-configuration-cases.ts";
 import { registerRuntimeDiagnosticCases } from "./contracts-runtime-diagnostic-cases.ts";
 
-test("replacing or removing a static template's approved Service requires fresh consent", () => {
-  const base: StaticKeyTemplateValues = {
-    mode: "static_bearer",
-    baseUrl: "https://inference.example.test/v1",
-    protocol: "openai-responses",
-    destinations: [
-      { host: "inference.example.test", port: 443, path: "/v1/responses", method: "POST" },
-    ],
-  };
-  const peer = {
-    kind: "kubernetes_service" as const,
-    namespace: "research",
-    name: "inference",
-    uid: randomUUID(),
-    address: "10.32.0.18",
-    targetPort: 8443,
-    podSelector: { app: "inference" },
-  };
-  const current = { ...base, privatePeer: peer };
-  assert.equal(connectionValuesChanged(current, structuredClone(current)), false);
-  assert.equal(
-    connectionValuesChanged(current, { ...base, privatePeer: { ...peer, uid: randomUUID() } }),
-    true,
-  );
-  assert.equal(
-    connectionValuesChanged(current, { ...base, privatePeer: { ...peer, targetPort: 9443 } }),
-    true,
-  );
-  assert.equal(connectionValuesChanged(current, base), true);
+test("inference URLs preserve canonical private IPv4 destinations and reject unsafe aliases", () => {
+  const baseUrl = "https://10.77.43.42:8443/v1";
+  assert.equal(normalizeInferenceBaseUrl(baseUrl), baseUrl);
+  assert.deepEqual(inferenceKeyDestination(baseUrl, "openai-responses"), {
+    method: "POST",
+    host: "10.77.43.42",
+    port: 8443,
+    path: "/v1/responses",
+  });
+  for (const host of ["127.0.0.1", "169.254.169.254", "10.1", "010.77.43.42"]) {
+    assert.throws(
+      () => normalizeInferenceBaseUrl(`https://${host}/v1`),
+      ConnectionTemplateValidationError,
+    );
+  }
 });
 
 test("network delegation covers every requested host label and port without broadening executables", () => {

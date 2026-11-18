@@ -33,24 +33,8 @@ export interface ModelProviderView extends ModelProvider {
   readonly settingsFingerprint: string;
 }
 
-/** A private receiver the Installation administrator selects when creating a template version. */
-export type InferencePrivatePeerInput =
-  | { readonly kind: "private_ipv4"; readonly address: string }
-  | { readonly kind: "kubernetes_service"; readonly namespace: string; readonly name: string };
-
-/** Service identity and ports observed by Compute before a credential owner approves the version. */
-export type InferencePrivatePeer =
-  | Extract<InferencePrivatePeerInput, { kind: "private_ipv4" }>
-  | (Extract<InferencePrivatePeerInput, { kind: "kubernetes_service" }> & {
-      readonly uid: string;
-      readonly address: string;
-      readonly targetPort: number;
-      readonly podSelector: Readonly<Record<string, string>>;
-    });
-
 /** The version pins where the credential owner approved sending the key. */
 export interface StaticKeyGrant {
-  readonly privatePeer?: InferencePrivatePeer;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
   readonly baseUrl: string;
@@ -70,14 +54,23 @@ export function normalizeInferenceBaseUrl(value: string): string {
     );
   }
   const url = new URL(value);
-  if (
-    !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+  const originalHost = value.slice("https://".length).split(/[/:]/, 1)[0]?.toLowerCase();
+  const dnsHost =
+    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
       url.hostname,
-    )
-  ) {
+    );
+  const octets = url.hostname.split(".").map(Number);
+  const privateIpv4 =
+    originalHost === url.hostname &&
+    octets.length === 4 &&
+    octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255) &&
+    (octets[0] === 10 ||
+      (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) ||
+      (octets[0] === 192 && octets[1] === 168));
+  if (!dnsHost && !privateIpv4) {
     throw new ConnectionTemplateValidationError(
       "baseUrl",
-      "Choose an exact DNS host for inference.",
+      "Choose an exact DNS host or private IPv4 address for inference.",
     );
   }
   return url.href.replace(/\/$/, "");

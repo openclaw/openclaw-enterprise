@@ -278,7 +278,11 @@ export function checkExactModelAndHarnessRoutes() {
   const gateway = find(dedicated, "allow-gateway-agent");
   const agent = find(dedicated, "allow-agent-runtime");
   const embeddedRuntime = find(embedded, "allow-agent-runtime");
-  const auth = driver["agentAuthenticationNetworkPolicy"](dedicated, execution);
+  const auth = driver["agentAuthenticationNetworkPolicy"](
+    dedicated,
+    execution,
+    driver["agentNetworkPolicies"](dedicated, execution),
+  );
   const agentEgress = policyRules(agent, "egress");
   assert.deepEqual(agentEgress, policyRules(embeddedRuntime, "egress"));
   assert.deepEqual(policyRules(auth, "egress"), agentEgress);

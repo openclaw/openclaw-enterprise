@@ -150,7 +150,6 @@ export interface OpenShellWorkspaceResponse {
 }
 
 export interface OpenShellProviderProfileEndpoint {
-  readonly allowedIps?: readonly string[];
   readonly host: string;
   readonly port: number;
   readonly protocol: string;
@@ -164,10 +163,9 @@ export interface OpenShellProviderProfileEndpoint {
 
 /** Exact stock endpoint sent at import and compared when the provider is observed. */
 export function openShellProfileEndpoint(endpoint: OpenShellProviderProfileEndpoint) {
-  const { rules, allowedIps, access = "NETWORK_ACCESS_PRESET_READ_WRITE", ...target } = endpoint;
+  const { rules, access = "NETWORK_ACCESS_PRESET_READ_WRITE", ...target } = endpoint;
   return {
     ...target,
-    ...(allowedIps && { allowed_ips: [...allowedIps] }),
     enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
     ...(rules ? { rules } : { access }),
   };
@@ -392,7 +390,6 @@ export interface OpenShellPolicyRequest {
   readonly sandbox: string;
 }
 export interface OpenShellPolicyStatus {
-  readonly privateInferenceRevisionId?: string;
   readonly version: number;
   readonly activeVersion: number;
   readonly state: string;
@@ -409,7 +406,6 @@ export interface OpenShellGatewayClient
     request: OpenShellPolicyRequest & {
       readonly policy: Readonly<Record<string, unknown>>;
       readonly expectedResourceVersion: string;
-      readonly privateInferenceRevisionId?: string;
       readonly requestId: string;
     },
     signal: AbortSignal,
@@ -451,8 +447,6 @@ export interface OpenShellGatewayClient
     request: OpenShellSandboxDeleteRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse | undefined>;
-  /** The exposed service's URL, or undefined when the endpoint does not exist. */
-  getServiceUrl(request: OpenShellServiceRequest, signal: AbortSignal): Promise<string | undefined>;
   getService(
     workspace: string,
     sandbox: string,
@@ -1475,9 +1469,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     ) {
       throw new OpenShellGatewayFailure("Invalid Sandbox policy status.");
     }
-    const provenance = asRecord(revision?.provenance)?.["openclaw.dev/revision-id"];
     return {
-      ...(typeof provenance === "string" && { privateInferenceRevisionId: provenance }),
       version: revision!.version as number,
       activeVersion: Number(response.active_version ?? 0),
       state: revision!.status as string,
@@ -1489,7 +1481,6 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     request: OpenShellPolicyRequest & {
       readonly policy: Readonly<Record<string, unknown>>;
       readonly expectedResourceVersion: string;
-      readonly privateInferenceRevisionId?: string;
       readonly requestId: string;
     },
     signal: AbortSignal,
@@ -1504,9 +1495,6 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         workspace_scope: { workspace: request.workspace },
         policy: request.policy,
         expected_resource_version: request.expectedResourceVersion,
-        ...(request.privateInferenceRevisionId && {
-          annotations: { "openclaw.dev/revision-id": request.privateInferenceRevisionId },
-        }),
         request_id: request.requestId,
       },
       signal,
@@ -1859,30 +1847,6 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       }
       throw error;
     }
-  }
-
-  async getServiceUrl(
-    request: OpenShellServiceRequest,
-    signal: AbortSignal,
-  ): Promise<string | undefined> {
-    let response: RecordValue;
-    try {
-      response = await this.unary(
-        "GetService",
-        {
-          sandbox: request.sandbox,
-          name: request.service,
-          workspace_scope: { workspace: request.workspace },
-        },
-        signal,
-      );
-    } catch (error) {
-      if (await this.isStatus(error, "NOT_FOUND")) {
-        return undefined;
-      }
-      throw error;
-    }
-    return normalizeServiceUrl(response.url, this.options.endpoint);
   }
 
   async getService(

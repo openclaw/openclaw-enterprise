@@ -25,16 +25,6 @@ import {
 } from "../egress-proxy/openshell.ts";
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
 import {
-  PRIVATE_INFERENCE_HOLD,
-  PRIVATE_INFERENCE_READY,
-  privateInferenceHold,
-  privateInferenceReleasedPolicy,
-  verifiedPrivateInferencePolicyBase,
-  verifyEffectivePrivateInferencePolicy,
-  assertExclusiveInferenceEndpoint,
-} from "./openshell-private-inference.ts";
-import { randomUUID } from "node:crypto";
-import {
   AgentId,
   ConfigurationValidationError,
   NamespaceId,
@@ -1339,7 +1329,6 @@ function sandboxCommand(
   native: boolean,
   loginMode: HarnessWorkloadRequirements["loginMode"],
   workspaceSetup: HarnessWorkloadRequirements["workspaceSetup"],
-  holdPrivateInference: boolean,
 ): readonly string[] {
   const loaderIndex = RUNTIME_WRAPPER_COMMAND.length;
   const loader = nodeProgramArguments("")[0]!;
@@ -1356,12 +1345,7 @@ function sandboxCommand(
   const bootstrap = `{\nconst fs = require("node:fs");\nconst path = require("node:path");\nfor (const [link, target] of ${JSON.stringify(
     links.map(({ path, target }) => [path, target]),
   )}) {\n  fs.mkdirSync(path.dirname(link), { recursive: true });\n  try {\n    const existing = fs.lstatSync(link);\n    if (!existing.isSymbolicLink() || fs.readlinkSync(link) !== target) {\n      throw new Error("OpenShell workspace link conflicts with existing runtime state: " + link);\n    }\n  } catch (error) {\n    if (error?.code !== "ENOENT") {\n      throw error;\n    }\n    fs.symlinkSync(target, link);\n  }\n}\n}\n`;
-  // /tmp is private to this Sandbox incarnation. Compute first verifies the actual sender
-  // and observes the exact released policy as LOADED, before waking either native Harness.
-  const privateWait = holdPrivateInference
-    ? `{const pause=new Int32Array(new SharedArrayBuffer(4));while(!require("node:fs").existsSync(${JSON.stringify(PRIVATE_INFERENCE_READY)})) Atomics.wait(pause,0,0,250); }\n`
-    : "";
-  const prelude = `${privateWait}${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
+  const prelude = `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
   const composed = [
     ...command.slice(0, loaderIndex),
     prelude + loader,
@@ -2322,14 +2306,6 @@ function sandboxSpec(
     assertNoManagedMcpRouteOverlap(defaults, install);
     assertNoManagedMcpRouteOverlap(additions, install);
   }
-  const hold = privateInferenceHold(revision);
-  if (
-    hold &&
-    (Object.hasOwn(defaults, PRIVATE_INFERENCE_HOLD) ||
-      Object.hasOwn(additions, PRIVATE_INFERENCE_HOLD))
-  ) {
-    throw new OpenShellSandboxConfigurationFailure("The private inference hold rule is reserved.");
-  }
   const dataMount = sandboxDataMount(options, requirements);
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
   const volumeMounts = workspace.mounts;
@@ -2380,7 +2356,6 @@ function sandboxSpec(
         // A protected execution keeps the exact policy and model attachment verified before provisioning.
         ...(egressPolicy ? asRecord(egressPolicy.network_policies) : defaults),
         ...(egressPolicy ? {} : additions),
-        ...(hold && { [PRIVATE_INFERENCE_HOLD]: hold }),
         ...plugin?.networks,
         ...Object.fromEntries(mcpPolicies.map(({ network }) => [network.name, network])),
         ...(runtimeProvider === undefined || workspaceNodeBinding === undefined
@@ -2395,10 +2370,8 @@ function sandboxSpec(
       revision.harness.id === "openclaw",
       requirements.loginMode,
       requirements.workspaceSetup,
-      hold !== undefined,
     ),
-    // A native generation replacement would inherit the already released policy.
-    restart_policy: hold ? "SANDBOX_RESTART_POLICY_NEVER" : SANDBOX_RESTART_POLICY,
+    restart_policy: SANDBOX_RESTART_POLICY,
   };
 }
 
@@ -2996,12 +2969,6 @@ function verifyExistingSandbox(
   request: OpenShellSandboxCreateRequest,
 ): void {
   if (
-    (Object.hasOwn(
-      asRecord(asRecord(request.spec.policy)?.network_policies) ?? {},
-      PRIVATE_INFERENCE_HOLD,
-    ) &&
-      existing.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER" &&
-      existing.spec?.restart_policy !== 1) ||
     existing.name !== request.name ||
     existing.workspace !== request.workspace ||
     !exactStringMap(existing.labels, request.labels) ||
@@ -4741,9 +4708,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
+    const candidate = openShellPolicyCandidate(baseline, snapshot);
     const status = await client.getPolicyStatus(request, context.signal);
-    const verifiedBase = verifiedPrivateInferencePolicyBase(context.revision, baseline, status);
-    const candidate = openShellPolicyCandidate(verifiedBase, snapshot);
     const matches = sameOpenShellPolicy(status.policy, candidate);
     const state =
       status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version
@@ -4757,88 +4723,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       state,
       matches,
     };
-  }
-
-  async releasePrivateInference(context: SandboxHarnessContext): Promise<boolean> {
-    const expected = privateInferenceHold(context.revision);
-    if (!expected) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "The revision has no ordinary private inference hold.",
-      );
-    }
-    const { client, request, sandbox } = await this.policyTarget(context);
-    const baseline = asRecord(sandbox.spec?.policy);
-    if (
-      !baseline ||
-      !sameOpenShellPolicy(
-        asRecord(baseline.network_policies)?.[PRIVATE_INFERENCE_HOLD],
-        expected,
-      ) ||
-      (sandbox.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER" &&
-        sandbox.spec?.restart_policy !== 1) ||
-      !client.getPolicyStatus ||
-      !client.updatePolicy
-    ) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell must create the Sandbox with the admitted private hold and support observed policy updates.",
-      );
-    }
-    const status = await client.getPolicyStatus(request, context.signal);
-    if (status.state === "POLICY_STATUS_FAILED" || status.state === "POLICY_STATUS_SUPERSEDED") {
-      throw new OpenShellSandboxConfigurationFailure(
-        "The private inference policy failed to load.",
-      );
-    }
-    if (status.state !== "POLICY_STATUS_LOADED" || status.activeVersion !== status.version) {
-      return false;
-    }
-    const verifiedBase = verifiedPrivateInferencePolicyBase(context.revision, baseline, status);
-    const config = await client.getSandboxConfig?.(
-      request.workspace,
-      request.sandbox,
-      context.signal,
-    );
-    verifyEffectivePrivateInferencePolicy(
-      context.revision,
-      request.workspace,
-      config,
-      expected,
-      verifiedBase === baseline,
-    );
-    if (verifiedBase === baseline) {
-      await client.updatePolicy(
-        {
-          ...request,
-          policy: privateInferenceReleasedPolicy(baseline),
-          privateInferenceRevisionId: context.revision.id,
-          expectedResourceVersion: sandbox.resourceVersion!,
-          requestId: randomUUID(),
-        },
-        context.signal,
-      );
-      return false;
-    }
-    const result = await client.execSandbox(
-      {
-        workspace: request.workspace,
-        sandbox: request.sandbox,
-        command: [
-          "/usr/local/bin/node",
-          "-e",
-          `const fs=require("node:fs"); const f=${JSON.stringify(PRIVATE_INFERENCE_READY)}; try { fs.writeFileSync(f,"",{flag:"wx",mode:0o600}) } catch(e) { if(e.code!=="EEXIST" || !fs.lstatSync(f).isFile()) throw e }`,
-        ],
-        environment: {},
-        stdin: "",
-        timeoutSeconds: 10,
-      },
-      context.signal,
-    );
-    if (result !== 0) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell could not release the verified private inference Harness.",
-      );
-    }
-    return true;
   }
 
   async applyNetworkPolicy(
@@ -4874,34 +4758,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    let verifiedBase = baseline;
-    const privateInference = privateInferenceHold(context.revision);
-    if (privateInference) {
-      if (!client.getPolicyStatus) {
-        throw new OpenShellSandboxConfigurationFailure(
-          "Private inference requires observed policy updates.",
-        );
-      }
-      const status = await client.getPolicyStatus(request, context.signal);
-      verifiedBase = verifiedPrivateInferencePolicyBase(context.revision, baseline, status);
-      if (
-        verifiedBase === baseline ||
-        status.state !== "POLICY_STATUS_LOADED" ||
-        status.activeVersion !== status.version
-      ) {
-        throw new OpenShellSandboxConfigurationFailure(
-          "Wait for verified private inference startup before editing the Agent network policy.",
-        );
-      }
-    }
-    const candidate = openShellPolicyCandidate(verifiedBase, input.snapshot);
-    if (privateInference) {
-      assertExclusiveInferenceEndpoint(
-        candidate.network_policies,
-        privateInference.endpoints[0]!,
-        [],
-      );
-    }
+    const candidate = openShellPolicyCandidate(baseline, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
@@ -4940,7 +4797,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       {
         ...request,
         policy: candidate,
-        ...(privateInference && { privateInferenceRevisionId: context.revision.id }),
         expectedResourceVersion: input.expectedProviderVersion,
         requestId: input.operationId,
       },

@@ -69,18 +69,13 @@ admissions. Existing revisions keep their saved values.
 
 ### Private endpoints
 
-The static-key template can authorize one private receiver for its HTTPS POST route.
+Set the inference base URL to the endpoint's HTTPS hostname or canonical private IPv4 address. For an in-cluster Kubernetes Service, use its full `<service>.<namespace>.svc.cluster.local` DNS name, such as `https://inference.research.svc.cluster.local/v1`. The Connection Template authorizes the host, port, method and path; it does not store a separate private network target or Service identity.
 
-- For a private server, set `privatePeer` to `{"kind":"private_ipv4","address":"10.20.30.40"}`. Use the server’s DNS name in the base URL. DNS must resolve to the approved address, and its TLS certificate must cover that name.
-- For a Kubernetes Service, use `{"kind":"kubernetes_service","namespace":"research","name":"inference"}` with `https://inference.research.svc.cluster.local/v1`. The Service owner gives Compute permission to `get` that named Service in the execution cluster. It must be an IPv4 ClusterIP Service with a Pod selector and a numeric TCP target port. Compute saves the Service UID, address, selector and target port with the template version.
+At deployment, Kubernetes Compute resolves the approved host and permits the required private addresses and port. For a Service DNS name, Compute reads the named Service and permits both its ClusterIP and its selected backend Pods, with their respective ports. The Service owner must grant Compute permission to read that Service. The endpoint owner controls ingress, DNS and TLS trust. A hostname must present a certificate valid for that hostname; an IPv4 endpoint needs a certificate valid for its IP address.
 
-Both destinations require a dedicated per-Sandbox OpenShell supervisor, DNS, and an HTTPS certificate trusted by that supervisor. The supervisor must connect to the validated address, including when it uses an upstream proxy. A shared supervisor or a proxy that resolves the hostname again cannot serve this route. For a cluster-local name, install the private issuing CA in the supervisor’s upstream trust store.
+Aliases for a Service and custom cluster DNS suffixes are not supported. A NetworkPolicy that permits only the resolved ClusterIP can block traffic after Kubernetes translates the address to a backend Pod.
 
-The credential owner approves the version. Compute checks the Service again at admission and when preparing and activating the Agent. If a Service is replaced or the mapping changes, save the updated template and register a credential for its new version. The new credential has a different source ID. Grant the Agent's service principal access to that source, then update the Agent draft through `PATCH /namespaces/{namespaceId}/agents/{agentId}`. Include its `modelProviderId`, set `harnessAuth` to `{"method":"credential_source","sourceId":"<new source ID>"}`, and replace the old source in `credentialSources` while retaining every unrelated binding. Select **Deploy new version** after the update. The Console draft editor cannot currently select this replacement source. Stop the Agent before transferring the Service name and address, or [withdraw the key](../../credential-sources/withdrawal.md) and wait until the withdrawal reports `revoked`. The key can still resolve while withdrawal is `pending`; removing an IAM grant alone does not detach an already attached key. A running supervisor checks the certificate and pinned address on requests. It does not watch the Kubernetes Service UID.
-
-Compute creates an egress NetworkPolicy for the revision’s OpenShell supervisor. For a Service, the policy permits the ClusterIP and Service port, and the selected Pods and target port, so it can apply before or after Kubernetes translates the address. For a private server, the policy permits one `/32` and port. The destination owner still controls ingress. Kubernetes combines the allowances from all policies that select a Pod. Stock OpenShell 0.1.8 maintains an allow-all egress policy for supervisors and suspends the workload if that managed policy changes. On this release, OpenShell checks the approved hostname, resolved address, port and POST route before injecting the key.
-
-An Agent that uses an ordinary private model credential cannot also use a separately protected Git connection. OCC refuses that combination before provisioning. For an ordinary private credential, OpenShell disables automatic Sandbox replacement. If a serving Sandbox is lost, select **Deploy new version** on the Agent. OCC verifies the new supervisor before it can send an authenticated inference request.
+A changed DNS answer or Service backend does not change the credential's approved HTTP destination. Redeploy the Agent to refresh network reachability after an address or Service backend changes. Changing the destination URL or protocol requires a new Connection Template version and credential approval.
 
 ## Deployment overrides
 
@@ -130,8 +125,7 @@ See [Credential Sources](../../credential-sources.md) for operations and permiss
 ## Validation and recovery
 
 URLs reject credentials, `@`, wildcards, whitespace, controls, queries, fragments,
-port zero, and ambiguous IPv4 spellings. Gateway-backed sources require exact DNS
-hostnames. Dedicated native OpenClaw retains its HTTPS port 443 restriction.
+port zero, and ambiguous IPv4 spellings. Named providers accept exact DNS hostnames and canonical private IPv4 addresses. Dedicated native OpenClaw retains its HTTPS port 443 restriction.
 Existing [egress policies](networking-and-isolation.md) remain in force; endpoint
 configuration or authorization does not grant network access.
 

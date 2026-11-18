@@ -520,10 +520,9 @@ export function checkExactAccountTokenEgress() {
   const namespace = kubernetesNamespaceName(tenant.id);
   const digest = (value: string, length: number) =>
     createHash("sha256").update(value).digest("hex").slice(0, length);
-  const policy = driver["agentAuthenticationNetworkPolicy"](revision, {
-    name: namespace,
-    plane: "execution",
-  });
+  const target = { name: namespace, plane: "execution" } as const;
+  const policies = driver["agentNetworkPolicies"](revision, target);
+  const policy = driver["agentAuthenticationNetworkPolicy"](revision, target, policies);
 
   // Login needs public HTTPS before readiness; candidate transport must remain closed until activation.
   assert.equal(policy.metadata.name, `allow-agent-auth-${digest(revision.agentId, 12)}`);
@@ -543,10 +542,7 @@ export function checkExactAccountTokenEgress() {
   });
   assert.deepEqual(spec.policyTypes, ["Egress"]);
   assert.equal(spec.ingress, undefined);
-  const runtime = driver["agentNetworkPolicies"](revision, {
-    name: namespace,
-    plane: "execution",
-  })[1];
+  const runtime = policies[1];
   assert.ok(runtime?.resource.spec);
   assert.deepEqual(spec.egress, runtime.resource.spec.egress);
   assert.deepEqual(spec.egress, [

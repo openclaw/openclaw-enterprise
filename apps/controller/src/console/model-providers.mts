@@ -1,8 +1,6 @@
 import type {
   ConnectionTemplate,
   CredentialSourceMetadata,
-  InferencePrivatePeer,
-  InferencePrivatePeerInput,
   ModelProvider,
   ModelProviderView,
   SecretMetadata,
@@ -27,20 +25,6 @@ function route(baseUrl: string, protocol: string) {
     baseUrl.replace(/\/$/, "") +
     (protocol === "openai-responses" ? "/responses" : "/chat/completions")
   );
-}
-
-function describePrivatePeer(peer: InferencePrivatePeer): string {
-  return peer.kind === "private_ipv4"
-    ? "Private server at " + peer.address
-    : "Kubernetes Service " +
-        peer.namespace +
-        "/" +
-        peer.name +
-        " at " +
-        peer.address +
-        " (target port " +
-        peer.targetPort +
-        ")";
 }
 
 function modelRow(initial: CatalogModel | undefined, remove: () => void) {
@@ -209,36 +193,13 @@ export function renderModelProviders(context: Context) {
     const templateName = element("input", { required: true });
     const newName = field({ label: "New static-key template name", control: templateName });
     const destination = element("p", { className: "hint" });
-    const network = element(
-      "select",
-      {},
-      option("public", "Public endpoint"),
-      option("private_ipv4", "Private server"),
-      option("kubernetes_service", "Kubernetes Service"),
-    );
-    const networkField = field({ label: "Network destination", control: network });
-    const address = element("input", { required: true, placeholder: "10.20.30.40" });
-    const addressField = field({ label: "Private IPv4 address", control: address });
-    const serviceHelp = element(
-      "p",
-      { className: "hint" },
-      "Use the Service DNS name in the inference URL, for example https://inference.research.svc.cluster.local/v1.",
-    );
     function refreshDestination() {
       const creating = template.value === "new";
       newName.hidden = templateName.disabled = !creating;
-      networkField.hidden = network.disabled = !creating;
-      addressField.hidden = address.disabled = !creating || network.value !== "private_ipv4";
-      serviceHelp.hidden = !creating || network.value !== "kubernetes_service";
-      const saved = templates.find((item) => item.id === template.value)?.current;
-      const privatePeer = saved?.mode === "static_bearer" ? saved.privatePeer : undefined;
       destination.textContent = baseUrl.value.trim()
-        ? "Allowed request: POST " +
-          route(baseUrl.value.trim(), protocol.value) +
-          (privatePeer ? ". " + describePrivatePeer(privatePeer) + "." : "")
+        ? "Allowed request: POST " + route(baseUrl.value.trim(), protocol.value)
         : "";
     }
-    network.addEventListener("change", refreshDestination);
     function syncTemplates(preferred = template.value) {
       const matching = templates.filter(
         (t) =>
@@ -284,9 +245,6 @@ export function renderModelProviders(context: Context) {
       field({ label: "Default model", control: defaultModel }),
       field({ label: "Static-key connection template", control: template }),
       newName,
-      networkField,
-      addressField,
-      serviceHelp,
       destination,
     );
     const form = element(
@@ -309,26 +267,11 @@ export function renderModelProviders(context: Context) {
       try {
         let connectionTemplateId = template.value;
         if (connectionTemplateId === "new") {
-          let privatePeer: InferencePrivatePeerInput | undefined;
-          if (network.value === "private_ipv4") {
-            privatePeer = { kind: "private_ipv4", address: address.value.trim() };
-          } else if (network.value === "kubernetes_service") {
-            const service = /^([^.]+)\.([^.]+)\.svc\.cluster\.local$/.exec(
-              new URL(baseUrl.value).hostname,
-            );
-            if (!service) {
-              status.textContent =
-                "Enter the Service URL using service.namespace.svc.cluster.local.";
-              return;
-            }
-            privatePeer = { kind: "kubernetes_service", name: service[1]!, namespace: service[2]! };
-          }
           const created = (await context.request("/connection-templates", {
             ...administration,
             method: "POST",
             body: {
               mode: "static_bearer",
-              ...(privatePeer && { privatePeer }),
               displayName: templateName.value.trim(),
               baseUrl: baseUrl.value.trim(),
               protocol: protocol.value,
@@ -447,8 +390,7 @@ export function renderInferenceCredential(
               route(grant.baseUrl, grant.protocol) +
               " (template version " +
               grant.version +
-              ")." +
-              (grant.privatePeer ? " " + describePrivatePeer(grant.privatePeer) + "." : "")
+              ")."
             : "";
       }
       template.addEventListener("change", showGrant);

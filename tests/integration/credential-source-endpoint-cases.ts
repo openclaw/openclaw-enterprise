@@ -223,13 +223,11 @@ export function registerCredentialSourceEndpointCases({
     await f.assertNothingSaved();
   });
 
-  test("credential source endpoints require an exact DNS host name", async (t) => {
+  test("credential source endpoints refuse unsafe numeric hosts and malformed DNS names", async (t) => {
     const f = await fixture(t);
-    // The bearer-token host rule: IP addresses in any spelling the URL parser accepts, and labels
-    // with `_` or an edge `-`, widened the member's Sandbox egress (finding 1293).
+    // IP aliases, infrastructure addresses and malformed labels must not broaden the authorized endpoint.
     for (const host of [
       "127.0.0.1",
-      "10.0.0.1",
       "192.0.2.1",
       "169.254.169.254",
       "0x7f000001",
@@ -243,7 +241,7 @@ export function registerCredentialSourceEndpointCases({
       assertRefused(
         response,
         "authorized_base_url",
-        "The openai authorized_base_url host must be an exact DNS name.",
+        "The openai authorized_base_url host must be an exact DNS name or private IPv4 address.",
         host,
       );
     }

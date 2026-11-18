@@ -81,7 +81,6 @@ export const CreateConnectionTemplateBody = Type.Union([
     {
       ...create,
       ...staticBearer,
-      privatePeer: Type.Optional(Type.Ref("InferencePrivatePeerInput")),
     },
     strict,
   ),
@@ -94,7 +93,6 @@ export const UpdateConnectionTemplateBody = Type.Union([
     {
       ...rename,
       ...staticBearer,
-      privatePeer: Type.Optional(Type.Ref("InferencePrivatePeerInput")),
     },
     strict,
   ),
@@ -176,7 +174,6 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
 export const StaticKeyConnectionTemplateVersionSchema = Type.Object(
   {
     ...staticBearer,
-    privatePeer: Type.Optional(Type.Ref("InferencePrivatePeer")),
     templateId: ConnectionTemplateId,
     version: Type.Integer({ minimum: 1 }),
     createdAt: Type.String(),

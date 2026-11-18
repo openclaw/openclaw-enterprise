@@ -460,7 +460,7 @@ async function runMigrationCheck(fixture, configPath) {
   try {
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
-      ["scripts/migrate-production.mjs", "--check"],
+      ["scripts/migrate-production.ts", "--check"],
       {
         cwd: repositoryRoot,
         env: {
@@ -752,8 +752,8 @@ async function installProviderCompletedHistory(db) {
 // The real migration command. pnpm's own startup costs about 1 s of CPU per call, so run each
 // package.json script's exact text through `sh` with this Node first on PATH, as pnpm does.
 // The "Drizzle second migration" case still runs both commands through `corepack pnpm`,
-// every prepared CI database is migrated that way, and the Helm migration Job runs the
-// script file directly. Each refusal code and both scripts keep a command case here.
+// every prepared CI database is migrated that way, and Helm runs the migration entry directly
+// in the selected controller image. Each refusal code and both tasks keep a command case here.
 const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").then(
   (text) => JSON.parse(text).scripts,
 );
@@ -833,7 +833,7 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
 }
 
 // The history cases migrate a few hundred databases. Run them in this process: the same
-// `migrateWithHistory` call on the same pool as `scripts/migrate-production.mjs`, with that
+// `migrateWithHistory` call on the same pool as `scripts/migrate-production.ts`, with that
 // command's outcome codes. The mode only selects the script (and its NODE_ENV logging),
 // never the migration; `runHistoryCommand` covers the process contract. flag and refusal
 // are as for runHistoryCommand: the command prints this same error.message on refusal.
@@ -1765,7 +1765,6 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preModelProviders"],
-      [81, "prePrivateInferencePeers"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2068,7 +2067,6 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preModelProviders"],
-      [81, "prePrivateInferencePeers"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2269,7 +2267,6 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preModelProviders"],
-      [81, "prePrivateInferencePeers"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2346,7 +2343,6 @@ test(
       [78, "prePredecessorReplacement"],
       [79, "preRevisionRuntimeInputs"],
       [80, "preModelProviders"],
-      [81, "prePrivateInferencePeers"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

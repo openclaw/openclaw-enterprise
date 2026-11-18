@@ -182,6 +182,12 @@ export function registerProviderCases() {
         tokenUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/token",
         jwksUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/certs",
       };
+      const split = {
+        issuer: "https://accounts.idp.example.test",
+        authorizationUrl: "https://accounts.idp.example.test/o/oauth2/v2/auth",
+        tokenUrl: "https://oauth2.idp.example.test/token",
+        jwksUrl: "https://www.idp.example.test/oauth2/v3/certs",
+      };
       const extra = { tokenAuth: "client_secret_basic", displayName: "Acme SSO" } as const;
       // The API trims each URL with JavaScript's trim (ASCII whitespace, Unicode spaces, U+2028,
       // U+2029 and U+FEFF) before its checks, and so does the chart. The env keeps the value as
@@ -284,6 +290,11 @@ export function registerProviderCases() {
             paddedBare,
           ),
           oidcOnly("OIDC only", oidc),
+          oidcOnly(
+            "OIDC with independently configured endpoint hosts",
+            { ...oidc, ...split },
+            split,
+          ),
           oidcOnly(
             "OIDC only, basic token auth and a label",
             { ...oidc, ...keycloak, ...extra },

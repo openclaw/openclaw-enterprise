@@ -158,9 +158,9 @@ Stores the scope, authentication kind, and current version of each connection te
 
 ### `static_key_template_versions`
 
-Pins an inference key's approved POST route and optional private destination.
+Pins an inference key's approved POST route.
 
-- `template_id`, `version`, `base_url`, `protocol`, `private_peer`, `created_at`
+- `template_id`, `version`, `base_url`, `protocol`, `created_at`
 
 ### `model_providers`
 
