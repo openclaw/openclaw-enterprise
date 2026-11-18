@@ -1308,7 +1308,7 @@ export const controllerWork = occSchema.table(
     namespaceTarget: text("namespace_target"),
     agentTarget: text("agent_target"),
     state: text("state").notNull().default("queued"),
-    readinessDeferred: boolean("readiness_deferred").notNull().default(false),
+    candidateAuthorized: boolean("candidate_authorized").notNull().default(false),
     availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
     claimToken: uuid("claim_token"),
@@ -1338,9 +1338,9 @@ export const controllerWork = occSchema.table(
       .onUpdate("restrict")
       .onDelete("no action"),
     check(
-      "controller_work_readiness_deferred_owner",
-      sql`NOT ${table.readinessDeferred} OR (
-        ${table.state} = 'queued' AND ${table.workKind} = 'lifecycle'
+      "controller_work_candidate_authorized_owner",
+      sql`NOT ${table.candidateAuthorized} OR (
+        ${table.state} IN ('claimed', 'queued') AND ${table.workKind} = 'lifecycle'
         AND ${table.agentId} IS NOT NULL AND ${table.revisionId} IS NOT NULL
         AND ${table.namespaceTarget} IS NULL AND ${table.agentTarget} IS NULL
         AND ${table.idempotencyKey} = 'agent_revision:' || ${table.revisionId} || ':reconcile'

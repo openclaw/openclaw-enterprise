@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { claimIsolatedWork } from "../helpers/postgres-work-claim.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
@@ -41,6 +42,7 @@ import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.ts";
+import { within } from "../helpers/wait-for.ts";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
 
 test(
@@ -2042,6 +2044,91 @@ test(
 );
 
 test(
+  "A refused candidate cannot mint or redeem while its Worker retries stopping it (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const { f, revision, exchange, request, grant } = await requestCredentialFixture(t, {
+      activateRevision: false,
+    });
+    const queue = new PostgresWorkQueue(f.pool);
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const first = await claimIsolatedWork(f.pool, { workId: key });
+    assert.ok(first);
+    await queue.setCandidateAuthorization(first, true);
+    await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    const approved = request();
+    assert.equal(
+      await exchange.authorizeRequestCredential(approved, t.signal, () => true),
+      "credential",
+    );
+
+    await delay(5, undefined, { signal: t.signal });
+    const refusal = await claimIsolatedWork(f.pool, { workId: key });
+    assert.ok(refusal);
+    await queue.defer(
+      refusal,
+      { code: "REFUSED_CANDIDATE_STOP_PENDING", refusal: "AUTHORIZATION_DENIED" },
+      { delayMs: 1 },
+    );
+    await f.pool.query(
+      `INSERT INTO occ.iam_restrictions
+       (id, namespace_id, action, resource_kind, resource_id, effect)
+       VALUES ($1, $2, 'deploy', 'agent', $3, 'deny')`,
+      [`restriction-${randomUUID()}`, f.namespace.id, f.agent.id],
+    );
+
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const compute = f.controller.selectedDriver("compute");
+    const workerPool = new pg.Pool({ connectionString: databaseUrl, max: 5 });
+    const worker = createControllerWorker({
+      pool: workerPool,
+      mode: "development",
+      computeDriver: {
+        ...compute,
+        async bindAgent({ agent }) {
+          if (agent.id === f.agent.id) {
+            held.resolve();
+            await release.promise;
+            throw new Error("controlled refused-candidate stop failure");
+          }
+        },
+      },
+      pollIntervalMs: 10,
+      leaseDurationMs: 5_000,
+    });
+    const guard = await f.pool.connect();
+    try {
+      await guard.query("BEGIN");
+      await guard.query(
+        "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key <> $1 FOR UPDATE SKIP LOCKED",
+        [key],
+      );
+      await worker.start();
+      await within(held.promise, "the actual Worker to enter refused-candidate stop", 8_000);
+      assert.equal((await queue.findWork(key))?.state, "claimed");
+      const reads = f.secretReads;
+      const minted = await exchange.authorizeRequestCredential(request(), t.signal, () => true);
+      const released = await exchange.resolveRequestCredential(grant(approved), t.signal);
+      assert.deepEqual(
+        {
+          minted: minted !== undefined,
+          released: released !== undefined,
+          secretReads: f.secretReads - reads,
+        },
+        { minted: false, released: false, secretReads: 0 },
+        "a live stop-retry lease is not candidate authorization",
+      );
+    } finally {
+      release.resolve();
+      await worker.stop();
+      await guard.query("ROLLBACK");
+      guard.release();
+    }
+  },
+);
+
+test(
   "Only owned readiness deferral preserves pending model credentials (PostgreSQL)",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
@@ -2063,12 +2150,12 @@ test(
     };
     const approve = (input = request()) =>
       exchange.authorizeRequestCredential(input, t.signal, () => true);
-    const defer = async (code: string, refusal?: string) =>
-      queue.defer(
-        await claim(),
-        { code, ...(refusal !== undefined && { refusal }) },
-        { delayMs: 1 },
-      );
+    const defer = async (code: string, refusal?: string) => {
+      const next = await claim();
+      assert.equal(await approve(), undefined, "reclaim does not restore candidate authority");
+      await queue.setCandidateAuthorization(next, true);
+      await queue.defer(next, { code, ...(refusal !== undefined && { refusal }) }, { delayMs: 1 });
+    };
     const approveAndRedeem = async () => {
       const input = request();
       assert.equal(await approve(input), "credential");
@@ -2079,6 +2166,8 @@ test(
 
     assert.equal(await approve(), undefined, "an unclaimed deployment cannot mint");
     const first = await claim();
+    assert.equal(await approve(), undefined, "a claim alone cannot mint");
+    await queue.setCandidateAuthorization(first, true);
     await approveAndRedeem();
     await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
     const deferred = await queue.findWork(key);
@@ -2129,6 +2218,7 @@ test(
     const claim = await claimIsolatedWork(f.pool, { workId: key });
     assert.ok(claim);
     assert.equal(claim.idempotencyKey, key);
+    await queue.setCandidateAuthorization(claim, true);
     await queue.defer(claim, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
 
     const whileBusy = async <T>(action: () => Promise<T>): Promise<T> => {
@@ -2203,6 +2293,8 @@ test(
     const key = `agent_revision:${revision.id}:reconcile`;
     const claim = await claimIsolatedWork(f.pool, { workId: key });
     assert.equal(claim?.idempotencyKey, key);
+    assert.ok(claim);
+    await queue.setCandidateAuthorization(claim, true);
 
     const input = request();
     const reservation = pauseNextApprovalCommit("after");

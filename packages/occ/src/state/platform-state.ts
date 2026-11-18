@@ -1236,7 +1236,7 @@ export interface PlatformOperationRepository extends PlatformOperationReadReposi
   /** Hold exact candidate work without waiting; busy work throws before credential effects. */
   lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean>;
   /**
-   * Read the current exact work row for a live database-clock lease or queued readiness marker.
+   * Require the exact work row's Worker authorization and a live lease or owned readiness deferral.
    * The caller must hold its work lock through authorization or credential release.
    */
   requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean>;

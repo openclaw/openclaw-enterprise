@@ -136,9 +136,12 @@ admission. OpenShell uses the authenticated extension identity's expiry.
 until that horizon, including after cancellation, consumption or revision
 deletion. The active revision may obtain or redeem an approval while its
 authority remains current. Before activation, only the newest revision's exact
-reconcile work can qualify. It must hold a live lease or be queued by an owned
-`REVISION_INCOMPLETE` deferral without a refusal or yielded stop. The current
-work row records that deferral. Claim, retry, completion, and recovery clear it.
+reconcile work can qualify. After admission, authorization, predecessor and
+repository checks, the Worker records candidate authorization immediately before
+Compute preparation. That permission requires a live claim or an owned
+`REVISION_INCOMPLETE` deferral without a refusal or yielded stop. Reclaim,
+retry, recovery and completion clear it; the Worker clears it before stopping a
+refused candidate. A claim alone never grants credential access.
 OCC checks the row under a nonblocking lock before approving or releasing
 material, and retries contention within the original deadline. A nonblocking
 transaction advisory lock serializes durable global and per-recipient quotas.
@@ -257,6 +260,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-18 12:08: Require current Worker authorization before candidate preparation and clear it on stop or reclaim. (authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e - d5c331fb8da1b65683cbc9bf027c5e206f4a2e9f)
 
 - 2026-11-18 11:10: Return an accepted approval after acknowledged commit and distinguish interrupted delivery from denial. (authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e - a59efd23c9cf5e7381d24dd0a4ef053fa624b29e)
 

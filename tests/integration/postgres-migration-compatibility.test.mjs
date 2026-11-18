@@ -1457,7 +1457,7 @@ async function canonicalData(db) {
       "gateway_managed_mode",
     ],
     agent_revisions: ["gateway_managed_mode"],
-    controller_work: ["work_kind", "audit_attempt_id", "readiness_deferred"],
+    controller_work: ["work_kind", "audit_attempt_id", "candidate_authorized"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -1599,7 +1599,7 @@ test(
           work: before.work.map((row) => ({
             ...row,
             ...(prefix === 76 && { audit_attempt_id: null }),
-            readiness_deferred: false,
+            candidate_authorized: false,
           })),
         };
         const manifest = JSON.parse(
@@ -1709,20 +1709,23 @@ test(
     const marker = async () =>
       (
         await db.app.query(
-          "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+          "SELECT candidate_authorized FROM occ.controller_work WHERE idempotency_key=$1",
           [idempotencyKey],
         )
-      ).rows[0].readiness_deferred;
+      ).rows[0].candidate_authorized;
     assert.equal(await marker(), false);
     assert.equal(await queue.requestCredentialCandidateEligible(owner), false);
     const claim = await queue.claim();
     assert.ok(claim);
+    assert.equal(await queue.requestCredentialCandidateEligible(owner), false);
+    await queue.setCandidateAuthorization(claim, true);
+    assert.equal(await queue.requestCredentialCandidateEligible(owner), true);
     await queue.defer(claim, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
     assert.equal(await marker(), true);
     await queue.enqueue({ ...owner, actorId, idempotencyKey });
     assert.equal(await marker(), true, "idempotent enqueue preserves current readiness");
     const invalidReadiness = (error) =>
-      error.code === "23514" && error.constraint === "controller_work_readiness_deferred_owner";
+      error.code === "23514" && error.constraint === "controller_work_candidate_authorized_owner";
     // These work shapes are valid independently of readiness eligibility.
     for (const rewrite of [
       "state='succeeded', completed_at=now(), reason_code='DONE'",
@@ -1748,7 +1751,7 @@ test(
     );
     await assert.rejects(
       db.app.query(
-        "UPDATE occ.controller_work SET readiness_deferred=true WHERE idempotency_key=$1",
+        "UPDATE occ.controller_work SET candidate_authorized=true WHERE idempotency_key=$1",
         [cleanupKey],
       ),
       invalidReadiness,

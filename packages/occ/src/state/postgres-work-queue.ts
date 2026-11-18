@@ -1111,7 +1111,7 @@ export class PostgresWorkQueue {
     )`;
     const recordAudit = input.recordAudit ?? this.controlPlaneAuditEnabled;
     const transition = `UPDATE occ.controller_work AS work
-      SET readiness_deferred = false,
+      SET candidate_authorized = false,
           state = 'claimed',
           attempt_count = CASE WHEN ${repositoryCleanupSql("work")}
             THEN LEAST(work.attempt_count::bigint + 1, $2::integer)::integer
@@ -1165,6 +1165,25 @@ export class PostgresWorkQueue {
       [claim.idempotencyKey, claim.claimToken, this.leaseDurationMs],
     );
     return renewed.rows[0] === undefined ? undefined : asClaimedWork(renewed.rows[0]);
+  }
+
+  /** A claim alone cannot authorize a candidate; only its preparation pass can. */
+  async setCandidateAuthorization(claim: WorkClaim, authorized: boolean): Promise<void> {
+    validateClaim(claim);
+    const updated = await this.client.query(
+      `UPDATE occ.controller_work
+       SET candidate_authorized = $3
+       WHERE idempotency_key = $1 AND claim_token = $2::uuid
+         AND state = 'claimed' AND lease_expires_at > clock_timestamp()
+         AND work_kind = 'lifecycle' AND agent_id IS NOT NULL AND revision_id IS NOT NULL
+         AND namespace_target IS NULL AND agent_target IS NULL
+         AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
+       RETURNING idempotency_key`,
+      [claim.idempotencyKey, claim.claimToken, authorized],
+    );
+    if (updated.rows.length !== 1) {
+      throw new WorkClaimLostError();
+    }
   }
 
   /**
@@ -1243,10 +1262,9 @@ export class PostgresWorkQueue {
          AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
          AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
          AND work.agent_target IS NULL
-         AND (
-           (work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()) OR
-           (work.state = 'queued' AND work.readiness_deferred)
-         )`,
+         AND work.candidate_authorized
+         AND (work.state = 'queued' OR
+              (work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()))`,
       [owner.namespaceId, owner.agentId, owner.revisionId],
     );
     return found.rows.length === 1;
@@ -1427,7 +1445,7 @@ export class PostgresWorkQueue {
     const completed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET readiness_deferred = false,
+         SET candidate_authorized = false,
              state = 'succeeded',
              claim_token = NULL,
              lease_expires_at = NULL,
@@ -1505,7 +1523,7 @@ export class PostgresWorkQueue {
     const deferred = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET readiness_deferred = (work_kind = 'lifecycle'
+         SET candidate_authorized = (candidate_authorized AND work_kind = 'lifecycle'
                AND agent_id IS NOT NULL AND revision_id IS NOT NULL
                AND namespace_target IS NULL AND agent_target IS NULL
                AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
@@ -1554,7 +1572,7 @@ export class PostgresWorkQueue {
     const retried = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work AS work
-         SET readiness_deferred = false,
+         SET candidate_authorized = false,
              state = CASE
                WHEN ${exhausted} THEN 'failed_permanent'
                ELSE 'queued'
@@ -1656,7 +1674,7 @@ export class PostgresWorkQueue {
            ))
        ), transitioned AS (
          UPDATE occ.controller_work AS work
-         SET readiness_deferred = false,
+         SET candidate_authorized = false,
              state = 'failed_permanent',
              claim_token = NULL,
              lease_expires_at = NULL,
@@ -1722,7 +1740,7 @@ export class PostgresWorkQueue {
           AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_refused_stops)`,
        )} transitioned AS (
          UPDATE occ.controller_work AS work
-         SET readiness_deferred = false,
+         SET candidate_authorized = false,
              state = CASE
                WHEN ${exhaustedClaim} THEN 'failed_permanent'
                ELSE 'queued'
@@ -1797,7 +1815,7 @@ export class PostgresWorkQueue {
        )} transitioned AS (
          -- A requeued row keeps its available_at: it was already queued.
          UPDATE occ.controller_work AS work
-         SET readiness_deferred = false,
+         SET candidate_authorized = false,
              state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
              attempt_count = CASE
                WHEN ${predecessorStop} THEN GREATEST($2::integer - 1, 0)

@@ -2166,6 +2166,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
+    candidate = false,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     if (!this.revisionPluginDriverAvailable(revision)) {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
@@ -2173,11 +2174,14 @@ export class ControllerWorker {
     this.validateExecutionAdmission(revision);
     const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
-      const prepared = await this.prepareRevisionPass(claim, revision, context);
+      const prepared = await this.prepareRevisionPass(claim, revision, context, candidate);
       timing?.observeReadiness(prepared.observation);
       return prepared;
     } catch (failure) {
       const error = primaryComputeFailure(failure);
+      if (candidate && !(error instanceof WorkClaimLostError)) {
+        await this.queue.setCandidateAuthorization(claim, false);
+      }
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
@@ -2218,6 +2222,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
+    candidate: boolean,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     // Preparing a revision can recreate its runtime, so it is no longer known stopped.
     this.stoppedPredecessors.delete(revision.id);
@@ -2231,7 +2236,7 @@ export class ControllerWorker {
       await this.stopPredecessors(claim, earlier);
     }
     try {
-      return await this.prepareAfterPredecessors(claim, revision, context);
+      return await this.prepareAfterPredecessors(claim, revision, context, candidate);
     } catch (error) {
       // A failed pass may stem from a predecessor that came back; sweep it again.
       for (const previous of earlier) {
@@ -2346,6 +2351,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
+    candidate: boolean,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     let prepared = context;
     if (revision.repositoryCredentials !== undefined) {
@@ -2361,6 +2367,9 @@ export class ControllerWorker {
     }
     await this.recheckRevokedCredentialSources(claim, revision);
     await this.assertRestartContinuation(revision);
+    if (candidate) {
+      await this.queue.setCandidateAuthorization(claim, true);
+    }
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
@@ -5607,7 +5616,7 @@ export class ControllerWorker {
     context: ComputeRevisionContext,
   ): Promise<RevisionDispatchResult> {
     return this.withClaimHeartbeat(claim, async () => {
-      const prepared = await this.prepareRevision(claim, revision, context);
+      const prepared = await this.prepareRevision(claim, revision, context, true);
       const observation = prepared.observation;
       context = prepared.context;
       if (!validRevisionObservation(observation, revision)) {
@@ -6720,6 +6729,7 @@ export class ControllerWorker {
     ) {
       return;
     }
+    await this.queue.setCandidateAuthorization(claim, false);
     const { namespace, agent, revision } = await this.state.read(async (view) => ({
       namespace: await view.namespaces.findNamespace(claim.namespaceId),
       agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),

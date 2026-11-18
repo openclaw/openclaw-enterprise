@@ -515,7 +515,7 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes, Age
 - `claim_token`
 - `audit_attempt_id`
 - `lease_expires_at`
-- `readiness_deferred` records an exact reconcile deferral for candidate model authorization. Existing work defaults to false.
+- `candidate_authorized` records the Worker's permission for an exact candidate preparation; only an owned readiness deferral can retain it. Existing work defaults to false.
 - `completed_at`
 - `reason_code`
 - `result_data`
