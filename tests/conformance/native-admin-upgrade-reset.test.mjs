@@ -127,6 +127,7 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
   await within(once(gateway, "listening"), "the fixture gateway must listen");
 
   const installationId = "inst_native_admin_transport";
+  /** @satisfies {Parameters<import("./native-admin-upgrade-audit-cases.ts").UpgradeAuditTransportOptions["authorize"]>[0]["agent"]} */
   const agent = { id: "agent_a", namespaceId: "ns_a", desiredRuntimeState: "running" };
   const domain = "agents.example.com";
   const host = deriveNativeAdminHost(installationId, agent, domain);
