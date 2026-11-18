@@ -1,17 +1,16 @@
 ---
 created: 2026-08-24
-updated: "2026-11-18 09:44"
-last_updated_session: "authoring-run/05059b24-93d6-4c07-b659-2d0b084a3070"
+updated: "2026-11-18 10:44"
+last_updated_session: "authoring-run/9343cba7-12f6-442b-b9c5-e237c2f99eb4"
 ---
 
 # Bootstrap and human authentication flow
 
 ## Overview
 
-Native-IAM bootstrap commits administrators with the Installation and protects
-their credentials. Human sign-in reaches exact IAM authorization;
-the [service API key flow](service-api-keys.md) covers key verification,
-rotation and revocation.
+Native IAM bootstrap commits administrators with the Installation and protects
+credentials. Human sign-in uses exact IAM authorization. See
+[service API keys](service-api-keys.md) for verification, rotation and revocation.
 
 ## Entry Points
 
@@ -22,10 +21,10 @@ rotation and revocation.
 - Source: [`scripts/bootstrap-installation.ts`](../../scripts/bootstrap-installation.ts),
   [`apps/controller/src/auth/index.ts:createControllerAuth`](../../apps/controller/src/auth/index.ts),
   and [`apps/controller/src/index.ts:createFastifyApp`](../../apps/controller/src/index.ts).
-- Assumptions: Migrated PostgreSQL, configured Better Auth, native IAM bootstrap,
-  protected output storage, disabled public signup, and exact IAM authorization.
-  Production receives a private password path and sibling service-key path;
-  development receives only the service-key output path.
+- Assumptions: Migrated PostgreSQL, Better Auth, native IAM bootstrap, protected
+  output, disabled public signup, and exact IAM authorization. Production receives
+  private password and sibling service-key paths; development receives only the
+  service-key path.
 
 ## Flow
 
@@ -65,30 +64,29 @@ graph TD
 ### 1. Load state and create the fresh administrator identities
 
 [`scripts/bootstrap-installation.ts`](../../scripts/bootstrap-installation.ts)
-loads the singleton Installation. Existing Installations verify the administrator's
-immutable account/IAM identity without issuing keys, changing output, or repairing
-grants, including Installations predating service-administrator bootstrap.
+loads the singleton Installation. Existing Installations, including those created
+before service-administrator bootstrap, verify the administrator's immutable
+account/IAM identity without issuing keys, changing output, or repairing grants.
 `verifiedWithoutAuth` checks the administrator's `occ."user"` row and IAM Principal
-before loading Better Auth. Success logs `installation.already-bootstrapped` with
-`step: "fast-path"`; a miss or error runs the full Better Auth check. Both paths
-check the base URL first.
+before Better Auth loads. Success logs `installation.already-bootstrapped` with
+`step: "fast-path"`; otherwise Better Auth performs the full check. Both paths
+first check the base URL.
 
-Before creating credentials, `apps/controller/src/composition/bootstrap-output.ts:bootstrapOutputPath`
-rejects output basenames over 255 UTF-8 bytes. Production creates a Better Auth
-account with a random password;
-development creates the configured `OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD`
-account. `packages/iam/src/index.ts:createBootstrapAdministratorSeed` adds a
-non-Agent `spn_<uuid>` without a Namespace and a separate unrestricted binding to
-the human's administrator Role. The [authorization reference](../reference/authorization.md#supported-policy-surface)
-defines exact actions. Additional-account provisioning creates no service administrator.
+Before credentials, `apps/controller/src/composition/bootstrap-output.ts:bootstrapOutputPath`
+rejects output basenames above 255 UTF-8 bytes. Better Auth creates a production
+account with a random password or the configured development
+`OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD` account.
+`packages/iam/src/index.ts:createBootstrapAdministratorSeed` adds a non-Agent
+`spn_<uuid>` without a Namespace and an unrestricted binding to the human
+administrator Role. The [authorization reference](../reference/authorization.md#supported-policy-surface)
+defines exact actions. Additional accounts receive no service administrator.
 
 ### 2. Issue private output, then commit the Installation
 
-[`apps/controller/src/auth/index.ts:createServiceKey`](../../apps/controller/src/auth/index.ts) persists a Better
-Auth key named `bootstrap-admin` with the default 30-day expiry, scoped to this
-Installation and service principal. This auth write is independent of the OCC
-transaction. An uncommitted IAM seed cannot authorize normal OCC operations;
-startup does not expose the application until bootstrap succeeds.
+[`apps/controller/src/auth/index.ts:createServiceKey`](../../apps/controller/src/auth/index.ts)
+persists a Better Auth key named `bootstrap-admin` with the default 30-day expiry,
+scoped to the Installation and service principal, outside the OCC transaction.
+An uncommitted IAM seed cannot authorize OCC operations; startup waits for bootstrap.
 
 [`bootstrap-output.ts:writeProtectedBootstrapFile`](../../apps/controller/src/composition/bootstrap-output.ts)
 creates owner-only output exclusively and syncs it before OCC commit. The JSON
@@ -97,15 +95,14 @@ password file on the same protected PVC, and development writes to its
 bootstrap-only volume or explicit direct-initialization path. No plaintext reaches logs, audit, bootstrap HTTP responses or the worker.
 
 The initializer commits Installation, IAM and audit once. API startup verifies
-committed state without calling `POST /installation/bootstrap`. Singleton
-constraints reject competing initializers.
+state without calling `POST /installation/bootstrap`; singleton constraints reject
+competing initializers.
 
-Errors record `installation.bootstrap-failed` with available non-secret IDs and
-paths, then exit nonzero. Helm sets `backoffLimit: 0`. Tracked accounts, keys and
-partial files remain for inspection. If password `linkAccount` fails before
-`createAccount` returns, the helper attempts to delete the new user and rethrows.
-The initializer never automatically revokes, retries, repairs or resets uncertain
-or committed state.
+Errors log `installation.bootstrap-failed` with available non-secret IDs and paths,
+then exit nonzero. Helm sets `backoffLimit: 0`. Tracked accounts, keys and partial
+files remain for inspection. If password `linkAccount` fails before `createAccount`
+returns, the helper deletes the new user if possible and rethrows. The initializer
+does not automatically revoke, retry, repair or reset uncertain or committed state.
 
 [Recovery](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
 requires confirming transaction completion and exact attempt IDs. Files alone
@@ -353,6 +350,8 @@ rechecks the resulting proof before issuing its cookie.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 10:44: Merge bootstrap and authentication updates. (authoring-run/9343cba7-12f6-442b-b9c5-e237c2f99eb4 - 5b4f32bff364fc9cb63f04e2d6db16312dc9ea22)
 
 - 2026-11-18 09:44: Trace same-origin browser reads of account and recovery state. (authoring-run/05059b24-93d6-4c07-b659-2d0b084a3070 - 43194d2b141b43d5da490c21661c85a91662ec83)
 
