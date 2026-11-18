@@ -187,16 +187,16 @@ recommended resource values, separately with
 
 ## Bind the Installation once
 
-After bootstrap, bind the Installation Secret using the retained key. Skip an
-already-correct `openclaw.dev/installation-id` annotation:
+Set `OCC_URL` and `OCC_SERVICE_KEY_FILE`. Use the API ID, not bootstrap JSON;
+skip correct annotations:
 
 ```bash
 (
   set -o pipefail
-  OCC_INSTALLATION_ID=$(jq -ser '
-    select(length == 1) | .[0].meta.installationId | select(type == "string") |
+  OCC_INSTALLATION_ID=$(occ installation get --output json | jq -ser '
+    select(length == 1) | .[0].id | select(type == "string") |
     select(test("\\Ains_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"))
-  ' "$OCC_BOOTSTRAP_KEY_FILE") &&
+  ') &&
   OCC_INSTALLATION_SECRET=$(yq -o=json '.' /secure/occ/values.yaml | jq -ser '
     select(length == 1) | .[0] | objects | .installation.secretName |
     if . == null then "occ-installation-startup" else . end |

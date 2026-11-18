@@ -10,6 +10,7 @@ import {
   validHttpBaseURL,
 } from "../../apps/controller/src/auth/configuration.ts";
 import type { ControllerAuthOptions } from "../../apps/controller/src/auth/index.ts";
+import { BootstrapInputError } from "./bootstrap-credentials.ts";
 
 type BootstrapMode = ControllerAuthOptions["mode"];
 type BootstrapEnvironment = Readonly<NodeJS.ProcessEnv>;
@@ -96,6 +97,13 @@ export function bootstrapConfiguration(
   mode: BootstrapMode,
   env: BootstrapEnvironment,
 ): BootstrapConfiguration {
+  for (const removed of ["OCC_BOOTSTRAP_PASSWORD_FILE", "OCC_BOOTSTRAP_SERVICE_KEY_FILE"]) {
+    if (Object.hasOwn(env, removed)) {
+      throw new BootstrapInputError(
+        `${removed} is removed; supply OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE and OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE instead.`,
+      );
+    }
+  }
   const secret = optional(
     env,
     "OCC_AUTH_SECRET",
