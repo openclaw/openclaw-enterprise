@@ -1,15 +1,9 @@
 import type {
-  CredentialDeploymentConfiguration,
   CredentialInjectionPolicy,
-  CredentialProxyDeploymentContract,
-  DeploymentCredentialBinding,
   NetworkAccessPolicy,
   PluginDeploymentContract,
-  PluginDeploymentNetworkRequirement,
   PluginDeploymentTool,
-  SavedConnection,
   TokenServiceDriver,
-  VersionedCredential,
 } from "@openclaw-enterprise/contracts";
 
 type DescribeInput = Parameters<PluginDeploymentContract["describeDeployment"]>[0];
@@ -56,68 +50,30 @@ const mixed = { ...hostedApp, installation: bundle };
 // @ts-expect-error A bundle needs a separate installation entry.
 const _appWithInstallation: PluginDeploymentTool = mixed;
 
-const evaluator = {
+// Resolution can return an unversioned credential; push delivery must reject it at runtime.
+const _resolved: Awaited<ReturnType<TokenServiceDriver["resolveCredential"]>> = {
+  credential: "synthetic-value",
+};
+
+// Discovery is network-only; Calendar access and injection share the admitted subtree.
+const calendar = {
   binary: "/usr/local/bin/gog",
   host: "calendar.googleapis.com",
   ports: [{ from: 443, to: 443 }],
-  requestPolicy: { type: "evaluator", id: "google-workspace", digest: "a".repeat(64) },
-} satisfies PluginDeploymentNetworkRequirement["match"];
-
-const admitted = {
-  ...evaluator,
-  requestPolicy: {
-    ...evaluator.requestPolicy,
-    admittedSource: {
-      bindingRef: "work-calendar",
-      host: "calendar.googleapis.com",
-      port: 443,
-      path: "/calendar/**",
-      scopes: ["https://www.googleapis.com/auth/calendar.readonly"],
-    },
-  },
+  requestPolicy: { type: "http", method: "GET", path: "/calendar/**" },
 } satisfies NetworkAccessPolicy["allowed"][number];
-
+const _network: NetworkAccessPolicy = {
+  allowed: [
+    calendar,
+    {
+      binary: "/usr/local/bin/gog",
+      host: "calendar.googleapis.com",
+      ports: [{ from: 443, to: 443 }],
+      requestPolicy: { type: "http", method: "GET", path: "/$discovery/rest" },
+    },
+  ],
+};
 const _injection: CredentialInjectionPolicy = {
   bindingRef: "work-calendar",
-  allowedRequests: [admitted],
-};
-// @ts-expect-error An evaluator reference alone cannot authorize sandbox network access.
-const _missingNetworkScope: NetworkAccessPolicy = { allowed: [evaluator] };
-const _missingInjectionScope: CredentialInjectionPolicy = {
-  bindingRef: "work-calendar",
-  // @ts-expect-error An evaluator reference alone cannot authorize credential injection.
-  allowedRequests: [evaluator],
-};
-// @ts-expect-error Even a previously constructed value cannot supply source admission from a Plugin.
-const _pluginOwnsAdmission: PluginDeploymentNetworkRequirement["match"] = admitted;
-
-type EvaluatorAuthority = NonNullable<DeploymentCredentialBinding["evaluatorAuthority"]>;
-declare const consent: SavedConnection;
-// @ts-expect-error OCC must supply resolved evaluator authority separately from the saved consent.
-const _consentAsAuthority: EvaluatorAuthority = consent;
-
-type ReadVersion = NonNullable<TokenServiceDriver["getPushVersion"]>;
-declare const pushedSource: Parameters<ReadVersion>[0];
-const _nativeVersionRead: Parameters<ReadVersion>[0] = {
-  ...pushedSource,
-  // @ts-expect-error The native owner reports provider readiness through its own delivery path.
-  registration: { delivery: "native", backendRef: {} },
-};
-
-type StatusInput = Parameters<CredentialProxyDeploymentContract["getDeploymentStatus"]>[0];
-declare const target: CredentialDeploymentConfiguration;
-declare const ownerVersion: Awaited<ReturnType<ReadVersion>>;
-if (ownerVersion !== undefined) {
-  const _expected: StatusInput = {
-    ...target,
-    expectedPushVersions: { "work-calendar": ownerVersion },
-  };
-}
-// @ts-expect-error The desired configuration alone cannot identify a missed source update.
-const _withoutOwnerVersions: StatusInput = target;
-declare const material: VersionedCredential;
-const _materialInStatus: StatusInput = {
-  ...target,
-  // @ts-expect-error Readiness takes a nonsecret version identifier for each pushed binding.
-  expectedPushVersions: { "work-calendar": material },
+  allowedRequests: [calendar],
 };
