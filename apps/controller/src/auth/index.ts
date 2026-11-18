@@ -45,6 +45,7 @@ import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./sessio
 import { sessionAuthority } from "./session-authority.ts";
 import { createServiceKeyVerification } from "./service-key-verification.ts";
 import { passwordSignOut } from "./password-sign-out.ts";
+import { authLibraryLog } from "./library-log.ts";
 import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
@@ -1054,8 +1055,14 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     ...(humanLogin === undefined
       ? {
           // Credential refusals are Better Auth warnings with no request or account; the
-          // sign-in audit records them instead. Errors still reach the console.
-          logger: { level: "error" },
+          // sign-in audit records them instead. Errors go to the structured log when there
+          // is one (a refused API key as one informational line), else to the console.
+          logger: {
+            level: "error",
+            ...(options.onOperationalEvent === undefined
+              ? {}
+              : { log: authLibraryLog(options.onOperationalEvent) }),
+          },
         }
       : {
           session: {

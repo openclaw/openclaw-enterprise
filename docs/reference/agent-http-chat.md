@@ -29,6 +29,14 @@ principal ID and label before forwarding it. Session changes and service-key
 rotation preserve continuation for the same principal. Another principal or
 Agent cannot use the label to select that conversation.
 
+The label separates conversations; it is not an access boundary. Each HTTP chat
+conversation is a session of the Agent's Gateway, like its browser chat
+sessions. Every user with browser access to the Agent, including chat-only
+users with `operate`, can see it in the Agent UI's session list and read its
+prompts and replies. When a transcript must not be shared with those users, use
+a dedicated Agent whose browser access is limited to the people allowed to read
+it.
+
 The Gateway owns history. This operation adds no transcript store, cross-revision
 history transfer, ordering guarantee, queue or idempotency key. Shared Agent
 workspace and tool permissions still apply. A retry can execute tools again.

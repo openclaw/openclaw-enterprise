@@ -28,6 +28,7 @@
     "resolveJsonModule": true
   },
   "include": [
+    "integration/ci-prepare-advisory-cases.ts",
     "integration/docker-compute-compose-cases.ts",
     "integration/credential-source-endpoint-cases.ts",
     "integration/local-first-agent-native-failure-cases.ts",
@@ -98,6 +99,7 @@
     "conformance/plugin-driver-openclaw-tool-denial-cases.ts",
     "fixtures/codex-catalog-peer.mts",
     "fixtures/egress-send-receipt-owner.mts",
+    "fixtures/egress-custody-postgres-observer.ts",
     "conformance/standing-approval-history-cases.ts",
     "conformance/oauth-renewal-refusal-cases.ts",
     "integration/postgres-worker-agent-revision-dispatch-cases.ts",
@@ -130,6 +132,7 @@
     "integration/qa-command-evidence-cases.ts",
     "integration/qa-http-chat-cleanup-cases.ts",
     "integration/qa-http-chat-routing-cases.ts",
+    "integration/qa-http-chat-stream-cases.ts",
     "integration/qa-native-tool-evidence-case.ts",
     "integration/kubernetes-compute-provisioning-api-case.ts",
     "integration/kubernetes-plugin-status-observation-cases.ts",
@@ -331,6 +334,7 @@
     "helpers/openshell-worker-diagnostics.ts",
     "helpers/protected-static-secret-read.ts",
     "../scripts/observe-worker-terminations.ts",
+    "conformance/native-admin-upgrade-audit-cases.ts",
     "conformance/native-admin-upgrade-recovery-cases.ts",
     "helpers/native-admin-postgres.ts",
     "integration/native-admin-http-integrity-cases.ts",
