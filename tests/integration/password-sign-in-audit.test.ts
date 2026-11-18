@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/human-login.ts";
-import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.ts";
 import type {
   ControllerAuth,
   ControllerAuthOptions,

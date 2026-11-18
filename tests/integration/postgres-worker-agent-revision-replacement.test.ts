@@ -14,7 +14,7 @@ import {
   computeStopShouldYield,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import {
   backendDefinition,
   createAccessTokenServiceAccount,
