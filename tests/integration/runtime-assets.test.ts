@@ -420,5 +420,8 @@ test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", 
     runtimeLines.some((line) => line.includes(`"${name}"`)),
     `${patch} must read ${name}`,
   );
-  assert.match(dockerfile, /session-restart-resume\.test\.ts \\\n\s+-t "interrupted under scope"/u);
+  assert.match(
+    dockerfile.replace(/\\\n\s*/gu, " "),
+    /session-restart-resume\.test\.ts\s+src\/config\/sessions\/session-entry-json\.test\.ts\s+-t "interrupted under scope\|keeps a graceful resume marker"/u,
+  );
 });

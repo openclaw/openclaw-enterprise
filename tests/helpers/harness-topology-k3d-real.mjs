@@ -3780,6 +3780,25 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     "incompatible",
   ]) {
     const interrupted = await startInterruptedWork(replacement);
+    let queuedNonce;
+    if (replacement === "explicit-stop") {
+      queuedNonce = `QUEUED-${randomUUID()}`;
+      await gatewayCall(topology, "chat.send", {
+        sessionKey: interrupted.sessionKey,
+        idempotencyKey: randomUUID(),
+        queueMode: "followup",
+        message: `Reply with exactly ${queuedNonce}. Do not use tools.`,
+      });
+      const queued = await gatewayCall(topology, "chat.history", {
+        sessionKey: interrupted.sessionKey,
+        limit: 100,
+      });
+      assert.equal(
+        queued.pendingInputs.queuedCount,
+        1,
+        "the stop control must contain an accepted durable follow-up",
+      );
+    }
     const previousUid = topology.gatewayPod.metadata.uid;
     if (replacement === "gateway-process") {
       const container = topology.gatewayPod.status.containerStatuses.find(
@@ -3904,6 +3923,17 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         });
         assert.equal(session.hasActiveRun, false);
         assert.equal(stoppedHistory.sessionId, interrupted.sessionId);
+        if (queuedNonce !== undefined) {
+          assert.equal(stoppedHistory.pendingInputs.queuedCount, 0);
+          assert.equal(
+            stoppedHistory.messages.some(
+              (message) =>
+                message.role === "assistant" && messageText(message).trim() === queuedNonce,
+            ),
+            false,
+            "an explicit stop must not replay accepted queued input after redeployment",
+          );
+        }
         assert.equal(
           stoppedHistory.messages.some(
             (message) => message.__openclaw?.continuation?.source === "restart",
