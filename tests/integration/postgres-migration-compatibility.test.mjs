@@ -2680,11 +2680,11 @@ test(
             consumed,
             replay_until_at,
           ]),
-        upgraded.map(({ request_id, consumed, replay_until_at }) => [
-          request_id,
-          consumed,
-          replay_until_at,
-        ]),
+          upgraded.map(({ request_id, consumed, replay_until_at }) => [
+            request_id,
+            consumed,
+            replay_until_at,
+          ]),
         );
         const nextNamespace = `ns_${randomUUID()}`;
         const next = await seedCanonicalAgent(db, nextNamespace, {
