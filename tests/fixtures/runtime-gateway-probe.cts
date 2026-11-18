@@ -1,7 +1,58 @@
-const assert = require("node:assert/strict");
-const { once } = require("node:events");
-const { mkdtempSync, writeFileSync, readFileSync } = require("node:fs");
-const { WebSocketServer } = require("ws");
+import type { AddressInfo } from "node:net";
+
+export type GatewayProbeInvocation = [fixture: "fixture", pluginRuntimeHelpers: string];
+
+type GatewayRequest = { id: string; method: string };
+type ProbeResult = { ok: true; value: unknown } | { ok: false; code: string };
+interface ProbeSocket {
+  on(event: "message", listener: (raw: Buffer) => void): void;
+  send(data: string): void;
+  terminate(): void;
+}
+interface ProbeServer {
+  once(event: string | symbol, listener: (...args: unknown[]) => void): this;
+  on(event: "connection", listener: (socket: ProbeSocket) => void): void;
+  address(): AddressInfo | string | null;
+  clients: Set<ProbeSocket>;
+  close(callback: (error?: Error) => void): void;
+}
+type WebSocketModule = {
+  WebSocketServer: new (options: { host: string; port: number }) => ProbeServer;
+};
+
+const assert: typeof import("node:assert/strict") = require("node:assert/strict");
+const { once }: typeof import("node:events") = require("node:events");
+const { mkdtempSync, writeFileSync, readFileSync }: typeof import("node:fs") = require("node:fs");
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireWebSocketModule(value: unknown): asserts value is WebSocketModule {
+  assert.ok(typeof value === "function" || isRecord(value), "ws must export a module");
+  assert.equal(typeof Reflect.get(value, "WebSocketServer"), "function");
+}
+
+function requireGatewayRequest(value: unknown): GatewayRequest {
+  assert.ok(isRecord(value), "Gateway request must be an object");
+  assert.ok(typeof value.id === "string", "Gateway request ID must be a string");
+  assert.ok(typeof value.method === "string", "Gateway request method must be a string");
+  return { id: value.id, method: value.method };
+}
+
+function assertProbeResult(value: unknown): asserts value is ProbeResult {
+  assert.ok(isRecord(value), "probe result must be an object");
+  if (value.ok === true) {
+    assert.ok("value" in value, "successful probe must return a value");
+    return;
+  }
+  assert.ok(value.ok === false, "failed probe must report ok=false");
+  assert.ok(typeof value.code === "string", "failed probe must report a code");
+}
+
+const webSocketModule: unknown = require("ws");
+requireWebSocketModule(webSocketModule);
+const { WebSocketServer } = webSocketModule;
 
 // The real packaged SDK talks to a silent peer, then a responsive peer. There
 // are no model credentials, external network, or mocked SDK timeout semantics.
@@ -9,6 +60,8 @@ const { WebSocketServer } = require("ws");
   const root = mkdtempSync("/tmp/oce-gateway-probe-");
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(server, "listening");
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string", "Gateway peer must listen on TCP");
   process.env.OPENCLAW_CONFIG_PATH = root + "/openclaw.json";
   process.env.OPENCLAW_STATE_DIR = root;
   writeFileSync(
@@ -16,7 +69,7 @@ const { WebSocketServer } = require("ws");
     JSON.stringify({
       gateway: {
         mode: "local",
-        port: server.address().port,
+        port: address.port,
         auth: { mode: "password", password: "synthetic-probe-password" },
       },
     }),
@@ -33,7 +86,8 @@ const { WebSocketServer } = require("ws");
       }),
     );
     socket.on("message", (raw) => {
-      const request = JSON.parse(raw);
+      const parsed: unknown = JSON.parse(raw.toString("utf8"));
+      const request = requireGatewayRequest(parsed);
       if (request.method === "connect") {
         socket.send(
           JSON.stringify({
@@ -68,7 +122,20 @@ const { WebSocketServer } = require("ws");
     });
   });
   // Load the exact generated helper, including its public-SDK resolution path.
-  const probe = new Function("require", process.argv[2] + "\nreturn callNativeGateway;")(require);
+  const helpers = process.argv[2];
+  assert.ok(typeof helpers === "string", "generated Gateway helper source is required");
+  const loaded: unknown = new Function("require", helpers + "\nreturn callNativeGateway;")(require);
+  assert.ok(typeof loaded === "function", "generated helper must expose callNativeGateway");
+  const callNativeGateway = loaded;
+  async function probe(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<ProbeResult> {
+    const result: unknown = await callNativeGateway(method, params, timeoutMs);
+    assertProbeResult(result);
+    return result;
+  }
   try {
     assert.equal((await probe("plugins.list", {}, 10000)).ok, true);
     hold = true;
@@ -90,7 +157,7 @@ const { WebSocketServer } = require("ws");
     for (const socket of server.clients) {
       socket.terminate();
     }
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     assert.deepEqual(await probe("plugins.list", {}, 3000), { ok: false, code: "UNAVAILABLE" });
     assert.equal(
       readFileSync(`/proc/self/task/${process.pid}/children`, "utf8").trim(),
@@ -102,7 +169,7 @@ const { WebSocketServer } = require("ws");
     for (const socket of server.clients) {
       socket.terminate();
     }
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 })().catch((error) => {
   console.error(error);
