@@ -5,9 +5,21 @@ restart recovery. A Gateway that later starts on the same retained state resumes
 recorded turn with one hidden system message. That message asks the Agent to check
 the current state and continue, and messages queued behind the turn follow it.
 
-Kubernetes and Docker Compute scope that record to the Agent revision with
+OCE scopes that record to the Agent revision with
 `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`. Every deployment creates a new revision
-ID, so only a restart of the same revision resumes a turn.
+ID, so only a restart of the same revision resumes a turn. Whether this holds
+depends on the Compute Driver:
+
+- **Kubernetes Compute:** covered. The runtime image supports the setting, and stop
+  allows 330 seconds for the graceful shutdown.
+- **SSH Compute:** the systemd unit sets the scope. It takes effect only once the
+  OpenClaw that the operator installs on the host supports the setting. Until
+  then, a turn cut by stop resumes at the next deployment.
+- **Docker Compute** (development only): stop kills an embedded Gateway without a
+  graceful shutdown. That forced termination is not covered: the runtime's crash
+  recovery can resume the turn.
+
+The table applies where the scope is in effect.
 
 | The Gateway ended because of                                                                  | The interrupted turn                                    |
 | --------------------------------------------------------------------------------------------- | ------------------------------------------------------- |

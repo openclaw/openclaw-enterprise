@@ -309,10 +309,10 @@ Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
 Stop terminates inbound routing and execution, including the current turn, which
-[stays stopped](interrupted-turns.md). It retains the Agent revision, Agent
-credentials, gateway state, and workspace, creates no Agent revision and calls no
+[stays stopped on Kubernetes](interrupted-turns.md). It retains the Agent revision, Agent
+credentials, gateway state, and workspace, creates no revision and calls no
 destructive version retirement. Repeated stops converge safely without
-affecting sibling Agents.
+affecting siblings.
 
 Deployment is the resume operation. It saves the next version in a new Agent revision and
 sets desired state to `running`; OCC never restarts an old version by mutating
