@@ -550,6 +550,84 @@ export async function requestCredentialFixture(
       assert.ok(state instanceof PostgresPlatformState);
       return pauseSecretMetadata(state, f.namespace.id, f.secret.id);
     },
+    pausePreliminary(stage: "revision" | "withdrawal") {
+      assert.ok(state instanceof PostgresPlatformState);
+      const policy = state;
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let pending = true;
+      let released = false;
+      const pause = async () => {
+        if (pending) {
+          pending = false;
+          reached.resolve();
+          await release.promise;
+        }
+      };
+      let restore: () => void;
+      if (stage === "revision") {
+        const original = policy.read.bind(policy);
+        policy.read = (work) =>
+          original((unit) =>
+            work({
+              ...unit,
+              revisions: {
+                ...unit.revisions,
+                async findRevision(...args) {
+                  const row = await unit.revisions.findRevision(...args);
+                  if (
+                    args[0] === f.namespace.id &&
+                    args[1] === f.agent.id &&
+                    args[2] === revision!.id
+                  ) {
+                    await pause();
+                  }
+                  return row;
+                },
+              },
+            }),
+          );
+        restore = () => {
+          policy.read = original;
+        };
+      } else {
+        const original = policy.transactReadCommitted.bind(policy);
+        policy.transactReadCommitted = (work) =>
+          original((unit) =>
+            work({
+              ...unit,
+              credentialSources: {
+                ...unit.credentialSources,
+                async findCredentialWithdrawal(...args) {
+                  const row = await unit.credentialSources.findCredentialWithdrawal(...args);
+                  if (
+                    args[0] === f.namespace.id &&
+                    args[1] === revision!.id &&
+                    args[2] === f.source.id
+                  ) {
+                    await pause();
+                  }
+                  return row;
+                },
+              },
+            }),
+          );
+        restore = () => {
+          policy.transactReadCommitted = original;
+        };
+      }
+      return {
+        reached: reached.promise,
+        release() {
+          if (released) {
+            return;
+          }
+          released = true;
+          restore();
+          release.resolve();
+        },
+      };
+    },
     pausePolicyCompletion(stage: "approval" | "release") {
       assert.ok(state instanceof PostgresPlatformState);
       const policyState = state;

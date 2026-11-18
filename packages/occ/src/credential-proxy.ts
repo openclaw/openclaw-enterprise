@@ -509,11 +509,8 @@ export class CredentialProxy implements CredentialProxyExchange {
         return undefined;
       }
       const current = () => !lifetime.aborted && this.ports.now() < deadline;
-      return finish
-        ? await finish(result, ports, lifetime, current)
-        : current()
-          ? result
-          : undefined;
+      const completed = finish ? await finish(result, ports, lifetime, current) : result;
+      return current() ? completed : undefined;
     } catch {
       // Ambiguous authority/read outcomes never grant a credential or retry a consumed approval.
       return undefined;
@@ -563,7 +560,11 @@ export class CredentialProxy implements CredentialProxyExchange {
           ? selection
           : undefined,
     );
-    return selected?.isCurrent() ? ("credential" as const) : undefined;
+    return selected?.isCurrent() &&
+      !signal.aborted &&
+      this.ports.now() < Date.parse(request.deadlineAt)
+      ? ("credential" as const)
+      : undefined;
   }
 
   acquireRequestAuthentication(): (() => void) | undefined {

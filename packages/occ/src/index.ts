@@ -8039,6 +8039,69 @@ export class OpenClawController {
       : undefined;
   }
 
+  /** Capture identities before revision metadata reveals the selected provider reference. */
+  private requestCredentialIdentity(owner: InstalledDriver) {
+    const proxy = owner.require("credential_proxy");
+    const control = proxy.sourceControl;
+    const gateway = this.selections.get("credential_gateway");
+    const iam = this.selections.get("iam");
+    const credentials = proxy.requestTimeCredentials;
+    const verify = credentials?.verifyRequestInstallation;
+    const transport = immutableCopy({
+      backend: control.backend,
+      sender: control.sender,
+      resolver: control.resolver,
+    });
+    const registrations = control.providers.map((provider) => ({
+      provider,
+      ref: immutableCopy(provider.ref),
+      sourceType: immutableCopy(provider.sourceType),
+      authorization: provider.authorization,
+      routes: provider.routes,
+      classify: provider.classify,
+      normalizeGrant: provider.normalizeGrant,
+      inject: provider.inject,
+    }));
+    const current = () => {
+      try {
+        return Boolean(
+          gateway &&
+          this.selections.get("credential_gateway") === gateway &&
+          this.unchangedDriver(gateway) &&
+          this.selections.get("iam") === iam &&
+          this.selectedProxyOwner() === owner &&
+          proxy.sourceControl === control &&
+          proxy.requestTimeCredentials === credentials &&
+          credentials?.verifyRequestInstallation === verify &&
+          isDeepStrictEqual(control.backend, transport.backend) &&
+          isDeepStrictEqual(control.sender, transport.sender) &&
+          isDeepStrictEqual(control.resolver, transport.resolver),
+        );
+      } catch {
+        return false;
+      }
+    };
+    const provider = (ref: EgressRef): CredentialProviderDefinition | undefined => {
+      const matching = registrations.filter((item) => isDeepStrictEqual(item.ref, ref));
+      const original = matching.length === 1 ? matching[0] : undefined;
+      if (
+        !current() ||
+        !original ||
+        registeredCredentialProvider(control.providers, ref) !== original.provider ||
+        !isDeepStrictEqual(original.provider.sourceType, original.sourceType) ||
+        original.provider.authorization !== original.authorization ||
+        original.provider.routes !== original.routes ||
+        original.provider.classify !== original.classify ||
+        original.provider.normalizeGrant !== original.normalizeGrant ||
+        original.provider.inject !== original.inject
+      ) {
+        return undefined;
+      }
+      return original.provider;
+    };
+    return { proxy, control, credentials, current, provider };
+  }
+
   /** Verify the installed recipient before entering a fresh, short policy transaction. */
   private async checkRequestCredential(
     owner: InstalledDriver,
@@ -8047,12 +8110,14 @@ export class OpenClawController {
     step?: RequestCredentialRelease | { readonly accept: () => boolean },
     expected?: () => boolean,
   ): Promise<RequestCredentialSelection | undefined> {
+    const identity = this.requestCredentialIdentity(owner);
     for (;;) {
       try {
         const result = await this.checkRequestCredentialOnce(
           owner,
           request,
           signal,
+          identity,
           step,
           expected,
         );
@@ -8079,6 +8144,7 @@ export class OpenClawController {
     owner: InstalledDriver,
     request: RequestCredentialInput | RequestCredentialApproval,
     signal: AbortSignal,
+    identity: ReturnType<OpenClawController["requestCredentialIdentity"]>,
     step?: RequestCredentialRelease | { readonly accept: () => boolean },
     expected?: () => boolean,
   ): Promise<RequestCredentialSelection | "quota-busy" | undefined> {
@@ -8088,13 +8154,12 @@ export class OpenClawController {
       Date.parse(request.deadlineAt) <= this.clock().getTime() ||
       this.transactionContext.getStore() ||
       (expected !== undefined && !expected()) ||
-      this.selectedProxyOwner() !== owner
+      !identity.current()
     ) {
       return undefined;
     }
     const { namespaceId, agentId, revisionId } = request.execution;
-    const proxy = owner.require("credential_proxy");
-    const credentials = proxy.requestTimeCredentials;
+    const { proxy, control, credentials } = identity;
     if (!credentials) {
       return undefined;
     }
@@ -8102,7 +8167,7 @@ export class OpenClawController {
       namespace: await state.namespaces.findNamespace(namespaceId),
       revision: await state.revisions.findRevision(namespaceId, agentId, revisionId),
       installed: await state.credentialSources.findEgressInstallation(
-        proxy.sourceControl.sender.id,
+        control.sender.id,
         "recipient" in request ? request.recipient.id : request.recipientId,
       ),
     }));
@@ -8116,6 +8181,8 @@ export class OpenClawController {
       !installed ||
       !isDeepStrictEqual(installed.plan, plan) ||
       !route ||
+      !identity.current() ||
+      identity.provider(route.binding.source.provider) === undefined ||
       plan.authorization !== "online-request" ||
       !owner.ownsProxyPlan(plan) ||
       revision.executionAdmission.mode !== "protected" ||
@@ -8187,15 +8254,11 @@ export class OpenClawController {
       }
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       const selected = source?.egress;
-      const control = proxy.sourceControl;
       const currentInstalled = await state.credentialSources.findEgressInstallation(
         control.sender.id,
         "recipient" in request ? request.recipient.id : request.recipientId,
       );
-      const provider = registeredCredentialProvider(
-        control.providers,
-        route.binding.source.provider,
-      );
+      const provider = identity.provider(route.binding.source.provider);
       if (
         source?.state !== "ready" ||
         installed?.sandboxId !==
@@ -8212,7 +8275,6 @@ export class OpenClawController {
         plan.execution.revisionId !== revisionId ||
         plan.execution.servicePrincipalId !== agent.servicePrincipalId ||
         !provider ||
-        provider === "ambiguous" ||
         provider.authorization !== "online-request" ||
         (await state.credentialSources.findCredentialWithdrawal(
           namespaceId,
@@ -8225,6 +8287,8 @@ export class OpenClawController {
       const currentSource = this.staticEgressDependencies(owner, selected);
       const dependenciesCurrent = () =>
         (expected === undefined || expected()) &&
+        identity.current() &&
+        identity.provider(route.binding.source.provider) === provider &&
         proxy.sourceControl === control &&
         currentSource(source) &&
         this.requestCredentialAuthority() === authority &&

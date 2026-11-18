@@ -580,6 +580,89 @@ test(
       },
     );
 
+    const preliminary = [];
+    for (const stage of ["revision", "withdrawal"] as const) {
+      const request = fixture.request();
+      const pause = fixture.pausePreliminary(stage);
+      t.after(pause.release);
+      const reads = f.secretReads;
+      const pending = evaluate(request);
+      await reachBarrier(pause.reached, pending, `preliminary ${stage}`);
+      if (stage === "revision") {
+        Reflect.set(proxy, "sourceControl", { ...control });
+      } else {
+        providers[0] = { ...requestProvider };
+      }
+      pause.release();
+      let decision;
+      try {
+        decision = await pending;
+      } finally {
+        Reflect.set(proxy, "sourceControl", control);
+        providers[0] = requestProvider;
+      }
+      const policyReads = f.secretReads - reads;
+      const grant = await redeem(request);
+      preliminary.push({
+        decision: decision.decision,
+        reads: policyReads,
+        status: grant.status,
+        tokenReturned: typeof grant.body.access_token === "string",
+      });
+    }
+    const redeemPreliminary = fixture.request();
+    assert.equal((await evaluate(redeemPreliminary)).decision, 1);
+    const beforePreliminaryRead = f.secretReads;
+    const preliminaryPause = fixture.pausePreliminary("revision");
+    t.after(preliminaryPause.release);
+    const pendingPreliminary = redeem(redeemPreliminary);
+    await reachBarrier(
+      preliminaryPause.reached,
+      pendingPreliminary,
+      "redemption preliminary metadata",
+    );
+    providers[0] = { ...requestProvider };
+    preliminaryPause.release();
+    let preliminaryGrant;
+    try {
+      preliminaryGrant = await pendingPreliminary;
+    } finally {
+      providers[0] = requestProvider;
+    }
+    const grantObservation = {
+      status: preliminaryGrant.status,
+      tokenReturned: typeof preliminaryGrant.body.access_token === "string",
+      reads: f.secretReads - beforePreliminaryRead,
+      replay: (await redeem(redeemPreliminary)).status,
+    };
+    const lateApproval = fixture.request();
+    const lifetime = new AbortController();
+    const completion = fixture.pausePolicyCompletion("approval");
+    t.after(completion.release);
+    const pendingLateApproval = fixture.exchange.authorizeRequestCredential(
+      lateApproval,
+      lifetime.signal,
+      () => true,
+    );
+    await reachBarrier(completion.reached, pendingLateApproval, "late approval cancellation");
+    lifetime.abort();
+    completion.release();
+    const reported = await pendingLateApproval;
+    const recovered = fixture.request();
+    assert.equal((await evaluate(recovered)).decision, 1);
+    assert.equal((await redeem(recovered)).status, 200);
+    assert.deepEqual(
+      { preliminary, grantObservation, reported },
+      {
+        preliminary: [
+          { decision: 2, reads: 0, status: 403, tokenReturned: false },
+          { decision: 2, reads: 0, status: 403, tokenReturned: false },
+        ],
+        grantObservation: { status: 403, tokenReturned: false, reads: 0, replay: 403 },
+        reported: undefined,
+      },
+    );
+
     const late = fixture.request();
     const committed = fixture.pauseNextApprovalCommit("after");
     const cancel = new AbortController();
