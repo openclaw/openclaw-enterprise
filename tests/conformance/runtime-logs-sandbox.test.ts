@@ -1,4 +1,4 @@
-import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import assert from "node:assert/strict";
@@ -168,8 +168,7 @@ function logOnlyGatewayClient() {
 }
 
 function openShellSandboxDriver(gatewayClient: OpenShellGatewayClient) {
-  const namespaceProtocol: unknown = openShellWorkspaceProtocol();
-  assert.ok(namespaceProtocol !== null && typeof namespaceProtocol === "object");
+  const namespaceProtocol = openShellWorkspaceProtocol();
   const client = new Proxy(gatewayClient, {
     get: (target, property): unknown =>
       property in namespaceProtocol
@@ -180,7 +179,6 @@ function openShellSandboxDriver(gatewayClient: OpenShellGatewayClient) {
     {
       gateway: { workspaceMode: "operator" },
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",

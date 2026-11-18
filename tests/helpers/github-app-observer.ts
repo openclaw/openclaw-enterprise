@@ -4,7 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import { open } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, join } from "node:path";
-import { registerQaSecret } from "./qa-secrets.mjs";
+import { registerQaSecret } from "./qa-secrets.ts";
 
 const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const numericIdPattern = /^[1-9][0-9]{0,15}$/;

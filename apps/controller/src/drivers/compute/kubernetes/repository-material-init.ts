@@ -1,4 +1,8 @@
-import { repositoryCredentialClientStringKeys } from "../../repo/access/client-contracts.ts";
+import {
+  clientGitconfig,
+  clientGhConfiguration,
+  repositoryCredentialClientStringKeys,
+} from "../../repo/access/client-contracts.ts";
 
 /** Runs in the runtime image before the read-only credential mount is exposed. */
 export const REPOSITORY_MATERIAL_INIT_ENTRYPOINT = String.raw`
@@ -156,8 +160,8 @@ function validateProjection(sourceRoot, binding) {
   requireValid(client.sessionId === binding.sessionId && client.deadlineWallMs === binding.deadlineWallMs &&
     client.hasPublicCa === hasPublicCa && clientKeys.every((key) => client.client[key] === binding.client[key]) &&
     JSON.stringify(client.client.pushRefAllowlist) === JSON.stringify(binding.client.pushRefAllowlist));
-  requireValid(files.gitconfig.text === "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n");
-  requireValid(files["gh/config.yml"].text === "version: 1\nprompt: disabled\ngit_protocol: https\n");
+  requireValid(files.gitconfig.text === ${JSON.stringify(clientGitconfig)});
+  requireValid(files["gh/config.yml"].text === ${JSON.stringify(clientGhConfiguration)});
   requireValid(files["gh/hosts.yml"].text === JSON.stringify(binding.client.canonicalApiHost) + ":\n  api_host: " +
     JSON.stringify(binding.client.apiHost) + "\n  git_protocol: https\n  oauth_token: " + JSON.stringify(files.bearer.text) + "\n");
   requireValid(!hasPublicCa || files["ca.pem"].contents.length > 0);

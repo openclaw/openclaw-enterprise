@@ -22,6 +22,7 @@ import { join } from "node:path";
 import vm from "node:vm";
 import { codexLaunchEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 
 const nodeRequire = createRequire(import.meta.url);
 const revisionId = "revision-runtime-auth-gate";
@@ -31,12 +32,28 @@ const providerPlaceholder = "openshell:resolve:env:v7_CODEX_ACCESS_TOKEN";
 const modelCredentials = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_CHATGPT_WORKSPACE_ID"];
 const transportCredentials = ["APP_SERVER_TOKEN", "APP_TOKEN_SHA"];
 
+/** @import { TestContext } from "node:test" */
+/** @import { JsonValue, NativeProcessResult, NativeStep, StartupOptions, StartupScenario } from "./codex-native-startup-types.ts" */
+/** @type {NativeProcessResult} */
 export const timedOut = { status: null, signal: "SIGKILL", error: { code: "ETIMEDOUT" } };
-// elapsed advances the fixture clock by a login's run time when it does not time out.
+
+/**
+ * @param {NativeProcessResult} [result]
+ * @param {number} [timeout] Expected remaining attempt timeout in milliseconds.
+ * @param {number} [elapsed] Advance the fixture clock by this login's run time in milliseconds.
+ * @returns {NativeStep<"login">}
+ */
 export function login(result = { status: 0 }, timeout, elapsed) {
   return { operation: "login", result, timeout, elapsed };
 }
-// elapsed advances the fixture clock by a probe's run time when it does not time out.
+
+/**
+ * @param {readonly JsonValue[]} events
+ * @param {Partial<NativeProcessResult>} [result]
+ * @param {number} [timeout] Expected remaining attempt timeout in milliseconds.
+ * @param {number} [elapsed] Advance the fixture clock by this probe's run time in milliseconds.
+ * @returns {NativeStep<"probe">}
+ */
 export function probe(events, result = {}, timeout, elapsed) {
   return {
     operation: "probe",
@@ -68,8 +85,11 @@ export function readRuntimeStatusFromHandler(handler) {
   return readStatusFromHandler(handler, "/openclaw/runtime/status");
 }
 
-// Substitute only native process output; execute the production login/probe
-// parser and readiness control flow unmodified. No native provider is contacted.
+/**
+ * Run the generated login/probe parser and readiness control flow with scripted native output.
+ * @param {TestContext} t
+ * @param {StartupOptions & { native: readonly NativeStep[]; protectedInference?: "signed" | "missing" }} options
+ */
 export function createCodexStartup(
   t,
   {
@@ -91,6 +111,7 @@ export function createCodexStartup(
   const marker = join(directory, "ready");
   const codexHome = join(directory, "codex");
   writeFileSync(marker, "stale\n", { mode: 0o600 });
+  /** @type {string[]} */
   const diagnostics = [];
   const idleTimers = [];
   const retryTimers = [];
@@ -452,8 +473,13 @@ export function createCodexStartup(
   };
 }
 
-// Ordinary scenarios log in successfully and run one probe; native scripts retain
-// explicit control over login failures, retries, process results, and timeouts.
+/**
+ * Ordinary scenarios log in successfully and run one probe. Native scripts retain
+ * explicit control over login failures, retries, process results, and timeouts.
+ * @param {TestContext} t
+ * @param {StartupScenario} scenario
+ * @returns {Promise<{ status: Record<string, unknown>; diagnostics: string[] } | undefined>}
+ */
 export async function checkCodexStartup(t, scenario) {
   const runtime = createCodexStartup(t, {
     ...scenario,
@@ -487,7 +513,8 @@ export async function checkCodexStartup(t, scenario) {
   const expected = scenario.expect;
   const probes = checkStartupDiagnostics(runtime, scenario);
   const messages = runtime.diagnostics.filter((line) => !line.startsWith("{"));
-  const status = runtime.status();
+  const status = asRecord(runtime.status());
+  assert.ok(status);
   assert.equal(status.revisionId, "revision-runtime-auth-gate");
   assert.equal(status.container, "agent");
   assert.equal(status.podUid, "pod-runtime-auth-gate");
@@ -504,16 +531,19 @@ export async function checkCodexStartup(t, scenario) {
     assert.equal(typeof runtime.idleTimers[0].callback, "function");
     assert.ok(runtime.idleTimers[0].delay > 0);
     assert.equal(runtime.marker(), undefined);
-    assert.equal(status.runtimeFailure.component, "agent");
-    assert.equal(status.runtimeFailure.check, expected.check);
-    assert.equal(status.runtimeFailure.code, expected.code);
-    assert.match(status.runtimeFailure.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
+    const failure = asRecord(status.runtimeFailure);
+    assert.ok(failure);
+    assert.equal(failure.component, "agent");
+    assert.equal(failure.check, expected.check);
+    assert.equal(failure.code, expected.code);
+    assert.ok(typeof failure.checkedAt === "string");
+    assert.match(failure.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
     // Only a failed model probe carries a cause: a closed kind and a fixed
     // token, never native output, provider text or the credential.
     if (expected.code === "MODEL_PROBE_FAILED") {
       assert.ok(expected.cause);
     }
-    assert.deepEqual(status.runtimeFailure.cause, expected.cause);
+    assert.deepEqual(failure.cause, expected.cause);
     // The probe log line names each attempt's own cause; only the held cause says
     // that the check was retried.
     assert.deepEqual(probes.at(-1)?.cause, scenario.lastProbeCause ?? expected.cause);

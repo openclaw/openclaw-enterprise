@@ -17,6 +17,7 @@
     "build.ts",
     "compute-matrix-browser.mts",
     "github-anchors.ts",
+    "preview-client.mts",
     "public-markdown.ts",
     "site.mts"
   ]

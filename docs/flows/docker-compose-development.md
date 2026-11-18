@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-11
-last_updated_session: authoring-run/f416a831-2d60-4973-af5c-9f0bf35a8899
+updated: 2026-11-16
+last_updated_session: 01a1e535-91ca-7273-913f-aaacfd69c1c2
 ---
 
 # Compose development flow
@@ -85,7 +85,7 @@ graph TD
   KStart --> KReady["Import runtime and start<br/>API and Kubernetes worker"]
   KReady --> KSandbox{"Sandbox profile"}
   KSandbox -->|none| KProof
-  KSandbox -->|OpenShell| KOpenShell["Install pinned Agent Sandbox, RuntimeClass,<br/>Gateway, and render workspace resources"]
+  KSandbox -->|OpenShell| KOpenShell["Install pinned Agent Sandbox,<br/>Gateway, and render workspace resources"]
   KOpenShell -->|Compose| KRouting["Install private Envoy route and project<br/>its service key and public CA"]
   KRouting --> KWorkspace["Driver applies workspace resources and creates<br/>the default Namespace's owned Workspace"]
   KOpenShell -->|Kubernetes| KWorkspace
@@ -300,9 +300,9 @@ describes accepted selectors.
   report Kubernetes Compute, a private kubeconfig, and the disposable k3d
   context; it does not mount the engine socket into the Kubernetes worker.
 - With `OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell` and
-  `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, startup should also report
+  `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, startup reports
   Kubernetes-only deployment, one ready `oce-system/openshell-gateway` Service, the
-  `openshell-sandbox` RuntimeClass, the Agent Sandbox CRD, and workspace
+  Agent Sandbox CRD and workspace
   resources in the bootstrap Namespace. The selected real dev-up case also
   reads the owned Workspace through the Gateway API. This proves infrastructure
   readiness, not a model turn. The expected Agent result is the explicit
@@ -345,6 +345,8 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 13:04: Remove RuntimeClass and PSA setup. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)
 
 - 2026-11-11 03:59: Limit Compose shutdown to its project. (authoring-run/f416a831-2d60-4973-af5c-9f0bf35a8899 - 5ee1a6b2650e988ddd2f03ded0142dba685ca504)
 

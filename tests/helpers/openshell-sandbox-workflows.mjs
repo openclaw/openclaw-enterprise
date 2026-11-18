@@ -1,12 +1,17 @@
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { runOpenShellStage } from "./openshell-stage.mjs";
+import { runOpenShellStage } from "./openshell-stage.ts";
+import { emitOpenShellReplacementCheckpoint } from "../../scripts/ci/openshell-progress.mjs";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
   openShellGatewayGrpcMetadata,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  openShellPolicyCandidate,
+  sameOpenShellPolicy,
+} from "../../apps/controller/src/drivers/sandbox/openshell-policy.ts";
 import { fileURLToPath } from "node:url";
 import { isWorkspaceNodeDeviceId } from "../../packages/utils/src/index.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -39,12 +44,10 @@ import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { selectPolicyProbeCommand } from "./openshell-policy-probe.mjs";
+import { selectPolicyProbeCommand } from "./openshell-policy-probe.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import {
-  assertNativeCronRunSucceeded,
-  createNativePluginAssertions,
-} from "../helpers/plugin-driver-real.mjs";
+import { assertNativeCronRunSucceeded } from "./native-cron-evidence.ts";
+import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import {
   assertCodexPolicyChild,
   findCodexPolicyChild,
@@ -84,24 +87,27 @@ import {
   observedTurn,
   tokenEchoDigest,
   tokenEchoReply,
-  summarizeWorkerEvents,
   createOpenShellWorkerLogEmitter,
-  workerDiagnosticLines,
   workerFailureDetail,
   rethrowOpenShellFailure,
 } from "../helpers/k3d-failure-diagnostics.ts";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
-  startWorkspaceGatewayHostRelay,
 } from "../helpers/envoy-workspace-gateway.mjs";
+import { startWorkspaceGatewayHostRelay } from "./workspace-gateway-host-relay.ts";
 import {
-  defaultKeycloakImage,
   issueServingCertificate,
   keycloakServiceClient,
   keycloakUserClient,
-  startKeycloak,
-} from "../helpers/keycloak-real.mjs";
+} from "./keycloak-issuer-material.ts";
+import { defaultKeycloakImage, startKeycloak } from "./keycloak-real.mjs";
+import { pollReplacementActivation } from "./openshell-replacement-activation.ts";
+import {
+  diagnosticQuery,
+  diagnosticQueryTimeoutMs,
+  writeWorkerCompletionDiagnostics,
+} from "./openshell-worker-diagnostics.ts";
 
 /** @param {unknown} turn */
 function turnMessages(turn) {
@@ -154,7 +160,6 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
 const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
   "",
@@ -239,7 +244,6 @@ if (demoStatePath !== undefined) {
   process.once("SIGTERM", resolveDemoStop);
 }
 const portableCommandArgumentBytes = 30 * 1024;
-const diagnosticQueryTimeoutMs = 3_000;
 const observerPoolConnectionTimeoutMs = 5_000;
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -254,7 +258,6 @@ const fixture = createOpenShellKubernetesFixture({
   openShellGatewayImage,
   openShellSandboxImage,
   openShellSupervisorImage,
-  openShellRuntimeClass,
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
@@ -278,6 +281,7 @@ const {
   assertProviderOwnedHarness,
   assertWorkspaceMounts,
   assertApprovedOpenShellPrivileges,
+  assertRestrictedPodSecurity,
   assertGatewayBootstrapPolicies,
   assertNoSecretBytes,
   requestCodexTurnFromGatewayPod,
@@ -465,22 +469,22 @@ export async function createScopedController(context, identifier, platformNamesp
   return { ...identity, tokenMintedAt, tenantRole, apiSecretRole, apiIdentity };
 }
 
+function nativeGatewayConfiguration(gateway, gatewayAuth) {
+  return {
+    ...gateway,
+    auth: {
+      ...gatewayAuth.auth,
+      password: gateway.auth.password,
+    },
+    allowRealIpFallback: gatewayAuth.allowRealIpFallback,
+    trustedProxies: gatewayAuth.trustedProxies,
+  };
+}
+
 function nativeCodexConfiguration(gatewayAuth) {
   const configuration = createHarnessConfiguration("codex", providerModel);
   if (gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: {
-        ...gatewayAuth.auth,
-        password: {
-          source: "env",
-          provider: "default",
-          id: "OPENCLAW_GATEWAY_PASSWORD",
-        },
-      },
-      allowRealIpFallback: gatewayAuth.allowRealIpFallback,
-      trustedProxies: gatewayAuth.trustedProxies,
-    };
+    configuration.gateway = nativeGatewayConfiguration(configuration.gateway, gatewayAuth);
   }
   // Native Codex tools are one capability; a narrow allowlist disables that surface.
   // OpenShell supplies the filesystem and network boundaries verified below.
@@ -506,22 +510,10 @@ function nativeOpenClawConfiguration(gatewayAuth, controlUiOrigins = []) {
     id: "OPENAI_API_KEY",
   };
   if (gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: {
-        ...gatewayAuth.auth,
-        password: {
-          source: "env",
-          provider: "default",
-          id: "OPENCLAW_GATEWAY_PASSWORD",
-        },
-      },
-      allowRealIpFallback: gatewayAuth.allowRealIpFallback,
-      trustedProxies: gatewayAuth.trustedProxies,
-      ...(controlUiOrigins.length === 0
-        ? {}
-        : { controlUi: { enabled: true, allowedOrigins: controlUiOrigins } }),
-    };
+    configuration.gateway = nativeGatewayConfiguration(configuration.gateway, gatewayAuth);
+    if (controlUiOrigins.length !== 0) {
+      configuration.gateway.controlUi = { enabled: true, allowedOrigins: controlUiOrigins };
+    }
   }
   return configuration;
 }
@@ -530,79 +522,6 @@ function workspaceGatewayHostname(workspaceGateway) {
   return `occ-gateway-${hash(
     `${workspaceGateway.routing.gatewayNamespace}/${workspaceGateway.routing.gatewayName}`,
   )}.${workspaceGateway.routing.envoyNamespace}.svc.cluster.local`;
-}
-
-async function diagnosticQuery(pool, text, values) {
-  return pool.query({ text, values, query_timeout: diagnosticQueryTimeoutMs });
-}
-
-async function readWorkerRevisionState(pool, { namespaceId, agentId, revisionId }) {
-  const [agent, revision, work] = await Promise.all([
-    diagnosticQuery(
-      pool,
-      "SELECT active_revision_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
-      [namespaceId, agentId],
-    ),
-    diagnosticQuery(
-      pool,
-      `SELECT revision_number
-       FROM occ.agent_revisions
-       WHERE namespace_id = $1 AND agent_id = $2 AND id = $3`,
-      [namespaceId, agentId, revisionId],
-    ),
-    diagnosticQuery(
-      pool,
-      `SELECT revision_id, namespace_target, state, attempt_count, completed_at IS NOT NULL AS completed
-       FROM occ.controller_work
-       WHERE namespace_id = $1 AND (revision_id = $2 OR agent_id = $3)
-       ORDER BY updated_at DESC, created_at DESC
-       LIMIT 8`,
-      [namespaceId, revisionId, agentId],
-    ),
-  ]);
-
-  return {
-    activeRevisionId: agent.rows[0]?.active_revision_id,
-    revision: revision.rows[0]
-      ? { revisionId, revisionNumber: revision.rows[0].revision_number }
-      : undefined,
-    queue: work.rows.map((row) => ({
-      operation:
-        row.revision_id === null
-          ? row.namespace_target === null
-            ? "work.reconcile"
-            : `namespace.${row.namespace_target}`
-          : "agent_revision.reconcile",
-      revisionId: row.revision_id ?? undefined,
-      state: row.state,
-      attempt: row.attempt_count,
-      completed: row.completed,
-    })),
-  };
-}
-
-// The reporter keeps 1,000 characters of each output line, so the persisted state comes before
-// the event list. Returns the diagnostic for callers that also put it in a failure message.
-async function writeWorkerCompletionDiagnostics(options) {
-  let persisted;
-  try {
-    persisted = await readWorkerRevisionState(options.pool, options);
-  } catch {
-    persisted = { readError: "unavailable" };
-  }
-  const diagnostic = {
-    operation: "agent_revision.reconcile",
-    revisionId: options.revisionId,
-    persisted,
-    events: summarizeWorkerEvents(options.events, options.revisionId),
-  };
-  for (const line of workerDiagnosticLines(diagnostic)) {
-    if (diagnosticDeadlinePassed()) {
-      break;
-    }
-    process.stderr.write(`${line}\n`);
-  }
-  return diagnostic;
 }
 
 async function assertWorkerCompleted(options) {
@@ -1413,9 +1332,11 @@ function createIntegrationSandboxDriverFactory(
           return value;
         }
         return async (...args) => {
+          let policyWrite;
           try {
             if (property === "updatePolicy") {
-              policyWrites.push({ sandbox: args[0].sandbox, requestId: args[0].requestId });
+              policyWrite = { sandbox: args[0].sandbox, requestId: args[0].requestId };
+              policyWrites.push(policyWrite);
             }
             const result = await value.apply(target, args);
             if (property === "updatePolicy") {
@@ -1423,6 +1344,13 @@ function createIntegrationSandboxDriverFactory(
             }
             return result;
           } catch (error) {
+            if (
+              policyWrite !== undefined &&
+              error?.message ===
+                "OpenShell UpdateConfig failed with gRPC status 10 (reason RESOURCE_VERSION_CONFLICT)."
+            ) {
+              policyWrite.refusedResourceVersion = true;
+            }
             process.stderr.write(
               `OpenShell gateway ${String(property)} failed: ${error?.code ?? ""} ${error?.details ?? error?.message}\n`,
             );
@@ -2136,7 +2064,6 @@ async function prepareProductionInstallation(
     platformNamespace,
     gatewayImage,
     codexImage,
-    openShellRuntimeClass,
     cluster: "k3d-openshell-sandboxdriver",
   });
   if (pluginInstallOnly) {
@@ -2501,6 +2428,7 @@ async function prepareProductionInstallation(
   });
   await waitForOpenShellGateway(placement);
   await assertGatewayBootstrapPolicies(placement);
+  await assertRestrictedPodSecurity(placement);
   if (harnessId === "codex") {
     // Each test Namespace runs its own OpenShell gateway, so its address is known only now. An
     // operator configures the dedicated Agent Gateway's route to the gateway that exposes Codex
@@ -6086,14 +6014,16 @@ PYTHON`;
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.error));
     version = saved.data.version;
-    const writes = topology.policyWrites.length;
     let wrote = false;
+    let writesAtInterruption;
+    let applicationId;
     if (interruptAfterWrite) {
       // The real UpdateConfig has committed. Withhold its receipt until worker shutdown
       // aborts the in-flight pass; no provider behavior or policy result is replaced.
       topology.setPolicyWriteBarrier(async (signal) => {
         topology.setPolicyWriteBarrier(undefined);
         wrote = true;
+        writesAtInterruption = topology.policyWrites.length;
         await new Promise((_, reject) => {
           if (signal.aborted) {
             reject(signal.reason);
@@ -6103,23 +6033,115 @@ PYTHON`;
         });
       });
     }
-    // Stage the application while the real worker is stopped, then prove durable recovery
-    // through a new worker and database pool before any provider effect occurs.
-    await topology.pauseWorker();
-    try {
+    const submitApplication = async () => {
       const applied = await topology.request("POST", `${policyPath}/apply`, {
         expectedVersion: version,
         revisionId: topology.revision.id,
       });
       assert.equal(applied.status, 202, JSON.stringify(applied.error));
       assert.equal(applied.data.application.state, "pending");
+      const previous = applicationId;
+      applicationId = applied.data.application.id;
+      assert.notEqual(
+        applicationId,
+        previous,
+        "each explicit application needs a new operation ID",
+      );
+    };
+    // Stage the application while the real worker is stopped, then prove durable recovery
+    // through a new worker and database pool before any provider effect occurs.
+    await topology.pauseWorker();
+    try {
+      await submitApplication();
     } finally {
       await topology.resumeWorker();
     }
+    let reapplied = false;
+    const reapplyAfterStaleVersion = async (view) => {
+      const application = view.data.policy.application;
+      assert.equal(application?.id, applicationId);
+      assert.equal(
+        application?.reason,
+        "SANDBOX_POLICY_PROVIDER_FAILED",
+        JSON.stringify(application),
+      );
+      assert.equal(reapplied, false, "only one explicit application retry is allowed");
+      assert.equal(wrote, false, "an interrupted or ambiguous write must not be reapplied");
+      const previousWrites = topology.policyWrites.filter(
+        (write) => write.requestId === applicationId,
+      );
+      assert.ok(
+        previousWrites.length === 0 ||
+          (previousWrites.length === 1 && previousWrites[0].refusedResourceVersion === true),
+        "reapply requires no dispatch or a definitive structured resource-version conflict",
+      );
+      const pinned = await topology.observerPool.query(
+        "SELECT document->'application'->>'expectedProviderVersion' AS version, document->'application'->'snapshot' AS snapshot FROM occ.sandbox_policies WHERE namespace_id=$1 AND agent_id=$2 AND document->'application'->>'id'=$3",
+        [topology.namespaceId, topology.agent.id, applicationId],
+      );
+      assert.equal(pinned.rows.length, 1);
+      assert.match(pinned.rows[0].version ?? "", /^[1-9][0-9]*$/);
+      const current = await topology
+        .gatewayClient()
+        .getSandbox(
+          { workspace: topology.placement, name: topology.sandbox.metadata.name },
+          AbortSignal.timeout(10_000),
+        );
+      assert.ok(current);
+      assert.notEqual(
+        current.resourceVersion,
+        pinned.rows[0].version,
+        "reapply requires proof that the provider moved past the fixed CAS version",
+      );
+      const status = await providerPolicy();
+      assert.notEqual(
+        status.state,
+        "POLICY_STATUS_FAILED",
+        "a failed committed policy must not be reapplied",
+      );
+      assert.notEqual(
+        status.state,
+        "POLICY_STATUS_SUPERSEDED",
+        "a superseded committed policy must not be reapplied",
+      );
+      assert.ok(current.spec?.policy);
+      assert.equal(
+        sameOpenShellPolicy(
+          status.policy,
+          openShellPolicyCandidate(current.spec.policy, pinned.rows[0].snapshot),
+        ),
+        false,
+        "a matching provider policy must not be reapplied under a fresh operation ID",
+      );
+      const refreshed = await topology.request("GET", policyPath);
+      assert.equal(refreshed.status, 200, JSON.stringify(refreshed.error));
+      assert.equal(refreshed.data.policy.version, version);
+      assert.equal(refreshed.data.policy.application.id, applicationId);
+      reapplied = true;
+      process.stderr.write(
+        "OpenShell integration: caller refreshed and explicitly reapplied after a stale provider version.\n",
+      );
+      await submitApplication();
+    };
+    const applicationView = async () => {
+      const view = await topology.request("GET", policyPath);
+      assert.equal(view.status, 200, JSON.stringify(view.error));
+      if (view.data.policy.application?.state === "failed") {
+        await reapplyAfterStaleVersion(view);
+        return undefined;
+      }
+      return view;
+    };
     if (interruptAfterWrite) {
       await waitFor(
         "native UpdateConfig before interruption",
-        async () => (wrote ? true : undefined),
+        async () => {
+          if (wrote) {
+            return true;
+          }
+          await applicationView();
+          return wrote ? true : undefined;
+        },
         30_000,
       );
       await topology.pauseWorker();
@@ -6128,14 +6150,8 @@ PYTHON`;
     await waitFor(
       "matching loaded live network policy",
       async () => {
-        const view = await topology.request("GET", policyPath);
-        assert.equal(view.status, 200, JSON.stringify(view.error));
-        assert.notEqual(
-          view.data.policy.application?.state,
-          "failed",
-          JSON.stringify(view.data.policy.application),
-        );
-        return view.data.policy.application?.state === "applied" ? view.data : undefined;
+        const view = await applicationView();
+        return view?.data.policy.application?.state === "applied" ? view.data : undefined;
       },
       120_000,
     );
@@ -6143,8 +6159,13 @@ PYTHON`;
     if (interruptAfterWrite) {
       assert.equal(
         topology.policyWrites.length,
-        writes + 1,
+        writesAtInterruption,
         "recovery must confirm the committed native write without issuing it again",
+      );
+      assert.equal(
+        topology.policyWrites.filter((write) => write.requestId === applicationId).length,
+        1,
+        "the interrupted application must issue UpdateConfig only once",
       );
       process.stderr.write(
         "OpenShell integration: interrupted native policy write recovered without a duplicate UpdateConfig.\n",
@@ -8338,6 +8359,16 @@ async function assertOpenShellGatewayOutage(topology) {
   }
 }
 
+/**
+ * @param {Parameters<typeof pollReplacementActivation>[0] & {
+ *   replacementNode?: Pick<ReturnType<typeof createReplacementNodeObservation>, "begin" | "finish">,
+ *   diagnoseRevision: (revisionId: string) => Promise<unknown>
+ * }} topology
+ * @param {{ data: { id: string } }} redeployed
+ * @param {import("node:test").TestContext} testContext
+ * @param {typeof waitFor} [poll]
+ * @param {typeof replacementActivationDiagnostic} [diagnose]
+ */
 export async function waitForReplacementActivation(
   topology,
   redeployed,
@@ -8345,34 +8376,9 @@ export async function waitForReplacementActivation(
   poll = waitFor,
   diagnose = replacementActivationDiagnostic,
 ) {
-  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
-  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
   topology.replacementNode?.begin(redeployed.data.id);
   try {
-    await poll(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request("GET", agentPath);
-      assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      if (observed.data.activeRevisionId === redeployed.data.id) {
-        return observed.data;
-      }
-      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
-      // good on its first attempt. Stop then: the error names the probe's classified cause, and
-      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
-      const deployment = await topology.request("GET", deploymentPath);
-      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
-      // original activation deadline; only the Agent naming this revision can satisfy the wait.
-      const { status } = deployment;
-      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
-        return undefined;
-      }
-      assert.equal(status, 200, JSON.stringify(deployment.error));
-      assert.notEqual(
-        deployment.data.status,
-        "failed",
-        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
-      );
-      return undefined;
-    });
+    await pollReplacementActivation(topology, redeployed.data.id, poll);
   } catch (error) {
     const observation = topology.replacementNode?.finish();
     if (observation !== undefined) {
@@ -8401,7 +8407,39 @@ export async function waitForReplacementActivation(
   }
 }
 
-async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext) {
+export async function redeployOpenShellReplacement(
+  topology,
+  testContext,
+  reportProgress,
+  diagnose,
+) {
+  if (reportProgress) {
+    emitOpenShellReplacementCheckpoint("redeploy-request");
+  }
+  const redeployed = await topology.request(
+    "POST",
+    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
+  );
+  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+  assert.notEqual(redeployed.data.id, topology.revision.id);
+  const revisionId = redeployed.data.id;
+  const observedAcceptance =
+    reportProgress && typeof revisionId === "string" && revisionId.length > 0;
+  if (observedAcceptance) {
+    emitOpenShellReplacementCheckpoint("activation");
+  }
+  await waitForReplacementActivation(topology, redeployed, testContext, undefined, diagnose);
+  if (observedAcceptance) {
+    emitOpenShellReplacementCheckpoint("reconciliation");
+  }
+  return redeployed;
+}
+
+async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(
+  topology,
+  testContext,
+  reportProgress,
+) {
   // Suspending the upstream Sandbox removes its Pod while retaining the provider resource.
   // Replacement must still discover and retire that Sandbox without relying on Pod observation.
   await kubectl(
@@ -8432,13 +8470,7 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, 
   );
   assert.equal(suspendedSandbox.spec.operatingMode, "Suspended");
 
-  const redeployed = await topology.request(
-    "POST",
-    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
-  );
-  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
-  assert.notEqual(redeployed.data.id, topology.revision.id);
-  await waitForReplacementActivation(topology, redeployed, testContext);
+  const redeployed = await redeployOpenShellReplacement(topology, testContext, reportProgress);
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
   await waitForProviderHarnessPod(topology.placement, redeployed.data);
@@ -9935,7 +9967,11 @@ export function registerProviderLifecycleTest(workflow) {
           // Retire the Harness used by the positive turns before changing DNS. A fresh
           // lookup alone cannot redirect its already established model connection.
           await measureOpenShellStage(testContext, "replacement", () =>
-            assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext),
+            assertDuplicateReconciliationDoesNotDuplicateOpenShell(
+              topology,
+              testContext,
+              workflow === "upstream" && selectedScenario === "full",
+            ),
           );
         }
         if (workflow === "upstream") {

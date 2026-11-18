@@ -25,7 +25,7 @@ import {
   ACCEPTED_DEVICE_AUTO_APPROVE,
   INVALID_ALLOW_USERS,
   INVALID_DEVICE_AUTO_APPROVE,
-} from "../helpers/trusted-proxy-shapes.mjs";
+} from "../helpers/trusted-proxy-shapes.ts";
 import {
   CODEX_PLACEMENT_REFUSAL,
   KUBERNETES_ALLOW_USERS_REFUSAL,
@@ -51,6 +51,43 @@ type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfigurati
 type NetworkingApi = InstanceType<KubernetesSdk["NetworkingV1Api"]>;
 type NetworkPolicy = Awaited<ReturnType<NetworkingApi["readNamespacedNetworkPolicy"]>>;
 type ExecutionCluster = NonNullable<KubernetesComputeDriverOptions["executionCluster"]>;
+
+type TrustedProxyRefusalOptions = {
+  unsupportedField?: boolean;
+  userHeader?: string;
+  allowUsers?: readonly string[];
+  allowLoopback?: boolean | string;
+  identityScopes?: readonly string[];
+  allowRealIpFallback?: boolean;
+  trustedProxies?: readonly string[];
+};
+
+export function trustedProxyRefusalConfiguration({
+  unsupportedField,
+  userHeader = "x-occ-identity",
+  allowUsers = ["occ-workspace-files"],
+  allowLoopback,
+  identityScopes = ["operator.admin"],
+  allowRealIpFallback = true,
+  trustedProxies = ["10.42.0.0/16"],
+}: TrustedProxyRefusalOptions): OpenClawConfigurationDocument {
+  return {
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        ...(unsupportedField === undefined ? {} : { unsupportedField }),
+        trustedProxy: {
+          userHeader,
+          allowUsers: [...allowUsers],
+          ...(allowLoopback === undefined ? {} : { allowLoopback }),
+        },
+        identityScopes: { "occ-workspace-files": [...identityScopes] },
+      },
+      allowRealIpFallback,
+      trustedProxies: [...trustedProxies],
+    },
+  };
+}
 
 function sandboxSettings(document: OpenClawConfigurationDocument) {
   const apps = asRecord(asRecord(document.mcp)?.apps);
@@ -740,14 +777,14 @@ export function checkTrustedProxyIdentities() {
     );
     assert.deepEqual(
       renderedRequiredHeaders({ allowUsers: ["occ-workspace-files"] }, machineGrant),
-      configure === routedOptions ? ["x-openclaw-scopes"] : undefined,
+      ["x-openclaw-scopes"],
     );
     assert.deepEqual(
       renderedRequiredHeaders(
         { allowUsers: ["occ-workspace-files"], requiredHeaders: ["x-real-ip"] },
         machineGrant,
       ),
-      configure === routedOptions ? ["x-real-ip", "x-openclaw-scopes"] : ["x-real-ip"],
+      ["x-real-ip", "x-openclaw-scopes"],
     );
     // Header names the Gateway could never match would refuse every request; non-arrays
     // fail its schema at startup. Both are refused before rollout.

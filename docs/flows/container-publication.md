@@ -1,17 +1,16 @@
 ---
 created: 2026-09-21
 updated: 2026-11-14
-last_updated_session: authoring-run/b93b80a6-de4f-4ade-b2de-0a80efedde44
+last_updated_session: authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e
 ---
 
 # Container publication flow
 
 ## Overview
 
-Manual Enterprise publication builds and verifies controller and runtime OCI
-archives on Linux amd64 and arm64. Each public GHCR package receives one
-multi-platform index. Image-only publication is the default. With
-`publish_chart: true`, a separate protected job also tags both indexes with
+Manual publication verifies Linux amd64 and arm64 controller and runtime images
+and publishes their indexes to public GHCR packages. Image-only is the default.
+With `publish_chart: true`, a separate protected job tags both indexes with
 the OCE version and publishes the Helm chart.
 
 ## Entry Points
@@ -81,15 +80,15 @@ docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-Before assembly, `openclaw-bridge-tests` runs bridge suites, CUA tests, and
-typechecks with the same checkout, arguments, base, and platform. Failure blocks
-smoke and upload. Local assembly can run independently.
+`openclaw-bridge-tests` typechecks and tests bridge and CUA assembly inputs.
+Coverage includes native turn settlement, approval discovery after reconnect,
+HTTP rejection, native handoff during late writes and revision-scoped restart
+resume. Failure blocks smoke and upload. Local builds can run independently.
 
-The `resources` step checks architecture, CPU, memory, and cgroup-v2 ancestor
-limits. Both stages use its Node compiler budget. ARM runtime can select eight
-jobs, with four for unknown or smaller limits. Before smoke,
-`scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq.
-See [build settings](../release/configuration.md#build-settings) for capacity and cleanup.
+The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
+Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
+smaller or unknown limits. Before smoke, `scripts/ci/setup-tools.sh` installs
+checksum-pinned kubectl, k3d, Helm and yq. See [build settings](../release/configuration.md#build-settings).
 
 Buildx runs up to two steps at once and caches by image and architecture on
 Blacksmith sticky disks or in GitHub Actions. Standalone `container-check.yml`
@@ -261,11 +260,13 @@ must agree before a version tag is written. The staged chart carries the source
 SHA and both digest references in annotations; its default controller image is
 the verified controller digest. Operator values can override that default.
 
-After image publication, the [identity projection](../guides/deploy/published-images.md#read-runtime-download-client-identities)
-checks client provenance against the sealed platform and source selection.
+The [client projection](../guides/deploy/published-images.md#read-runtime-download-client-identities)
+checks image and executable provenance against the authenticated receipt.
+`scripts/ci/runtime-download-client-projection.ts:selectNativeArtifact` supplies the
+separate AMD64 smoke ZIP selection. Gateway builds use both outputs.
 
-Both jobs share the protected environment. Workflow-level concurrency retains
-the publication lock across preparation and both writes; jobs never reacquire it.
+The jobs share the protected environment and hold the workflow lock from
+preparation through publication.
 The chart publisher checks image version tags and any existing chart before writing. Existing tags must resolve to the receipt's digests;
 an existing chart version must have identical packaged files. It rechecks the trusted
 source, CI, environment, and public chart package before each write. After
@@ -314,6 +315,10 @@ owns package-write access and coordination.
 
 ## Changelog
 
+- 2026-11-17 23:51: Bridge tests cover revision-scoped restart resume. (finding 3347)
+
+- 2026-11-14 22:54: Document native ZIP selection. (authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e - e2ca224aa9657568ded513872d2fe6315d8d5301)
+
 - 2026-11-14 15:07: Document optional native tool selection, image verification, and published client identities. (authoring-run/b93b80a6-de4f-4ade-b2de-0a80efedde44 - 1c56c61909b9f480845f4579e2add893207fa759)
 
 - 2026-11-12 19:30: Document shared publisher alias validation. (authoring-run/3d91deeb-c702-4376-b918-2394dc2e27ff - 3b0efb219416109116f50ff643e7979ac2233711)
@@ -343,11 +348,5 @@ owns package-write access and coordination.
 - 2026-10-26 10:23: Read OpenClaw source metadata from one manifest; validate build arguments and provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
 
 - 2026-10-23 15:28: Require patched Node 24.22.1 bases before controller and runtime preparation (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
-
-- 2026-10-23 16:52: Select the source's CI base for standalone checks and update OpenClaw for Gateway managed mode. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
-
-- 2026-10-16 22:41: Require the native reaper and caller-authority regression checks. (codex/01a13683-3916-7880-b1a6-27175b853600 - fd21b43ce92dbd44f98fce5fef29489b97d6352c)
-
-- 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 
 [Container publication documentation history](container-publication/history.md) preserves the older dated entries.

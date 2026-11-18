@@ -1,0 +1,865 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { request, Agent, type RequestOptions } from "node:https";
+import { randomUUID } from "node:crypto";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+} from "node:http";
+import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
+import { connect, createServer as createTcpServer } from "node:net";
+import { readFile, writeFile } from "node:fs/promises";
+import { buffer } from "node:stream/consumers";
+import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { setTimeout as delay } from "node:timers/promises";
+
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
+import {
+  createAuthenticatedControllerRequest,
+  createTestAuthPrincipal,
+} from "../helpers/auth-session.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { relaySockets } from "../helpers/socket-relay.ts";
+import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
+import {
+  cleanEnvironment,
+  listen,
+  run,
+  temporaryDirectory,
+} from "../fixtures/repository-credentials/process.ts";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
+import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
+import type { RefusalRecord } from "../../apps/controller/src/drivers/repo/access/transport/agent.ts";
+import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
+
+type BrokerInput = Parameters<
+  NonNullable<NonNullable<Parameters<typeof fixture>[1]>["openBroker"]>
+>[0];
+type BrokerRequest = {
+  method?: string;
+  headers?: OutgoingHttpHeaders;
+  body?: string | Buffer | undefined;
+  beforeBody?: () => Promise<void>;
+};
+type BrokerResponse = { status: number; text: string };
+type Broker = Awaited<ReturnType<typeof startBroker>>;
+
+function object(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Expected a JSON object");
+  }
+  return value as Record<string, unknown>;
+}
+
+function jsonObject(text: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(text);
+  return object(value);
+}
+
+async function readResponse(response: IncomingMessage): Promise<BrokerResponse> {
+  const { statusCode } = response;
+  if (statusCode === undefined) {
+    throw new Error("Expected an HTTP response status");
+  }
+  return { status: statusCode, text: (await buffer(response)).toString() };
+}
+
+async function readProviderPulls(url: string, options: RequestOptions): Promise<unknown[]> {
+  // The request callback cannot propagate promise rejections to its caller.
+  const response = await new Promise<BrokerResponse>(
+    (resolve, reject: (reason: unknown) => void) => {
+      request(url, options, (message) => {
+        void readResponse(message).then(resolve, reject);
+      })
+        .once("error", reject)
+        .end();
+    },
+  );
+  assert.equal(response.status, 200, "Expected a successful provider pull list");
+  const value: unknown = JSON.parse(response.text);
+  assert.ok(Array.isArray(value), "Expected the provider's list of pull requests");
+  return value;
+}
+
+async function startBroker(
+  t: TestContext,
+  {
+    gh,
+    registry,
+    socketPath,
+    namespaceId,
+    binding,
+    pushRef,
+    deadlineWallMs,
+    repository,
+  }: BrokerInput,
+) {
+  const tls = gh.tls;
+  const observed: { method: string | undefined; url: string | undefined }[] = [];
+  const origin = await startGitSmartHttpFixture(t, {
+    tls,
+    repository,
+    authorize: gh.authorize,
+    observeRequest: (method, url) => observed.push({ method, url }),
+  });
+  // Control the time of verified upstream TLS without trusting a substitute sender.
+  let slow = false;
+  const tcp = createTcpServer(async (socket) => {
+    if (slow) {
+      await delay(5250);
+    }
+    if (socket.destroyed) {
+      return;
+    }
+    relaySockets(socket, connect(Number(new URL(origin.origin).port), "127.0.0.1"));
+  });
+  const gitOrigin = await listen(t, tcp);
+  const clock = createSystemClock();
+  const gatewayOrigin = "https://127.0.0.1";
+  const config = validateServiceConfig(
+    serviceConfigurationData({
+      limits: { connectMs: 12000, stallMs: 12000, gitFetchStallMs: 12000 },
+      gateway: {
+        publicOrigin: gatewayOrigin,
+        listen: "127.0.0.1:8443",
+        controlSocket: join(socketPath, "..", "control.sock"),
+      },
+    }),
+  );
+  const factory = createPreparedGitHubRegistryFactory({
+    registry,
+    clock,
+    socketPath,
+    gitOrigin,
+    apiOrigin: gh.origin,
+    gatewayOrigin,
+    limits: config.limits,
+  });
+  const service = createCredentialService({ config, factory, clock });
+  t.after(() => service.shutdown(5000));
+  // The production composition writes each refusal record to the broker's log (finding 2411).
+  const logs: RefusalRecord[] = [];
+  const server = await startListeners({
+    service,
+    factory,
+    clock,
+    tls,
+    log: (record) => logs.push(record),
+    config: { ...config, gateway: { ...config.gateway, listen: "127.0.0.1:0" } },
+    upstreamCa: tls.ca,
+    trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
+  });
+  t.after(() => server.close());
+  const address = gatewayOrigin + ":" + server.address.port;
+  const openSession = () =>
+    service.open({
+      durationSeconds: 600,
+      namespaceId,
+      repositoryRef: binding.repositoryRef,
+      profile: binding.profile,
+      expectedBinding: binding.grant,
+      deadlineWallMs,
+      preparedOnly: true,
+    });
+  const opened = openSession();
+  const authorization =
+    "Basic " + Buffer.from("gateway-session:" + opened.bearer).toString("base64");
+  const agent = new Agent({ ca: tls.ca, keepAlive: true, maxSockets: 1 });
+  t.after(() => agent.destroy());
+  function http(
+    path: string,
+    { method = "GET", headers, body, beforeBody }: BrokerRequest = {},
+  ): Promise<BrokerResponse> {
+    return new Promise((resolve, reject: (reason: unknown) => void) => {
+      const req = request(
+        address + path,
+        { agent, method, headers: { authorization, host: "127.0.0.1", ...headers } },
+        (res) => {
+          void readResponse(res).then(resolve, reject);
+        },
+      );
+      req.once("error", reject);
+      if (beforeBody) {
+        req.once("continue", () => {
+          const socket = req.socket;
+          void beforeBody()
+            .then(() => {
+              assert.equal(req.socket, socket);
+              req.end(body);
+            })
+            .catch((error: unknown) => {
+              req.destroy();
+              reject(error);
+            });
+        });
+        req.flushHeaders();
+      } else {
+        req.end(body);
+      }
+    });
+  }
+  const env = cleanEnvironment({
+    GIT_SSL_CAINFO: tls.certFile,
+    GIT_CONFIG_COUNT: "3",
+    GIT_CONFIG_KEY_2: "http.extraHeader",
+    GIT_CONFIG_VALUE_2: "Host: 127.0.0.1",
+    GIT_CONFIG_KEY_1: "http.extraHeader",
+    GIT_CONFIG_VALUE_1: "Authorization: " + authorization,
+  });
+  return {
+    http,
+    address,
+    origin,
+    observed,
+    logs,
+    identity: {
+      sessionId: opened.session.sessionId,
+      namespaceId,
+      repositoryRef: binding.repositoryRef,
+    },
+    opened,
+    openSession,
+    env,
+    pushRef,
+    repository,
+    slow(value: boolean) {
+      slow = value;
+    },
+  };
+}
+
+// Exercise the normal authenticated HTTP withdrawal against the exact same State as
+// the worker. This component test does not start Compute or a model/chat session.
+// Finding 2411: each refused authenticated request logs exactly one record with the code
+// the Agent received (an error envelope's code, or a receipt's error), where it was refused,
+// the operation once known, and the session.
+function refusedOnceBy(
+  b: Broker,
+  response: BrokerResponse,
+  reason: RefusalRecord["reason"],
+  operation?: RefusalRecord["operation"],
+  upstreamConnect?: RefusalRecord["upstreamConnect"],
+) {
+  assert.ok(response.status >= 400, response.text);
+  const { error } = jsonObject(response.text);
+  const reasonCode = typeof error === "string" ? error : object(error).code;
+  assert.equal(typeof reasonCode, "string");
+  assert.deepEqual(b.logs.splice(0), [
+    {
+      event: "repository-credentials.denied",
+      status: response.status,
+      reasonCode,
+      reason,
+      ...(operation === undefined ? {} : { operation }),
+      ...(upstreamConnect === undefined ? {} : { upstreamConnect }),
+      ...b.identity,
+    },
+  ]);
+}
+
+async function withdrawRepositoryBinding(
+  t: TestContext,
+  {
+    state,
+    pool,
+    agent,
+    revision,
+  }: Pick<Awaited<ReturnType<typeof fixture>>, "state" | "pool" | "agent" | "revision">,
+) {
+  const original = await state.read((unit) =>
+    unit.operations.findWork(`agent_revision:${revision.id}:reconcile`),
+  );
+  assert.ok(original);
+  const installation = await state.read((unit) => unit.installations.getInstallation());
+  assert.ok(installation);
+  const auth = await createTestAuthPrincipal({ installationId: installation.id });
+  assert.notEqual(original.actorId, auth.seed.principal.id);
+  const iam = new NativeIAMDriver({
+    async loadNativeIAMState() {
+      return {
+        identities: [auth.seed.principal],
+        groups: [],
+        memberships: [],
+        roles: [...auth.seed.roles],
+        bindings: [...auth.seed.bindings],
+        restrictions: [],
+      };
+    },
+  });
+  const controller = new OpenClawController(installation, { state });
+  controller.registerDriver(iam);
+  controller.selectDriver(iam.capability, iam.id);
+  const app = createFastifyApp({
+    controller,
+    iamDriver: iam,
+    auditSink: new InMemoryAuditSink(),
+    resolveHarness: resolveApprovedHarness,
+    durableRequestAuditSink: state.auditSink,
+    auth: auth.auth,
+    development: {
+      enabled: true,
+      installationId: installation.id,
+      browserOrigin: "https://console.oce.localhost",
+    },
+  });
+  t.after(() => app.close());
+  const api: (method: "PATCH", path: string, payload: Record<string, unknown>) => Promise<unknown> =
+    await createAuthenticatedControllerRequest(app, auth);
+  const response: unknown = await api(
+    "PATCH",
+    "/namespaces/" + agent.namespaceId + "/agents/" + agent.id,
+    {
+      configurationId: agent.configurationId,
+      repositoryBindings: [],
+    },
+  );
+  const result = object(response);
+  assert.equal(result.status, 200, JSON.stringify(result.error));
+  assert.deepEqual(object(result.data).repositoryBindings ?? [], []);
+  const { requestId } = object(result.meta);
+  assert.equal(typeof requestId, "string");
+  // Cleanup retains the original deployer, even when another principal removes Git.
+  const workId = repositoryRemovalWorkKey(revision.id);
+  const withdrawal = await state.read((unit) => unit.operations.findWork(workId));
+  assert.ok(withdrawal);
+  assert.equal(withdrawal.actorId, original.actorId);
+  const replay: unknown = await api(
+    "PATCH",
+    "/namespaces/" + agent.namespaceId + "/agents/" + agent.id,
+    {
+      configurationId: agent.configurationId,
+      repositoryBindings: [],
+    },
+  );
+  const replayResult = object(replay);
+  assert.equal(replayResult.status, 200, JSON.stringify(replayResult.error));
+  // Only the request that queued withdrawal is linked to this job.
+  const events = await pool.query<Record<string, unknown>>(
+    `SELECT details->'__occAuditMetadata'->>'requestId' AS request_id, actor_id,
+            resource_kind, resource_id, namespace_id, details->>'agentId' AS agent_id
+     FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
+       AND details->>'workId' = $1`,
+    [workId],
+  );
+  assert.deepEqual(events.rows, [
+    {
+      request_id: requestId,
+      actor_id: original.actorId,
+      resource_kind: "agent_revision",
+      resource_id: revision.id,
+      namespace_id: agent.namespaceId,
+      agent_id: agent.id,
+    },
+  ]);
+}
+
+test(
+  "prepared broker uses committed Git material for native clone, exact-ref push and independent fetch; withdrawal denies a fetch already admitted on the same TLS connection",
+  {
+    ...requiresPostgres,
+    timeout: 75000,
+  },
+  async (t) => {
+    const {
+      broker: b,
+      pool,
+      admissionId,
+      gh,
+      owner,
+      permissions,
+      state,
+      agent,
+      revision,
+    } = await fixture<Broker>(t, {
+      openBroker: (input) => startBroker(t, input),
+      recordDeploymentOperation: true,
+    });
+    assert.ok(b);
+    const repo = "/" + b.repository + ".git/";
+    const discovery = repo + "info/refs?service=git-upload-pack";
+    const useCount = async () => {
+      const { rows } = await pool.query<{ n: unknown }>(
+        "SELECT count(*)::int AS n FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
+        [admissionId],
+      );
+      const [count] = rows;
+      if (typeof count?.n !== "number") {
+        throw new Error("Expected a PostgreSQL use count");
+      }
+      return count.n;
+    };
+
+    const refusedOnce = (
+      response: BrokerResponse,
+      reason: RefusalRecord["reason"],
+      operation?: RefusalRecord["operation"],
+    ) => refusedOnceBy(b, response, reason, operation);
+    const logged: RefusalRecord[] = [];
+    const keep = () => logged.push(...b.logs);
+
+    // No prepared material yet: the owner cannot authorize the send, so nothing is sent.
+    const cold = await b.http(discovery);
+    assert.equal(cold.status, 503);
+    keep();
+    refusedOnce(cold, "not_dispatched", "git-discovery");
+    assert.equal(gh.issuesOfTokens.length, 0);
+    await prepare({ gh, owner, permissions });
+    assert.equal((await b.http(discovery)).status, 200);
+    const before = await useCount();
+    const beforeOrigin = b.observed.length;
+    const packet = (text: string) => (text.length + 4).toString(16).padStart(4, "0") + text;
+    const line = (ref: string) => packet("0".repeat(40) + " " + "1".repeat(40) + " " + ref + "\n");
+    // The server receives a mixed-ref update directly, independent of any client hooks.
+    const mixed = await b.http(repo + "git-receive-pack", {
+      method: "POST",
+      headers: { "content-type": "application/x-git-receive-pack-request" },
+      body: line(b.pushRef) + line("refs/heads/main") + "0000",
+    });
+    assert.equal(mixed.status, 400);
+    keep();
+    refusedOnce(mixed, "input_refused", "git-push");
+    // Another repository, GitHub REST and GraphQL are outside the Git-only route, so the
+    // session's Git credential is not accepted there; the record still names the session.
+    for (const path of [
+      discovery.replace(b.repository, "wrong/other"),
+      "/repos/" + b.repository,
+      "/graphql",
+    ]) {
+      const response = await b.http(path);
+      keep();
+      refusedOnce(response, "credential_refused");
+    }
+    // Finding 2429: a head refused before authentication (here a wrong Host that the
+    // certificate still names) is logged when its credential names the open session; the
+    // route is not known yet, so the record has no operation.
+    const wrongHost = await b.http(discovery, { headers: { host: "localhost" } });
+    assert.equal(wrongHost.status, 400);
+    keep();
+    refusedOnce(wrongHost, "request_refused");
+    // With an API credential, the Git-only route refuses the REST request itself.
+    const rest = await b.http("/repos/" + b.repository, {
+      headers: { authorization: "Bearer " + b.opened.bearer },
+    });
+    keep();
+    refusedOnce(rest, "request_refused");
+    assert.equal(await useCount(), before);
+    assert.equal(b.observed.length, beforeOrigin);
+
+    // The owner commits a use, TLS completes, but no HTTP request crosses an expired send window.
+    b.slow(true);
+    const late = await b.http(discovery);
+    assert.equal(late.status, 503);
+    keep();
+    refusedOnce(late, "not_dispatched", "git-discovery");
+    b.slow(false);
+    assert.equal(await useCount(), before + 1);
+    assert.equal(b.observed.length, beforeOrigin);
+
+    const negotiation = packet("command=ls-refs\n") + "00010000";
+    // Unchanged identity input retains chunked framing at the Git origin.
+    const beforeIdentity = b.origin.trace.length;
+    const identity = await b.http(repo + "git-upload-pack", {
+      method: "POST",
+      headers: {
+        "git-protocol": "version=2",
+        "transfer-encoding": "chunked",
+        "content-type": "application/x-git-upload-pack-request",
+      },
+      body: negotiation,
+    });
+    assert.equal(identity.status, 200);
+    assert.equal(b.origin.trace.length, beforeIdentity + 1);
+    const identityRequest = b.origin.trace[beforeIdentity];
+    assert.ok(identityRequest);
+    assert.equal(identityRequest.method, "POST");
+    assert.equal(identityRequest.path, repo + "git-upload-pack");
+    assert.equal(identityRequest.contentEncoding, undefined);
+    assert.equal(identityRequest.contentLength, undefined);
+
+    // The deadline is to start sending, not a five-second limit on completing a large fetch.
+    const beforeGzip = b.origin.trace.length;
+    const hold = b.origin.holdNextFetch({ beforeHeaders: true });
+    const started = b.http(repo + "git-upload-pack", {
+      method: "POST",
+      headers: {
+        "git-protocol": "version=2",
+        "content-encoding": "gzip",
+        "content-type": "application/x-git-upload-pack-request",
+      },
+      body: gzipSync(negotiation),
+    });
+    await hold.observed;
+    await delay(5200);
+    hold.release();
+    assert.equal((await started).status, 200);
+    assert.equal(b.origin.trace.length, beforeGzip + 1);
+    const decodedRequest = b.origin.trace[beforeGzip];
+    assert.ok(decodedRequest);
+    assert.equal(decodedRequest.method, "POST");
+    assert.equal(decodedRequest.path, repo + "git-upload-pack");
+    assert.equal(decodedRequest.contentEncoding, undefined);
+    assert.equal(decodedRequest.contentLength, String(Buffer.byteLength(negotiation)));
+
+    const remote = b.opened.client.gitRemote.replace("https://127.0.0.1", b.address);
+    const cwd = await temporaryDirectory(t, "warm-native-git-");
+    const git = (args: string[], allowFailure = false) =>
+      run("git", args, { cwd, env: b.env, allowFailure });
+    await git(["clone", remote, "writer"]);
+    await writeFile(join(cwd, "writer", "review.txt"), "Native Git wrote this review\n");
+    const writer = (...args: string[]) => git(["-C", "writer", ...args]);
+    await writer("add", "review.txt");
+    const author = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test"];
+    await writer(...author, "commit", "-m", "Propose review");
+    const head = (await writer("rev-parse", "HEAD")).stdout.trim();
+    await writer("push", "origin", "HEAD:" + b.pushRef);
+    assert.equal(await b.origin.ref(b.pushRef), head);
+    await git(["clone", remote, "reader"]);
+    await git(["-C", "reader", "pull", "--ff-only", "origin", b.pushRef]);
+    assert.equal((await git(["-C", "reader", "rev-parse", "HEAD"])).stdout.trim(), head);
+    assert.equal(
+      await readFile(join(cwd, "reader", "review.txt"), "utf8"),
+      "Native Git wrote this review\n",
+    );
+
+    // Lose a successful local receive-pack response. Reconcile by reading, never by replay.
+    await writer(...author, "commit", "--allow-empty", "-m", "Inconclusive push");
+    const next = (await writer("rev-parse", "HEAD")).stdout.trim();
+    b.origin.disconnectAfterNextAcceptedPush();
+    const pushes = () => b.observed.filter(({ url }) => url?.endsWith("/git-receive-pack")).length;
+    const count = pushes();
+    const uncertain = await git(["-C", "writer", "push", "origin", "HEAD:" + b.pushRef], true);
+    assert.notEqual(uncertain.code, 0);
+    assert.equal(await b.origin.ref(b.pushRef), next);
+    assert.equal(pushes(), count + 1);
+
+    assert.equal((await b.http(discovery)).status, 200);
+    // Successful Git requests and an uncertain push are not refusals.
+    assert.deepEqual(b.logs, []);
+    const sent = b.observed.length;
+    const used = await useCount();
+    // The production listener deliberately serves only one request per TLS connection.
+    // A 100 Continue proves the broker already admitted this exact request/session.
+    // Withdraw before finishing its body: the subsequent owner read must deny this fetch.
+    let withdrawn = false;
+    const revoked = await b.http(repo + "git-upload-pack", {
+      method: "POST",
+      headers: {
+        expect: "100-continue",
+        "git-protocol": "version=2",
+        "content-type": "application/x-git-upload-pack-request",
+      },
+      body: packet("command=ls-refs\n") + "00010000",
+      async beforeBody() {
+        await withdrawRepositoryBinding(t, { state, pool, agent, revision });
+        withdrawn = true;
+      },
+    });
+    assert.equal(withdrawn, true);
+    assert.equal(revoked.status, 503);
+    keep();
+    refusedOnce(revoked, "not_dispatched", "git-fetch");
+    const after = await b.http(discovery);
+    assert.equal(after.status, 503);
+    keep();
+    refusedOnce(after, "not_dispatched", "git-discovery");
+    // Records name the session, never its bearer, the token, a ref or the repository.
+    const text = JSON.stringify(logged);
+    for (const secret of [b.opened.bearer, b.pushRef, b.repository]) {
+      assert.ok(!text.includes(secret));
+    }
+    assert.equal(b.observed.length, sent);
+    assert.equal(await useCount(), used);
+    assert.equal(gh.issuesOfTokens.length, 1);
+  },
+);
+
+for (const mode of [
+  "Git only",
+  "connection failed before any write",
+  "created",
+  "created in GitHub's spelling",
+  "lost provider reply",
+  "mismatched provider 201",
+]) {
+  test("prepared draft pull: " + mode, { ...requiresPostgres, timeout: 45000 }, async (t) => {
+    const draftPull = mode !== "Git only";
+    const settles = mode.startsWith("created");
+    // The registry lowercases the repository; GitHub answers with its own spelling (finding 2236).
+    const spelled = mode === "created in GitHub's spelling";
+    const spell = (url: string) =>
+      url.replace(/(?<=^https:\/\/github\.com\/)[^/]+\/[^/]+/, (name) => name.toUpperCase());
+    const {
+      broker: b,
+      gh,
+      owner,
+      permissions,
+      withdraw,
+      admitReplacement,
+    } = await fixture<Broker>(t, {
+      draftPull,
+      draftResponse:
+        mode === "mismatched provider 201"
+          ? (body) => ({ ...body, base: body.head })
+          : spelled
+            ? (body) => ({ ...body, html_url: spell(body.html_url) })
+            : undefined,
+      openBroker: (input) => startBroker(t, input),
+    });
+    assert.ok(b);
+    const path = "/repos/" + b.repository + "/pulls";
+    const head = b.pushRef.slice("refs/heads/".length);
+    const base = "main";
+    const title = "Scoped review";
+    const body = settles ? "Check: tests passed" : "";
+    const operationId = randomUUID();
+    const packet = { title, head, base, body, draft: true };
+    const headers = {
+      "content-type": "application/json",
+      authorization: "Bearer " + b.opened.bearer,
+      "x-oce-operation-id": operationId,
+    };
+    const send = (input: Partial<BrokerRequest> = {}) =>
+      b.http(path, { method: "POST", headers, body: JSON.stringify(packet), ...input });
+    let invoke:
+      | ((extra: string[], operation?: string, target?: string) => ReturnType<typeof run>)
+      | undefined;
+    const observed = () => gh.trace.filter((q) => q.method === "POST" && q.target === path);
+    if (!draftPull) {
+      await prepare({ gh, owner, permissions });
+      assert.equal((await send()).status, 400);
+      assert.equal(observed().length, 0);
+      // An unauthenticated observer must report the real provider's refusal to its caller.
+      await assert.rejects(readProviderPulls(gh.origin + path, { ca: gh.tls.ca }), {
+        code: "ERR_ASSERTION",
+        actual: 401,
+        expected: 200,
+      });
+      return;
+    }
+    // A cold request cannot mint a token or leave a durable operation.
+    assert.equal((await send()).status, 503);
+    assert.equal(gh.issuesOfTokens.length, 0);
+    await prepare({ gh, owner, permissions });
+    for (const input of [
+      { body: JSON.stringify({ ...packet, head: "main" }) },
+      { body: JSON.stringify({ ...packet, base: "other" }) },
+      { body: JSON.stringify({ ...packet, draft: false }) },
+      { body: JSON.stringify(packet).replace('"head":', '"he\\u0061d":"wrong","head":') },
+      { headers: { ...headers, "x-github-api-version": "2022-01-01" } },
+      { method: "GET", body: undefined },
+    ]) {
+      assert.equal((await send(input)).status, 400);
+    }
+    assert.equal(observed().length, 0);
+    assert.equal(gh.issuesOfTokens.length, 1);
+
+    if (mode === "connection failed before any write") {
+      // Finding 2429: the GitHub connection fails before TLS, so the broker settles the create
+      // as not sent. The Agent gets a recorded 409 and the operator one not_dispatched line;
+      // a same-operation replay returns that receipt and is logged the same way. Only the
+      // attempt that connected names the failed provider connect (finding 3183), and the
+      // receipt the Agent reads never carries it.
+      b.logs.splice(0);
+      gh.refuseNextConnection();
+      const api = new URL(gh.origin);
+      for (let i = 0; i < 2; i++) {
+        const response = await send();
+        assert.equal(response.status, 409);
+        const value = jsonObject(response.text);
+        assert.equal(value.operationId, operationId);
+        assert.equal(value.error, "not-submitted");
+        assert.equal(value.upstreamConnect, undefined);
+        const connect =
+          i === 0
+            ? {
+                host: api.hostname,
+                addresses: [api.hostname],
+                port: Number(api.port),
+                error: "ECONNRESET",
+              }
+            : undefined;
+        refusedOnceBy(b, response, "not_dispatched", "api", connect);
+      }
+      assert.equal(observed().length, 0);
+      assert.equal(gh.pulls.size, 0);
+      return;
+    }
+
+    if (settles) {
+      // Exercise the shipping client and real computed manifest through an obligatory CONNECT.
+      // The TLS broker listens on a random port unreachable at the client's selected port 443.
+      const { root } = await createNativeClientMaterial(
+        t,
+        [{ opened: b.opened, repositoryRef: "source" }],
+        { ca: gh.tls.ca },
+      );
+      const proxy = createHttpServer();
+      const tunnels: (string | undefined)[] = [];
+      proxy.on("connect", (req, socket, early) => {
+        tunnels.push(req.url);
+        const upstream = connect(Number(new URL(b.address).port), "127.0.0.1", () => {
+          socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        });
+        // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+        upstream.write(early);
+        relaySockets(socket, upstream);
+      });
+      const proxyAddress = (await listen(t, proxy)).replace(/^https:/, "http:");
+      const client = fileURLToPath(
+        new URL("../fixtures/repository-credentials/native-draft-child.ts", import.meta.url),
+      );
+      const args = (operation: string, target: string) => [
+        "pr-create",
+        "--operation-id",
+        operation,
+        "--draft",
+        "--head",
+        head,
+        "--base",
+        target,
+        "--title",
+        title,
+      ];
+      // The helper's own entry point, so its exit code and failure line are the Agent's view.
+      invoke = (extra, operation = operationId, target = base) =>
+        run(process.execPath, [client, root, ...args(operation, target), ...extra], {
+          env: { ...cleanEnvironment(), HTTPS_PROXY: proxyAddress },
+          allowFailure: true,
+        });
+      const bodyFile = join(await temporaryDirectory(t), "body.txt");
+      await writeFile(bodyFile, "file contents must stay local");
+      const refused = await invoke(["--body-file", bodyFile]);
+      assert.notEqual(refused.code, 0);
+      assert.match(refused.stderr, /Unknown option '--body-file'/);
+      assert.deepEqual(tunnels, [], "file input must be refused before contacting the broker");
+      const output = await invoke(["--body", body]);
+      assert.equal(output.code, 0, output.stderr);
+      assert.deepEqual(tunnels, ["127.0.0.1:443"]);
+      const receipt = jsonObject(output.stdout);
+      assert.equal(receipt.operationId, operationId);
+      assert.equal(object(receipt.head).ref, head);
+      assert.equal(object(receipt.base).ref, base);
+      assert.equal(receipt.draft, true);
+      assert.equal(typeof receipt.number, "number");
+      const url = "https://github.com/" + b.repository + "/pull/" + receipt.number;
+      assert.equal(receipt.url, spelled ? spell(url) : url);
+      assert.equal(spelled, receipt.url !== url);
+      assert.ok(
+        !output.stdout.includes("must-not-escape"),
+        "upstream nested credentials must never be returned",
+      );
+      // Finding 2410: a definite broker refusal names its code and says GitHub received
+      // nothing; only an unknown outcome prints "Draft not confirmed".
+      const refusal = (result: Awaited<ReturnType<typeof run>>) => {
+        assert.equal(result.code, 1, result.stderr);
+        assert.doesNotMatch(result.stderr, /Draft not confirmed/);
+        return result.stderr.trim().split("\n").at(-1) ?? "";
+      };
+      assert.equal(
+        refusal(await invoke(["--body", body], randomUUID(), "other")),
+        "Draft not created: the repository broker refused it (unsupported-request); GitHub did not receive it. This repository binding does not allow this create; do not retry it. Ask an operator if the branch or base should change.",
+      );
+      assert.match(
+        refusal(await invoke(["--body", body], randomUUID())),
+        /^Draft not created: the grant's draft-create allowance was already used\. GitHub did not receive this request\./,
+      );
+      assert.equal(observed().length, 1, "neither refusal reached GitHub");
+      const repeat = await send();
+      assert.equal(repeat.status, 201);
+      assert.deepEqual(
+        jsonObject(repeat.text),
+        receipt,
+        "same operation returns the committed safe projection",
+      );
+    } else {
+      // Provider creates the PR and drops its response. We can inspect that projection here;
+      // the production broker must preserve uncertainty rather than claim that evidence or re-POST.
+      if (mode === "lost provider reply") {
+        gh.disconnectAfterMutation("POST", path);
+      }
+      b.logs.splice(0);
+      for (let i = 0; i < 2; i++) {
+        const response = await send();
+        assert.equal(response.status, 409);
+        const value = jsonObject(response.text);
+        assert.equal(value.operationId, operationId);
+        assert.equal(value.error, "outcome_unknown");
+      }
+      // GitHub may have created this draft, so the operator log records no refusal.
+      assert.deepEqual(b.logs, []);
+    }
+    // Finding 2429: another operation or a changed request gets the spent allowance's receipt.
+    // GitHub received nothing for it, so each is one operation_conflict line.
+    b.logs.splice(0);
+    const other = await send({ headers: { ...headers, "x-oce-operation-id": randomUUID() } });
+    assert.equal(other.status, 409);
+    assert.equal(jsonObject(other.text).error, "operation_conflict");
+    refusedOnceBy(b, other, "operation_conflict", "api");
+    const changed = await send({ body: JSON.stringify({ ...packet, title: "different" }) });
+    assert.equal(jsonObject(changed.text).error, "operation_conflict");
+    refusedOnceBy(b, changed, "operation_conflict", "api");
+    // An independently authenticated observer reconciles by reading, never by trying another create.
+    // Its observation cannot be presented as a delivered result to the Agent which lost the reply.
+    const observer = randomUUID();
+    gh.acceptStatic(observer);
+    const query = new URLSearchParams({ base, head: b.repository.split("/")[0] + ":" + head });
+    const visible = await readProviderPulls(gh.origin + path + "?" + query, {
+      ca: gh.tls.ca,
+      headers: { authorization: "Bearer " + observer },
+    });
+    assert.equal(visible.length, 1);
+    const created = object(visible[0]);
+    assert.equal(created.body, body);
+    assert.equal(object(created.head).ref, head);
+    assert.equal(object(created.base).ref, base);
+    assert.equal(created.maintainer_can_modify, false);
+    assert.equal(gh.pulls.size, 1);
+    const [attempt] = observed();
+    assert.ok(attempt);
+    if (mode !== "lost provider reply") {
+      assert.equal(attempt.usedBearer, true);
+      assert.equal(attempt.forwardedOperationId, false);
+    }
+    assert.equal(attempt.apiVersion, "2026-03-10");
+    assert.equal(attempt.tokenIndex, 1);
+    assert.equal(
+      observed().length,
+      1,
+      "exactly one provider create attempt, including ambiguous response",
+    );
+    await withdraw();
+    assert.equal((await send()).status, 503, "cannot replay even a receipt after withdrawal");
+    if (invoke) {
+      const withdrawn = await invoke(["--body", body], randomUUID());
+      assert.equal(withdrawn.code, 1, withdrawn.stderr);
+      assert.equal(
+        withdrawn.stderr.trim().split("\n").at(-1),
+        "Draft not created: the repository broker refused it (unavailable); GitHub did not receive it. Retry once; if it is refused again, ask an operator to check the repository-credentials container log in the worker Pod.",
+      );
+    }
+    assert.equal(observed().length, 1);
+    // A legitimate replacement with the identical grant and old client operation cannot obtain
+    // the prior admission's receipt, a second permit, or a fresh token by trying this endpoint.
+    const replacement = b.openSession();
+    await admitReplacement(replacement.session.sessionId);
+    const next = await send({
+      headers: { ...headers, authorization: "Bearer " + replacement.bearer },
+    });
+    assert.equal(next.status, 409);
+    assert.deepEqual(jsonObject(next.text), { error: "operation_conflict" });
+    assert.equal(observed().length, 1);
+    assert.equal(gh.issuesOfTokens.length, 1, "no request-time mint or permission escalation");
+  });
+}

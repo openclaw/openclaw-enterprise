@@ -40,6 +40,7 @@ import {
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
   QualifiedAuthorizationDeniedError,
+  HiddenResourceAuthorizationDeniedError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -891,7 +892,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.");
   }
   if (error instanceof ConfigurationOwnershipError) {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+    return dependencyUnavailable();
   }
   if (error instanceof NamespaceNotReadyError) {
     return failure(409, "NAMESPACE_NOT_READY", "The requested Namespace is not ready.");
@@ -945,7 +946,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return result;
   }
   if (isDependencyUnavailable(error)) {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+    return dependencyUnavailable();
   }
   if (error instanceof ConfigurationGenerationConflictError) {
     // The detail marks a stale read, which a reread fixes, apart from other Configuration
@@ -974,7 +975,10 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
   }
-  if (error instanceof ScopeViolationError) {
+  if (
+    error instanceof ScopeViolationError ||
+    error instanceof HiddenResourceAuthorizationDeniedError
+  ) {
     return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
   if (error instanceof CredentialWithdrawalNotFoundError) {
@@ -1041,11 +1045,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       if (status === 403) {
         return failure(403, "FORBIDDEN", GENERIC_DENIAL);
       }
-      return failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      return dependencyUnavailable();
     }
     if (candidate.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
       return failure(413, "PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size.");

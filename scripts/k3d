@@ -711,7 +711,7 @@ if [ "$action" = "reset" ]; then
     esac
   done <<< "$namespace_inventory"
   info "Replacing the isolated Kubernetes test database."
-  node scripts/ci/reset-k3d-model.mjs --state "$state_file"
+  node scripts/ci/reset-k3d-model.ts --state "$state_file"
   rm -f "$env_file" "$ready_file"
   touch "$reset_file"
   echo "$engine_label-backed k3d test state reset; cluster and images preserved."

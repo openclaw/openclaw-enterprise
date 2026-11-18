@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "http-chat": ["OpenClaw", "Codex"],
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
@@ -143,11 +144,26 @@ export function selectQaMatrix(env = process.env) {
   );
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
-  const requiredEnv = activePresets.map((name) =>
-    name === "Codex" && !codexSearchConfig
-      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
-      : "OCC_TEST_QA_OPENAI_KEY_FILE",
-  );
+  const requiredEnv = [];
+  for (const name of activePresets) {
+    const selectedScenarios = cells
+      .filter((cell) => cell.preset === name)
+      .flatMap((cell) => cell.scenarios);
+    if (
+      name === "OpenClaw" ||
+      selectedScenarios.some((scenario) => ["http-chat", "codex-search-config"].includes(scenario))
+    ) {
+      if (!requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE")) {
+        requiredEnv.push("OCC_TEST_QA_OPENAI_KEY_FILE");
+      }
+    }
+    if (
+      name === "Codex" &&
+      selectedScenarios.some((scenario) => !["http-chat", "codex-search-config"].includes(scenario))
+    ) {
+      requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
+    }
+  }
   if (oidcAgentChat) {
     requiredEnv.push(
       "OCC_TEST_KUBERNETES_KUBECONFIG",

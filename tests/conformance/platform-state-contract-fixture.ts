@@ -155,6 +155,7 @@ export async function seedPlatformState(
       id: "compute-contract",
       implementation: "deterministic-contract",
       admission: `driver-state:v1:${"a".repeat(64)}`,
+      runtimeInputs: "fixture-runtime-inputs:v1",
     },
     executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,

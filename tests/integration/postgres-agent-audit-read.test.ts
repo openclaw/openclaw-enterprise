@@ -8,7 +8,7 @@ import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const authSecret = "agent-audit-reader-postgres-auth-secret";
 const migrationUrl = process.env.OCC_TEST_AGENT_AUDIT_READ_MIGRATION_DATABASE_URL;

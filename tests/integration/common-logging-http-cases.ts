@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { authLibraryLog } from "../../apps/controller/src/auth/library-log.ts";
 import { createFastifyApp, type ControllerAppOptions } from "../../apps/controller/src/index.ts";
-import type { LoggingConfiguration } from "../../apps/controller/src/logging.ts";
+import { emitOccLogEvent, type LoggingConfiguration } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -15,10 +16,23 @@ async function withLoggingApp<Result>(
   level: LoggingConfiguration["level"],
   developmentEnabled: boolean,
   trustedProxies: ControllerAppOptions["trustedProxies"],
-  exercise: (app: ReturnType<typeof createFastifyApp>) => Promise<Result>,
+  exercise: (
+    app: ReturnType<typeof createFastifyApp>,
+    auth: ReturnType<typeof createControllerAuth>,
+  ) => Promise<Result>,
 ) {
   const { logger, lines } = captureLogs("occ-api", level);
   const installationId = `ins_${randomUUID()}`;
+  const auth = createControllerAuth({
+    mode: "development",
+    installationId,
+    baseURL: "https://occ.oce.localhost",
+    agentDomain: "agents.oce.localhost",
+    secret: randomBytes(32).toString("hex"),
+    memoryDatabase: { user: [], session: [], account: [], verification: [], apikey: [] },
+    // As the API composes it: auth events go to the structured log.
+    onOperationalEvent: (event) => emitOccLogEvent(logger, event),
+  });
   const app = createFastifyApp({
     iamDriver: new NativeIAMDriver(
       {
@@ -40,19 +54,12 @@ async function withLoggingApp<Result>(
     resolveHarness: () => undefined,
     auditSink: new InMemoryAuditSink(),
     development: { enabled: developmentEnabled, installationId },
-    auth: createControllerAuth({
-      mode: "development",
-      installationId,
-      baseURL: "https://occ.oce.localhost",
-      agentDomain: "agents.oce.localhost",
-      secret: randomBytes(32).toString("hex"),
-      memoryDatabase: { user: [], session: [], account: [], verification: [], apikey: [] },
-    }),
+    auth,
     logger,
     ...(trustedProxies === undefined ? {} : { trustedProxies }),
   });
   try {
-    return { result: await exercise(app), lines };
+    return { result: await exercise(app, auth), lines };
   } finally {
     await app.close();
   }
@@ -182,5 +189,80 @@ export function registerHttpCases(): void {
     assert.equal(JSON.stringify(observed).includes(token), false);
     assert.equal(invalid.body.includes(token), false);
     assert.equal(JSON.stringify(lines).includes(token), false);
+  });
+
+  test("a refused API key logs one structured line without the key, not the library's console block", async (t) => {
+    const consoleCalls = ["error", "warn", "log", "info", "debug"].map((method) =>
+      t.mock.method(console, method as "error" | "warn" | "log" | "info" | "debug", () => {}),
+    );
+    const forged = `occ_${randomBytes(24).toString("hex")}`;
+    let revoked = "";
+    const { lines } = await withLoggingApp("info", false, undefined, async (app, auth) => {
+      const issued = await auth.createServiceKey({
+        principal: {
+          kind: "service_principal",
+          id: `logging-automation-${randomUUID()}`,
+          namespaceId: `ns_${randomUUID()}`,
+        },
+        name: "logging-proof",
+      });
+      await auth.revokeServiceKey(issued);
+      revoked = issued.key;
+      for (const key of [forged, revoked]) {
+        const refused = await app.inject({
+          method: "GET",
+          url: "/namespaces/ns_00000000-0000-4000-8000-000000000001",
+          headers: { "x-api-key": key },
+        });
+        assert.equal(refused.statusCode, 401, refused.body);
+      }
+    });
+
+    assert.deepEqual(
+      consoleCalls.map((call) => call.mock.callCount()),
+      [0, 0, 0, 0, 0],
+      "the auth library must not print to the console",
+    );
+    const refusals = lines.filter((line) => line.event === "authentication.request-refused");
+    assert.deepEqual(
+      refusals.map(({ severity, reasonCode }) => ({ severity, reasonCode })),
+      [
+        { severity: "INFO", reasonCode: "INVALID_API_KEY" },
+        { severity: "INFO", reasonCode: "INVALID_API_KEY" },
+      ],
+    );
+    assert.equal(
+      lines.filter((line) => String(line.event).startsWith("authentication.library-")).length,
+      0,
+    );
+    assert.deepEqual(
+      lines.filter((line) => line.event === "http.completed").map(({ status }) => status),
+      [401, 401],
+    );
+    const logged = JSON.stringify(lines);
+    assert.ok(revoked.length > 0);
+    assert.equal(logged.includes(forged), false);
+    assert.equal(logged.includes(revoked), false);
+  });
+
+  test("an unexpected auth library error stays a structured ERROR with only its code", () => {
+    const { logger, lines } = captureLogs("occ-api", "info");
+    const log = authLibraryLog((event) => emitOccLogEvent(logger, event));
+    log(
+      "error",
+      "Failed to delete expired API keys:",
+      Object.assign(new Error("select * from apikey where key = 'occ_secret'"), {
+        code: "ECONNRESET",
+      }),
+    );
+    assert.equal(lines.length, 1);
+    const { time, ...line } = logAt(lines, 0);
+    assert.ok(time);
+    assert.deepEqual(line, {
+      severity: "ERROR",
+      service: "occ-api",
+      event: "authentication.library-error",
+      reasonCode: "ECONNRESET",
+    });
   });
 }
