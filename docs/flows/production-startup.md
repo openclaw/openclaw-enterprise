@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-18"
-last_updated_session: "authoring-run/f67a604c-e411-4131-9cab-20d72a067871"
+last_updated_session: "authoring-run/af763315-eda8-40fc-bab0-fb23d4f8f175"
 ---
 
 # Production Startup Flow
@@ -142,8 +142,9 @@ API rollout. The migration container evaluates the chart's
 `files/migrate-selected-image.cjs` program. It validates the selected image's
 `db:migrate:production` package command, forwards the exact mode argument, and imports
 that image's migration entry point in the same Node process. The bootstrap container
-uses `files/bootstrap-selected-image.cjs` to validate the image's
-`db:bootstrap:production` task and regular executable, then replaces Node with
+evaluates `files/bootstrap-selected-image.cts` as CommonJS TypeScript. The
+selector reads the image's `db:bootstrap:production` task as untrusted data,
+requires a supported string command and regular file, then replaces Node with
 that executable. Doctor recognizes the exact selector or retained direct paths.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
 up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
@@ -382,6 +383,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 06:35: Evaluate the typed bootstrap selector and reject malformed package scripts. (authoring-run/af763315-eda8-40fc-bab0-fb23d4f8f175 - fa7803bfc18a9ce252ff1093d4fb4b1ebaf7b537)
 
 - 2026-11-18 05:59: Select and directly execute the controller image's bootstrap program. (authoring-run/f67a604c-e411-4131-9cab-20d72a067871 - 90db5bf2bc4d9365b2c582025ce305a834115e6e)
 

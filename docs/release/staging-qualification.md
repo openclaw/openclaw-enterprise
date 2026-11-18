@@ -173,7 +173,8 @@ Both controllers and the unchanged runtime must be reachable by their verified
 public digest from the node. The job also checks the exact PostgreSQL and Node
 support images. It builds the fixture CLI from the trusted workflow checkout.
 For the reviewed v3 pair, the job copies that checkout's chart and sets the
-worker probes and bootstrap command to the programs present in both historical images. The initial
+worker probes to the programs present in both historical images. The stock Job
+selects the bootstrap program from each controller image. The initial
 installation and the OIDC configuration upgrade use the same copy. The two
 image generations share a populated database and one issuer across replacements.
 

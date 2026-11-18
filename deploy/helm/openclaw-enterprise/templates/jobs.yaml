@@ -175,8 +175,9 @@ spec:
         - name: bootstrap
           image: {{ .Values.images.controller | quote }}
           args:
+            - --input-type=commonjs-typescript
             - -e
-            - {{ required "chart is missing files/bootstrap-selected-image.cjs" (.Files.Get "files/bootstrap-selected-image.cjs") | quote }}
+            - {{ required "chart is missing files/bootstrap-selected-image.cts" (.Files.Get "files/bootstrap-selected-image.cts") | quote }}
             - --
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}

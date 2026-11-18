@@ -110,9 +110,10 @@ test("console themes mount only on the API and restart it when the checksum chan
 });
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const selectedImageBootstrapEntry = [
+  "--input-type=commonjs-typescript",
   "-e",
   await readFile(
-    join(repository, "deploy/helm/openclaw-enterprise/files/bootstrap-selected-image.cjs"),
+    join(repository, "deploy/helm/openclaw-enterprise/files/bootstrap-selected-image.cts"),
     "utf8",
   ),
   "--",
@@ -2020,6 +2021,19 @@ process.exitCode = Number(process.env.BOOTSTRAP_EXIT_CODE ?? 0);
           env: { ...process.env, BOOTSTRAP_EXIT_CODE: "23" },
         }),
         ({ code, stdout }) => code === 23 && JSON.parse(stdout).entry === join(directory, entry),
+      );
+      // A one-element array coerces to the approved text, but is not a package script.
+      await writeFile(
+        join(directory, "package.json"),
+        JSON.stringify({
+          type: "module",
+          scripts: { "db:bootstrap:production": [`NODE_ENV=production node ${entry}`] },
+        }),
+      );
+      await assert.rejects(
+        execute(process.execPath, bootstrap.args, { cwd: directory }),
+        ({ code, stdout, stderr }) =>
+          code !== 0 && stdout === "" && stderr.includes("supported production bootstrap program"),
       );
     }
   },

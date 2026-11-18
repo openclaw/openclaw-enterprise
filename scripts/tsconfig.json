@@ -58,6 +58,7 @@
     "ci/**/*.ts",
     "lib/**/*.ts",
     "../deploy/helm/src/*.ts",
+    "../deploy/helm/openclaw-enterprise/files/bootstrap-selected-image.cts",
     "../deploy/runtime/native-tools/fetch.ts",
     "../deploy/runtime/node/verify.mts",
     "../deploy/runtime/with-pinned-matrix-sdk-crypto.mts",

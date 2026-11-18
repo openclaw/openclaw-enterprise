@@ -160,11 +160,12 @@ export async function standInChart(
                 name: "bootstrap",
                 image,
                 args: [
+                  "--input-type=commonjs-typescript",
                   "-e",
                   readFileSync(
                     join(
                       repository,
-                      "deploy/helm/openclaw-enterprise/files/bootstrap-selected-image.cjs",
+                      "deploy/helm/openclaw-enterprise/files/bootstrap-selected-image.cts",
                     ),
                     "utf8",
                   ),
