@@ -51,16 +51,14 @@ export const keptLocks = { status: 1, stdout: "" };
 
 // The line a held start logs before OpenClaw's holders. The Gateway's is the one the tool
 // policy step logs when `config validate` meets the lock first; an embedded Gateway reaches
-// the same hold, so it names no Gateway kind.
+// the same hold, so it names no Gateway kind. The Harness's names the workspace node's lock.
 export function lockHoldLine(reported = leaseHolder, owner: "Gateway" | "Harness" = "Gateway") {
-  const [holder, lock] =
-    owner === "Gateway"
-      ? ["an earlier Gateway process", "the Gateway state lock"]
-      : ["an earlier OpenClaw process", "the workspace node's state lock"];
-  return (
-    `The ${owner} cannot start: ${holder} did not stop cleanly and still holds ${lock}, and` +
-    " this container cannot verify that it stopped. It remains unready; stop the Agent and" +
-    " recover the lock as the Agent troubleshooting guide describes for an unverifiable state" +
-    ` owner. OpenClaw reported: ${reported}`
-  );
+  return owner === "Gateway"
+    ? "The Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds" +
+        " the Gateway state lock, and this container cannot verify that it stopped. It remains" +
+        " unready; stop the Agent and recover the lock as the Agent troubleshooting guide" +
+        ` describes for an unverifiable state owner. OpenClaw reported: ${reported}`
+    : "The Harness cannot start: an earlier OpenClaw process holds the workspace node's state" +
+        " lock, and this container cannot verify that it stopped. Recover it as the Agent" +
+        ` troubleshooting guide describes. OpenClaw reported: ${reported}`;
 }

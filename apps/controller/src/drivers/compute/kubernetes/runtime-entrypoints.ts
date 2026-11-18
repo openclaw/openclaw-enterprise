@@ -5064,9 +5064,11 @@ function workspaceBaselineReport(path) {
 // 3345). The Harness never recovers a lock it cannot prove stopped; an operator does.
 function holdUnverifiableStateLock(check) {
   const holders = openClawStateLockHolders(nodeEnv);
-  const locked = holders !== undefined && holders.length > 0;
-  if (locked) console.error(${JSON.stringify(unverifiableStateLockLine("Harness"))} + holders.join(" "));
-  holdStartupFailure(locked ? "gateway-state-lock" : check, "UNAVAILABLE");
+  if (holders?.length > 0) {
+    console.error(${JSON.stringify(unverifiableStateLockLine("Harness"))} + holders.join(" "));
+    check = "gateway-state-lock";
+  }
+  holdStartupFailure(check, "UNAVAILABLE");
 }
 // The node state on the Agent's workspace claim outlives runtime image upgrades.
 // Native setup and both children open it, so Doctor migrates it first, with the

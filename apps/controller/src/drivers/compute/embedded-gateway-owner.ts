@@ -77,18 +77,15 @@ export const EXITED_OPENCLAW_STATE_STOP_WAIT_MS = 20_000;
 export const EXITED_OPENCLAW_STATE_RELEASE = String.raw`
 function releaseExitedOpenClawState(environment, waitMs = 0) {
   let namespace;
-  try { namespace = ${GATEWAY_NAMESPACE_PROBE}; } catch { return false; }
-  const deadline = Date.now() + waitMs;
-  for (;;) {
-    const released = require("node:child_process").spawnSync(process.execPath,
-      ["/app/openclaw.mjs", "gateway", "recover-lock", "--terminated-namespace", JSON.stringify(namespace), "--json"],
-      { env: environment, stdio: ["ignore", "inherit", "inherit"], timeout: 60000 });
-    if (released.status === 0) return true;
+  try { namespace = JSON.stringify(${GATEWAY_NAMESPACE_PROBE}); } catch { return false; }
+  for (const deadline = Date.now() + waitMs; ; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)) {
+    if (require("node:child_process").spawnSync(process.execPath,
+      ["/app/openclaw.mjs", "gateway", "recover-lock", "--terminated-namespace", namespace, "--json"],
+      { env: environment, stdio: ["ignore", "inherit", "inherit"], timeout: 60000 }).status === 0) return true;
     if (Date.now() >= deadline) {
-      console.error("OpenClaw kept the state locks of the process that exited; see the recover-lock output above.");
+      console.error("OpenClaw kept the exited process's state locks.");
       return false;
     }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
   }
 }
 `;
@@ -101,23 +98,19 @@ function releaseExitedOpenClawState(environment, waitMs = 0) {
 // holder is cut on its own so that a long one never drops the lease. Only the holder
 // descriptions: the confirmation would recover the lock without proof that the holder stopped.
 export const OPENCLAW_STATE_LOCK_INSPECTION = String.raw`
-const OPENCLAW_STATE_LOCK_HOLDER_CHARS = 500;
 function openClawStateLockHolders(environment) {
   const inspection = require("node:child_process").spawnSync("node", ["/app/openclaw.mjs", "gateway", "recover-lock", "--json"], {
     env: { ...environment, OPENCLAW_CONFIG_READONLY: "1" },
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
   });
-  if (inspection.error !== undefined || inspection.status !== 0) return undefined;
-  let report;
   try {
-    report = JSON.parse(inspection.stdout);
-  } catch {
-    return undefined;
-  }
-  if (typeof report?.present !== "boolean" || !Array.isArray(report.holders)) return undefined;
-  const holders = report.holders.filter((holder) => typeof holder === "string" && holder !== "");
-  return holders.length === report.holders.length && report.present === holders.length > 0
-    ? holders.map((holder) => holder.slice(0, OPENCLAW_STATE_LOCK_HOLDER_CHARS)) : undefined;
+    const { present, holders } = JSON.parse(inspection.stdout);
+    if (inspection.status === 0 && typeof present === "boolean" && present === holders.length > 0 &&
+        holders.every((holder) => typeof holder === "string" && holder !== "")) {
+      return holders.map((holder) => holder.slice(0, 500));
+    }
+  } catch {}
+  return undefined;
 }
 `;
 
@@ -127,16 +120,14 @@ function openClawStateLockHolders(environment) {
  * Gateway state lock (finding 3288); the Harness's, the workspace node's (finding 3345).
  */
 export function unverifiableStateLockLine(owner: "Gateway" | "Harness"): string {
-  const [holder, lock] =
-    owner === "Gateway"
-      ? ["an earlier Gateway process", "the Gateway state lock"]
-      : ["an earlier OpenClaw process", "the workspace node's state lock"];
-  return (
-    `The ${owner} cannot start: ${holder} did not stop cleanly and still holds ${lock}, and` +
-    " this container cannot verify that it stopped. It remains unready; stop the Agent and" +
-    " recover the lock as the Agent troubleshooting guide describes for an unverifiable state" +
-    " owner. OpenClaw reported: "
-  );
+  return owner === "Gateway"
+    ? "The Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds" +
+        " the Gateway state lock, and this container cannot verify that it stopped. It remains" +
+        " unready; stop the Agent and recover the lock as the Agent troubleshooting guide" +
+        " describes for an unverifiable state owner. OpenClaw reported: "
+    : "The Harness cannot start: an earlier OpenClaw process holds the workspace node's state" +
+        " lock, and this container cannot verify that it stopped. Recover it as the Agent" +
+        " troubleshooting guide describes. OpenClaw reported: ";
 }
 
 // Run this in a short-lived process. By the time the Gateway can load a plugin

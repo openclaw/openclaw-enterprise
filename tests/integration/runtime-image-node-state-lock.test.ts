@@ -279,7 +279,7 @@ test(
     assert.equal(stop.exitCode, 0, stop.output);
     assert.doesNotMatch(stop.output, /WATCHER_TIMEOUT/);
     assert.deepEqual(phaseOutcomes(stop.output, "state-migration"), [], stop.output);
-    assert.doesNotMatch(stop.output, /OpenClaw kept the state locks/);
+    assert.doesNotMatch(stop.output, /OpenClaw kept the exited process's state locks/);
 
     // Its maintenance is still pending, so the next Pod runs Doctor again, in another PID
     // namespace on the same claim, and must not meet a lock no later process can verify.
@@ -318,7 +318,7 @@ test(
     assert.deepEqual(phaseOutcomes(held.output, "state-migration"), ["failed"], held.output);
     assert.match(
       held.output,
-      /The Harness cannot start: an earlier OpenClaw process did not stop cleanly and still holds the workspace node's state lock, .* OpenClaw reported: \S+\/tmp\/openclaw-1000\/state\.[0-9a-f]+\.lock: holder \d+ at [^ ]+\/pid-ns \d+/,
+      /The Harness cannot start: an earlier OpenClaw process holds the workspace node's state lock, .* OpenClaw reported: \S+\/tmp\/openclaw-1000\/state\.[0-9a-f]+\.lock: holder \d+ at [^ ]+\/pid-ns \d+/,
     );
     assert.deepEqual(baselineOutcomes(held.output), [], held.output);
     assert.equal(held.running, true, held.output);

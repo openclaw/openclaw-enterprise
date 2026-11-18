@@ -624,7 +624,7 @@ test("Harness releases the node state of a Doctor stopped with its Pod before it
         assertReleasedOwnNamespace(call, directory);
       }
       assert.equal(
-        outcome.errors.some((line) => line.includes("kept the state locks")),
+        outcome.errors.some((line) => line.includes("kept the exited process's state locks")),
         false,
       );
     });
@@ -641,9 +641,7 @@ test("Harness exits within the stop's grace when its stopped Doctor's CLI keeps 
   });
   assert.deepEqual(outcome.ends.slice(0, 3), ["release", "release", "exit 0"]);
   assert.ok(
-    outcome.errors.includes(
-      "OpenClaw kept the state locks of the process that exited; see the recover-lock output above.",
-    ),
+    outcome.errors.includes("OpenClaw kept the exited process's state locks."),
     outcome.errors.join("\n"),
   );
 });
