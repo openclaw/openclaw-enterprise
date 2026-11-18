@@ -108,11 +108,15 @@ export async function readManifest(
     await readFile(join(directory, "meta/_journal.json"), "utf8"),
   );
   if (!isRecord(manifest) || !Array.isArray(manifest.entries)) {
-    refuse("the canonical migration manifest is invalid");
+    refuse(
+      "the canonical migration manifest is invalid; preserve the database and run --check with an intact matching release",
+    );
   }
   const entries: unknown[] = manifest.entries;
   if (!entries.every(isRecord)) {
-    refuse("a canonical migration entry is invalid");
+    refuse(
+      "a canonical migration entry is invalid; preserve the database and run --check with an intact matching release",
+    );
   }
   const expected = entries.map(({ sha256: _hash, ...entry }) => entry);
   if (
@@ -151,7 +155,9 @@ export async function readManifest(
     previousTimestamp = migration.folderMillis;
   }
   if (!isMigrationManifest(manifest)) {
-    refuse("the canonical migration manifest is invalid");
+    refuse(
+      "the canonical migration manifest is invalid; preserve the database and run --check with an intact matching release",
+    );
   }
   return { manifest, migrations };
 }

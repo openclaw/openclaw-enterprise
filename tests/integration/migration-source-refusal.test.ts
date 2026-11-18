@@ -26,14 +26,8 @@ test("the migration command reports malformed release metadata before connecting
     await copyFile(join(repository, "scripts", path), join(fixture, "scripts", path));
   }
   const meta = join(repository, "migrations", "meta");
-  await copyFile(join(meta, "_journal.json"), join(fixture, "migrations", "meta", "_journal.json"));
+  const journal = JSON.parse(await readFile(join(meta, "_journal.json"), "utf8"));
   const manifest = JSON.parse(await readFile(join(meta, "_canonical-history.json"), "utf8"));
-  // Simulate a damaged release artifact while keeping its reviewed journal unchanged.
-  manifest.catalogs = [];
-  await writeFile(
-    join(fixture, "migrations", "meta", "_canonical-history.json"),
-    JSON.stringify(manifest),
-  );
   const url = syntheticCredentialUrl({
     protocol: "postgresql",
     username: "occ_migrator",
@@ -42,20 +36,59 @@ test("the migration command reports malformed release metadata before connecting
     port: 9,
     pathname: "/openclaw_enterprise",
   });
-  const result = spawnSync(process.execPath, ["scripts/migrate-production.mjs", "--check"], {
-    cwd: fixture,
-    env: {
-      ...process.env,
-      NODE_ENV: "production",
-      OCC_DATABASE_AUTH: "password",
-      OCC_CONFIG_PATH: undefined,
-      OCC_MIGRATION_DATABASE_URL: url,
+  const cases = [
+    {
+      manifest: { ...manifest, catalogs: [] },
+      journal,
+      message: "the completed catalog has not been qualified",
     },
-    encoding: "utf8",
-    timeout: 30_000,
-  });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /MIGRATION_HISTORY_UNSUPPORTED/);
-  assert.match(result.stderr, /the completed catalog has not been qualified/);
-  assert.doesNotMatch(result.stderr + result.stdout, /synthetic-source-secret/);
+    {
+      manifest: null,
+      journal,
+      message:
+        "the canonical migration manifest is invalid; preserve the database and run --check with an intact matching release",
+    },
+    {
+      manifest: { ...manifest, entries: [null] },
+      journal,
+      message:
+        "a canonical migration entry is invalid; preserve the database and run --check with an intact matching release",
+    },
+    {
+      // An empty, matching journal reaches the final shape guard without SQL fixture copies.
+      manifest: { ...manifest, entries: [], initialSchemaStates: null },
+      journal: { ...journal, entries: [] },
+      message:
+        "the canonical migration manifest is invalid; preserve the database and run --check with an intact matching release",
+    },
+  ];
+  for (const scenario of cases) {
+    await writeFile(
+      join(fixture, "migrations", "meta", "_journal.json"),
+      JSON.stringify(scenario.journal),
+    );
+    await writeFile(
+      join(fixture, "migrations", "meta", "_canonical-history.json"),
+      JSON.stringify(scenario.manifest),
+    );
+    const result = spawnSync(process.execPath, ["scripts/migrate-production.mjs", "--check"], {
+      cwd: fixture,
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+        OCC_DATABASE_AUTH: "password",
+        OCC_CONFIG_PATH: undefined,
+        OCC_MIGRATION_DATABASE_URL: url,
+      },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 1);
+    assert.equal(
+      result.stderr.split("\n")[0],
+      `Unsupported migration history: ${scenario.message}.`,
+    );
+    assert.match(result.stderr, /MIGRATION_HISTORY_UNSUPPORTED/);
+    assert.doesNotMatch(result.stderr + result.stdout, /synthetic-source-secret/);
+  }
 });
