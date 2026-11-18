@@ -34,6 +34,48 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { staticEgressFixture } from "./static-egress.mjs";
 import { postgresApp } from "./postgres-egress-app.mjs";
 
+/** Pause after the real Secret metadata query, before the caller can use its result. */
+export function pauseSecretMetadata(
+  state: PostgresPlatformState,
+  namespaceId: string,
+  secretId: string,
+) {
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const original = state.read.bind(state);
+  let pending = true;
+  let released = false;
+  state.read = (work) =>
+    original((unit) =>
+      work({
+        ...unit,
+        secrets: {
+          ...unit.secrets,
+          async findSecret(...args) {
+            const result = await unit.secrets.findSecret(...args);
+            if (pending && args[0] === namespaceId && args[1] === secretId) {
+              pending = false;
+              reached.resolve();
+              await release.promise;
+            }
+            return result;
+          },
+        },
+      }),
+    );
+  return {
+    reached: reached.promise,
+    release() {
+      if (released) {
+        return;
+      }
+      released = true;
+      state.read = original;
+      release.resolve();
+    },
+  };
+}
+
 /** Real API/IAM/PostgreSQL/Secret Driver with controlled external runtime observation.
  * No installed OpenShell or workload execution is represented by this fixture. */
 export async function requestCredentialFixture(
@@ -504,6 +546,63 @@ export async function requestCredentialFixture(
     grant,
     restartController,
     principalId,
+    pauseMaterialMetadata() {
+      assert.ok(state instanceof PostgresPlatformState);
+      return pauseSecretMetadata(state, f.namespace.id, f.secret.id);
+    },
+    pausePolicyCompletion(stage: "approval" | "release") {
+      assert.ok(state instanceof PostgresPlatformState);
+      const policyState = state;
+      const original = policyState.transactReadCommitted.bind(policyState);
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let pending = true;
+      let released = false;
+      policyState.transactReadCommitted = (work) =>
+        original(async (unit) => {
+          let selected = false;
+          const result = await work({
+            ...unit,
+            secrets: {
+              ...unit.secrets,
+              async findSecret(...args) {
+                const value = await unit.secrets.findSecret(...args);
+                if (stage === "release" && args[0] === f.namespace.id && args[1] === f.secret.id) {
+                  selected = true;
+                }
+                return value;
+              },
+            },
+            requestCredentialApprovals: {
+              ...unit.requestCredentialApprovals,
+              async approve(...args) {
+                const value = await unit.requestCredentialApprovals.approve(...args);
+                if (stage === "approval" && value) {
+                  selected = true;
+                }
+                return value;
+              },
+            },
+          });
+          if (pending && selected) {
+            pending = false;
+            reached.resolve();
+            await release.promise;
+          }
+          return result;
+        });
+      return {
+        reached: reached.promise,
+        release() {
+          if (released) {
+            return;
+          }
+          released = true;
+          policyState.transactReadCommitted = original;
+          release.resolve();
+        },
+      };
+    },
     pauseNativeAuthorization(skip = 0) {
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();

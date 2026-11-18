@@ -77,6 +77,12 @@ export type RequestCredentialRelease = (
   read: () => Promise<VersionedSecretValue & { readonly materialId: string }>,
 ) => Promise<boolean>;
 
+/** The source and the original in-process dependency identity of one policy decision. */
+export interface RequestCredentialSelection {
+  readonly source: StaticEgressSource;
+  readonly isCurrent: () => boolean;
+}
+
 export interface EgressAuthorityPorts {
   readonly exchangeOwner: EgressExchangeOwner;
   readonly now: () => number;
@@ -110,11 +116,13 @@ export interface EgressAuthorityPorts {
       request: RequestCredentialInput | RequestCredentialApproval,
       signal: AbortSignal,
       release?: RequestCredentialRelease,
-    ): Promise<StaticEgressSource | undefined>;
+      expected?: () => boolean,
+    ): Promise<RequestCredentialSelection | undefined>;
     approve(
       request: RequestCredentialInput,
       signal: AbortSignal,
       accept: () => boolean,
+      expected: () => boolean,
     ): Promise<boolean>;
     consume(grant: RequestCredentialGrant): Promise<ConsumedRequestCredentialApproval | undefined>;
     validate(source: StaticEgressSource, value: string): boolean;
@@ -514,7 +522,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     }
   }
 
-  authorizeRequestCredential(
+  async authorizeRequestCredential(
     input: RequestCredentialInput,
     signal: AbortSignal,
     accept: () => boolean,
@@ -529,7 +537,7 @@ export class CredentialProxy implements CredentialProxyExchange {
       !input.bindingId ||
       input.bindingId.length > 256
     ) {
-      return Promise.resolve(undefined);
+      return undefined;
     }
     const request = {
       ...immutableCopy({ ...input, http: { ...input.http, body: undefined } }),
@@ -538,17 +546,24 @@ export class CredentialProxy implements CredentialProxyExchange {
         body: new Uint8Array(input.http.body),
       },
     };
-    return this.withRequestCredential<"credential">(
+    const selected = await this.withRequestCredential<RequestCredentialSelection>(
       request.recipient.id,
       request.deadlineAt,
       signal,
-      async (ports, lifetime) =>
-        (await ports.check(request, lifetime)) ? "credential" : undefined,
-      async (decision, ports, lifetime, current) =>
-        current() && (await ports.approve(request, lifetime, () => current() && accept()))
-          ? decision
+      (ports, lifetime) => ports.check(request, lifetime),
+      async (selection, ports, lifetime, current) =>
+        current() &&
+        selection.isCurrent() &&
+        (await ports.approve(
+          request,
+          lifetime,
+          () => current() && selection.isCurrent() && accept(),
+          selection.isCurrent,
+        ))
+          ? selection
           : undefined,
     );
+    return selected?.isCurrent() ? ("credential" as const) : undefined;
   }
 
   acquireRequestAuthentication(): (() => void) | undefined {
@@ -596,7 +611,8 @@ export class CredentialProxy implements CredentialProxyExchange {
         if (!admitted || approvedLifetime.aborted) {
           return undefined;
         }
-        const source = immutableCopy(admitted);
+        const source = immutableCopy(admitted.source);
+        const dependenciesCurrent = admitted.isCurrent;
         const readLifetime = {
           signal: approvedLifetime,
           deadlineAt: new Date(deadline).toISOString(),
@@ -604,13 +620,21 @@ export class CredentialProxy implements CredentialProxyExchange {
         // Both authoritative reads are outside policy transactions. A rotation during a held
         // read invalidates this approval; a later request may select the replacement version.
         const first = immutableCopy(
-          await this.ports.read(source, readLifetime, () => !approvedLifetime.aborted),
+          await this.ports.read(
+            source,
+            readLifetime,
+            () => !approvedLifetime.aborted && dependenciesCurrent(),
+          ),
         );
         if (approvedLifetime.aborted) {
           return undefined;
         }
         const current = immutableCopy(
-          await this.ports.read(source, readLifetime, () => !approvedLifetime.aborted),
+          await this.ports.read(
+            source,
+            readLifetime,
+            () => !approvedLifetime.aborted && dependenciesCurrent(),
+          ),
         );
         const fresh = (value: VersionedSecretValue) =>
           value.version &&
@@ -639,35 +663,43 @@ export class CredentialProxy implements CredentialProxyExchange {
           await ports.deny(approval, "invalid_material");
           return undefined;
         }
-        const selected = await ports.check(approval, approvedLifetime, async (selected, read) => {
-          if (!isDeepStrictEqual(selected, source) || approvedLifetime.aborted) {
-            return false;
-          }
-          // OCC rotations use this same Namespace fence. The last read is the material
-          // observation for release; direct external writes have no shared OCC lock.
-          let onAbort!: () => void;
-          const aborted = new Promise<undefined>((resolve) => {
-            onAbort = () => resolve(undefined);
-          });
-          approvedLifetime.addEventListener("abort", onAbort, { once: true });
-          try {
-            // A Driver ignoring cancellation must neither retain policy locks nor escape
-            // capacity accounting while its abandoned read is still pending.
-            const final = await Promise.race([retain(read()), aborted]);
-            return (
-              final !== undefined &&
-              !approvedLifetime.aborted &&
-              Boolean(fresh(final)) &&
-              final.version === current.version &&
-              final.materialId === current.materialId &&
-              sameSecret(final.value, current.value)
-            );
-          } finally {
-            approvedLifetime.removeEventListener("abort", onAbort);
-          }
-        });
+        const selected = await ports.check(
+          approval,
+          approvedLifetime,
+          async (selected, read) => {
+            if (!isDeepStrictEqual(selected, source) || approvedLifetime.aborted) {
+              return false;
+            }
+            // OCC rotations use this same Namespace fence. The last read is the material
+            // observation for release; direct external writes have no shared OCC lock.
+            let onAbort!: () => void;
+            const aborted = new Promise<undefined>((resolve) => {
+              onAbort = () => resolve(undefined);
+            });
+            approvedLifetime.addEventListener("abort", onAbort, { once: true });
+            try {
+              // A Driver ignoring cancellation must neither retain policy locks nor escape
+              // capacity accounting while its abandoned read is still pending.
+              const final = await Promise.race([retain(read()), aborted]);
+              return (
+                final !== undefined &&
+                !approvedLifetime.aborted &&
+                Boolean(fresh(final)) &&
+                final.version === current.version &&
+                final.materialId === current.materialId &&
+                sameSecret(final.value, current.value)
+              );
+            } finally {
+              approvedLifetime.removeEventListener("abort", onAbort);
+            }
+          },
+          dependenciesCurrent,
+        );
         if (
-          !isDeepStrictEqual(selected, source) ||
+          !selected ||
+          !isDeepStrictEqual(selected.source, source) ||
+          !dependenciesCurrent() ||
+          !selected.isCurrent() ||
           approvedLifetime.aborted ||
           this.ports.now() >= deadline ||
           performance.now() - startedAt >= releaseLifetimeMs

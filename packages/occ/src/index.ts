@@ -84,6 +84,7 @@ import {
   resolveCredentialProxyCapacity,
   type CredentialProxyCapacity,
   type RequestCredentialRelease,
+  type RequestCredentialSelection,
   type ExchangeProvider,
 } from "./credential-proxy.ts";
 import type { EgressExchangeOwner, CapturedEgressUse } from "@openclaw-enterprise/contracts";
@@ -7727,6 +7728,10 @@ export class OpenClawController {
         check: (use, material, stream, provider) =>
           this.checkEgressUse(use, material, stream, provider),
         read: async (source, lifetime, isProviderCurrent) => {
+          const current = this.staticEgressDependencies(owner ?? this.selectedProxyOwner(), source);
+          if (!isProviderCurrent() || !current()) {
+            throw new DependencyUnavailableError("Selected credential source changed.");
+          }
           const { secret, stored } = await this.state.read(async (state) => ({
             secret: await state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
             stored: await state.credentialSources.findCredentialSource(
@@ -7734,25 +7739,20 @@ export class OpenClawController {
               source.key.source.id,
             ),
           }));
-          const current = this.staticEgressDependencies(
-            owner ?? this.selectedProxyOwner(),
-            stored,
-            source,
-          );
           return this.readEgressMaterial(
             secret,
             source,
             lifetime,
-            () => isProviderCurrent() && current(),
+            () => stored !== undefined && isProviderCurrent() && current(stored),
           );
         },
         ...(owner?.require("credential_proxy").requestTimeCredentials && {
           requestCredentials: {
             sender: owner.require("credential_proxy").sourceControl.sender,
-            check: (request, signal, release) =>
-              this.checkRequestCredential(owner, request, signal, release),
-            approve: async (request, signal, accept) =>
-              !!(await this.checkRequestCredential(owner, request, signal, { accept })),
+            check: (request, signal, release, expected) =>
+              this.checkRequestCredential(owner, request, signal, release, expected),
+            approve: async (request, signal, accept, expected) =>
+              !!(await this.checkRequestCredential(owner, request, signal, { accept }, expected)),
             validate: (source, value) => {
               if (this.selectedProxyOwner() !== owner) {
                 return false;
@@ -7983,30 +7983,46 @@ export class OpenClawController {
   /** Snapshot the current owner and transport of an admitted live static source. */
   private staticEgressDependencies(
     owner: InstalledDriver,
-    source: Readonly<CredentialSource> | undefined,
     selected: StaticEgressSource,
-  ): () => boolean {
+  ): (source?: Readonly<CredentialSource>) => boolean {
     const proxy = owner.require("credential_proxy");
     const control = proxy.sourceControl;
     const gateway = this.selections.get("credential_gateway");
     const provider = registeredCredentialProvider(control.providers, selected.key.provider);
-    return () => {
+    const methods =
+      provider && provider !== "ambiguous"
+        ? {
+            authorization: provider.authorization,
+            routes: provider.routes,
+            classify: provider.classify,
+            normalizeGrant: provider.normalizeGrant,
+            inject: provider.inject,
+          }
+        : undefined;
+    return (source) => {
       try {
         return Boolean(
-          source?.state === "ready" &&
-          source.ownerCapability === "credential_gateway" &&
-          source.driverId === gateway?.id &&
           gateway &&
           this.selections.get("credential_gateway") === gateway &&
           this.unchangedDriver(gateway) &&
           this.selectedProxyOwner() === owner &&
           proxy.sourceControl === control &&
-          isDeepStrictEqual(source.egress, selected) &&
+          (source === undefined ||
+            (source.state === "ready" &&
+              source.ownerCapability === "credential_gateway" &&
+              source.driverId === gateway.id &&
+              isDeepStrictEqual(source.egress, selected))) &&
           isDeepStrictEqual(selected.key.backend, control.backend) &&
           isDeepStrictEqual(selected.sender, control.sender) &&
           isDeepStrictEqual(selected.resolver, control.resolver) &&
           provider &&
           provider !== "ambiguous" &&
+          methods &&
+          provider.authorization === methods.authorization &&
+          provider.routes === methods.routes &&
+          provider.classify === methods.classify &&
+          provider.normalizeGrant === methods.normalizeGrant &&
+          provider.inject === methods.inject &&
           registeredCredentialProvider(control.providers, selected.key.provider) === provider,
         );
       } catch {
@@ -8029,12 +8045,19 @@ export class OpenClawController {
     request: RequestCredentialInput | RequestCredentialApproval,
     signal: AbortSignal,
     step?: RequestCredentialRelease | { readonly accept: () => boolean },
-  ): Promise<StaticEgressSource | undefined> {
+    expected?: () => boolean,
+  ): Promise<RequestCredentialSelection | undefined> {
     for (;;) {
       try {
-        const result = await this.checkRequestCredentialOnce(owner, request, signal, step);
+        const result = await this.checkRequestCredentialOnce(
+          owner,
+          request,
+          signal,
+          step,
+          expected,
+        );
         if (result !== "quota-busy") {
-          return result;
+          return result?.isCurrent() && (expected === undefined || expected()) ? result : undefined;
         }
       } catch (error) {
         if (!(error instanceof RequestCredentialWorkBusyError)) {
@@ -8057,12 +8080,14 @@ export class OpenClawController {
     request: RequestCredentialInput | RequestCredentialApproval,
     signal: AbortSignal,
     step?: RequestCredentialRelease | { readonly accept: () => boolean },
-  ): Promise<StaticEgressSource | "quota-busy" | undefined> {
+    expected?: () => boolean,
+  ): Promise<RequestCredentialSelection | "quota-busy" | undefined> {
     const release = typeof step === "function" ? step : undefined;
     if (
       signal.aborted ||
       Date.parse(request.deadlineAt) <= this.clock().getTime() ||
       this.transactionContext.getStore() ||
+      (expected !== undefined && !expected()) ||
       this.selectedProxyOwner() !== owner
     ) {
       return undefined;
@@ -8197,12 +8222,20 @@ export class OpenClawController {
       ) {
         return refuse("stale_configuration");
       }
-      const currentSource = this.staticEgressDependencies(owner, source, selected);
-      const dependenciesCurrent = () => proxy.sourceControl === control && currentSource();
+      const currentSource = this.staticEgressDependencies(owner, selected);
+      const dependenciesCurrent = () =>
+        (expected === undefined || expected()) &&
+        proxy.sourceControl === control &&
+        currentSource(source) &&
+        this.requestCredentialAuthority() === authority &&
+        authority.authorize === authorize &&
+        proxy.requestTimeCredentials === credentials &&
+        credentials.verifyRequestInstallation === verifyRequestInstallation;
+      const selection = Object.freeze({ source: selected, isCurrent: dependenciesCurrent });
       if (!dependenciesCurrent()) {
         return refuse("stale_configuration");
       }
-      const { routes: makeRoutes, classify, normalizeGrant } = provider;
+      const { routes: makeRoutes, classify } = provider;
       if (
         !Reflect.apply(makeRoutes, provider, [
           source,
@@ -8300,18 +8333,7 @@ export class OpenClawController {
       if (
         signal.aborted ||
         Date.parse(request.deadlineAt) <= this.clock().getTime() ||
-        !dependenciesCurrent() ||
-        this.authorizationAuthority(revision.servicePrincipalId) !== authority ||
-        authority.authorize !== authorize ||
-        proxy.sourceControl !== control ||
-        proxy.requestTimeCredentials !== credentials ||
-        credentials.verifyRequestInstallation !== verifyRequestInstallation ||
-        provider.authorization !== "online-request" ||
-        registeredCredentialProvider(control.providers, route.binding.source.provider) !==
-          provider ||
-        provider.routes !== makeRoutes ||
-        provider.classify !== classify ||
-        provider.normalizeGrant !== normalizeGrant
+        !dependenciesCurrent()
       ) {
         return refuse("stale_configuration");
       }
@@ -8338,7 +8360,7 @@ export class OpenClawController {
           if (!(await candidateCurrent()) || !dependenciesCurrent() || step.accept() !== true) {
             throw new DependencyUnavailableError("Request credential authorization expired.");
           }
-          return selected;
+          return selection;
         }
         const reservation = await state.requestCredentialApprovals.insert(
           {
@@ -8370,7 +8392,7 @@ export class OpenClawController {
           return refuse("approval_refused");
         }
       }
-      return selected;
+      return selection;
     });
   }
 

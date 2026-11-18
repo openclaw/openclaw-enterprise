@@ -1,5 +1,5 @@
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
-import type { OpenClawController } from "../../packages/occ/src/index.ts";
+import { PostgresPlatformState, type OpenClawController } from "../../packages/occ/src/index.ts";
 import { staticEgressAdmissionFixture, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { openShellModelRequestPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
 import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -48,7 +48,10 @@ import {
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { invoke, openShellMiddlewareClient, token } from "../helpers/openshell-online-wire.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
+import {
+  pauseSecretMetadata,
+  requestCredentialFixture,
+} from "../helpers/request-credential-fixture.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { waitFor } from "../helpers/qa-wait.ts";
 
@@ -84,6 +87,18 @@ function registerAlternateGateway(controller: OpenClawController) {
   });
   controller.registerDriver(alternate);
   return { selected, alternate };
+}
+
+async function reachBarrier<T>(reached: Promise<void>, pending: Promise<T>, label: string) {
+  await Promise.race([
+    reached,
+    pending.then(() => {
+      throw new Error(`${label} completed before its barrier`);
+    }),
+    delay(5_000, undefined, { ref: false }).then(() => {
+      throw new Error(`${label} barrier timed out`);
+    }),
+  ]);
 }
 
 test(
@@ -372,15 +387,7 @@ test(
     t.after(authorization.release);
     const beforeAuthorizationReads = f.secretReads;
     const pendingAuthorization = evaluate(duringAuthorization);
-    await Promise.race([
-      authorization.reached,
-      pendingAuthorization.then(() => {
-        throw new Error("authorization completed before the IAM barrier");
-      }),
-      delay(5_000, undefined, { ref: false }).then(() => {
-        throw new Error("IAM barrier timed out");
-      }),
-    ]);
+    await reachBarrier(authorization.reached, pendingAuthorization, "authorization");
     controller.selectDriver("credential_gateway", alternate.id);
     authorization.release();
     let denied;
@@ -422,15 +429,7 @@ test(
       const read = fixture.pauseFinalMaterialRead();
       t.after(() => read.release());
       const pending = redeem(request);
-      await Promise.race([
-        read.reached,
-        pending.then(() => {
-          throw new Error("redemption completed before the final read");
-        }),
-        delay(5_000, undefined, { ref: false }).then(() => {
-          throw new Error("final read timed out");
-        }),
-      ]);
+      await reachBarrier(read.reached, pending, "final read");
       change.apply();
       read.release();
       let refused;
@@ -461,6 +460,125 @@ test(
         { status: 403, tokenReturned: false, replayStatus: 403 },
       ],
     });
+
+    const proxy = fixture.owner.require("credential_proxy");
+    const providers = control.providers as CredentialProviderDefinition[];
+    const requestProvider = providers[0]!;
+    const metadataObservations = [];
+    for (const mutation of [
+      {
+        apply: () => Reflect.set(proxy, "sourceControl", { ...control }),
+        restore: () => Reflect.set(proxy, "sourceControl", control),
+      },
+      {
+        apply: () => {
+          providers[0] = { ...requestProvider };
+        },
+        restore: () => {
+          providers[0] = requestProvider;
+        },
+      },
+    ]) {
+      const request = fixture.request();
+      assert.equal((await evaluate(request)).decision, 1);
+      const pause = fixture.pauseMaterialMetadata();
+      t.after(pause.release);
+      const before = f.secretReads;
+      const pending = redeem(request);
+      await reachBarrier(pause.reached, pending, "material metadata");
+      mutation.apply();
+      pause.release();
+      let result;
+      try {
+        result = await pending;
+      } finally {
+        mutation.restore();
+      }
+      metadataObservations.push({
+        status: result.status,
+        tokenReturned: typeof result.body.access_token === "string",
+        reads: f.secretReads - before,
+        replay: (await redeem(request)).status,
+      });
+    }
+    const completionObservations = [];
+    for (const mutation of [
+      {
+        apply: () => controller.selectDriver("credential_gateway", alternate.id),
+        restore: () => controller.selectDriver("credential_gateway", credentialGateway.id),
+      },
+      {
+        apply: () =>
+          Reflect.set(control, "backend", { ...backend, generation: backend.generation + 1 }),
+        restore: () => Reflect.set(control, "backend", backend),
+      },
+    ]) {
+      const request = fixture.request();
+      assert.equal((await evaluate(request)).decision, 1);
+      const pause = fixture.pausePolicyCompletion("release");
+      t.after(pause.release);
+      const pending = redeem(request);
+      await reachBarrier(pause.reached, pending, "release policy completion");
+      mutation.apply();
+      pause.release();
+      let result;
+      try {
+        result = await pending;
+      } finally {
+        mutation.restore();
+      }
+      completionObservations.push({
+        status: result.status,
+        tokenReturned: typeof result.body.access_token === "string",
+        replay: (await redeem(request)).status,
+      });
+    }
+    const approvalRequest = fixture.request();
+    const approvalPause = fixture.pausePolicyCompletion("approval");
+    t.after(approvalPause.release);
+    const pendingApproval = evaluate(approvalRequest).then(
+      (response) => ({ decision: response.decision, code: 0 }),
+      (error: { code?: number }) => ({ decision: undefined, code: error.code }),
+    );
+    await reachBarrier(approvalPause.reached, pendingApproval, "approval policy completion");
+    controller.selectDriver("credential_gateway", alternate.id);
+    approvalPause.release();
+    let approvalResult;
+    let staleGrant;
+    try {
+      approvalResult = await pendingApproval;
+      staleGrant = await redeem(approvalRequest);
+    } finally {
+      controller.selectDriver("credential_gateway", credentialGateway.id);
+    }
+    const healthyAgain = fixture.request();
+    assert.equal((await evaluate(healthyAgain)).decision, 1);
+    assert.equal((await redeem(healthyAgain)).status, 200);
+    assert.deepEqual(
+      {
+        metadataObservations,
+        completionObservations,
+        approvalResult,
+        staleGrant: {
+          status: staleGrant.status,
+          tokenReturned: typeof staleGrant.body.access_token === "string",
+        },
+        replay: (await redeem(approvalRequest)).status,
+      },
+      {
+        metadataObservations: [
+          { status: 403, tokenReturned: false, reads: 0, replay: 403 },
+          { status: 403, tokenReturned: false, reads: 0, replay: 403 },
+        ],
+        completionObservations: [
+          { status: 403, tokenReturned: false, replay: 403 },
+          { status: 403, tokenReturned: false, replay: 403 },
+        ],
+        approvalResult: { decision: undefined, code: 14 },
+        staleGrant: { status: 403, tokenReturned: false },
+        replay: 403,
+      },
+    );
 
     const late = fixture.request();
     const committed = fixture.pauseNextApprovalCommit("after");
@@ -595,6 +713,42 @@ test(
       }),
     );
     assert.equal((await redeem(next)).body.access_token, "synthetic-key-rotated");
+  },
+);
+
+test(
+  "strict static exchange preserves control identity across material metadata (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    let state: PostgresPlatformState | undefined;
+    const f = await staticEgressFixture(t, {
+      appFactory: async (...args: Parameters<typeof postgresApp>) => {
+        const app = await postgresApp(...args);
+        assert.ok(app.state instanceof PostgresPlatformState);
+        state = app.state;
+        return app;
+      },
+    });
+    assert.ok(state);
+    const proxy = f.controller.selectedDriver("credential_proxy");
+    const control = proxy.sourceControl;
+    const pause = pauseSecretMetadata(state, f.namespace.id, f.secret.id);
+    t.after(pause.release);
+    const reads = f.secretReads;
+    const pending = f.resolve(f.capture());
+    await reachBarrier(pause.reached, pending, "strict material metadata");
+    assert.equal(Reflect.set(proxy, "sourceControl", { ...control }), true);
+    pause.release();
+    let result;
+    try {
+      result = await pending;
+    } finally {
+      Reflect.set(proxy, "sourceControl", control);
+    }
+    const observation = { ready: Boolean(result.ready), reads: f.secretReads - reads };
+    const restored = await f.resolve(f.capture());
+    assert.ok(restored.ready, "restored strict source remains usable");
+    assert.deepEqual(observation, { ready: false, reads: 0 });
   },
 );
 
