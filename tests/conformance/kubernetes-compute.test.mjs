@@ -44,7 +44,7 @@ import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/g
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
-import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
 import {
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   EMBEDDED_API_KEY_REQUIRED,
