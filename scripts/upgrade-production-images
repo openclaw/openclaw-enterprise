@@ -2108,6 +2108,40 @@ if ((helm_complete == 0)); then
       require_private_file "$handoff"
     fi
   fi
+  worker_stop_receipt="$evidence_dir/worker-stop-confirmed.json"
+  # Verified parameters bind the receipt to the original evidence directory,
+  # selected cluster and release, and prepared fleet inventory.
+  worker_stop_attempt=$(python3 -c \
+    'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' \
+    <"$evidence_dir/parameters.json")
+  unconfirmed_worker_stop="The worker Deployment $namespace/openclaw-enterprise-worker is at zero replicas without a confirmed stop for this upgrade and Deployment generation."
+  # A Helm submission intent does not clear a recorded external handoff.
+  if [[ "$upgrade_migration" == separate && -f "$handoff" ]]; then
+    unconfirmed_worker_stop+=" Keep both writers fenced. Preserve the evidence and reconcile the external migration and database migration history."
+  else
+    unconfirmed_worker_stop+=" Preserve the evidence and reconcile the worker stop. Verify that the selected release, mounted Installation Secret, and database migration history are compatible before taking any recovery action."
+  fi
+  worker_stop_matches() {
+    [[ -e "$worker_stop_receipt" || -L "$worker_stop_receipt" ]] || return 1
+    # Keep the privacy error and let the caller report recovery guidance.
+    (require_private_file "$worker_stop_receipt") || return 1
+    jq -es --arg attempt "$worker_stop_attempt" --slurpfile observed "$1" '
+      . == [{attempt: $attempt, uid: $observed[0].metadata.uid,
+        generation: $observed[0].metadata.generation}]
+    ' "$worker_stop_receipt" >/dev/null 2>&1
+  }
+  scale_writer() {
+    local component=$1
+    shift
+    if [[ "$component" == worker ]]; then
+      # Capture only the identity and replica state from the PATCH response.
+      # Command failure does not confirm the stop, even with a response body.
+      worker_stop_response=$("$@" --output 'jsonpath={.metadata.uid}{"\t"}{.metadata.generation}{"\t"}{.spec.replicas}') || return "$?"
+      printf '%s\n' "$worker_stop_response"
+    else
+      "$@"
+    fi
+  }
   # Validate both writers before stopping either one.
   for component in api worker; do
     deployment="openclaw-enterprise-$component"
@@ -2119,6 +2153,7 @@ if ((helm_complete == 0)); then
       .metadata.labels["app.kubernetes.io/component"] == $component and
       (.metadata.uid | type == "string" and length > 0) and
       (.metadata.resourceVersion | type == "string" and length > 0) and
+      ($component != "worker" or (.metadata.generation | type == "number" and . > 0 and floor == .)) and
       .metadata.deletionTimestamp == null and
       (.spec.replicas == 0 or .spec.replicas == 1)
     ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
@@ -2136,9 +2171,12 @@ if ((helm_complete == 0)); then
       {op: "replace", path: "/spec/replicas", value: 0}
     ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
   done
-  # Refresh before the first stop, including resume when the worker still runs.
-  # This detects changed selections; exclusive maintenance ownership is still required.
-  if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+  if jq -e '.spec.replicas == 0' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+    ((resume)) && worker_stop_matches "$evidence_dir/current-worker-deployment.json" ||
+      die "$unconfirmed_worker_stop"
+  else
+    # Refresh before the first stop, including resume when the worker still runs.
+    # This detects changed selections; exclusive maintenance ownership is still required.
     quiescence_remaining
     if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
       [[ "$decision" == true ]] ||
@@ -2153,16 +2191,41 @@ if ((helm_complete == 0)); then
   fi
   # These writes are sequential; a later conflict can leave the API stopped.
   for component in api worker; do
-    # A stopped worker cannot receive a prospective assessment. Reconcile its
-    # existing quiescence instead of replaying a stop on resume.
     if jq -e '.spec.replicas == 0' "$evidence_dir/current-$component-deployment.json" >/dev/null; then
       continue
     fi
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
     native_output quiescence-scale "$component" "quiescence-$component.txt" \
-      "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
+      scale_writer "$component" "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
       --type json --patch-file "$evidence_dir/quiescence-$component-patch.json"
+    if [[ "$component" == worker ]]; then
+      python3 - "$worker_stop_receipt" "$evidence_dir/current-worker-deployment.json" "$worker_stop_attempt" \
+        3<<<"$worker_stop_response" 2>/dev/null <<'PYTHON' ||
+import json, os, sys, tempfile
+from pathlib import Path
+
+receipt = Path(sys.argv[1])
+before = json.loads(Path(sys.argv[2]).read_bytes())["metadata"]
+with os.fdopen(3, encoding="utf-8") as response:
+    uid, generation, replicas = response.read().rstrip("\n").split("\t")
+# A change to the Deployment spec increments its generation. An exit-zero
+# response must confirm the same Deployment and the exact transition to zero.
+if uid != before["uid"] or generation != str(before["generation"] + 1) or replicas != "0":
+    sys.exit(1)
+with tempfile.NamedTemporaryFile(mode="w", dir=receipt.parent, prefix=".worker-stop.", delete=False) as staged:
+    try:
+        json.dump({"attempt": sys.argv[3], "uid": uid, "generation": int(generation)}, staged)
+        staged.write("\n")
+        staged.flush()
+        os.fsync(staged.fileno())
+        os.replace(staged.name, receipt)
+        os.fsync(8)
+    finally:
+        Path(staged.name).unlink(missing_ok=True)
+PYTHON
+        die "Could not record the worker stop acknowledgement. $unconfirmed_worker_stop"
+    fi
   done
   while true; do
     quiescence_remaining
@@ -2186,6 +2249,8 @@ if ((helm_complete == 0)); then
     ' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
       die "OCC identity or replicas changed during quiescence; migration was not started."
   done
+  worker_stop_matches "$evidence_dir/quiescence-worker-deployment.json" ||
+    die "$unconfirmed_worker_stop"
 
   if ((separate_handoff)) && { [[ ! -f "$handoff" ]] || ((migration_history_checked == 0)); }; then
     if [[ ! -f "$handoff" ]]; then

@@ -118,6 +118,43 @@ export function registerWriterHandoffCases({
     assert.deepEqual([stopped.api, stopped.worker], [0, 0]);
     assert.equal(stopped.helmSubmissions ?? 0, 0);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+
+    // Losing the stop receipt after handoff must leave both recorded writers fenced.
+    const receipt = join(f.evidence, "worker-stop-confirmed.json");
+    const savedReceipt = join(f.directory, "saved-worker-stop-confirmed.json");
+    const handoff = join(f.evidence, "database-migration-handoff.json");
+    const originalReceipt = await readFile(receipt);
+    const originalHandoff = await readFile(handoff);
+    const stoppedEvents = await f.events();
+    const fencedGuidance =
+      /Keep both writers fenced\. Preserve the evidence and reconcile the external migration and database migration history\./;
+    await rename(receipt, savedReceipt);
+    try {
+      const failure = await expectUpgradeFailure(
+        f.run("--resume", "--migration-history-checked"),
+        "the separate migration handoff requires the original worker stop receipt",
+      );
+      assert.equal(failure.code, 1);
+      assert.match(
+        failure.stderr,
+        /worker Deployment .* is at zero replicas without a confirmed stop/,
+      );
+      assert.match(failure.stderr, fencedGuidance);
+      assert.doesNotMatch(failure.stderr, /\b(?:restore|restart)\b/i);
+      const missingReceipt = await f.state();
+      assert.deepEqual([missingReceipt.api, missingReceipt.worker], [0, 0]);
+      assert.deepEqual(missingReceipt.deploymentIdentities, stopped.deploymentIdentities);
+      assert.equal(missingReceipt.version, stopped.version);
+      assert.equal(missingReceipt.helmSubmissions ?? 0, 0);
+      assert.deepEqual(await f.events(), stoppedEvents);
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      assert.equal(existsSync(receipt), false);
+      assert.deepEqual(await readFile(savedReceipt), originalReceipt);
+      assert.deepEqual(await readFile(handoff), originalHandoff);
+    } finally {
+      await rename(savedReceipt, receipt);
+    }
+
     // A replacement with the same labels and replica count does not own this handoff.
     const stateFile = join(f.directory, "state.json");
     await writeFile(
@@ -149,9 +186,59 @@ export function registerWriterHandoffCases({
     assert.equal(refused.helmSubmissions ?? 0, 0);
     assert.deepEqual([refused.api, refused.worker], [0, 0]);
     databaseId = "ins_test";
+
+    // Recording Helm intent does not end the handoff if the release never changed.
+    await f.failNext("reject-helm-submission");
+    const rejected = await expectUpgradeFailure(
+      f.run("--resume", "--migration-history-checked"),
+      "the injected Helm rejection must fail the upgrade",
+    );
+    assert.equal(rejected.code, 9);
+    await assertHelmIntent(f, 1, 2);
+    const helmIntent = join(f.evidence, "helm-started");
+    const originalHelmIntent = await readFile(helmIntent);
+    const rejectedState = await f.state();
+    assert.deepEqual([rejectedState.api, rejectedState.worker], [0, 0]);
+    assert.equal(rejectedState.version, stopped.version);
+    assert.equal(rejectedState.helmStatus, "deployed");
+    assert.equal(rejectedState.helmSubmissions, 1);
+    assert.deepEqual(await f.events(), stoppedEvents);
+
+    for (const unsafeReceipt of ["missing", "public permissions"] as const) {
+      if (unsafeReceipt === "missing") {
+        await rename(receipt, savedReceipt);
+      } else {
+        await chmod(receipt, 0o644);
+      }
+      try {
+        const failure = await expectUpgradeFailure(
+          f.run("--resume", "--migration-history-checked"),
+          `the recorded handoff must refuse a worker stop receipt with ${unsafeReceipt}`,
+        );
+        assert.equal(failure.code, 1);
+        assert.match(failure.stderr, fencedGuidance);
+        assert.doesNotMatch(failure.stderr, /\b(?:restore|restart)\b/i);
+        const afterRefusal = await f.state();
+        assert.deepEqual([afterRefusal.api, afterRefusal.worker], [0, 0]);
+        assert.deepEqual(afterRefusal.deploymentIdentities, rejectedState.deploymentIdentities);
+        assert.equal(afterRefusal.version, rejectedState.version);
+        assert.equal(afterRefusal.helmSubmissions, 1);
+        assert.deepEqual(await f.events(), stoppedEvents);
+        assert.deepEqual(await readFile(helmIntent), originalHelmIntent);
+        assert.deepEqual(await readFile(handoff), originalHandoff);
+        assert.equal(existsSync(receipt), unsafeReceipt !== "missing");
+      } finally {
+        if (unsafeReceipt === "missing") {
+          await rename(savedReceipt, receipt);
+        } else {
+          await chmod(receipt, 0o600);
+        }
+      }
+    }
+
     // Completing the handoff requires no further patch.
     await f.run("--resume", "--migration-history-checked");
-    assert.equal((await f.state()).helmSubmissions, 1);
+    assert.equal((await f.state()).helmSubmissions, 2);
   });
 
   test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {

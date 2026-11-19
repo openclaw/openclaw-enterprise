@@ -1078,6 +1078,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           identity.resourceVersion = "2";
         }
         save();
+        const priorReplicas = state[component];
         if (args.includes("patch")) {
           assert.equal(fileArg("--type"), "json");
           const patch: unknown = JSON.parse(readFileSync(requiredArg("--patch-file"), "utf8"));
@@ -1113,8 +1114,24 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           state[component] = 0;
         }
         identity.resourceVersion = String(Number(identity.resourceVersion) + 1);
+        if (state[component] !== priorReplicas) {
+          identity.generation =
+            journalInteger(identity.generation ?? 1, "Deployment generation", 1) + 1;
+        }
         save();
         log("scale-" + component);
+        if (component === "worker" && args.includes("--output")) {
+          assert.equal(
+            fileArg("--output"),
+            'jsonpath={.metadata.uid}{"\\t"}{.metadata.generation}{"\\t"}{.spec.replicas}',
+          );
+          out([identity.uid, identity.generation, state[component]].join("\t"));
+        }
+        // Persist the stop before dropping the final acknowledgement. The client
+        // can receive response bytes and still see a failed command.
+        if (component === "worker" && take("lost-worker-stop-response")) {
+          return fail(9);
+        }
       } else if (args.includes("replace")) {
         const secret: unknown = JSON.parse(await io.readInput());
         if (state.denyInstallationUpdate) {
@@ -1261,6 +1278,12 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               .join(" "),
           );
         } else {
+          const generation =
+            optionalField(optionalField(state.deploymentIdentities, component), "generation") ?? 1;
+          const reportedGeneration =
+            component === "worker" && take("report-worker-generation-drift")
+              ? journalInteger(generation, "Deployment generation", 1) + 1
+              : generation;
           out({
             metadata: {
               name: "openclaw-enterprise-" + component,
@@ -1272,7 +1295,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
                   optionalField(state.deploymentIdentities, component),
                   "resourceVersion",
                 ) ?? "1",
-              generation: 1,
+              generation: reportedGeneration,
               labels: {
                 "app.kubernetes.io/instance": state.release,
                 "app.kubernetes.io/component": component,
@@ -1286,7 +1309,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               },
             },
             status: {
-              observedGeneration: 1,
+              observedGeneration: generation,
               replicas: 1,
               updatedReplicas: 1,
               availableReplicas: 1,
@@ -1443,6 +1466,17 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             ],
           });
         } else {
+          if (
+            state.api === 0 &&
+            state.worker === 0 &&
+            args.includes(
+              `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${state.release}`,
+            ) &&
+            take("drift-worker-generation-after-drain")
+          ) {
+            // The empty Pod list confirms drain. Only the next worker read reports drift.
+            writeFileSync(join(root, "report-worker-generation-drift"), "");
+          }
           out({
             items:
               initialization && state.initActive
