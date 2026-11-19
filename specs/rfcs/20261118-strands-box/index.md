@@ -149,8 +149,9 @@ No infrastructure simplifications.
 
 Shared preconditions: an authorized operator selects one authenticated execution of an Agent revision,
 delegates its Agent-wide routes, and grants credential use through the reviewed authority. Use the
-normal Worker deployment, paired Drivers, a real Box parent and child, and the
-[companion criteria](strands-box-held-launch.md#acceptance-criteria). Use invented credentials for
+normal Worker deployment, paired Drivers, and the
+[companion criteria](strands-box-held-launch.md#acceptance-criteria). Use a real Box parent and child
+for cases that launch a child. Use invented credentials for
 containment checks; AC-5 additionally requires clean ARM64 Helm, reviewed images, and authorized
 model-provider and GitHub access. Verify each criterion through the supported workflow with integration
 or reproducible manual evidence from its real dependencies.
@@ -159,7 +160,7 @@ or reproducible manual evidence from its real dependencies.
 
 - **AC-0 — Contract selection** ([Safe startup](#goal-startup)): Deploy with matching and incompatible
   credential-proxy package selections. Observe successful selection for a matching package and refusal
-  before module load for an incompatible package.
+  before module load for an incompatible package, with no child, module loads, or factory calls.
 
 <a id="ac-1"></a>
 
@@ -188,11 +189,12 @@ or reproducible manual evidence from its real dependencies.
 
 <a id="ac-5"></a>
 
-- **AC-5 — Installed journey** ([Installed journey](#goal-journey)): Obtain a real HTTP model reply,
-  push an authorized commit, and open a draft pull request. Read back both Git effects at GitHub. After
-  confirmed Git withdrawal or expiry, observe a fresh push denial, an unchanged ref, and a successful
-  next model turn in the same conversation. If an earlier push or draft creation has an unknown effect,
-  reconcile it at GitHub without replaying the uncertain operation; a rejected withdrawal is incomplete.
+- **AC-5 — Installed journey** ([Installed journey](#goal-journey)): Run separate withdrawal and expiry
+  journeys, each starting with a fresh Git grant. Obtain a real HTTP model reply, push an authorized
+  commit, open a draft pull request, and read back both Git effects at GitHub. After the journey's
+  confirmed withdrawal or expiry, require a fresh push denial, an unchanged GitHub ref, and a
+  successful next model turn in the same conversation. Reconcile any unknown push or draft-creation
+  effect at GitHub without replaying it; a rejected withdrawal is incomplete.
 
 All five milestones in [TASK-0053](../../plans/0053-strands-box-convergence.md) are pending. V1
 covers HTTP API-key inference and refuses personal access tokens, interactive login, and WebSocket
