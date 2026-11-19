@@ -266,6 +266,36 @@ branch list for `github-repository`; it does not promise every administrative
 operation. Access is finite by default. Change selections and deploy a new revision
 to change access; do not rewrite a narrow grant into a broader one in place.
 
+### Read issues with the optional GitHub REST skill
+
+Use the [stock `gh api` skill](../../../deploy/runtime/repository-credentials/github-repository-rest/SKILL.md)
+only after confirming that the deployed Codex Agent has a `github-repository`
+binding, REST access and Issues read permission for the selected repository.
+Do not enable it on a Git-only policy. The skill grants no permissions and does
+not restrict what other clients can do.
+
+The skill does not submit PRs or use GraphQL. A general PR write grant does not
+enforce draft status or branch restrictions. For a ref-constrained draft, use
+the [existing draft client](../../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository)
+with its own grant. Do not broaden access.
+
+To opt in, run this as the Agent user **inside its Sandbox**, with a private,
+revision-specific home. Do not link the skill in the shared workspace or on the host.
+
+```sh
+skill=/usr/local/share/oce/skills/github-repository-rest
+destination="${HOME:?}/.agents/skills"
+test "$(id -u)" != 0 &&
+  test "$(realpath -m -- "$destination")" = "$destination" &&
+  test -r "$skill/SKILL.md" &&
+  mkdir -p -- "$destination" &&
+  ln -sT -- "$skill" "$destination/github-repository-rest"
+```
+
+This does not replace an existing skill. Reload Codex skills to see
+`github-repository-rest`. To opt out, unlink only the link you created.
+Recheck access before opting in on a new revision. Discovery is not authorization.
+
 ### Plan for request limits
 
 Unmodified OpenShell 0.1.6 buffers complete requests. These are byte limits, not

@@ -3,10 +3,12 @@ import type { codexRpc, list, parseJson, record, text } from "./wire.ts";
 export async function probePackagedCodex(
   {
     historicalCodex,
+    expectBundledRepositoryRestSkill,
     stagingCodexVersion,
     deadlineMs,
   }: {
     historicalCodex: boolean;
+    expectBundledRepositoryRestSkill: boolean;
     stagingCodexVersion: string;
     deadlineMs: number;
   },
@@ -216,7 +218,8 @@ export async function probePackagedCodex(
 
   // Install two real local bundles without credentials or model calls. Feature
   // enablement stays on, so only OCE's plugin policy can exclude their skills.
-  const { mkdirSync, mkdtempSync, writeFileSync } = process.getBuiltinModule("node:fs");
+  const { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } =
+    process.getBuiltinModule("node:fs");
   const { tmpdir } = process.getBuiltinModule("node:os");
   const { createInterface } = process.getBuiltinModule("node:readline");
   const { spawn } = process.getBuiltinModule("node:child_process");
@@ -254,7 +257,7 @@ export async function probePackagedCodex(
   );
   const native = spawn(platformBinary, ["app-server", "--listen", "stdio://"], {
     cwd: workspace,
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: { ...process.env, HOME: root, CODEX_HOME: codexHome },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const lines = createInterface({ input: native.stdout });
@@ -274,12 +277,50 @@ export async function probePackagedCodex(
     fail(new Error("Native plugin proof timed out: " + stderr));
     native.kill("SIGKILL");
   }, deadlineMs);
+  async function listSkills() {
+    const catalog = read(await rpc("skills/list", { cwds: [workspace], forceReload: true }));
+    return asList(catalog.data)
+      .flatMap((entry) => asList(read(entry).skills))
+      .map(read);
+  }
+
+  async function assertBundledRepositoryRestSkill(skillDirectory: string) {
+    const name = "github-repository-rest";
+    const instructions = resolve(skillDirectory, "SKILL.md");
+    const skillLink = resolve(root, ".agents/skills", name);
+    const discover = async () => (await listSkills()).filter((skill) => skill.name === name);
+    assert.ok(
+      typeof process.getuid === "function" && process.getuid() !== 0,
+      "The packaged skill must be readable by the runtime user.",
+    );
+    assert.match(readFileSync(instructions, "utf8"), /^name: github-repository-rest$/m);
+
+    // Image packaging alone must never make the skill visible to a clean user.
+    assert.deepEqual(await discover(), [], "The skill must be opt-in.");
+    mkdirSync(dirname(skillLink), { recursive: true });
+    symlinkSync(skillDirectory, skillLink, "dir");
+    try {
+      const skills = await discover();
+      assert.equal(skills.length, 1, "The opt-in must discover exactly one skill.");
+      const [skill] = skills;
+      assert.ok(skill?.enabled === true, "The opted-in skill must be enabled.");
+      assert.equal(skill.scope, "user");
+      assert.equal(realpathSync(asText(skill.path)), realpathSync(instructions));
+    } finally {
+      unlinkSync(skillLink);
+    }
+    assert.deepEqual(await discover(), [], "Removing the opt-in must hide the skill.");
+  }
+
   try {
     await rpc("initialize", {
       clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" },
       capabilities: { experimentalApi: true },
     });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+    if (expectBundledRepositoryRestSkill) {
+      await assertBundledRepositoryRestSkill("/usr/local/share/oce/skills/github-repository-rest");
+    }
     // Production startup uses this experimental API. An empty query proves protocol
     // support without authentication, remote catalog access, or a model request.
     if (!historicalCodex) {
@@ -325,10 +366,7 @@ export async function probePackagedCodex(
           .sort((a, b) => a.name.localeCompare(b.name)),
         names.map((name) => ({ name, installed: true, enabled: enabledNames.includes(name) })),
       );
-      const skills = read(await rpc("skills/list", { cwds: [workspace], forceReload: true }));
-      const fixtureSkills = asList(skills.data)
-        .flatMap((entry) => asList(read(entry).skills))
-        .map(read)
+      const fixtureSkills = (await listSkills())
         .filter((skill) => names.some((name) => asText(skill.name).startsWith(name + ":")))
         .map(({ name, pluginId }) => ({ name: asText(name), pluginId }));
       assert.deepEqual(
@@ -338,9 +376,10 @@ export async function probePackagedCodex(
     }
     process.stdout.write("shared-reviewed-codex-ready\n");
   } finally {
-    clearTimeout(deadline);
     lines.close();
     native.kill("SIGTERM");
     await closed;
+    clearTimeout(deadline);
+    rmSync(root, { recursive: true, force: true });
   }
 }

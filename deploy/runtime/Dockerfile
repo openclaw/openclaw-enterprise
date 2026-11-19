@@ -88,6 +88,7 @@ RUN node_modules/.bin/tsc -p deploy/runtime/repository-credentials/tsconfig.clie
 # rebuilds only that layer and every builder writes the same bytes. With a fixed
 # SOURCE_DATE_EPOCH (CI image lanes) the runtime image ID then matches too.
 COPY deploy/runtime/bin .build/runtime-client/opt/oce/repository-credentials/bin
+COPY --chmod=0444 deploy/runtime/repository-credentials/github-repository-rest/SKILL.md .build/runtime-client/usr/local/share/oce/skills/github-repository-rest/SKILL.md
 RUN set -eu; \
     client=.build/runtime-client/opt/oce/repository-credentials; \
     cp .build/repository-credentials/client/package.json "$client/package.json"; \
