@@ -31,6 +31,23 @@ execution of one Agent revision as the principal. A shell and a tool can both pu
 permitted ref. A compromised tool can make that push even though it cannot retrieve the token.
 Use separate Agents when the processes need different rights.
 
+## Goals
+
+<a id="goal-startup"></a>
+
+- **Safe startup:** Select compatible Drivers, report startup failures, and release only the intended
+  contained child after trusted delivery is current.
+
+<a id="goal-scope"></a>
+
+- **Enforceable scope:** Let every process in the selected Agent use only routes and credential
+  bindings that both Box Policy and OCE permit, without exposing the credential to the child.
+
+<a id="goal-journey"></a>
+
+- **Installed journey:** Complete inference and authorized Git work on clean ARM64 Helm, then
+  withdraw Git while the same conversation remains usable.
+
 ## From deployment to Git withdrawal
 
 The proposed path below follows one Agent with separate grants for HTTP inference and Git.
@@ -90,14 +107,15 @@ flowchart TB
 
 ### APIs
 
-No changes to public HTTP endpoints. The owners of v1 credential-push admission must agree on public
-startup, status, and release fields before implementation selects names.
+No changes to existing public HTTP endpoints. Proposed startup, status, and release fields remain
+pending agreement by the owners of v1 credential-push admission; this RFC does not select their names.
 
 ### IAM
 
 An authorized administrator must delegate the route at Agent scope. Injection also needs separate,
-reviewed authority for the Agent to use the credential at that scope. Admission must refuse grants
-that mix Agent-wide and executable-specific subjects, and any executable, port, or other restriction
+reviewed authority for the Agent to use the credential at that scope; the authority choice remains
+pending. Admission must refuse grants that mix Agent-wide and executable-specific subjects, and any
+executable, port, or other restriction
 the selected Driver cannot enforce. The [Agent-wide policy](strands-box-agent-policy.md)
 defines these checks under the existing RFC-0023 protection levels.
 
@@ -125,25 +143,58 @@ both endpoints. The cost is proving isolation inside the container. Kubernetes N
 the whole Pod, so the native boundary must prevent the child from reading the parent's vault or
 bypassing its injector. The [launch alternatives](strands-box-held-launch.md#delivery-alternatives-and-open-decisions)
 describe the conditions for a separate receiver.
+No infrastructure simplifications.
 
 ## Acceptance Criteria
 
-Use the normal Worker deployment and the [companion criteria](strands-box-held-launch.md#acceptance-criteria).
+Shared preconditions: an authorized operator selects one authenticated execution of an Agent revision,
+delegates its Agent-wide routes, and grants credential use through the reviewed authority. Use the
+normal Worker deployment, paired Drivers, a real Box parent and child, and the
+[companion criteria](strands-box-held-launch.md#acceptance-criteria). Use invented credentials for
+containment checks; AC-5 additionally requires clean ARM64 Helm, reviewed images, and authorized
+model-provider and GitHub access. Verify each criterion through the supported workflow with integration
+or reproducible manual evidence from its real dependencies.
 
-- **AC-0 through AC-3 — Select and release the intended child.** Refuse incompatible packages before
-  module load. Report a validated startup failure from an unready Pod. Keep the child held if one
-  serving copy is stale. After replacement, reject the previous release and verify the new startup
-  before activation.
-- **AC-4 — Prove the admitted scope.** In the [isolated pilot](strands-box-agent-policy.md#acceptance-criteria),
-  have two real subprocesses use the same route and binding. Verify both injections at a trusted
-  origin and that neither process can retrieve the test credential. Independently deny the operation
-  in Box Policy and revoke the binding in OCE. Each must prevent a fresh protected request from
-  reaching the provider.
-- **AC-5 — Verify the result on clean ARM64 Helm.** With reviewed images and authorized provider
-  access, obtain a real HTTP model reply. Read back the pushed commit and draft pull request at
-  GitHub. After confirmed Git withdrawal, verify a fresh push is refused and the next model turn
-  succeeds in the same conversation.
+<a id="ac-0"></a>
+
+- **AC-0 — Contract selection** ([Safe startup](#goal-startup)): Deploy with matching and incompatible
+  credential-proxy package selections. Observe successful selection for a matching package and refusal
+  before module load for an incompatible package.
+
+<a id="ac-1"></a>
+
+- **AC-1 — Startup failure** ([Safe startup](#goal-startup)): Cause a contained child to fail while its
+  Pod is unready. Observe Compute authenticate the status and the Worker report a sanitized terminal
+  failure; the revision must not activate.
+
+<a id="ac-2"></a>
+
+- **AC-2 — Current delivery** ([Safe startup](#goal-startup)): Deploy with one stale serving copy.
+  Observe that the child remains held and no release is signed until every required copy is current.
+  Failed delivery or an unknown reply must not be reported as successful delivery.
+
+<a id="ac-3"></a>
+
+- **AC-3 — Replacement** ([Safe startup](#goal-startup)): Replace the held child and present the old
+  release. Observe its rejection, then authenticate and release the new startup before activation.
+
+<a id="ac-4"></a>
+
+- **AC-4 — Admitted scope** ([Enforceable scope](#goal-scope)): In the
+  [isolated pilot](strands-box-agent-policy.md#acceptance-criteria), have two real subprocesses use the
+  same route and binding. Observe both injections at a trusted origin and verify neither process can
+  retrieve the test credential. Independently deny the operation in Box Policy and revoke the binding
+  in OCE; either must prevent a fresh protected request from reaching the provider.
+
+<a id="ac-5"></a>
+
+- **AC-5 — Installed journey** ([Installed journey](#goal-journey)): Obtain a real HTTP model reply,
+  push an authorized commit, and open a draft pull request. Read back both Git effects at GitHub. After
+  confirmed Git withdrawal or expiry, observe a fresh push denial, an unchanged ref, and a successful
+  next model turn in the same conversation. If an earlier push or draft creation has an unknown effect,
+  reconcile it at GitHub without replaying the uncertain operation; a rejected withdrawal is incomplete.
 
 All five milestones in [TASK-0053](../../plans/0053-strands-box-convergence.md) are pending. V1
 covers HTTP API-key inference and refuses personal access tokens, interactive login, and WebSocket
 credential delivery. The plan requires installed and provider evidence in addition to source checks.
+Missing prerequisites leave the affected criteria unverified.

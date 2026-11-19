@@ -37,6 +37,9 @@ and flows with each behavior change. Submit a covering RFC for human review befo
 interface, required behavior, or configuration. Respect explicit holds and existing branch
 ownership. Import only reviewed changes.
 
+The [overview criteria](../rfcs/20261118-strands-box/index.md#acceptance-criteria) map to milestones:
+1 covers AC-0–AC-4; 2 and 3 cover AC-4 and AC-5; 4 covers AC-2, AC-4, and AC-5; 5 covers AC-0–AC-5.
+
 1. **Establish the boundary.** Start with
    [contract selection](../rfcs/20261118-strands-box/strands-box-held-launch.md#credentialproxy-contract-selection)
    through Installation setup, the default package loader, Compute, and the Worker. Next exercise
