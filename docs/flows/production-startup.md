@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-17"
-last_updated_session: "authoring-run/13aee116-8880-41d5-b55f-83a0152d7460"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/8502e0d3-905b-43ff-9c00-e3b1a03856c6"
 ---
 
 # Production Startup Flow
@@ -15,14 +15,14 @@ API/worker readiness, authenticate `/installation` with the service key.
 
 ## Entry Points
 
-- Trigger: Run `scripts/prepare-bootstrap-volume`, then
+- Trigger: Precreate the bootstrap credential Secret, then run
   `occ installation install` with explicit target, local chart, values and receipt.
-- Source: `scripts/prepare-bootstrap-volume:53`,
+- Source: `scripts/lib/bootstrap-credentials.ts:bootstrapCredentials`,
   `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`, and
   `apps/controller/src/composition/production.ts:28`.
 - Assumptions: Explicit kubeconfig/context, enforcing NetworkPolicies, external
   PostgreSQL, approved immutable images, protected operator files, fresh
-  bootstrap PVC, exact API/client selectors, `/32` egress hosts,
+  bootstrap credential Secret, exact API/client selectors, `/32` egress hosts,
   reviewed control-plane node labels, and an approved private OCC URL.
 
 ## Flow
@@ -32,11 +32,9 @@ First install requires [empty OCE history](../reference/settings/operations.md#m
 ```mermaid
 graph TD
     subgraph Operator["Operator-owned preparation"]
-        A["Prepare values, Installation YAML and bootstrap PVC"]
-        B["Create namespace and Secrets; check prerequisites"]
-        C["Create fresh bootstrap PVC"]
-        D["prepare-bootstrap-volume verifies empty output and root permissions"]
-        D --> RC["Snapshot inputs and sync intent"]
+        A["Prepare values, Installation YAML and private credential files"]
+        A --> B["Create namespace and Secrets; check prerequisites"]
+        B --> RC["Snapshot inputs and sync intent"]
         RC --> RN{"Receipt notice write failed?"}
         RN -->|Yes| RF["Preserve intent; stop before dispatch"]
         RN -->|No| RD["Sync dispatch marker"]
@@ -48,7 +46,7 @@ graph TD
         V -->|Yes| P["Refuse initialization before migration DDL"]
         V -->|No| O{"Recognized receipts and catalog?"}
         O -->|No| P
-        O -->|Yes| G["Apply pending migrations, bootstrap administrators and write protected key output"]
+        O -->|Yes| G["Apply migrations; bootstrap registers supplied credentials"]
         G --> H["Start private API Deployment"]
         G --> I["Start independent worker Deployment"]
         I --> R{"Repository credentials enabled?"}
@@ -65,7 +63,7 @@ graph TD
         U --> W["Report checkpoint; operator reconciles remaining work"]
     end
     subgraph Proof["Operator-owned authenticated proof"]
-        M -->|No| J["Retrieve service-key response from protected storage"]
+        M -->|No| J["Prepare CLI JSON from retained service key"]
         N --> J
         J --> K["occ installation get from approved client"]
     end
@@ -91,8 +89,8 @@ addresses and object quota headroom. EKS binds account, ARN, endpoint and CA.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Keep values, Installation YAML and bootstrap PVC outside the checkout. Helm
-selects images, endpoint, Secrets, claim, selectors and egress.
+Keep values, Installation YAML and credential files outside the checkout. Helm
+selects images, endpoint, Secrets, selectors and egress, not credential values.
 `openclaw.validate` requires a DNS-1123 release Namespace label (maximum 63 characters).
 Installation YAML selects Drivers, Backends, runtime images, projected identity,
 networking and storage.
@@ -101,32 +99,31 @@ File-backed Secrets supply Installation startup, database URLs/optional CA, Bett
 signing, and optional ChatGPT administrator credentials. Helm neither synchronizes
 inputs, rewrites Driver configuration, nor infers runtime images.
 
-### 2. Prepare the fresh bootstrap volume
+### 2. Precreate the bootstrap credential Secret
 
-`scripts/prepare-bootstrap-volume:124` takes an existing
-`bootstrap.password.claimName` PVC, explicit kubeconfig/context/namespace/claim,
-an approved Node-capable image and optional `--node-selector KEY=VALUE` labels.
-It preserves namespace/selector strings, applying selectors before
-WaitForFirstConsumer binding. It requires an empty root except filesystem-owned
-`lost+found` and sets UID/GID `1000`, mode `0700`.
+`deploy/helm/openclaw-enterprise/templates/jobs.yaml:1` projects the precreated
+`bootstrap.credentials.secretName` only on install. Bootstrap alone mounts it
+read-only at `/run/openclaw-bootstrap`; migration, API and worker receive neither
+input. Token automount stays disabled; bootstrap needs no Secret API access.
 
-If forbidden, storage administrators prepare the claim through approved procedures.
-The helper cannot create PVCs, repair used claims, retrieve credentials or
-change controller configuration.
+`scripts/lib/bootstrap-credentials.ts:bootstrapCredentials` follows Secret
+symlinks and validates both files before credential creation. See the
+[input contract](../reference/authentication.md#installation-and-account-ownership).
+Upgrades verify the existing Installation without projecting inputs. Editing
+retained sources does not rotate credentials.
 
 ### 3. Run Helm initialization
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
 kubeconfig/chart/values, checks release states and syncs intent and its directory.
-A failed stdout notice preserves and names intent, stopping before dispatch or
-Helm. Otherwise it syncs the unknown marker and starts Helm.
+A failed stdout notice names and preserves intent, stopping before dispatch.
+Otherwise it syncs the unknown marker before Helm.
 `observeInstallationJob` records the first recognized attempt-matched Job UID
-(installs only). Helm's outcome stays separate; final report write errors fail
-the command without changing that outcome or replaying install.
+(installs only). Helm's outcome stays separate; report write errors fail without
+changing it or replaying install.
 
-Reported template failures add static [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff),
-including settings for the suffix refusal. Stderr stays in memory (4 MiB); excess is discarded without affecting Helm. Raw diagnostics are never
-printed or saved. Receipt and recovery decisions stay unchanged.
+Template failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
+Helm stderr is bounded to 4 MiB in memory; raw diagnostics are not printed or saved.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
@@ -138,75 +135,71 @@ Jobs during connected installs. Offline rendering cannot check this; lookup
 neither locks names nor verifies database/volume freshness.
 
 `openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
-checks routing, ports and peer labels. Operators supply GatewayClass, CRDs,
-controllers and Secrets. [Disabling routing](../guides/deploy/workspace-routing.md#explicit-opt-out)
-omits its resources/mounts and requires disabling native admin and sandbox routing.
-Database/API ports accept 1–65535 without leading zeros; worker metrics/repository
-ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
-numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
+checks routing, ports and peer labels. See [routing opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
+and [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
-On install and upgrade, Helm runs the generated
-`deploy/helm/openclaw-enterprise/files/check-installation.mjs` from
-`deploy/helm/src/check-installation.ts` before migration, bootstrap and API rollout.
-`formatStartupConfigurationFailure` uses the API and worker's
-`configurationLogDetails` to report up to 32 fields without submitted values.
-`requireChartListener` reports refused ports, hosts or paths as
-`CHART_LISTENER_MISMATCH` when `OCC_EGRESS_AUTHORITY_PORT` or
-`OCC_OPENSHELL_GIT_PORT` is set.
+Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
+(generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap and
+API rollout. The migration container evaluates the chart's
+`files/migrate-selected-image.cjs` program. It validates the selected image's
+`db:migrate:production` package command, forwards the exact mode argument, and imports
+that image's migration entry point in the same Node process.
+`formatStartupConfigurationFailure` and `configurationLogDetails` report
+up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
+`OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
+ports, hosts or paths as `CHART_LISTENER_MISMATCH`.
 
-With chart-managed routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
-to the hook, API and worker. `requireChartGatewayRouting` checks the Gateway name, Gateway and Envoy
-namespaces, and hostname. It reports a mismatched field without its value.
+`openclaw.listenerEnv` passes routing settings to the hook, API and worker.
+`requireChartGatewayRouting` reports mismatched fields without values.
 
-The hook keeps the release name and bounds its suffix to 63 characters. Both
-database containers optionally mount the CA. Helm validates distinct application and
-migration Secret keys against Kubernetes syntax before use. `installation.key`
-and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
-not `.` or a `..` prefix.
+The hook validates its name and distinct database Secret keys; both database containers can mount the CA. See [production settings](../reference/settings/production.md).
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
-`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies receipt
-namespace/release/cluster connection before reading the named Job.
-`initializationEvidence` checks marker, captured UID, chart steps, controller and
-terminal status. Missing UID, replacement, refusal or inconclusive status leaves
-the checkpoint unknown. Doctor separately reports Helm's outcome; plan adds
-read-only recovery. Both check the buffered report's `WriteTo` before returning
-Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and exit `1`.
+`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the receipt
+target before reading the Job. `initializationEvidence` checks its marker, UID, exact chart
+steps, controller and terminal status. A separate-upgrade Job verifies schema before bootstrap.
+Missing, replaced, refused or inconclusive evidence leaves the checkpoint unknown.
+Doctor reports Helm separately; report write errors exit `1`.
 
-`scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
+`scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-All modes verify migration source and reject PostgreSQL before 17 with
-`MIGRATION_SERVER_UNSUPPORTED` before locking or reading the catalog.
-Under the advisory lock, the migrator checks roles, receipts, catalogs and
-grants, including approved logical restores. Unrecognized history stops startup
-with `MIGRATION_HISTORY_UNSUPPORTED` before migration SQL or bootstrap.
+All modes verify source and reject PostgreSQL before 17 with
+`MIGRATION_SERVER_UNSUPPORTED` before locking or catalog access
+([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
+On SIGINT or SIGTERM, a second migrator connection terminates the uniquely named
+session. Repeated signals are ignored during cleanup. If termination fails, the
+command reports `migration.cancellation-failed` and waits for migration to return.
 
-- Canonical history through `0080` adds request credential approvals at `0081`.
-- For verified historical approvals applied at `0077`, the migrator keeps the
-  existing receipts and appends the missing stock migrations `0077`–`0080`.
-  It checks the completed catalog and preserved receipts before committing the
-  SQL and new receipts in one transaction.
+Under the advisory lock, the migrator verifies roles, receipts, catalogs and grants,
+including reviewed restores. Unrecognized history fails with
+`MIGRATION_HISTORY_UNSUPPORTED` before migration SQL or bootstrap.
 
-Completed apply skips Drizzle only when `SHOW transaction_read_only` returns
-`off`. Pending migrations and read-only sessions still go through migration
-checks. The command releases the lock and connection
+- Canonical history runs restart and authentication migrations `0081`–`0083` before
+  the approvals, model Driver identity, readiness and network migrations `0084`–`0087`.
+- Verified earlier approval receipts remain in place. The migrator appends the
+  missing canonical SQL, verifies the full receipts and catalog, and commits in
+  one transaction.
+
+Completed apply skips Drizzle only if `SHOW transaction_read_only` returns `off`.
+Drizzle still handles pending canonical migrations and read-only refusal. The
+command releases the lock and client
 ([history](../reference/settings/operations.md#migration-history)).
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
 Console origin before database access, including during `--verify-existing`.
 
 `scripts/bootstrap-installation.mjs` creates or verifies Installation,
-human/service administrators, IAM seed, audit evidence, and initial service key.
-Fresh bootstrap creates `default` via `OpenClawController.createNamespace`
-as the bootstrap Principal. Queued reconciliation commits with Installation/IAM
-state and audit. Existing Installations add no Namespace; this is not Kubernetes'
-`default`. The worker provisions Driver-owned infrastructure; operators provide
-tenant RoleBindings. The bootstrap container alone writes protected PVC password/service-key files.
-Operators can invoke the same command with [`--verify-existing`](../reference/settings/production.md#production-installation-bootstrap-environment)
+human and service administrators, IAM seed and audit evidence. Fresh bootstrap
+creates the OCE `default` Namespace via `OpenClawController.createNamespace`.
+The bootstrap Principal queues reconciliation in the Installation/IAM
+transaction. The worker provisions Driver resources. Operators supply tenant
+RoleBindings. Bootstrap registers supplied credentials and emits only
+non-secret attempt IDs on stdout.
+Use [`--verify-existing`](../reference/settings/production.md#production-installation-bootstrap-environment)
 to check a populated candidate using the incumbent ID and a read-only database
 snapshot. The Helm initialization Job continues to use ordinary bootstrap.
-Existing output, unsafe permissions, or inconsistent accounts/IAM identity fail
-the Job. Helm failure does not imply database-hook rollback.
+Invalid fresh credential inputs or inconsistent existing accounts/IAM identity
+fail the Job. Helm failure does not imply database-hook rollback.
 
 ### 4. Start private API and worker Deployments
 
@@ -297,7 +290,7 @@ The worker independently validates production settings, opens the same
 application-role database, loads selected Drivers, validates IAM, runs Compute
 preflight with the same advisory warning, emits `worker.started`, and polls
 durable Namespace/AgentRevision work. Readiness requires fresh queue-health
-observations; neither process mounts the bootstrap PVC.
+observations; neither process receives the bootstrap credential projection.
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
@@ -324,20 +317,19 @@ its Driver contract. Neither component has independent high availability.
 Repository runtime reconciliation continues in the
 [Agent repository credential flow](agent-repository-credentials.md).
 
-### 5. Retrieve the key and prove authenticated access
-
-Fresh bootstrap [checks both output paths](../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap) before creating credentials.
+### 5. Use the retained key and prove authenticated access
 
 `internal/occclient/client.go:Client.GetInstallation`
 
-After Helm readiness, use the approved reader to save
-`initial-admin-service-key.json` from protected bootstrap storage to an
-owner-readable file. A completed Job cannot serve the file via exec. The API and
-worker cannot retrieve it for the operator.
+Prepare private CLI JSON containing `data.key` from the retained raw key, as in
+[bootstrap key access](../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key).
+Bootstrap emits no credentials; API/worker cannot retrieve them. Preparation
+does not prove installation success.
 
-Use `occ installation get` with the service key. The Installation's `ID` must
-match `meta.installationId` from the key response. Its startup Secret annotation
-`openclaw.dev/installation-id` binds upgrades to the selected Installation.
+Use `occ installation get` with the service key. Its authenticated response
+supplies the server-owned Installation ID; the local key JSON has no metadata.
+The startup Secret annotation `openclaw.dev/installation-id` binds upgrades to
+that Installation.
 
 The operator session's `upgrade_installation` checks Helm's deployed revision
 and API Pod binding. The scoped `docs/snippets/openshell-quickstart/request.mts`
@@ -348,8 +340,10 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Debugging and Verification
 
-- `scripts/prepare-bootstrap-volume` exits `0` for a fresh claim with no bootstrap
-  outputs and root state owned by UID/GID `1000` with mode `0700`.
+- Check credential Secret names and keys. Missing Secrets prevent mounts, and
+  `BOOTSTRAP_INPUT_INVALID` indicates rejected contents.
+- Upgrade Jobs omit bootstrap credential projections. Verify actual mounts and
+  authentication separately from rendering.
 - `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
   should succeed before API and worker rollout checks.
 - `pnpm db:migrate:production --check` reports history without applying SQL.
@@ -368,10 +362,8 @@ The shell initializes the missing annotation, patches with UID and
   `repository.openShell` and `tokenGrant` are configured.
   `apps/controller/src/api-startup.ts:startupFailureFields` passes the API
   diagnostics to `apps/controller/src/server.mjs`.
-- `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
-  first check for unsafe output storage, existing outputs, database-role
-  failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
-  administrator/IAM mismatch.
+- Check `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap`
+  for database-role, authentication and administrator/IAM errors.
 - After changing an external startup Secret, roll out the API and worker. Repeat
   readiness and authenticated checks.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
@@ -398,7 +390,17 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
+- 2026-11-19 07:31: Trace supplied bootstrap credentials and converged migration history. (authoring-run/8502e0d3-905b-43ff-9c00-e3b1a03856c6 - 01922f334313161236682955fa851628cf8a5ef1)
+
+- 2026-11-18 02:53: Select the migration entry point from each controller image and retain signal handlers through cleanup. (authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9 - 4616630e8ab5edf25de29af948e80c72627af9c4)
+
+- 2026-11-18 02:26: Run the migration entry directly and distinguish separate-upgrade verification. (authoring-run/c3b46e7f-1066-4c87-9808-34e281ccaa98 - 8e8474eec4c7027bb45b5fe470e675e2e3e321cf)
+
+- 2026-11-18 01:53: Reconcile the generated Installation check with the production migration command. (authoring-run/d1d2f3b0-6dbf-4fce-b8d6-94df71d391b8 - 0bd8061ff988a0847541fa3d890f676f1a57a676)
+
 - 2026-11-17 21:06: Trace production migration for stock and historical request credential approvals. (authoring-run/13aee116-8880-41d5-b55f-83a0152d7460 - 7e7cb6005e6fe7f94463524ad36ae93fa8e2097a)
+
+- 2026-11-16 09:42: Trace precreated credential Secret projection and retained-key authentication in the accompanying uncommitted implementation. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
 - 2026-11-16 09:47: Document the request helper’s scoped path validation. (authoring-run/04994f45-a986-442f-8747-1595e124325f - b4a03d909a2815bbf6c44eb6e195d4503a59fe70)
 

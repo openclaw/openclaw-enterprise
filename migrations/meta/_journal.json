@@ -566,28 +566,49 @@
       "idx": 81,
       "version": "7",
       "when": 1787000000081,
-      "tag": "0081_request_credential_approvals",
+      "tag": "0081_restart_continuation",
       "breakpoints": true
     },
     {
       "idx": 82,
       "version": "7",
       "when": 1787000000082,
-      "tag": "0082_request_model_driver_identity",
+      "tag": "0082_authentication_states",
       "breakpoints": true
     },
     {
       "idx": 83,
       "version": "7",
       "when": 1787000000083,
-      "tag": "0083_controller_work_readiness",
+      "tag": "0083_native_restart_recovery",
       "breakpoints": true
     },
     {
       "idx": 84,
       "version": "7",
       "when": 1787000000084,
-      "tag": "0084_network_egress_mode",
+      "tag": "0084_request_credential_approvals",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1787000000085,
+      "tag": "0085_request_model_driver_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1787000000086,
+      "tag": "0086_controller_work_readiness",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1787000000087,
+      "tag": "0087_network_egress_mode",
       "breakpoints": true
     }
   ]

@@ -1,5 +1,5 @@
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
-import type { OpenClawController } from "../../packages/occ/src/index.ts";
+import { PostgresPlatformState, type OpenClawController } from "../../packages/occ/src/index.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import {
@@ -677,7 +677,9 @@ test(
 
     // Changing either configured ID after approval withdraws permission to redeem
     // a retained endpoint grant before the Secret Driver can read material.
-    const { providers } = fixture.owner.require("credential_proxy").sourceControl;
+    const proxy = fixture.owner.require("credential_proxy");
+    const originalControl = proxy.sourceControl;
+    const { providers } = originalControl;
     const originalProvider = providers[0];
     assert.ok(originalProvider);
     for (const selection of [
@@ -741,6 +743,72 @@ test(
     assert.equal(f.secretReads, initialReads, "only redemption may read material");
     assert.ok(await redeem(accepted));
     assert.equal(await redeem(accepted), undefined);
+
+    assert.ok("state" in f && f.state instanceof PostgresPlatformState);
+    const { state } = f;
+    await t.test(
+      "control drift during the final metadata lookup prevents the last read",
+      async () => {
+        const input = fixture.request();
+        assert.equal((await preflight(requestFrame(input))).result, "preflight_result");
+        const reads = f.secretReads;
+        const originalTransact = state.transactReadCommitted;
+        const transact = originalTransact.bind(state);
+        let observed = false;
+        // The first two reads have their own units. Replace the control only when the
+        // final release transaction looks up the real Secret metadata.
+        state.transactReadCommitted = (work) =>
+          transact((unit) =>
+            work({
+              ...unit,
+              secrets: {
+                ...unit.secrets,
+                async findSecret(...args) {
+                  const secret = await unit.secrets.findSecret(...args);
+                  if (secret && args[0] === f.namespace.id && args[1] === f.secret.id) {
+                    observed = true;
+                    assert.ok(Reflect.set(proxy, "sourceControl", { ...originalControl }));
+                  }
+                  return secret;
+                },
+              },
+            }),
+          );
+        try {
+          assert.equal(await redeem(input), undefined);
+          assert.ok(observed, "redemption reached the final metadata lookup");
+          assert.equal(f.secretReads - reads, 2, "only the preliminary reads reached the Driver");
+        } finally {
+          state.transactReadCommitted = originalTransact;
+          assert.ok(Reflect.set(proxy, "sourceControl", originalControl));
+        }
+      },
+    );
+
+    await t.test("generation drift during the final material read prevents release", async () => {
+      const control = { ...originalControl };
+      const input = fixture.request();
+      assert.ok(Reflect.set(proxy, "sourceControl", control));
+      try {
+        assert.equal((await preflight(requestFrame(input))).result, "preflight_result");
+        const read = fixture.pauseFinalMaterialRead();
+        const pending = redeem(input);
+        try {
+          await Promise.race([
+            read.reached,
+            pending.then(() => assert.fail("redemption settled before the final read")),
+          ]);
+          // A generation can change even when the same control and provider objects
+          // remain selected. Material returned by the old generation must stay in OCC.
+          control.resolver = { ...control.resolver, generation: control.resolver.generation + 1 };
+        } finally {
+          read.release();
+        }
+        assert.equal(await pending, undefined);
+      } finally {
+        assert.ok(Reflect.set(proxy, "sourceControl", originalControl));
+      }
+    });
   },
 );
 

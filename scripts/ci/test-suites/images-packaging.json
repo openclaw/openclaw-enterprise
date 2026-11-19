@@ -30,6 +30,7 @@
     "tests/integration/production-kubernetes-packaging.test.mjs",
     "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
+    "tests/integration/production-image-bootstrap-mounts.test.mjs",
     "tests/integration/container-registry-real.test.ts",
     "tests/integration/logging-packaging.test.ts",
     "tests/integration/repository-runtime-volume.test.ts",
@@ -78,6 +79,10 @@
       ]
     },
     {
+      "path": "tests/integration/production-image-bootstrap-mounts.test.mjs",
+      "expectedTests": ["development bootstrap mount copies support a different reader UID"]
+    },
+    {
       "path": "tests/integration/production-image-upgrade-recovery.test.ts"
     },
     {
@@ -101,6 +106,7 @@
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
+        "the chart runs the migration selected by each controller image in the same process",
         "the staged sign-in chart preserves the historical worker probes for both Helm operations",
         "the production image executes the chart worker probes as the worker user",
         "the plugin request guard installs beside OpenShell without control-plane access",
@@ -131,7 +137,7 @@
     {
       "path": "tests/integration/development-packaging.test.mjs",
       "expectedTests": [
-        "development packaging isolates bootstrap service key output to the bootstrap service"
+        "development packaging isolates precreated credential inputs to the bootstrap service"
       ]
     },
     {

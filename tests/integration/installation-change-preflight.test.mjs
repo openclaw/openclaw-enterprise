@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -109,16 +110,71 @@ test(
       const { job, hook, api } = await render(values, true);
       const install = await render(values, false);
       assert.deepEqual(install.hook.initContainers[0], hook.initContainers[0]);
-      assert.deepEqual(install.hook.volumes, hook.volumes);
+      assert.deepEqual(
+        install.hook.volumes.filter(({ name }) => name !== "bootstrap-credentials"),
+        hook.volumes,
+      );
+      assert.ok(!hook.volumes.some(({ name }) => name === "bootstrap-credentials"));
+      assert.deepEqual(
+        install.hook.volumes.find(({ name }) => name === "bootstrap-credentials").secret.items,
+        [
+          { key: "admin-password", path: "admin-password" },
+          { key: "admin-service-key", path: "admin-service-key" },
+        ],
+      );
       assert.deepEqual(
         install.hook.initContainers.map(({ name }) => name),
         ["installation-check", "migration"],
       );
       assert.deepEqual(install.hook.initContainers[1].args, [
-        "scripts/migrate-production.mjs",
+        ...selectedImageMigrationEntry,
         "--expect-empty",
       ]);
-      assert.deepEqual(install.hook.containers, hook.containers);
+      const installedBootstrap = install.hook.containers.find(({ name }) => name === "bootstrap");
+      const upgradedBootstrap = hook.containers.find(({ name }) => name === "bootstrap");
+      assert.deepEqual(
+        installedBootstrap.volumeMounts.find(({ name }) => name === "bootstrap-credentials"),
+        {
+          name: "bootstrap-credentials",
+          mountPath: "/run/openclaw-bootstrap",
+          readOnly: true,
+        },
+      );
+      assert.ok(
+        !(upgradedBootstrap.volumeMounts ?? []).some(
+          ({ name }) => name === "bootstrap-credentials",
+        ),
+      );
+      assert.deepEqual(
+        installedBootstrap.env.filter(({ name }) => name.endsWith("_INPUT_FILE")),
+        [
+          {
+            name: "OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE",
+            value: "/run/openclaw-bootstrap/admin-password",
+          },
+          {
+            name: "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE",
+            value: "/run/openclaw-bootstrap/admin-service-key",
+          },
+        ],
+      );
+      assert.ok(!upgradedBootstrap.env.some(({ name }) => name.endsWith("_INPUT_FILE")));
+      assert.deepEqual(installedBootstrap.args, [
+        "scripts/bootstrap-installation.mjs",
+        "--require-fresh",
+      ]);
+      assert.deepEqual(upgradedBootstrap.args, ["scripts/bootstrap-installation.mjs"]);
+      assert.deepEqual(
+        {
+          ...installedBootstrap,
+          args: upgradedBootstrap.args,
+          env: installedBootstrap.env.filter(({ name }) => !name.endsWith("_INPUT_FILE")),
+          volumeMounts: installedBootstrap.volumeMounts.filter(
+            ({ name }) => name !== "bootstrap-credentials",
+          ),
+        },
+        { ...upgradedBootstrap, volumeMounts: upgradedBootstrap.volumeMounts ?? [] },
+      );
       // Pre-upgrade hooks finish before Helm updates the Deployments.
       assert.match(job.metadata.annotations["helm.sh/hook"], /(^|,)pre-upgrade(,|$)/);
       assert.equal(job.spec.backoffLimit, 0);
@@ -128,7 +184,7 @@ test(
       );
       const [check, migration] = hook.initContainers;
       const server = api.containers.find(({ name }) => name === "api");
-      assert.deepEqual(migration.args, ["scripts/migrate-production.mjs"]);
+      assert.deepEqual(migration.args, selectedImageMigrationEntry);
       assert.equal(check.image, server.image);
       assert.deepEqual(check.command, ["node"]);
       assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
@@ -206,7 +262,7 @@ test(
       const { hook } = await render(values, isUpgrade);
       const migration = hook.initContainers.find(({ name }) => name === "migration");
       assert.deepEqual(migration.args, [
-        "scripts/migrate-production.mjs",
+        ...selectedImageMigrationEntry,
         isUpgrade ? "--require-current" : "--expect-empty",
       ]);
     }

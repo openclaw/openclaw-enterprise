@@ -259,7 +259,9 @@ test("online credential authorization bounds retained request bytes and frees ca
     pending.push(proxy.authorizeRequestCredential(request(17), t.signal, () => true));
     assert.equal(waiting.length, 17, "settled authorization restores its captured-byte capacity");
   } finally {
-    for (const gate of waiting) gate.resolve();
+    for (const gate of waiting) {
+      gate.resolve();
+    }
     await Promise.allSettled(pending);
   }
 });

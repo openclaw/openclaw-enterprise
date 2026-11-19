@@ -989,7 +989,12 @@
         "additionalProperties": false,
         "properties": {
           "createdAt": { "type": "string" },
-          "current": { "$ref": "#/components/schemas/def-14" },
+          "current": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/def-14" },
+              { "$ref": "#/components/schemas/def-16" }
+            ]
+          },
           "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
           "id": {
             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -1001,7 +1006,129 @@
           }
         },
         "required": ["displayName", "id", "current", "createdAt"],
-        "title": "OAuth connection template",
+        "title": "Connection template",
+        "type": "object"
+      },
+      "def-16": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": { "type": "string" },
+          "destinations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                "method": {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                  "type": "string"
+                },
+                "path": { "maxLength": 512, "minLength": 1, "pattern": "^/", "type": "string" },
+                "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+              },
+              "required": ["host", "port", "path", "method"],
+              "type": "object"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "type": "array"
+          },
+          "mode": { "const": "static_bearer", "type": "string" },
+          "templateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "version": { "minimum": 1, "type": "integer" }
+        },
+        "required": ["mode", "destinations", "templateId", "version", "createdAt"],
+        "title": "Static-key connection template version",
+        "type": "object"
+      },
+      "def-17": {
+        "additionalProperties": false,
+        "properties": {
+          "contextWindow": { "minimum": 1, "type": "integer" },
+          "cost": {
+            "additionalProperties": false,
+            "description": "Cost in USD per million tokens.",
+            "properties": {
+              "cacheRead": { "minimum": 0, "type": "number" },
+              "cacheWrite": { "minimum": 0, "type": "number" },
+              "input": { "minimum": 0, "type": "number" },
+              "output": { "minimum": 0, "type": "number" }
+            },
+            "required": ["input", "output", "cacheRead", "cacheWrite"],
+            "type": "object"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "type": "string"
+          },
+          "maxTokens": { "minimum": 1, "type": "integer" },
+          "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+        },
+        "required": ["id"],
+        "title": "Model offered by this provider",
+        "type": "object"
+      },
+      "def-18": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
+            "maxLength": 2048,
+            "pattern": "^https://",
+            "type": "string"
+          },
+          "connectionTemplateId": {
+            "description": "Installation-wide static-key Connection Template that approves the inference request.",
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "defaultModelId": {
+            "description": "Optional default from the models offered by this provider.",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "type": "string"
+          },
+          "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+          "id": {
+            "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "models": {
+            "description": "Models offered by this provider. Each model ID must be unique.",
+            "items": { "$ref": "#/components/schemas/def-17" },
+            "maxItems": 256,
+            "minItems": 1,
+            "type": "array"
+          },
+          "protocol": {
+            "anyOf": [
+              { "const": "openai-responses", "type": "string" },
+              { "const": "openai-completions", "type": "string" }
+            ]
+          },
+          "settingsFingerprint": {
+            "description": "Fingerprint of the saved settings, used for conditional updates.",
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "displayName",
+          "baseUrl",
+          "protocol",
+          "models",
+          "connectionTemplateId",
+          "settingsFingerprint"
+        ],
+        "title": "Model Provider",
         "type": "object"
       },
       "def-2": {
@@ -2628,7 +2755,7 @@
     },
     "/api/auth/accounts/{userId}": {
       "get": {
-        "description": "Requires a current human Native IAM Installation administrator and trusted Origin. Returns guarded present state, not a receipt for any prior operation.",
+        "description": "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns guarded present state.",
         "operationId": "getAuthAccount",
         "parameters": [
           {
@@ -8562,7 +8689,7 @@
     },
     "/api/auth/recovery": {
       "get": {
-        "description": "Requires a current human Native IAM Installation administrator and trusted Origin. Returns the present designation, whose password the database protects; not a receipt for any prior operation.",
+        "description": "Requires a current human Native IAM Installation administrator and either the configured Origin or a same-origin browser fetch to the configured Console host. Returns the present designation.",
         "operationId": "getAuthRecovery",
         "responses": {
           "200": {
@@ -11660,22 +11787,60 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "authorizationUrl": "https://accounts.example.com/authorize",
                     "destinations": [
-                      { "host": "api.example.com", "path": "/profile", "port": 443 }
+                      {
+                        "host": "inference.example.com",
+                        "method": "POST",
+                        "path": "/v1/responses",
+                        "port": 443
+                      }
                     ],
-                    "displayName": "Example account",
-                    "issuer": "https://accounts.example.com",
-                    "mode": "manual",
-                    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                    "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                    "scopes": ["profile.read"],
-                    "tokenUrl": "https://accounts.example.com/token"
+                    "displayName": "Research inference",
+                    "mode": "static_bearer"
                   }
                 }
               },
               "schema": {
                 "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                            "method": {
+                              "maxLength": 16,
+                              "minLength": 1,
+                              "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                              "type": "string"
+                            },
+                            "path": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^/",
+                              "type": "string"
+                            },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["host", "port", "path", "method"],
+                          "type": "object"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "mode": { "const": "static_bearer", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["displayName", "mode", "destinations"],
+                    "type": "object"
+                  },
                   {
                     "additionalProperties": false,
                     "properties": {
@@ -11816,23 +11981,21 @@
                       "data": {
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "current": {
-                          "authorizationParameters": {},
-                          "authorizationUrl": "https://accounts.example.com/authorize",
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "destinations": [
-                            { "host": "api.example.com", "path": "/profile", "port": 443 }
+                            {
+                              "host": "inference.example.com",
+                              "method": "POST",
+                              "path": "/v1/responses",
+                              "port": 443
+                            }
                           ],
-                          "issuer": "https://accounts.example.com",
-                          "mode": "manual",
-                          "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                          "scopes": ["profile.read"],
-                          "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-                          "tokenUrl": "https://accounts.example.com/token",
+                          "mode": "static_bearer",
+                          "templateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                           "version": 1
                         },
-                        "displayName": "Example account",
-                        "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+                        "displayName": "Research inference",
+                        "id": "ctp_223e4567-e89b-42d3-a456-426614174000"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -12482,6 +12645,41 @@
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                            "method": {
+                              "maxLength": 16,
+                              "minLength": 1,
+                              "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$",
+                              "type": "string"
+                            },
+                            "path": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^/",
+                              "type": "string"
+                            },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["host", "port", "path", "method"],
+                          "type": "object"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "mode": { "const": "static_bearer", "type": "string" }
+                    },
+                    "required": ["mode", "destinations"],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
                       "authorizationParameters": {
                         "additionalProperties": { "maxLength": 1024, "type": "string" },
                         "maxProperties": 32,
@@ -12969,8 +13167,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -13393,8 +13593,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -14032,6 +14234,692 @@
           }
         },
         "summary": "Inspect selected Driver accepted startup values and configuration schemas",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/model-providers": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "listModelProviders",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "baseUrl": "https://inference.example.com/v1",
+                          "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                          "defaultModelId": "research-model",
+                          "displayName": "Research inference",
+                          "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                          "models": [{ "id": "research-model" }],
+                          "protocol": "openai-responses",
+                          "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "items": { "$ref": "#/components/schemas/def-18" }, "type": "array" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List Installation model providers",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "createModelProvider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "baseUrl": "https://inference.example.com/v1",
+                    "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                    "defaultModelId": "research-model",
+                    "displayName": "Research inference",
+                    "models": [{ "id": "research-model" }],
+                    "protocol": "openai-responses"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseUrl": {
+                    "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
+                    "maxLength": 2048,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "connectionTemplateId": {
+                    "description": "Installation-wide static-key Connection Template that approves the inference request.",
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "defaultModelId": {
+                    "description": "Optional default from the models offered by this provider.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                    "type": "string"
+                  },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "models": {
+                    "description": "Models offered by this provider. Each model ID must be unique.",
+                    "items": { "$ref": "#/components/schemas/def-17" },
+                    "maxItems": 256,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "protocol": {
+                    "anyOf": [
+                      { "const": "openai-responses", "type": "string" },
+                      { "const": "openai-completions", "type": "string" }
+                    ]
+                  }
+                },
+                "required": [
+                  "displayName",
+                  "baseUrl",
+                  "protocol",
+                  "models",
+                  "connectionTemplateId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "$ref": "#/components/schemas/def-18" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Create an Installation model provider",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/model-providers/{modelProviderId}": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "getModelProvider",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "mpr_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "modelProviderId",
+            "required": true,
+            "schema": {
+              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "$ref": "#/components/schemas/def-18" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Read a model provider",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "put": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "updateModelProvider",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "mpr_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "modelProviderId",
+            "required": true,
+            "schema": {
+              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "baseUrl": "https://inference.example.com/v1",
+                    "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                    "defaultModelId": "research-model",
+                    "displayName": "Research inference",
+                    "expectedSettingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "models": [{ "id": "research-model" }],
+                    "protocol": "openai-responses"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseUrl": {
+                    "description": "Exact HTTPS inference URL with a DNS hostname or private IPv4 address and a path ending in /v1.",
+                    "maxLength": 2048,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "connectionTemplateId": {
+                    "description": "Installation-wide static-key Connection Template that approves the inference request.",
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "defaultModelId": {
+                    "description": "Optional default from the models offered by this provider.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                    "type": "string"
+                  },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "expectedSettingsFingerprint": {
+                    "description": "Fingerprint of the saved settings, used for conditional updates.",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
+                  "models": {
+                    "description": "Models offered by this provider. Each model ID must be unique.",
+                    "items": { "$ref": "#/components/schemas/def-17" },
+                    "maxItems": 256,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "protocol": {
+                    "anyOf": [
+                      { "const": "openai-responses", "type": "string" },
+                      { "const": "openai-completions", "type": "string" }
+                    ]
+                  }
+                },
+                "required": [
+                  "displayName",
+                  "baseUrl",
+                  "protocol",
+                  "models",
+                  "connectionTemplateId",
+                  "expectedSettingsFingerprint"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "$ref": "#/components/schemas/def-18" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Replace model provider settings if the saved fingerprint matches",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -14963,8 +15851,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -15368,6 +16258,10 @@
                                 "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
                               "name": {
                                 "maxLength": 200,
                                 "minLength": 1,
@@ -15542,6 +16436,10 @@
                                 "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
                               "name": {
                                 "maxLength": 200,
                                 "minLength": 1,
@@ -15696,17 +16594,10 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                    "configurationId": "cfg_223e4567-e89b-42d3-a456-426614174000",
                     "executionMode": "dedicated",
-                    "harnessAuth": {
-                      "method": "api_key",
-                      "source": {
-                        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                        "kind": "secret",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                      }
-                    },
-                    "name": "Documentation assistant"
+                    "modelProviderId": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                    "name": "Research assistant"
                   }
                 }
               },
@@ -15883,6 +16774,10 @@
                     },
                     "type": "object"
                   },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
                   "name": {
                     "maxLength": 200,
                     "minLength": 1,
@@ -15975,7 +16870,7 @@
                     "value": {
                       "data": {
                         "backendId": null,
-                        "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                        "configurationId": "cfg_223e4567-e89b-42d3-a456-426614174000",
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "desiredRuntimeState": "stopped",
                         "executionMode": "dedicated",
@@ -15988,10 +16883,11 @@
                             "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                           }
                         },
-                        "id": "agt_123e4567-e89b-42d3-a456-426614174000",
-                        "name": "Documentation assistant",
+                        "id": "agt_223e4567-e89b-42d3-a456-426614174000",
+                        "modelProviderId": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "name": "Research assistant",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "servicePrincipalId": "principal-docs-agent",
+                        "servicePrincipalId": "principal-research-agent",
                         "status": "active"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -16165,6 +17061,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -16409,7 +17309,7 @@
     },
     "/namespaces/{namespaceId}/agents/device-authorizations": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Secret resources in the requested Namespace.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16458,8 +17358,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -16484,19 +17383,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -16653,13 +17551,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}": {
       "delete": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Only the initiating actor can poll or cancel the login.",
         "operationId": "cancelAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16681,11 +17579,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16773,14 +17671,13 @@
         "summary": "Experimental: Discard a local device login without upstream revocation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.",
         "operationId": "pollAgentDeviceAuthorization",
         "parameters": [
           {
@@ -16802,11 +17699,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16835,8 +17732,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -16861,19 +17757,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -17030,7 +17925,7 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "operate", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
@@ -18298,6 +19193,10 @@
                       }
                     },
                     "type": "object"
+                  },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
                   },
                   "name": {
                     "maxLength": 200,
@@ -19700,6 +20599,10 @@
                     },
                     "type": "object"
                   },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
                   "name": {
                     "description": "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
                     "maxLength": 200,
@@ -20054,6 +20957,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -20492,6 +21399,10 @@
                               "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
                             "name": {
                               "maxLength": 200,
                               "minLength": 1,
@@ -20664,6 +21575,10 @@
                             },
                             "id": {
                               "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
                             "name": {
@@ -20849,7 +21764,8 @@
                 "additionalProperties": false,
                 "anyOf": [
                   { "required": ["configurationId"] },
-                  { "required": ["gatewayManagedMode"] }
+                  { "required": ["gatewayManagedMode"] },
+                  { "required": ["modelProviderId"] }
                 ],
                 "properties": {
                   "backendId": {
@@ -20987,6 +21903,15 @@
                             "type": "object"
                           }
                         ]
+                      },
+                      { "type": "null" }
+                    ]
+                  },
+                  "modelProviderId": {
+                    "anyOf": [
+                      {
+                        "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
                       },
                       { "type": "null" }
                     ]
@@ -21320,6 +22245,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -22546,6 +23475,10 @@
                                 { "const": "embedded", "type": "string" },
                                 { "const": "dedicated", "type": "string" }
                               ]
+                            },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
                             },
                             "overrides": {
                               "additionalProperties": {},
@@ -25628,7 +26561,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for Secret resources in the requested Namespace.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for CredentialSource resources in the requested Namespace.",
         "operationId": "startSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -25692,8 +26625,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -25718,19 +26650,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -25888,13 +26819,13 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+          { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}": {
       "delete": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Only the initiating actor can poll or cancel the login.",
         "operationId": "cancelSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -25931,11 +26862,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -26024,14 +26955,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
-          { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the exact credential source associated with the login. Only the initiating actor can poll or cancel the login.",
         "operationId": "pollSavedAgentDeviceAuthorization",
         "parameters": [
           {
@@ -26068,11 +26998,11 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -26101,8 +27031,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -26127,19 +27056,18 @@
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
                         "session": {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
                               "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": ["id", "namespaceId"],
                           "type": "object"
                         },
                         "source": {
@@ -26297,7 +27225,7 @@
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
-          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+          { "action": "operate", "resourceKind": "credential_source", "scope": "requested" }
         ]
       }
     },
@@ -28138,7 +29066,12 @@
                         "driver": { "$ref": "#/components/schemas/def-1" },
                         "driverPolicySchema": { "additionalProperties": {}, "type": "object" },
                         "policyScopeByPlugin": {
-                          "additionalProperties": { "const": "enablement_only", "type": "string" },
+                          "additionalProperties": {
+                            "anyOf": [
+                              { "const": "enablement_only", "type": "string" },
+                              { "const": "tool_human_approval", "type": "string" }
+                            ]
+                          },
                           "type": "object"
                         },
                         "toolDefaults": {
@@ -29471,6 +30404,10 @@
                                   { "const": "dedicated", "type": "string" }
                                 ]
                               },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
                               "overrides": {
                                 "additionalProperties": {},
                                 "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
@@ -29832,6 +30769,10 @@
                                     { "const": "embedded", "type": "string" },
                                     { "const": "dedicated", "type": "string" }
                                   ]
+                                },
+                                "modelProviderId": {
+                                  "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
                                 },
                                 "overrides": {
                                   "additionalProperties": {},
@@ -32633,6 +33574,10 @@
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
                         "name": {
                           "maxLength": 200,
                           "minLength": 1,
@@ -33349,6 +34294,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -34377,8 +35326,10 @@
                     "values": {
                       "agents": {
                         "defaults": {
-                          "model": "codex/gpt-5.1-codex",
-                          "models": { "codex/gpt-5.1-codex": { "agentRuntime": { "id": "codex" } } }
+                          "model": "codex/research-model",
+                          "models": {
+                            "codex/research-model": { "agentRuntime": { "id": "codex" } }
+                          }
                         }
                       },
                       "gateway": {
@@ -34399,7 +35350,7 @@
                           "codex": {
                             "api": "openai-responses",
                             "baseUrl": "http://127.0.0.1:9",
-                            "models": [{ "id": "gpt-5.1-codex", "name": "gpt-5.1-codex" }]
+                            "models": [{ "id": "research-model", "name": "research-model" }]
                           }
                         }
                       },
@@ -34491,15 +35442,15 @@
                       "data": {
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "generation": 1,
-                        "id": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                        "id": "cfg_223e4567-e89b-42d3-a456-426614174000",
                         "kind": "agent",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "values": {
                           "agents": {
                             "defaults": {
-                              "model": "codex/gpt-5.1-codex",
+                              "model": "codex/research-model",
                               "models": {
-                                "codex/gpt-5.1-codex": { "agentRuntime": { "id": "codex" } }
+                                "codex/research-model": { "agentRuntime": { "id": "codex" } }
                               }
                             }
                           },
@@ -34521,7 +35472,7 @@
                               "codex": {
                                 "api": "openai-responses",
                                 "baseUrl": "http://127.0.0.1:9",
-                                "models": [{ "id": "gpt-5.1-codex", "name": "gpt-5.1-codex" }]
+                                "models": [{ "id": "research-model", "name": "research-model" }]
                               }
                             }
                           },
@@ -39485,6 +40436,145 @@
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/model-providers": {
+      "get": {
+        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "operationId": "listUsableModelProviders",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "baseUrl": "https://inference.example.com/v1",
+                          "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                          "defaultModelId": "research-model",
+                          "displayName": "Research inference",
+                          "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                          "models": [{ "id": "research-model" }],
+                          "protocol": "openai-responses",
+                          "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": { "items": { "$ref": "#/components/schemas/def-18" }, "type": "array" },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List the model providers available when creating an Agent",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
         ]
       }
     },

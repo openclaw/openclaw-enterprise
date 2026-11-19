@@ -21,6 +21,7 @@
         "OCC_TEST_CANDIDATE_CONTROLLER_REVISION"
       ],
       "expectedTests": [
+        "Native restart migration removes recovery metadata and preserves immutable admitted revisions",
         "Separate database deployment verifies the exact candidate history without applying pending SQL",
         "Logical restore preserves reviewed canonical and Provider migration histories",
         "Canonical readiness migration defaults historical work to ineligible and constrains ownership",
@@ -28,6 +29,8 @@
         "First installation requires empty migration history under the migration lock",
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
         "Canonical migration refuses unexplained histories before mutation",
+        "Production migration preserves divergent approval histories and converges exactly once",
+        "Production migration refuses altered receipts and catalog after the stored approval suffix",
         "Credential Proxy preview receipts require the exact history before the shared migration",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
         "External ChatGPT migration rejects retired OAuth state and admits only source metadata",

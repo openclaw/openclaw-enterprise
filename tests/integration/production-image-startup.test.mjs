@@ -8,17 +8,11 @@ import { selfSigned } from "../helpers/certificates.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
 import {
   assertNoPackagingFailure,
+  image,
+  imageTestOptions,
   registerProductionImageControllerStartupCases,
   runDocker,
 } from "./production-image-controller-startup-cases.ts";
-
-const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
-const imageTestOptions =
-  image === undefined
-    ? {
-        skip: "Set OCC_TEST_PRODUCTION_IMAGE to a locally built production controller image tag.",
-      }
-    : {};
 
 function productionResourceRequirements() {
   return {
@@ -168,7 +162,7 @@ async function productionFixture(t) {
   return fixture;
 }
 
-registerProductionImageControllerStartupCases({ image, imageTestOptions, productionFixture });
+registerProductionImageControllerStartupCases({ productionFixture });
 
 test(
   "production image runs the chart's pre-upgrade Installation check",

@@ -216,7 +216,7 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 				output = io.MultiWriter(&outputAttempt, &handoffFailingWriter{remaining: remaining, err: failure})
 			}
 			cmd := New(output, &stderr)
-			cmd.SetArgs([]string{"installation", "install", "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--chart", chart, "--values", values, "--receipt", receipt})
+			cmd.SetArgs([]string{"installation", "install", "--bootstrap-credentials", "existing", "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--chart", chart, "--values", values, "--receipt", receipt})
 			err := cmd.ExecuteContext(t.Context())
 			wantOutcome := "succeeded"
 			switch {

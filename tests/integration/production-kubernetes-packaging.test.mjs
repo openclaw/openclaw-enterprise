@@ -1,8 +1,19 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -291,7 +302,7 @@ test(
       ["dns.namespace", "true"],
       ["api.clients[0].namespace", "1"],
       ["database.appUrlKey", "2"],
-      ["bootstrap.password.claimName", "true"],
+      ["bootstrap.credentials.secretName", "true"],
       ["gatewayRouting.envoyNamespace", "true", gatewayRoutingValues],
       ["gatewayRouting.gatewayName", "2024", gatewayRoutingValues],
       ["gatewayRouting.tlsSecretName", "true", gatewayRoutingValues],
@@ -303,8 +314,6 @@ test(
       ["database.caKey", "1", stringNameCaValues.database],
       ["auth.oidc.secretName", "2024", stringNameCaValues.oidc],
       ["auth.oidc.secretName", "false", stringNameCaValues.oidc],
-      ["bootstrap.password.fileName", "2024"],
-      ["bootstrap.serviceKey.fileName", "true"],
       ["database.caSecretName", "2024", stringNameCaValues.oidc],
       ["auth.oidc.caSecretName", "2024", stringNameCaValues.oidc],
       ["executionCluster.apiKubeconfigSecretName", "2024", stringNameCaValues.execution],
@@ -664,14 +673,9 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.equal(drivers.secretDriver.id, "secret-kubernetes");
   assert.equal(Object.hasOwn(drivers.installation.drivers, "service_account"), false);
 
-  const bootstrapClaim = loadYaml(
-    await readFile(new URL("bootstrap-pvc.yaml", productionExamples), "utf8"),
-  );
-  assert.equal(bootstrapClaim.kind, "PersistentVolumeClaim");
-  assert.equal(bootstrapClaim.metadata.name, "occ-bootstrap-admin-password");
-  assert.equal(bootstrapClaim.metadata.namespace, "openclaw-system");
-  assert.deepEqual(bootstrapClaim.spec.accessModes, ["ReadWriteOnce"]);
-  assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
+  assert.equal(values.bootstrap.credentials.secretName, "occ-bootstrap-credentials");
+  assert.equal(Object.hasOwn(values.bootstrap, "password"), false);
+  assert.equal(Object.hasOwn(values.bootstrap, "serviceKey"), false);
 });
 
 registerProductionGatewayHostnameCase(sandboxValues);
@@ -828,7 +832,12 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       ? `registry.example.invalid/controller@sha256:${"c".repeat(64)}`
       : values["images.controller"];
     const objects = await renderObjects(
-      { ...settings, "images.controller": controllerImage },
+      {
+        ...settings,
+        "images.controller": controllerImage,
+        // Upgrades must render without the install-only Secret reference.
+        ...(isUpgrade ? { "bootstrap.credentials.secretName": "" } : {}),
+      },
       { isUpgrade },
     );
     // Recovery joins the submitted attempt to all live hooks and its owned Pod;
@@ -847,6 +856,17 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
     assert.equal(
       initializer.spec.template.metadata.annotations?.["openclaw.dev/upgrade-attempt"],
       isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
+    );
+    const initializerPod = initializer.spec.template.spec;
+    assert.equal(
+      initializerPod.volumes.some(({ name }) => name === "bootstrap-credentials"),
+      !isUpgrade,
+    );
+    assert.equal(
+      initializerPod.containers[0].env.some(
+        ({ name }) => name === "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE",
+      ),
+      !isUpgrade,
     );
     const api = deploymentPodSpec(objects, "api").containers[0];
     assert.equal(api.image, controllerImage);
@@ -884,6 +904,23 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
     assert.ok(objects.some(({ kind }) => kind === "EnvoyProxy"));
     assert.ok(objects.some(({ kind, metadata }) => kind === "Service" && metadata.name === "git"));
   }
+});
+
+test("upgrades ignore the bootstrap output settings earlier charts required", tooling, async () => {
+  // Earlier charts refused to render without bootstrap.password.claimName, so an existing
+  // installation's own values still carry these keys when it upgrades.
+  const retired = {
+    "bootstrap.credentials.secretName": "",
+    "bootstrap.password.claimName": "bootstrap-password",
+    "bootstrap.serviceKey.fileName": "initial-admin-service-key.json",
+  };
+  const objects = await renderObjects(retired, { isUpgrade: true });
+  const initializerPod = objects.find(({ kind }) => kind === "Job").spec.template.spec;
+  assert.ok(!initializerPod.volumes.some(({ persistentVolumeClaim }) => persistentVolumeClaim));
+  // A fresh install still has to name the precreated credentials Secret.
+  await assert.rejects(render(retired), ({ stderr }) =>
+    /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr),
+  );
 });
 
 test(
@@ -1328,7 +1365,7 @@ test(
         },
         bootstrap: {
           adminEmail: values["bootstrap.adminEmail"],
-          password: { claimName: values["bootstrap.password.claimName"] },
+          credentials: { secretName: values["bootstrap.credentials.secretName"] },
         },
         api: {
           clients: [
@@ -1592,6 +1629,7 @@ esac
           ? `.repositoryCredentials.hostname = ${JSON.stringify(configuredHostname)}`
           : "del(.repositoryCredentials.hostname)",
       );
+      const originalValues = await readFile(liveValues);
       const evidence = join(directory, name);
       await writeFile(probeCalls, "", { mode: 0o600 });
       await writeFile(helmCalls, "", { mode: 0o600 });
@@ -1648,6 +1686,7 @@ esac
           return true;
         },
       );
+      assert.ok((await readFile(liveValues)).equals(originalValues), "protected values changed");
       assert.equal(
         await readFile(probeCalls, "utf8"),
         `${controllerImage}|${brokerImage}|linux/amd64\n`,
@@ -1660,6 +1699,9 @@ esac
       );
       if (!failure) {
         // A failed dry-run has a render but no successful-preparation pointer.
+        await assert.rejects(lstat(join(evidence, "prepared-helm-attempt.json")), {
+          code: "ENOENT",
+        });
         const attempts = await readdir(join(evidence, "helm-attempts"));
         assert.equal(attempts.length, 1);
         const candidate = await resources(
@@ -1672,12 +1714,6 @@ esac
         assert.equal(broker.args[1], `https://${hostname}`);
         assert.ok(
           candidate.some(({ kind, metadata }) => kind === "Service" && metadata.name === "broker"),
-        );
-        const retained = loadYaml(await readFile(liveValues, "utf8"));
-        assert.equal(
-          retained.repositoryCredentials.serviceName,
-          undefined,
-          "dry-run must not mutate protected inputs",
         );
       }
     }
@@ -1928,6 +1964,50 @@ test("the chart refuses installation names the bootstrap Job refuses", tooling, 
 });
 
 test(
+  "the chart runs the migration selected by each controller image in the same process",
+  tooling,
+  async (t) => {
+    const objects = await resources((await renderProductionChart()).stdout);
+    const migration = findResourceByComponent(
+      objects,
+      "Job",
+      "initialization",
+    ).spec.template.spec.initContainers.find(({ name }) => name === "migration");
+    for (const extension of ["mjs", "ts"]) {
+      const directory = await temporaryDirectory(t, "occ-migration-layout-");
+      await mkdir(join(directory, "scripts"));
+      const entry = `scripts/migrate-production.${extension}`;
+      await writeFile(
+        join(directory, "package.json"),
+        JSON.stringify({
+          type: "module",
+          scripts: { "db:migrate:production": `NODE_ENV=production node ${entry}` },
+        }),
+      );
+      // Each isolated layout contains only its own generation's executable.
+      await writeFile(
+        join(directory, entry),
+        "process.stdout.write(JSON.stringify({pid: process.pid, args: process.argv.slice(2)}));",
+      );
+      const applying = execute(process.execPath, migration.args, { cwd: directory });
+      const applied = await applying;
+      assert.deepEqual(JSON.parse(applied.stdout), {
+        pid: applying.child.pid,
+        args: ["--expect-empty"],
+      });
+      const check = [...migration.args.slice(0, -1), "--check"];
+      const checked = await execute(process.execPath, check, { cwd: directory });
+      assert.deepEqual(JSON.parse(checked.stdout).args, ["--check"]);
+      // Omitting Node's separator must fail before an apply can start.
+      await assert.rejects(
+        execute(process.execPath, [...check.slice(0, -2), "--check"], { cwd: directory }),
+        { code: 9, stdout: "" },
+      );
+    }
+  },
+);
+
+test(
   "the staged sign-in chart preserves the historical worker probes for both Helm operations",
   tooling,
   async (t) => {
@@ -1953,6 +2033,14 @@ test(
       );
       const rendered = await resources(staged.stdout);
       assert.deepEqual(rendered, expected);
+      const job = findResourceByComponent(rendered, "Job", "initialization");
+      const migration = job.spec.template.spec.initContainers.find(
+        ({ name }) => name === "migration",
+      );
+      assert.deepEqual(migration.args, [
+        ...selectedImageMigrationEntry,
+        ...(isUpgrade ? [] : ["--expect-empty"]),
+      ]);
       const worker = findResourceByComponent(
         rendered,
         "Deployment",
@@ -2111,9 +2199,9 @@ test(
     const [bootstrap] = pod.containers;
     assert.equal(check.name, "installation-check");
     assert.equal(migration.name, "migration");
-    assert.deepEqual(migration.args, ["scripts/migrate-production.mjs", "--expect-empty"]);
+    assert.deepEqual(migration.args, [...selectedImageMigrationEntry, "--expect-empty"]);
     assert.equal(bootstrap.name, "bootstrap");
-    assert.deepEqual(bootstrap.args, ["scripts/bootstrap-installation.mjs"]);
+    assert.deepEqual(bootstrap.args, ["scripts/bootstrap-installation.mjs", "--require-fresh"]);
     assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
     assert.ok(!migration.env.some(({ name }) => name === "OCC_DATABASE_URL"));
     assert.ok(bootstrap.env.some(({ name }) => name === "OCC_DATABASE_URL"));
@@ -2143,26 +2231,43 @@ test(
     for (const [name, value] of Object.entries({
       OCC_BOOTSTRAP_ADMIN_EMAIL: "admin@example.invalid",
       OCC_BOOTSTRAP_INSTALLATION_NAME: "openclaw-enterprise",
-      OCC_BOOTSTRAP_PASSWORD_FILE: "/var/lib/openclaw/bootstrap/initial-admin-password",
-      OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/var/lib/openclaw/bootstrap/initial-admin-service-key.json",
+      OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/run/openclaw-bootstrap/admin-password",
+      OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/run/openclaw-bootstrap/admin-service-key",
     })) {
       assertEnvValue(bootstrap, name, value);
     }
-    assert.ok(
-      pod.volumes.some(
-        ({ name, persistentVolumeClaim }) =>
-          name === "bootstrap-password-output" &&
-          persistentVolumeClaim?.claimName === "occ-bootstrap-admin-password",
-      ),
+    assert.deepEqual(
+      pod.volumes.find(({ name }) => name === "bootstrap-credentials"),
+      {
+        name: "bootstrap-credentials",
+        secret: {
+          secretName: "occ-bootstrap-credentials",
+          items: [
+            { key: "admin-password", path: "admin-password" },
+            { key: "admin-service-key", path: "admin-service-key" },
+          ],
+        },
+      },
     );
-    assert.ok(
-      bootstrap.volumeMounts.some(
-        ({ name, mountPath, readOnly }) =>
-          name === "bootstrap-password-output" &&
-          mountPath === "/var/lib/openclaw/bootstrap" &&
-          readOnly === undefined,
-      ),
+    assert.deepEqual(
+      bootstrap.volumeMounts.find(({ name }) => name === "bootstrap-credentials"),
+      {
+        name: "bootstrap-credentials",
+        mountPath: "/run/openclaw-bootstrap",
+        readOnly: true,
+      },
     );
+    assert.ok(!pod.volumes.some(({ persistentVolumeClaim }) => persistentVolumeClaim));
+    for (const container of pod.initContainers) {
+      assert.ok(!container.volumeMounts?.some(({ name }) => name === "bootstrap-credentials"));
+    }
+    for (const component of ["api", "worker"]) {
+      const servicePod = deploymentPodSpec(objects, component);
+      assert.ok(!servicePod.volumes?.some(({ name }) => name === "bootstrap-credentials"));
+      for (const container of servicePod.containers) {
+        assert.ok(!container.env?.some(({ name }) => name.startsWith("OCC_BOOTSTRAP_")));
+      }
+    }
 
     // The privileged initialization Pod is isolated before its pre-install hook starts.
     const bootstrapPolicies = objects.filter(
@@ -2689,13 +2794,16 @@ test(
       { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
       { "gatewayRouting.remoteNodeCidrs[0]": "12345::/64" },
       { "gatewayRouting.remoteNodeCidrs[0]": "::ffff:999.1.2.3/32" },
+      // A /0 prefix would remove the source restriction on the private listener.
+      { "gatewayRouting.remoteNodeCidrs[0]": "0.0.0.0/0" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "::/0" },
     ]) {
       await assert.rejects(
         render({ ...gatewayRoutingValues, ...override }),
         /gatewayRouting\.remoteNodeCidrs/,
       );
     }
-    for (const cidr of ["10.0.0.1/32", "0.0.0.0/0", "::/64", "::ffff:10.0.0.0/120"]) {
+    for (const cidr of ["10.0.0.1/32", "10.0.0.0/8", "::/64", "::ffff:10.0.0.0/120"]) {
       await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
     }
   },
@@ -3212,26 +3320,43 @@ test("the chart refuses administrator emails the bootstrap Job refuses", tooling
   }
 });
 
-test("the chart refuses bootstrap claim names the volume helper refuses", tooling, async () => {
-  const message =
-    /bootstrap\.password\.claimName must be a DNS subdomain of at most 253 characters/;
-  // This is Kubernetes' 253-character object-name limit, not a DNS hostname limit.
-  const longest = "a".repeat(253);
-  for (const claimName of ["Bootstrap", "claim_name", "claim-", `.claim`, `${"a".repeat(254)}`]) {
-    await assert.rejects(
-      render({}, { strings: { "bootstrap.password.claimName": claimName } }),
-      ({ code, stderr }) => code !== 0 && message.test(stderr),
-      JSON.stringify(claimName),
+test(
+  "the chart validates precreated bootstrap Secret names and projects custom keys",
+  tooling,
+  async () => {
+    const message =
+      /bootstrap\.credentials\.secretName must be a DNS subdomain of at most 253 characters/;
+    const longest = "a".repeat(253);
+    for (const secretName of ["Bootstrap", "secret_name", "secret-", ".secret", "a".repeat(254)]) {
+      await assert.rejects(
+        render({}, { strings: { "bootstrap.credentials.secretName": secretName } }),
+        ({ code, stderr }) => code !== 0 && message.test(stderr),
+        JSON.stringify(secretName),
+      );
+    }
+    const objects = await renderObjects(
+      {},
+      {
+        strings: {
+          "bootstrap.credentials.secretName": longest,
+          "bootstrap.credentials.passwordKey": "human-password",
+          "bootstrap.credentials.serviceKeyKey": "automation-key",
+        },
+      },
     );
-  }
-  const objects = await renderObjects({}, { strings: { "bootstrap.password.claimName": longest } });
-  const job = findResourceByComponent(objects, "Job", "initialization");
-  const claim = job.spec.template.spec.volumes.find(
-    (volume) => volume.name === "bootstrap-password-output",
-  ).persistentVolumeClaim.claimName;
-  assert.equal(claim, longest);
-  assert.equal(longest.length, 253);
-});
+    const job = findResourceByComponent(objects, "Job", "initialization");
+    const volume = job.spec.template.spec.volumes.find(
+      ({ name }) => name === "bootstrap-credentials",
+    );
+    assert.deepEqual(volume.secret, {
+      secretName: longest,
+      items: [
+        { key: "human-password", path: "admin-password" },
+        { key: "automation-key", path: "admin-service-key" },
+      ],
+    });
+  },
+);
 
 // Findings 1065 and 1066: every Secret or ConfigMap name an operator sets, and the GatewayClass,
 // must be a Kubernetes resource name (the profile renderer's resourceNameRule), so a malformed
@@ -3381,17 +3506,15 @@ test(
   },
 );
 
-test("the chart refuses a relative bootstrap mount path the Job refuses", tooling, async () => {
-  const message = /bootstrap\.password\.mountPath must be an absolute path/;
-  for (const mountPath of ["bootstrap", "./bootstrap", " bootstrap"]) {
-    await assert.rejects(
-      render({}, { strings: { "bootstrap.password.mountPath": mountPath } }),
-      ({ code, stderr }) => code !== 0 && message.test(stderr),
-      JSON.stringify(mountPath),
-    );
+test("bootstrap credential Secret keys reject YAML booleans and numbers", tooling, async () => {
+  for (const field of ["passwordKey", "serviceKeyKey"]) {
+    for (const value of ["true", "2024"]) {
+      await assert.rejects(
+        render({ [`bootstrap.credentials.${field}`]: value }),
+        /bootstrap credential key must be a string/,
+      );
+    }
   }
-  const { stdout } = await render();
-  assert.match(stdout, /value: "\/var\/lib\/openclaw\/bootstrap\/initial-admin-password"/);
 });
 
 test(
@@ -3489,7 +3612,7 @@ test(
       "database.caKey": "4",
       "backend.chatgpt.secretName": "1.5",
       "backend.chatgpt.key": "off",
-      "bootstrap.password.claimName": "408",
+      "bootstrap.credentials.secretName": "408",
       "api.clients[0].namespace": "2024",
       "dns.namespace": "true",
       "gatewayRouting.gatewayName": "409",
@@ -3883,7 +4006,7 @@ test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", too
 });
 
 test(
-  "the chart refuses control-plane node selectors the volume helper refuses",
+  "the chart validates control-plane node selectors against Kubernetes label rules",
   tooling,
   async (t) => {
     const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;

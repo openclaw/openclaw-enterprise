@@ -130,6 +130,10 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/interrupted-turns",
+                    "label": "Interrupted turns"
+                  },
+                  {
                     "page": "reference/agents/planned-replacement",
                     "label": "Planned replacement"
                   },
@@ -618,16 +622,29 @@
                     "label": "Overview"
                   },
                   {
-                    "page": "guides/deploy/kubernetes",
-                    "label": "Kubernetes"
-                  },
-                  {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup Without OpenShell"
-                  },
-                  {
-                    "page": "guides/deploy/production-installation",
-                    "label": "Control Plane Setup"
+                    "group": "Control Plane Setup",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/control-plane-setup",
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "guides/deploy/kubernetes",
+                        "label": "Prepare the Cluster"
+                      },
+                      {
+                        "page": "guides/deploy/production-installation",
+                        "label": "Install the Control Plane"
+                      },
+                      {
+                        "page": "guides/deploy/openshift",
+                        "label": "OpenShift"
+                      },
+                      {
+                        "page": "guides/deploy/azure-postgresql",
+                        "label": "Azure PostgreSQL"
+                      }
+                    ]
                   },
                   {
                     "page": "guides/deploy/installation-profiles",
@@ -767,6 +784,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/production-upgrade-command",
+                    "label": "Upgrade Commands"
+                  },
+                  {
                     "page": "guides/deploy/separate-database-upgrade",
                     "label": "Separate Database Deployment"
                   },
@@ -823,6 +844,7 @@
               }
             ],
             "hidden": [
+              "guides/quickstart",
               "guides/deploy/production-installation-preparation",
               "guides/deploy/service-keys",
               "guides/deploy/oidc-upgrade",
@@ -985,6 +1007,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/harness-restart-recovery",
               "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
@@ -1105,6 +1128,10 @@
                       {
                         "page": "reference/drivers/sandbox",
                         "label": "Sandbox"
+                      },
+                      {
+                        "page": "reference/drivers/strands-box",
+                        "label": "Strands Box"
                       },
                       {
                         "page": "reference/drivers/secret",
@@ -1257,6 +1284,7 @@
               "design/safeguards",
               "reference/settings/programmatic",
               "flows/platform-startup",
+              "flows/installation-preparation",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
               "flows/coordinated-production-upgrade/preflight-cleanup",
@@ -1287,6 +1315,8 @@
               "flows/service-account-driver-credential-delivery",
               "flows/service-api-keys",
               "flows/harness-execution-topology",
+              "flows/strands-box-companion",
+              "flows/harness-restart-recovery",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/connection-templates",

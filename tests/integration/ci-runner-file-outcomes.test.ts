@@ -13,6 +13,7 @@ import {
   runnerEnv,
   runRunnerAsync,
   runRunnerSync,
+  writeCleanupFixture,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
@@ -54,19 +55,6 @@ function onlyFile(summary: RunSummary) {
   const [file] = summary.files;
   assert.ok(file && summary.files.length === 1, "expected one file result");
   return file;
-}
-
-async function writeCleanupFixture(root: string) {
-  await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
-    [
-      'import { appendFile } from "node:fs/promises";',
-      "export async function prepareFile({ file, statePath }) {",
-      '  return { cleanup: async () => appendFile(statePath, file.path + "\\n") };',
-      "}",
-      "",
-    ].join("\n"),
-  );
 }
 
 async function checkUpstreamInstallationPhases(root: string) {

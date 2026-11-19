@@ -110,7 +110,9 @@ without message content. An audit-write failure emits `http.audit_append_failed`
   normal provisioning, real completions and selected Harness tool effects.
 - Inspect request IDs, HTTP statuses and revision IDs in audit evidence. A `502`
   after successful resolution points to transport or interruption; `503` can
-  precede any upstream request. Do not infer tool rollback from either status.
+  precede any upstream request. A `503` `text/plain` body from the route's proxy
+  is passed on unchanged: a graceful Gateway Pod deletion cut a non-stream
+  request. Do not infer tool rollback from either status.
 
 ## Related docs
 
@@ -122,6 +124,8 @@ without message content. An audit-write failure emits `http.audit_append_failed`
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 05:48: Note that the route proxy's `503` reaches a non-stream caller when a Gateway Pod is deleted. (fix-interrupted-turns-1118 - 8cbb31a68)
 
 - 2026-11-17 02:02: Await the periodic check, then require a fresh post-body delivery check. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - d7c1c305e)
 

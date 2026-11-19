@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { Pool } from "pg";
 import type { App, Request, Session } from "./postgres-production-sharing-cases.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
@@ -16,7 +16,7 @@ import {
   parsePrivateJson,
   row,
 } from "./postgres-production-sharing-cases.ts";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import { createServer } from "node:net";
 import { startApi } from "../../apps/controller/src/api-startup.ts";
@@ -26,9 +26,10 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
+import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
@@ -51,9 +52,10 @@ import {
   PostgresPlatformState,
   InstalledDriver,
   OpenClawController,
+  type PostgresPool,
 } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { readPrivateBootstrapOutput } from "../helpers/bootstrap-output.ts";
+import { productionBootstrapEnvironment } from "../helpers/bootstrap-installation.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 import { createDriver as createProtectedFixture } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 
@@ -230,7 +232,7 @@ async function productionDrivers({
 }
 
 test(
-  "production bootstrap creates a generated-password administrator that can authenticate",
+  "production bootstrap registers supplied administrator credentials that can authenticate",
   {
     skip: databaseUrl
       ? false
@@ -238,33 +240,31 @@ test(
   },
   async (t) => {
     assert.ok(databaseUrl);
-    const environment = {
-      ...process.env,
-      NODE_ENV: "production",
-      OCC_DATABASE_URL: databaseUrl,
-      OCC_AUTH_SECRET: authSecret,
-      OCC_AUTH_BASE_URL: authBaseURL,
-      OCC_AGENT_NATIVE_ADMIN_DOMAIN: nativeAdmin.domain,
-      OCC_BOOTSTRAP_ADMIN_EMAIL: adminEmail,
-      OCC_BOOTSTRAP_PASSWORD_FILE: join(
-        await temporaryDirectory(t, "openclaw-enterprise-bootstrap-password-"),
-        "admin-password",
-      ),
-      OCC_BOOTSTRAP_SERVICE_KEY_FILE: "",
-      OCC_BOOTSTRAP_INSTALLATION_NAME: "openclaw-enterprise",
-    };
-    const passwordDirectory = dirname(environment.OCC_BOOTSTRAP_PASSWORD_FILE);
-    environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE = join(
-      passwordDirectory,
-      "initial-admin-service-key.json",
-    );
+    const passwordDirectory = await temporaryDirectory(t, "openclaw-enterprise-bootstrap-inputs-");
+    const environment = productionBootstrapEnvironment({
+      databaseUrl,
+      directory: passwordDirectory,
+      authSecret,
+      authBaseURL,
+      agentDomain: nativeAdmin.domain,
+      email: adminEmail,
+      installationName: "openclaw-enterprise",
+    });
+    const passwordFile = environment.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE;
+    const serviceKeyFile = environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE;
+    const password = await readFile(passwordFile, "utf8");
+    const serviceKey = await readFile(serviceKeyFile, "utf8");
     let app: App | undefined;
     let endpoint = "";
     let pool: Pool | undefined;
     try {
-      // Run the actual production Job; the generated credential is handed off only via the
-      // protected operator-selected file.
+      // Run the actual production Job with operator-supplied credential files.
       const bootstrapped = await runSuccessfulBootstrap(environment, "installation.bootstrapped");
+      assert.deepEqual(
+        (await readdir(passwordDirectory)).sort(),
+        ["admin-password-input", "admin-service-key-input"],
+        "initialization must not write credential outputs",
+      );
 
       pool = new Pool({ connectionString: databaseUrl });
       // Creating an administrator is not signing in: no usable session may exist yet.
@@ -284,10 +284,6 @@ test(
         `namespace:${defaultNamespaceId}:reconcile:ready`,
       );
 
-      const passwordFile = environment.OCC_BOOTSTRAP_PASSWORD_FILE;
-      const serviceKeyFile = environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
-      const password = (await readPrivateBootstrapOutput(passwordFile)).trim();
-      assert.ok(/^[A-Za-z0-9_-]{43}$/.test(password), "invalid bootstrap password format");
       assert.ok(
         password !== adminEmail,
         "bootstrap password must differ from the administrator email",
@@ -296,16 +292,12 @@ test(
         password !== authSecret,
         "bootstrap password must differ from the authentication secret",
       );
-      const serviceKeyBytes = await readPrivateBootstrapOutput(serviceKeyFile);
-      const serviceKeyOutput = record(
-        parsePrivateJson(serviceKeyBytes, "bootstrap service-key output"),
+      const confirmed = parseLogEvents(bootstrapped.stdout).find(
+        (event) => event.event === "installation.bootstrapped",
       );
-      const serviceKeyData = record(serviceKeyOutput.data);
-      const serviceKeyMeta = record(serviceKeyOutput.meta);
-      const serviceKey = text(serviceKeyData.key);
-      assert.ok(serviceKeyData.name === "bootstrap-admin", "incorrect bootstrap service-key name");
+      assert.ok(confirmed);
       assert.ok(
-        text(serviceKeyData.servicePrincipalId).startsWith("spn_"),
+        text(confirmed.servicePrincipalId).startsWith("spn_"),
         "invalid bootstrap principal ID",
       );
       assert.ok(
@@ -314,7 +306,7 @@ test(
           !/[^!-~]/.test(serviceKey),
         "invalid bootstrap service-key format",
       );
-      assert.equal(text(serviceKeyMeta.installationId).startsWith("ins_"), true);
+      assert.equal(text(confirmed.installationId).startsWith("ins_"), true);
       assert.equal(
         bootstrapped.stdout.includes(password),
         false,
@@ -336,30 +328,29 @@ test(
         "stderr must not contain service key",
       );
 
-      async function assertBootstrapOutputsUnchanged() {
+      async function assertBootstrapInputsUnchanged() {
         // Compare without including either credential in a test failure.
-        const currentPassword = (await readPrivateBootstrapOutput(passwordFile)).trim();
-        const currentServiceKey = await readPrivateBootstrapOutput(serviceKeyFile);
-        assert.ok(currentPassword === password, "bootstrap password changed");
-        assert.ok(currentServiceKey === serviceKeyBytes, "bootstrap service-key output changed");
+        assert.ok(
+          (await readFile(passwordFile, "utf8")) === password,
+          "bootstrap password input changed",
+        );
+        assert.ok(
+          (await readFile(serviceKeyFile, "utf8")) === serviceKey,
+          "bootstrap key input changed",
+        );
       }
 
       // Helm upgrades and Job retries must not rotate the bootstrap credential.
       await runSuccessfulBootstrap(environment, "installation.already-bootstrapped");
       assert.deepEqual(await defaultNamespaceRows(pool), defaultNamespace);
-      await assertBootstrapOutputsUnchanged();
-      const {
-        OCC_BOOTSTRAP_INSTALLATION_NAME,
-        OCC_BOOTSTRAP_PASSWORD_FILE,
-        OCC_BOOTSTRAP_SERVICE_KEY_FILE,
-        ...existingOnlyEnvironment
-      } = environment;
-      assert.equal(OCC_BOOTSTRAP_INSTALLATION_NAME.length > 0, true);
-      assert.equal(OCC_BOOTSTRAP_PASSWORD_FILE.length > 0, true);
-      assert.equal(OCC_BOOTSTRAP_SERVICE_KEY_FILE.length > 0, true);
+      await assertBootstrapInputsUnchanged();
+      const existingOnlyEnvironment: NodeJS.ProcessEnv = { ...environment };
+      delete existingOnlyEnvironment.OCC_BOOTSTRAP_INSTALLATION_NAME;
+      delete existingOnlyEnvironment.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE;
+      delete existingOnlyEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE;
       await runSuccessfulBootstrap(existingOnlyEnvironment, "installation.already-bootstrapped");
       assert.deepEqual(await defaultNamespaceRows(pool), defaultNamespace);
-      await assertBootstrapOutputsUnchanged();
+      await assertBootstrapInputsUnchanged();
 
       // A different configured administrator must not silently adopt the existing Installation.
       const administratorMismatch = await run(
@@ -399,7 +390,7 @@ test(
       assert.equal(installation.rows.length, 1);
       assert.equal(row(installation).count, 1);
       assert.ok(
-        serviceKeyMeta.installationId === recordId(row(installation)),
+        confirmed.installationId === recordId(row(installation)),
         "bootstrap service key must belong to the installed Installation",
       );
       const user = await pool.query<Record<string, unknown>>(
@@ -439,7 +430,7 @@ test(
            AND identity.kind = 'service_principal'
            AND identity.namespace_id IS NULL
            AND identity.agent_id IS NULL`,
-        [serviceKeyData.servicePrincipalId],
+        [confirmed.servicePrincipalId],
       );
       assert.equal(bootstrapServicePrincipal.rowCount, 1);
       const humanBinding = await pool.query<Record<string, unknown>>(
@@ -450,7 +441,7 @@ test(
       const storedServiceKey = await pool.query<Record<string, unknown>>(
         `SELECT key, reference_id, name, metadata
          FROM occ.apikey WHERE id = $1`,
-        [text(serviceKeyData.id)],
+        [text(confirmed.serviceKeyId)],
       );
       assert.equal(storedServiceKey.rowCount, 1);
       assert.ok(
@@ -458,7 +449,7 @@ test(
         "bootstrap service key was stored in plaintext",
       );
       assert.ok(
-        row(storedServiceKey).reference_id === serviceKeyData.servicePrincipalId,
+        row(storedServiceKey).reference_id === confirmed.servicePrincipalId,
         "stored bootstrap service key must belong to the bootstrap principal",
       );
       assert.ok(
@@ -582,13 +573,15 @@ test(
 
       // Exercise both API builders against PostgreSQL while failures at owned Driver seams
       // verify that shutdown and failed startup still release later owners.
+      const custodyKeyPath = join(passwordDirectory, "cleanup-custody-key");
+      await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
       for (const [mode, failure] of [
         ["production", "shutdown"],
         ["development", "shutdown"],
         ["production", "bind"],
         ["development", "bind"],
         ["production", "routes"],
-      ]) {
+      ] as const) {
         await t.test(`${mode} cleanup after ${failure} failure`, async () => {
           const events: string[] = [];
           const first = mode === "production" ? 0 : new Error("first cleanup failure");
@@ -626,8 +619,9 @@ test(
           );
           const cleanup: { endPool?: () => Promise<void> } = {};
           let poolClosed = false;
-          const preparedGitHub = {
-            async connect(pool: Pool) {
+          class ObservedGitHubLifecycle extends PostgresPreparedGitHubLifecycle {
+            override async connect(pool: PostgresPool) {
+              await super.connect(pool);
               const endPool = pool.end.bind(pool);
               cleanup.endPool = endPool;
               pool.end = async () => {
@@ -635,24 +629,32 @@ test(
                 await endPool();
                 poolClosed = true;
               };
-            },
-            async close() {
+            }
+
+            override async close() {
               events.push("prepared");
+              await super.close();
+            }
+          }
+          const preparedGitHub = new ObservedGitHubLifecycle(custodyKeyPath, {
+            ...runtimeBase.secretDriver,
+            async readCredentialInput() {
+              throw new Error("The cleanup scenario does not issue GitHub tokens.");
             },
-          };
+          });
           const runtime = { ...runtimeBase, protectedDriver, preparedGitHub };
           const config = {
-            mode,
             host: "127.0.0.1",
             databaseUrl,
             authSecret,
             authBaseURL,
             nativeAdmin,
-          };
+          } satisfies Omit<Parameters<typeof composePostgresDevelopment>[0], "mode">;
           const build = () =>
             mode === "production"
               ? composeProduction({
                   ...config,
+                  mode,
                   drivers: runtime,
                   onStartupPhase(phase: ProductionStartupPhase) {
                     if (failure === "routes" && phase === "routes") {
@@ -660,7 +662,7 @@ test(
                     }
                   },
                 })
-              : composePostgresDevelopment(config, runtime);
+              : composePostgresDevelopment({ ...config, mode }, runtime);
           try {
             if (failure === "shutdown") {
               const instance = await build();

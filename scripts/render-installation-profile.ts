@@ -78,6 +78,7 @@ interface ChatGptValues {
   providerCidr: string;
 }
 interface SecretValues {
+  bootstrap: { adminEmail: string; credentials: { secretName: string } };
   database: { caSecretName?: string; caMountPath?: string };
   repositoryCredentials: RepositoryValues;
   backend?: { chatgpt: ChatGptValues };
@@ -104,7 +105,6 @@ interface ProfileValues extends SecretValues {
   installation: { name: string };
   auth: ExternalSignInValues & { baseUrl: string };
   agentNativeAdmin: { enabled: boolean; domain: string; sessionMode?: string };
-  bootstrap: { adminEmail: string; password: { claimName: string } };
   database: { cidrs: unknown[]; caSecretName?: string; caKey?: string; caMountPath?: string };
   api: {
     clients: { namespace: string; podLabels: InputRecord }[];
@@ -243,8 +243,7 @@ const secretKeyRule = {
   description: "a Kubernetes Secret key of at most 253 characters",
 };
 // Every image field takes a reference Kubernetes can pull, pinned to a lowercase SHA-256
-// digest. controllerImage and repository.image reach the chart, and the controller image
-// also feeds prepare-bootstrap-volume; runtime.image reaches only
+// digest. controllerImage and repository.image reach the chart; runtime.image reaches only
 // KubernetesComputeDriver (installation.yaml images.gateway and images.agent). The chart,
 // Compute and the image tools apply the same imageReferenceProblem rule.
 const digestImage = /@sha256:[a-f0-9]{64}$/;
@@ -745,7 +744,7 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
   const reserved = new Set([
     "/etc/openclaw/installation",
     "/run/openclaw-worker",
-    "/var/lib/openclaw/bootstrap",
+    "/run/openclaw-bootstrap",
     "/etc/openclaw/gateway-api-key",
     "/etc/openclaw/gateway-ca",
   ]);
@@ -881,7 +880,7 @@ function labelSyntax(
   return labels;
 }
 
-// Kubernetes node selector labels: the chart and prepare-bootstrap-volume apply this rule to
+// Kubernetes node selector labels: the chart applies this rule to
 // controlPlane.nodeSelector, and Kubernetes applies it to every Pod's nodeSelector, so the
 // runtime selectors in Installation configuration follow it too. Kubernetes allows empty
 // label values, as in `node-role.kubernetes.io/infra: ""`.
@@ -1171,11 +1170,10 @@ function renderOidc(source: InputRecord, diagnostics: Errors) {
       "an https URL on port 443 with a DNS host name and no query or fragment, written without a port",
   });
   rendered.issuer = issuer;
-  const host = oidcEndpointHost(issuer, { issuer: true });
   for (const key of ["authorizationUrl", "tokenUrl", "jwksUrl"] as const) {
     rendered[key] = asString(source, [...path, key], diagnostics, {
-      validate: (value) => host === undefined || oidcEndpointHost(value) === host,
-      description: "an https URL on port 443 on the issuer's host, with no query or fragment",
+      validate: (value) => oidcEndpointHost(value) !== undefined,
+      description: "an https URL on port 443 with a DNS host name and no query or fragment",
     });
   }
   const tokenAuth = optionalString(source, [...path, "tokenAuth"], diagnostics, {
@@ -1366,7 +1364,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
     diagnostics,
   );
   const presets = section(input, "presets", diagnostics, false);
-  closed(presets, "presets", ["files"], diagnostics);
+  closed(presets, "presets", ["includeDefaults", "files"], diagnostics);
   closed(
     controlPlane,
     "controlPlane",
@@ -1377,10 +1375,11 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
       "controllerImage",
       "authBaseUrl",
       "adminEmail",
-      "bootstrapPasswordClaimName",
+      "bootstrapCredentialsSecretName",
       "apiClients",
       "databaseCidrs",
       "clusterCidrs",
+      "clusterPort",
       "dns",
       "gatewayClassName",
       "gatewayApiKeySecretName",
@@ -1574,6 +1573,7 @@ function dedicatedSecrets(
   ]);
   const repository = values.repositoryCredentials;
   const fields: (readonly [string, string | undefined, string?])[] = [
+    ["controlPlane.bootstrapCredentialsSecretName", values.bootstrap.credentials.secretName],
     ...(values.backend?.chatgpt?.enabled
       ? [
           [
@@ -1841,6 +1841,13 @@ function buildRendered(
     );
   }
 
+  const clusterPort = optionalPositiveInteger(
+    controlPlane,
+    ["controlPlane", "clusterPort"],
+    diagnostics,
+    { max: 65535 },
+  );
+
   // Same rule the controller applies to Installation observability.url at startup, including
   // its refusal of any @ before the host (http://@host).
   // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
@@ -1914,14 +1921,14 @@ function buildRendered(
         validate: administratorEmail,
         description: "a valid administrator email",
       }),
-      password: {
-        claimName: asString(
+      credentials: {
+        secretName: asString(
           controlPlane,
-          ["controlPlane", "bootstrapPasswordClaimName"],
+          ["controlPlane", "bootstrapCredentialsSecretName"],
           diagnostics,
           {
             validate: isKubernetesResourceName,
-            description: "a PVC name: a DNS subdomain of at most 253 characters",
+            description: "a precreated Secret name: a DNS subdomain of at most 253 characters",
           },
         ),
       },
@@ -1987,6 +1994,7 @@ function buildRendered(
         validate: (value) => isIpv4Cidr(value, 32),
         description: "an IPv4 /32 CIDR",
       }),
+      ...(clusterPort === undefined ? {} : { port: clusterPort }),
     },
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined
@@ -2061,7 +2069,7 @@ function buildRendered(
     ...(observabilityUrl === undefined ? {} : { observability: { url: observabilityUrl } }),
     backend: [],
     presets: {
-      includeDefaults: true,
+      includeDefaults: asBoolean(presets, ["presets", "includeDefaults"], diagnostics, true),
       ...(presets.files === undefined
         ? {}
         : { files: stringArray(presets, ["presets", "files"], diagnostics, { nonempty: false }) }),
@@ -2475,8 +2483,9 @@ function buildRendered(
 
   diagnostics.nextSteps.push(
     `Create or update the ${namespace}/occ-installation-startup Secret from installation.yaml.`,
+    `Precreate the ${namespace}/${values.bootstrap.credentials.secretName} Secret with admin-password and admin-service-key before installing Helm.`,
     `Run helm upgrade --install ${releaseName} deploy/helm/openclaw-enterprise --namespace ${namespace} --values values.yaml.`,
-    "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
+    "Verify authenticated OCC access with the retained service key after initialization.",
   );
 
   const backendIds = new Set();

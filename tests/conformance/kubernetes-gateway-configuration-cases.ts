@@ -29,11 +29,13 @@ import {
   dedicatedCodexVariableRefusal,
   pluginEntryKeyVariantRefusal,
   unboundPluginSecretRefusal,
+} from "../helpers/refusal-text.mjs";
+import {
   unreadablePluginSecretRefusal,
   unboundUnreadablePluginSecretRefusal,
   appServerUnreadablePluginSecretRefusal,
   unreadableGatewayPasswordRefusal,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-diagnostics.ts";
 import {
   tenant,
   apiKeyAuth as routedApiKeyAuth,
@@ -60,6 +62,17 @@ export function enforceDedicatedGatewayToolAllowlist() {
   assert.deepEqual(tools.alsoAllow, ["diffs", "oce_mcp_docs_listitems"]);
   const gatewayAllow = asRecord(tools.gatewayPolicy)?.allow;
   assert.ok(Array.isArray(gatewayAllow) && gatewayAllow.includes("oce_mcp_docs_listitems"));
+
+  // A dedicated Codex Harness cannot open Gateway-only skill files, such as pinned
+  // Skill Library revisions; the default reads approved skills through the Gateway.
+  const codex = managedGatewayConfiguration(standard, standard, true);
+  const codexAllow = asRecord(asRecord(codex.tools)?.gatewayPolicy)?.allow;
+  const codexConfig = asRecord(asRecord(asRecord(codex.plugins)?.entries)?.codex)?.config;
+  const excluded = asRecord(codexConfig)?.codexDynamicToolsExclude;
+  for (const skillTool of ["skills_search", "skills_read"]) {
+    assert.ok(Array.isArray(codexAllow) && codexAllow.includes(skillTool), skillTool);
+    assert.ok(Array.isArray(excluded) && !excluded.includes(skillTool), skillTool);
+  }
 
   const explicit = { tools: { allow: ["exec"], deny: ["oce_mcp_docs_listitems"] } };
   const configured = asRecord(
@@ -353,7 +366,7 @@ function checkDedicatedGatewaySettings(routed: KubernetesComputeDriver) {
     source: "env",
     ...(allowlist ? { allowlist } : {}),
   });
-  for (const [configuration, reason, ...details] of [
+  for (const [configuration, ...diagnostic] of [
     [passwordRef(), "providerless"],
     [passwordRef(undefined, { defaults: { env: "custom" } }), "providerless", "env", "custom"],
     [passwordRef(null), "providerless"],
@@ -375,7 +388,7 @@ function checkDedicatedGatewaySettings(routed: KubernetesComputeDriver) {
       "vault",
     ],
   ] as const) {
-    assertGatewayRefusal(configuration, unreadableGatewayPasswordRefusal(reason, ...details));
+    assertGatewayRefusal(configuration, unreadableGatewayPasswordRefusal(...diagnostic));
   }
   for (const configuration of [
     withPolicy("never"),
@@ -684,7 +697,7 @@ export function validatePluginSecretInputs() {
   });
   const codexDriverAdmission = admission(driver, codex);
   const codexBase = createHarnessConfiguration("codex", "gpt-5");
-  for (const [configuration, setting, plugin, held, ...shown] of [
+  for (const [configuration, setting, plugin, ...diagnostic] of [
     [
       withCodex({ config: { appServer: { authToken: { source: "env", id: "RELAY_TOKEN" } } } }),
       authToken,
@@ -793,7 +806,7 @@ export function validatePluginSecretInputs() {
       "RELAY_TOKEN",
     ],
   ] as const) {
-    const expected = refusal(unreadablePluginSecretRefusal(setting, plugin, held, ...shown));
+    const expected = refusal(unreadablePluginSecretRefusal(setting, plugin, ...diagnostic));
     const label = JSON.stringify(configuration);
     refusedByMode(embeddedAdmission, configuration, expected, label);
     assert.throws(() => driver.validateConfiguration(configuration), expected, label);
@@ -826,7 +839,7 @@ export function validatePluginSecretInputs() {
     ...withSearchHeader({ ...envRef("RELAY_TOKEN"), ...reference }),
     secrets: { defaults: { env: longAlias }, ...secrets },
   });
-  for (const [configuration, held, ...shown] of [
+  for (const [configuration, ...diagnostic] of [
     [withLongNames({ provider: longProvider }), "provider", cut(longProvider), "env", null],
     [withLongNames({}), "defaultAlias", cut(longAlias), "env", null],
     [withLongNames({ provider: "P".repeat(64) }), "providerAlias", cut("P".repeat(64)), null],
@@ -845,7 +858,7 @@ export function validatePluginSecretInputs() {
       cut(longProvider),
     ],
   ] as const) {
-    const [, expected] = unreadablePluginSecretRefusal("<path>", "google", held, ...shown).split(
+    const [, expected] = unreadablePluginSecretRefusal("<path>", "google", ...diagnostic).split(
       "<path>",
     );
     assert.ok(expected);
@@ -856,7 +869,7 @@ export function validatePluginSecretInputs() {
         Array.from(error.message).length <= 256 &&
         error.message.startsWith("Configuration setting plugins.") &&
         error.message.endsWith(expected),
-      held,
+      diagnostic[0],
     );
   }
   // OpenClaw reads each of these, so the binding alone decides: an env SecretRef on the default

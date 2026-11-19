@@ -143,7 +143,8 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-replacement.test.ts",
       "expectedTests": [
-        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision"
+        "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision",
+        "a stop during preparation prevents activation before a later deployment"
       ]
     },
     {

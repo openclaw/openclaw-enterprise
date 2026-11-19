@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { prepareFile } from "../../scripts/ci/prepare.mjs";
+import { prepareFile } from "../../scripts/ci/prepare.ts";
 import { authorizedPrincipal } from "./development-iam-state.ts";
 import {
   createBackendWorkerDrivers,
