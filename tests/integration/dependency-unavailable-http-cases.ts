@@ -10,6 +10,10 @@ import {
   DependencyUnavailableError,
   RuntimeCredentialsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
+import {
+  carriesFakeCredential,
+  CREDENTIAL_SHAPE_TEXTS,
+} from "../fixtures/logged-error-text-cases.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
@@ -54,7 +58,7 @@ async function configurationFixture(
       throw createError;
     };
   }
-  return { fixture, lines, namespace };
+  return { configurationDriver, fixture, lines, namespace };
 }
 
 function createConfiguration(fixture: Fixture, namespace: NamespaceWire): Promise<HttpResponse> {
@@ -132,6 +136,35 @@ export function registerDependencyUnavailableHttpCases(clientText: string) {
     assert.ok(warning);
     assert.equal(warning.message, WITHHELD_ERROR_TEXT);
     assert.equal(JSON.stringify(lines).includes(SECRET_VALUE), false);
+  });
+
+  test("a Driver error carrying a credential pair, header or token prefix is withheld from the log", async (t) => {
+    const { configurationDriver, fixture, lines, namespace } = await configurationFixture(t);
+    for (const [index, { shape, text }] of CREDENTIAL_SHAPE_TEXTS.entries()) {
+      configurationDriver.create = async () => {
+        throw new DependencyUnavailableError(text);
+      };
+      const body = errorResponse(fixture, await createConfiguration(fixture, namespace));
+      const entry = dependencyWarnings(lines).at(index);
+      assert.ok(entry, shape);
+      const { time, ...warning } = entry;
+      assert.equal(typeof time, "string");
+      assert.deepEqual(
+        warning,
+        {
+          severity: "WARN",
+          service: "occ-api",
+          event: "http.dependency_unavailable",
+          requestId: body.meta.requestId,
+          method: "POST",
+          route: "/namespaces/:namespaceId/configurations",
+          errorClass: "DependencyUnavailableError",
+          message: WITHHELD_ERROR_TEXT,
+        },
+        shape,
+      );
+    }
+    assert.equal(carriesFakeCredential(JSON.stringify(lines)), false);
   });
 
   test("responses other than a dependency 503 log no dependency warning", async (t) => {

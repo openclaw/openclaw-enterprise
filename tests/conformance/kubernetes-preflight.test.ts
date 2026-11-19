@@ -540,7 +540,7 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
   assert.deepEqual(result, {
     warnings: [warning("2001:db8::/64"), warning("10.42.0.0/16")],
   });
-  // The worker logs each warning; the log keeps only plain text, so the message must survive.
+  // The worker logs each warning, and the log keeps each message verbatim.
   const lines: unknown[] = [];
   const logger = createOccLogger({
     component: "occ-worker",

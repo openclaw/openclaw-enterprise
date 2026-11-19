@@ -11,7 +11,7 @@ import { asRecord } from "@openclaw-enterprise/utils";
 // deploy/runtime/openclaw-source.json changes, compare those files and src/infra/env.ts and
 // src/infra/host-env-security.ts between the two commits, update this module, then the commit
 // below; a conformance test fails until then.
-export const OPENCLAW_CONFIG_ENVIRONMENT_COMMIT = "f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9";
+export const OPENCLAW_CONFIG_ENVIRONMENT_COMMIT = "58e735cba379598a3de6955f3985ccf5a8783319";
 
 // `normalizeEnvVarKey(key, { portable: true })` in src/infra/host-env-security.ts.
 const PORTABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;

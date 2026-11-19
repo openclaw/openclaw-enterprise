@@ -16,7 +16,7 @@ manager, frozen lockfile, and upstream Docker assembly. A registry mirror
 requires [separate Corepack and pnpm build secrets](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 Both Codex entrypoints use stock Codex `0.164.0`, unpatched;
 `stock-codex-0.164.0-dependency-pin.patch` holds the lockfile there and sets
-`CODEX_APP_SERVER_VERSION` and `OPENAI_CODEX_CLIENT_VERSION` back to it while OpenClaw bundles 0.169.0. Verify native startup and
+`CODEX_APP_SERVER_VERSION` back to it while OpenClaw bundles 0.169.0. Verify native startup and
 sandbox behavior with the image's seccomp rules. Codex and Slack come from the same source, whose
 restricted workspace-node commands and persistent device identity support
 split storage. That contract requires a newer source than `2026.9.5`.
@@ -192,7 +192,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/58e735cba379598a3de6955f3985ccf5a8783319/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing

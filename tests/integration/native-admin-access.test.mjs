@@ -124,6 +124,10 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
   const parserErrors = [];
   /** @type {Set<import("node:tls").TLSSocket>} */
   const sockets = new Set();
+  // While set, every request gets this short 503 text/plain answer, like the route proxy's own
+  // reply for a Gateway that refuses connections (a held or restarting container).
+  /** @type {{ text: string | undefined }} */
+  const routeProxy = { text: undefined };
   /**
    * @param {import("node:http").ServerResponse} response
    * @param {string} name
@@ -196,6 +200,12 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (routeProxy.text !== undefined) {
+      const text = routeProxy.text;
+      response.writeHead(503, { "content-type": "text/plain", "content-length": text.length });
+      response.end(text);
+      return;
+    }
     if (request.url?.endsWith("/integrity-response-reset")) {
       startStream(response, "response-reset", 200);
       return;
@@ -311,7 +321,16 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, parsedRequests, wire, streams, parserErrors, cert };
+  return {
+    port: address.port,
+    requests,
+    parsedRequests,
+    wire,
+    streams,
+    parserErrors,
+    cert,
+    routeProxy,
+  };
 }
 
 /**
@@ -774,27 +793,48 @@ test("redeploy after explicit Stop keeps the old native endpoint closed", async 
 
 // While it reconnects, the Agent UI probes GET /healthz and treats 401 or 403 as a sign-in or
 // access problem (deploy/runtime/openclaw-control-ui-browser-reconnect.patch).
-test("a deployment replacing the version answers an authorized probe 503 and outsiders as before", async (t) => {
+test("an unreachable Gateway or a deployment answers an authorized probe 503, a stop shows a page, and outsiders see neither", async (t) => {
   const context = await createNativeAdminFixture(t, {
     exclusiveReplacement: (revision) => revision.revision === 2,
   });
   trustLocalUpstreamCertificate(t, context.upstream.cert);
   const host = nativeAuthority((await nativeStatus(context)).data);
   const readOnly = await createReadOnlySession(context, "native-transition-reader");
-  const probe = (cookie) =>
-    injectJson(context.fixture, "GET", "/healthz", { headers: { host, cookie } });
-  // Signed out, and signed in without Agent operate: each whole answer, request ID and date aside.
+  // The Agent UI's "Reconnect in browser" link is a user-activated page load of /.
+  const navigation = {
+    accept: "text/html,application/xhtml+xml",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  const probe = (cookie, path = "/healthz", headers = {}) =>
+    injectJson(context.fixture, "GET", path, { headers: { ...headers, host, cookie } });
+  // Signed out, and signed in without Agent operate, for the probe and the page load: each whole
+  // answer, request ID and date aside.
   const outsiders = async () => {
     const answers = [];
     for (const cookie of [undefined, readOnly.cookie]) {
-      const response = await probe(cookie);
-      const { "x-request-id": requestId, date, ...headers } = response.headers;
-      assert.equal(response.json().meta.requestId, requestId);
-      answers.push({
-        status: response.statusCode,
-        headers,
-        body: response.body.replaceAll(String(requestId), "<request>"),
-      });
+      for (const [path, headers] of [
+        ["/healthz", {}],
+        ["/", navigation],
+      ]) {
+        const response = await probe(cookie, path, headers);
+        const { "x-request-id": requestId, date, ...rest } = response.headers;
+        assert.ok(requestId);
+        // The 302 has no body, though it is labelled JSON.
+        if (
+          response.body !== "" &&
+          String(response.headers["content-type"]).startsWith("application/json")
+        ) {
+          assert.equal(response.json().meta.requestId, requestId);
+        }
+        answers.push({
+          path,
+          status: response.statusCode,
+          headers: rest,
+          body: response.body.replaceAll(String(requestId), "<request>"),
+        });
+      }
     }
     return answers;
   };
@@ -803,12 +843,46 @@ test("a deployment replacing the version answers an authorized probe 503 and out
   const available = await outsiders();
   assert.deepEqual(
     available.map(({ status }) => status),
-    [403, 403],
+    [403, 302, 403, 403],
   );
-  assert.deepEqual(JSON.parse(available[1].body).error, {
+  assert.match(available[3].body, /You do not have access to this gateway\./);
+  assert.deepEqual(JSON.parse(available[2].body).error, {
     code: "FORBIDDEN",
     message: NATIVE_ADMIN_DENIED,
   });
+  const key = host.match(/^agent-([a-f0-9]{32})\./)[1];
+  const link = `<a href="${publicOrigin}/console/#native-agent=${key}">Return to console</a>`;
+
+  // The Gateway refuses connections, so the route's proxy answers instead of it: OCE's own answer
+  // replaces that text, a page for a page load.
+  context.upstream.routeProxy.text =
+    "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure, transport failure reason: delayed connect error: Connection refused";
+  for (const headers of [{}, { accept: "application/json" }]) {
+    const unreachable = await probe(context.session.cookie, "/healthz", headers);
+    assert.equal(unreachable.statusCode, 503, unreachable.body);
+    assert.equal(unreachable.json().meta.requestId, unreachable.headers["x-request-id"]);
+    assert.deepEqual(unreachable.json().error, {
+      code: "DEPENDENCY_UNAVAILABLE",
+      message: "A required platform dependency is unavailable.",
+    });
+  }
+  const notResponding = await probe(context.session.cookie, "/", navigation);
+  assert.equal(notResponding.statusCode, 503, notResponding.body);
+  assert.match(notResponding.headers["content-type"], /^text\/html/);
+  assert.equal(notResponding.headers["cache-control"], "no-store");
+  assert.match(notResponding.body, /<title>Agent not responding<\/title>/);
+  assert.match(notResponding.body, /This Agent is not responding right now\./);
+  assert.ok(notResponding.body.includes(link), notResponding.body);
+  assert.deepEqual(await outsiders(), available, "an unreachable Gateway is invisible to them");
+  assert.equal(context.upstream.requests.length, 4, "only authorized requests reached the route");
+  // Any other short 503 text/plain answer is the Gateway's own and passes through as it is.
+  context.upstream.routeProxy.text = "other";
+  const other = await probe(context.session.cookie, "/healthz");
+  assert.equal(other.statusCode, 503);
+  assert.equal(other.body, "other");
+  assert.equal(other.headers["content-type"], "text/plain");
+  assert.equal(other.headers["content-length"], "5");
+  context.upstream.routeProxy.text = undefined;
 
   const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
   await context.fixture.controller.transact((state) =>
@@ -833,13 +907,30 @@ test("a deployment replacing the version answers an authorized probe 503 and out
   );
   assert.equal(stop.status, 202);
   assert.equal((await nativeStatus(context)).data.status, "stopped");
-  // A stopped Agent stays refused; the Agent UI still offers its sign-in panel, whose link then
-  // gets this generic refusal.
-  const stopped = await probe(context.session.cookie);
-  assert.equal(stopped.statusCode, 403, stopped.body);
-  assert.deepEqual(stopped.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  // A stopped Agent stays refused, so the Agent UI still offers its sign-in panel. Its link, a page
+  // load, gets a page that says the Agent is unavailable; probes and API reads keep the JSON 403.
+  for (const headers of [{}, navigation]) {
+    const stopped = await probe(context.session.cookie, "/healthz", headers);
+    assert.equal(stopped.statusCode, 403, stopped.body);
+    assert.deepEqual(stopped.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  }
+  const apiRead = await probe(context.session.cookie, "/", { accept: "application/json" });
+  assert.equal(apiRead.statusCode, 403, apiRead.body);
+  assert.deepEqual(apiRead.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  const page = await probe(context.session.cookie, "/", navigation);
+  assert.equal(page.statusCode, 403, page.body);
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.equal(page.headers["cache-control"], "no-store");
+  assert.equal(page.headers["referrer-policy"], "no-referrer");
+  assert.match(page.body, /<title>Agent unavailable<\/title>/);
+  assert.match(
+    page.body,
+    /<p>This Agent is not available right now\. Open it from the console\.<\/p>/,
+  );
+  assert.ok(page.body.includes(link), page.body);
+  assert.equal(page.body.includes(context.agent.id), false);
   assert.deepEqual(await outsiders(), available, "a stop is invisible to outsiders");
-  assert.equal(context.upstream.requests.length, 1, "only the available probe reached the Agent");
+  assert.equal(context.upstream.requests.length, 5, "only authorized running probes reached it");
 });
 
 test("native browser disabled status still requires exact Agent authority", async (t) => {
