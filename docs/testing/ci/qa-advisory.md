@@ -344,7 +344,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
   --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-`TEST_ENV_FILE` is the private environment file described above.
+`TEST_ENV_FILE` names that private file.
 
 ## Results and limits
 

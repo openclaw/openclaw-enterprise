@@ -19,7 +19,11 @@ import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compu
 import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
-import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
+import {
+  admitRevisionHarness,
+  gatewayRouting,
+  routedRevision,
+} from "../helpers/kubernetes-routed-scenarios.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
@@ -32,19 +36,93 @@ import {
   runtimeSandboxFixture,
 } from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
 
 export function registerManagedOpenShellStartupCases() {
-  test("startup composes Kubernetes Compute with managed OpenShell and refuses embedded execution", async (t) => {
+  test("managed preparation admits workspace nodes through Envoy without Sandbox network peers", async (t) => {
+    for (const harnessId of ["codex", "openclaw"]) {
+      await t.test(harnessId, async () => {
+        const configuration = sandboxInstallation().drivers.sandbox.configuration;
+        configuration.integrationMode = "service";
+        configuration.gateway = {};
+        configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+        const client = workspaceGatewayClient();
+        const sandbox = new ManagedOpenShellSandbox(configuration, {
+          id: "openshell-sandbox",
+          backend: backendFor(client),
+        });
+        const fixture = providerEndpointFixture({
+          sandboxDriver: sandbox,
+          servicePrincipalCredentials: { mode: "disabled" },
+          revisionOverrides: {
+            harness: { id: harnessId, version: "1.0.0", mode: "dedicated" },
+          },
+        });
+        if (harnessId === "openclaw") {
+          const native = createHarnessConfiguration("openclaw", "gpt-5");
+          fixture.revision.configuration = {
+            ...fixture.revision.configuration,
+            agents: native.agents,
+            models: native.models,
+          };
+          admitRevisionHarness(fixture.driver, fixture.revision);
+        }
+        // Exercise real Compute preparation and the managed Sandbox collaborator.
+        // Transport fixtures prove the rendered boundary, not live packet delivery.
+        const result = await fixture.prepare();
+        assert.equal(result.ready, false, "the Gateway must become ready before enrollment");
+        const policies = [...fixture.objects.values()].filter(
+          ({ kind }) => kind === "NetworkPolicy",
+        );
+        assert.equal(
+          policies.some(({ metadata }) =>
+            metadata.name.startsWith("allow-gateway-workspace-node-"),
+          ),
+          false,
+        );
+        const ingress = fixture.read(
+          "NetworkPolicy",
+          "allow-gateway-ingress",
+          fixture.gatewayNamespace,
+        );
+        const routing = fixture.driver.options.gatewayRouting;
+        assert.deepEqual(ingress.spec.ingress[0].from, [
+          {
+            namespaceSelector: {
+              matchLabels: { "kubernetes.io/metadata.name": routing.envoyNamespace },
+            },
+            podSelector: {
+              matchLabels: {
+                "gateway.envoyproxy.io/owning-gateway-namespace": routing.gatewayNamespace,
+                "gateway.envoyproxy.io/owning-gateway-name": routing.gatewayName,
+              },
+            },
+          },
+        ]);
+        const route = fixture.read(
+          "HTTPRoute",
+          `${fixture.gatewayName}-node`,
+          fixture.gatewayNamespace,
+        );
+        assert.ok(route, "the Agent-specific node route must remain available");
+        assert.equal(
+          route.spec.rules[0].matches[0].path.value,
+          `/namespaces/${fixture.revision.namespaceId}/agents/${fixture.revision.agentId}/node`,
+        );
+        assert.equal(route.spec.rules[0].backendRefs[0].name, fixture.gatewayName);
+      });
+    }
+  });
+
+  test("startup selects managed OpenShell through integrationMode alone and preserves storage ownership", async (t) => {
     const configuration = sandboxInstallation();
-    configuration.drivers.compute.configuration.managedOpenShell = {
-      experimentalSingleWorker: true,
-      gatewayId: "managed-test",
-    };
-    configuration.drivers.sandbox.configuration.gateway = { workspaceMode: "managed" };
+    configuration.drivers.sandbox.configuration.integrationMode = "service";
+    configuration.drivers.sandbox.configuration.gateway = {};
     configuration.drivers.sandbox.configuration.kubernetes.sandboxDataMount.mountPath =
       "/sandbox/oce/workspace";
     const composed = await loadInstallationFile(t, configuration);
@@ -52,6 +130,17 @@ export function registerManagedOpenShellStartupCases() {
     assert.equal(composed.computeDriver.id, "compute-kubernetes");
     assert.ok(composed.sandboxDriver instanceof ManagedOpenShellSandbox);
     assert.equal(composed.installation.drivers.compute.implementation, "occ/kubernetes");
+    // A second selector must be rejected rather than silently ignored.
+    const obsolete = structuredClone(configuration);
+    obsolete.drivers.compute.configuration.managedOpenShell = { experimentalSingleWorker: true };
+    await assert.rejects(loadInstallationFile(t, obsolete), (error) => {
+      assert.ok(error instanceof SharedConfigurationValidationError);
+      assert.ok(
+        error.error.details.some((detail) => detail.code === "UNKNOWN_FIELD"),
+        JSON.stringify(error.error.details),
+      );
+      return true;
+    });
     assert.throws(
       () => composed.computeDriver.validateHarnessAuth({ id: "openclaw", mode: "embedded" }),
       /requires a dedicated Harness/,
@@ -79,10 +168,17 @@ export function registerManagedOpenShellStartupCases() {
     }
     // Restart with the same Driver IDs but a different storage owner. Admission and
     // lifecycle checks are real; Kubernetes must not be contacted on either mismatch.
-    const original = await loadInstallationFile(t, sandboxInstallation());
+    const legacy = structuredClone(configuration);
+    legacy.drivers.sandbox.configuration.integrationMode = "legacy";
+    const original = await loadInstallationFile(t, legacy);
+    delete legacy.drivers.sandbox.configuration.integrationMode;
+    const defaultIntegration = await loadInstallationFile(t, legacy);
+    assert.equal(defaultIntegration.sandboxDriver instanceof ManagedOpenShellSandbox, false);
     for (const [source, changed] of [
       [original, composed],
       [composed, original],
+      [defaultIntegration, composed],
+      [composed, defaultIntegration],
     ]) {
       assert.equal(source.computeDriver.id, changed.computeDriver.id);
       assert.equal(source.sandboxDriver.id, changed.sandboxDriver.id);
@@ -116,22 +212,62 @@ export function registerManagedOpenShellStartupCases() {
       // The original Installation can still interpret the revision's launch admission.
       assert.doesNotThrow(() => source.computeDriver.pluginRuntimeSnapshot(stored));
     }
-    // A managed-only block must not silently survive a switch to operator storage.
-    const operator = structuredClone(configuration);
-    operator.drivers.sandbox.configuration.gateway.workspaceMode = "operator";
-    await assert.rejects(loadInstallationFile(t, operator), (error) => {
-      assert.ok(error instanceof SharedConfigurationValidationError);
-      assert.equal(error.error.details[0].code, "INVALID_VALUE");
-      assert.equal(error.error.details[0].path, "/drivers/compute/configuration/managedOpenShell");
-      return true;
-    });
-    // Automatic selection must still validate the managed path's required settings.
-    delete configuration.drivers.compute.configuration.managedOpenShell;
-    await assert.rejects(loadInstallationFile(t, configuration), (error) => {
-      assert.ok(error instanceof SharedConfigurationValidationError);
-      assert.ok(error.error.details.some((detail) => detail.code === "REQUIRED"));
-      return true;
-    });
+    // These Compute restrictions depend on the actual Sandbox collaborator, not
+    // an independent flag that could be omitted to bypass them.
+    for (const [field, value, message] of [
+      ["runtime", undefined, /explicitly configured Codex runtime/],
+      [
+        "executionCluster",
+        {
+          authentication: {
+            mode: "kubeconfig",
+            kubeconfigPath: "/fixture/execution",
+            context: "execution",
+          },
+          harnessRouting: { ...gatewayRouting, hostname: "harness.example.test" },
+          network: {
+            dns: configuration.drivers.compute.configuration.network.dns,
+            harnessEndpointCidrs: ["192.0.2.2/32"],
+            gatewayEndpointCidrs: ["192.0.2.1/32"],
+            pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+          },
+        },
+        /one Gateway cluster/,
+      ],
+      [
+        "servicePrincipalCredentials",
+        {
+          mode: "projectedServiceAccountToken",
+          audience: "openclaw-controller",
+          expirationSeconds: 900,
+        },
+        /disabled ServicePrincipal projection/,
+      ],
+    ]) {
+      const invalid = structuredClone(configuration);
+      invalid.drivers.compute.configuration[field] = value;
+      if (field === "executionCluster") {
+        invalid.drivers.compute.configuration.gatewayRouting = gatewayRouting;
+        delete invalid.drivers.compute.configuration.network.gatewayClients;
+      }
+      await assert.rejects(loadInstallationFile(t, invalid), (error) => {
+        if (field === "runtime") {
+          assert.match(error.message, message);
+        } else {
+          assert.ok(
+            error instanceof SharedConfigurationValidationError,
+            `${field}: ${error.stack}`,
+          );
+          assert.ok(
+            error.error.details.some(
+              (detail) => detail.path === `/${field}` && message.test(detail.message),
+            ),
+            JSON.stringify(error.error.details),
+          );
+        }
+        return true;
+      });
+    }
   });
 
   test("Kubernetes final Agent cleanup deletes managed Sandbox state before shared resources and refuses foreign ownership", async (t) => {
@@ -139,19 +275,14 @@ export function registerManagedOpenShellStartupCases() {
       await t.test(foreign ? "foreign Sandbox" : "owned Sandbox and retry", async () => {
         const configuration = sandboxInstallation();
         const sandboxOptions = configuration.drivers.sandbox.configuration;
-        sandboxOptions.gateway.workspaceMode = "managed";
+        sandboxOptions.integrationMode = "service";
         sandboxOptions.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
-        configuration.drivers.compute.configuration.managedOpenShell = {
-          experimentalSingleWorker: true,
-          gatewayId: "managed-test",
-        };
         const context = namespaceContext();
         context.namespace.name = kubernetesNamespaceName(context.namespace.id);
         const gateway = workspaceGatewayClient();
         const sandbox = new ManagedOpenShellSandbox(sandboxOptions, {
           id: "openshell-sandbox",
           backend: backendFor(gateway),
-          gatewayId: "managed-test",
         });
         const compute = new KubernetesComputeDriver(configuration.drivers.compute.configuration, {
           sandboxDriver: sandbox,
@@ -304,12 +435,12 @@ export function registerManagedOpenShellStartupCases() {
     t.after(() => wireClient.close());
     client.updateProviderConfig = wireClient.updateProviderConfig.bind(wireClient);
     const configuration = sandboxInstallation().drivers.sandbox.configuration;
-    configuration.gateway = { workspaceMode: "managed" };
+    configuration.integrationMode = "service";
+    configuration.gateway = {};
     configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
     const driver = new ManagedOpenShellSandbox(configuration, {
       id: "openshell-sandbox",
       backend: backendFor(client),
-      gatewayId: "test-gateway",
     });
     let request;
     let phase = "SANDBOX_PHASE_PROVISIONING";
@@ -546,13 +677,13 @@ export function registerManagedOpenShellStartupCases() {
   test("managed network policy replacement survives lost responses and gates activation", async (t) => {
     const client = workspaceGatewayClient();
     const options = sandboxInstallation().drivers.sandbox.configuration;
-    options.gateway = { workspaceMode: "managed" };
+    options.integrationMode = "service";
+    options.gateway = {};
     options.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
     const makeDriver = (configuration) =>
       new ManagedOpenShellSandbox(configuration, {
         id: "openshell-sandbox",
         backend: backendFor(client),
-        gatewayId: "test-gateway",
       });
     const original = makeDriver(options);
     const { context, revision, requirements } = runtimeSandboxFixture(original);
@@ -763,12 +894,12 @@ export function registerManagedOpenShellStartupCases() {
   test("managed native replacement restores its startup exposure and withdraws it after enrollment", async (t) => {
     const client = workspaceGatewayClient();
     const configuration = sandboxInstallation().drivers.sandbox.configuration;
-    configuration.gateway = { workspaceMode: "managed" };
+    configuration.integrationMode = "service";
+    configuration.gateway = {};
     configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
     const driver = new ManagedOpenShellSandbox(configuration, {
       id: "openshell-sandbox",
       backend: backendFor(client),
-      gatewayId: "test-gateway",
     });
     const { context, revision, requirements } = runtimeSandboxFixture(driver, {
       harnessId: "openclaw",

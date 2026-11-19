@@ -514,7 +514,8 @@ async function buildStaticEgressFixture(
     new OpenShellSandboxDriver(
       {
         egress: egressOptions,
-        gateway: { workspaceMode: "operator" },
+        integrationMode: "legacy",
+        gateway: {},
         kubernetes: {
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {

@@ -8,8 +8,7 @@ last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
 
 ## Overview
 
-This flow covers operator-mode provisioning. See [managed provisioning](openshell-managed-workload.md)
-for managed Workspaces.
+For service integration, see [managed provisioning](openshell-managed-workload.md).
 
 ## Entry Points
 
@@ -26,9 +25,9 @@ for managed Workspaces.
 graph TD
   %%{init: {"flowchart": {"htmlLabels": true}}}%%
   A["<b>Reconcile Namespace</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
-  B --> C{"<b>Workspace mode</b><br/>Installation setting"}
-  C -- "managed" --> X["<b>Reject configuration</b><br/>Before mutation"]
-  C -- "operator" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
+  B --> C{"<b>Integration mode</b><br/>Installation setting"}
+  C -- "service" --> X["<b>Reject configuration</b><br/>Before mutation"]
+  C -- "legacy" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
   D --> G0["<b>Ensure configured gateway</b><br/>Owned resources and health"]
   G0 --> E["<b>Own Workspace</b><br/>Create or adopt"]
   E --> A0["<b>Namespace ready</b><br/>Deployment permitted"]
@@ -119,7 +118,7 @@ share controller readiness diagnostics.
 UID-linked ReplicaSets/Pods and Warning reasons once, preserving rollback errors. It excludes
 messages, environment, full labels and logs, marking unavailable/malformed/oversized results.
 Limits: 15 seconds total, three seconds/256 KiB per command, 32 KiB per record, no retries.
-The 200 ms pipe drain cannot terminate descendants.
+The 200 ms drain cannot terminate descendants.
 
 `network.providerHarness` identifies the Gateway ClusterIP and Pod selector.
 Agent Gateways retain the HTTP Host and connect only to those Pods on TCP/8080.
@@ -131,7 +130,7 @@ Failed discovery aborts. Uninstall removes recorded policies.
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
 persisted policies (maximum 1 MiB) before adding them to generated rules.
-Cleanup checks ownership before deleting the cluster, project and volumes.
+Cleanup verifies cluster, project and volume ownership.
 See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
 
 ### 0.1. Check Harness mode support

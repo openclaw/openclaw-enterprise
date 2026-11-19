@@ -1,11 +1,11 @@
-# Kubernetes Compute with managed OpenShell Workspaces
+# Kubernetes Compute with OpenShell service integration
 
-Keep `compute-kubernetes` and select OpenShell managed Workspaces to investigate
+Keep `compute-kubernetes` and select OpenShell service integration to investigate
 a stable OpenShell Sandbox per Agent. This local prototype is not qualified for production. Image builds
 and cluster integration are deferred to the user.
 
 The single Kubernetes Compute Driver owns Gateway orchestration. OpenShell owns the
-Harness namespace and `/sandbox` storage through managed Workspaces. OCE does
+Harness resources and `/sandbox` storage. OCE does
 not create, read, mount or delete the Harness PVC. OCE still manages Gateway
 storage, transport and setup Secrets, configuration, routing and NetworkPolicies
 in its own tenant namespace. The workspace node connects from the Sandbox to
@@ -14,8 +14,10 @@ the Agent Gateway; file operations use that authenticated connection.
 ## Select the prototype
 
 Start with the existing [Kubernetes configuration](kubernetes-compute.md) and
-[OpenShell Backend](../backends.md#openshell-gateway). Apply these settings to the
-Installation file read by both API and worker:
+[OpenShell Backend](../backends.md#openshell-gateway). Select the mode with
+`drivers.sandbox.configuration.integrationMode: service` in the Installation
+file read by both API and worker. There is no separate Compute mode flag.
+The following overlay also shows the existing prerequisites:
 
 ```yaml
 drivers:
@@ -26,15 +28,12 @@ drivers:
       # resource and runtime settings.
       servicePrincipalCredentials:
         mode: disabled
-      managedOpenShell:
-        experimentalSingleWorker: true
-        gatewayId: YOUR_OPENSHELL_GATEWAY_ID
   sandbox:
     id: openshell-sandbox
     configuration:
       # Retain the existing process/network policy and Kubernetes runtime class.
-      gateway:
-        workspaceMode: managed
+      integrationMode: service
+      gateway: {}
       kubernetes:
         sandboxDataMount:
           subPath: workspace
@@ -45,14 +44,15 @@ drivers:
 This is a partial configuration overlay. Keep the selected Sandbox and Credential
 Gateway members on the same Backend. Configure that Backend with an explicit
 OpenShell endpoint reachable from the OCE namespace. Composition selects an internal managed runtime for Kubernetes Compute with
-bundled OpenShell Sandbox in `managed` mode. All Kubernetes modes use
-`occ/kubernetes` and keep the configured Compute ID. Operator mode retains its
-lifecycle. `managedOpenShell` is required in managed mode and rejected otherwise. Rebuilding
-images alone does not change the workspace mode or supply the required settings.
+bundled OpenShell Sandbox in `service` mode. All Kubernetes modes use
+`occ/kubernetes` and keep the configured Compute ID. `legacy` is the default and retains the existing
+lifecycle. The Compute schema rejects the removed `managedOpenShell` block.
+Rebuilding images alone does not change the integration mode. Runtime, storage-path
+and policy prerequisites still apply; selecting a mode does not rewrite them.
 
-Dedicated OpenClaw does not require `kubernetes.userNamespaces: false` in managed
+Dedicated OpenClaw does not require `kubernetes.userNamespaces: false` in service
 mode. Its image bootstrap prepares retained directories inside the Sandbox;
-the operator-mode workspace preparation restrictions do not apply.
+the legacy workspace preparation restrictions do not apply.
 
 Select the storage mode before deploying Agents. Changing between Kubernetes-owned
 and OpenShell-managed storage for an existing Agent is unsupported, even when Driver
@@ -60,11 +60,15 @@ IDs stay the same. OCE refuses to prepare, activate, stop or retire a revision u
 a different storage mode. Restore the original Installation settings to operate
 those Agents; OCE does not move their data between storage owners.
 
-Configure OpenShell itself for managed Workspaces. Set `gatewayId` to its actual
-gateway identity: OCE uses this label, the Workspace label and the exact Sandbox
-supervisor ID in the Gateway ingress policy. Use one cluster with enforcing
-NetworkPolicies and one OCE worker. `experimentalSingleWorker` acknowledges a
-limitation; it does not control the worker replica count.
+OpenShell must supply persistent Sandbox storage; its gateway workspace mode is
+configured independently. Workspace nodes connect through
+the existing [Envoy node route](../gateway-routing.md#native-node-endpoint).
+OCE admits its Envoy proxy to the Agent Gateway; service mode does not select
+OpenShell namespace or Pod labels or create a direct Sandbox ingress allowance.
+Activation removes previous Agent-owned direct workspace-node policies through
+normal policy cleanup. Use one cluster with enforcing NetworkPolicies and one OCE
+worker. Mode selection does not enforce the worker replica count; configure it in
+the deployment. Separate-cluster connectivity remains unqualified.
 
 Protected Git verifies execution ownership and readiness through OpenShell's API.
 The worker does not need Kubernetes Pod-read access in OpenShell-managed namespaces.
@@ -174,7 +178,7 @@ See the [provisioning flow](../../flows/openshell-managed-workload.md).
   operations. See [stop and replacement ordering](../../flows/openshell-managed-workload.md#stop-and-replacement-ordering)
   for the cancellation argument. Provider credential mutations and exposure
   withdrawal require separate qualification.
-- A missing bootstrap fails launch. A mismatched `gatewayId` prevents node
+- A missing bootstrap fails launch. An unreachable Envoy endpoint prevents node
   connection. A workload-update mismatch leaves the Sandbox stopped; inspect the
   server capability and stored specification before retrying.
 

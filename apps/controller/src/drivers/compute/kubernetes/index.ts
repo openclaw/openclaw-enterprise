@@ -571,11 +571,6 @@ function scratchVolume(value: unknown): KubernetesScratchVolume {
 }
 
 export interface KubernetesComputeDriverOptions {
-  readonly managedOpenShell?: {
-    /** Explicit opt-in until generation-fenced lifecycle operations exist upstream. */
-    readonly experimentalSingleWorker: true;
-    readonly gatewayId: string;
-  };
   readonly authentication:
     | { readonly mode: "inCluster" }
     | { readonly mode: "kubeconfig"; readonly kubeconfigPath: string; readonly context: string };
@@ -3348,20 +3343,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     required: ["authentication", "images", "resources", "network", "servicePrincipalCredentials"],
     additionalProperties: false,
     properties: {
-      managedOpenShell: {
-        type: "object",
-        additionalProperties: false,
-        required: ["experimentalSingleWorker", "gatewayId"],
-        properties: {
-          experimentalSingleWorker: { const: true },
-          gatewayId: {
-            type: "string",
-            minLength: 1,
-            maxLength: 63,
-            pattern: "^[a-zA-Z0-9]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?$",
-          },
-        },
-      },
       authentication: {
         type: "object",
         required: ["mode"],
@@ -3644,18 +3625,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): readonly ErrorDetail[] {
     try {
       const options = configuration;
-      if (
-        options.managedOpenShell !== undefined &&
-        (options.executionCluster !== undefined ||
-          options.servicePrincipalCredentials.mode !== "disabled" ||
-          options.runtime === undefined)
-      ) {
-        throw configurationConstraintFailure(
-          "Managed OpenShell requires one Gateway cluster, a configured runtime, and disabled ServicePrincipal projection.",
-          "/managedOpenShell",
-          "INVALID_VALUE",
-        );
-      }
       validateKubernetesAuthentication(options.authentication, "/authentication");
       if (
         asRecord(options.images) === undefined ||
@@ -4321,11 +4290,28 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
     this.nativeHarness = new KubernetesHarnessRuntime(harnessResources);
     this.selectedHarness = createHarnessRuntime(harnessResources, this.sandboxDriver);
-    const managedHarness = this.selectedHarness instanceof ManagedOpenShellHarnessRuntime;
-    if ((options.managedOpenShell !== undefined) !== managedHarness) {
-      throw new ConfigurationFailure(
-        "Managed OpenShell settings require the managed OpenShell Sandbox collaborator.",
-      );
+    if (this.selectedHarness instanceof ManagedOpenShellHarnessRuntime) {
+      if (options.executionCluster !== undefined) {
+        throw configurationConstraintFailure(
+          "Managed OpenShell requires one Gateway cluster.",
+          "/executionCluster",
+          "INVALID_VALUE",
+        );
+      }
+      if (options.servicePrincipalCredentials.mode !== "disabled") {
+        throw configurationConstraintFailure(
+          "Managed OpenShell requires disabled ServicePrincipal projection.",
+          "/servicePrincipalCredentials",
+          "INVALID_VALUE",
+        );
+      }
+      if (options.runtime === undefined) {
+        throw configurationConstraintFailure(
+          "Managed OpenShell requires a configured runtime.",
+          "/runtime",
+          "REQUIRED",
+        );
+      }
     }
     this.preprovisionedNamespace = selection.preprovisionedNamespace;
     this.preparedTokens = preparedTokenReadiness(selection.preparedTokens);
@@ -7851,7 +7837,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         false,
         undefined,
         deliveredHarnessAuth,
-        [],
+        undefined,
         [],
         pluginRuntime,
         [],
@@ -11900,6 +11886,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       input.pluginRuntime?.runtime.kind === "codex" &&
       this.options.runtime !== undefined &&
+      this.sandboxDriver?.implementation !== "strands-box" &&
       !auth.environment.some(({ name }) => name === APP_TOKEN_SHA) &&
       Object.values(input.pluginRuntime.runtime.selections).some((selection) => selection.enabled)
     ) {
@@ -15228,7 +15215,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         runtime = prefix + (runtime ?? "");
       }
     }
-    if (this.options.managedOpenShell !== undefined) {
+    if (this.selectedHarness instanceof ManagedOpenShellHarnessRuntime) {
       runtime = MANAGED_OPENSHELL_ADMISSION_PREFIX + (runtime ?? "");
     }
     const provider = this.providerAdmission(revision);
@@ -15336,7 +15323,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private validateHarnessStorage(revision: Readonly<AgentRevision>): void {
     const managed =
       this.storageAdmission(revision)?.startsWith(MANAGED_OPENSHELL_ADMISSION_PREFIX) === true;
-    if (managed !== (this.options.managedOpenShell !== undefined)) {
+    if (managed !== this.selectedHarness instanceof ManagedOpenShellHarnessRuntime) {
       throw new ConfigurationFailure(
         "AgentRevision Harness storage mode differs from the Installation. Switching between Kubernetes-owned and OpenShell-managed storage is unsupported; restore the original Installation settings.",
       );
@@ -16114,6 +16101,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   /** Whether the revision's SandboxDriver Pods open its workspace-node connection
    * to the Agent Gateway, which then admits exactly those Pods. */
   private workspaceNodeRelay(revision: AgentRevision): SandboxDriver | undefined {
+    // Managed OpenShell nodes connect through Envoy. Compute admits the OCE proxy,
+    // without selecting or inspecting the provider's namespace or workload Pods.
+    if (this.selectedHarness instanceof ManagedOpenShellHarnessRuntime) {
+      return undefined;
+    }
     const sandboxDriver =
       revision.harness.mode === "dedicated" ? this.sandboxDriverForRevision(revision) : undefined;
     const opensWorkspaceNode =
@@ -16350,7 +16342,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                     ? []
                     : [
                         {
-                          from: workspaceNodePeers.map((podLabels) => this.peer({ namespace: namespace.name, podLabels })),
+                          from: workspaceNodePeers.map((podLabels) =>
+                            this.peer({ namespace: namespace.name, podLabels }),
+                          ),
                           ports: [{ protocol: "TCP", port: this.options.network.gatewayPort }],
                         },
                       ],

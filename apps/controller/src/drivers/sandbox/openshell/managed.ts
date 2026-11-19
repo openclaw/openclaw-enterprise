@@ -55,15 +55,11 @@ const stopped = (sandbox: OpenShellSandboxResponse) =>
 /** Managed Workspace implementation used by the Kubernetes Harness runtime. */
 export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
   readonly workspaceStorage = "provider" as const;
-  private readonly gatewayId: string;
 
-  constructor(
-    options: OpenShellSandboxDriverOptions,
-    selection: OpenShellSandboxDriverSelection & { readonly gatewayId: string },
-  ) {
+  constructor(options: OpenShellSandboxDriverOptions, selection: OpenShellSandboxDriverSelection) {
     super(options, selection);
     if (
-      options.gateway.workspaceMode !== "managed" ||
+      options.integrationMode !== "service" ||
       options.gateway.operatorNamespaceLabels !== undefined ||
       options.gateway.operatorWorkspaceResources !== undefined ||
       options.gateway.networkPolicyResources !== undefined ||
@@ -71,8 +67,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       options.kubernetes.sandboxDataMount.claimName !== undefined ||
       options.kubernetes.sandboxDataMount.subPath !== "workspace" ||
       (options.sandboxNamePrefix !== undefined && options.sandboxNamePrefix !== "oc") ||
-      !/^[a-zA-Z0-9]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?$/.test(selection.gatewayId) ||
-      selection.gatewayId.length > 63 ||
       options.kubernetes.sandboxDataMount.mountPath !== DATA + "/workspace" ||
       options.kubernetes.sandboxDataMount.readOnly ||
       options.policy.filesystem?.readOnly?.some(
@@ -80,13 +74,12 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       )
     ) {
       throw new Error(
-        "Managed OpenShell requires managed Workspaces, writable /sandbox, /sandbox/oce/workspace, and no operator namespace resources or PVC selection.",
+        "OpenShell service integration requires integrationMode: service, writable /sandbox, /sandbox/oce/workspace, and no operator namespace resources or PVC selection.",
       );
     }
-    this.gatewayId = selection.gatewayId;
   }
 
-  protected override requireOperatorWorkspaceMode(_operation: string): void {
+  protected override requireLegacyIntegration(_operation: string): void {
     // All overridden storage and lifecycle paths use the managed Workspace API.
   }
 
@@ -118,14 +111,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       throw new Error("Managed Workspace disappeared during creation.");
     }
     verifyActiveWorkspace(workspace, context.namespace);
-  }
-
-  workspaceNodeNamespaceLabels(context: SandboxNamespaceContext): Readonly<Record<string, string>> {
-    return {
-      "openshell.ai/managed-by": "openshell",
-      "openshell.ai/gateway-id": this.gatewayId,
-      "openshell.ai/sandbox-workspace": workspaceName(context.namespace),
-    };
   }
 
   protected override sandboxRef(
@@ -250,7 +235,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         environment,
         command,
         driverConfig: {
-          pod: { runtime_class_name: this.options.kubernetes.runtimeClassName },
           containers: { agent: { resources } },
         },
         filesystem: {
@@ -825,24 +809,9 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       : { state: "starting" };
   }
 
-  override async workspaceNodePeerLabels(
-    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
-  ) {
-    const sandbox = await this.gatewayClientForNamespace(context.namespace.name).getSandbox(
-      {
-        workspace: workspaceName(context.namespace),
-        name: this.agentSandboxName(context.revision.agentId),
-      },
-      context.signal,
-    );
-    if (sandbox === undefined) {
-      return undefined;
-    }
-    this.verifyOwner(sandbox, context.namespace.id, context.revision.agentId);
-    if (sandbox.annotations[REVISION] !== context.revision.id) {
-      return undefined;
-    }
-    return super.workspaceNodePeerLabels(context);
+  override async workspaceNodePeerLabels(): Promise<undefined> {
+    // Managed nodes use OCE's Envoy route; their network placement belongs to OpenShell.
+    return undefined;
   }
 
   override async withdrawHarnessExposure(context: SandboxHarnessWithdrawalContext): Promise<void> {

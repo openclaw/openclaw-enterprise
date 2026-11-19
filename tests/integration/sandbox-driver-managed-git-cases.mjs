@@ -108,13 +108,13 @@ export async function verifyManagedGitReplacement(
       `managed Git replacement (${scenario}) retires its old route without deleting the Sandbox`,
       async () => {
         const config = structuredClone(sandbox.options);
-        config.gateway = { workspaceMode: "managed" };
+        config.integrationMode = "service";
+        config.gateway = {};
         config.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
         const managed = new ManagedOpenShellSandbox(config, {
           id: sandbox.id,
           backend: backendFor(gateway),
           openShellGit: git,
-          gatewayId: "test-gateway",
         });
         const saved = {
           created,

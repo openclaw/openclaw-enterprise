@@ -187,7 +187,8 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
     });
     const driver = new OpenShellSandboxDriver(
       {
-        gateway: { workspaceMode: "operator" },
+        integrationMode: "legacy",
+        gateway: {},
         kubernetes: {
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {

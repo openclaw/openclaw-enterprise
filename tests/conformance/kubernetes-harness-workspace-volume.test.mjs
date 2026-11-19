@@ -210,7 +210,8 @@ test("scratch requirements keep the durable workspace and exact admitted writabl
 function scratchCompute(bindings) {
   const sandbox = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
         userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },

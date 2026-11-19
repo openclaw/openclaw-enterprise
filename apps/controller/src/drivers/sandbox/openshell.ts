@@ -212,9 +212,10 @@ interface OpenShellAgentResourceOverride {
 
 export interface OpenShellSandboxDriverOptions {
   readonly egress?: OpenShellProxyOptions;
-  /** Workspace and readiness policy; the `openshell` Backend owns the gateway connection. */
+  /** OCE integration strategy; omitted selects legacy. */
+  readonly integrationMode?: "service" | "legacy";
+  /** Legacy workspace resources and readiness policy; the `openshell` Backend owns the gateway connection. */
   readonly gateway: {
-    readonly workspaceMode: "managed" | "operator";
     /** Exact HTTPS endpoint of the registered OCE request guard. */
     readonly managedPluginMiddleware?: string;
     readonly operatorNamespaceLabels?: Readonly<Record<string, string>>;
@@ -2441,15 +2442,18 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       `OpenShell startupDelayMs must be a positive safe integer no greater than ${MAX_SANDBOX_STARTUP_DELAY_MS}.`,
     );
   }
-  if (options.gateway.workspaceMode !== "managed" && options.gateway.workspaceMode !== "operator") {
+  if (
+    options.integrationMode !== undefined &&
+    options.integrationMode !== "service" &&
+    options.integrationMode !== "legacy"
+  ) {
     throw new OpenShellSandboxConfigurationFailure(
-      "OpenShell gateway workspaceMode must be managed or operator.",
+      "OpenShell integrationMode must be service or legacy.",
     );
   }
   for (const key of Object.keys(options.gateway)) {
     if (
       ![
-        "workspaceMode",
         "managedPluginMiddleware",
         "operatorNamespaceLabels",
         "readiness",
@@ -2517,9 +2521,9 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
   });
   if (options.gateway.namespaceGatewayResources !== undefined) {
     validateNamespaceGatewayResources(options.gateway.namespaceGatewayResources);
-    if (options.gateway.readiness === undefined || options.gateway.workspaceMode !== "operator") {
+    if (options.gateway.readiness === undefined || options.integrationMode === "service") {
       throw new SandboxNamespaceRefusedError(
-        "Namespace gateway setup requires readiness settings and operator Workspace mode.",
+        "Namespace gateway setup requires readiness settings and legacy integration mode.",
       );
     }
   }
@@ -2609,11 +2613,11 @@ export const configurationSchema = Object.freeze({
   required: ["gateway", "kubernetes", "policy"],
   additionalProperties: false,
   properties: {
+    integrationMode: { type: "string", enum: ["service", "legacy"], default: "legacy" },
     gateway: {
       type: "object",
       additionalProperties: false,
       properties: {
-        workspaceMode: { type: "string", enum: ["managed", "operator"] },
         managedPluginMiddleware: { type: "string", pattern: "^https://" },
         operatorNamespaceLabels: { type: "object", writeOnly: true },
         operatorWorkspaceResources: { type: "array", writeOnly: true },
@@ -3108,7 +3112,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     this.options = options;
     let reason: string | undefined;
     // Managed bootstrap prepares storage inside the Sandbox without the operator preparer.
-    if (options.gateway.workspaceMode !== "managed") {
+    if (options.integrationMode !== "service") {
       if (options.kubernetes.userNamespaces !== false) {
         reason =
           "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
@@ -3265,7 +3269,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   private async ensureNamespaceWorkspace(context: SandboxNamespaceContext): Promise<void> {
-    this.requireOperatorWorkspaceMode("ensure a Namespace");
+    this.requireLegacyIntegration("ensure a Namespace");
     const namespace = namespaceName(context.namespace);
     if (this.options.gateway.namespaceGatewayResources !== undefined) {
       const placement = this.backend.client.placement(namespace);
@@ -3398,7 +3402,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
 
   async provisionHarness(context: SandboxHarnessContext): Promise<SandboxResourceRef> {
     assertNoRepositoryEnrollment(context, this.openShellGit);
-    this.requireOperatorWorkspaceMode("provision a Harness");
+    this.requireLegacyIntegration("provision a Harness");
     if (!isDeepStrictEqual(context.requirements.proxyWiring?.plan, context.revision.egressPlan)) {
       throw new OpenShellSandboxConfigurationFailure(
         "Protected egress attachment must match the admitted revision.",
@@ -4004,7 +4008,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
 
   /** The existing OpenShell execution identity for a read-only standing execution check. */
   standingGitExecution(context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> }) {
-    this.requireOperatorWorkspaceMode("observe standing repository execution");
+    this.requireLegacyIntegration("observe standing repository execution");
     const continuity = this.gitContinuity(context);
     if (continuity) {
       const sandbox = this.sandboxRef(context);
@@ -4183,7 +4187,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * (finding 1657). Fails closed: resolves only once OpenShell confirms the service gone.
    */
   async withdrawHarnessExposure(context: SandboxHarnessWithdrawalContext): Promise<void> {
-    this.requireOperatorWorkspaceMode("withdraw a Harness exposure");
+    this.requireLegacyIntegration("withdraw a Harness exposure");
     if (
       context.revision.harness.mode !== "dedicated" ||
       context.revision.harness.id !== "openclaw"
@@ -4464,7 +4468,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     readonly client: OpenShellGatewayClient;
     readonly service: NonNullable<Awaited<ReturnType<OpenShellGatewayClient["getService"]>>>;
   }> {
-    this.requireOperatorWorkspaceMode(operation);
+    this.requireLegacyIntegration(operation);
     const codex = context.revision.harness.id === "codex";
     if (
       context.revision.harness.mode !== "dedicated" ||
@@ -4523,7 +4527,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
   ): Promise<void> {
     if (context.revision !== undefined) {
-      this.requireOperatorWorkspaceMode("clean up a revision");
+      this.requireLegacyIntegration("clean up a revision");
       if (
         context.revision.namespaceId !== context.namespace.id ||
         context.revision.sandboxDriverId !== this.id
@@ -4609,7 +4613,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       return;
     }
-    this.requireOperatorWorkspaceMode("clean up a Namespace");
+    this.requireLegacyIntegration("clean up a Namespace");
     const namespace = namespaceName(context.namespace);
     const managedResources = this.options.gateway.namespaceGatewayResources;
     // Compute removes the backing namespace asynchronously after provider cleanup. Its
@@ -4815,7 +4819,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   private async policyTarget(context: SandboxLogContext) {
-    this.requireOperatorWorkspaceMode("read or apply an Agent network policy");
+    this.requireLegacyIntegration("read or apply an Agent network policy");
     if (
       context.revision.namespaceId !== context.namespace.id ||
       context.revision.sandboxDriverId !== this.id
@@ -5079,7 +5083,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     context: SandboxLogContext,
     request: SandboxLogRequest,
   ): Promise<SandboxLogChunk> {
-    this.requireOperatorWorkspaceMode("read Sandbox logs");
+    this.requireLegacyIntegration("read Sandbox logs");
     if (
       context.revision.namespaceId !== context.namespace.id ||
       context.revision.sandboxDriverId !== this.id
@@ -5130,7 +5134,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * 1676): an observation, not a removal, and no controller path acts on it today.
    */
   async observeHarness(context: SandboxLogContext): Promise<SandboxHarnessObservation> {
-    this.requireOperatorWorkspaceMode("observe a Harness");
+    this.requireLegacyIntegration("observe a Harness");
     if (
       context.revision.namespaceId !== context.namespace.id ||
       context.revision.sandboxDriverId !== this.id ||
@@ -5169,7 +5173,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   async workspaceNodePeerLabels(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<Readonly<Record<string, string>> | undefined> {
-    this.requireOperatorWorkspaceMode("resolve a workspace-node peer");
+    this.requireLegacyIntegration("resolve a workspace-node peer");
     if (
       context.revision.namespaceId !== context.namespace.id ||
       context.revision.sandboxDriverId !== this.id ||
@@ -5338,10 +5342,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     await client.deleteProviderProfile(workspace, profileId, signal);
   }
 
-  protected requireOperatorWorkspaceMode(operation: string): void {
-    if (this.options.gateway.workspaceMode === "managed") {
+  protected requireLegacyIntegration(operation: string): void {
+    if (this.options.integrationMode === "service") {
       throw new OpenShellSandboxConfigurationFailure(
-        `OpenShell managed workspace mode is not implemented; cannot ${operation}.`,
+        `OpenShell service integration requires the service Sandbox implementation; cannot ${operation}.`,
       );
     }
   }

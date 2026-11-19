@@ -130,21 +130,22 @@ export function registerDedicatedCodexProviderCase(): void {
 }
 
 export function registerInitialWorkspaceCases(): void {
-  for (const [harnessId, workspaceMode] of [
-    ["codex", "operator"],
-    ["openclaw", "operator"],
-    ["codex", "managed"],
-    ["openclaw", "managed"],
+  for (const [harnessId, integrationMode] of [
+    ["codex", "legacy"],
+    ["openclaw", "legacy"],
+    ["codex", "service"],
+    ["openclaw", "service"],
   ] as const) {
-    test(`OpenShell ${workspaceMode} delivers ${harnessId} initial workspace files privately after supervisor readiness`, async (t) => {
+    test(`OpenShell ${integrationMode} delivers ${harnessId} initial workspace files privately after supervisor readiness`, async (t) => {
       const gatewayClient = workspaceGatewayClient();
       const base = buildSandboxInstallation().drivers.sandbox.configuration;
-      const managed = workspaceMode === "managed";
+      const managed = integrationMode === "service";
       const { userNamespaces: _userNamespaces, ...kubernetes } = base.kubernetes;
       const configuration: OpenShellSandboxDriverOptions = managed
         ? {
             ...base,
-            gateway: { workspaceMode },
+            integrationMode,
+            gateway: {},
             kubernetes: {
               ...kubernetes,
               sandboxDataMount: {
@@ -159,7 +160,6 @@ export function registerInitialWorkspaceCases(): void {
             id: "openshell-sandbox",
             implementation: "openshell",
             backend: backendFor(gatewayClient),
-            gatewayId: "test-gateway",
           })
         : openShellDriver(gatewayClient, configuration);
       const {

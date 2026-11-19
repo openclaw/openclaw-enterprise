@@ -694,8 +694,8 @@ export function createOpenShellInstallationConfiguration({
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
     configuration: {
+      integrationMode: "legacy",
       gateway: {
-        workspaceMode: "operator",
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },

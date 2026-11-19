@@ -222,8 +222,6 @@ export interface SandboxDriver extends Driver {
   readonly repositoryAccess?: SandboxRepositoryAccess;
   /** Provider owns durable Harness storage and reports lifecycle through observeHarness. */
   readonly workspaceStorage?: "provider";
-  /** Namespace selector paired with exact workspace-node Pod labels. */
-  workspaceNodeNamespaceLabels?(context: SandboxNamespaceContext): Readonly<Record<string, string>>;
 
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {

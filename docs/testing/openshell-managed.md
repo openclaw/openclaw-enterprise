@@ -11,7 +11,12 @@ Local checks cover launch inputs through Compute preparation, Kubernetes mounts,
 OpenShell rendering and real filesystem bootstrap. The launch refactor removed
 reverse-Deployment parser checks; identity, private setup delivery and retained
 storage assertions now inspect constructed requirements or rendered resources.
-These checks do not establish live managed-Workspace integration.
+Managed startup tests select the mode through `integrationMode: service` alone,
+verify the `legacy` default, reject obsolete selectors and retain configuration and storage-owner checks.
+They exercise Compute preparation with the real managed Sandbox
+Driver and fixture transports. They check that both Harnesses keep the Envoy node
+route without a direct Sandbox ingress policy. These checks do not establish live
+managed-Workspace integration or packet delivery.
 
 Local checks:
 
@@ -20,7 +25,9 @@ node --test tests/conformance/openshell-managed-bootstrap.test.mjs tests/conform
 ```
 
 Before qualification, extend the QA matrix's regular Agent workflow on a disposable
-cluster. Deny OCE access to the managed namespace. Deploy, read/write an allowed
+cluster. Deny OCE access to the managed namespace. Confirm that node enrollment
+and reconnection use Envoy with no direct Sandbox ingress allowance, and that
+activation removes any previous Agent-owned workspace-node policy. Deploy, read/write an allowed
 workspace file, run a model/tool turn, replace the revision, stop/restart, then
 delete the Agent. Confirm stable Sandbox/PVC identity and retained files through
 replacement; confirm deletion only at final Agent removal. Exercise both Harnesses,
@@ -33,7 +40,7 @@ For Git repository changes across revisions, use the [Git replacement scenario](
 
 Use a disposable loopback k3d installation with this branch's API and worker,
 a gateway meeting the [managed runtime requirements](../reference/drivers/kubernetes-openshell-compute.md),
-managed Workspaces, one worker and rebuilt Codex runtime images.
+OpenShell-owned persistent Sandbox storage, one worker and rebuilt Codex runtime images.
 Select its kubeconfig and context explicitly. Prepare a ready OCE Namespace, a
 dedicated Codex Configuration and an authorized static model Credential Source.
 The test creates two Agents and two sources that reference the existing model

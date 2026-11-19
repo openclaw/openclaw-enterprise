@@ -87,7 +87,6 @@ import {
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
 import { ManagedOpenShellSandbox } from "../drivers/sandbox/openshell/managed.ts";
-import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import {
   createExternalDriver,
@@ -1177,13 +1176,13 @@ async function composeInstallationConfiguration(
           sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
           sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
         );
-  const managedOpenShellWorkspace =
+  const openShellServiceIntegration =
     kubernetesCompute &&
     sandbox !== undefined &&
     sandboxPackage === undefined &&
-    (sandbox.configuration as unknown as OpenShellSandboxDriverOptions).gateway.workspaceMode ===
-      "managed";
-  if (managedOpenShellWorkspace && options.createSandboxDriver !== undefined) {
+    (sandbox.configuration as unknown as OpenShellSandboxDriverOptions).integrationMode ===
+      "service";
+  if (openShellServiceIntegration && options.createSandboxDriver !== undefined) {
     throw new Error(
       "Managed Kubernetes + OpenShell Compute requires its bundled Sandbox collaborator.",
     );
@@ -1216,37 +1215,16 @@ async function composeInstallationConfiguration(
       environment,
     );
   }
-  const managedOpenShell = kubernetesCompute
-    ? (compute.configuration as unknown as KubernetesComputeDriverOptions).managedOpenShell
-    : undefined;
-  if (managedOpenShellWorkspace && managedOpenShell === undefined) {
-    throw new ConfigurationValidationError([
-      {
-        path: "/drivers/compute/configuration/managedOpenShell",
-        code: "REQUIRED",
-        message: "Managed OpenShell Workspaces require managedOpenShell Compute settings.",
-      },
-    ]);
-  }
-  if (!managedOpenShellWorkspace && managedOpenShell !== undefined) {
-    throw new ConfigurationValidationError([
-      {
-        path: "/drivers/compute/configuration/managedOpenShell",
-        code: "INVALID_VALUE",
-        message: "managedOpenShell requires the bundled OpenShell Sandbox with managed Workspaces.",
-      },
-    ]);
-  }
   const createOpenShellSandbox = (
     configuration: Readonly<Record<string, unknown>>,
     selection: OpenShellSandboxDriverSelection,
   ): SandboxDriver =>
-    managedOpenShell === undefined
-      ? new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection)
-      : new ManagedOpenShellSandbox(configuration as unknown as OpenShellSandboxDriverOptions, {
-          ...selection,
-          gatewayId: managedOpenShell.gatewayId,
-        });
+    openShellServiceIntegration
+      ? new ManagedOpenShellSandbox(
+          configuration as unknown as OpenShellSandboxDriverOptions,
+          selection,
+        )
+      : new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection);
   const secret = selected(
     secretSelection,
     "secret",

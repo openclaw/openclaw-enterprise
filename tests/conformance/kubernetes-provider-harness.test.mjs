@@ -1725,15 +1725,9 @@ test("provider Harness protected execution is released only on current signed in
   );
 });
 
-test("provider-owned storage uses API observation and a cross-namespace node policy without a Harness claim", async () => {
+test("provider-owned storage uses API observation without a Harness claim", async () => {
   const fixture = providerEndpointFixture();
   fixture.sandbox.workspaceStorage = "provider";
-  const namespaceLabels = {
-    "openshell.ai/managed-by": "openshell",
-    "openshell.ai/gateway-id": "test-gateway",
-    "openshell.ai/sandbox-workspace": "test-workspace",
-  };
-  fixture.sandbox.workspaceNodeNamespaceLabels = () => namespaceLabels;
   fixture.sandbox.observeHarness = async () => ({ state: "running" });
   // API responses are controlled inputs here. Assertions cover Compute's rendered
   // resources, not real OpenShell lifecycle, Kubernetes RBAC, or network enforcement.
@@ -1764,15 +1758,4 @@ test("provider-owned storage uses API observation and a cross-namespace node pol
   const claims = fixture.writes.filter(({ kind }) => kind === "PersistentVolumeClaim");
   assert.ok(claims.length > 0, "Gateway private storage remains Kubernetes-owned");
   assert.ok(claims.every(({ metadata }) => !metadata.name.startsWith("harness-workspace-")));
-  const policy = fixture.read(
-    "NetworkPolicy",
-    `allow-gateway-workspace-node-${digest(fixture.revision.agentId)}`,
-    fixture.gatewayNamespace,
-  );
-  assert.deepEqual(policy.spec.ingress[0].from, [
-    {
-      namespaceSelector: { matchLabels: namespaceLabels },
-      podSelector: { matchLabels: supervisorPeerLabels(fixture.revision.id) },
-    },
-  ]);
 });

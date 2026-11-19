@@ -1,26 +1,23 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-18"
-last_updated_session: authoring-run/671a44ed-6929-4d1b-b949-8fc89154ce75
+updated: "2026-11-19"
+last_updated_session: authoring-run/b99f4c77-4d5d-4682-8f6f-f1e82c55323d
 ---
 
 # Managed OpenShell workload flow
 
 ## Overview
 
-The Kubernetes Compute Driver selects an internal managed OpenShell runtime
-that keeps one Sandbox per Agent across revisions. An Agent deployment triggers shared Kubernetes Gateway
-preparation and OpenShell workload reconciliation. OpenShell owns Harness storage
-in a managed namespace; OCE manages Gateway resources in its tenant namespace.
-This trace covers implemented prototype code, not verified cluster behavior.
+Kubernetes Compute keeps one OpenShell Sandbox per Agent across revisions.
+Deployment prepares the Gateway and reconciles the Sandbox workload. OpenShell
+owns Harness storage; OCE manages Gateway resources in its tenant namespace.
+This trace describes implementation, not cluster qualification.
 
 ## Entry Points
 
 - `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-  constructs one Kubernetes Compute Driver and the selected Sandbox collaborator.
-  Native, operator and managed execution all retain `occ/kubernetes` and the
-  configured Compute ID. Managed mode requires `managedOpenShell` settings;
-  native and operator selections reject that block.
+  selects managed execution from the bundled Sandbox's `integrationMode: service`.
+  All Kubernetes modes retain `occ/kubernetes` and the configured Compute ID.
 - `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
   receives the authorized Agent revision and prepares the Gateway.
 - `apps/controller/src/drivers/sandbox/openshell/managed.ts:reconcileHarness`
@@ -75,14 +72,12 @@ constructs `KubernetesHarnessRuntime` for native workloads,
 `SandboxHarnessRuntime` for operator OpenShell or external provisioning Sandboxes,
 and `ManagedOpenShellHarnessRuntime` for managed OpenShell. Non-provisioning
 Sandboxes retain their cleanup hooks with Kubernetes-owned workloads.
-`KubernetesComputeDriver.admitRevision` records managed storage in the existing
-private `compute.admission` value while preserving any protected-execution launch
-fact. `validateHarnessStorage` compares that saved mode with the current
-Installation before preparation, activation, stop or retirement can touch resources.
-A mismatch fails the operation. The worker therefore cannot finish stopping an
-old revision under a new storage mode and then prepare its replacement. This also
-applies when both modes use the same Compute and Sandbox IDs. Restoring the original
-Installation allows operations on the stored revisions again.
+The Compute constructor rejects managed execution with an execution cluster,
+ServicePrincipal projection or no runtime.
+`KubernetesComputeDriver.admitRevision` records managed storage in `compute.admission`
+alongside protected-execution launch facts. `validateHarnessStorage` refuses
+preparation, activation, stop and retirement when the Installation storage mode
+differs, even with unchanged Driver IDs. Restore the original settings to resume.
 `harnessForRevision` validates the saved Sandbox ID before selecting a runtime.
 The runtime's workspace owner omits Harness PVC operations for provider storage.
 
@@ -228,10 +223,12 @@ retained directories and a revision home before the Harness loader runs. It
 validates existing paths, creates home-relative links and atomically replaces
 the runtime selector symlink. Old homes remain until Agent deletion.
 
-`KubernetesComputeDriver.workspaceNodePeers` pairs the managed namespace labels
-with the gateway-issued Sandbox supervisor ID. `providerHarnessReady` reads
-OpenShell lifecycle state. Existing transport and node-enrollment checks still
-gate activation.
+`KubernetesComputeDriver.workspaceNodeRelay` omits direct Sandbox ingress in managed
+mode. `prepareWorkspaceNode` supplies the [Envoy node URL](../reference/gateway-routing.md#native-node-endpoint);
+`networkPolicies` admits OCE's Envoy Pods. No OpenShell namespace or Pod labels
+are resolved. Activation removes obsolete Agent policies through
+`deleteUnwrittenAgentPolicies`. OpenShell lifecycle, transport and node enrollment
+still gate activation.
 
 After reconciliation, `OpenShellSandboxDriver.provisionHarness` verifies any
 selected plugin request guard before workspace initialization.
@@ -289,7 +286,7 @@ Provider credential updates and exposure withdrawal are outside this argument.
 ## Debugging and Verification
 
 Run the [local checks and deferred cluster checklist](../testing/openshell.md#managed-compute-prototype).
-A missing image bootstrap fails launch. Incorrect namespace labels block the
+A missing image bootstrap fails launch. An unreachable Envoy endpoint blocks the
 workspace-node connection. Unsupported or incomplete workload updates leave the
 Sandbox stopped and the revision inactive. Local protocol and filesystem checks
 do not establish cluster isolation or durable replacement after failures.
@@ -302,6 +299,12 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 11:07: Rename selection to integrationMode, defaulting to legacy. (authoring-run/b99f4c77-4d5d-4682-8f6f-f1e82c55323d - 597acc05cdfe4be5874f3f362a77e927a0855ea6)
+
+- 2026-11-18 22:11: Select managed execution from the Sandbox workspace mode in the accompanying change. (authoring-run/8310b556-472e-4f48-8d7d-b15a34c1b562 - 597acc05cdfe4be5874f3f362a77e927a0855ea6)
+
+- 2026-11-18 19:26: Use Envoy ingress without OpenShell Sandbox selectors in the accompanying change. (authoring-run/f5b43850-4eb1-4d35-960f-4f4a641f5178 - 597acc05cdfe4be5874f3f362a77e927a0855ea6)
 
 - 2026-11-18 16:51: Remove obsolete Provider config keys with readback in the accompanying fix. (authoring-run/671a44ed-6929-4d1b-b949-8fc89154ce75 - 434ca70f7e7d60769865b780096886acbfc0219c)
 

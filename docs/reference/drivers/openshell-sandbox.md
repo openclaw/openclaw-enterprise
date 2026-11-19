@@ -42,12 +42,12 @@ routing, and the per-Agent Gateway. Sandbox owns:
   removes the Workspace and configured resources before Compute deletes the
   Kubernetes namespace.
 
-Compute requires workload readiness and routes matching the running Agent revision
-before serving traffic. Workers resolve its stored `sandboxDriverId` for provisioning and cleanup.
+Compute requires ready workloads and matching revision routes before serving traffic.
+Workers use the stored `sandboxDriverId` for provisioning and cleanup.
 
 ## OpenShell containment facets
 
-The Driver requests three [containment facets](sandbox.md#containment-facets):
+[Containment facets](sandbox.md#containment-facets):
 
 | Facet        | Current OpenShell behavior                                                                    |
 | ------------ | --------------------------------------------------------------------------------------------- |
@@ -55,12 +55,11 @@ The Driver requests three [containment facets](sandbox.md#containment-facets):
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
 | `process`    | OpenShell runs the workload with the UID and GID selected by its driver.                      |
 
-Landlock enforcement requires `policy.landlockCompatibility` omitted or
-`hard_requirement`; other values, including `best_effort`, fail Installation
-startup. Hosts lacking these Landlock operations fail launch.
+`policy.landlockCompatibility` must be omitted or `hard_requirement`. Other values
+fail startup. Hosts lacking required Landlock operations fail launch.
 
-There is no `exec` facet. Command-level authorization and per-tool sandbox
-creation are deferred; `exec` runs inside the selected Harness sandbox.
+`exec` runs inside the Harness sandbox. An `exec` facet, command authorization
+and per-tool sandboxes are deferred.
 
 ## Configuration
 
@@ -80,8 +79,8 @@ drivers:
   sandbox:
     id: openshell-sandbox
     configuration:
+      integrationMode: legacy
       gateway:
-        workspaceMode: operator
         operatorNamespaceLabels:
           openshell.ai/openclaw-workspace: "true"
         operatorWorkspaceResources: []
@@ -174,9 +173,10 @@ revision to change artifact authority. Live Agent policy apply remains unavailab
 
 Optional readiness observes an OCC-namespace Service/Pods; paired Gateways normally use Backend `endpoint`. Require positive `timeoutMs` and `pollIntervalMs` ≤ `2147483647` (default 1000). Development uses Harness readiness without `startupDelayMs`.
 
-Install OpenShell's gateway separately. Required `gateway.workspaceMode`
-accepts `operator` or `managed`; managed mode selects the experimental
-[Kubernetes Harness runtime](kubernetes-openshell-compute.md). Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
+Install OpenShell separately. `integrationMode` selects `legacy` (default) or
+[`service`](kubernetes-openshell-compute.md), independently of OpenShell's workspace mode. OCE rejects `gateway.workspaceMode`.
+
+For legacy integration, configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
 `app.kubernetes.io/managed-by`; otherwise deployment fails with
@@ -259,7 +259,7 @@ permits cluster-wide Sandbox and Pod mutations. The
 adds Pod create/delete/list/patch/watch and Service/NetworkPolicy create/get.
 The 0.1.6 operator ClusterRole already granted these verbs cluster-wide.
 Disabling sandbox updates, namespace labels and NetworkPolicies
-do not limit Kubernetes permissions. OCE requires operator mode.
+do not limit Kubernetes permissions. OCE's legacy integration requires operator mode.
 
 OCE controller/worker grants remain separate: Compute access, namespace-scoped
 policy apply and Gateway readiness, without Sandbox custom-resource permission.

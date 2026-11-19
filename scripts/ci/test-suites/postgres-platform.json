@@ -3,10 +3,7 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
-  "optionalEnv": [
-    "OCC_TEST_STANDING_GIT_CODEX",
-    "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION"
-  ],
+  "optionalEnv": ["OCC_TEST_STANDING_GIT_CODEX", "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION"],
   "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.ts",
@@ -191,9 +188,7 @@
     },
     {
       "path": "tests/integration/postgres-controller-work-targets.test.ts",
-      "expectedTests": [
-        "PostgreSQL controller work requires exactly one complete target shape"
-      ]
+      "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
     },
     {
       "path": "tests/integration/postgres-connection-templates.test.ts",
@@ -368,9 +363,7 @@
     },
     {
       "path": "tests/integration/postgres-worker-audit.test.ts",
-      "expectedTests": [
-        "PostgreSQL commits a worker claim and its audit record before Compute"
-      ]
+      "expectedTests": ["PostgreSQL commits a worker claim and its audit record before Compute"]
     },
     {
       "path": "tests/integration/compute-singleton-worker-postgres.test.ts",
@@ -387,9 +380,7 @@
     },
     {
       "path": "tests/integration/postgres-repository-transactions.test.ts",
-      "expectedTests": [
-        "PostgreSQL repository ownership, lifetime, and atomicity"
-      ]
+      "expectedTests": ["PostgreSQL repository ownership, lifetime, and atomicity"]
     },
     {
       "path": "tests/integration/postgres-transaction-commit.test.ts",
@@ -790,9 +781,7 @@
     },
     {
       "path": "tests/integration/postgres-readiness-capacity.test.ts",
-      "expectedTests": [
-        "PostgreSQL readiness shares only in-flight application-pool work"
-      ]
+      "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
     },
     {
       "path": "tests/integration/postgres-private-secret-create.test.ts",

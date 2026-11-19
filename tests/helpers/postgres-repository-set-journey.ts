@@ -304,7 +304,8 @@ async function repositoryGitJourney(
     );
     const sandbox = new OpenShellSandboxDriver(
       {
-        gateway: { workspaceMode: "operator" },
+        integrationMode: "legacy",
+        gateway: {},
         kubernetes: {
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {

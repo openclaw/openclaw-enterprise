@@ -186,8 +186,8 @@ provider. Compute waits for the gateway to report every attachment
 `SandboxResourceRef` retains `namespaceName`, `resourceName`, `agentId` and
 `revisionId` across Pod replacement/removal.
 
-[Managed OpenShell](kubernetes-openshell-compute.md) combines `workspaceNodeNamespaceLabels(context)`
-and `workspaceNodePeerLabels`; neither grants namespace-wide Pod access.
+[Managed OpenShell](kubernetes-openshell-compute.md) uses the authenticated Envoy
+node route without Kubernetes namespace or Pod selectors for its Sandboxes.
 
 ### Optional network policy operations
 
