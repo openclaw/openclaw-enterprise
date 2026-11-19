@@ -601,6 +601,7 @@ test(
     const clientName = "gateway-client";
     const clientSecret = "mounted-client";
     const detachedSecret = "detached-client";
+    const detachedItem = "detached-only.pem";
     const clientLeaf = await signedLeaf(dir, ca, {
       name: "current-client",
       commonName: clientName,
@@ -623,11 +624,17 @@ test(
     const clientLabels = { app: clientName };
     const excludedValue = randomUUID();
     const mountPath = "/etc/openclaw/openshell";
+    const unrelatedMountPath = "/etc/unrelated";
+    const otherContainer = "unrelated-container";
+    const otherContainerMountPath = "/etc/other-container";
     const worker = {
       name: "worker",
       image: "example.invalid/client:test",
       env: [{ name: "UNRELATED_FIXTURE_VALUE", value: excludedValue }],
-      volumeMounts: [{ name: "client", mountPath, readOnly: true }],
+      volumeMounts: [
+        { name: "client", mountPath, readOnly: true },
+        { name: "scratch", mountPath: unrelatedMountPath },
+      ],
     };
     const publicItem = { key: "tls.crt", path: "admin.pem" };
     const clientVolume = {
@@ -654,8 +661,25 @@ test(
           template: {
             metadata: { labels: clientLabels },
             spec: {
-              containers: [worker],
-              volumes: [clientVolume, { name: "detached", secret: { secretName: detachedSecret } }],
+              containers: [
+                worker,
+                {
+                  name: otherContainer,
+                  image: worker.image,
+                  volumeMounts: [{ name: "scratch", mountPath: otherContainerMountPath }],
+                },
+              ],
+              volumes: [
+                clientVolume,
+                { name: "scratch", emptyDir: {} },
+                {
+                  name: "detached",
+                  secret: {
+                    secretName: detachedSecret,
+                    items: [{ key: "tls.crt", path: detachedItem }],
+                  },
+                },
+              ],
             },
           },
         },
@@ -690,6 +714,11 @@ if (args.includes("get") && args.includes("deployments.apps") && args.includes($
     selectedMount: result.stdout?.includes(${JSON.stringify(mountPath)}),
     excludedValue: result.stdout?.includes(${JSON.stringify(excludedValue)}),
     excludedFields: /"env"|"annotations"/u.test(result.stdout ?? ""),
+    detachedSecret: [${JSON.stringify(detachedSecret)}, ${JSON.stringify(detachedItem)}]
+      .some((value) => result.stdout?.includes(value)),
+    unrelatedMount: result.stdout?.includes(${JSON.stringify(unrelatedMountPath)}),
+    otherContainer: [${JSON.stringify(otherContainer)}, ${JSON.stringify(otherContainerMountPath)}]
+      .some((value) => result.stdout?.includes(value)),
     stderrDiscarded: stderr.isCharacterDevice() && stderr.rdev === statSync("/dev/null").rdev,
   };
 }
@@ -755,6 +784,9 @@ process.exit(result.status ?? 1);
         selectedMount: false,
         excludedValue: false,
         excludedFields: false,
+        detachedSecret: false,
+        unrelatedMount: false,
+        otherContainer: false,
         stderrDiscarded: true,
       },
       {
@@ -762,6 +794,9 @@ process.exit(result.status ?? 1);
         selectedMount: true,
         excludedValue: false,
         excludedFields: false,
+        detachedSecret: false,
+        unrelatedMount: false,
+        otherContainer: false,
         stderrDiscarded: true,
       },
     ]);
@@ -843,6 +878,7 @@ process.exit(result.status ?? 1);
                   name === aliasName
                     ? { ...clientVolume, secret: { ...clientVolume.secret, items: aliasItems } }
                     : clientVolume,
+                  { name: "scratch", emptyDir: {} },
                 ],
               },
             },
@@ -975,6 +1011,41 @@ process.exit(result.status ?? 1);
     assert.equal(deniedSecret?.status, "unknown");
     assert.match(deniedSecret?.summary ?? "", /named resource could not be read.*get access/u);
     assert.deepEqual(deniedSecret?.resources, [workloadIdentity]);
+
+    // A differently written parent path still shadows the selected file. The
+    // reader has no Secret access, so a premature Secret GET would be unknown.
+    const shadow = { name: "scratch", mountPath: "/etc/openclaw//./" };
+    const shadowMount = "/spec/template/spec/containers/0/volumeMounts";
+    async function patchShadow(operations: object[]) {
+      await kubectl(
+        "-n",
+        namespace,
+        "patch",
+        "deployment",
+        clientName,
+        "--type=json",
+        "-p",
+        JSON.stringify(operations),
+      );
+    }
+    await patchShadow([{ op: "add", path: `${shadowMount}/-`, value: shadow }]);
+    await waitFor("shadow mount Deployment generation observation", async () => {
+      const deployment = await resource("deployment", clientName);
+      return deployment.status?.observedGeneration === deployment.metadata.generation;
+    });
+    const overlap = await diagnose({ ...clientPlan, kubeconfig: deniedConfig, context: "reader" }, [
+      token,
+      ...protectedValues,
+    ]);
+    const shadowed = overlap.checks.get("client-certificate");
+    assert.equal(shadowed?.status, "failed");
+    assert.match(shadowed?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
+    assert.deepEqual(shadowed?.resources, [await identity("Deployment", "deployment", clientName)]);
+    await patchShadow([
+      { op: "test", path: `${shadowMount}/2/mountPath`, value: shadow.mountPath },
+      { op: "remove", path: `${shadowMount}/2` },
+    ]);
+
     // A Secret read under this identity would be unknown, like the control above.
     for (const name of [claimName, aliasName]) {
       const invalid = await diagnose(

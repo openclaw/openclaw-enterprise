@@ -161,38 +161,22 @@ type DeploymentReadiness = {
   } | null;
 };
 
-type ClientContainer = {
-  name: string;
-  restartPolicy?: string;
-  volumeMounts?: {
-    name: string;
-    mountPath: string;
-    subPath?: string | null;
-    subPathExpr?: string | null;
-  }[];
+type ClientMount = {
+  mountPath: string;
+  subPath: boolean | null;
+  claim: boolean | null;
+  volumes: ({
+    secretName: string;
+    optional: boolean | null;
+    items: { key: string; path: string }[] | null;
+  } | null)[];
 };
 
 type ClientWorkload = {
   apiVersion?: string;
   kind?: string;
   metadata?: NamedMetadata;
-  spec?: {
-    volumeClaimNames?: (string | null)[] | null;
-    template?: {
-      spec?: {
-        containers?: ClientContainer[];
-        initContainers?: ClientContainer[];
-        volumes?: {
-          name: string;
-          secret?: {
-            secretName: string;
-            optional: boolean | null;
-            items: { key: string; path: string }[] | null;
-          };
-        }[];
-      };
-    };
-  };
+  mounts: (ClientMount | null)[] | null;
 };
 
 type MountedCertificateSecret = {
@@ -777,29 +761,12 @@ const observationTemplates = `
 {{end}}
 `;
 
-const clientWorkloadProjection = `${observationTemplates}
-{{define "mounts"}}
-  [{{if eq (printf "%T" .) "[]interface {}"}}{{range $i, $mount := .}}{{if $i}},{{end}}
-    {{if eq (printf "%T" $mount) "map[string]interface {}"}}
-      {"name":{{template "text" $mount.name}},"mountPath":{{template "text" $mount.mountPath}}
-       {{range $field, $value := $mount}}
-         {{if or (eq $field "subPath") (eq $field "subPathExpr")}}
-           ,{{printf "%q" $field}}:{{template "nullableText" $value}}
-         {{end}}
-       {{end}}}
-    {{else}}null{{end}}
-  {{end}}{{end}}]
-{{end}}
-{{define "containers"}}
-  {{if eq (printf "%T" .) "[]interface {}"}}
-    [{{range $i, $container := .}}{{if $i}},{{end}}
-      {{if eq (printf "%T" $container) "map[string]interface {}"}}
-        {"name":{{template "text" $container.name}},"restartPolicy":{{template "text" $container.restartPolicy}},
-         "volumeMounts":{{template "mounts" $container.volumeMounts}}}
-      {{else}}null{{end}}
-    {{end}}]
-  {{else}}null{{end}}
-{{end}}
+function clientWorkloadProjection({
+  container,
+  certificatePath,
+  workload: { kind, namespace, name },
+}: ClientCertificate): string {
+  return `${observationTemplates}
 {{define "items"}}
   {{if eq (printf "%T" .) "[]interface {}"}}
     [{{range $i, $item := .}}{{if $i}},{{end}}
@@ -809,13 +776,6 @@ const clientWorkloadProjection = `${observationTemplates}
     {{end}}]
   {{else if eq (printf "%T" .) "<nil>"}}[]{{else}}null{{end}}
 {{end}}
-{{define "claimNames"}}
-  {{if eq (printf "%T" .) "[]interface {}"}}
-    [{{range $i, $claim := .}}{{if $i}},{{end}}
-       {{if exists $claim "metadata" "name"}}{{template "nullableText" $claim.metadata.name}}{{else}}null{{end}}
-    {{end}}]
-  {{else}}null{{end}}
-{{end}}
 {{define "secretVolume"}}
   {{if eq (printf "%T" .) "map[string]interface {}"}}
     {"secretName":{{template "text" .secretName}},"items":{{template "items" .items}},
@@ -823,27 +783,139 @@ const clientWorkloadProjection = `${observationTemplates}
                  {{else if eq (printf "%T" .optional) "<nil>"}}false{{else}}null{{end}}}
   {{else}}null{{end}}
 {{end}}
+{{- define "clientMounts" -}}
+  {{- $certificatePath := ${JSON.stringify(certificatePath)} -}}
+  {{- $spec := .spec -}}
+  {{- $pod := .spec.template.spec -}}
+  {{- $container := $pod -}}
+  {{- $found := false -}}
+  {{- $duplicate := false -}}
+  {{- $valid := eq (printf "%T" $pod.containers) "[]interface {}" -}}
+  {{- range $field, $containers := $pod -}}
+    {{- if or (eq $field "containers") (eq $field "initContainers") -}}
+      {{- if eq (printf "%T" $containers) "[]interface {}" -}}
+        {{- range $entry := $containers -}}
+          {{- if ne (printf "%T" $entry) "map[string]interface {}" -}}
+            {{- $valid = false -}}
+          {{- else if and (eq (printf "%T" $entry.name) "string") (eq $entry.name ${JSON.stringify(container)})
+                     (or (eq $field "containers")
+                         (and (eq (printf "%T" $entry.restartPolicy) "string") (eq $entry.restartPolicy "Always"))) -}}
+            {{- $duplicate = $found -}}
+            {{- $found = true -}}
+            {{- $container = $entry -}}
+          {{- end -}}
+        {{- end -}}
+      {{- else if ne (printf "%T" $containers) "<nil>" -}}
+        {{- $valid = false -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if not $valid -}}null
+  {{- else if or (not $found) $duplicate -}}[]
+  {{- else -}}
+    {{- $mount := $container -}}
+    {{- $foundMount := false -}}
+    {{- $overlap := false -}}
+    {{- $validPaths := true -}}
+    {{- if eq (printf "%T" $container.volumeMounts) "[]interface {}" -}}
+      {{- range $candidate := $container.volumeMounts -}}
+        {{- if not (and (eq (printf "%T" $candidate) "map[string]interface {}")
+                     (eq (printf "%T" $candidate.name) "string") $candidate.name
+                     (eq (printf "%T" $candidate.mountPath) "string") $candidate.mountPath
+                     (eq (index $candidate.mountPath 0) '/')) -}}
+          {{- $validPaths = false -}}
+          {{- break -}}
+        {{- end -}}
+        {{/* Clean POSIX segments in kubectl to find shadow mounts without emitting unrelated paths. */}}
+        {{- $raw := printf "%s/" $candidate.mountPath -}}
+        {{- $normalized := "" -}}
+        {{- $start := 0 -}}
+        {{- range $end := len $raw -}}
+          {{- if eq (index $raw $end) '/' -}}
+            {{- $segment := slice $raw $start $end -}}
+            {{- if eq $segment "/.." -}}
+              {{- $last := 0 -}}
+              {{- range $i := len $normalized -}}
+                {{- if eq (index $normalized $i) '/' -}}{{- $last = $i -}}{{- end -}}
+              {{- end -}}
+              {{- $normalized = slice $normalized 0 $last -}}
+            {{- else if and $segment (ne $segment "/.") (ne $segment "/") -}}
+              {{- $normalized = printf "%s%s" $normalized $segment -}}
+            {{- end -}}
+            {{- $start = $end -}}
+          {{- end -}}
+        {{- end -}}
+        {{- $prefix := printf "%s/" $normalized -}}
+        {{- if or (eq $certificatePath $normalized)
+                   (and (le (len $prefix) (len $certificatePath))
+                        (eq $prefix (slice $certificatePath 0 (len $prefix)))) -}}
+          {{- $overlap = $foundMount -}}
+          {{- $foundMount = true -}}
+          {{- $mount = $candidate -}}
+        {{- end -}}
+      {{- end -}}
+    {{- else if ne (printf "%T" $container.volumeMounts) "<nil>" -}}
+      {{- $validPaths = false -}}
+    {{- end -}}
+    {{- if not $validPaths -}}[null]
+    {{- else if or (not $foundMount) $overlap -}}[]
+    {{- else -}}
+        [{"mountPath":{{template "text" $mount.mountPath}},
+         "subPath":{{- $subPath := "false" -}}
+           {{- range $field, $value := $mount -}}
+             {{- if or (eq $field "subPath") (eq $field "subPathExpr") -}}
+               {{- if ne (printf "%T" $value) "string" -}}{{- $subPath = "null" -}}
+               {{- else if and (ne $subPath "null") $value -}}{{- $subPath = "true" -}}{{- end -}}
+             {{- end -}}
+           {{- end -}}{{- $subPath -}},
+         "claim":{{- $claim := "false" -}}
+           {{- if and (eq (printf "%T" $.kind) "string") (eq $.kind "StatefulSet") -}}
+             {{- range $field, $claims := $spec -}}
+               {{- if eq $field "volumeClaimTemplates" -}}
+                 {{- if eq (printf "%T" $claims) "[]interface {}" -}}
+                   {{- range $entry := $claims -}}
+                     {{- if not (and (eq (printf "%T" $entry) "map[string]interface {}")
+                                  (eq (printf "%T" $entry.metadata) "map[string]interface {}")
+                                  (eq (printf "%T" $entry.metadata.name) "string") $entry.metadata.name) -}}
+                       {{- $claim = "null" -}}
+                     {{- else if and (ne $claim "null") (eq $entry.metadata.name $mount.name) -}}
+                       {{- $claim = "true" -}}
+                     {{- end -}}
+                   {{- end -}}
+                 {{- else -}}{{- $claim = "null" -}}{{- end -}}
+               {{- end -}}
+             {{- end -}}
+           {{- end -}}{{- $claim -}},
+         "volumes":[
+           {{- $volumeSeparator := "" -}}
+           {{- if and (eq $subPath "false") (eq $claim "false") (eq (printf "%T" $pod.volumes) "[]interface {}") -}}
+             {{- range $volume := $pod.volumes -}}
+               {{- if and (eq (printf "%T" $volume) "map[string]interface {}")
+                         (eq (printf "%T" $volume.name) "string") (eq $volume.name $mount.name) -}}
+                 {{- $volumeSeparator -}}{{- $volumeSeparator = "," -}}{{- template "secretVolume" $volume.secret -}}
+               {{- end -}}
+             {{- end -}}
+           {{- end -}}]}]
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
 {"apiVersion":{{template "text" .apiVersion}},"kind":{{template "text" .kind}},
  "metadata":{{template "identity" .metadata}},
- "spec":{
-   {{if eq (printf "%T" .spec) "map[string]interface {}"}}
-     {{range $field, $value := .spec}}
-       {{if eq $field "volumeClaimTemplates"}}"volumeClaimNames":{{template "claimNames" $value}},{{end}}
-     {{end}}
-   {{end}}
-   "template":{"spec":{{if and (exists . "spec" "template" "spec") (eq (printf "%T" .spec.template.spec) "map[string]interface {}")}}
-     {{with .spec.template.spec}}
-       {"containers":{{template "containers" .containers}},
-        "initContainers":{{template "containers" .initContainers}},
-        "volumes":[{{if eq (printf "%T" .volumes) "[]interface {}"}}{{range $i, $volume := .volumes}}{{if $i}},{{end}}
-          {{if eq (printf "%T" $volume) "map[string]interface {}"}}
-            {"name":{{template "text" $volume.name}},"secret":{{template "secretVolume" $volume.secret}}}
-          {{else}}null{{end}}
-        {{end}}{{end}}]}
-     {{else}}null{{end}}
-   {{else}}null{{end}}}
- }}
+ "mounts":{{if and (eq (printf "%T" .apiVersion) "string") (eq .apiVersion "apps/v1")
+                   (eq (printf "%T" .kind) "string") (eq .kind ${JSON.stringify(kind)})
+                   (eq (printf "%T" .metadata) "map[string]interface {}")
+                   (eq (printf "%T" .metadata.name) "string") (eq .metadata.name ${JSON.stringify(name)})
+                   (eq (printf "%T" .metadata.namespace) "string") (eq .metadata.namespace ${JSON.stringify(namespace)})
+                   (eq (printf "%T" .metadata.uid) "string") .metadata.uid
+                   (eq (printf "%T" .metadata.resourceVersion) "string") .metadata.resourceVersion
+                   (eq (printf "%T" .spec) "map[string]interface {}")
+                   (eq (printf "%T" .spec.template) "map[string]interface {}")
+                   (eq (printf "%T" .spec.template.spec) "map[string]interface {}")}}
+   {{template "clientMounts" .}}
+ {{else}}null{{end}}
+}
 `;
+}
 
 const deploymentReadinessProjection = `${observationTemplates}
 {{define "number"}}
@@ -984,55 +1056,37 @@ function mountedClientSecret(
   selection: ClientCertificate,
   observed: ClientWorkload,
 ): MountedCertificateSecret | undefined {
-  const pod = observed.spec?.template?.spec;
-  if (!Array.isArray(pod?.containers)) {
+  const { mounts } = observed;
+  if (!Array.isArray(mounts)) {
     throw new DiagnosticError("The selected workload response lacks its Pod template containers.");
   }
-  const containers = [
-    ...pod.containers,
-    ...(pod.initContainers ?? []).filter(({ restartPolicy }) => restartPolicy === "Always"),
-  ].filter(({ name }) => name === selection.container);
-  const [container] = containers;
-  if (containers.length !== 1 || !container) {
-    return undefined;
-  }
-
-  const path = selection.certificatePath;
-  const observedMounts = container.volumeMounts ?? [];
-  if (observedMounts.some((mount) => !mount?.name || !posix.isAbsolute(mount.mountPath))) {
+  if (mounts.includes(null)) {
     throw new DiagnosticError("The response lacks valid mount paths in the selected container.");
   }
-  const mounts = observedMounts.filter(({ mountPath }) => {
-    const normalized = posix.normalize(mountPath).replace(/\/$/u, "");
-    return path === normalized || path.startsWith(`${normalized}/`);
-  });
   const [mount] = mounts;
   if (mounts.length !== 1 || !mount) {
     return undefined;
   }
-  if (mount.subPath === null || mount.subPathExpr === null) {
+  if (mount.subPath === null) {
     throw new DiagnosticError("The selected volume mount has an invalid subpath.");
   }
-  if (mount.subPath || mount.subPathExpr) {
+  if (mount.subPath) {
     return undefined;
   }
   // The StatefulSet controller gives claims precedence over same-name Pod volumes.
-  if (selection.workload.kind === "StatefulSet") {
-    const claimNames = observed.spec?.volumeClaimNames;
-    if (claimNames === null || claimNames?.some((name) => name === null || !isDnsName(name))) {
-      throw new DiagnosticError("The response lacks a valid StatefulSet volume claim inventory.");
-    }
-    if (claimNames?.includes(mount.name)) {
-      return undefined;
-    }
+  if (mount.claim === null) {
+    throw new DiagnosticError("The response lacks a valid StatefulSet volume claim inventory.");
   }
+  if (mount.claim) {
+    return undefined;
+  }
+  const path = selection.certificatePath;
   const prefix = mount.mountPath.endsWith("/") ? mount.mountPath : `${mount.mountPath}/`;
   if (!path.startsWith(prefix)) {
     return undefined;
   }
 
-  const volumes = (pod.volumes ?? []).filter(({ name }) => name === mount.name);
-  const secret = volumes.length === 1 ? volumes[0]?.secret : undefined;
+  const secret = mount.volumes.length === 1 ? mount.volumes[0] : undefined;
   if (!secret || typeof secret.secretName !== "string" || !isDnsName(secret.secretName)) {
     return undefined;
   }
@@ -1632,11 +1686,34 @@ async function diagnose(
       "Verify the selected container's certificate path and renew its mounted Secret through the certificate owner.",
       async () => {
         const { kind, namespace } = client.workload;
+        if (kubeUnavailable) {
+          throw new DiagnosticError(kubeUnavailable);
+        }
+        // An older Go-template printer can dump the input object when it cannot
+        // iterate a string length. Check that capability with an empty kubeconfig.
+        const templateSupport = await commandOutput(
+          "kubectl",
+          [
+            "--kubeconfig",
+            process.platform === "win32" ? "NUL" : "/dev/null",
+            "config",
+            "view",
+            "-o",
+            "go-template={{range 1}}supported{{end}}",
+          ],
+          deadline,
+          "discard",
+        ).catch(() => "");
+        if (templateSupport !== "supported") {
+          throw new DiagnosticError(
+            "The kubectl client cannot safely project the selected workload. Use the kubectl version listed in the release tools guide.",
+          );
+        }
         const workload = parseJson<ClientWorkload | null>(
           await projectNamed(
             kind === "Deployment" ? "deployments.apps" : "statefulsets.apps",
             client.workload,
-            clientWorkloadProjection,
+            clientWorkloadProjection(client),
           ),
         );
         if (!workload) {
