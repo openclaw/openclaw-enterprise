@@ -6,52 +6,28 @@ rfc: index.md
 
 ## Problem and decision
 
-The [Sandbox network grant](../../../packages/contracts/src/sandbox-policy.ts) selects a binary, host and ports. The [installation Git Provider](../../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts) permits Git transport across repositories on the same host. Neither expresses a distinct network permission for each repository.
-
-Propose an opt-in restriction on [Agent egress](index.md). An Admin grants one Agent read access to repository A and write access to B. Unlisted C is denied. OpenShell must enforce those limits even if the credential permits more. The Agent gets only a placeholder. [RFC-0022](../0022-driver-configuration-contributions.md) governs configuration ownership.
+The [Sandbox network grant](../../../packages/contracts/src/sandbox-policy.ts) selects a binary, host and ports. The [installation-scoped Git Provider](../../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts) permits Git across repositories on that host. An Admin needs to grant one Agent read access to A and write access to B while denying unlisted C, even when its credential permits more. The Agent receives only a placeholder.
 
 ## Native Git v1
 
-| Grant    | Operations     | Git service                             |
-| -------- | -------------- | --------------------------------------- |
-| Read     | Clone, fetch   | `git-upload-pack`                       |
-| Write    | Read plus push | Both upload-pack and `git-receive-pack` |
-| Unlisted | None           | Neither                                 |
+Read permits `git-upload-pack` (clone/fetch); write also permits `git-receive-pack` (push). On the exact GitHub HTTPS origin, canonical discovery is GET `/{owner}/{repo}.git/info/refs?service={service}`; canonical RPC is POST `/{owner}/{repo}.git/{service}`. Require inspection, enforcement and default deny.
 
-For each permitted service, allow GET `/{owner}/{repo}.git/info/refs?service={service}` and POST `/{owner}/{repo}.git/{service}` on the exact GitHub origin. Require inspected HTTPS, explicit enforcement and default deny.
+The [stock matcher](https://github.com/NVIDIA/OpenShell/blob/v0.1.8/crates/openshell-supervisor-network/data/sandbox-policy.rego#L761-L817) may match HEAD as GET, identical duplicate `service` values or extra query keys. Accept these variants only if installed adversarial evidence shows no A push, C access, unauthorized forwarding or credential disclosure. Refuse mixed service values.
 
-- **Admission.** Reuse Admin repository choices. Check policy-edit authority, Namespace grants and Installation delegation at save and deploy. Reject ambiguous or excessive grants. Omission preserves legacy behavior. An explicit empty list denies all repositories, including after redeploy. Omit the Git provider or refuse launch when it cannot represent deny-all. Never fall back to the legacy profile.
-- **Capability.** The selected Sandbox Driver must declare support for repository policy. If it cannot enforce an explicit policy, including an empty list, refuse admission or deployment with an actionable unsupported-policy error.
-- **Composition.** Freeze canonical grants, profile and policy identity in the revision. Matching allows combine, so the Sandbox Driver must narrow the credential-bearing route itself. Replace wildcard Git and remove full REST and GraphQL access in this mode. Reject conflicting routes, including live additions. Preserve credential middleware, recipient checks and the startup probe denied before forwarding.
-- **Release.** Before Agent traffic, verify the complete loaded policy, including Provider rules, against the revision and active generation. Block release on mismatch, incompatible workers or changes to the admitted proxy plan or Harness credential source.
-- **Readback.** Show the Admin the admitted revision, canonical grants, Driver capability, active generation and effective inspection and enforcement state.
+- **Save and deploy.** Use the existing Agent SandboxPolicy's optional `repositoryNetworkPolicy` array of `{ repository, access }` grants. Validate edit authority, the current Namespace grants and Installation delegation at both save and deployment. Omission preserves legacy behavior or the previously saved value on update; `[]` denies all. Preserve presence through storage, restart and redeploy. Freeze canonical grants and identity in the Agent revision. Refuse unsupported Drivers or protected execution combinations before credential preparation; preserve existing IAM, version, lock and protected-addition checks.
+- **Compose and release.** The Git Provider narrows its credential-bearing route, replacing wildcard Git and removing REST and GraphQL. The Sandbox Driver checks the exact complete loaded policy, including overlapping Provider allows, against the revision and active generation. Refuse stale or broader policy, widening live updates, changed credential sources and bypasses through direct sockets or opaque TLS. Preserve credential middleware, recipient checks and the held startup challenge denied before forwarding. For `[]`, omit the Provider or refuse launch; never restore legacy access. On an uncertain update, deny Git until reconciliation.
+- **Readback and revocation.** Show saved version, grants, revision, capability, generation and enforcement state. Saving does not revoke old executions: report a downgrade pending until every superseded execution retires. Recheck authority before rollback or resume.
 
 ## v1 limitations
 
-- Grants identify the exact GitHub owner/name path for a deployment. A different repository created at that path inherits its network access. Use v1 only where administrators can keep names stable for the full lifetime of the grant. Retire affected sandboxes before a rename, transfer, deletion or path reuse. Revalidate the new repository and deploy a new grant. Where stable object identity is required, refuse this mode until an independent identity check is available.
-
-- HTTPS Git only. No branch ACL, SSH, LFS or API access. Submodule repositories need their own grants. GitHub branch protections still apply.
-- Saving an ACL does not revoke running access. Stop all sandboxes with the old grant, or deploy a replacement and verify their retirement. Recheck authority before rollback or resume. Credential revocation remains independent.
-- Network grants only narrow existing authority. Selected repositories share one token permission map. Never widen issuance or implicitly select [installation access](../0023-egress-proxy-credential-lifecycle/github-installation-access.md). Qualify each credential arrangement separately.
-- The [stock matcher](https://github.com/NVIDIA/OpenShell/blob/v0.1.8/crates/openshell-supervisor-network/data/sandbox-policy.rego#L761-L817) may admit HEAD for GET, identical repeated service values or extra query keys. Record accepted variants. Any unauthorized forwarding or credential disclosure blocks release.
+Grants bind a lowercase owner/name path, not repository object identity; retire affected executions before rename, transfer, deletion or path reuse. Refuse v1 where stable identity is required. HTTPS Git only: no branch ACL, SSH, LFS or API; submodules need separate grants. Branch protections still apply. The current authorizer caps upload-pack bodies at 1 MiB and complete receive-pack requests at 4 MiB; qualify push behavior at those limits. Grants cannot widen credential issuance. Credential selection and production qualification remain separate decisions.
 
 ## Installed acceptance
 
-Use a disposable installation with a disposable credential independently verified to permit A push and C access. Calibrate origin counters with allowed traffic. Deploy the grants above through the Admin workflow.
+Use a disposable installation and synthetic broad credential. First calibrate that the same Agent client and middleware can push A, send A receive-pack discovery and direct RPC, and perform C discovery and direct RPC under a permissive policy. Calibrate trusted observation of upstream sends separately for discovery and direct RPC; use origin counters only at a controlled origin.
 
-1. Clone/fetch A and B. Push B and independently verify the remote ref. For A push and all C Git operations, require OpenShell denial and zero forbidden origin requests for both discovery and direct RPC.
-2. Repeat denials outside Git. Exercise conflicting and identical query duplicates, HEAD, extra keys, redirects, aliases, direct IP, REST and GraphQL. Reject broader or stale policy at startup and widening live updates. Verify credential non-disclosure.
-3. Downgrade B to read, redeploy and retire old sandboxes. Verify fetch succeeds and push is denied. Fixture success alone does not qualify production credential delivery.
+Deploy A read/B write. Clone and fetch both. Push B and independently verify its remote ref. Attempt a normal push to A. Independently send receive-pack discovery and a direct receive-pack POST to A, and both services’ discovery and direct RPC to C. Require policy denial and zero upstream sends for each forbidden request. Exercise accepted query variants, mixed services, redirects, aliases, REST and GraphQL. Attempt direct TLS/IP from each covered execution context; verify confinement at a controlled boundary and no credential leak. Reject stale startup policy, unsupported combinations and deployment after authority is lost. Verify a second Agent retains independent grants. Downgrade B, redeploy, verify fetch succeeds and push fails, then confirm old executions retire. Verify omission and `[]` survive unrelated saves and redeploys. With the policy omitted, fetch successfully as a control. Clear the final grant to `[]`, redeploy and confirm superseded executions retire; require launch refusal or denial of discovery and direct RPC for a formerly allowed repository, with no upstream sends. Qualify production separately.
 
 ## Proposed REST CLI follow-up
 
-Ship separately from native Git. Propose thin commands using `gh api` with explicit `--repo OWNER/REPO` on the wrapper. Git permission alone never enables API access.
-
-| Proposed command                     | REST route under `/repos/{owner}/{repo}` | Requires                      |
-| ------------------------------------ | ---------------------------------------- | ----------------------------- |
-| `issues list` / `issues view NUMBER` | GET `/issues` or `/issues/{number}`      | Read and Issues read          |
-| `pr create --draft`                  | POST `/pulls`                            | Write and Pull requests write |
-
-The proxy enforces origin, repository, method, path and allowed query keys for every client. Reuse [draft validation](../../../apps/controller/src/drivers/repo/github/access/routes/request-selection.ts) for bounded JSON, draft status, same-repo head and approved base. Refuse unknown fields and fork heads. Disable creation if validation is unavailable. Deny other APIs and GraphQL. Ordinary `gh pr create` is outside this contract.
-
-Qualify issue reads on A, draft creation on B and pre-origin denial for A mutations, C access and invalid bodies, even when bypassing the CLI.
+Ship separately: issue GETs at `/repos/{owner}/{repo}/issues` and `/repos/{owner}/{repo}/issues/{number}` require repository read access and Issues read; draft PR POSTs at `/repos/{owner}/{repo}/pulls` require repository write access and Pull requests write. Use bounded repository-scoped commands and enforce these checks before forwarding, even outside the CLI. Before forwarding a draft POST, reuse Repo's draft validation and operation authorization, including any applicable draft allowance. Verify that a direct-client draft POST on read-only A is denied before forwarding; deny other APIs and GraphQL. An uncertain creation is not retry authority.
