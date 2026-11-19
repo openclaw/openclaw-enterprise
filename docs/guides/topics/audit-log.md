@@ -97,96 +97,6 @@ no output is returned. Each log download records one
 read. Both use the audit event kind `access`, which marks an audited read. The
 event names the permission that admitted the reader, `read_logs` or `administer`.
 
-### Runtime activity
-
-Turn on [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
-to collect runtime events and use the Agent audit API.
-
-With Helm-managed Gateway routing, the audit setting also creates the private
-HTTPS endpoint for managed dedicated Gateways. Deploy Agent revisions from
-the Console as usual. During deployment, Kubernetes Compute saves a token
-for the revision in a Kubernetes Secret and mounts it read-only in the
-Gateway. Compute saves a grant with the token's hash in PostgreSQL before
-it starts the Gateway.
-The API checks the grant when it receives an event. The grant takes effect as
-soon as PostgreSQL saves it.
-
-For an installation that supplies its own receiver route, set the Compute
-Driver's `runtime.audit.endpoint` to its HTTPS URL at
-`/internal/runtime-audit`. Make that URL reachable from the Gateway.
-
-If you turn audit off, reconcile the Agent so the Gateway starts without
-the audit configuration. A Gateway with audit configured must save the
-admission record before it starts a covered turn.
-
-Runtime activity shows the action, the reporting component, and the Agent
-revision. A turn ID links events from one turn. A message ID points to a saved
-input in that session, when the runtime can identify it. The reader needs
-conversation access to view that input. The audit response does not contain the
-message body.
-
-The Gateway can record decisions from the OpenClaw command reviewer and the
-Codex Guardian. The decision can include the classifier reason. These
-reviewers decide whether to permit a tool action. A turn can continue after
-the reviewer denies the action. If an OpenClaw plugin blocks a turn before
-the Agent starts, the result can show `blocked` with reason `before-agent-run`.
-
-The OpenClaw Gateway records turns and model calls that use its provider
-connection. The in-process runtime can also record tool calls and workspace
-read and write decisions. The standard dedicated OpenClaw worker makes model
-requests and runs tools locally. Those operations still need a trusted audit
-source. The Codex Gateway records its dynamic tool calls and the command,
-file-change, and MCP items from the native server.
-
-When Kubernetes Compute starts a managed dedicated Codex revision with an
-audit endpoint, it uses the packaged audit App Server. The App Server
-reports foreground Responses model requests during a turn. The Gateway
-saves a start and a result when it observes each of them. A retry that makes
-a new model request has a new call ID. The Agent audit API returns these
-records with the session and turn IDs. Warmup and background requests are
-outside this coverage.
-
-If the Gateway stops before it sends a result, the ledger can keep the start
-record alone. The outcome of that attempt is unknown. If OpenClaw resumes
-the work after restart, it records a new turn ID. That turn can have no
-message ID because restart recovery can supply its own input.
-
-#### OpenShell network denials
-
-Use the OpenShell Gateway's typed OCSF export for eligible Sandboxes. Use a
-private HTTPS origin for the regular OCC API that the exporter can reach. In
-the OpenShell Helm values, set the following parameters under
-`gatewayConfig."openshell.gateway.otlp.ocsf"`.
-
-| Parameter      | Value                                                                          |
-| -------------- | ------------------------------------------------------------------------------ |
-| `enabled`      | `true`                                                                         |
-| `protocol`     | `http/protobuf`                                                                |
-| `endpoint`     | The private HTTPS OCC origin with the path `/internal/runtime-audit/openshell` |
-| `headers_file` | Absolute path to the export credential file                                    |
-
-Mount the file with `server.extraVolumes` and `server.extraVolumeMounts`.
-Generate 32 random bytes for the exporter token. Encode them as Base64URL
-without padding. Use the line `authorization=Bearer <token>` in the file.
-
-Create an OCC grants file with a JSON array. Each entry contains
-`namespaceId`, `agentId`, `agentRevisionId`, `runtimeSource: "openshell"`,
-`openshellSandboxId`, and `tokenDigest`. Set `tokenDigest` to the lowercase
-SHA-256 hash of the exporter token text. In Helm, set
-`api.runtimeAudit.grantsSecretName` to the name of a Secret in the API namespace
-with the key `grants.json`. In other deployments, set
-`OCC_RUNTIME_AUDIT_GRANTS_PATH` on the API to the absolute path of the file.
-Restart the API after you change the OpenShell grants. Start the supervisors
-with the new export settings.
-Get the Sandbox UUID from the authenticated OpenShell Gateway. Confirm that
-the Sandbox's `openclaw.dev/revision-id` annotation identifies the revision
-in the grant. Use a new grant when the Sandbox has a new UUID.
-
-OCC stores admitted denial metadata. It can include the destination host and
-port when OpenShell supplies them. Those records show an enforced network
-decision for the Sandbox. OpenShell does not supply a turn ID with this event.
-The export can lose records when the exporter or audit service is unavailable.
-
 ## Manage audit storage
 
 OCC keeps audit rows when a resource is deleted. The application role can add
@@ -194,11 +104,10 @@ rows. It cannot update, delete, or truncate them. Automatic expiry, purge,
 archive, and export are outside the current audit workflow. Use approved
 database access to inspect raw audit rows.
 
-PostgreSQL checks each new Control Plane request, work, runtime activity, or audit disclosure event
+PostgreSQL checks each new Control Plane request, work, or audit disclosure event
 against an 8 KiB limit on its JSON row. At 1 GiB of allocated space for the
 `occ.audit_events` table and its indexes, PostgreSQL refuses new Control Plane
-and runtime activity audit events by default. Other event types can still grow
-the table.
+audit events by default. Existing event types can still grow the table.
 Concurrent writes and page allocations can take the table above the threshold.
 
 Check the storage threshold before enabling Control Plane audit and while it runs.
@@ -270,18 +179,10 @@ with the `read_audit` permission directly to your Principal and the Agent.
 OCC checks the grant each time you request a page.
 
 Send `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`.
-The response lists selected events from the preceding 24 hours, newest first.
-
-- `agent_lifecycle` shows success records for Agent creation, draft updates,
-  stop requests and completed stops, and revision deployment admission,
-  activation, and supersession. It also shows provisioning checkpoints and
-  failures linked to the Agent. OCC returns the saved `action`. A
-  provisioning record can include `provisioningPhase`. Records with a verified
-  revision include `agentRevisionId`.
-- API read and worker records show selected Control Plane activity. A work ID
-  connects records for the same job.
-- `runtime_activity` records include the action, revision, and fields for that
-  action.
+The response lists selected API reads and worker events from the preceding
+24 hours, newest first. A work ID in the response connects events for the
+same job. OCC gives it a separate format to keep internal work keys and
+Agent revision IDs private.
 
 The default page contains up to 50 records. Set `limit` to a number from
 1 through 100 to change the size. If the response includes a `nextCursor`,
@@ -294,10 +195,10 @@ Give your platform operator the request ID if the error persists.
 
 ## Access and limitations
 
-For deleted Agents or events outside this view, use your organization's approved
-database access procedure. Give your platform operator the approximate time,
-Namespace, resource ID, and OCC request ID when available. Console browsing,
-automatic retention, and export are outside this workflow.
+For other audit events, use your organization's approved database access
+procedure. Give your platform operator the approximate time, Namespace,
+resource ID, and OCC request ID when available. Console browsing, automatic
+retention, and export are outside this workflow.
 
 For metrics and operational troubleshooting, see
 [Observability](../observability.md). For the platform’s audit and logging

@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
-import { AgentAuditResponse } from "../../packages/contracts/src/api/agent-audit.ts";
 import {
   AgentDeploymentStatusResponse,
   AgentProvisioningStatusResponse,
   AgentReadResponse,
   AgentResponse,
   AgentRevisionResponse,
-  IAMAccessBindingResponse,
-  IAMRoleResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import type { ProvisionAgentBody } from "../../packages/contracts/src/index.ts";
 import type { AgentProvisioningRecord, ControllerWorkState } from "../../packages/occ/src/index.ts";
@@ -612,7 +609,6 @@ export function registerTransportCases() {
         ready: firstRevisionId !== undefined && revision.id !== firstRevisionId,
       });
       const fixture = await createFixture(context, { computeDriver });
-      await fixture.restartApi({ controlPlaneAuditEnabled: true });
       const namespace = await fixture.bootstrapNamespace();
       const secrets = await createProvisioningSecrets(fixture, namespace.id);
       const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
@@ -631,50 +627,6 @@ export function registerTransportCases() {
         });
         firstRevisionId = handoff.revisionId;
         const agentPath = `/namespaces/${namespace.id}/agents/${handoff.agentId}`;
-
-        // Checkpoints become readable once provisioning has saved the exact Agent.
-        // The handoff must identify the Revision admitted by the worker.
-        const actorId = await fixture.administratorPrincipalId();
-        const iamPath = `/namespaces/${namespace.id}/iam`;
-        const role = await fixture.requestChecked(IAMRoleResponse, "POST", `${iamPath}/roles`, {
-          body: { permissions: [{ action: "read_audit", resourceKind: "agent" }] },
-        });
-        assert.equal(role.status, 201);
-        const binding = await fixture.requestChecked(
-          IAMAccessBindingResponse,
-          "POST",
-          `${iamPath}/access-bindings`,
-          {
-            body: {
-              subjectKind: "identity",
-              subjectId: actorId,
-              roleId: role.data.id,
-              resourceKind: "agent",
-              resourceId: handoff.agentId,
-            },
-          },
-        );
-        assert.equal(binding.status, 201);
-        const audit = await fixture.requestChecked(
-          AgentAuditResponse,
-          "GET",
-          `${agentPath}/audit-events`,
-        );
-        assert.equal(audit.status, 200);
-        const checkpoints = audit.data.events
-          .filter((entry) => entry.event === "agent_lifecycle")
-          .filter((entry) => entry.action === "openclaw.agents.provision.checkpoint");
-        for (const phase of ["configuration", "transport", "handoff"]) {
-          const checkpoint = checkpoints.find((entry) => entry.provisioningPhase === phase);
-          assert.ok(checkpoint, `Expected provisioning checkpoint for ${phase}`);
-          assert.equal(checkpoint.actorId, actorId);
-          assert.equal(checkpoint.outcome, "success");
-          assert.equal(
-            checkpoint.agentRevisionId,
-            phase === "handoff" ? handoff.revisionId : undefined,
-          );
-        }
-
         const deleting = await fixture.requestChecked(AgentResponse, "DELETE", agentPath);
         assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
         assert.equal(deleting.data.status, "deleting");
@@ -1010,13 +962,7 @@ export function registerDeploymentHandoffCases() {
         configurationId = await provisioningConfigurationId(fixture.pool, workId);
         const agentPath = `/namespaces/${target.namespace.id}/agents/${target.agentId}`;
         // Turn collection off in the API while the original worker still holds the audited claim.
-        await fixture.restartApi({
-          controlPlaneAuditEnabled: false,
-          openShellRuntimeAuditAdmission: () => undefined,
-        });
-        // Sender configuration alone cannot expose the runtime audit route.
-        const auditOff = await fixture.request("POST", "/internal/runtime-audit", {});
-        assert.equal(auditOff.status, 404, JSON.stringify(auditOff.body));
+        await fixture.restartApi({ controlPlaneAuditEnabled: false });
         const deleting = await fixture.requestChecked(AgentResponse, "DELETE", agentPath);
         assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
         assert.equal(deleting.data.status, "deleting");

@@ -10,7 +10,6 @@ author: kevinlin-openai
 - **Created:** 2026-11-06
 - **Last updated:** 2026-11-12
 - **RFC PR:** [#4974](https://github.com/openclaw/openclaw-enterprise/pull/4974)
-- **Plan:** [Runtime audit](../../plans/0039-event-contract-ownership.md)
 - **Related:** [Platform audit](../0013-platform-audit/index.md), [production observability](../0012-production-observability.md), [platform design](../../../docs/design.md#implementation-status).
 
 ## Summary
@@ -154,9 +153,6 @@ Acceptance of M0 is not a claim that comprehensive audit exists.
 Use the regular Agent workflow for proof: message → turn → policy decision →
 tool execution → result → reply. Missing runtime, provider or infrastructure
 proof remains an explicit gap. This document changes no runtime behavior.
-
-The [OpenClaw audit producer proposal](openclaw-audit-producers.md) covers
-the protected execution paths needed for the remaining M2 observations.
 
 ## Rationale and alternatives
 

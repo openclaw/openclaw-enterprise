@@ -1,4 +1,3 @@
-import type { OpenShellRuntimeAuditAdmission } from "../http/runtime-audit.ts";
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
@@ -72,8 +71,6 @@ export interface PostgresDevelopmentConfig {
   readonly trustedDevelopmentForwarderCidr?: string;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
-  readonly privateGatewayRuntimeAudit?: boolean;
-  readonly openShellRuntimeAuditAdmission?: OpenShellRuntimeAuditAdmission;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
@@ -342,16 +339,7 @@ export async function composePostgresDevelopment(
       resolveHarness: resolveApprovedHarness,
       auditSink: state.auditSink,
       ...(auditEnabled
-        ? {
-            durableRequestAuditSink: state.auditSink,
-            agentAuditCursorSecret: config.authSecret,
-            runtimeAudit: {
-              privateGateway: config.privateGatewayRuntimeAudit === true,
-              ...(config.openShellRuntimeAuditAdmission === undefined
-                ? {}
-                : { admitOpenShell: config.openShellRuntimeAuditAdmission }),
-            },
-          }
+        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
         : {}),
       ...(drivers === undefined
         ? {}

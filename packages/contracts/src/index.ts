@@ -1,5 +1,4 @@
 import type { Static } from "typebox";
-import type { RuntimeAuditSource } from "./runtime-audit.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
@@ -1427,7 +1426,7 @@ export type IdentityLookup = Scope &
 
 /** `access` records an audited read, such as viewing or downloading runtime log text. */
 export type AuditEventKind =
-  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request" | "runtime_activity";
+  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request";
 
 export type AuditOutcome = "success" | "denied" | "failure";
 
@@ -1463,7 +1462,7 @@ export interface AuditEvent extends Scope {
   readonly kind: AuditEventKind;
   readonly actorId: string;
   readonly schemaVersion?: number;
-  readonly source?: "occ" | RuntimeAuditSource;
+  readonly source?: "occ";
   readonly requestId?: string;
   readonly admissionDecisionId?: string;
   readonly actor?: {
@@ -1483,18 +1482,6 @@ export interface AuditEvent extends Scope {
   readonly outcome: AuditOutcome;
   readonly details?: Readonly<Record<string, unknown>>;
 }
-
-export {
-  RUNTIME_AUDIT_ACTIONS,
-  RUNTIME_AUDIT_DETAIL_SCHEMAS,
-  RUNTIME_AUDIT_REASON_LIMIT,
-  runtimeAuditObservationSchema,
-} from "./runtime-audit.ts";
-export type {
-  RuntimeAuditAction,
-  RuntimeAuditObservation,
-  RuntimeAuditSource,
-} from "./runtime-audit.ts";
 
 export { DRIVER_CAPABILITIES, isDriverCapability } from "./drivers/index.ts";
 export type {
@@ -1618,9 +1605,6 @@ export * from "./api/common.ts";
 export {
   AGENT_AUDIT_PAGE_LIMIT,
   AGENT_AUDIT_PROJECTION_VERSION,
-  AGENT_LIFECYCLE_AUDIT_ACTIONS,
-  projectAgentLifecycleAuditDetails,
-  projectRuntimeAgentAuditDetails,
   type AgentAuditEntry,
   type AgentAuditPage,
   type AgentAuditQuery,

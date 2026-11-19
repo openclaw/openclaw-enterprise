@@ -23,10 +23,6 @@ import {
   kubernetesNamespaceName,
   kubernetesGatewayNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import {
-  NETWORK_PROFILE_LABEL,
-  ORDINARY_NETWORK_PROFILE,
-} from "../../apps/controller/src/drivers/compute/kubernetes/resources/network.ts";
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   ActivationPendingError,
@@ -590,28 +586,15 @@ function dedicatedFirstDeployFixture({
   credentialGatewayDriver,
   context,
   splitCluster = false,
-  executionClusterCa,
-  gatewayRuntimeAudit,
-  gatewayRuntimeAuditTarget,
   revision: revisionOverrides = {},
 } = {}) {
   const { state, nodeEnrollment } = createDedicatedDeployEnrollmentFixture(clock);
   const driver = new KubernetesComputeDriver(
     routedOptions({
-      ...(splitCluster
-        ? {
-            executionCluster: {
-              ...twoClusterOptions().executionCluster,
-              ...(executionClusterCa === undefined ? {} : { caBundle: executionClusterCa }),
-            },
-          }
-        : {}),
+      ...(splitCluster ? { executionCluster: twoClusterOptions().executionCluster } : {}),
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        ...(gatewayRuntimeAudit === undefined || gatewayRuntimeAuditTarget !== undefined
-          ? {}
-          : { audit: { endpoint: "https://controller.example/internal/runtime-audit" } }),
         ...(modelEndpoint === undefined
           ? {}
           : {
@@ -633,13 +616,6 @@ function dedicatedFirstDeployFixture({
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
       nodeEnrollment,
-      ...(gatewayRuntimeAudit === undefined
-        ? {}
-        : {
-            auditEnabled: true,
-            gatewayRuntimeAudit: { exists: async () => false, ...gatewayRuntimeAudit },
-            gatewayRuntimeAuditTarget,
-          }),
     },
   );
   if (clock === undefined) {
@@ -761,324 +737,6 @@ function dedicatedFirstDeployFixture({
     },
   };
 }
-
-function gatewayAuditSecretName(revision) {
-  return `runtime-audit-${createHash("sha256")
-    .update(JSON.stringify([revision.agentId, revision.id]))
-    .digest("hex")
-    .slice(0, 24)}`;
-}
-
-test("dedicated Gateway waits for its own audit grant and reuses the winning Secret on retry", async (t) => {
-  const target = gatewayAuditTarget((await harnessTlsFixture(t)).caBundle);
-  const executionClusterCa = (await harnessTlsFixture(t)).caBundle;
-  for (const statusCode of [409, 503]) {
-    await t.test(`Secret create answers ${statusCode} after the Secret exists`, async () => {
-      const registered = [];
-      let grantsAvailable = false;
-      const fixture = dedicatedFirstDeployFixture({
-        splitCluster: true,
-        executionClusterCa,
-        gatewayRuntimeAuditTarget: target,
-        gatewayRuntimeAudit: {
-          async register(grant) {
-            registered.push(grant);
-            if (!grantsAvailable) {
-              throw new DependencyUnavailableError("Runtime audit grant store is unavailable.");
-            }
-          },
-          async remove() {},
-        },
-      });
-      const { driver, gateway, gatewayName, gatewayNamespace, namespace, revision } = fixture;
-      const name = gatewayAuditSecretName(revision);
-      const create = gateway.clients.core.createNamespacedSecret;
-      let creates = 0;
-      gateway.clients.core.createNamespacedSecret = async (request) => {
-        if (request.body.metadata.name !== name) {
-          return await create(request);
-        }
-        creates += 1;
-        if (statusCode === 409) {
-          // A competing request stored different bytes first. Only its token can be accepted.
-          request = structuredClone(request);
-          request.body.stringData.token = Buffer.alloc(32, 123).toString("base64url");
-        }
-        await create(request);
-        throw Object.assign(new Error("Create result was not acknowledged"), { statusCode });
-      };
-
-      await assert.rejects(fixture.prepare(), (error) => {
-        const failure = driver.describePrepareRevisionFailure(error);
-        assert.equal(failure.stage, "gateway_runtime_audit");
-        assert.equal(failure.message, "Runtime audit grant store is unavailable.");
-        return true;
-      });
-      assert.ok(!gateway.templates.some(({ name }) => name === gatewayName));
-      const stored = gateway.read("Secret", name);
-      const winningToken = Buffer.from(stored.data.token, "base64").toString("utf8");
-      const grant = {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        agentRevisionId: revision.id,
-        runtimeSource: "codex",
-        tokenDigest: createHash("sha256").update(winningToken).digest("hex"),
-      };
-      assert.deepEqual(registered, [grant]);
-      assert.equal(stored.metadata.namespace, gatewayNamespace);
-      assert.equal(stored.immutable, true);
-      assert.equal(stored.type, "Opaque");
-      assert.deepEqual(Object.keys(stored.data), ["token"]);
-      assert.equal(stored.metadata.labels["openclaw.dev/revision"], revision.id);
-      assert.equal(
-        stored.metadata.annotations["openclaw.dev/service-principal-id"],
-        revision.servicePrincipalId,
-      );
-      assert.ok(!fixture.objects.has(fixture.key("Secret", name, namespace)));
-
-      grantsAvailable = true;
-      await fixture.prepare();
-      assert.equal(creates, 1);
-      assert.deepEqual(registered, [grant, grant]);
-      assert.equal(gateway.read("Secret", name).metadata.uid, stored.metadata.uid);
-      const gatewayPod = gateway.read("Deployment", gatewayName).spec.template.spec;
-      const harnessPod = fixture.read("Deployment", fixture.agentName).spec.template.spec;
-      assert.equal(
-        gatewayPod.volumes.find(({ name }) => name === "runtime-audit")?.secret.secretName,
-        name,
-      );
-      assert.ok(!JSON.stringify(gatewayPod).includes(winningToken));
-      assert.ok(!JSON.stringify(harnessPod).includes("runtime-audit"));
-      const gatewayContainer = gatewayPod.containers[0];
-      const modelAuditSelector = "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT";
-      // Only the Gateway paired with this Compute-owned Codex Harness can accept its model receipts.
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === modelAuditSelector)?.value,
-        "1",
-      );
-      assert.ok(!harnessPod.containers[0].env.some(({ name }) => name === modelAuditSelector));
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_URL")?.value,
-        target.endpoint,
-      );
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_CA_PATH")?.value,
-        "/etc/openclaw-runtime-audit/ca.pem",
-      );
-      assert.match(
-        gatewayContainer.env.find(({ name }) => name === "NODE_EXTRA_CA_CERTS")?.value,
-        /^\/etc\/openclaw(?:-managed)?\/execution-ca\.pem$/,
-      );
-      assert.deepEqual(
-        gatewayContainer.volumeMounts.find(({ name }) => name === "runtime-audit-ca"),
-        { name: "runtime-audit-ca", mountPath: "/etc/openclaw-runtime-audit", readOnly: true },
-      );
-      assert.deepEqual(gateway.read("ConfigMap", `${name}-ca`).data, { "ca.pem": target.caBundle });
-      assert.deepEqual(gateway.read("NetworkPolicy", `allow-${name}`).spec, {
-        podSelector: {
-          matchLabels: {
-            "openclaw.dev/workload-role": "gateway",
-            "openclaw.dev/namespace": revision.namespaceId,
-            "openclaw.dev/agent": revision.agentId,
-            "openclaw.dev/revision": revision.id,
-            [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE,
-          },
-        },
-        policyTypes: ["Egress"],
-        egress: [
-          {
-            to: [
-              {
-                namespaceSelector: {
-                  matchLabels: { "kubernetes.io/metadata.name": target.peer.namespace },
-                },
-                podSelector: { matchLabels: target.peer.podLabels },
-              },
-            ],
-            ports: [{ protocol: "TCP", port: target.peer.port }],
-          },
-        ],
-      });
-      assert.ok(!fixture.objects.has(fixture.key("NetworkPolicy", `allow-${name}`, namespace)));
-
-      fixture.markWorkloadsReady();
-      fixture.state.connected = true;
-      assert.equal((await fixture.prepare()).ready, true);
-      const beforeActivation = registered.length;
-      await driver.activateRevision(revision, authContext(revision, gatewayNamespace));
-      assert.deepEqual(registered.slice(beforeActivation), [grant]);
-      assert.equal(creates, 1);
-    });
-  }
-});
-
-function gatewayAuditTarget(caBundle) {
-  return {
-    endpoint:
-      "https://openclaw-enterprise-runtime-audit.enterprise.svc:8444/internal/runtime-audit",
-    caBundle,
-    peer: {
-      namespace: "enterprise",
-      port: 8444,
-      podLabels: {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": "fixture",
-        "app.kubernetes.io/component": "api",
-      },
-    },
-  };
-}
-
-test("dedicated Gateway refuses a revision audit Secret owned by another revision", async () => {
-  const recorded = [];
-  const fixture = dedicatedFirstDeployFixture({
-    gatewayRuntimeAudit: {
-      async register(grant) {
-        recorded.push(grant);
-      },
-      async remove() {},
-    },
-  });
-  const { gateway, gatewayName, revision } = fixture;
-  const name = gatewayAuditSecretName(revision);
-  gateway.save({
-    apiVersion: "v1",
-    kind: "Secret",
-    metadata: {
-      name,
-      namespace: fixture.gatewayNamespace,
-      uid: "foreign-audit-secret",
-      labels: { "openclaw.dev/revision": "different-revision" },
-    },
-    type: "Opaque",
-    immutable: true,
-    data: { token: Buffer.from(Buffer.alloc(32, 123).toString("base64url")).toString("base64") },
-  });
-  const foreign = gateway.read("Secret", name);
-  await assert.rejects(fixture.prepare(), (error) => {
-    assert.equal(
-      fixture.driver.describePrepareRevisionFailure(error).code,
-      "KUBERNETES_OWNERSHIP_CONFLICT",
-    );
-    return true;
-  });
-  assert.deepEqual(gateway.read("Secret", name), foreign);
-  assert.deepEqual(recorded, []);
-  assert.ok(!gateway.templates.some(({ name }) => name === gatewayName));
-});
-
-test("dedicated Gateway suspends the audit grant on stop and retires the owned Secret", async (t) => {
-  const registered = [];
-  const removed = [];
-  let activeGrant;
-  let observedDrained = false;
-  const fixture = dedicatedFirstDeployFixture({
-    gatewayRuntimeAuditTarget: gatewayAuditTarget((await harnessTlsFixture(t)).caBundle),
-    gatewayRuntimeAudit: {
-      async register(grant) {
-        registered.push(grant);
-        activeGrant = grant;
-      },
-      async remove(grant) {
-        assert.ok(observedDrained, "The Gateway must finish before its grant is withdrawn");
-        if (grant.tokenDigest === activeGrant?.tokenDigest) {
-          removed.push(grant);
-          activeGrant = undefined;
-        }
-      },
-      async exists(scope) {
-        assert.ok(observedDrained, "The Gateway must finish before checking for an orphan grant");
-        assert.deepEqual(scope, {
-          namespaceId: fixture.revision.namespaceId,
-          agentId: fixture.revision.agentId,
-          agentRevisionId: fixture.revision.id,
-          runtimeSource: "codex",
-        });
-        return activeGrant !== undefined;
-      },
-    },
-  });
-  const { driver, revision, clients, objects, key, read, save, gatewayName, agentName } = fixture;
-  const name = gatewayAuditSecretName(revision);
-
-  // Model Kubernetes deletion and observe when the exact Gateway Pods are gone.
-  const deleteResource =
-    (kind) =>
-    async ({ name, namespace, body }) => {
-      const resource = read(kind, name, namespace);
-      assert.equal(body.preconditions.uid, resource.metadata.uid);
-      objects.delete(key(kind, name, namespace));
-    };
-  for (const kind of ["ConfigMap", "Secret", "Service", "ServiceAccount"]) {
-    clients.core[`deleteNamespaced${kind}`] = deleteResource(kind);
-  }
-  clients.apps.deleteNamespacedDeployment = deleteResource("Deployment");
-  clients.networking.deleteNamespacedNetworkPolicy = deleteResource("NetworkPolicy");
-  clients.objects.patch = async (resource) => {
-    resource.metadata.uid ??= `${resource.metadata.name}-uid`;
-    resource.metadata.resourceVersion ??= "1";
-    save(resource);
-    return resource;
-  };
-  clients.objects.delete = async (...args) => {
-    const [{ kind, metadata }, , , , , , body] = args;
-    return deleteResource(kind)({ ...metadata, body });
-  };
-  const listPods = clients.core.listNamespacedPod;
-  clients.core.listNamespacedPod = async (request) => {
-    const labels = labelSelectorLabels(request.labelSelector);
-    const gateway = labels["openclaw.dev/workload-role"] === "gateway";
-    if (objects.has(key("Deployment", gateway ? gatewayName : agentName))) {
-      return await listPods(request);
-    }
-    if (gateway) {
-      assert.equal(labels["openclaw.dev/revision"], revision.id);
-      observedDrained = true;
-    }
-    return { items: [] };
-  };
-
-  await fixture.prepare();
-  const uid = read("Secret", name).metadata.uid;
-  const grant = registered[0];
-  await driver.stopRevision(revision);
-  assert.deepEqual(removed, [grant]);
-  assert.equal(read("Secret", name).metadata.uid, uid);
-  assert.ok(!objects.has(key("NetworkPolicy", `allow-${name}`)));
-  assert.ok(!objects.has(key("ConfigMap", `${name}-ca`)));
-  observedDrained = false;
-
-  await fixture.prepare();
-  assert.deepEqual(registered, [grant, grant]);
-  assert.equal(read("Secret", name).metadata.uid, uid);
-  assert.ok(objects.has(key("NetworkPolicy", `allow-${name}`)));
-  const owningSecret = read("Secret", name);
-  // Losing the Secret out of band cannot make Stop report success with a live grant.
-  objects.delete(key("Secret", name));
-  await assert.rejects(
-    driver.stopRevision(revision),
-    /grant remains but its owning Secret is missing/,
-  );
-  assert.deepEqual(removed, [grant]);
-  // A replacement Secret with valid ownership cannot revoke a different credential.
-  const replacement = structuredClone(owningSecret);
-  replacement.metadata.uid = "replacement-audit-secret";
-  replacement.data.token = Buffer.from(Buffer.alloc(32, 124).toString("base64url")).toString(
-    "base64",
-  );
-  save(replacement);
-  await assert.rejects(
-    driver.stopRevision(revision),
-    /grant remains but its token does not match the owning Secret/,
-  );
-  assert.deepEqual(removed, [grant]);
-  save(owningSecret);
-  await driver.retireRevision(revision);
-  assert.deepEqual(removed, [grant, grant]);
-  assert.ok(!objects.has(key("Secret", name)));
-  assert.ok(!objects.has(key("NetworkPolicy", `allow-${name}`)));
-  assert.ok(!objects.has(key("ConfigMap", `${name}-ca`)));
-});
 
 test("shared providers render OpenClaw adapters and refuse unsupported Codex protocols", async () => {
   for (const protocol of ["openai-responses", "openai-completions"]) {
@@ -5272,13 +4930,11 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
 });
 
 test("dedicated OpenClaw renders an enrolled Harness without exposing model credentials to its gateway", async () => {
-  const auditEndpoint = "https://controller.example/internal/runtime-audit";
   const driverOptions = routedOptions({
     runtime: {
       transportSecretPrefix: "transport",
       gatewayStorageClassName: "local-path",
       nativeOpenClawSessionCapacity: 12,
-      audit: { endpoint: auditEndpoint },
     },
   });
   const sandboxDriver = {
@@ -5290,11 +4946,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     async provisionHarness() {},
     async cleanup() {},
   };
-  const driver = new KubernetesComputeDriver(driverOptions, {
-    sandboxDriver,
-    nodeEnrollment: {},
-    auditEnabled: true,
-  });
+  const driver = new KubernetesComputeDriver(driverOptions, { sandboxDriver, nodeEnrollment: {} });
   const namespace = kubernetesNamespaceName(tenant.id);
   const namespaceAddress = { name: namespace, plane: "execution" };
   const agentId = "agent-native-worker";
@@ -5633,26 +5285,24 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
   };
   const deviceId = "a".repeat(64);
-  const renderGateway = (compute) =>
-    compute.deployment(
-      "gateway-native-worker",
-      ownership,
-      namespaceAddress,
-      { runtime: "gateway:local", workspaceSetup: compute.options.images.gateway },
-      "gateway-native-worker",
-      "gateway",
-      {},
-      "info",
-      compute.gatewayConfiguration(revision, deviceId, namespaceAddress),
-      false,
-      undefined,
-      undefined,
-      [],
-      [],
-      undefined,
-      [],
-    );
-  const gatewayDeployment = renderGateway(driver);
+  const gatewayDeployment = driver.deployment(
+    "gateway-native-worker",
+    ownership,
+    namespaceAddress,
+    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
+    "gateway-native-worker",
+    "gateway",
+    {},
+    "info",
+    driver.gatewayConfiguration(revision, deviceId, namespaceAddress),
+    false,
+    undefined,
+    undefined,
+    [],
+    [],
+    undefined,
+    [],
+  );
   const workerDeployment = driver.deployment(
     "agent-native-worker",
     { ...ownership, revisionId: revision.id },
@@ -5680,54 +5330,6 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   const worker = workerDeployment.spec.template.spec.containers[0];
   assert.ok(gateway);
   assert.ok(worker);
-  const auditVolume = "runtime-audit";
-  const auditSecret = createHash("sha256")
-    .update(JSON.stringify([revision.agentId, revision.id]))
-    .digest("hex")
-    .slice(0, 24);
-  const gatewayPod = gatewayDeployment.spec.template.spec;
-  const workerPod = workerDeployment.spec.template.spec;
-  // An endpoint can remain configured when the operator turns audit off.
-  const auditDisabledPod = renderGateway(
-    new KubernetesComputeDriver(driverOptions, { sandboxDriver, nodeEnrollment: {} }),
-  ).spec.template.spec;
-  assert.ok(!auditDisabledPod.volumes.some(({ name }) => name === auditVolume));
-  assert.ok(
-    !auditDisabledPod.containers[0].env.some(({ name }) =>
-      name.startsWith("OPENCLAW_RUNTIME_AUDIT_"),
-    ),
-  );
-  assert.deepEqual(gatewayPod.volumes.find(({ name }) => name === auditVolume)?.secret, {
-    secretName: `runtime-audit-${auditSecret}`,
-    optional: false,
-    defaultMode: 0o440,
-    items: [{ key: "token", path: "token" }],
-  });
-  assert.deepEqual(
-    gateway.volumeMounts.find(({ name }) => name === auditVolume),
-    {
-      name: auditVolume,
-      mountPath: "/var/run/openclaw-runtime-audit",
-      readOnly: true,
-    },
-  );
-  assert.deepEqual(
-    gateway.env.filter(({ name }) => name.startsWith("OPENCLAW_RUNTIME_AUDIT_")),
-    [
-      { name: "OPENCLAW_RUNTIME_AUDIT_URL", value: auditEndpoint },
-      {
-        name: "OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH",
-        value: "/var/run/openclaw-runtime-audit/token",
-      },
-    ],
-  );
-  assert.ok(
-    gatewayPod.initContainers.every(
-      ({ volumeMounts }) => !volumeMounts.some(({ name }) => name === auditVolume),
-    ),
-  );
-  assert.ok(!workerPod.volumes.some(({ name }) => name === auditVolume));
-  assert.ok(!worker.env.some(({ name }) => name.startsWith("OPENCLAW_RUNTIME_AUDIT_")));
   assert.deepEqual(gateway.readinessProbe, {
     httpGet: { path: "/readyz", port: "plugin-status" },
     periodSeconds: 2,

@@ -69,12 +69,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.22.1"
-      - name: Set up Go for the controller image smoke test
-        if: ${{ matrix.image == 'controller' }}
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
       - name: Select the checked-in Node base for standalone verification
         if: ${{ !inputs.ci_run_id }}
         run: |

@@ -91,7 +91,7 @@ export async function measureFirstAgentStage(context, stage, operation) {
   }
 }
 
-export function withoutModelCredentials(environment) {
+function withoutModelCredentials(environment) {
   const result = { ...environment };
   delete result.OPENAI_API_KEY;
   delete result.OPENAI_API_KEY_FILE;
@@ -542,10 +542,7 @@ async function availablePorts() {
   }
 }
 
-export async function localFirstAgentStack(
-  context,
-  { modelCredential, administratorPassword } = {},
-) {
+export async function localFirstAgentStack(context, { modelCredential } = {}) {
   if (modelCredential !== undefined && modelCredential !== "openai") {
     throw new Error("Unsupported local first-Agent model credential selection.");
   }
@@ -641,12 +638,7 @@ export async function localFirstAgentStack(
       subnet: environment.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR,
     });
   }
-  const subprocessEnvironment = withoutModelCredentials({
-    ...environment,
-    ...(administratorPassword === undefined
-      ? {}
-      : { OPENCLAW_DEV_PASSWORD: administratorPassword }),
-  });
+  const subprocessEnvironment = withoutModelCredentials(environment);
   const startupArguments = ["dev", "up"];
   if (sandboxDriver === "openshell") {
     // Exercise the public startup input before the regular Agent workflow.

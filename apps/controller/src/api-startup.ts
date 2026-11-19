@@ -1,7 +1,3 @@
-import {
-  loadRuntimeAuditAdmission,
-  startGatewayRuntimeAuditListener,
-} from "./http/runtime-audit.ts";
 import type { ChatGPTBackendDefinition, ComputeDriver } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
@@ -20,11 +16,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
-import {
-  CHART_RUNTIME_AUDIT_TLS_DIRECTORY,
-  chartRuntimeAudit,
-  controlPlaneAuditEnabled,
-} from "./composition/control-plane-audit.ts";
+import { controlPlaneAuditEnabled } from "./composition/control-plane-audit.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
@@ -416,16 +408,7 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
   if (settings.gatewayApiKeyPath !== undefined) {
     await validateWorkspaceFilesApiKeyPath(settings.gatewayApiKeyPath);
   }
-  const runtimeAuditGrantsPath = env.OCC_RUNTIME_AUDIT_GRANTS_PATH;
-  const privateRuntimeAudit = settings.controlPlaneAuditEnabled
-    ? chartRuntimeAudit(env.OCC_CHART_RUNTIME_AUDIT)
-    : undefined;
   const compositionSettings = {
-    ...(!settings.controlPlaneAuditEnabled || runtimeAuditGrantsPath === undefined
-      ? {}
-      : {
-          openShellRuntimeAuditAdmission: await loadRuntimeAuditAdmission(runtimeAuditGrantsPath),
-        }),
     ...(consoleTheme === undefined ? {} : { consoleTheme }),
     logger,
     logging,
@@ -439,7 +422,6 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
     environment: env,
     startupConfiguration,
   });
-  const privateGatewayRuntimeAudit = drivers?.privateGatewayRuntimeAudit === true;
   let serviceAccountDriverFactory: ServiceAccountDriverFactory | undefined;
   const selectedServiceAccountDriver = drivers?.installation.drivers.service_account;
   if (drivers !== undefined && selectedServiceAccountDriver !== undefined) {
@@ -499,7 +481,6 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
       ...compositionSettings,
       databaseUrl,
       drivers,
-      privateGatewayRuntimeAudit,
       ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
       onStartupPhase: (phase, durationMs) => {
         phasesMs[phase] = durationMs;
@@ -509,7 +490,7 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
   } else {
     const { composePostgresDevelopment } = await import("./composition/development-postgres.ts");
     app = await composePostgresDevelopment(
-      { ...settings, ...compositionSettings, databaseUrl, privateGatewayRuntimeAudit },
+      { ...settings, ...compositionSettings, databaseUrl },
       drivers,
       serviceAccountDriverFactory,
     );
@@ -518,16 +499,6 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
 
   let closing = false;
   let metricsListener: Awaited<ReturnType<typeof startMetricsListener>> | undefined;
-  let gatewayAuditListener:
-    Awaited<ReturnType<typeof startGatewayRuntimeAuditListener>> | undefined;
-  app.addHook("preClose", async () => {
-    const listener = gatewayAuditListener;
-    if (listener !== undefined) {
-      await new Promise<void>((resolve, reject) => {
-        listener.close((error) => (error === undefined ? resolve() : reject(error)));
-      });
-    }
-  });
   app.addHook("onClose", async () => {
     await metricsListener?.close();
   });
@@ -566,24 +537,6 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
     phaseCompleted("ready");
     if (metrics !== undefined && metricsSettings !== undefined) {
       metricsListener = await startMetricsListener(metrics, metricsSettings);
-    }
-    if (privateRuntimeAudit !== undefined) {
-      gatewayAuditListener = await startGatewayRuntimeAuditListener(app, {
-        host: settings.host,
-        port: privateRuntimeAudit.port,
-        loadTls: async () => {
-          const [key, cert] = await Promise.all([
-            readFile(`${CHART_RUNTIME_AUDIT_TLS_DIRECTORY}/tls.key`),
-            readFile(`${CHART_RUNTIME_AUDIT_TLS_DIRECTORY}/tls.crt`),
-          ]);
-          return { key, cert };
-        },
-        onTlsReloadError: () =>
-          logger.warn({
-            event: "runtime_audit.tls_reload_failed",
-            code: "RUNTIME_AUDIT_TLS_UNAVAILABLE",
-          }),
-      });
     }
     await app.listen({ host: settings.host, port: settings.port });
     phaseCompleted("listen");

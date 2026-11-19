@@ -5,12 +5,10 @@ export async function probePackagedCodex(
     historicalCodex,
     stagingCodexVersion,
     deadlineMs,
-    expectedPatches,
   }: {
     historicalCodex: boolean;
     stagingCodexVersion: string;
     deadlineMs: number;
-    expectedPatches?: Readonly<Record<string, string>>;
   },
   codexExecutableSource: string,
   createRpc: typeof codexRpc,
@@ -85,26 +83,39 @@ export async function probePackagedCodex(
       ? "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804"
       : "b6261ce5be40e7d3c8f2d263aba7320301cbdd66381540edbb4362e95794139a",
   );
-  if (historicalCodex) {
-    assert.deepEqual(provenance.patches, {
-      "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
-      "openclaw-codex-full-access-profile.patch":
-        "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
-      "openclaw-required-worker-authority-regression.patch":
-        provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-      "openclaw-google-worker-placeholder.patch":
-        "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
-      "openclaw-control-ui-browser-reconnect.patch":
-        "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
-      "openclaw-terminated-gateway-namespace.patch":
-        "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
-      "stock-codex-0.163.0-alpha.2-dependency-pin.patch":
-        "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
-    });
-  } else {
-    assert.ok(expectedPatches && Object.keys(expectedPatches).length > 0);
-    assert.deepEqual(provenance.patches, expectedPatches);
-  }
+  assert.deepEqual(provenance.patches, {
+    "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
+    "openclaw-codex-full-access-profile.patch": historicalCodex
+      ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a"
+      : "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
+    "openclaw-required-worker-authority-regression.patch":
+      provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
+    "openclaw-google-worker-placeholder.patch":
+      "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+    ...(historicalCodex
+      ? {
+          "openclaw-control-ui-browser-reconnect.patch":
+            "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
+          "openclaw-terminated-gateway-namespace.patch":
+            "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+          "stock-codex-0.163.0-alpha.2-dependency-pin.patch":
+            "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
+        }
+      : {
+          "stock-codex-0.164.0-dependency-pin.patch":
+            "1ca10c576c65748498ede421a230740f2ab3d87bbfb4fa4ab92d89f809c1402f",
+          "openclaw-control-ui-browser-reconnect.patch":
+            "e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0",
+          "openclaw-terminated-gateway-namespace.patch":
+            "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
+          "openclaw-planned-completion.patch":
+            "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
+          "openclaw-node-setup-renewal.patch":
+            "de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8",
+          "openclaw-restart-harness-readiness.patch":
+            "fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f",
+        }),
+  });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);
   assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);

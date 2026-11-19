@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
-import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createSecureContext } from "node:tls";
 import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.mjs";
 import {
   minute,
@@ -192,7 +190,6 @@ export interface Pod {
   metadata: {
     namespace: string;
     name: string;
-    uid: string;
     creationTimestamp: string;
     deletionTimestamp?: string | null;
     labels?: Record<string, string>;
@@ -203,7 +200,6 @@ export interface Pod {
   status?: {
     phase?: string;
     conditions?: { type: string; status: string }[];
-    containerStatuses?: { name: string; containerID?: string; restartCount: number }[];
   };
 }
 
@@ -219,7 +215,6 @@ interface LocalSetupState {
   keyPath: string;
   cluster: string;
   apiPort: number;
-  browserOrigin?: string;
   platformNamespace: string;
 }
 
@@ -295,145 +290,6 @@ export function kubectl(
   });
 }
 
-export async function signInConsole(
-  stack: Pick<LocalSetup, "directory" | "state">,
-  credentials: { email: string; password: string },
-): Promise<Api> {
-  const { cookieHeaderFromSetCookie } = await import("../../../packages/utils/src/index.ts");
-  assert.ok(stack.state.browserOrigin, "Local Setup did not record the Console origin");
-  const origin = new URL(stack.state.browserOrigin);
-  assert.equal(origin.protocol, "https:");
-  assert.equal(origin.hostname, `console.${stack.state.cluster}.oce.localhost`);
-  const agent = new HttpsAgent({
-    secureContext: createSecureContext({
-      ca: await readFile(join(stack.directory, "browser-ca.crt")),
-    }),
-  });
-  const signIn = "/api/auth/sign-in/email";
-  let cookie = "";
-  const api: Api = (method, path, body) => {
-    const url = new URL(path, origin);
-    assert.equal(url.origin, origin.origin, "refusing to send credentials outside the Console");
-    const content = body === undefined ? undefined : JSON.stringify(body);
-    return new Promise((resolveResponse, reject) => {
-      // Use the real Console ingress and verify its hostname against the Local Setup CA.
-      const request = httpsRequest(
-        {
-          hostname: "127.0.0.1",
-          servername: origin.hostname,
-          port: origin.port || 443,
-          path: url.pathname + url.search,
-          agent,
-          rejectUnauthorized: true,
-          method,
-          headers: {
-            host: origin.host,
-            origin: origin.origin,
-            ...(cookie === "" ? {} : { cookie }),
-            ...(content === undefined
-              ? {}
-              : {
-                  "content-type": "application/json",
-                  "content-length": Buffer.byteLength(content),
-                }),
-          },
-          signal: AbortSignal.timeout(30_000),
-        },
-        (response) => {
-          const chunks: Buffer[] = [];
-          response.on("data", (chunk: Buffer) => chunks.push(chunk));
-          response.once("error", reject);
-          response.once("end", () => {
-            const status = response.statusCode ?? 500;
-            if (status < 200 || status >= 300) {
-              reject(new Error(`${method} ${url.pathname}: HTTP ${status}`));
-              return;
-            }
-            if (path === signIn) {
-              cookie = cookieHeaderFromSetCookie(response.headers["set-cookie"]);
-              resolveResponse(undefined);
-              return;
-            }
-            try {
-              const envelope: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-              resolveResponse(wireField(envelope, "data"));
-            } catch {
-              reject(new Error(`${method} ${url.pathname}: invalid JSON response`));
-            }
-          });
-        },
-      );
-      request.once("error", reject);
-      request.end(content);
-    });
-  };
-  await api("POST", signIn, credentials);
-  assert.ok(cookie.length > 0, "Console sign-in returned no session cookie");
-  return api;
-}
-
-export function enableLocalSetupAudit(
-  stack: Pick<LocalSetup, "directory" | "context" | "kubeconfig" | "state">,
-  options?: RunOptions,
-) {
-  return run(
-    "helm",
-    [
-      "upgrade",
-      "openclaw-enterprise",
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      stack.state.platformNamespace,
-      "--kubeconfig",
-      stack.kubeconfig,
-      "--kube-context",
-      stack.context,
-      "-f",
-      join(stack.directory, "helm-values.json"),
-      "--set",
-      "controlPlaneAudit.enabled=true",
-      "--wait",
-      "--timeout",
-      "5m",
-    ],
-    { timeout: 6 * minute, ...options },
-  );
-}
-
-export async function apiProcess(
-  stack: Pick<LocalSetup, "kubeconfig" | "context" | "state">,
-  options?: RunOptions,
-) {
-  const { stdout } = await kubectl(
-    stack,
-    [
-      "-n",
-      stack.state.platformNamespace,
-      "get",
-      "pods",
-      "-l",
-      "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=api",
-      "-o",
-      "json",
-    ],
-    options,
-  );
-  const ready = podList(stdout).filter(
-    (pod) =>
-      !pod.metadata.deletionTimestamp &&
-      pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
-  );
-  assert.equal(ready.length, 1, "the chart must have one ready API Pod");
-  const api = ready[0]!;
-  const container = api.status?.containerStatuses?.find(({ name }) => name === "api");
-  assert.ok(api.metadata.uid && container?.containerID, "the API Pod must identify its process");
-  return {
-    podUid: api.metadata.uid,
-    containerId: container.containerID,
-    restartCount: container.restartCount,
-  };
-}
-
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent
 // Pods reach it through their ordinary model egress NetworkPolicy and verify
 // its certificate against the CA added to the runtime image. `providerImage`
@@ -446,12 +302,10 @@ export async function routeModelProvider(
     journey = "PROBE_PUBLIC_READ_JOURNEY",
     cleanup = [],
     credentialDigests,
-    auditFailures = false,
   }: {
     journey?: string;
     cleanup?: (() => Promise<unknown>)[];
     credentialDigests?: Record<string, string>;
-    auditFailures?: boolean;
   } = {},
 ) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
@@ -494,7 +348,6 @@ export async function routeModelProvider(
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
     "--env",
     `${journey}=1`,
-    ...(auditFailures ? ["--env", "PROBE_CODEX_AUDIT_FAILURES=1"] : []),
     // With digests, the stand-in answers only these credentials and names each caller.
     ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",

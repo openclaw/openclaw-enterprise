@@ -484,18 +484,6 @@ worker activity, and disclosures of Agent audit records. See the [audit guide](.
 - `outcome`
 - `details`
 
-### `gateway_runtime_audit_grants`
-
-Binds a managed Gateway's audit credential to one Agent revision and Harness.
-OCC stores the SHA-256 digest of the credential. Deleting the Agent revision
-deletes its grant. See the [audit guide](../../guides/topics/audit-log.md).
-
-- `token_digest`
-- `namespace_id`
-- `agent_id`
-- `revision_id`
-- `runtime_source`
-
 ### `controller_work`
 
 Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and version deployments.

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-18"
-last_updated_session: "authoring-run/51fe8bbd-9fd9-44a4-b12c-7aaf26cdb440"
+updated: "2026-11-12"
+last_updated_session: "authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9"
 ---
 
 # Audit ledger flow
@@ -9,17 +9,17 @@ last_updated_session: "authoring-run/51fe8bbd-9fd9-44a4-b12c-7aaf26cdb440"
 ## Overview
 
 OpenClaw Control Plane (OCC) records audit evidence as controller requests and
-reconciliation work run and when an enrolled runtime sends an observation. This
-flow follows Gateway enrollment, PostgreSQL writes, and the Agent audit API. See the
+reconciliation work run. This flow follows PostgreSQL event append, commit,
+the internal State repository's list operation, and the Agent audit API. See the
 [audit guide](../guides/topics/audit-log.md) for the operator boundary.
 
 ## Entry Points
 
-- Trigger: the API admits or answers a resource request, the worker deploys an
-  Agent revision with audit enabled, or an enrolled runtime sends an event.
+- Trigger: the API admits or answers a resource request, a controller operation
+  appends an event, or internal code lists events in a State unit of work.
 - Source: `apps/controller/src/index.ts:appendRequestAudit`
-- Source: `apps/controller/src/http/runtime-audit.ts:registerRuntimeAudit`
 - Source: `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
+- Source: `packages/occ/src/state/postgres-work-queue.ts:INSERT_EVIDENCE_CTE_SQL`
 - Assumptions: PostgreSQL State has a server-owned Installation; request
   admission and authorization are handled by the calling operation. Repository
   list is an internal operation, not an authorization or public serving boundary.
@@ -42,16 +42,6 @@ graph TD
   ResultEvent -->|Write failed| Diagnostic["Log audit write failure"]
   Diagnostic --> Send
   Request["Controller operation"] --> Factory["Create and sanitize event"]
-  Chart["Helm enables audit"] --> TLS["Open private HTTPS listener<br/>for Gateway events"]
-  Deploy["Deploy Agent revision"] --> Token["Kubernetes Compute creates<br/>or reads the Gateway Secret"]
-  Token --> SaveGrant{"Save token hash and revision?"}
-  SaveGrant -->|Saved| Gateway["Start Gateway"]
-  SaveGrant -->|Failed| Retry["Retry deployment"]
-  Gateway --> Runtime
-  Runtime["Runtime observation"] --> Grant{"Valid producer grant and event?"}
-  TLS --> Grant
-  Grant -->|Yes| Factory
-  Grant -->|No| Reject
   Factory --> Append["State audit append"]
   Append --> Scope{"Installation and<br/>Namespace scopes match?"}
   Scope -->|yes| Encode["Encode metadata<br/>and insert row"]
@@ -215,9 +205,9 @@ copies and array are immutable.
 
 ### 6. The Agent audit API saves a disclosure for each page
 
-`apps/controller/src/http/agent-audit.ts:createAgentAuditReader`,
+`apps/controller/src/http/agent-audit.ts:createAgentAuditReader` and
 `packages/occ/src/index.ts:OpenClawController.listAgentAuditEvents`, and
-`packages/occ/src/state/postgres-agent-audit.ts:SELECT_AGENT_AUDIT`
+`apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
 
 When audit is enabled, composition supplies the PostgreSQL audit reader. The
 reader checks that the selected Native IAM Driver uses the same State as the
@@ -226,75 +216,15 @@ Native IAM checks for a direct `read_audit` binding for the human Principal, the
 Agent, and its Namespace. The same rule applies when Native IAM checks which
 grants an account or service-key manager must hold. The reader locks the active
 Agent, its ready Namespace, and the policy tables through commit. It checks the
-grant again under these locks. The query selects approved events for the Agent
-within the first page's time window. It requests the page size plus one to
-check whether another page exists. For lifecycle records that target a
-revision, PostgreSQL checks that the revision belongs to the Agent in the same
-Namespace. Provisioning checkpoints and failures qualify once the saved record
-names the Agent.
+grant again under these locks. The query selects approved event types for that
+Agent and limits the time window and page size.
 
 State builds the page from named fields. It derives a public work ID from the
-stored key. A lifecycle record includes `agent_lifecycle` as its event type and
-the saved `action`. State adds `agentRevisionId` when PostgreSQL confirms the
-revision and `provisioningPhase` for provisioning checkpoints and failures.
-Runtime events include the revision and the fields for the registered action.
-The same transaction appends
+stored key and omits revision IDs. The same transaction appends
 `openclaw.audit.agent.read` with the actor, Agent, request ID, time window,
 projection version, and number of returned records. The API releases the
 page after it confirms commit. The next-page cursor is encrypted and bound
 to the same session, Agent, and window.
-
-### 7. Deployment enrolls the Gateway
-
-`apps/controller/src/worker.mjs`,
-`apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevisionWorkloads`,
-and `packages/occ/src/state/postgres-state.ts:registerGatewayRuntimeGrant`
-
-Kubernetes Compute enrolls a managed dedicated Gateway when the Control Plane
-audit setting is on and an audit endpoint is available. Compute
-creates or reads the revision's Secret in the Gateway namespace. It saves the
-token's hash and revision scope in PostgreSQL before it starts the Gateway.
-If the write fails, deployment stops at that step. A retry uses the token
-already saved in the revision's Secret. Compute mounts the Secret read-only
-in the Gateway container.
-
-When Compute starts the managed dedicated Codex workload, it selects the
-packaged audit App Server for the serving connection when the Gateway has an
-audit endpoint. The Gateway admits the turn after OCC saves its admission
-record. The App Server reports the start and outcome
-of observed foreground Responses requests over its existing authenticated
-connection. The Gateway checks the active turn and records when it receives
-each observation. Agent model credentials stay in the Codex workload.
-See `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`
-and `deploy/runtime/openclaw-codex-runtime-audit.patch`.
-
-### 8. OCC accepts an observation from an enrolled runtime
-
-`apps/controller/src/http/runtime-audit.ts:registerRuntimeAudit` and
-`packages/contracts/src/runtime-audit.ts:runtimeAuditObservationSchema`
-
-The producer sends the same event ID, time, and metadata if it retries the
-request. The API hashes the credential and finds its grant in PostgreSQL in
-the transaction that writes the event. OCC checks the action and fields. It
-takes the Agent and revision from the grant and the turn context from the body.
-OCC derives the ledger ID from the grant scope and the producer event ID.
-It returns HTTP 204 after the transaction commits. A retry with the same
-stored values returns the same result without a new row. A retry with
-different values for the same ID fails.
-
-With Helm-managed Gateway routing, the chart creates a private HTTPS Service
-when audit is on. OCC accepts Gateway audit requests on that listener.
-Kubernetes Compute mounts the public certificate authority certificate in
-the Gateway and grants network access to the exact API peer. Cert-manager
-renews the server certificate. The API checks the mounted certificate files
-every minute and loads a new valid pair when they change.
-
-The OpenShell OCSF path uses a separate file with exporter grants. Each grant
-identifies the exporter credential and an enrolled Sandbox UUID. OCC checks
-that the resource, log attributes, and decision
-identify the same Sandbox. It projects approved fields from a blocked
-network decision and uses the native event ID for retries. It commits the
-batch before it returns the OTLP response.
 
 ## Debugging and Verification
 
@@ -328,14 +258,6 @@ batch before it returns the OTLP response.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-11-18 15:31: Trace how the packaged Codex App Server reports foreground model requests. (authoring-run/51fe8bbd-9fd9-44a4-b12c-7aaf26cdb440 - 4ef3a6947e60309d88ecd796018f7e32e5a8993b)
-
-- 2026-11-18 14:48: Trace how the Agent audit API selects and returns lifecycle records. (authoring-run/6a1e940c-115b-4fd9-b4e0-be3e1602d5d8 - fcf72c27b375405d62e6e64015a36d7637018387)
-
-- 2026-11-18 13:56: Trace automatic enrollment and live grant checks for a managed Gateway. (authoring-run/4b6e27d3-fbfc-4030-9235-6ec1011de508 - 3943a3fcf3da51a1558cd66cc762eee63f73b964)
-
-- 2026-11-17 12:32: Add runtime event admission, persistence, and the Agent audit view. (authoring-run/e410717c-d715-4c61-9ec7-adc9e88c1232 - c8c1fb2d1e00413a4a911d1bd7980d44a4e252a1)
 
 - 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 16:19: Trace how composition supplies the Agent audit reader and verifies its IAM Driver. (authoring-run/0262148b-40f3-48c2-a3e1-546feb2e265b - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)

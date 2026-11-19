@@ -72,8 +72,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose
  *   ServicePrincipal may operate that Secret, deploys it, and returns
- *   `{ namespace, secretRef, agent, revision, createRequestId }`. Pass `{ dedicated: true }`
- *   for dedicated Codex.
+ *   `{ namespace, secretRef, agent, revision }`.
  */
 export async function createPostgresAgentApp(
   t,
@@ -182,14 +181,17 @@ export async function createPostgresAgentApp(
   );
   assert.ok(principal);
 
-  async function deployAgent(name, { dedicated = sandboxDriver !== undefined } = {}) {
+  async function deployAgent(name) {
     const created = await inject("POST", "/namespaces", { name: `${name} ${randomUUID()}` });
     assert.equal(created.statusCode, 201, created.body);
     const namespace = created.json().data;
     await controller.handleNamespaceLifecycle(principal.id, namespace.id, "ready");
     const configuration = await inject("POST", `/namespaces/${namespace.id}/configurations`, {
       kind: "agent",
-      values: createHarnessConfiguration(dedicated ? "codex" : "openclaw", "gpt-4.1"),
+      values: createHarnessConfiguration(
+        sandboxDriver === undefined ? "openclaw" : "codex",
+        "gpt-4.1",
+      ),
     });
     assert.equal(configuration.statusCode, 201, configuration.body);
     const secret = await inject("POST", `/namespaces/${namespace.id}/secrets`, {
@@ -206,14 +208,11 @@ export async function createPostgresAgentApp(
     );
     const createdAgent = await inject("POST", `/namespaces/${namespace.id}/agents`, {
       name: `${name} ${randomUUID()}`,
-      ...(dedicated ? { executionMode: "dedicated" } : {}),
+      ...(sandboxDriver === undefined ? {} : { executionMode: "dedicated" }),
       configurationId: configuration.json().data.id,
       harnessAuth: { method: "api_key", source: secretRef },
     });
-    const {
-      data: agent,
-      meta: { requestId: createRequestId },
-    } = fixtureResponse(
+    const { data: agent } = fixtureResponse(
       { status: createdAgent.statusCode, body: /** @type {unknown} */ (createdAgent.json()) },
       201,
       AgentResponse,
@@ -225,7 +224,7 @@ export async function createPostgresAgentApp(
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedHarness,
     );
-    return { namespace, secretRef, agent, revision, createRequestId };
+    return { namespace, secretRef, agent, revision };
   }
 
   return {

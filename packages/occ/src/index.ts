@@ -615,7 +615,6 @@ export {
   InMemoryPlatformState,
   type PredecessorReplacement,
   type AgentRevisionReadRepository,
-  type GatewayRuntimeAuditGrant,
   type InMemoryPlatformStateOptions,
   type PlatformAuditSink,
   type PlatformOperation,

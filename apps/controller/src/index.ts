@@ -1,4 +1,3 @@
-import { registerRuntimeAudit, type OpenShellRuntimeAuditAdmission } from "./http/runtime-audit.ts";
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
@@ -218,10 +217,6 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
-  readonly runtimeAudit?: {
-    readonly privateGateway?: boolean;
-    readonly admitOpenShell?: OpenShellRuntimeAuditAdmission;
-  };
   /** Durable sink for required HTTP admission and result records. */
   readonly durableRequestAuditSink?: AuditSink;
   readonly agentAuditCursorSecret?: string;
@@ -1080,7 +1075,7 @@ function permissionDescription(
   operation?: OccApiRoute,
 ): string {
   if (operation?.operationId === "listAgentAuditEvents") {
-    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API, worker, and runtime audit metadata from the preceding 24 hours.";
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";
   }
   if (operation?.operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
@@ -2024,15 +2019,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         rejectedMutation(context.operation, request, context, "NAMESPACE_NOT_READY"),
     }),
   };
-
-  if (options.runtimeAudit !== undefined) {
-    registerRuntimeAudit(
-      app,
-      () => controller,
-      options.runtimeAudit.privateGateway === true,
-      options.runtimeAudit.admitOpenShell,
-    );
-  }
 
   const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();
   app.addHook("onRequest", async (request, reply) => {
