@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Repository layout and conventions
 
 Use this guide to choose where a change belongs in OpenClaw Enterprise (OCE).
@@ -155,6 +160,7 @@ command from the repository root with the pinned Node version.
 
 - API CA programs: `node deploy/helm/src/generate-api-ca.ts`
 - Installation check: `node deploy/helm/src/generate-installation-check.ts`
+- Channel egress policy: `node deploy/helm/src/generate-channel-egress.ts`; `--check` verifies the packaged policy against current Drivers.
 
 Commit any generated chart updates with their sources. The OIDC CA integration
 suite checks the packaged CA programs. The Installation preflight suite checks
@@ -215,6 +221,11 @@ Update affected current references, guides, and flows with behavior changes;
 shipped specifications remain historical records. Keep Manual Notes unchanged.
 Put detailed contracts in their owning reference rather than expanding
 architecture pages for every feature.
+
+Keep shared control plane installation steps in `docs/guides/deploy/production-installation.md`.
+The [setup overview](guides/deploy/control-plane-setup.md) links cloud and
+distribution-specific preparation in sibling pages under `docs/guides/deploy/`.
+Register these pages in the **Control Plane Setup** sidebar group.
 
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling

@@ -324,9 +324,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (ne $installationName (trim $installationName)) (hasPrefix "\uFEFF" $installationName) (hasSuffix "\uFEFF" $installationName) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $installationName)) -}}
 {{- fail "installation.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
 {{- end -}}
-{{- if or (hasKey .Values.bootstrap "password") (hasKey .Values.bootstrap "serviceKey") -}}
-{{- fail "bootstrap output settings are removed; use bootstrap.credentials" -}}
-{{- end -}}
 {{- if .Release.IsInstall -}}
 {{- $secret := required "bootstrap.credentials.secretName must reference a precreated Secret" .Values.bootstrap.credentials.secretName -}}
 {{- include "openclaw.requireString" (dict "label" "bootstrap.credentials.secretName" "value" $secret) -}}
@@ -525,17 +522,34 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.requireString" (dict "label" "api.consoleTheme.checksum" "value" .Values.api.consoleTheme.checksum) -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.slackProxy.enabled -}}
-{{- $proxy := .Values.slackProxy -}}
-{{- if .Values.api.channelDirectoryProxyUrl -}}{{- fail "api.channelDirectoryProxyUrl must be empty when slackProxy.enabled uses the chart-managed Service" -}}{{- end -}}
-{{- if not (kindIs "bool" $proxy.enabled) -}}{{- fail "slackProxy.enabled must be a boolean" -}}{{- end -}}
-{{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
-{{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
+{{- if or (hasKey .Values "slackProxy") (hasKey .Values.api "channelDirectoryProxyUrl") -}}
+{{- fail "Legacy Slack proxy settings are unsupported; configure channelEgress" -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1024) (gt (int $proxy.port) 65535) -}}
-{{- fail "slackProxy.port must be an integer TCP port from 1024 to 65535: the proxy runs as a non-root user without capabilities" -}}
+{{- if .Values.channelEgress.enabled -}}
+{{- $egress := .Values.channelEgress -}}
+{{- if and .Values.gatewayRouting.enabled (eq $egress.gatewayName (include "openclaw.gatewayRouting.gatewayName" .)) -}}{{- fail "channelEgress must use a Gateway separate from private workspace ingress" -}}{{- end -}}
+{{- range $name := list "listenerPortStart" "listenerPortEnd" "occListenerPort" "inspectionPort" -}}
+{{- $port := get $egress $name -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $port))) (lt (int $port) 1024) (gt (int $port) 65535) -}}{{- fail (printf "channelEgress.%s must be an integer TCP port from 1024 to 65535" $name) -}}{{- end -}}
 {{- end -}}
-{{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
+{{- range $name := list "gatewayName" "gatewayClassName" "envoyNamespace" "serviceName" -}}
+{{- include "openclaw.validateResourceName" (dict "label" (printf "channelEgress.%s" $name) "value" (get $egress $name)) -}}
+{{- end -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "channelEgress.resources" "requirements" $egress.resources) -}}
+{{- range $index, $cidr := $egress.excludedCidrs -}}
+{{- include "openclaw.networkPolicy.cidr" (dict "name" (printf "channelEgress.excludedCidrs[%d]" $index) "value" $cidr) -}}
+{{- end -}}
+{{- if or (lt (int $egress.listenerPortStart) 1024) (gt (int $egress.listenerPortEnd) 65535) (lt (int $egress.listenerPortEnd) (int $egress.listenerPortStart)) (gt (sub (int $egress.listenerPortEnd) (int $egress.listenerPortStart)) 61) -}}
+{{- fail "channelEgress requires a range of at most 62 Agent listener ports" -}}
+{{- end -}}
+{{- if not $egress.excludedCidrs -}}{{- fail "channelEgress.excludedCidrs must contain the installation Pod, Service and node ranges" -}}{{- end -}}
+{{- range $port := list $egress.occListenerPort $egress.inspectionPort 19000 19001 19003 -}}
+{{- if and (ge (int $port) (int $egress.listenerPortStart)) (le (int $port) (int $egress.listenerPortEnd)) -}}{{- fail "channelEgress reserved ports must be outside the Agent range" -}}{{- end -}}
+{{- end -}}
+{{- if eq (int $egress.occListenerPort) (int $egress.inspectionPort) -}}{{- fail "channelEgress OCC and inspection listeners must be distinct" -}}{{- end -}}
+{{- range $port := list $egress.occListenerPort $egress.inspectionPort -}}
+{{- if has (int $port) (list 19000 19001 19003) -}}{{- fail "channelEgress OCC and inspection ports must not use Envoy administrative ports" -}}{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if $repositoryGit -}}
 {{- if .Values.openshellGit.enabled -}}
@@ -828,14 +842,6 @@ capabilities:
     secretKeyRef:
       name: {{ .secretName | quote }}
       key: {{ .key | quote }}
-{{- end -}}
-
-{{- define "openclaw.slackProxy.serviceName" -}}
-{{- .Values.slackProxy.serviceName -}}
-{{- end -}}
-
-{{- define "openclaw.slackProxy.url" -}}
-{{- printf "http://%s.%s.svc:%v" (include "openclaw.slackProxy.serviceName" .) .Release.Namespace (int .Values.slackProxy.port) -}}
 {{- end -}}
 
 {{- define "openclaw.gatewayRouting.gatewayName" -}}

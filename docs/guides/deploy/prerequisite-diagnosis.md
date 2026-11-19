@@ -1,7 +1,8 @@
 # Diagnose Kubernetes installation prerequisites
 
 Before installing OCE, run the read-only prerequisite check from a matching
-checkout with Node.js satisfying `engines.node` in the selected release checkout's `package.json`, `kubectl`, and your trusted kubeconfig. Prepare the target
+checkout on a host with Unix sockets, Node.js satisfying `engines.node` in the
+release checkout's `package.json`, `kubectl`, and your trusted kubeconfig. Prepare the target
 namespace and prerequisite controllers through your infrastructure workflow first.
 The command does not create resources, update policies, change your current
 context, or run commands inside Pods.
@@ -77,8 +78,8 @@ Use the DNS name from the intended client's reviewed TLS configuration for
 Omit `tls` for a policy check alone. Kubernetes `get` on the named Secret
 authorizes reading the entire object, including `tls.key`. Use an identity
 already authorized to read that Secret or ask the certificate owner to run the
-TLS check. The command projects only Secret identity, deletion state, and the
-public `tls.crt` field from `kubectl`. It checks the first certificate's
+TLS check. It uses Secret identity, deletion state, and the public `tls.crt`
+field for the diagnosis. It checks the first certificate's
 validity window and matches `serverName` against its DNS subject alternative
 names. The report contains no certificate or private key bytes. Verify the
 actual served leaf, trust chain, and policy enforcement separately from the
@@ -100,13 +101,32 @@ account and the cluster named by the ARN with your intended target. Use the
 for webhook ingress. The adapter reads STS caller identity, EKS cluster details,
 and EC2 network interfaces filtered by VPC, cluster security group and cluster description.
 
-Select the exact EKS HTTPS endpoint or an IP loopback tunnel with an explicit
-port and the EKS hostname in `tls-server-name`. Both require the EKS CA. The
-tool pins the verified endpoint, TLS name and CA for subsequent reads. Keep the
-trusted kubeconfig, context and credentials stable during collection.
+Select the exact EKS HTTPS endpoint or a tunnel at `127.0.0.1` or `[::1]`
+with an explicit port from 1 through 65535 and the EKS hostname in
+`tls-server-name`. Omit the tunnel path or use `/`. Both require the EKS CA.
 
-Use an HTTPS kubeconfig with server verification and a configured credential.
-The operator needs API discovery, named reads of the GatewayClass, Deployments,
+Use a kubeconfig with an explicit `https://` server URL, server verification
+and a configured credential.
+The tool resolves the selected context into a private temporary copy before
+its first Kubernetes request. Each read uses a short-lived kubectl proxy on a
+private Unix socket. The command sends a GET for the selected API path and
+reports redirects as unknown without following them. For EKS, the tool also
+verifies the copy's endpoint, TLS name and CA against the intended
+cluster. The copy includes any configured CA and file-backed client certificate
+and key. Without a configured CA, ordinary HTTPS uses system trust.
+Keep referenced token files and credential plugins available. They can supply
+refreshed credentials for the verified endpoint.
+Use an exec plugin, token or client certificate in place of a built-in
+kubeconfig `auth-provider`. The command refuses built-in providers before
+making requests because their refresh can replace credentials in a kubeconfig.
+
+The command disables kubectl preferences so their defaults cannot change the
+verified target after resolution. To use a kubeconfig exec plugin, follow the
+credential owner's procedure. If it permits running the plugin without kubectl
+preferences, set `KUBERC=off` or `KUBECTL_KUBERC=false` for this command. If it
+requires a kubectl credential-plugin policy, use a different approved credential.
+
+The operator needs named reads of the GatewayClass, Deployments,
 CRDs, namespace and `default/kubernetes` Service, and list access to that
 Service's EndpointSlices and the namespace's ResourceQuotas. The tool uses your
 configured credential plugin when applicable. The optional Service dependency
@@ -114,17 +134,34 @@ check needs named `get` access to the resources it selects.
 
 ## Run and interpret the checks
 
+Set `RUN_DIR` to an existing private directory that contains `prerequisites.json`.
+
 ```bash
-node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
-# Save machine-readable evidence privately when needed.
-node scripts/diagnose-kubernetes-prerequisites.ts \
-  --config "$RUN_DIR/prerequisites.json" --json > "$RUN_DIR/prerequisite-result.json"
+RUN_DIR=/secure/occ/prerequisite-run
+diagnosis_tmp=$(mktemp -d "$RUN_DIR/prerequisite-tmp.XXXXXX") || exit 2
+diagnosis_status=0
+TMPDIR="$diagnosis_tmp" node scripts/diagnose-kubernetes-prerequisites.ts \
+  --config "$RUN_DIR/prerequisites.json" || diagnosis_status=$?
+rmdir -- "$diagnosis_tmp"
+printf 'Diagnostic exit status: %s\n' "$diagnosis_status"
 ```
+
+To save a machine-readable report, add `--json` to the command and redirect
+its stdout to `"$RUN_DIR/prerequisite-result.json"`.
+
+Use a private temporary path short enough for Unix sockets. Linux with procfs
+also supports longer paths. If the process is forcibly
+killed or reports a cleanup error, its `oce-prerequisites-*` child directory
+can still hold the credential-bearing `kubeconfig.json`. Once the process
+stops, remove the exact child directory for that run, then remove the empty parent.
+Keep their contents private.
 
 Each result is `passed`, `failed`, or `unknown`, with a next action for failed or
 unknown checks. Exit status is `0` when all requested checks passed, `1` when any
 failed, and `2` when none failed but evidence is incomplete, or the plan is invalid.
 A failed check can coexist with unknown checks; inspect the complete report.
+A check reports a resource absent after HTTP `404`. Invalid responses leave the
+check unknown.
 
 | Check                              | What it establishes                                                                                                                                              |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -144,6 +181,8 @@ inventory. An incomplete or unreadable inventory yields `unknown`.
 For `service-egress`, `missing` lists required grants absent from the named
 NetworkPolicy. An `ExternalName` Service is a DNS alias without a ClusterIP.
 The check reports `failed` for that Service even when it declares ports.
+For a missing or unreadable dependency, verify the selected resource and
+read access before changing a NetworkPolicy or serving certificate.
 
 Reconcile address drift and missing grants through your infrastructure workflow.
 Review the deployed policies before changing the plan.

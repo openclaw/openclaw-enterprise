@@ -12,13 +12,14 @@ import (
 )
 
 func installationUpgradeCommand() *cobra.Command {
-	var profile, evidence string
-	upgrade := &cobra.Command{
-		Use:   "upgrade [-- EXPERT_OPTIONS...]",
-		Short: "Upgrade production images with a private operator profile",
-	}
-	upgrade.PersistentFlags().StringVar(&profile, "profile", "", "Owner-only production upgrade profile")
-	upgrade.PersistentFlags().StringVar(&evidence, "evidence-dir", "", "Fresh evidence directory, or the original directory for recovery")
+	upgrade := commandGroup("upgrade", "Plan and apply production image upgrades")
+	upgrade.Example = "  occ installation upgrade plan --profile /secure/occ/upgrade.json\n  occ installation upgrade apply --profile /secure/occ/upgrade.json"
+	upgrade.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		if cmd == upgrade {
+			return fmt.Errorf("%w. Use occ installation upgrade plan to preview or occ installation upgrade apply to deploy", err)
+		}
+		return err
+	})
 	upgrade.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		for _, name := range []string{"url", "service-key-file", "ca-bundle", "timeout-seconds", "namespace", "output"} {
 			if cmd.Flags().Changed(name) {
@@ -27,72 +28,101 @@ func installationUpgradeCommand() *cobra.Command {
 		}
 		return nil
 	}
-	run := func(action string) func(*cobra.Command, []string) error {
-		return func(cmd *cobra.Command, args []string) error {
-			if action != "status" && strings.TrimSpace(profile) == "" {
-				return errors.New("--profile must name the owner-only production upgrade profile")
-			}
-			if action != "plan" && strings.TrimSpace(evidence) == "" {
-				return errors.New("--evidence-dir must name the fresh or original upgrade evidence directory")
-			}
-			if action == "plan" && cmd.Flags().Changed("evidence-dir") {
-				return errors.New("plan does not use --evidence-dir")
-			}
-			if action == "status" && cmd.Flags().Changed("profile") {
-				return errors.New("status reads local evidence and does not use --profile")
-			}
-			repository, err := checkoutRepository("occ installation upgrade", filepath.Join("scripts", "upgrade-production"))
-			if err != nil {
-				return err
-			}
-			current, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-			if current != repository {
-				return errors.New("run occ installation upgrade from the reviewed release checkout root so relative paths keep their meaning")
-			}
-			arguments := []string{action}
-			if action != "status" {
-				arguments = append(arguments, "--profile", profile)
-			}
-			if action != "plan" {
-				arguments = append(arguments, "--evidence-dir", evidence)
-			}
-			if len(args) > 0 {
-				arguments = append(arguments, "--")
-				arguments = append(arguments, args...)
-			}
-			process := exec.CommandContext(cmd.Context(), filepath.Join(repository, "scripts", "upgrade-production"), arguments...)
-			process.Dir = repository
-			return runStreamingProcess(cmd, process, 0)
+	operation := func(name, action, description string) *cobra.Command {
+		var profile, evidence string
+		var autoApprove bool
+		expert := action != "status"
+		originalEvidence := action == "status" || action == "resume" || action == "cleanup-preflight"
+		use := name
+		if originalEvidence {
+			use += " RUN"
 		}
-	}
-	args := func(expert bool) cobra.PositionalArgs {
-		return func(cmd *cobra.Command, values []string) error {
-			if len(values) > 0 && (!expert || cmd.ArgsLenAtDash() != 0) {
-				return errors.New("expert upgrade options must follow --")
-			}
-			return nil
+		if expert {
+			use += " [-- EXPERT_OPTIONS...]"
 		}
-	}
-	upgrade.Args, upgrade.RunE = args(true), run("upgrade")
-	for _, operation := range []struct {
-		name, description string
-		expert            bool
-	}{
-		{"plan", "Show the selected target and next steps without contacting the cluster", false},
-		{"preflight", "Check the candidate with temporary cluster resources", true},
-		{"status", "Report local evidence markers without contacting the cluster", false},
-		{"resume", "Resume the original upgrade with its recorded evidence", true},
-		{"cleanup-preflight", "Reconcile interrupted preflight cleanup", true},
-	} {
-		child := &cobra.Command{
-			Use: operation.name, Short: operation.description,
-			Args: args(operation.expert), RunE: run(operation.name),
+		cmd := &cobra.Command{
+			Use:   use,
+			Short: description,
+			Args: func(cmd *cobra.Command, values []string) error {
+				beforeDash := len(values)
+				if split := cmd.ArgsLenAtDash(); split >= 0 {
+					beforeDash = split
+				}
+				if originalEvidence {
+					if beforeDash != 1 || strings.TrimSpace(values[0]) == "" {
+						return errors.New("specify exactly one original evidence directory as RUN before any expert options")
+					}
+					values = values[1:]
+				} else if expert && beforeDash != 0 {
+					return errors.New("expert upgrade options must follow --")
+				}
+				if !expert && len(values) != 0 {
+					return errors.New("this operation does not accept additional positional arguments")
+				}
+				return nil
+			},
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if action != "status" && strings.TrimSpace(profile) == "" {
+					return errors.New("--profile must name the owner-only production upgrade profile")
+				}
+				if cmd.Flags().Changed("evidence-dir") && strings.TrimSpace(evidence) == "" {
+					return errors.New("--evidence-dir must name the upgrade evidence directory")
+				}
+				repository, err := checkoutRepository("occ installation upgrade", filepath.Join("scripts", "upgrade-production"))
+				if err != nil {
+					return err
+				}
+				current, err := os.Getwd()
+				if err != nil {
+					return err
+				}
+				if current != repository {
+					return errors.New("run occ installation upgrade from the reviewed release checkout root so relative paths keep their meaning")
+				}
+				arguments := []string{action}
+				if profile != "" {
+					arguments = append(arguments, "--profile", profile)
+				}
+				if originalEvidence {
+					arguments = append(arguments, "--evidence-dir", args[0])
+					args = args[1:]
+				} else if evidence != "" {
+					arguments = append(arguments, "--evidence-dir", evidence)
+				}
+				if autoApprove {
+					arguments = append(arguments, "--auto-approve")
+				}
+				if len(args) > 0 {
+					arguments = append(arguments, "--")
+					arguments = append(arguments, args...)
+				}
+				process := exec.CommandContext(cmd.Context(), filepath.Join(repository, "scripts", "upgrade-production"), arguments...)
+				process.Dir = repository
+				return runStreamingProcess(cmd, process, 0)
+			},
 		}
-		upgrade.AddCommand(child)
+		if action != "status" {
+			cmd.Flags().StringVar(&profile, "profile", "", "Owner-only production upgrade profile")
+		}
+		if !originalEvidence && action != "plan" {
+			cmd.Flags().StringVar(&evidence, "evidence-dir", "", "New evidence directory (default: private directory beside the profile)")
+		}
+		if action == "apply" || action == "resume" {
+			cmd.Flags().BoolVar(&autoApprove, "auto-approve", false, "Approve this operation without the interactive prompt")
+		}
+		return cmd
 	}
+	upgrade.AddCommand(
+		operation("plan", "plan", "Preview the target and selected images offline"),
+		operation("apply", "apply", "Run preflight and deploy the selected images"),
+		operation("preflight", "preflight", "Rehearse the candidate with temporary cluster resources"),
+		operation("status", "status", "Inspect local evidence without contacting the cluster"),
+		operation("resume", "resume", "Resume the original upgrade with its recorded evidence"),
+		operation("cleanup-preflight", "cleanup-preflight", "Reconcile interrupted preflight cleanup"),
+	)
+	migration := commandGroup("migration", "Check the selected controller image against installed database history")
+	migration.AddCommand(operation("check", "migration-check", "Check migration history before a production change"))
+	upgrade.AddCommand(migration)
 	config := commandGroup("config", "Find the chart-owned operation for protected Installation settings")
 	for _, action := range []string{"apply", "rollback"} {
 		config.AddCommand(&cobra.Command{

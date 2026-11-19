@@ -151,8 +151,8 @@ A dedicated Gateway does not recover a killed container's locks. On
 Kubernetes it holds unready on `gateway-state-lock`; the deployment fails with
 `RUNTIME_STATE_LOCK_UNVERIFIED` while the Pod waits. `occ agent logs AGENT_ID
 --source gateway` shows `The Gateway cannot start: …` with the holder. If the
-holder stops cleanly, the Gateway restarts within 5 minutes; otherwise use the
-same procedure, which stops the Agent first.
+holder stops cleanly, the Gateway restarts after its next 5-minute check;
+otherwise use the same procedure, which stops the Agent first.
 
 A dedicated Harness Pod killed during Doctor or native setup (node failure)
 can leave its workspace node state locked. Later versions fail with

@@ -12,15 +12,24 @@
     "postgres": true,
     "k3d": true,
     "requiresPreparedStateForFile": true,
-    "selfProvisionedFiles": ["tests/integration/staged-signin-cleanup-real.test.ts"]
+    "selfProvisionedFiles": [
+      "tests/integration/staged-signin-cleanup-real.test.ts",
+      "tests/integration/production-upgrade-command.test.ts",
+      "tests/integration/installation-prerequisite-transport.test.ts"
+    ]
   },
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/kubernetes-compute-real.test.ts",
     "tests/integration/kubernetes-plugin-status-real.test.ts",
-    "tests/integration/installation-handoff-k3d-real.test.ts"
+    "tests/integration/installation-handoff-k3d-real.test.ts",
+    "tests/integration/production-upgrade-command.test.ts",
+    "tests/integration/installation-prerequisite-transport.test.ts"
   ],
   "files": [
+    {
+      "path": "tests/integration/production-upgrade-command.test.ts"
+    },
     {
       "path": "tests/integration/kubernetes-plugin-status-real.test.ts",
       "expectedTests": [
@@ -40,6 +49,12 @@
         "installation handoff distinguishes replaced Helm Jobs with only named get access",
         "installation prerequisites report Job quota headroom, address drift and unreadable resources",
         "first install retains exact attempt evidence after a lost client"
+      ]
+    },
+    {
+      "path": "tests/integration/installation-prerequisite-transport.test.ts",
+      "expectedTests": [
+        "installation prerequisites keep genuine kubectl on the selected verified transport"
       ]
     },
     {

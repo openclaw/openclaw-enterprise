@@ -491,10 +491,6 @@ class ClaimLeaseLostError extends WorkClaimLostError {
   }
 }
 
-class RestartContinuationEndedError extends Error {
-  readonly code = "RESTART_CONTINUATION_ENDED";
-}
-
 /**
  * Stopping a refused candidate failed or yielded to other Work. The pass waits as
  * `REFUSED_CANDIDATE_STOP_PENDING`, whose evidence and log keep the refusal code the stop was
@@ -1971,17 +1967,6 @@ export class ControllerWorker {
     return decision;
   }
 
-  private async assertRestartContinuation(revision: Readonly<AgentRevision>): Promise<void> {
-    const current = await this.state.read((view) =>
-      view.agents.findRestartContinuation(revision.namespaceId, revision.agentId),
-    );
-    if (!isDeepStrictEqual(current, revision.restartContinuation)) {
-      throw new RestartContinuationEndedError(
-        "The Agent ended this revision's recovery generation.",
-      );
-    }
-  }
-
   private async stagedRevision(
     operation: "activateRevision" | "deactivateRevision",
     revision: Readonly<AgentRevision>,
@@ -1992,7 +1977,6 @@ export class ControllerWorker {
       throw new Error(`The selected production Compute Driver requires ${operation}.`);
     }
     if (operation === "activateRevision") {
-      await this.assertRestartContinuation(revision);
       if (!this.revisionPluginDriverAvailable(revision)) {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
@@ -2360,7 +2344,6 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
-    await this.assertRestartContinuation(revision);
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
@@ -2398,7 +2381,6 @@ export class ControllerWorker {
       prepared = { ...prepared, repositoryCredentials };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
-      await this.assertRestartContinuation(revision);
       observation = await this.withClaimHeartbeat(claim, () =>
         this.compute.prepareRevision(revision, prepared),
       );
@@ -3315,6 +3297,10 @@ export class ControllerWorker {
     return undefined;
   }
 
+  private outcomeWithAttemptLimit(claim: ClaimedWork, outcome: Outcome): Outcome {
+    return outcome === "retry" && claim.attemptCount >= this.maxAttempts ? "permanent" : outcome;
+  }
+
   private async finalizeAgentDeletion(
     claim: ClaimedWork,
     result: AgentDeletionDispatchResult,
@@ -3354,9 +3340,7 @@ export class ControllerWorker {
         if ((await queue.heartbeat(claim)) === undefined) {
           throw new WorkClaimLostError();
         }
-        const terminalFailure =
-          result.outcome === "permanent" ||
-          (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+        const terminalFailure = this.outcomeWithAttemptLimit(claim, result.outcome) === "permanent";
         if (result.decision !== undefined) {
           await this.appendAgentDenial(unit, claim, result, "deletion");
         } else if (terminalFailure) {
@@ -3376,10 +3360,7 @@ export class ControllerWorker {
         }
       }, this.queueOptions);
     }
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, result.outcome);
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),
@@ -3441,9 +3422,7 @@ export class ControllerWorker {
           );
         }
       }
-      const terminalFailure =
-        result.outcome === "permanent" ||
-        (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+      const terminalFailure = this.outcomeWithAttemptLimit(claim, result.outcome) === "permanent";
       if (result.decision !== undefined) {
         await this.appendAgentDenial(unit, claim, result, "stop");
       } else if (result.outcome === "success" || terminalFailure) {
@@ -3466,10 +3445,7 @@ export class ControllerWorker {
         await queue.retry(claim, { code: result.code });
       }
     }, this.queueOptions);
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, result.outcome);
     if (result.outcome === "success" && result.code !== "STOP_SUPERSEDED") {
       this.metrics?.observeAgentOperation("stop", this.workAgeMs(claim) / 1000);
     }
@@ -4986,7 +4962,6 @@ export class ControllerWorker {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
           if (
             error instanceof WorkClaimLostError ||
-            error instanceof RestartContinuationEndedError ||
             error instanceof RepositoryCredentialAuthorityError ||
             error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
@@ -5133,7 +5108,6 @@ export class ControllerWorker {
           // could not authenticate retries within the attempt budget first (finding 1694).
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
-          error instanceof RestartContinuationEndedError ||
           error instanceof RepositoryCredentialAuthorityError ||
           // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
           // can never enroll, so it fails now instead of at the convergence deadline.
@@ -6382,10 +6356,7 @@ export class ControllerWorker {
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
-    let committedOutcome: WorkOutcome =
-      resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : resolved.outcome;
+    let committedOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
     if (committedOutcome === "permanent") {
       failureLogFields = {
         ...failureLogFields,
@@ -6424,14 +6395,7 @@ export class ControllerWorker {
           activeRevisionChanged = true;
           return;
         }
-        const continuation = await unit.agents.findRestartContinuation(
-          claim.namespaceId,
-          current.id,
-        );
-        if (
-          current.desiredRuntimeState !== "running" ||
-          !isDeepStrictEqual(continuation, resolved.revision.restartContinuation)
-        ) {
+        if (current.desiredRuntimeState !== "running") {
           stoppedCandidate = resolved.revision;
           return;
         }
@@ -6579,10 +6543,7 @@ export class ControllerWorker {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        if (
-          error instanceof RestartContinuationEndedError ||
-          error instanceof RepositoryCredentialAuthorityError
-        ) {
+        if (error instanceof RepositoryCredentialAuthorityError) {
           await this.finalizeRevision(
             claim,
             { outcome: "permanent", code: error.code },
@@ -7683,10 +7644,7 @@ export class ControllerWorker {
       }
       this.auditedPendingLifecycle.set(claim.idempotencyKey, pendingAudit);
     }
-    this.passOutcome =
-      resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : resolved.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
     // The Compute Driver's bounded reason for a failed Namespace pass; the lifecycle audit
     // and Namespace status keep only the failure class.
     const reason =

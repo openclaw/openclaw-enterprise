@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/conformance/strands-box-transport.test.ts",
     "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
@@ -19,7 +20,7 @@
     "tests/conformance/ssh-compute.test.ts",
     "tests/conformance/module-boundaries.test.ts",
     "tests/integration/repository-credentials-router.test.ts",
-    "tests/conformance/module-policy.test.mjs",
+    "tests/conformance/module-policy.test.ts",
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.ts",
     "tests/integration/cli-release.test.ts",
@@ -83,8 +84,6 @@
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
-    "tests/conformance/slack-proxy-tunnel.test.mjs",
-    "tests/conformance/slack-proxy-backpressure.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.ts",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
@@ -133,7 +132,6 @@
     "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.ts",
     "tests/integration/ci-go-test.test.ts",
-    "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
     "tests/conformance/repository-credentials-receive-pack.test.ts",
@@ -171,6 +169,24 @@
     "tests/conformance/schema-auth-boundary-v1.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/conformance/strands-box-transport.test.ts",
+      "expectedTests": [
+        "Strands rejected half-open clients release listener capacity without Harness I/O",
+        "the worker port allows readiness but refuses native upgrades with the same valid bearer",
+        "Strands shutdown closes clients still reading headers and refuses queued Gateway opens",
+        "Strands supervisor refuses a racing channel without disconnecting admitted clients",
+        "Strands contained receiver refuses capacity overflow and retains native connections",
+        "Strands slow downstream closes only its channel and retains the shared transport",
+        "Strands large stream pauses for shared pipe pressure without truncation",
+        "Strands malformed or oversized IPC fails closed exactly once",
+        "Strands disconnected channel releases its pending drain and a fresh channel works",
+        "Strands routing keeps explicit connection factories on the provider proxy",
+        "a loopback readiness probe retains capacity when all session channels are busy",
+        "a terminal frame flushes queued TCP output",
+        "the policy proxy delivers the complete response to a slow reader at EOF"
+      ]
+    },
     {
       "path": "tests/integration/prepared-refresh-enrollment.test.ts",
       "expectedTests": [
@@ -523,16 +539,7 @@
       "path": "tests/conformance/bounded-response-reads.test.ts"
     },
     {
-      "path": "tests/conformance/slack-proxy-reset.test.mjs"
-    },
-    {
       "path": "tests/conformance/native-admin-upgrade-reset.test.mjs"
-    },
-    {
-      "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
-    },
-    {
-      "path": "tests/conformance/slack-proxy-backpressure.test.ts"
     },
     {
       "path": "tests/conformance/native-admin-websocket-relay.test.ts"
@@ -791,7 +798,7 @@
       "path": "tests/conformance/module-boundaries.test.ts"
     },
     {
-      "path": "tests/conformance/module-policy.test.mjs",
+      "path": "tests/conformance/module-policy.test.ts",
       "expectedTests": [
         "repository source obeys its dependency policy with exact current exceptions",
         "repository policy allows a public root and rejects a new HTTP Driver import"

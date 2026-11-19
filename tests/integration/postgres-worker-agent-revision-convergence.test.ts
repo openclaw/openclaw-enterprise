@@ -33,6 +33,7 @@ import {
   runPreparationFailureCase,
   type WorkResultRow,
 } from "../helpers/postgres-worker-revision-scenarios.ts";
+import { repositoryBoundary } from "../helpers/postgres-worker-revision-support.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 
 type AgentIdentity = Pick<Agent, "id">;
@@ -297,7 +298,10 @@ revisionTest(
 revisionTest(
   "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
   async (fixture) => {
-    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-status");
+    const repository = repositoryBoundary().snapshot;
+    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-status", {
+      revision: { repositoryCredentials: repository },
+    });
     const queue = new fixture.PostgresWorkQueue(fixture.observerPool);
     const readStatus = () => fixture.deploymentStatus(owner, candidate);
 
@@ -311,11 +315,27 @@ revisionTest(
     const deploy = await queue.claim();
     assert.ok(deploy, "expected a claim for the due work");
     assert.equal(deploy.idempotencyKey, candidate.idempotencyKey);
-    await queue.enqueueRepositoryCleanup(
-      deploy,
-      { namespaceId: fixture.namespace.id, agentId: owner.id, revisionId: candidate.id },
-      "failed-preparation",
-    );
+    const revisionOwner = {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      revisionId: candidate.id,
+    };
+    await queue.enqueueRepositoryCleanup(deploy, revisionOwner, "failed-preparation");
+    const binding = repository.bindings[0];
+    assert.ok(binding);
+    // Deployment failure transfers a still-unconfirmed opening to retirement.
+    await fixture.state.transact(async ({ repositorySessions }) => {
+      const now = new Date();
+      await repositorySessions.createAttempt({
+        ...revisionOwner,
+        admissionId: `${now.getTime()}-${randomUUID()}`,
+        repositoryRef: binding.repositoryRef,
+        durationSeconds: 60,
+        deadlineWallMs: repository.deadlineWallMs,
+        createdAt: now.toISOString(),
+        brokerProtocol: 3,
+      });
+    });
     await queue.fail(deploy, { code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" });
 
     // No worker has claimed the cleanup yet: it waits, whatever its deployment recorded
@@ -332,9 +352,22 @@ revisionTest(
     assert.equal(claim.revisionId, candidate.id);
     assert.deepEqual((await readStatus()).cleanup, { status: "running", nextAttemptAt: null });
 
+    // A deferral refunds the count, but exact-work evidence keeps terminal retirement running.
+    await queue.defer(claim, { code: "DEPENDENCY_UNAVAILABLE" }, { delayMs: 60_000 });
+    const deferred = await queue.findWork(claim.idempotencyKey);
+    assert.equal(deferred?.attemptCount, 0);
+    assert.deepEqual((await readStatus()).cleanup, {
+      status: "running",
+      nextAttemptAt: deferred.availableAt.toISOString(),
+    });
+
     // A retry counts the attempt and queues the cleanup again. It stays running between
     // attempts and still reports no result.
-    await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+    await makeWorkDue(fixture.observerPool, claim.idempotencyKey);
+    const retry = await queue.claim();
+    assert.ok(retry);
+    assert.equal(retry.idempotencyKey, claim.idempotencyKey);
+    await queue.retry(retry, { code: "DEPENDENCY_UNAVAILABLE" });
     const retried = await queue.findWork(claim.idempotencyKey);
     assert.ok(retried, "missing retried cleanup work");
     assert.equal(retried.attemptCount, 1);
@@ -349,6 +382,35 @@ revisionTest(
     assert.equal(last.idempotencyKey, claim.idempotencyKey);
     assert.equal((await readStatus()).cleanup?.status, "running");
     await queue.complete(last, { code: "REPOSITORY_CLEANUP_COMPLETE" });
+    assert.deepEqual((await readStatus()).cleanup, { status: "succeeded", nextAttemptAt: null });
+
+    // A later Stop can transfer its own cleanup obligation for the same revision.
+    // The already-completed retirement must not mask that independent work.
+    await fixture.controller.stopAgent(fixture.actor.id, fixture.namespace.id, owner.id);
+    const stop = await queue.claim();
+    assert.ok(stop);
+    assert.equal(stop.agentTarget, "stopped");
+    const sessions = await queue.enqueueRepositoryCleanup(stop, revisionOwner);
+    assert.ok(sessions);
+    await queue.complete(stop, { code: "AGENT_STOPPED" });
+    const pending = await readStatus();
+
+    const disposal = await queue.claim();
+    assert.ok(disposal);
+    assert.equal(disposal.idempotencyKey, sessions.idempotencyKey);
+    const running = await readStatus();
+
+    assert.deepEqual(
+      [pending.cleanup, running.cleanup],
+      [
+        { status: "queued", nextAttemptAt: sessions.availableAt.toISOString() },
+        { status: "running", nextAttemptAt: null },
+      ],
+      "completed retirement must not mask pending or running session disposal",
+    );
+    assert.deepEqual([pending.status, running.status], ["failed", "failed"]);
+
+    await queue.complete(disposal, { code: "REPOSITORY_CLEANUP_COMPLETE" });
     assert.deepEqual((await readStatus()).cleanup, { status: "succeeded", nextAttemptAt: null });
   },
 );

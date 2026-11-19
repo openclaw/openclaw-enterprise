@@ -6,11 +6,12 @@ import {
   createRunnerFixture,
   heldClock,
   laneArgs,
-  procStat,
   runnerArtifactPaths,
   runRunnerAsync,
+  writeRunnerLaneFiles,
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
+import { createCleanupProcessTree } from "./ci-runner-cleanup-process-tree.ts";
 
 interface RunnerIssue {
   code: string;
@@ -31,16 +32,6 @@ interface RunnerSummary {
   }[];
 }
 
-// Node arguments that hold the runner just after it lists /proc, the first time it ends its
-// descendants, until the `forked` path exists. It creates the `window` path when
-// the hold starts (tests/helpers/ci-runner-kill-window.ts, finding 2182).
-function killWindow(window: string, forked: string) {
-  const preload = new URL("../helpers/ci-runner-kill-window.ts", import.meta.url);
-  preload.searchParams.set("window", window);
-  preload.searchParams.set("forked", forked);
-  return ["--import", preload.href];
-}
-
 // Cleanup runs inside the runner. An interval keeps the fixture alive unless the runner
 // stops waiting when the cleanup allowance expires.
 const hangForever = "new Promise(() => setInterval(() => {}, 1_000))";
@@ -52,52 +43,8 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
     const root = await createRunnerFixture(t);
     const { statePath, resultsPath } = runnerArtifactPaths(root, "hung-cleanup");
     const cleaned = join(root, "state/later-cleaned");
-    // The hung cleanup waits for a command that started one of its own (as `docker compose`
-    // or `pnpm` would). Both record their pids, in one rename.
-    const pidsPath = join(root, "state/command-pids");
-    // The command starts another child while the runner is ending it: after the runner has listed
-    // its processes and before it kills them (killWindow). That child records its pid too.
-    const windowPath = join(root, "state/kill-window");
-    const latePath = join(root, "state/late-pid");
-    const commandPath = join(root, "command.cjs");
-    const writeOnce = (path: string, value: string) =>
-      `writeFileSync(${JSON.stringify(`${path}.partial`)}, ${value}); ` +
-      `renameSync(${JSON.stringify(`${path}.partial`)}, ${JSON.stringify(path)});`;
-    await writeFile(
-      commandPath,
-      [
-        'const { spawn } = require("node:child_process");',
-        'const { existsSync, renameSync, writeFileSync } = require("node:fs");',
-        'const forever = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {',
-        '  stdio: "ignore",',
-        "});",
-        "const descendant = forever();",
-        writeOnce(pidsPath, 'process.pid + "\\n" + descendant.pid + "\\n"'),
-        "const poll = setInterval(() => {",
-        `  if (existsSync(${JSON.stringify(windowPath)})) {`,
-        "    clearInterval(poll);",
-        `    ${writeOnce(latePath, 'forever().pid + "\\n"')}`,
-        "  }",
-        "}, 10);",
-        "setInterval(() => {}, 1_000);",
-        "",
-      ].join("\n"),
-    );
-    const running = (pid: number) => {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return false;
-      }
-      // A zombie (state Z) still answers kill(pid, 0), but it has exited.
-      return procStat(pid)?.state !== "Z";
-    };
-    const pids: number[] = [];
-    t.after(() => {
-      for (const pid of pids.filter(running)) {
-        process.kill(pid, "SIGKILL");
-      }
-    });
+    // The command forks a second descendant after the runner lists /proc but before it kills.
+    const processTree = await createCleanupProcessTree(t, root);
     await writeFile(
       join(root, "scripts/ci/prepare.ts"),
       [
@@ -108,9 +55,9 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
         "  if (file.path.endsWith('hung.test.mjs')) {",
         "    return {",
         "      cleanup: async () => {",
-        `        spawn(process.execPath, [${JSON.stringify(commandPath)}], { stdio: "ignore" });`,
+        `        spawn(process.execPath, [${JSON.stringify(processTree.commandPath)}], { stdio: "ignore" });`,
         // Hang only once both pids are on record.
-        `        while (!(await readFile(${JSON.stringify(pidsPath)}, "utf8").catch(() => ""))) {`,
+        `        while (!(await readFile(${JSON.stringify(processTree.pidsPath)}, "utf8").catch(() => ""))) {`,
         "          await delay(20);",
         "        }",
         `        return ${hangForever};`,
@@ -122,11 +69,7 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
         "",
       ].join("\n"),
     );
-    const files = ["hung", "later"].map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
-    for (const { path } of files) {
-      await writeFile(join(root, path), passingLaneFixture);
-    }
-    await writeRunnerManifest(root, { lanes: { cleanup: { files } } });
+    await writeRunnerLaneFiles(root, "cleanup", ["hung", "later"], passingLaneFixture);
 
     // The runner's clock stands still from the start until the command and its descendant are on
     // record, so the cleanup's allowance ends two seconds after that however long the host takes
@@ -137,14 +80,9 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
       { CI_RUNNER_CLEANUP_TIMEOUT_MS: "2000", CI_RUNNER_CLEANUP_MARKER: cleaned },
       {
         timeout: 60_000,
-        execArgv: [...heldClock(started, [pidsPath]), ...killWindow(windowPath, latePath)],
+        execArgv: [...heldClock(started, [processTree.pidsPath]), ...processTree.execArgv],
       },
     );
-    pids.push(...(await readFile(pidsPath, "utf8")).split("\n").filter(Boolean).map(Number));
-    const late = Number(await readFile(latePath, "utf8").catch(() => ""));
-    if (late > 1) {
-      pids.push(late);
-    }
 
     assert.equal(result.error, undefined, `the runner gave up on the cleanup: ${result.stderr}`);
     assert.equal(result.status, 1, result.stderr);
@@ -175,15 +113,7 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
     // The runner ended the abandoned cleanup's command and its descendants before it exited, so
     // none is left running as an orphan (finding 1225), not even the one the command started
     // after the runner had listed its processes (finding 2182).
-    assert.equal(pids.length, 3, "the command recorded itself and both descendants");
-    for (let attempt = 0; pids.some(running) && attempt < 50; attempt += 1) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-    }
-    assert.deepEqual(
-      pids.filter(running),
-      [],
-      "the abandoned cleanup's commands outlived the runner",
-    );
+    await processTree.assertExited();
   });
 
   test("run ends the cleanups of files the deadline stopped together one allowance past it", async (t) => {

@@ -28,6 +28,10 @@ const workspace = `${home}/workspace`;
 // (resolveGatewayLockPaths), for the runtime user 1000.
 const stateLock = `${nodeState}/tmp/openclaw-1000/gateway.state.lock`;
 const timeoutMs = cpuScaledImageTimeoutMs(60_000);
+// A full Doctor pass, which the Harness runs before native setup while maintenance is
+// pending: about 30 s on 8 idle CPUs, up to 60 s on 8 loaded ones (52.5 s on a hosted
+// runner whose setup budget it used up). It gets its own budget, twice that worst case.
+const doctorMs = cpuScaledImageTimeoutMs(120_000);
 // Doctor waits this long for a holder it cannot verify ("Waiting up to 95 seconds for the
 // previous Gateway to release state") before it gives up on maintenance.
 const unverifiableHolderWaitMs = 95_000;
@@ -283,13 +287,20 @@ test(
 
     // Its maintenance is still pending, so the next Pod runs Doctor again, in another PID
     // namespace on the same claim, and must not meet a lock no later process can verify.
+    // Doctor and then native setup each report their outcome, and each gets its own budget.
     const next = await startHarnessPod(t, claim);
+    const migrated = await waitForOutput(
+      next,
+      "next Pod finished Doctor",
+      (output) => phaseOutcomes(output, "state-migration").length > 0,
+      doctorMs,
+    );
+    assert.deepEqual(phaseOutcomes(migrated.output, "state-migration"), ["ok"], migrated.output);
     const started = await waitForOutput(
       next,
       "next Pod finished native setup",
       (output) => baselineOutcomes(output).length > 0,
     );
-    assert.deepEqual(phaseOutcomes(started.output, "state-migration"), ["ok"], started.output);
     assert.deepEqual(baselineOutcomes(started.output), ["ok"], started.output);
     assert.doesNotMatch(started.output, /cannot verify Gateway ownership/);
   },

@@ -1,15 +1,15 @@
 ---
 created: 2026-08-25
-updated: "2026-11-18"
-last_updated_session: "authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/fb46fd44-f1b3-4ac7-9bd8-0096c2f70fa9"
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-Helm initializes OCE from protected storage and approved inputs. After private
-API/worker readiness, authenticate `/installation` with the service key.
+Helm initializes OCE from approved inputs and protected storage. Authenticate
+`/installation` with the service key after private API/worker readiness.
 
 ## Entry Points
 
@@ -80,21 +80,21 @@ Queries reconnect.
 
 ### 1. Prepare native production inputs
 
-`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` checks controllers, CRDs, addresses,
-quotas, Service grants and public TLS leaves. EKS verifies identity.
-[Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
+`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` validates the selected
+kubeconfig and uses private sockets for reads without redirects. EKS verifies
+cluster identity. [Resolve findings](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Keep values, Installation YAML and credential files synchronized outside the checkout. Helm
+Keep values, Installation YAML and credential files outside the checkout. Helm
 selects images, endpoint, Secrets, selectors and egress, not credential values.
 `openclaw.validate` requires a DNS-1123 release Namespace label (maximum 63 characters).
 Installation YAML selects Drivers, Backends, runtime images, projected identity,
 networking and storage.
 
-File-backed Secrets supply startup Installation, database URLs/optional CA,
-Better Auth signing, and optional ChatGPT administrator credentials. Supply
-Driver configuration and runtime images explicitly.
+File-backed Secrets supply Installation startup, database URLs/optional CA, Better Auth
+signing, and optional ChatGPT administrator credentials. Helm neither synchronizes
+inputs, rewrites Driver configuration, nor infers runtime images.
 
 ### 2. Precreate the bootstrap credential Secret
 
@@ -113,11 +113,10 @@ retained sources does not rotate credentials.
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
 kubeconfig/chart/values, checks release states and syncs intent and its directory.
-A failed stdout notice names and preserves intent, stopping before dispatch.
-Otherwise it syncs the unknown marker before Helm.
-`observeInstallationJob` records the first recognized attempt-matched Job UID
-(installs only). Helm's outcome stays separate; report write errors fail without
-changing it or replaying install.
+A failed stdout notice names and preserves intent; dispatch stops. Otherwise the
+CLI syncs the unknown marker before Helm. `observeInstallationJob` records the
+first recognized, attempt-matched install Job UID. Report errors leave Helm's
+outcome unchanged and never replay install.
 
 Template failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
 Helm stderr is bounded to 4 MiB in memory; raw diagnostics are not printed or saved.
@@ -136,11 +135,11 @@ checks routing, ports and peer labels. See [routing opt-out](../guides/deploy/wo
 and [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
 Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
-(generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap and
-API rollout. The migration container evaluates the chart's
-`files/migrate-selected-image.cjs` program. It validates the selected image's
-`db:migrate:production` package command, forwards the exact mode argument, and imports
-that image's migration entry point in the same Node process.
+(generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap
+and API rollout. The migration container evaluates `files/migrate-selected-image.cjs`,
+which validates the image's `db:migrate:production` entry and forwards mode arguments
+in the same Node process. Modes require the `NODE_ENV=production` declaration
+introduced with strict parsing. Bare legacy entries permit only unflagged apply.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
 up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
 `OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
@@ -149,30 +148,31 @@ ports, hosts or paths as `CHART_LISTENER_MISMATCH`.
 `openclaw.listenerEnv` passes routing settings to the hook, API and worker.
 `requireChartGatewayRouting` reports mismatched fields without values.
 
-The hook validates its name and distinct database Secret keys; both database containers can mount the CA. See [production settings](../reference/settings/production.md).
+The hook validates its name and distinct database Secret keys; both database containers can mount the CA ([production settings](../reference/settings/production.md)).
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
 `internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the receipt
 target before reading the Job. `initializationEvidence` checks its marker, UID, exact chart
-steps, controller and terminal status. A separate-upgrade Job verifies schema before bootstrap.
-Missing, replaced, refused or inconclusive evidence leaves the checkpoint unknown.
-Doctor reports Helm separately; report write errors exit `1`.
+steps, controller and terminal status. Guarded checks require the current wrapper
+or typed entry; flagged historical Jobs remain unknown. Separate-upgrade verifies schema
+before bootstrap.
+Missing, replaced, refused or inconclusive evidence stays unknown.
+Doctor reports Helm separately; write errors exit `1`.
 
 `scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
 After source verification, all modes reject PostgreSQL before 17 with
-fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access
+`MIGRATION_SERVER_UNSUPPORTED` before locking or catalog access
 ([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
-On SIGINT or SIGTERM, the command uses a second migrator connection to terminate its
-uniquely named database session and waits for cleanup before exit. Listeners ignore repeated signals during cleanup. If the control
-connection fails, the command reports `migration.cancellation-failed` and waits for the
-migration to return.
-Under the advisory lock, the same connection verifies roles and receipts,
-then catalogs and grants against native or reviewed restore digests. Unsupported
-history fails before DDL/bootstrap. After option guards, completed apply
-skips Drizzle only when `SHOW transaction_read_only` returns `off`.
-Otherwise Drizzle retains pending migration and read-only refusal.
-`finally` releases the lock and client
+On SIGINT/SIGTERM, a second migrator connection terminates the uniquely named
+session. Cleanup ignores repeated signals and finishes before exit. If the
+connection fails, the command reports `migration.cancellation-failed` and waits
+for migration completion.
+Under the advisory lock, the migration client verifies roles, receipts, catalogs and
+grants against native or reviewed restore digests. Unsupported history fails
+before DDL/bootstrap. After option guards, completed apply skips Drizzle only
+when `SHOW transaction_read_only` returns `off`. Drizzle otherwise retains pending
+migration and read-only refusal. `finally` releases the lock and client
 ([history](../reference/settings/operations.md#migration-history)).
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
@@ -266,11 +266,11 @@ no egress. Operators maintain addresses for
 [MCP tool discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin)
 independently. Console model selection and Harness egress do not depend on these policies.
 
-When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
-literal IPv4 address and port, the chart passes it to the API and grants only
-that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
-CONNECT to `slack.com:443`. The empty default renders no rule and leaves
-production Slack directory lookup unavailable with manual exact-ID entry.
+Managed channel egress uses one installation configuration for the reserved
+OCC provider listener and per-Agent listener allocation. Helm grants the API
+only its reserved port and the worker only configuration inspection. Startup
+records unavailable egress as a warning; channel operations fail closed while
+OCC stays available. See [channel egress](channel-egress.md).
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Below the supported 1.35 baseline, the API logs
@@ -382,9 +382,13 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
-- 2026-11-18 14:20: Reconcile credential inputs (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 10aa89ec05593393b17607d5b91ed06205f4ae2f)
+- 2026-11-19 19:08: Trace the verified prerequisite context. (authoring-run/fb46fd44-f1b3-4ac7-9bd8-0096c2f70fa9 - a99a9c85206960539cf27f47cbe350b033d8b2ca)
 
-- 2026-11-18 13:04: Check Service dependencies. (authoring-run/fd6bab1e-731b-4e93-8d14-0e64f6280246 - cb0f0300e53fd639cec1741323c7799a425b6dc9)
+- 2026-11-18 13:48: Recognize migration hooks (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 62b4fb61d91580e4080fe3bd22da3e981bffb603)
+
+- 2026-11-18 13:11: Shorten startup prose (PST). (authoring-run/3fdef1cf-e0cc-4e68-a3f4-4950c5f43c02 - ced12b9028ea989d2da2893ebff60cdcb9d4e689)
+
+- 2026-11-18 20:56: Trace the selected image's migration mode guard before import. (authoring-run/839744da-eafc-4b7e-81a4-91094255f4f0 - 084874338baf51ad05d0b1a2b438e8bcd0120c1b)
 
 - 2026-11-18 02:53: Select the migration entry point from each controller image and retain signal handlers through cleanup. (authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9 - 4616630e8ab5edf25de29af948e80c72627af9c4)
 

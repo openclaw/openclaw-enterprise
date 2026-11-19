@@ -31,6 +31,7 @@ import {
   type ComputeAgentBinding,
   type HarnessAuthBinding,
   type OpenClawConfigurationDocument,
+  type SecretReference,
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
@@ -464,6 +465,39 @@ export function createProvisioningCapableComputeDriver() {
     },
     async stopRevision() {},
   });
+}
+
+export function slackValidationConfiguration({
+  appSource,
+  botSource,
+  appToken,
+  botToken,
+  model,
+}: {
+  appSource: SecretReference;
+  botSource: SecretReference;
+  appToken?: string;
+  botToken?: string;
+  model?: string;
+}) {
+  return {
+    kind: "agent",
+    values: {
+      ...(model === undefined ? {} : { agents: { defaults: { model } } }),
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: appToken ?? { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: botToken ?? { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+        },
+      },
+    },
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: appSource, delivery: { type: "env" } },
+      SLACK_BOT_TOKEN: { source: botSource, delivery: { type: "env" } },
+    },
+  };
 }
 
 export async function bindHarnessKey(
