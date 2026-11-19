@@ -640,6 +640,8 @@ test(
     ).toString("utf8");
     secrets.push(password);
     let gatewayPod: Record<string, unknown> | undefined;
+    let upgradeReceipt: Record<string, unknown> | undefined;
+    const deliveries: Record<string, unknown>[] = [];
     const verifyDelivery = async () => {
       const delivery = await verifySingleSlackDelivery({
         slack,
@@ -664,6 +666,7 @@ test(
         channel: slack.channelId,
         message_ts: delivery.responseTs,
       });
+      deliveries.push({ ...delivery, responsePermalink: link.permalink });
       if (process.env.OCC_TEST_SLACK_EVIDENCE_PATH) {
         await writeFile(
           process.env.OCC_TEST_SLACK_EVIDENCE_PATH,
@@ -671,7 +674,9 @@ test(
             {
               ...delivery,
               responsePermalink: link.permalink,
-              workflow: "production-helm",
+              workflow: upgrade ? "production-helm-channel-upgrade" : "production-helm",
+              deliveries,
+              ...(upgradeReceipt ? { upgrade: upgradeReceipt } : {}),
               controller,
               runtime,
               harness,
@@ -958,6 +963,28 @@ test(
         }
         assert.equal(lost.deploymentRequests(), 1);
         assert.equal((await api("GET", agentPath)).activeRevisionId, accepted.id);
+        const completedJournal = JSON.parse(await readFile(journalPath, "utf8"));
+        upgradeReceipt = {
+          sourceRevision,
+          sourceController,
+          controller,
+          nextController,
+          migrationMode,
+          targets: completedJournal.targets.map((item: Record<string, unknown>) => ({
+            namespaceId: item.namespaceId,
+            agentId: item.agentId,
+            originalRevisionId: item.originalRevisionId,
+            deploymentId: item.deploymentId,
+            stop: item.stop,
+            deploy: item.deploy,
+          })),
+          uncertainResponseRefused: true,
+          manualRecoveryCompleted: true,
+          workspaceRetained: true,
+          stoppedAgentPreserved: true,
+          currentSavedDraftAdopted: true,
+          subsequentUpgradeRetainedRevision: true,
+        };
       } else {
         revision = await api("POST", `${agentPath}/deploy`, undefined, 202);
       }

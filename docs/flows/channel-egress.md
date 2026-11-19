@@ -94,7 +94,8 @@ changes before OCC writer shutdown.
 After authenticated access to the same Installation recovers, plain Deploy
 creates revisions from current saved drafts. Requests are sequential. Accepted
 requests are observed to completion; an uncertain `sending` state refuses
-resubmission until manual inspection resolves it. Disabled channels skip both
+resubmission until manual inspection resolves it. Completion and resume also check
+that each Agent still selects the recorded new revision. Disabled channels skip both
 Envoy preparation and Agent transitions. Ordinary upgrades do not select this
 mode. Follow [One Off Upgrades](../guides/deploy/one-off-upgrades.md) for commands
 and recovery; then the normal revision path below owns policy preparation.
@@ -186,6 +187,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 20:41: Verify recorded Agent state before one-off completion and on resume (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - 87d5c0d63f6765816d0e4a6dee9cb20f8be1d5c1)
 
 - 2026-11-19 19:30: Linked installation defaults and the explicit one-off upgrade in accompanying changes (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - ebcbd2f60535c36b3a9b63847a2d052363cd29a6)
 

@@ -205,6 +205,23 @@ def lifecycle(action, args):
     base = [args.occ, "--output", "json", "--timeout-seconds", str(args.timeout_seconds)]
     def occ(*tail):
         return json.loads(command([*base, *tail]))
+    def agent_state(target):
+        agent = occ("--namespace", target["namespaceId"], "agent", "get", target["agentId"])
+        require(agent.get("id") == target["agentId"] and agent.get("namespaceId") == target["namespaceId"],
+                "Agent read identity does not match the recorded operation")
+        return agent
+
+    def confirm_completed(target):
+        agent = agent_state(target)
+        require(agent["status"] == "active", "recorded Agent is no longer active")
+        if action == "stop":
+            require(agent["desiredRuntimeState"] == "stopped" and not agent.get("activeRevisionId"),
+                    "a completed Stop changed before upgrade quiescence")
+        else:
+            require(agent["desiredRuntimeState"] == "running" and agent.get("activeRevisionId") == target["deploymentId"] and
+                    target["deploymentId"] != target["originalRevisionId"],
+                    "the recorded deployment is not the Agent's running new revision; inspect concurrent changes or manual recovery")
+
     if not journal.exists():
         require(action == "stop", "missing original running-Agent journal; do not infer it from the upgraded fleet")
         rows = inventory_rows(original)
@@ -229,10 +246,11 @@ def lifecycle(action, args):
     for target in state["targets"]:
         ns, agent_id = target["namespaceId"], target["agentId"]
         if target[action] == "complete":
+            confirm_completed(target)
             continue
         require(target[action] != "sending", f"{action} outcome is unknown for Agent {agent_id}; inspect Agent revision history, deployment status and audit records. Do not resubmit automatically. Preserve this journal for manual recovery.")
         if target[action] == "unsent":
-            agent = occ("--namespace", ns, "agent", "get", agent_id)
+            agent = agent_state(target)
             require(agent["status"] == "active", "recorded Agent is no longer active; manual recovery required")
             if action == "stop":
                 require(agent.get("activeRevisionId") == target["originalRevisionId"] and agent["desiredRuntimeState"] == "running", "Agent changed since inventory; Stop was not submitted")
@@ -253,7 +271,7 @@ def lifecycle(action, args):
         deadline = time.monotonic() + args.timeout_seconds
         while time.monotonic() < deadline:
             if action == "stop":
-                observed = occ("--namespace", ns, "agent", "get", agent_id)
+                observed = agent_state(target)
                 require(observed["status"] == "active" and observed["desiredRuntimeState"] == "stopped", "Agent changed while Stop was pending")
                 complete = not observed.get("activeRevisionId")
             else:
@@ -262,6 +280,7 @@ def lifecycle(action, args):
                 require(observed["status"] != "failed", f"deployment {target['deploymentId']} failed; inspect its status and recover manually")
                 complete = observed["status"] == "succeeded"
             if complete:
+                confirm_completed(target)
                 target[action] = "complete"
                 save(journal, state)
                 break
