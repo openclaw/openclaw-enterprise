@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-19
-last_updated_session: fix/native-admin-transition-503
+last_updated_session: authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b
 ---
 
 # Agent Native Admin UI Flow
@@ -331,7 +331,7 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
-- 2026-11-19 10:00: A deployment in progress answers authorized Agent-host HTTP with `503`. (fix/native-admin-transition-503 - b0fe1a2196)
+- 2026-11-19 01:23: A deployment in progress answers authorized Agent-host HTTP with `503`. (authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b - 50ba6e3c180341cddc63528b98c21da57508ad2b)
 
 - 2026-11-13 06:32: Clarify replacement records and native access reasons. (authoring-run/97aeaabf-7b1c-40d2-bd48-f7e3e105e434 - 4ab097ffe6f1bce048629dcdec005ed666e536c0)
 

@@ -783,12 +783,12 @@ test("a deployment replacing the version answers an authorized probe 503 and out
   const readOnly = await createReadOnlySession(context, "native-transition-reader");
   const probe = (cookie) =>
     injectJson(context.fixture, "GET", "/healthz", { headers: { host, cookie } });
-  // Signed out, and signed in without Agent operate: each whole answer, request ID aside.
+  // Signed out, and signed in without Agent operate: each whole answer, request ID and date aside.
   const outsiders = async () => {
     const answers = [];
     for (const cookie of [undefined, readOnly.cookie]) {
       const response = await probe(cookie);
-      const { "x-request-id": requestId, ...headers } = response.headers;
+      const { "x-request-id": requestId, date, ...headers } = response.headers;
       assert.equal(response.json().meta.requestId, requestId);
       answers.push({
         status: response.statusCode,
@@ -833,7 +833,8 @@ test("a deployment replacing the version answers an authorized probe 503 and out
   );
   assert.equal(stop.status, 202);
   assert.equal((await nativeStatus(context)).data.status, "stopped");
-  // A stopped Agent stays refused: the browser's sign-in path leads to the console, which says so.
+  // A stopped Agent stays refused; the Agent UI still offers its sign-in panel, whose link then
+  // gets this generic refusal.
   const stopped = await probe(context.session.cookie);
   assert.equal(stopped.statusCode, 403, stopped.body);
   assert.deepEqual(stopped.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
