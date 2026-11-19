@@ -151,7 +151,9 @@ function installationCapabilities(
 ): value is NonNullable<Parameters<typeof installationFixture>[0]["pluginCapabilities"]> {
   return (
     (value.policyScopeByPlugin === undefined ||
-      Object.values(value.policyScopeByPlugin).every((scope) => scope === "enablement_only")) &&
+      Object.values(value.policyScopeByPlugin).every(
+        (scope) => scope === "enablement_only" || scope === "tool_human_approval",
+      )) &&
     (value.credentialSlots === undefined ||
       value.credentialSlots.every(
         (slot) => slot.toolDiscovery === undefined || slot.toolDiscovery === true,

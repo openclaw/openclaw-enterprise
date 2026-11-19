@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Install the production control plane
 
 For an OpenShell cluster, start with [Kubernetes setup](kubernetes-setup.md) or
@@ -12,7 +17,7 @@ once, [authenticate to the API](#authenticate-to-the-production-api), and
 [deploy a production Agent](production-agents.md).
 
 Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
-[prerequisites below](#before-you-start), and
+[requirements below](#requirements), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
 Private routing is enabled by default. The chart does not install Envoy Gateway,
 Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
@@ -27,9 +32,16 @@ Use a clean checkout matching the image source commit. Follow
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
 
-## Before you start
+<span id="before-you-start"></span>
+
+## Requirements
 
 <Snippet file="../../snippets/kubernetes-prerequisites.md" />
+
+<span id="azure-postgresql-workload-identity"></span>
+
+For cloud and distribution-specific preparation, use the
+[control plane setup overview](control-plane-setup.md) before installation.
 
 ## Use published images
 
@@ -158,22 +170,6 @@ rejects `limits.shutdownGraceMs` above `60000` to finish cleanup within the
 Pod's 75-second grace. Restart the API and worker together after registry
 or service input changes; readiness does not prove token minting or Agent Git
 workflows.
-
-### Azure PostgreSQL workload identity
-
-For [Azure workload-identity database authentication](../../reference/settings/operations.md#postgresql-connection-authentication),
-use password-free, TLS-verified URLs in the database URL files above. Give each
-connecting process (migration, bootstrap, API, and worker) the identity
-environment variables and a renewed federation-token projection. Provision
-federation and database grants for separate application and migrator
-identities, confining migrator privileges to migration. Use
-the [selected-image migration command](separate-database-upgrade.md#run-a-selected-image-migration)
-for this authentication mode.
-
-The chart configures none of these inputs. Its migration and bootstrap
-containers share an initialization Pod and service account, so changing the
-database URL Secrets alone neither configures their distinct identity inputs nor
-enables Azure mode.
 
 ### Optional operational log export
 

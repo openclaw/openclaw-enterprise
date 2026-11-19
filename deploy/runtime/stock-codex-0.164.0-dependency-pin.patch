@@ -22,21 +22,21 @@ index 5649308748b..801e8507a67 100644
  /** Inclusive runtime compatibility floor for external app-server binaries. */
  export const MIN_SUPPORTED_CODEX_APP_SERVER_VERSION = "0.149.0";
  export const MANAGED_CODEX_APP_SERVER_PACKAGE = "@openai/codex";
-diff --git a/extensions/openai/base-url.ts b/extensions/openai/base-url.ts
-index 05aeacddfa7..38374a683e9 100644
---- a/extensions/openai/base-url.ts
-+++ b/extensions/openai/base-url.ts
-@@ -5,7 +5,7 @@ export const OPENAI_CODEX_RESPONSES_BASE_URL = "https://chatgpt.com/backend-api/
- // Bundled @openai/codex pin, reported when the Codex plugin cannot name the
- // binary its turns run; the client-version contract test keeps it equal to
- // extensions/codex's exact dependency.
--const OPENAI_CODEX_CLIENT_VERSION = "0.169.0";
-+const OPENAI_CODEX_CLIENT_VERSION = "0.164.0";
+diff --git a/extensions/openai/codex-client-version.ts b/extensions/openai/codex-client-version.ts
+index 4cabc895a7d..970e252f798 100644
+--- a/extensions/openai/codex-client-version.ts
++++ b/extensions/openai/codex-client-version.ts
+@@ -7,7 +7,7 @@ import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
  
- export type OpenAICodexModelsEndpointContext = {
-   config?: OpenClawConfig;
+ // Bundled @openai/codex pin: the floor when the registry cannot be read. The
+ // client-version contract test keeps it equal to extensions/codex's exact dependency.
+-const OPENAI_CODEX_CLIENT_VERSION_FLOOR = "0.169.0";
++const OPENAI_CODEX_CLIENT_VERSION_FLOOR = "0.164.0";
+ 
+ const CODEX_LATEST_VERSION_URL = "https://registry.npmjs.org/@openai/codex/latest";
+ // npm publishes a Codex release at most a few times a day; a launch needs one refresh.
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 1069e5a4409..cb8770f62de 100644
+index cd804aaff9a..67aa3391ff3 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
 @@ -169,7 +169,7 @@ overrides:
@@ -48,7 +48,7 @@ index 1069e5a4409..cb8770f62de 100644
    '@codemirror/commands@6.11.1>@codemirror/view': 6.43.15
    '@codemirror/view@6.43.15>@codemirror/state': 6.7.6
    '@anthropic-ai/sdk': 0.137.0
-@@ -1015,8 +1015,8 @@ importers:
+@@ -1013,8 +1013,8 @@ importers:
    extensions/codex:
      dependencies:
        '@openai/codex':
@@ -59,7 +59,7 @@ index 1069e5a4409..cb8770f62de 100644
        '@openclaw/fs-safe':
          specifier: 0.27.1
          version: 0.27.1
-@@ -5113,43 +5113,43 @@ packages:
+@@ -5111,43 +5111,43 @@ packages:
      resolution: {integrity: sha512-3zcN5Q3yEmeyxXBzqB6fXPQFzYa2ROsGFSr69W0ArXIAGJqxl/aFECOVPD2kbkYPm0U/EHxFKgclK3UA9WQg5A==}
      engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
  
@@ -117,7 +117,7 @@ index 1069e5a4409..cb8770f62de 100644
      engines: {node: '>=16'}
      cpu: [x64]
      os: [win32]
-@@ -11162,7 +11162,7 @@ snapshots:
+@@ -11160,7 +11160,7 @@ snapshots:
    '@agentclientprotocol/codex-acp@2.3.0':
      dependencies:
        '@agentclientprotocol/sdk': 2.0.2(zod@4.6.7)
@@ -126,7 +126,7 @@ index 1069e5a4409..cb8770f62de 100644
        cross-spawn: 7.0.6
        diff: 9.0.0
        open: 11.0.4
-@@ -13274,31 +13274,31 @@ snapshots:
+@@ -13272,31 +13272,31 @@ snapshots:
  
    '@npmcli/redact@5.0.0': {}
  
@@ -172,7 +172,7 @@ index 1069e5a4409..cb8770f62de 100644
  
    '@openclaw/crabline@0.2.0(patch_hash=87093d75728e71110a39bd4729df86642a7974ebbbd2155fec2e074ce9a90f3d)':
 diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
-index 8f66b0dab84..df1cf075ff3 100644
+index 51586b0554c..fd8b21213c5 100644
 --- a/pnpm-workspace.yaml
 +++ b/pnpm-workspace.yaml
 @@ -52,7 +52,7 @@ overrides:

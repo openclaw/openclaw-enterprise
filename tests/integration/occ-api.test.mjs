@@ -37,6 +37,7 @@ import {
   identifier,
   injectedRequest,
   readyNamespaceFixture as bootstrapReadyNamespace,
+  slackValidationConfiguration,
 } from "./occ-api-injected-fixture.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -5582,24 +5583,13 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
     ["xoxb-${SLACK_SPARE_TOKEN}", unbound],
   ];
-  const configurationWithBotToken = (botToken) => ({
-    kind: "agent",
-    values: {
-      agents: { defaults: { model: "codex/gpt-6-astra" } },
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken,
-        },
-      },
-    },
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-    },
-  });
+  const configurationWithBotToken = (botToken) =>
+    slackValidationConfiguration({
+      appSource: app.ref,
+      botSource: bot.ref,
+      botToken,
+      model: "codex/gpt-6-astra",
+    });
   for (const [botToken, message] of forms) {
     const refused = await provision(configurationWithBotToken(botToken));
     assertApiError(refused, 400, "INVALID_REQUEST");
@@ -5653,23 +5643,10 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   });
   fixture.controller.registerDriver(channel);
   fixture.controller.selectDriver("channel", channel.id);
-  const configuration = {
-    kind: "agent",
-    values: {
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-        },
-      },
-    },
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: app.ref, delivery: { type: "env" } },
-    },
-  };
+  const configuration = slackValidationConfiguration({
+    appSource: bot.ref,
+    botSource: app.ref,
+  });
   // A foreign channel Secret is an invalid request, not a scope miss from channel validation.
   const foreignBot = { ...bot.ref, namespaceId: `ns_${randomUUID()}` };
   const foreign = await provision({
@@ -5797,23 +5774,12 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
   fixture.controller.selectDriver("channel", channel.id);
   // Configuration save accepts the whole-reference form and Edit Slack keeps it; OpenClaw reads
   // it as the env SecretRef to that name (finding 2511).
-  const configuration = {
-    kind: "agent",
-    values: {
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: "${SLACK_APP_TOKEN}",
-          botToken: "${SLACK_BOT_TOKEN}",
-        },
-      },
-    },
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-    },
-  };
+  const configuration = slackValidationConfiguration({
+    appSource: app.ref,
+    botSource: bot.ref,
+    appToken: "${SLACK_APP_TOKEN}",
+    botToken: "${SLACK_BOT_TOKEN}",
+  });
   // The fixture has no durable work queue: its error means the plan passed channel validation,
   // which sent the bound bot token to Slack.
   assert.equal((await provision(configuration)).body.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -5868,23 +5834,12 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   );
   fixture.controller.registerDriver(channel);
   fixture.controller.selectDriver("channel", channel.id);
-  const configuration = {
-    kind: "agent",
-    values: {
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: "${SLACK_APP_TOKEN}",
-          botToken: "${SLACK_BOT_TOKEN}",
-        },
-      },
-    },
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: app.ref, delivery: { type: "env" } },
-    },
-  };
+  const configuration = slackValidationConfiguration({
+    appSource: app.ref,
+    botSource: app.ref,
+    appToken: "${SLACK_APP_TOKEN}",
+    botToken: "${SLACK_BOT_TOKEN}",
+  });
   const noRoute = SLACK_ROUTE_NOT_CONFIGURED;
   // Checks that need no provider call keep their own answers: a wrong token role is still named.
   assertApiError(await provision(configuration), 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
