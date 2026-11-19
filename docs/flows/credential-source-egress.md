@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: "authoring-run/2b8fc8d2-014c-4fdd-8a8a-4b36f8f06904"
+last_updated_session: "authoring-run/224d5954-94cf-48c2-a7dd-15d94cd74df7"
 ---
 
 # Protected credential request flow
@@ -288,36 +288,36 @@ grant selects model and destination. Resumed reasoning input can carry
 OCC commits withdrawal before provider action. Under the Agent lock,
 `packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` records the
 source or repository compare-and-reduce request in `credential_delivery_reductions`.
-Concurrent reductions wait; recovery observes without another capability probe or
-mutation. The store separately constrains policy and material reduction receipts.
+Concurrent reductions wait; recovery only observes. The store separately constrains policy and material reduction receipts.
 
 Only exact-dispatch Git uses reduction v2. Online and observed-hook Git retain v5/v6. Ordinary v3 uses reduction v1 only when the Driver
 explicitly declares it; v2 alone does not authorize v1 or multiple static sources.
 
 Policy requires the exact observed operation, stable recipient and retained plan;
-the original receipt stays unchanged. Missing identity, stale operations or invalid
-configuration/policy evidence keeps withdrawal pending. A confirmed replacement
-recipient can require retirement. Remaining grants stay unchanged; the last route leaves deny-all. Settlement and stale
-installation cannot restore withdrawn routes. Reference-peer proof does not qualify released
+the original receipt remains. Missing identity, stale operations or invalid
+configuration/policy evidence keeps withdrawal pending. Confirmed replacement recipients can require retirement. Remaining grants persist; the last route leaves deny-all. Settlement and stale
+installation cannot restore withdrawn routes. Reference-peer proof cannot qualify released
 Sandboxes or continued model execution.
 
 ### 7. Retain installation custody
 
-`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires
-recipient confirmation and worker custody for snapshots, including bootstrap.
+Snapshots and bootstrap require confirmed recipients and worker custody
+(`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries`).
 
+For explicit repository network policy rotations,
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
-checks durable ownership after Gateway authentication and material selection.
-`releasePreview` checks ownership after Compute signs. Repository-policy dispatch
-checks local withdrawal, expiry and supervisor lease. Owners cancel unsent
-reservations. Uncertain writes stay blocked. Sandbox deletion drops closed routes.
+rechecks durable ownership after Gateway authentication and material selection;
+otherwise authentication follows release, so withdrawal can precede writing without
+recheck. `releasePreview` checks ownership after Compute signs. Repository-policy
+dispatch checks withdrawal, expiry and supervisor lease; owners cancel unsent
+reservations. Uncertain writes block; Sandbox deletion drops closed routes.
 
-`prepare` requires a held launch or explicit preview and closes other workers’
-routes before credential access. `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
-checks sessions before transport. Historical v4 and installation-wide v5 cannot issue or renew.
-See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
+`prepare` requires held launch or explicit preview, closing other workers’ routes
+before credential access. `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
+checks sessions before transport. v4 and installation-wide v5 cannot issue or renew
+([restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)).
 
-`openshell-git-route-store.ts:confirmDetached` retains deletion custody by verifying
+`openshell-git-route-store.ts:confirmDetached` retains deletion custody, verifying
 the original fence, recipient, material, policy and request without reapplying.
 
 ## Debugging and Verification
@@ -347,6 +347,7 @@ None.
 
 ## Changelog
 
+- 2026-11-19 12:19: Qualify rotations. (authoring-run/224d5954-94cf-48c2-a7dd-15d94cd74df7 - 92fe533603b2ffd20853d8e4d39dcc22079974d5)
 - 2026-11-19 11:59: Recheck durable ownership at dispatch. (authoring-run/2b8fc8d2-014c-4fdd-8a8a-4b36f8f06904 - 6faced2cc2dd1b68171f9973d28416df77a42f58)
 - 2026-11-19 11:36: Fence credential dispatch and launcher release against withdrawal. (authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc - 88411a2c219e6903d8777d68013ae4b2330ca5a6)
 
