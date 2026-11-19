@@ -250,6 +250,7 @@ RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
+# Run exactly the tests that exercise a kept carried patch; upstream CI covers the rest.
 # One main runner invocation for the Node test files: the runner compiles the whole
 # source tree for its workers first (about a minute), and a second invocation on
 # a fresh .artifacts directory would compile it again. Keep generated files on
@@ -263,11 +264,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
     src/cli/update-cli/update-command-service-drain.native.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
-    src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     extensions/codex/src/app-server/thread-policy.test.ts extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts \
-    src/auto-reply/reply/session-event-config-readmission.test.ts \
-    src/gateway/session-restart-resume.admission.test.ts src/gateway/session-restart-resume.workspace.test.ts \
+    extensions/codex/src/app-server/config.test.ts extensions/codex/src/app-server/config-network-proxy.test.ts \
     src/node-host/runner.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
@@ -298,15 +297,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/node-host/codex-node-plugin.integration.test.ts \
     test/node-host-launcher.test.ts \
     src/daemon/program-args.test.ts \
-    src/gateway/server-methods.session-main-start.test.ts \
-    src/gateway/server.chat-main-session-narrow.test.ts \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
-    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.scope.test.ts \
-    src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
-    src/config/sessions/session-entry-json.test.ts \
     && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
@@ -324,8 +317,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts \
-    src/app/gateway-page-activation.test.ts \
-    src/pages/chat/chat-history-subscription-errors.test.ts
+    src/app/gateway-page-activation.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
