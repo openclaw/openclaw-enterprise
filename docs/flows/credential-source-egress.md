@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf
+last_updated_session: authoring-run/325438da-aa59-4666-b988-77550741b87d
 ---
 
 # Protected credential request flow
@@ -238,52 +238,47 @@ lost reply remains a possible effect and must not be retried.
 ### 4. Protect response and finish
 
 `packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer,
-request and exchange, removes unlisted headers and withholds bytes until approval. The request
+request and exchange, removes unlisted headers, and withholds bytes pending approval. The request
 deadline bounds the first byte. On progress, `renewResponse` checks policy at most once every
-15 seconds, including during outages. Unavailability preserves the deadline; denial cuts the
-stream. Recovery can renew before expiry. A shorter authenticated peer lifetime caps leases
-and held responses despite later progress.
-Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
+15 seconds, including outages. Unavailability preserves the deadline; denial cuts the stream;
+recovery can renew before expiry. Authenticated peer expiry caps leases and held responses
+despite progress. Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
 `openai-responses.ts:isResponsesEvent` validates Responses envelopes, including
 response-only null local-tool metadata and the optional effective image policy.
-Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
-joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
-refuse. A reasoning summary part opens only at the next index; an unopened or
-skipped summary delta withholds the response. Reasoning text has no part event:
-its next content index opens on the first delta, not a completion; a gap still withholds it.
-Each index is scanned alone, so material split across one part is withheld when
-another part's delta arrives between the halves.
+Unknown or invalid fields withhold all bytes. Protection scans SDK snapshots,
+joined assistant text and completed/streamed Codex Plans, refusing ambiguous order or indexes.
+Reasoning summary parts open only at the next index; unopened or skipped summary deltas withhold bytes.
+Reasoning text has no part event: its first delta, not completion, opens the next content index;
+gaps withhold. Per-index scans withhold material split within a part despite interleaved deltas.
 Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-preserves safe bytes. The origin already received the credential.
+preserves safe bytes. The origin received the credential.
 
 Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
-Failure withholds bytes; success still requires checking cancellation and deadline.
+Failure withholds bytes; success requires cancellation and deadline checks.
 
 Structured OpenAI `invalid_api_key` can establish rejection; a bare 401 cannot. At
 its next scheduled check, the prepared owner excludes a positively rejected version.
 Concurrent owners coalesce replacement; uncertain issuance blocks it; late feedback
 cannot invalidate its successor. GitHub metadata has no positive rejection classifier.
 
-Erase material after response handling or at deadline. Only a refusal before
-permission can settle as undispatched. After possible permission, inspect the
-exact attempt without retrying; returning bytes does not prove delivery.
+Erase material after response handling or at deadline. Only pre-permission refusals
+can settle as undispatched. Inspect any possibly permitted attempt without retrying;
+returned bytes do not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` selects HTTP
-Responses with local tools. It disables provider tools, WebSockets, and retries.
-Startup probes also disable retries.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` uses HTTP Responses and
+local tools, disabling provider tools, WebSockets and retries (including startup probes).
 
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
-applies the [request policy](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-through `openai-responses.ts:responsesRequestFailure` before Secret resolution. The
-grant selects model and destination. Resumed reasoning input can carry
-`content: null`. The classifier checks inline raster data in user content and
-structured local tool output before Secret resolution; the exchange still bounds
-the complete serialized request.
+checks the [request policy](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
+via `openai-responses.ts:responsesRequestFailure` before Secret resolution. The grant binds
+the request model and destination. Inline rasters are allowed in user content and structured local tool
+output; resumed reasoning accepts `content: null`. The signed exchange bounds the complete
+serialized request.
 
 ### 6. Reduce the live credential policy
 
@@ -353,8 +348,9 @@ None.
 
 ## Changelog
 
+- 2026-11-19 12:50: Condense request and response flow. (authoring-run/325438da-aa59-4666-b988-77550741b87d - 8f58785f4626fb1e844b0c2e1e1578e0a60b3c75)
 - 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
-- 2026-11-19 04:26: Admit inline raster input through the Responses classifier while retaining the request bound. (authoring-run/7ccb9fb8-c9b6-440b-90a2-e9331fc81393 - f6443620ddc03fea6e7799367d723278f11fe06f)
+- 2026-11-19 04:26: Admit inline rasters within the request bound. (authoring-run/7ccb9fb8-c9b6-440b-90a2-e9331fc81393 - f6443620ddc03fea6e7799367d723278f11fe06f)
 - 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
