@@ -265,6 +265,8 @@ export async function commitAckProxy(databaseUrl, options = {}) {
       }
       const held = heldCommit;
       heldCommit = undefined;
+      // A forwarded COMMIT is no longer abandoned; its pooled session stays open.
+      heldBackendPid = undefined;
       held.upstream.write(held.frame);
     },
     /**
