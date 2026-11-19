@@ -98,8 +98,17 @@ A skipped job does not verify the installed Agent workflow.
 Use the `qa-openshell-k3d` pull request label to select the Kubernetes
 [OpenShell test](../openshell.md#guided-native-openclaw-redeployment).
 It starts a disposable installation with a Sandbox Driver, enables the same
-audit setting, and reads the turn and model-call records from two dedicated
-OpenClaw revisions.
+audit setting, and sends a normal chat message to each of two dedicated
+OpenClaw revisions. It checks the reply, the worker that ran the turn, and
+the session, turn, and model-call records in the API and PostgreSQL. A
+separate check uses a tool and reads a file after redeployment.
+
+For embedded OpenClaw and dedicated Codex, the smoke test rejects a turn
+admission in PostgreSQL. It checks that the model provider received no
+request, restores writes, and sends a new message. The Codex test also
+checks a provider retry, cancellation, and a Gateway restart. The embedded
+test sends a message with audit disabled and checks that the revision has
+no runtime audit records.
 
 ## Files
 

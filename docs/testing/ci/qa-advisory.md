@@ -9,10 +9,8 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Scheduled QA runs Console Secret management on Compose/Kubernetes, OpenShell
-security and lifecycle files, local installation, and OIDC Agent chat. Jobs use
-real dependencies on disposable installations. Results are advisory, not merge
-or publication gates.
+Disposable installations test Console Secrets on Compose and Kubernetes, OpenShell security
+and lifecycle, local installation, and OIDC Agent chat with real dependencies. Results are advisory.
 
 <a id="when-it-runs"></a>
 
@@ -24,6 +22,7 @@ or publication gates.
 | Manual run of `qa-advisory.yml` on `main`          | All four groups                                                              |
 | Eligible PR with `full-qa`                         | All four groups                                                              |
 | Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                       |
+| Eligible PR with only `qa-openshell-k3d`           | Kubernetes OpenShell first-Agent job only                                    |
 | Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                             |
 | Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                      |
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
