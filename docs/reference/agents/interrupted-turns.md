@@ -85,8 +85,8 @@ See [native authority](../agent-native-admin.md#native-authority-and-drift).
 A surviving Codex turn can finish before adoption. Recovery waits for up to two
 minutes of polling and refuses takeover if it stays active; an in-flight read
 keeps its native RPC timeout. The reply then tells the user that the Gateway
-restarted, that the work still runs in the Agent's workspace and its result is
-not in this reply, and to send a new message after it finishes. Completed or explicitly cancelled work does not
+restarted, that the work is still running and its result is not in this
+reply, and to send a new message after it finishes. Completed or explicitly cancelled work does not
 become eligible merely because a Gateway starts.
 
 This is best-effort continuation. It does not guarantee exactly-once external

@@ -792,7 +792,7 @@ test("redeploy after explicit Stop keeps the old native endpoint closed", async 
 });
 
 // While it reconnects, the Agent UI probes GET /healthz and treats 401 or 403 as a sign-in or
-// access problem (deploy/runtime/openclaw-control-ui-browser-reconnect.patch).
+// access problem; when its configuration request is refused too, it opens its sign-in dialog.
 test("an unreachable Gateway or a deployment answers an authorized probe 503, a stop shows a page, and outsiders see neither", async (t) => {
   const context = await createNativeAdminFixture(t, {
     exclusiveReplacement: (revision) => revision.revision === 2,
@@ -800,7 +800,7 @@ test("an unreachable Gateway or a deployment answers an authorized probe 503, a 
   trustLocalUpstreamCertificate(t, context.upstream.cert);
   const host = nativeAuthority((await nativeStatus(context)).data);
   const readOnly = await createReadOnlySession(context, "native-transition-reader");
-  // The Agent UI's "Reconnect in browser" link is a user-activated page load of /.
+  // The sign-in dialog's "Sign in" button opens / in a new tab: a user-activated page load.
   const navigation = {
     accept: "text/html,application/xhtml+xml",
     "sec-fetch-mode": "navigate",

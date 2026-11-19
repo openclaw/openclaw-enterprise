@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-19"
-last_updated_session: "authoring-run/099c1a03-0e25-4504-9cf7-2f62d1cfa035"
+last_updated_session: "authoring-run/b54d6eb9-13cb-4072-96e2-2e285cde2402"
 ---
 
 # Production image upgrade flow
@@ -80,7 +80,7 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`internal/occcli/installation_upgrade.go:installationUpgradeCommand` launches `scripts/upgrade-production:main`. Plan checks profile, images and HEAD offline. Status reads markers. Other operations exec `scripts/upgrade-production-images`.
+`internal/occcli/installation_upgrade.go:installationUpgradeCommand` runs `scripts/upgrade-production:main`. Plan validates profile/images/HEAD. `report_status` compares marker scans. Writes exec `scripts/upgrade-production-images`.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
@@ -168,8 +168,10 @@ Controller ownership addresses EKS's standalone-Pod limitation; verify enforceme
 
 Preflight leaves writers serving. `scripts/upgrade-preflight-state.py` records create intent and acknowledged UIDs. `scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight` confirms Jobs and children are gone before deleting dependencies. [Interrupted cleanup](coordinated-production-upgrade/preflight-cleanup.md) uses these records.
 
-Reference switches recheck Secrets after cleanup.
-`--preflight-only` exits unprepared. If an original-worker requirement blocks upgrade, it exits 1 after checks and cleanup. `startup-preflight-passed` records startup and cleanup. Upgrade rechecks inventory with fresh evidence.
+Recheck switch Secrets after cleanup. Preflight exits unprepared. For an
+original-worker blocker, preflight writes `preflight-blocked-original-worker`
+and exits 1. `startup-preflight-passed` records checks and cleanup.
+Upgrade refreshes inventory.
 Preparation locks candidates, inventory and target/parameter hashes. `scripts/upgrade-production-images:interrupted_upgrade`
 retains the lock and skips cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`.
 Before unlocking, confirm termination and reconcile accepted operations/resources.
@@ -352,6 +354,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-19 12:44: Compare status markers. (authoring-run/b54d6eb9-13cb-4072-96e2-2e285cde2402 - a02224a7e22516f958546a249ddcbfa9bfcd6012)
+- 2026-11-19 12:31: Trace standalone preflight status. (authoring-run/95ab0282-a9eb-46db-9c6b-bd4cce4ee6ea - a02224a7e22516f958546a249ddcbfa9bfcd6012)
 - 2026-11-19 11:30: Trace candidate rehearsal when retained Agents require the original worker. (authoring-run/099c1a03-0e25-4504-9cf7-2f62d1cfa035 - 6679017155741810c2ae1bcbacba05a3eb59f3ec)
 
 - 2026-11-18 10:52: Trace Installation CLI planning, status and handoff. (authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd - aeb385b97974a6bd729f58dd73a44d518aec1edc)

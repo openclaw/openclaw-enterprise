@@ -309,12 +309,12 @@ the OCE login.
 If a refreshed tab says **Agent version changed**, choose **Return to console**,
 then open the Agent again. The old session cannot cross a deployment.
 
-If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
-may have expired or your access changed. After any sign-in, OCE rechecks your
-access and returns you to that Agent’s detail page. Select **Open Agent UI** to
-continue. With an older runtime, open the Agent root or console page for the
-same recovery. If it shows **Agent unavailable**, open the Agent in the
-console; deploy a stopped Agent.
+If an open Gateway tab shows **Sign in to continue loading content**, select
+**Sign in**. Your sign-in may have expired or your access changed. A new tab
+opens; after any sign-in, OCE rechecks your access and shows that Agent’s detail
+page. Return to the first tab and select **Check again**; it reconnects with your
+draft. If the new tab shows **Agent unavailable**, open the Agent in the console;
+deploy a stopped Agent.
 
 If the Agent host returns `503 DEPENDENCY_UNAVAILABLE` or **Agent not responding**
 outside a deployment, check `occ agent runtime`, the controller and session store.

@@ -69,7 +69,7 @@ The [native recovery flow](../flows/harness-restart-recovery.md) describes the
 workspace reconnect and remote-turn waits, including their refusal conditions.
 
 Run against images built from the final change, with unchanged upstream scope
-policy and the Harness-readiness bridge. The native image checks select upstream's
+policy and the pinned source's restart waits. The native image checks select upstream's
 `session-restart-resume.scope.test.ts`, recovery, custody, and session-entry tests.
 They cover normal unscoped eligibility and scope mismatch refusal, including
 previously scoped records. These source tests do not prove a real model workflow.

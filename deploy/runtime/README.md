@@ -37,20 +37,15 @@ The selected source preserves `on-request` when plugins use MCP elicitation,
 reconnects `connect --ephemeral` with saved device credentials after its setup
 code expires, and retains the original caller's authority while required-worker
 placement continues after session creation is acknowledged. Scope, role, and
-profile revocation still stop dispatch. The build applies
-`openclaw-required-worker-authority-regression.patch` and runs its Gateway
-public-RPC cases offline: placement before and after acknowledgement,
-disconnect, and committed role, scope, and profile revocation.
+profile revocation still stop dispatch.
 [OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds an opt-in wait for admitted work and final writes.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
-the native full-access Codex profile, and
-`openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
-after the Control UI's access is refused. Remove each once upstream matches.
+the native full-access Codex profile. Remove it once upstream matches.
 `openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
 private Linux PID namespace stopped recover its Gateway records, or, inside it,
 any record whose PID is dead. OC compares its lock fingerprint first.
 Unattributed owners need operator confirmation.
-The [restart recovery bridge](../../docs/flows/harness-restart-recovery.md) waits for workspace reconnection and surviving Codex work before continuing.
+[Restart recovery](../../docs/flows/harness-restart-recovery.md) in the selected source waits for workspace reconnection and surviving Codex work before continuing.
 The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
 final delivery retains its progress window after a long Codex turn.
 
@@ -192,7 +187,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/58e735cba379598a3de6955f3985ccf5a8783319/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/82b682c627ba8bfc2c2bd51cf46ad8f51c583857/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
