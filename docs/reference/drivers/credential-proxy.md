@@ -100,10 +100,14 @@ Material stays in the trusted resolver, sender or verified recipient. Workload
 configuration receives safe references or markers, not issuer inputs or provider
 tokens. Keep material out of logs, receipts and public status. A material read
 permits receipt or installation only; it does not authorize an upstream send.
-For a static exchange, OCC pins the selected Proxy owner and source control before
-looking up Secret metadata. Before reading material, it verifies that the owner,
-control, Backend, sender, resolver and registered provider still match; otherwise
-it refuses the exchange.
+Static deployment and exchange require one provider registration whose ID and
+generation match the admitted reference, whose type matches the source, and whose
+lifecycle supports static credentials. Deployment checks again before invoking
+runtime credential provisioning and before calling the revision store. A later
+refusal cannot undo provisioning already started. Exchange pins the Proxy owner and source
+control before Secret metadata lookup, then rechecks them, the Backend, sender,
+resolver and provider before reading material. Another registration of the same
+source type cannot replace the admitted registration.
 
 ## Lifecycle
 
