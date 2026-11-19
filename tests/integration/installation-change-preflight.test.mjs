@@ -1,6 +1,5 @@
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -21,7 +20,6 @@ import {
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
 import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
-import { validateOpenShellTokenGrantBundle } from "../../apps/controller/src/drivers/egress-proxy/openshell-token-grant.ts";
 import { generateInstallationCheck } from "../../deploy/helm/src/generate-installation-check.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -69,11 +67,6 @@ const issuerCaValues = {
   ...preparedGitHubValues,
   "preparedGitHub.issuerCaConfigMapName": "prepared-github-issuer-ca",
 };
-const tokenGrantValues = {
-  ...preparedGitHubValues,
-  "egressAuthority.tokenGrant.enabled": "true",
-  "egressAuthority.tokenGrant.bundleConfigMapName": "supervisor-jwt-bundle",
-};
 
 async function render(values, isUpgrade) {
   const objects = await parseProductionChart(
@@ -106,7 +99,6 @@ test(
       { ...repositoryCredentialValues, ...themeValues },
       preparedGitHubValues,
       issuerCaValues,
-      tokenGrantValues,
     ]) {
       const { job, hook, api } = await render(values, true);
       const install = await render(values, false);
@@ -202,7 +194,6 @@ test(
         environment(server, "OCC_CONFIG_PATH"),
         environment(server, "OCC_EGRESS_AUTHORITY_PORT"),
         environment(server, "OCC_OPENSHELL_GIT_PORT"),
-        environment(server, "OCC_TOKEN_GRANT_PORT"),
         ...("gatewayRouting.enabled" in values
           ? [environment(server, "OCC_CHART_GATEWAY_ROUTING")]
           : []),
@@ -214,10 +205,6 @@ test(
         "egressAuthority.enabled" in values ? "9444" : "disabled",
       );
       assert.equal(environment(check, "OCC_OPENSHELL_GIT_PORT").value, "disabled");
-      assert.equal(
-        environment(check, "OCC_TOKEN_GRANT_PORT").value,
-        "egressAuthority.tokenGrant.enabled" in values ? "9445" : "disabled",
-      );
       // Each file the check reads comes from the API's own volume at the API's path.
       const expected = ["installation-startup"];
       if (theme) {
@@ -230,9 +217,6 @@ test(
       // reads the custody key only after it opens the database, so the hook never mounts it.
       if ("preparedGitHub.issuerCaConfigMapName" in values) {
         expected.push("prepared-github-issuer-ca");
-      }
-      if ("egressAuthority.tokenGrant.enabled" in values) {
-        expected.push("token-grant-bundle");
       }
       assert.deepEqual(
         check.volumeMounts.map(({ name }) => name),
@@ -394,79 +378,6 @@ test("the upgrade hook check passes an Installation API startup accepts", async 
   assert.equal(result.stderr, "");
 });
 
-test("the upgrade hook checks the public token grant bundle before migration", async (t) => {
-  const directory = await temporaryDirectory(t, "occ-token-grant-bundle-");
-  const bundlePath = join(directory, "bundle.json");
-  const configuration = credentialProxyInstallation();
-  configuration.drivers.credential_proxy.configuration.tokenGrant = {
-    endpoint: "https://authority.example.test:9445/token",
-    port: 9445,
-    trustDomain: "example.test",
-    bundlePath,
-  };
-
-  const result = await runCheck(t, configuration);
-  assert.equal(result.status, 1, result.stderr || result.stdout);
-  assert.match(result.stderr, /token grant JWT trust bundle/i);
-  assert.equal(result.stdout, "");
-
-  const invalidKey = { use: "jwt-svid", kty: "EC", kid: "private-fixture-marker", crv: "P-256" };
-  const rsaKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const rsaKey = {
-    ...rsaKeys.publicKey.export({ format: "jwk" }),
-    kid: "rsa-test",
-    use: "jwt-svid",
-  };
-  const modulus = Buffer.from(rsaKey.n, "base64url");
-  const evenModulus = Buffer.from(modulus);
-  evenModulus[evenModulus.length - 1] &= 0xfe;
-  const exponentOne = { ...rsaKey, e: "AQ" };
-  for (const [reason, invalid] of [
-    ["invalid JSON", '{"private-fixture-marker":'],
-    ["no keys", JSON.stringify({ keys: [] })],
-    ["incomplete EC key", JSON.stringify({ keys: [invalidKey] })],
-    ["exponent one", JSON.stringify({ keys: [exponentOne] })],
-  ]) {
-    await writeFile(bundlePath, invalid, "utf8");
-    const result = await runCheck(t, configuration);
-    assert.equal(result.status, 1, `${reason}: ${result.stderr || result.stdout}`);
-    assert.match(result.stderr, /token grant JWT trust bundle/i);
-    assert.doesNotMatch(result.stderr, /private-fixture-marker/);
-    assert.equal(result.stdout, "");
-  }
-
-  // Exercise additional RSA encodings through the same validator without restarting the hook.
-  for (const [reason, fields] of [
-    ["even exponent", { e: "BA" }],
-    ["empty exponent", { e: "" }],
-    ["invalid exponent encoding", { e: "!!!!" }],
-    ["padded exponent", { e: `${rsaKey.e}=` }],
-    ["exponent equal to modulus", { e: rsaKey.n }],
-    ["short modulus", { n: Buffer.alloc(256, 0x7f).toString("base64url") }],
-    ["even modulus", { n: evenModulus.toString("base64url") }],
-    [
-      "leading zero in modulus",
-      { n: Buffer.concat([Buffer.alloc(1), modulus]).toString("base64url") },
-    ],
-  ]) {
-    await writeFile(bundlePath, JSON.stringify({ keys: [{ ...rsaKey, ...fields }] }), "utf8");
-    await assert.rejects(
-      validateOpenShellTokenGrantBundle(bundlePath),
-      /JWT trust bundle/i,
-      reason,
-    );
-  }
-
-  const { publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  const ecKey = { ...publicKey.export({ format: "jwk" }), kid: "ec-test", use: "jwt-svid" };
-  for (const keys of [[rsaKey], [invalidKey, exponentOne, ecKey]]) {
-    await writeFile(bundlePath, JSON.stringify({ keys }), "utf8");
-    const accepted = await runCheck(t, configuration);
-    assert.equal(accepted.status, 0, accepted.stderr);
-    assert.equal(accepted.stdout, "installation-startup-ready\n");
-  }
-});
-
 test(
   "the upgrade hook refuses private Gateway routing that differs from the chart",
   tooling,
@@ -604,12 +515,8 @@ test(
       const [check] = (await render(values, true)).hook.initContainers;
       return Object.fromEntries(
         check.env
-          .filter(({ name }) =>
-            [
-              "OCC_EGRESS_AUTHORITY_PORT",
-              "OCC_OPENSHELL_GIT_PORT",
-              "OCC_TOKEN_GRANT_PORT",
-            ].includes(name),
+          .filter(
+            ({ name }) => name === "OCC_EGRESS_AUTHORITY_PORT" || name === "OCC_OPENSHELL_GIT_PORT",
           )
           .map(({ name, value }) => [name, value]),
       );
@@ -622,37 +529,6 @@ test(
       const accepted = await runCheck(t, reachable, {}, () => enabled);
       assert.equal(accepted.status, 0, accepted.stderr);
       assert.equal(accepted.stdout, "installation-startup-ready\n");
-    }
-
-    // The same preflight guards the request token listener before a Recreate upgrade stops the API.
-    const requestCredentials = structuredClone(reachable);
-    requestCredentials.drivers.credential_proxy.configuration.tokenGrant = {
-      endpoint: "https://authority.example.test:9445/token",
-      port: 9445,
-      trustDomain: "example.test",
-      bundlePath: "/etc/openclaw/egress/token-grant/bundle.json",
-    };
-    const tokenEnvironment = await chartEnvironment(tokenGrantValues);
-    const wrongBundle = structuredClone(requestCredentials);
-    wrongBundle.drivers.credential_proxy.configuration.tokenGrant.bundlePath =
-      "/unmounted/bundle.json";
-    for (const [configuration, environment, diagnostic] of [
-      [requestCredentials, enabled, /Helm egressAuthority.tokenGrant.enabled is false/],
-      [
-        requestCredentials,
-        { ...tokenEnvironment, OCC_TOKEN_GRANT_PORT: "9555" },
-        /Helm egressAuthority.tokenGrant.port is 9555/,
-      ],
-      [
-        wrongBundle,
-        tokenEnvironment,
-        /bundlePath must be \/etc\/openclaw\/egress\/token-grant\/bundle.json/,
-      ],
-    ]) {
-      const refused = await runCheck(t, configuration, {}, () => environment);
-      assert.equal(refused.status, 1);
-      assert.match(refused.stderr, /CHART_LISTENER_MISMATCH/);
-      assert.match(refused.stderr, diagnostic);
     }
 
     const loopback = structuredClone(reachable);

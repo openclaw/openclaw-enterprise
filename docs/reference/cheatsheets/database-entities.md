@@ -294,16 +294,6 @@ If the installation result is unknown, `state` stays `installing`. The sender mu
 - `fence` (advances before each attempt to install a token), `state` (`observed`, `installing`, or `installed`)
 - `attempt_id`, `material_version` (identify the prepared token without storing its value here)
 
-### `request_credential_approvals`
-
-Stores one-use request credential approvals and retains correlation keys through the authenticated replay horizon.
-
-- `recipient_id`, `request_id`, `binding_id`
-- `namespace_id`, `agent_id`, `revision_id`
-- `policy_digest`, `driver_ref`
-- `expires_at` (redemption deadline), `consumed`
-- `replay_until_at` (correlation retention deadline, including consumed approvals)
-
 ### `egress_send_receipts`
 
 Retains exact sender attempts and safe observations independently of final delivery proof.
@@ -512,7 +502,6 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes, Age
 - `claim_token`
 - `audit_attempt_id`
 - `lease_expires_at`
-- `candidate_authorized` records the Worker's permission for an exact candidate preparation; only an owned readiness deferral can retain it. Existing work defaults to false. The API and Worker share the trusted `occ_app` role; the constraint checks Work ownership, not the writer's process identity.
 - `completed_at`
 - `reason_code`
 - `result_data`

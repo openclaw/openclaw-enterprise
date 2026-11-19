@@ -1,17 +1,15 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1
+last_updated_session: authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes GitHub identity replies.
-See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+OpenClaw Control Plane (OCC) authorizes the supervisor to release GitHub identity replies. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
-[Online model requests](credential-source-egress/model-requests.md) have their own approval and release flow.
 
 ## Entry Points
 
@@ -26,7 +24,8 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ### Follow the metadata GET
 
-This route admits `github-app-metadata` for `acme/widgets` (ID `12345`) at `https://api.github.com`.
+For an admitted `github-app-metadata` route to repository `12345`,
+`acme/widgets`, at `https://api.github.com`:
 
 1. **Match.** The supervisor binds the bodyless `GET /repos/acme/widgets` reply
    to its exchange. The adapter checks method, URL, headers and body against the route.
@@ -41,8 +40,9 @@ This route admits `github-app-metadata` for `acme/widgets` (ID `12345`) at `http
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-The supervisor withholds ID `67890`. Credential-free requests use the same filters,
-record `no_material_required`, and omit credential headers.
+ID `67890` under the same name is withheld after GitHub receives the request.
+The credential-free profile applies the same filters, records
+`no_material_required` and sends no credential header.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
@@ -60,12 +60,11 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-Bundled OpenShell rejects new strict static OpenAI use through
+Bundled OpenShell rejects new static OpenAI use via
 `InstalledDriver.assertNewStaticProviderUse`: source refusal precedes material
-reads; deployment refusal precedes counterpart probes. Full request-time model
-configuration can separately admit an [online model source](credential-source-egress/model-requests.md).
-Retained revisions keep their original provider, authorization, withdrawal and
-cleanup under the [Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
+reads; deployment refusal precedes counterpart probes. Retained revisions keep
+their provider, authorization, withdrawal and cleanup under the
+[current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
 OCC checks source and Secret grants; adoption requires consent. Version 3 binds
 Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from saved Harness
@@ -323,12 +322,15 @@ verifies the original fence, recipient, material, policy and request without rea
 
 ## Debugging and Verification
 
-Verify model execution, custody, and NetworkPolicy with [separate origin and caller checks](../testing/static-egress.md).
-Correlate `openclaw.egress.authorize` by actor, source, revision, and time. Refusals before reservation may reuse `requestId`.
-Responses `classificationRule` comes from
+Follow the [testing guide](../testing/static-egress.md) to qualify model execution,
+response custody and NetworkPolicy; observe origin and caller separately.
+`openclaw.egress.authorize` rows describe attempts. Pre-reservation refusals
+can reuse `requestId`; correlate actor, source, revision and time.
+Responses `classificationRule` maps to
 `apps/controller/src/drivers/egress-proxy/openai-responses.ts:responsesRequestFailure`
-after route and model checks. Numbers identify root slots. Rule 1 hides unknown names.
-Absent rules name no slot. Audit excludes values. Caller refusals stay generic.
+after route and model eligibility checks. Numbers identify root slots; audit rule 1
+hides unknown names. Values are excluded; absent rules identify no slot.
+Caller refusals stay generic.
 
 ## Related docs
 
@@ -345,13 +347,9 @@ None.
 
 ## Changelog
 
-- 2026-11-19 09:25: Reconcile static material checks and online model admission with main. (authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1 - abc218e67e3325ea0db6ae3687413abd34713aff)
-
 - 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
-
-- 2026-11-18 06:18: Distinguish retired strict admission from configured online model sources. (authoring-run/8402abbe-3326-4701-82d2-ef491121ad47 - a87a1af97472f3dcbb9c5a5d4cda835212446e00)
 
 - 2026-11-12 19:08: Preserve source-free Proxy admission while bypassing it for ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
 

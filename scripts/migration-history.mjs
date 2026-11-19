@@ -121,9 +121,6 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 82 && completedCount > 82) {
     return "preNativeRestartRecovery";
   }
-  if (count === 83 && completedCount > 83) {
-    return "preRequestCredentialApprovals";
-  }
   if (count === completedCount) {
     return "completed";
   }

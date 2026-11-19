@@ -13,7 +13,6 @@ import type {
 export { HARNESS_EGRESS_ENROLLMENT_PATH } from "./harness-egress-enrollment.ts";
 
 export interface HarnessEgressEnrollment {
-  readonly authorization?: ProxyPlan["authorization"];
   readonly routeCount: number;
   readonly inference: boolean | "credential_source";
   readonly plan: EgressRef;
@@ -26,7 +25,6 @@ export function harnessEgressEnrollment(plan: ProxyPlan): HarnessEgressEnrollmen
   const { installationId, namespaceId, agentId, servicePrincipalId, revisionId, executionId } =
     plan.execution;
   return {
-    ...(plan.authorization && { authorization: plan.authorization }),
     ...(plan.repositoryGitAuthorization && {
       repositoryGitAuthorization: plan.repositoryGitAuthorization,
     }),
@@ -63,10 +61,9 @@ export function signComputeExecutionRelease(
     sandboxId,
     instanceId: enforcement.instanceId,
     configurationId: enforcement.configurationId,
-    ...(plan.repositoryGitAuthorization === undefined &&
-      plan.authorization !== "online-request" && {
-        peerKeyId: enforcement.peerKeyId,
-      }),
+    ...(plan.repositoryGitAuthorization === undefined && {
+      peerKeyId: enforcement.peerKeyId,
+    }),
   };
   if (
     !Object.values(installation).every((value) => typeof value === "string" && value.length > 0)

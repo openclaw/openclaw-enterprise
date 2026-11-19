@@ -47,10 +47,6 @@ export type {
   CredentialProxyDriver,
 } from "./drivers/credential-proxy/index.ts";
 export type {
-  CredentialHttpRequest,
-  RequestCredentialInput,
-  RequestCredentialGrant,
-  RequestCredentialMaterial,
   CredentialProxyBinding,
   CredentialProxyExchange,
   EgressPeer,
@@ -594,10 +590,7 @@ export type CredentialSource = CredentialSourceOwner & {
 
 export interface CredentialSourceMetadata {
   readonly ownerCapability: CredentialSourceOwnerCapability;
-  readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention"> & {
-    /** Live model protection; unavailable when its exact registration cannot be resolved. */
-    readonly protection?: "exact-dispatch" | "request-time" | "unavailable";
-  };
+  readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;

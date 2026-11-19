@@ -14,10 +14,7 @@ import {
 } from "../embedded-gateway-owner.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
-import {
-  HARNESS_EGRESS_ENROLLMENT_HELPER,
-  LEGACY_HARNESS_EGRESS_ENROLLMENT_HELPER,
-} from "../harness-egress-enrollment.ts";
+import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
   DELIBERATE_RESTART_MESSAGE,
@@ -4253,7 +4250,6 @@ function agentRuntimeEntrypoint({
   computeOwned = false,
   withNode = false,
   patRecovery = false,
-  modelRequestEnrollment = false,
   boxHttps = false,
   explicitProxy = false,
 } = {}): string {
@@ -4269,7 +4265,7 @@ ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_PLUGIN_STDIO_HELPER}
-${modelRequestEnrollment ? HARNESS_EGRESS_ENROLLMENT_HELPER : LEGACY_HARNESS_EGRESS_ENROLLMENT_HELPER}
+${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 ${computeOwned ? CODEX_READINESS_HELPER + "\n" : ""}
 // codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
@@ -4959,6 +4955,16 @@ if (!protectedStartup) {
 `;
 }
 
+export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint();
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ protected: true });
+// Compute owns these mutable Pod/process launches. Provider-owned immutable
+// Sandbox commands keep their existing bytes and provider readiness contract.
+export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({ computeOwned: true });
+export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint({
+  computeOwned: true,
+  protected: true,
+});
+
 const WORKSPACE_NODE_SETUP_CODE_HELPER = String.raw`
 // Match OpenShell's provider-file limit and the native connect target-file limit.
 // Bound both delivered bytes and the resulting base64url code before retirement.
@@ -5590,17 +5596,20 @@ for (const slot of [...processes].reverse()) start(slot);${role === "file-node" 
 `;
 }
 
+const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
+const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
+const providerCodexArguments = nodeProgramArguments(providerCodexChild);
+const protectedProviderCodexArguments = nodeProgramArguments(protectedProviderCodexChild);
 // Only split the exact provider launcher Compute rendered. An unknown or customized
 // command must never silently lose its initialization or gain a companion process.
 export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifier: string) {
-  const launcher = codexLaunchEntrypoint({
-    providerOwned: true,
-    protected: false,
-    withNode: true,
-    strandsBox: true,
-    explicitProxy: true,
-  });
-  const expected = [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(setupVerifier + launcher)];
+  const args = nodeProgramArguments(
+    agentRuntimeEntrypoint({ withNode: true, explicitProxy: true }),
+  );
+  const expected = [
+    ...RUNTIME_WRAPPER_COMMAND,
+    ...nodeProgramArguments(setupVerifier + agentWithNodeEntrypoint(args, true)),
+  ];
   if (command.length !== expected.length || expected.some((part, i) => part !== command[i])) {
     return undefined;
   }
@@ -5626,13 +5635,35 @@ export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifie
   };
 }
 
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(providerCodexArguments);
+export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  protectedProviderCodexArguments,
+);
+export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, computeOwned: true })),
+);
+export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  nodeProgramArguments(
+    agentRuntimeEntrypoint({ withNode: true, computeOwned: true, protected: true }),
+  ),
+);
+
+let patEntrypoint: string | undefined;
+const explicitProxyLaunches = new Map<string, string>();
+let compactPatLaunch: string | undefined;
+let compactProviderLaunch: string | undefined;
+let compactProtectedLaunch: string | undefined;
+
+function compactWorkspaceNodeLaunch(child: string): string {
+  return agentWithNodeEntrypoint(compactNodeChildArguments(child));
+}
+
 export interface CodexLaunch {
   readonly providerOwned: boolean;
   readonly protected: boolean;
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
-  readonly modelRequestEnrollment?: boolean;
   readonly strandsBox?: boolean;
   /**
    * A provider-owned launch whose Sandbox may name an explicit egress proxy in the Harness
@@ -5642,99 +5673,69 @@ export interface CodexLaunch {
   readonly explicitProxy?: boolean;
 }
 
-// Only the finite set of launch choices belongs in the cache. A revision ID or
-// enrollment payload must never become part of a shared program.
-const codexEntrypoints = new Map<string, string>();
-
 export function codexLaunchEntrypoint(
   {
     providerOwned,
     protected: protectedLaunch,
     openShellProgram,
-    withNode = false,
-    workspaceSetup = false,
-    modelRequestEnrollment = false,
-    strandsBox = false,
-    explicitProxy = false,
+    withNode,
+    workspaceSetup,
+    strandsBox,
+    explicitProxy,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
-  const computeOwned = !providerOwned;
-  const patRecovery = providerOwned && !protectedLaunch && openShellProgram === "pat";
-  const useExplicitProxy = providerOwned && openShellProgram === undefined && explicitProxy;
-  const compact =
-    withNode &&
-    providerOwned &&
-    (patRecovery || (workspaceSetup && openShellProgram !== undefined));
-  const boxLaunch = providerOwned && strandsBox && !patRecovery && !compact;
-  const boxHttps = boxLaunch && !withNode && (useExplicitProxy || !protectedLaunch);
-  const boxHookDirectory = boxLaunch && withNode;
-  const key = JSON.stringify([
-    computeOwned,
-    protectedLaunch,
-    patRecovery,
-    withNode,
-    compact,
-    modelRequestEnrollment,
-    useExplicitProxy,
-    boxHttps,
-    boxHookDirectory,
-  ]);
-  const cached = codexEntrypoints.get(key);
-  if (cached !== undefined) {
-    return cached;
+  if (!providerOwned) {
+    if (protectedLaunch) {
+      return withNode
+        ? COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+        : COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
+    }
+    return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
   }
-
-  const child = agentRuntimeEntrypoint({
-    protected: protectedLaunch,
-    computeOwned,
-    withNode,
-    patRecovery,
-    modelRequestEnrollment,
-    explicitProxy: useExplicitProxy,
-    boxHttps,
-  });
-  let program = child;
-  if (withNode) {
-    const args = compact ? compactNodeChildArguments(child) : nodeProgramArguments(child);
-    program = agentWithNodeEntrypoint(args, boxHookDirectory);
+  if (explicitProxy && openShellProgram === undefined) {
+    const key = `${protectedLaunch}:${Boolean(withNode)}:${Boolean(strandsBox)}`;
+    const cached = explicitProxyLaunches.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const child = agentRuntimeEntrypoint({
+      protected: protectedLaunch,
+      withNode: Boolean(withNode),
+      explicitProxy: true,
+      boxHttps: Boolean(strandsBox && !withNode),
+    });
+    const program = withNode
+      ? agentWithNodeEntrypoint(nodeProgramArguments(child), strandsBox)
+      : child;
+    explicitProxyLaunches.set(key, program);
+    return program;
   }
-  codexEntrypoints.set(key, program);
-  return program;
+  if (!protectedLaunch && openShellProgram === "pat") {
+    if (withNode) {
+      return (compactPatLaunch ??= compactWorkspaceNodeLaunch(
+        agentRuntimeEntrypoint({ withNode: true, patRecovery: true }),
+      ));
+    }
+    return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));
+  }
+  if (!withNode) {
+    if (strandsBox && !protectedLaunch) {
+      return agentRuntimeEntrypoint({ boxHttps: true });
+    }
+    return protectedLaunch ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (workspaceSetup && openShellProgram !== undefined) {
+    if (protectedLaunch) {
+      return (compactProtectedLaunch ??= compactWorkspaceNodeLaunch(protectedProviderCodexChild));
+    }
+    return (compactProviderLaunch ??= compactWorkspaceNodeLaunch(providerCodexChild));
+  }
+  if (strandsBox) {
+    const args = protectedLaunch ? protectedProviderCodexArguments : providerCodexArguments;
+    return agentWithNodeEntrypoint(args, true);
+  }
+  return protectedLaunch ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT;
 }
-
-export const AGENT_RUNTIME_ENTRYPOINT = codexLaunchEntrypoint({
-  providerOwned: true,
-  protected: false,
-});
-export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = codexLaunchEntrypoint({
-  providerOwned: true,
-  protected: true,
-});
-export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = codexLaunchEntrypoint();
-export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = codexLaunchEntrypoint({
-  providerOwned: false,
-  protected: true,
-});
-export const AGENT_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
-  providerOwned: true,
-  protected: false,
-  withNode: true,
-});
-export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
-  providerOwned: true,
-  protected: true,
-  withNode: true,
-});
-export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
-  providerOwned: false,
-  protected: false,
-  withNode: true,
-});
-export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = codexLaunchEntrypoint({
-  providerOwned: false,
-  protected: true,
-  withNode: true,
-});
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");

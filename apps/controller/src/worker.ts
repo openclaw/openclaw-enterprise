@@ -1317,8 +1317,6 @@ export class ControllerWorker {
   private stopYieldedThisPass = false;
   /** Each claim's work creation instant on this process's monotonic clock; see `workAgeMs`. */
   private readonly workOrigins = new WeakMap<ClaimedWork, number>();
-  private candidateClaim: ClaimedWork | undefined;
-  private enablingCandidate: Promise<void> | undefined;
 
   constructor(options: ControllerWorkerOptions) {
     this.metrics = options.metrics;
@@ -1605,12 +1603,6 @@ export class ControllerWorker {
     if (!this.stopping) {
       this.stopping = true;
       this.abort.abort();
-      const claim = this.candidateClaim;
-      if (claim !== undefined) {
-        // An enable already in flight must settle before shutdown revokes the same claim.
-        await this.enablingCandidate?.catch(() => {});
-        await this.revokeCandidate(claim);
-      }
     }
     // Let an in-flight OAuth exchange persist a rotated grant before closing its dependencies.
     await Promise.all([this.loop, this.connectionMaintenance]);
@@ -1677,7 +1669,6 @@ export class ControllerWorker {
             this.passOutcome = error instanceof WorkClaimLostError ? "claim_lost" : "error";
             throw error;
           } finally {
-            await this.revokeCandidate(claim);
             if (!this.stopYieldedThisPass) {
               this.stopYields.settled(claim.idempotencyKey);
             }
@@ -2159,7 +2150,6 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
-    candidate = false,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     if (!this.revisionPluginDriverAvailable(revision)) {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
@@ -2167,14 +2157,11 @@ export class ControllerWorker {
     this.validateExecutionAdmission(revision);
     const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
-      const prepared = await this.prepareRevisionPass(claim, revision, context, candidate);
+      const prepared = await this.prepareRevisionPass(claim, revision, context);
       timing?.observeReadiness(prepared.observation);
       return prepared;
     } catch (failure) {
       const error = primaryComputeFailure(failure);
-      if (candidate) {
-        await this.revokeCandidate(claim);
-      }
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
@@ -2215,7 +2202,6 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
-    candidate: boolean,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     // Preparing a revision can recreate its runtime, so it is no longer known stopped.
     this.stoppedPredecessors.delete(revision.id);
@@ -2229,7 +2215,7 @@ export class ControllerWorker {
       await this.stopPredecessors(claim, earlier);
     }
     try {
-      return await this.prepareAfterPredecessors(claim, revision, context, candidate);
+      return await this.prepareAfterPredecessors(claim, revision, context);
     } catch (error) {
       // A failed pass may stem from a predecessor that came back; sweep it again.
       for (const previous of earlier) {
@@ -2344,7 +2330,6 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
-    candidate: boolean,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     let prepared = context;
     if (revision.repositoryCredentials !== undefined) {
@@ -2359,9 +2344,6 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
-    if (candidate && revision.egressPlan?.authorization === "online-request") {
-      await this.authorizeCandidate(claim);
-    }
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
@@ -5605,7 +5587,7 @@ export class ControllerWorker {
     context: ComputeRevisionContext,
   ): Promise<RevisionDispatchResult> {
     return this.withClaimHeartbeat(claim, async () => {
-      const prepared = await this.prepareRevision(claim, revision, context, true);
+      const prepared = await this.prepareRevision(claim, revision, context);
       const observation = prepared.observation;
       context = prepared.context;
       if (!validRevisionObservation(observation, revision)) {
@@ -5621,7 +5603,7 @@ export class ControllerWorker {
       const held =
         ((revision.executionAdmission.version === 6 &&
           revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
-          ([5, 9].includes(revision.executionAdmission.version) &&
+          (revision.executionAdmission.version === 5 &&
             revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
@@ -6032,40 +6014,12 @@ export class ControllerWorker {
 
   /** Renews the lease and re-anchors the work's age (`workAgeMs`); false once the claim is lost. */
   private async renewClaim(claim: ClaimedWork): Promise<boolean> {
-    if (this.stopping) {
-      return false;
-    }
     const renewed = await this.queue.heartbeat(claim);
     if (renewed === undefined) {
       return false;
     }
     this.workOrigins.set(claim, performance.now() - renewed.ageMs);
     return true;
-  }
-
-  private async authorizeCandidate(claim: ClaimedWork): Promise<void> {
-    if (this.stopping) {
-      throw new ClaimLeaseLostError("WORKER_STOPPING");
-    }
-    this.candidateClaim = claim;
-    const enabling = this.queue.setCandidateAuthorization(claim, true);
-    this.enablingCandidate = enabling;
-    try {
-      await enabling;
-    } finally {
-      this.enablingCandidate = undefined;
-    }
-    if (this.stopping) {
-      throw new ClaimLeaseLostError("WORKER_STOPPING");
-    }
-  }
-
-  private async revokeCandidate(claim: ClaimedWork): Promise<void> {
-    if (this.candidateClaim !== claim) {
-      return;
-    }
-    await this.queue.setCandidateAuthorization(claim, false);
-    this.candidateClaim = undefined;
   }
 
   private async withClaimHeartbeat<T>(
@@ -6350,14 +6304,6 @@ export class ControllerWorker {
         }
       }
     }
-    const candidateContinues =
-      (resolved.outcome === "success" && resolved.revision !== undefined) ||
-      (resolved.outcome === "pending" &&
-        resolved.code === "REVISION_INCOMPLETE" &&
-        resolved.refusedCandidate === undefined);
-    if (isCandidateDeployment(claim) && !candidateContinues) {
-      await this.revokeCandidate(claim);
-    }
     if (
       resolved.outcome === "retry" &&
       claim.attemptCount >= this.maxAttempts &&
@@ -6583,7 +6529,7 @@ export class ControllerWorker {
         if (
           resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
           (activated.executionAdmission.version === 6 ||
-            ([5, 9].includes(activated.executionAdmission.version) &&
+            (activated.executionAdmission.version === 5 &&
               activated.egressPlan?.repositoryGitAuthorization === "online-request"))
         ) {
           // Re-enter normal preparation after custody can install material. Do not mark this
@@ -6744,7 +6690,6 @@ export class ControllerWorker {
     ) {
       return;
     }
-    await this.revokeCandidate(claim);
     const { namespace, agent, revision } = await this.state.read(async (view) => ({
       namespace: await view.namespaces.findNamespace(claim.namespaceId),
       agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),

@@ -2,7 +2,6 @@ import type {
   CredentialProxyBinding,
   CredentialProxyExchange,
   EgressExchangeOwner,
-  RequestCredentialInput,
 } from "../../credential-proxy-exchange.ts";
 import { repositoryGitDeliveryProfile } from "../repo/index.ts";
 
@@ -122,8 +121,6 @@ export interface EgressRoute {
 }
 
 export interface ProxyPlan {
-  /** Explicit online model profile. Absence retains exact-dispatch semantics. */
-  readonly authorization?: "online-request";
   readonly id: string;
   readonly generation: number;
   readonly execution: EgressExecution;
@@ -207,8 +204,6 @@ export interface EgressInstallation {
   readonly enforcement: {
     readonly instanceId: string;
     readonly configurationId: string;
-    /** Request-profile witness readable without acquiring a Worker-owned credential session. */
-    readonly requestConfigurationId?: string;
     readonly policyHash: string;
     readonly authorityScope: "execution";
     /** Public key bound by the adapter to this installation, never selected by a request. */
@@ -296,8 +291,6 @@ export interface EgressResponse {
 
 /** Installed trusted provider semantics; callers never supply code or an injection callback. */
 export interface CredentialProviderDefinition {
-  /** Installed provider enforcement semantics. Omission retains exact dispatch and response custody; source callers do not select this value. */
-  readonly authorization?: "online-request";
   readonly ref: EgressRef;
   readonly schemaVersion: 1;
   readonly sourceType: CredentialSourceType;
@@ -452,16 +445,6 @@ export interface CredentialPolicyWithdrawalOptions {
 }
 
 export interface CredentialProxyDriver extends Driver {
-  /** Explicitly qualified request authorization and independent material redemption. */
-  readonly requestTimeCredentials?: {
-    assertAvailable(signal: AbortSignal): Promise<void>;
-    /** Reobserve the recipient and the persisted request-profile fence in the API process. */
-    verifyRequestInstallation(
-      context: ProxyRevisionContext,
-      installation: EgressInstallation,
-      recipient: RequestCredentialInput["recipient"],
-    ): Promise<boolean>;
-  };
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
   readonly policyReduction?: CredentialPolicyReducer;
@@ -487,7 +470,7 @@ export interface CredentialProxyDriver extends Driver {
 /** Durable admission semantics. v7 adds verified Git policy reduction to exact dispatch. */
 export type ExecutionAdmission =
   | { readonly version: 2; readonly mode: "unprotected" }
-  | { readonly version: 3 | 4 | 5 | 6 | 7 | 8 | 9; readonly mode: "protected" };
+  | { readonly version: 3 | 4 | 5 | 6 | 7; readonly mode: "protected" };
 
 export function protectedRepositoryGitAdmission(
   admission: ExecutionAdmission | undefined,
@@ -496,8 +479,7 @@ export function protectedRepositoryGitAdmission(
     admission?.version === 4 ||
     admission?.version === 5 ||
     admission?.version === 6 ||
-    admission?.version === 7 ||
-    admission?.version === 9
+    admission?.version === 7
   );
 }
 
@@ -510,9 +492,7 @@ export function assertExecutionAdmission(
     !admission ||
     (!(admission.version === 2 && admission.mode === "unprotected") &&
       !(
-        (admission.version === 3 ||
-          admission.version === 8 ||
-          protectedRepositoryGitAdmission(admission)) &&
+        (admission.version === 3 || protectedRepositoryGitAdmission(admission)) &&
         admission.mode === "protected"
       )) ||
     (admission.mode !== "protected" && admission.mode !== "unprotected") ||
@@ -527,18 +507,6 @@ export function assertExecutionAdmission(
     throw new Error("Invalid protected execution plan.");
   }
   const plan = revision.egressPlan;
-  const online = admission.version === 8 || admission.version === 9;
-  if (
-    (plan?.authorization === "online-request") !== online ||
-    (plan?.authorization !== undefined && !online) ||
-    (online &&
-      (!plan?.routes.length ||
-        plan.harnessCredentialSource !== undefined ||
-        plan.policyReductionVersion !== undefined ||
-        plan.routes.some((route) => route.binding.grant.kind !== "inference")))
-  ) {
-    throw new Error("Invalid request-authorized model execution admission.");
-  }
   if (
     (plan?.policyReductionVersion !== undefined &&
       !(
@@ -562,7 +530,7 @@ export function assertExecutionAdmission(
     (admission.version === 6
       ? revision.egressPlan?.repositoryGitAuthorization !== "request-hook-observed" ||
         repositoryGitDeliveryProfile(repository) !== "github_installation"
-      : admission.version === 5 || admission.version === 9
+      : admission.version === 5
         ? revision.egressPlan?.repositoryGitAuthorization !== "online-request"
         : revision.egressPlan?.repositoryGitAuthorization !== undefined)
   ) {
@@ -584,7 +552,7 @@ export function assertExecutionAdmission(
   }
   const owner = revision.egressPlan?.driver;
   if (
-    admission.version === 3 || admission.version === 8 || protectedRepositoryGitAdmission(admission)
+    admission.version === 3 || protectedRepositoryGitAdmission(admission)
       ? !owner ||
         typeof owner.id !== "string" ||
         !owner.id.trim() ||

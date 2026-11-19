@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
 import { waitFor } from "../helpers/wait-for.ts";
 import {
-  createNarrowOnlineGitStartup,
+  beforeNarrowGitPreparation,
   narrowOnlineGitJourney,
 } from "../helpers/postgres-repository-set-journey.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
@@ -332,110 +332,105 @@ test(
   "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart",
   { ...requiresPostgres, timeout: 45_000 },
   async (t) => {
-    const startup = await createNarrowOnlineGitStartup(t, import.meta.url);
-    const { revision, client, workspace, sandbox, peer, world } = startup;
-    const first = startup.getRuntime();
-    const pool = startup.fixture.observerPool;
-    const writes = () => world.writes;
-    const initial = await pool.query(
-      "SELECT 1 FROM occ.credential_deliveries WHERE revision_id=$1",
-      [revision.id],
-    );
-    assert.equal(initial.rowCount, 0, "the startup fixture has not prepared this route");
-    let lostAcknowledgements = 0;
-    const releases: boolean[] = [];
-    // Run the real reservation transaction for this admitted route, then lose only
-    // the acknowledgement of the commit.
-    const connection: PostgresPool = {
-      end: () => pool.end(),
-      async connect() {
-        const database = await pool.connect();
-        let reservation = false;
-        return {
-          async query(sql: string, values?: readonly unknown[]) {
-            const result = await database.query(
-              sql,
-              values === undefined ? undefined : [...values],
-            );
-            reservation ||= sql.includes("INSERT INTO occ.credential_deliveries");
-            if (sql === "COMMIT" && reservation && lostAcknowledgements === 0) {
-              lostAcknowledgements++;
-              throw new Error("controlled lost initial reservation acknowledgement");
-            }
-            return result;
-          },
-          release(discard?: boolean) {
-            releases.push(discard === true);
-            database.release(discard);
+    await beforeNarrowGitPreparation(
+      t,
+      async ({ runtime: first, revision, client, workspace, sandbox, pool, peer, writes }) => {
+        let lostAcknowledgements = 0;
+        const releases: boolean[] = [];
+        // Run the real reservation transaction for this admitted route, then lose only
+        // the acknowledgement of the commit.
+        const connection: PostgresPool = {
+          end: () => pool.end(),
+          async connect() {
+            const database = await pool.connect();
+            let reservation = false;
+            return {
+              async query(sql: string, values?: readonly unknown[]) {
+                const result = await database.query(
+                  sql,
+                  values === undefined ? undefined : [...values],
+                );
+                reservation ||= sql.includes("INSERT INTO occ.credential_deliveries");
+                if (sql === "COMMIT" && reservation && lostAcknowledgements === 0) {
+                  lostAcknowledgements++;
+                  throw new Error("controlled lost initial reservation acknowledgement");
+                }
+                return result;
+              },
+              release(discard?: boolean) {
+                releases.push(discard === true);
+                database.release(discard);
+              },
+            };
           },
         };
-      },
-    };
-    const routes = new PostgresOpenShellGitRouteStore(connection);
-    first["routes"] = routes;
-    const cold = new OpenShellGitRuntime(
-      first.configuration,
-      createGitHubRepositoryDeliveryResolver(peer.registry),
-    );
-    cold["routes"] = routes;
-    cold["owner"] = first["owner"];
-    t.after(() => cold.close());
-    const read = () =>
-      pool
-        .query(
-          `SELECT binding_id, fence, write_pending, blocked, material_version
-     FROM occ.credential_deliveries WHERE revision_id=$1`,
-          [revision.id],
-        )
-        .then(({ rows }) => {
-          assert.equal(rows.length, 1);
-          return rows[0];
+        const routes = new PostgresOpenShellGitRouteStore(connection);
+        first["routes"] = routes;
+        const cold = new OpenShellGitRuntime(
+          first.configuration,
+          createGitHubRepositoryDeliveryResolver(peer.registry),
+        );
+        cold["routes"] = routes;
+        cold["owner"] = first["owner"];
+        t.after(() => cold.close());
+        const read = () =>
+          pool
+            .query(
+              `SELECT binding_id, fence, write_pending, blocked, material_version
+         FROM occ.credential_deliveries WHERE revision_id=$1`,
+              [revision.id],
+            )
+            .then(({ rows }) => {
+              assert.equal(rows.length, 1);
+              return rows[0];
+            });
+        const prepare = (owner: OpenShellGitRuntime) =>
+          owner.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [
+            "openai",
+          ]);
+        const baseline = {
+          writes: writes(),
+          issues: peer.gh.issuesOfTokens.length,
+          traffic: peer.originCalls(),
+        };
+        await assert.rejects(prepare(first), { name: "OpenShellGitObservationError" });
+        assert.equal(lostAcknowledgements, 1);
+        assert.ok(releases.includes(true), "discard the connection with uncertain commit reply");
+        const reserved = await read();
+        assert.deepEqual(reserved, {
+          binding_id: revision.egressPlan!.execution.executionId,
+          fence: "1",
+          write_pending: "bootstrap",
+          blocked: null,
+          material_version: null,
         });
-    const prepare = (owner: OpenShellGitRuntime) =>
-      owner.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [
-        "openai",
-      ]);
-    const baseline = {
-      writes: writes(),
-      issues: peer.gh.issuesOfTokens.length,
-      traffic: peer.originCalls(),
-    };
-    await assert.rejects(prepare(first), { name: "OpenShellGitObservationError" });
-    assert.equal(lostAcknowledgements, 1);
-    assert.ok(releases.includes(true), "discard the connection with uncertain commit reply");
-    const reserved = await read();
-    assert.deepEqual(reserved, {
-      binding_id: revision.egressPlan!.execution.executionId,
-      fence: "1",
-      write_pending: "bootstrap",
-      blocked: null,
-      material_version: null,
-    });
-    const closed = { name: "OpenShellGitRouteBlockedError", reason: "worker_replaced" };
-    await assert.rejects(prepare(cold), closed);
-    await assert.rejects(prepare(first), closed);
-    await assert.rejects(prepare(cold), closed);
-    assert.deepEqual(await read(), { ...reserved, fence: "2", blocked: "worker_replaced" });
-    for (const owner of [first, cold]) {
-      assert.equal(
-        await owner.lookup(
-          {
-            workspace,
-            sandboxId: "uncreated-sandbox",
-            bindingId: reserved.binding_id,
-            requestId: "uncertain-reservation",
-          },
-          t.signal,
-        ),
-        undefined,
-      );
-    }
-    await peer.prepared.maintain();
-    assert.deepEqual(
-      { writes: writes(), issues: peer.gh.issuesOfTokens.length, traffic: peer.originCalls() },
-      baseline,
+        const closed = { name: "OpenShellGitRouteBlockedError", reason: "worker_replaced" };
+        await assert.rejects(prepare(cold), closed);
+        await assert.rejects(prepare(first), closed);
+        await assert.rejects(prepare(cold), closed);
+        assert.deepEqual(await read(), { ...reserved, fence: "2", blocked: "worker_replaced" });
+        for (const owner of [first, cold]) {
+          assert.equal(
+            await owner.lookup(
+              {
+                workspace,
+                sandboxId: "uncreated-sandbox",
+                bindingId: reserved.binding_id,
+                requestId: "uncertain-reservation",
+              },
+              t.signal,
+            ),
+            undefined,
+          );
+        }
+        await peer.prepared.maintain();
+        assert.deepEqual(
+          { writes: writes(), issues: peer.gh.issuesOfTokens.length, traffic: peer.originCalls() },
+          baseline,
+        );
+        assert.equal(lostAcknowledgements, 1);
+      },
     );
-    assert.equal(lostAcknowledgements, 1);
   },
 );
 

@@ -1,20 +1,24 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-19
-last_updated_session: authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1
+last_updated_session: authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-OCC authorizes source admission, stores references and hands live sources to Compute.
-[Protected sources](credential-source-egress.md) skip Gateway copies and require
-unbound migration. Protected revisions refuse legacy attachments.
-[Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
-retains its Gateway and Refresh owners after Git Proxy selection; fresh OAuth is
-outside the Git-only static model exception. Without a Proxy, Gateway/Refresh
-continues. See [Sandbox provisioning](openshell-sandbox-provisioning.md).
+OCC authorizes sources and stores metadata/references; OpenShell holds values.
+Admission freezes identity; workers pass live sources to Compute.
+See [refresh](credential-source-refresh.md) and
+[Sandbox provisioning](openshell-sandbox-provisioning.md).
+
+[Protected sources](credential-source-egress.md) admit versioned Secret references,
+skip gateway copies and require explicit migration while unbound. Protected revisions
+refuse legacy attachments. [OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
+retains its recorded Credential Gateway and Refresh owners, including when a Git
+Proxy is later selected. Fresh OAuth enrollment is not part of the Git-only static
+model exception. Without a selected Proxy, the existing Gateway/Refresh path remains.
 
 ## Entry Points
 
@@ -37,8 +41,7 @@ graph TD
   P0 -- "prepared, credential-free or protected static" --> P1["<b>Admit protected source</b><br/>No Gateway copy"]
   P0 -- "no Proxy or validated Git-only static model" --> C["<b>Read Secret input</b><br/>withValue"]
   P0 -- "unsupported or retired" --> X
-  P1 -- "live static" --> E
-  P1 -- "prepared or credential-free" --> R
+  P1 --> R
   C --> R["<b>Commit record</b><br/>state registering"]
   R -- "Gateway copy" --> D["<b>registerSource</b><br/>Gateway stores copy"]
   R -- "protected source" --> PR["<b>Finalize protected source</b><br/>Prepare issuer if required"]
@@ -70,7 +73,7 @@ graph TD
 ## Execution Trace
 
 Registration and deletion reject active or stale inherited controller transactions
-with `ResourceConflictError`. OCC commits intermediate state before
+with `ResourceConflictError` before effects. OCC commits intermediate State before
 `registerSource` or `removeSource`.
 
 ### 1. Admit the registration request
@@ -79,39 +82,37 @@ with `ResourceConflictError`. OCC commits intermediate state before
 `packages/occ/src/index.ts:createCredentialSource`
 
 The route accepts `name`, `type`, optional `config` and lowercase-keyed `secrets`.
-OpenAPI publishes the [proposed TokenService schemas](../../packages/contracts/src/api/token-service-sources.ts)
-as standalone components. OCC authorizes `credential_source:create`, locks the ready
-Namespace and reads the selected Driver's catalog in one transaction.
-An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Invalid
-values or unknown or missing catalog fields return `400 INVALID_REQUEST` before
-Secret reads, record creation or Gateway writes. OCC validates and stores normalized
-configuration.
+[TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts) are standalone OpenAPI components.
+One transaction authorizes `credential_source:create`, locks the ready Namespace,
+requires its selected source Driver, then reads the catalog.
+An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
+or missing catalog fields and Driver-invalid values return `400 INVALID_REQUEST`
+before Secret reads, record creation, or gateway writes. OCC checks normalized
+configuration against the catalog and stores it in the source record.
 
 `apps/controller/src/drivers/credential-source-endpoint.ts:validateOpenAiSourceBaseUrl` validates
 OpenShell destinations for requests and stored sources: field-specific `400` errors
 for requests, `409` for stored endpoints. It normalizes explicit URLs and preserves
 omission. Sources require an exact DNS host; Compute and Proxy retain broader URL rules.
 
-OAuth2 validation resolves OpenShell placement to reject token endpoints in the
-Gateway's Namespace. Registration repeats the check with tenant placement.
-Static OpenAI validation skips placement. The recorded Driver owns source cleanup.
+OpenShell's lazy placement callback is unused by static OpenAI validation. OAuth2
+validation resolves it to reject token endpoints in the Gateway's Namespace;
+registration repeats this with tenant placement. The recorded Driver retains
+source ownership and cleanup.
 
-With a selected Proxy, new sources require protected admission except for static
-Harness model sources on the validated Git-only installation. Refresh, device login,
-OAuth and plugin enrollment are ineligible for that exception. Prepared and
-credential-free types use their Proxy owner; protected static admission reads the
-live Secret without a Gateway copy.
-
-`packages/occ/src/index.ts:newSourceAdmission` permits configured ordinary Gateway
-delivery. Otherwise `staticEgressProvider` selects the external Driver’s first matching
-provider. A bundled owner with retirement policy requires one eligible provider for the
-type; missing or ambiguous choices refuse before Secret reads. Updates validate the original
-profile and eligible successor. Admission rechecks the Gateway, Sandbox pairing, provider,
-Proxy references and callbacks through audit.
-
-`packages/occ/src/index.ts:credentialSourceProtection` reports live model protection
-on create, GET and list. It checks the exact provider, lifecycle, backend, sender and
-resolver. Invalid registrations report `unavailable`; readback does not attest running enforcement.
+New sources use protected admission when a Credential Proxy is selected. Only
+the validated bundled Git-only installation permits fresh static model sources
+through its separately selected Credential Gateway. The catalog type must declare
+Harness authentication without refresh, device authorization or OAuth token login. Plugin, refresh and
+OAuth enrollment do not receive this exception. Prepared and credential-free types use
+their Proxy owner first. Eligible static sources in other profiles use live Secret
+reads without a Gateway write; retired or unavailable providers refuse admission.
+For static admission and explicit live adoption, `packages/occ/src/index.ts:staticEgressProvider` selects
+the first catalog entry for the requested type, then resolves its exact reference.
+Duplicate registrations for that ID and generation return `409` before a Secret
+payload read. Distinct providers of the same type retain catalog order. Updates
+resolve the recorded reference. Admission retains the provider and its callbacks
+and rechecks them, including identity uniqueness, around material resolution.
 
 ### 2. Read Secret values
 
@@ -132,9 +133,8 @@ alone is insufficient. Kubernetes verifies ownership labels, UID and key before 
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-Live static sources atomically commit `ready` and audit, then recheck the record. Other
-sources commit `registering`; Gateway registration resolves Compute's Sandbox namespace
-and calls `registerSource` (30-second deadline).
+OCC commits `registering` with Secret references. Gateway registration resolves
+Compute's Sandbox namespace and calls `registerSource` (30-second deadline).
 OpenShell checks provider ownership before changing the source-owned profile,
 creates the labeled provider and rechecks collisions. Calls are non-atomic.
 Only Refresh receives refresh material.
@@ -276,17 +276,18 @@ Until deletion, the Namespace remains nonempty.
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
 One transaction authorizes `credential_source:update`, reads the Namespace,
-locks the source, and requires a ready catalog source (`409` otherwise).
-Device-authorized sources reject PATCH before Secret reads or refresh
-changes. Protected updates recheck admission after the success audit. Gateway sources
-authorize `secret:operate` and read replacements through `withValue`. Gateway `updateSource` uses
-Compute's placement under the source lock; OpenShell requires matching
+locks only the source, and requires a ready source offered by the catalog (`409`
+otherwise). Device-authorized sources reject PATCH before Secret reads or refresh
+changes. Static sources validate replacement references, authorize each
+`secret:operate`, and read through `withValue`. Gateway `updateSource` runs with
+Compute's placement while the source lock is held; OpenShell requires matching
 ownership and nonempty values because `UpdateProvider` merges credentials.
-Only newly started processes receive updates.
+Only subsequently started processes receive the update.
 
 OCC commits replacement Secret references and mutation audit after the external
-write. Failure rolls back references and audits possible Gateway changes. A failed
-commit may leave OpenShell newer until retry. An absent/failed source returns `503`. Secret-backed refresh
+write. A failure rolls back the references; once the gateway may have changed,
+the failure is audited. A failed commit can leave OpenShell newer until the same
+request is repeated. An absent/failed source returns `503`. Secret-backed refresh
 updates use the [Refresh Driver](credential-source-refresh.md#4-update-and-rotation).
 
 ### 9. Withdraw a source from an Agent
@@ -372,17 +373,11 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 
 ## Changelog
 
-- 2026-11-19 09:25: Keep the standalone TokenService schemas alongside the current source admission flow. (authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1 - abc218e67e3325ea0db6ae3687413abd34713aff)
-
 - 2026-11-19 03:15: Keep the flow current while moving catalog enforcement to a separate change. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - ea34779cc)
 
 - 2026-11-18 14:02: Check the selected catalog type during registration. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 293833c72)
 
 - 2026-11-18 12:46: Check catalog field names and report malformed config keys. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 4875ab0f5)
-
-- 2026-11-18 06:42: Remove source-create protection selection and report admitted provider protection. (authoring-run/deb16d3b-e25e-4b06-b8b5-fa14f7121a08 - 73a9c6467899a076dc9e0a5f8162fcf4f2af0cf6)
-
-- 2026-11-18 05:30: Expose the recorded live model authorization profile in source metadata. (authoring-run/37e75cb4-4947-44ab-8be4-6a3f6726be01 - 514390283e7f2a3638eeee5427846e8215556c84)
 
 - 2026-11-17 19:44: Distinguish the published TokenService schemas from the current registration handler. (01a1eb01-0dea-7f01-8613-761574377d3f - 23b54e285)
 

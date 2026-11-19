@@ -10705,7 +10705,6 @@ List readable credential sources without revealing credential values
 | `data[].config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data[].egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data[].egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data[].egress.protection` | `"exact-dispatch" or "request-time" or "unavailable"` | No | Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement. |
 | `data[].egress.retention` | `"none"` | Yes | — |
 | `data[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -10846,7 +10845,6 @@ Example request
 | `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.protection` | `"exact-dispatch" or "request-time" or "unavailable"` | No | Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement. |
 | `data.egress.retention` | `"none"` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -10977,7 +10975,6 @@ Get one credential source and its live Credential Gateway status
 | `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.protection` | `"exact-dispatch" or "request-time" or "unavailable"` | No | Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement. |
 | `data.egress.retention` | `"none"` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -11104,7 +11101,6 @@ Example request
 | `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.protection` | `"exact-dispatch" or "request-time" or "unavailable"` | No | Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement. |
 | `data.egress.retention` | `"none"` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -11202,7 +11198,6 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.protection` | `"exact-dispatch" or "request-time" or "unavailable"` | No | Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement. |
 | `data.egress.retention` | `"none"` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
