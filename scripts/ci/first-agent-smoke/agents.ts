@@ -258,7 +258,11 @@ export async function allowAgentAuditRead(
     "missing Principal ID",
   );
   const base = `/namespaces/${stack.namespaceId}`;
-  // The audit route requires a human session and a direct binding to this Agent.
+  const api = await signInConsole(stack, reader);
+  const readAudit = async () =>
+    (await api("GET", `${base}/agents/${agent.id}/audit-events?limit=100`)) as AgentAuditPage;
+  // The same human session gains access only after the direct Agent grant.
+  await assert.rejects(readAudit(), /HTTP 403$/);
   const role = await administrator("POST", `${base}/iam/roles`, {
     name: "First Agent audit reader",
     permissions: [{ action: "read_audit", resourceKind: "agent" }],
@@ -270,9 +274,7 @@ export async function allowAgentAuditRead(
     resourceKind: "agent",
     resourceId: agent.id,
   });
-  const api = await signInConsole(stack, reader);
-  return async () =>
-    (await api("GET", `${base}/agents/${agent.id}/audit-events?limit=100`)) as AgentAuditPage;
+  return readAudit;
 }
 
 export async function assertAgentTurnAudit(
@@ -509,6 +511,18 @@ export async function proveCodexAuditInterruptions(
     "the provider retry must have a distinct model attempt ID in the same turn",
   );
   log(`${agent.label}: stored separate failed and successful attempts for one retried turn`);
+
+  // The Gateway owns session deletion. Its end record must match the Codex
+  // session start by the session ID that chat.history returns.
+  await rpc("sessions.delete", { key: retried.sessionKey, expectedSessionId: retried.sessionId });
+  const lifecycle = await retried.events();
+  for (const action of ["openclaw.runtime.session.started", "openclaw.runtime.session.ended"]) {
+    assert.equal(
+      lifecycle.filter((event) => event.action === action).length,
+      1,
+      `expected one ${action} for the deleted Codex session`,
+    );
+  }
 
   // Cancellation uses the active run's native RPC while the provider is still held.
   const cancel = await start("cancel");

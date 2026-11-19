@@ -225,38 +225,32 @@ index ba759ae..eb95c9b 100644
    );
  }
 diff --git a/src/gateway/server-methods/sessions-delete.ts b/src/gateway/server-methods/sessions-delete.ts
-index 9a76826..71a3f78 100644
+index 9a76826..80d93e5 100644
 --- a/src/gateway/server-methods/sessions-delete.ts
 +++ b/src/gateway/server-methods/sessions-delete.ts
-@@ -25,6 +25,10 @@ import { assertCapturedSessionEntryReadSource } from "../../config/sessions/sess
+@@ -25,6 +25,7 @@ import { assertCapturedSessionEntryReadSource } from "../../config/sessions/sess
  import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
  import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
  import { formatErrorMessage } from "../../infra/errors.js";
-+import {
-+  hasOpenClawRuntimeAudit,
-+  recordObservedOpenClawRuntimeAudit,
-+} from "../../infra/openclaw-runtime-audit.js";
++import { recordGatewaySessionAudit } from "../../infra/openclaw-runtime-audit.js";
  import { failChatDeliveries } from "../../infra/outbound/delivery-queue-storage.js";
  import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
  import {
-@@ -580,6 +584,12 @@ async function deleteGatewaySessionInScope(
+@@ -580,6 +581,9 @@ async function deleteGatewaySessionInScope(
        }
        return { ok: false, error: error.error };
      }
-+    if (deletion.deleted && deletion.deletedSessionId && hasOpenClawRuntimeAudit()) {
-+      await recordObservedOpenClawRuntimeAudit({
-+        action: "openclaw.runtime.session.ended",
-+        sessionId: deletion.deletedSessionId,
-+      });
++    if (deletion.deleted && deletion.deletedSessionId) {
++      await recordGatewaySessionAudit("openclaw.runtime.session.ended", deletion.deletedSessionId);
 +    }
      const response = publishDeletion(deletion);
      return { ok: true, result: response };
    } finally {
 diff --git a/src/gateway/server-methods/sessions-lifecycle-dormant.test.ts b/src/gateway/server-methods/sessions-lifecycle-dormant.test.ts
-index 763c2ac..4f18016 100644
+index 763c2ac..c16382f 100644
 --- a/src/gateway/server-methods/sessions-lifecycle-dormant.test.ts
 +++ b/src/gateway/server-methods/sessions-lifecycle-dormant.test.ts
-@@ -13,6 +13,14 @@ import { createDirectChatContext } from "../server-chat.agent-events.test-helper
+@@ -13,6 +13,13 @@ import { createDirectChatContext } from "../server-chat.agent-events.test-helper
  import { deleteGatewaySession } from "./sessions-delete.js";
  import { seedYieldedSession } from "./sessions.abort-lifecycle.test-support.js";
 
@@ -264,14 +258,13 @@ index 763c2ac..4f18016 100644
 +
 +vi.mock("../../infra/openclaw-runtime-audit.js", async (importOriginal) => ({
 +  ...(await importOriginal<typeof import("../../infra/openclaw-runtime-audit.js")>()),
-+  hasOpenClawRuntimeAudit: () => true,
-+  recordObservedOpenClawRuntimeAudit: recordRuntimeAudit,
++  recordGatewaySessionAudit: recordRuntimeAudit,
 +}));
 +
  const fixture = useSubagentControlFixture();
  const parentKey = "agent:main:paused-child-requester";
  const childKey = "agent:main:subagent:paused-lifecycle-child";
-@@ -72,6 +80,7 @@ it.each([false, true])(
+@@ -72,6 +79,7 @@ it.each([false, true])(
      if (fails) {
        vi.spyOn(registry, "retireSubagentObligations").mockRejectedValueOnce(new Error(failure));
      }
@@ -279,7 +272,7 @@ index 763c2ac..4f18016 100644
      const result = await deleteGatewaySession({
        params: { key: childKey, agentId: "main" },
        client: null,
-@@ -83,10 +92,15 @@ it.each([false, true])(
+@@ -83,10 +91,12 @@ it.each([false, true])(
          error: { code: "UNAVAILABLE", message: expect.stringContaining(failure) },
        });
        expect(loadSessionEntry(target)).toMatchObject({ sessionId: childId });
@@ -288,10 +281,7 @@ index 763c2ac..4f18016 100644
      }
      expect(result).toMatchObject({ ok: true, result: { deleted: true } });
      expect(loadSessionEntry(target)).toBeUndefined();
-+    expect(recordRuntimeAudit).toHaveBeenCalledExactlyOnceWith({
-+      action: "openclaw.runtime.session.ended",
-+      sessionId: childId,
-+    });
++    expect(recordRuntimeAudit).toHaveBeenCalledExactlyOnceWith("openclaw.runtime.session.ended", childId);
      const run = subagentRuns.get(childRunId);
      expect(run?.pauseReason).toBeUndefined();
      expect(run?.requesterSettleWake?.pauseNotice).toBeUndefined();
@@ -1111,10 +1101,10 @@ index 0000000..a468870
 +});
 diff --git a/src/infra/openclaw-runtime-audit.ts b/src/infra/openclaw-runtime-audit.ts
 new file mode 100644
-index 0000000..a52f5fd
+index 0000000..2927f5c
 --- /dev/null
 +++ b/src/infra/openclaw-runtime-audit.ts
-@@ -0,0 +1,419 @@
+@@ -0,0 +1,436 @@
 +/** OpenClaw Enterprise runtime audit sender. */
 +import { randomUUID } from "node:crypto";
 +import { readFileSync } from "node:fs";
@@ -1177,6 +1167,7 @@ index 0000000..a52f5fd
 +};
 +
 +const state = {
++  source: "openclaw" as RuntimeAuditSource,
 +  sender: undefined as ((body: string, source: RuntimeAuditSource) => Promise<void>) | undefined,
 +  initialized: false,
 +  initializationError: undefined as Error | undefined,
@@ -1191,10 +1182,12 @@ index 0000000..a52f5fd
 +  if (state.initialized) {
 +    return;
 +  }
++  const source = process.env.OPENCLAW_RUNTIME_AUDIT_SOURCE ?? "openclaw";
 +  const candidate = process.env.OPENCLAW_RUNTIME_AUDIT_URL;
 +  const tokenValue = process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN;
 +  const tokenPath = process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH;
 +  const caPath = process.env.OPENCLAW_RUNTIME_AUDIT_CA_PATH;
++  delete process.env.OPENCLAW_RUNTIME_AUDIT_SOURCE;
 +  delete process.env.OPENCLAW_RUNTIME_AUDIT_URL;
 +  delete process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN;
 +  delete process.env.OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH;
@@ -1207,6 +1200,7 @@ index 0000000..a52f5fd
 +    const url = new URL(candidate ?? "");
 +    const loopback = url.hostname === "127.0.0.1" || url.hostname === "[::1]";
 +    if (
++      (source !== "openclaw" && source !== "codex") ||
 +      (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) ||
 +      url.username ||
 +      url.password ||
@@ -1226,6 +1220,7 @@ index 0000000..a52f5fd
 +      const dispatcher = new Agent({ connect: { ca: readFileSync(caPath, "utf8") } });
 +      post = (url, options) => fetchWithDispatcher(url, { ...options, dispatcher });
 +    }
++    state.source = source;
 +    state.sender = (body, source) => deliverAuditEvent({ url, token }, body, source, post);
 +    state.initialized = true;
 +  } catch {
@@ -1239,6 +1234,18 @@ index 0000000..a52f5fd
 +
 +export function hasOpenClawRuntimeAudit(): boolean {
 +  return state.sender !== undefined;
++}
++
++export async function recordGatewaySessionAudit(
++  action: "openclaw.runtime.session.started" | "openclaw.runtime.session.ended",
++  sessionId: string,
++): Promise<void> {
++  // Codex reports the start when it creates a native thread. The Gateway
++  // reports deletion for either harness and uses the same host session ID.
++  if (!state.sender || (action === "openclaw.runtime.session.started" && state.source === "codex")) {
++    return;
++  }
++  await recordObservedOpenClawRuntimeAudit({ action, sessionId }, state.source);
 +}
 +
 +export async function recordOpenClawRuntimeAudit(
@@ -1535,30 +1542,22 @@ index 0000000..a52f5fd
 +  };
 +}
 diff --git a/src/sessions/session-created.ts b/src/sessions/session-created.ts
-index 29686e9..897af0b 100644
+index 29686e9..7a3dcb8 100644
 --- a/src/sessions/session-created.ts
 +++ b/src/sessions/session-created.ts
-@@ -8,6 +8,10 @@ import { resolveCanonicalMainSessionKey } from "../config/sessions/main-session-
+@@ -8,6 +8,7 @@ import { resolveCanonicalMainSessionKey } from "../config/sessions/main-session-
  import { resolveSessionCreatorActor } from "../config/sessions/session-entry-provenance.js";
  import type { SessionEntry } from "../config/sessions/types.js";
  import type { OpenClawConfig } from "../config/types.openclaw.js";
-+import {
-+  hasOpenClawRuntimeAudit,
-+  recordObservedOpenClawRuntimeAudit,
-+} from "../infra/openclaw-runtime-audit.js";
++import { recordGatewaySessionAudit } from "../infra/openclaw-runtime-audit.js";
  import {
    prepareSystemEventStorePath,
    withSystemEventOwner,
-@@ -44,6 +48,12 @@ export async function recordSessionCreated(
+@@ -44,6 +45,7 @@ export async function recordSessionCreated(
      spawned?: { runId: string; requesterSessionKey: string };
    },
  ): Promise<void> {
-+  if (hasOpenClawRuntimeAudit()) {
-+    await recordObservedOpenClawRuntimeAudit({
-+      action: "openclaw.runtime.session.started",
-+      sessionId: params.entry.sessionId,
-+    });
-+  }
++  await recordGatewaySessionAudit("openclaw.runtime.session.started", params.entry.sessionId);
    const agentId = params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey);
    const actor = resolveSessionCreatorActor(params.entry.createdActor);
    const event = actor

@@ -272,7 +272,7 @@ RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp
 
 # Record runtime audit observations at the OpenClaw and Codex Gateway owners.
 COPY deploy/runtime/openclaw-runtime-audit.patch /tmp/openclaw-runtime-audit.patch
-RUN echo '141258adb28cfcbe33bc0cc0c50ddae6d12d63e79a2643a5595d520243ce214e  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
+RUN echo '7fdcb6d38f125e837195d47b036bd53078a2ac813cdd94d09667ed6b2d2c4064  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-runtime-audit.patch
 
 COPY deploy/runtime/openclaw-codex-runtime-audit.patch /tmp/openclaw-codex-runtime-audit.patch

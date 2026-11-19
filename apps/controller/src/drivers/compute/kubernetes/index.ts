@@ -671,6 +671,7 @@ interface GatewayConfigurationSnapshot {
   readonly revision: number;
   readonly revisionId: string;
   readonly gatewayManagedMode: boolean;
+  readonly auditSource?: "openclaw" | "codex";
   readonly auditCodexModelAttempts?: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
@@ -13842,6 +13843,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision: revision.revision,
       revisionId: revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
+      ...(revision.harness.id === "codex" && { auditSource: "codex" as const }),
       ...(this.usesAuditedCodexServer(revision) && { auditCodexModelAttempts: true }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
@@ -17688,6 +17690,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
         variables.push(
           { name: "OPENCLAW_RUNTIME_AUDIT_URL", value: auditTarget.endpoint },
+          {
+            name: "OPENCLAW_RUNTIME_AUDIT_SOURCE",
+            value: configuration?.auditSource ?? "openclaw",
+          },
           {
             name: "OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH",
             value: `${RUNTIME_AUDIT_DIRECTORY}/${RUNTIME_AUDIT_TOKEN_KEY}`,
