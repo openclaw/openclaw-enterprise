@@ -436,13 +436,9 @@ test("profiled upgrade checks and recovery bind Kubernetes requests to the appro
     {
       cwd: repository,
       encoding: "utf8",
-      timeout: 120_000,
+      // The fixture owns per-case timeouts and reaps isolated command groups.
     },
   );
   assert.ifError(result.error);
-  if (result.status === 77) {
-    t.skip(result.stdout.trim());
-    return;
-  }
   assert.equal(result.status, 0, result.stderr);
 });

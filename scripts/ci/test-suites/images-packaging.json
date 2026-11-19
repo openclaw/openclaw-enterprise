@@ -87,7 +87,10 @@
       ]
     },
     {
-      "path": "tests/integration/upgrade-preflight-state.test.ts"
+      "path": "tests/integration/upgrade-preflight-state.test.ts",
+      "expectedTests": [
+        "profiled upgrade checks and recovery bind Kubernetes requests to the approved target"
+      ]
     },
     {
       "path": "tests/integration/production-image-qualification.test.ts"

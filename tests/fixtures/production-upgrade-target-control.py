@@ -4,10 +4,13 @@ The recorder stops before network access. Receipt fixtures use synthetic evidenc
 for an acknowledged Secret and do not simulate a completed Kubernetes upgrade.
 """
 import base64
+import hashlib
 import json
 import os
+import platform
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,18 +20,71 @@ proof = Path(sys.argv[1]).resolve()
 root = Path.cwd()
 tools = ("bash", "git", "jq", "node", "yq")
 missing = [tool for tool in tools if not shutil.which(tool)]
-# Network-routing wrappers may intercept even local subcommands. Look for
-# a standalone client on PATH so the recorder controls all remote verbs.
-kubectl = next((
-    candidate for directory in os.get_exec_path()
-    if (candidate := shutil.which("kubectl", path=directory))
-    and Path(candidate).resolve().name.split("-", 1)[0] == "kubectl"
-), None)
-if kubectl is None:
-    missing.append("standalone kubectl")
 if missing:
-    print("requires local tools: " + ", ".join(missing))
-    sys.exit(77)
+    sys.exit("requires local tools: " + ", ".join(missing))
+
+def pinned_decoder():
+    architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
+    if sys.platform != "linux" or architecture is None:
+        sys.exit("the upgrade target regression requires a supported Linux kubectl build")
+    pins = json.loads((root / "scripts/ci/kubectl-pins.json").read_text())
+    expected = pins["linux"][architecture]
+    # Inspect PATH candidates without invoking them. Nonblocking open keeps
+    # executable FIFOs from blocking discovery before the regular-file check.
+    for directory in os.get_exec_path():
+        candidate = shutil.which("kubectl", path=directory)
+        if candidate is None:
+            continue
+        try:
+            candidate = Path(candidate).resolve(strict=True)
+            flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+            with os.fdopen(os.open(candidate, flags), "rb") as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or not info.st_mode & 0o111:
+                    continue
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                if digest.hexdigest() == expected:
+                    return str(candidate), expected
+        except OSError:
+            continue
+    sys.exit("requires the pinned native kubectl executable on PATH")
+
+kubectl, kubectl_sha256 = pinned_decoder()
+
+
+def run_command(command, *, environment=None, timeout=20):
+    with subprocess.Popen(
+        command, env=environment, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=2)
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+# The nested child holds the inherited stdout pipe. A leader-only kill would
+# leave the pipe open beyond the cleanup timeout instead of settling the case.
+probe = (
+    "import subprocess, sys; "
+    "subprocess.Popen([sys.executable, '-c', "
+    "'import time; print(42, flush=True); time.sleep(6)']).wait()"
+)
+try:
+    run_command([sys.executable, "-c", probe], timeout=1)
+except subprocess.TimeoutExpired as error:
+    assert error.timeout == 1 and b"42" in (error.output or b""), "timeout did not settle its child group"
+else:
+    raise AssertionError("deliberately blocked fixture failed to time out")
+
 adapter_cmd = ["python3", "scripts/upgrade-production"]
 native_cmd = ["bash", "scripts/upgrade-production-images"]
 
@@ -36,12 +92,23 @@ binaries = proof / "bin"
 binaries.mkdir(mode=0o700, exist_ok=True)
 shim = binaries / "kubectl"
 shim.write_text("""#!/usr/bin/env python3
-import base64,json,os,pathlib,subprocess,sys
+import base64,hashlib,json,os,pathlib,stat,subprocess,sys
 from pathlib import Path
 args = sys.argv[1:]
 case = Path(os.environ["CONTROL_CASE"])
 tool = Path(sys.argv[0]).name
-real = [os.environ["CONTROL_KUBECTL"]]
+def decoder():
+    candidate = os.environ["CONTROL_KUBECTL"]
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+    with os.fdopen(os.open(candidate, flags), "rb") as source:
+        info = os.fstat(source.fileno())
+        assert stat.S_ISREG(info.st_mode) and info.st_mode & 0o111, "decoder is no longer an executable file"
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    assert digest.hexdigest() == os.environ["CONTROL_KUBECTL_SHA256"], "decoder changed before invocation"
+    return candidate
+
 path = Path(args[args.index("--kubeconfig") + 1])
 record = {"tool": tool, "path": str(path)}
 def swap_ca():
@@ -52,11 +119,15 @@ def swap_ca():
 if (tool == "kubectl" and args[:1] == ["--kubeconfig"]
         and args[2:] == ["config", "view", "--merge=false", "--raw", "-o", "json"]):
     record["operation"] = "decode"
-    if os.environ.get("SWAP_BEFORE_PIN") == "yes":
+    mutation = os.environ.get("CHANGE_BEFORE_PIN")
+    if mutation == "swap":
         swap_ca()
+    elif mutation == "delete":
+        (case / "material/server.pem").unlink()
     with (case/"events.jsonl").open("a") as out:
         out.write(json.dumps(record)+"\\n")
-    os.execv(real[0],[*real,*args])
+    real = decoder()
+    os.execv(real,[real,*args])
 if "get" in args and "--raw=/readyz" in args:
     record["operation"] = "ready"
 elif tool == "helm" and args[:2] == ["status","oce"]:
@@ -71,7 +142,7 @@ if os.environ.get("SWAP_AT_BOUNDARY") == "yes":
 # Decode the same source and flatten relative references locally using real
 # client-go compatibility. Permit no non-config subcommand or network call.
 view = subprocess.run(
-    [*real,"--kubeconfig",str(path),"--context","fixture","config","view",
+    [decoder(),"--kubeconfig",str(path),"--context","fixture","config","view",
      "--minify","--flatten","--raw","-o","json"],
     capture_output=True,text=True,
 )
@@ -130,38 +201,30 @@ def fixture(mode, image="runtime"):
     put(case/"profile.json", json.dumps(profile).encode())
     return case
 
-def run(case, command, *, swap=False, swap_before_pin=False):
+def run(case, command, *, swap=False, change_before_pin=""):
     events = case/"events.jsonl"
     events.unlink(missing_ok=True)
     environment = {
         "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}",
         "LANG": "C.UTF-8", "OCC_URL":"https://127.0.0.1:9",
         "OCC_SERVICE_KEY_FILE":str(case/"service-key.json"),
-        "CONTROL_CASE":str(case), "CONTROL_KUBECTL": kubectl, "SWAP_AT_BOUNDARY":"yes" if swap else "no",
-        "SWAP_BEFORE_PIN":"yes" if swap_before_pin else "no",
+        "CONTROL_CASE": str(case), "CONTROL_KUBECTL": kubectl,
+        "CONTROL_KUBECTL_SHA256": kubectl_sha256,
+        "SWAP_AT_BOUNDARY": "yes" if swap else "no",
+        "CHANGE_BEFORE_PIN": change_before_pin,
     }
-    with subprocess.Popen(
-        command, env=environment, text=True, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, start_new_session=True,
-    ) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=20)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-            raise
-        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    result = run_command(command, environment=environment)
     assert authority.decode() not in result.stdout+result.stderr
     assert replacement.decode() not in result.stdout+result.stderr
     actual = [json.loads(line) for line in events.read_text().splitlines()] if events.exists() else []
     return result, actual
 
-def profiled(case, operation, *, swap=False, swap_before_pin=False):
+def profiled(case, operation, *, swap=False, change_before_pin=""):
     args = ["--profile",str(case/"profile.json"),"--evidence-dir",str(case/"evidence")]
     if operation == "apply":
         args += ["--auto-approve"]
     return run(case,[*adapter_cmd,operation,*args,"--","--timeout-seconds","1"],
-               swap=swap,swap_before_pin=swap_before_pin)
+               swap=swap,change_before_pin=change_before_pin)
 
 def raw(case, operation):
     arguments = [
@@ -202,10 +265,16 @@ for operation, image, expected in (
     assert request["path"] != str(case / "operator/kubeconfig"), request
     assert request["approved_ca"] and not request["replacement_ca"], request
     assert json.loads((case / "evidence/parameters.json").read_text())["profiled"] is True
-    case = fixture("external", image)
-    result, events = profiled(case, operation, swap_before_pin=True)
-    assert result.returncode == 1 and "external server CA changed after approval" in result.stderr, result.stderr
-    assert [entry["operation"] for entry in events] == ["decode"], events
+    for mutation in ("swap", "delete"):
+        # The local decoder runs after the adapter has admitted the profile but
+        # before the native script pins its copy of the approved external CA.
+        case = fixture("external", image)
+        result, events = profiled(case, operation, change_before_pin=mutation)
+        assert result.returncode == 1, result.stderr
+        assert "external server CA changed after approval" in result.stderr, result.stderr
+        if mutation == "delete":
+            assert "file is missing" in result.stderr, result.stderr
+        assert [entry["operation"] for entry in events] == ["decode"], events
 
 for mode in ("inline", "system", "external"):
     case = fixture(mode)
@@ -234,10 +303,9 @@ for mode in ("inline", "system", "external"):
         del original["profiled"]
         put(parameters, json.dumps(original).encode())
         (evidence / "preflight-journal.json").unlink()
-        subprocess.run(
-            ["python3", "scripts/upgrade-preflight-state.py", "init", str(evidence)],
-            check=True, capture_output=True,
-        )
+        run_command(
+            ["python3", "scripts/upgrade-preflight-state.py", "init", str(evidence)]
+        ).check_returncode()
         result, events = raw(case, "resume")
         assert result.returncode != 0 and "no verifiable target origin" in result.stderr, result.stderr
         assert not events, events
@@ -255,7 +323,7 @@ def record_secret(case):
         ["register", str(evidence), ".", "a1b2c3d4", "false"],
         ["started", str(evidence), ".", "secret"],
     ):
-        subprocess.run(["python3", str(state), *command], check=True, capture_output=True)
+        run_command(["python3", str(state), *command]).check_returncode()
     plan = json.loads((evidence / "preflight-plan.json").read_text())
     put(evidence / "preflight-secret-identity.json", json.dumps({
         **plan["slots"]["secret"], "uid": "fixture-secret-uid",

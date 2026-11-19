@@ -65,16 +65,6 @@ actionlint_version_matches() {
   [[ "${current}" == "${version}" ]]
 }
 
-kubectl_version_matches() {
-  local version="$1"
-  local current=""
-  if ! command -v kubectl >/dev/null 2>&1; then
-    return 1
-  fi
-  current="$(kubectl version --client=true -o json 2>/dev/null | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => { const version = JSON.parse(input).clientVersion?.gitVersion; if (version) console.log(version); });' 2>/dev/null || true)"
-  [[ "${current}" == "v${version}" ]]
-}
-
 linux_amd64_or_manual() {
   local tool="$1"
   if [[ "${platform}" != "Linux-x86_64" ]]; then
@@ -123,23 +113,28 @@ select_linux_artifact() {
 }
 
 install_kubectl() {
-  local version="1.35.0"
-  if kubectl_version_matches "${version}"; then
-    kubectl version --client=true
-    return
-  fi
-  local artifact arch checksum
+  local pins version amd64_checksum arm64_checksum artifact arch checksum existing
+  pins="$(node -e '
+    const { version, linux } = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    if (!/^\d+\.\d+\.\d+$/.test(version) || ![linux.amd64, linux.arm64].every((value) => /^[a-f0-9]{64}$/.test(value))) {
+      throw new Error("Invalid kubectl pins");
+    }
+    console.log(version, linux.amd64, linux.arm64);
+  ' "${root_dir}/scripts/ci/kubectl-pins.json")"
+  read -r version amd64_checksum arm64_checksum <<< "${pins}"
   artifact="$(select_linux_artifact "${platform}" kubectl "${version}" \
-    "amd64 a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989" \
-    "arm64 58f82f9fe796c375c5c4b8439850b0f3f4d401a52434052f2df46035a8789e25")" || return
+    "amd64 ${amd64_checksum}" "arm64 ${arm64_checksum}" 2>/dev/null)" || {
+    echo "No repository kubectl checksum for ${platform}; use Linux x86_64 or arm64 for CI tool setup." >&2
+    return 1
+  }
   read -r arch checksum <<< "${artifact}"
   local binary="${bin_dir}/kubectl"
+  existing="$(type -P kubectl || true)"
+  # The downloader verifies a private copy of a PATH candidate before reuse.
   download_file \
     "https://dl.k8s.io/release/v${version}/bin/linux/${arch}/kubectl" \
-    "${binary}" \
-    "${checksum}"
-  chmod 0755 "${binary}"
-  kubectl version --client=true
+    "${binary}" "${checksum}" "" "${existing}" 0755
+  "${binary}" version --client=true
 }
 
 install_k3d() {
