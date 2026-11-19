@@ -738,6 +738,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
+      KUBERC: "off",
       OCC_URL: "https://occ.example.invalid",
       OCC_SERVICE_KEY_FILE: join(directory, "key"),
     };
