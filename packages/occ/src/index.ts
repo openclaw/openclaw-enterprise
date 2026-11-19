@@ -8119,6 +8119,13 @@ export class OpenClawController {
     }
     const authorize = authority.authorize;
     const verifyRequestInstallation = credentials.verifyRequestInstallation;
+    const control = proxy.sourceControl;
+    const provider = registeredCredentialProvider(control.providers, route.binding.source.provider);
+    if (!provider || provider === "ambiguous" || provider.authorization !== "online-request") {
+      await this.transactReadCommitted((state) => deny(state, "stale_configuration"));
+      return undefined;
+    }
+    const { routes: makeRoutes, classify, normalizeGrant, authorizeRequestEndpoint } = provider;
     if (
       !(await Reflect.apply(verifyRequestInstallation, credentials, [
         {
@@ -8173,14 +8180,9 @@ export class OpenClawController {
       }
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       const selected = source?.egress;
-      const control = proxy.sourceControl;
       const currentInstalled = await state.credentialSources.findEgressInstallation(
         control.sender.id,
         "recipient" in request ? request.recipient.id : request.recipientId,
-      );
-      const provider = registeredCredentialProvider(
-        control.providers,
-        route.binding.source.provider,
       );
       if (
         source?.state !== "ready" ||
@@ -8200,9 +8202,6 @@ export class OpenClawController {
         plan.execution.agentId !== agentId ||
         plan.execution.revisionId !== revisionId ||
         plan.execution.servicePrincipalId !== agent.servicePrincipalId ||
-        !provider ||
-        provider === "ambiguous" ||
-        provider.authorization !== "online-request" ||
         (await state.credentialSources.findCredentialWithdrawal(
           namespaceId,
           revisionId,
@@ -8211,8 +8210,15 @@ export class OpenClawController {
       ) {
         return refuse("stale_configuration");
       }
-      const { routes: makeRoutes, classify, normalizeGrant } = provider;
       if (
+        proxy.sourceControl !== control ||
+        registeredCredentialProvider(control.providers, route.binding.source.provider) !==
+          provider ||
+        provider.authorization !== "online-request" ||
+        provider.routes !== makeRoutes ||
+        provider.classify !== classify ||
+        provider.normalizeGrant !== normalizeGrant ||
+        provider.authorizeRequestEndpoint !== authorizeRequestEndpoint ||
         !Reflect.apply(makeRoutes, provider, [
           source,
           route.binding,
@@ -8245,19 +8251,22 @@ export class OpenClawController {
         ) {
           return refuse("unsupported_operation");
         }
-        const operation = Reflect.apply(classify, provider, [
-          route,
-          {
-            id: request.requestId,
-            deadlineAt: request.deadlineAt,
-            bindingId: request.bindingId,
-            method: target.method,
-            url: `https://${target.host}${target.port === 443 ? "" : `:${target.port}`}${target.path}${target.query ? `?${target.query}` : ""}`,
-            headers,
-            body,
-          },
-        ]);
-        if (operation?.kind !== "inference") {
+        const head = {
+          id: request.requestId,
+          deadlineAt: request.deadlineAt,
+          bindingId: request.bindingId,
+          method: target.method,
+          url: `https://${target.host}${target.port === 443 ? "" : `:${target.port}`}${target.path}${target.query ? `?${target.query}` : ""}`,
+          headers,
+        };
+        const endpointOnly =
+          route.binding.grant.kind === "inference" &&
+          route.binding.grant.requestInspection === "endpoint";
+        const allowed = endpointOnly
+          ? body === undefined && authorizeRequestEndpoint?.call(provider, route, head) === true
+          : body !== undefined &&
+            Reflect.apply(classify, provider, [route, { ...head, body }])?.kind === "inference";
+        if (!allowed) {
           return refuse("unsupported_operation");
         }
       } else if (
@@ -8311,7 +8320,8 @@ export class OpenClawController {
           provider ||
         provider.routes !== makeRoutes ||
         provider.classify !== classify ||
-        provider.normalizeGrant !== normalizeGrant
+        provider.normalizeGrant !== normalizeGrant ||
+        provider.authorizeRequestEndpoint !== authorizeRequestEndpoint
       ) {
         return refuse("stale_configuration");
       }
@@ -9212,7 +9222,10 @@ export class OpenClawController {
       if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
       }
-      const grant = provider.normalizeGrant([modelId], source.config);
+      const grant = provider.normalizeGrant([modelId], source.config, {
+        agentId: agent.id,
+        sourceId: source.id,
+      });
       let digestGrant = grant;
       if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
         const canonical = credentialFreeMetadataGrant(source.config);

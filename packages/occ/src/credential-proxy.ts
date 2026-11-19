@@ -530,7 +530,7 @@ export class CredentialProxy implements CredentialProxyExchange {
       !Number.isFinite(Date.parse(input.replayUntilAt)) ||
       Date.parse(input.replayUntilAt) < Date.parse(input.deadlineAt) ||
       Date.parse(input.replayUntilAt) > this.ports.now() + 3_600_000 ||
-      input.http.body.byteLength > MAX_REQUEST_CREDENTIAL_BODY_BYTES ||
+      (input.http.body?.byteLength ?? 0) > MAX_REQUEST_CREDENTIAL_BODY_BYTES ||
       !input.requestId ||
       input.requestId.length > 256 ||
       !input.bindingId ||
@@ -545,7 +545,7 @@ export class CredentialProxy implements CredentialProxyExchange {
       input.deadlineAt,
       signal,
       async (ports, lifetime) => {
-        const bodyBytes = input.http.body.byteLength;
+        const bodyBytes = input.http.body?.byteLength ?? 0;
         if (bodyBytes > maximumOnlineCapturedBodyBytes - this.onlineCapturedBodyBytes) {
           return undefined;
         }
@@ -558,7 +558,10 @@ export class CredentialProxy implements CredentialProxyExchange {
         } = input;
         request = {
           ...immutableCopy(envelope),
-          http: { ...immutableCopy(http), body: new Uint8Array(body) },
+          http: {
+            ...immutableCopy(http),
+            ...(body !== undefined && { body: new Uint8Array(body) }),
+          },
         };
         return (await ports.check(request, lifetime)) ? "credential" : undefined;
       },

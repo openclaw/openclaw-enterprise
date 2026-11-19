@@ -60,7 +60,9 @@ unmodified OpenShell for the MVP. **OpenShell v0.1.4 is NOT QUALIFIED.** Release
 mandatory check of each actual request, verified encrypted transport, and one never-reused
 sandbox identity per execution. If qualified, OCE decides whether the execution may make the
 request; OpenShell holds the scoped provider credential and sends it. An allow decision is not
-a send receipt.
+a send receipt. The proposed [endpoint-only Codex option](online-authorization.md#endpoint-only-authorization-for-codex-responses)
+uses stock OpenShell v0.1.9 and delegates body policy to the upstream provider
+for one operator-selected CredentialSource.
 
 OCE already has an [experimental OpenShell-owned Codex OAuth path](../../../docs/testing/openshell-oauth.md).
 OpenShell keeps the refresh grant, the Harness uses a stable alias, and a separate

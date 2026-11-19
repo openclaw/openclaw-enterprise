@@ -36,6 +36,37 @@ provider credential is still valid. We cannot recall a request that already pass
    contact, delivery or successful completion. Start with explicitly supported, inspected
    HTTPS operations; do not imply Git transport, WebSockets or generic proxy coverage.
 
+## Endpoint-only authorization for Codex Responses
+
+Use stock OpenShell v0.1.9's HTTP hooks to authorize a dedicated Codex Agent at
+the endpoint when an operator can delegate request body policy to the provider.
+The body-scoped unary hook checks the admitted model and other input fields,
+and its request-size limit can refuse long Codex turns. Endpoint-only
+authorization avoids sending the body to OCC.
+
+Select one Agent and its bound CredentialSource with `agentId` and `sourceId` in
+`drivers.credential_proxy.configuration.endpointOnly` and deploy a new
+dedicated Codex revision. Require a separate authenticated, fail-closed
+`HTTP_REQUEST` hook at `PRE_CREDENTIALS`. It requires the
+`openshell.supervisor-middleware.http-hooks` capability and advertises zero
+payload bytes. The normal model registration serves other bindings, including
+other Agents bound to that source. Git and exact-dispatch paths keep their existing contracts.
+
+OCC verifies the signed supervisor identity, current revision, binding and IAM,
+and the exact HTTPS origin, `POST /v1/responses`, empty query and approved
+headers visible to the hook. The affirmative preflight returns `continue_without_body`. OpenShell
+redeems that approval once with a zero-cache grant and injects the credential
+outside the guest. OCC receives neither body. The upstream provider enforces
+model, tool, storage and other body rules. An operator who needs OCC to enforce
+request body rules can continue using the body-scoped hook.
+
+Qualify the selected stock release at a controlled origin. Exercise an ordinary
+Codex turn with a request larger than the unary limit and a streamed response.
+Verify that authorization precedes credential injection, no body reaches OCC,
+and a changed origin, path, method, query, disallowed hook-visible header, identity or current authority
+prevents release. Verify that an approval cannot be redeemed twice. See the
+[operator setup and checks](../../../docs/guides/credential-proxy/model-requests.md#enable-endpoint-only-authorization).
+
 ## Release requirements for mandatory online authorization
 
 **OpenShell v0.1.4 is NOT QUALIFIED.** A fail-closed policy for an unavailable request service
@@ -81,11 +112,11 @@ Qualify the mandatory profile separately; never relabel a preview receipt as str
 
 ## Known gaps and what would close them
 
-| Online authorization accepts | Stronger guarantee |
-| --- | --- |
-| The supervisor already holds usable provider material. Its signed identity is a reusable bearer, not proof bound to this request channel. | Resolve authorized material on demand; bind execution, channel and reply recipient. |
+| Online authorization accepts                                                                                                                  | Stronger guarantee                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| The supervisor already holds usable provider material. Its signed identity is a reusable bearer, not proof bound to this request channel.     | Resolve authorized material on demand; bind execution, channel and reply recipient.                                     |
 | The final check and send can race with withdrawal. We do not identify the exact credential version sent or interrupt a send that already won. | Bind selected material and operation to a short-lived, single-use send permit. Even this cannot undo a provider action. |
-| An allow is not proof of one dispatch or of a safe response. Do not retry an ambiguous operation automatically. | Record the send attempt durably, preserve uncertainty and gate the full response before release. |
+| An allow is not proof of one dispatch or of a safe response. Do not retry an ambiguous operation automatically.                               | Record the send attempt durably, preserve uncertainty and gate the full response before release.                        |
 
 First qualify a released OpenShell without patches. If the gap is proving that an authorizer
 is mandatory and applied, ask upstream for that narrow capability. Do not paper over a

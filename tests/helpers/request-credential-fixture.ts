@@ -42,6 +42,7 @@ export async function requestCredentialFixture(
     credentialProxyCapacity?: Partial<CredentialProxyCapacity>;
     poolOptions?: { options: string };
     bindExchange?: CredentialProxyDriver["bindExchange"];
+    endpointOnly?: boolean;
   } = {},
 ) {
   let owner!: InstalledDriver;
@@ -107,6 +108,7 @@ export async function requestCredentialFixture(
       });
       // This fixture supplies only the external installation/recipient observation.
       // Production provider classification, IAM, approval persistence and Secret reads run below.
+      const providers = [createOpenAiRequestProvider(), ...original.sourceControl.providers];
       const proxy: CredentialProxyDriver = {
         id: "request-policy-fixture",
         implementation: "request-policy-fixture",
@@ -114,7 +116,7 @@ export async function requestCredentialFixture(
         ...(configuration.bindExchange && { bindExchange: configuration.bindExchange }),
         sourceControl: {
           ...original.sourceControl,
-          providers: [createOpenAiRequestProvider(), ...original.sourceControl.providers],
+          providers,
         },
         requestTimeCredentials: {
           async assertAvailable(signal) {
@@ -201,6 +203,9 @@ export async function requestCredentialFixture(
           unit.credentialSources.findCredentialSource(namespace.id, selected.id),
         );
         assert.deepEqual(stored?.egress?.key.provider, expected);
+      }
+      if (configuration.endpointOnly) {
+        providers[0] = createOpenAiRequestProvider({ agentId: agent.id, sourceId: source.id });
       }
       const result = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
         body: {

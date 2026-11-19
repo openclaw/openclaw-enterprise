@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-19
-last_updated_session: authoring-run/5cec88b7-8faf-42a6-ad05-8b095a0cff0b
+last_updated_session: authoring-run/9cad10ef-9d7b-47c1-81b4-74006966fa7f
 ---
 
 # Authorize model credentials per request
@@ -32,7 +32,7 @@ defines the guarantee. Existing strict exchanges retain their
 
 ```mermaid
 graph TD
-  A["Supervisor captures<br/>HTTPS model request"] --> B{"Current route, model<br/>and permission?"}
+  A["Supervisor captures<br/>HTTPS model request"] --> B{"Current route, request<br/>scope and permission?"}
   B -->|No| X["Refuse credential"]
   B -->|Yes| C["OCC reserves<br/>the replay ID"]
   C --> K{"Transport accepts<br/>the decision?"}
@@ -108,19 +108,35 @@ credential material.
 ### 2. Approve the captured request
 
 `openshell-request-credential.ts:authorizeOpenShellRequest` authenticates the
-Gateway-signed supervisor identity, reads the installed binding, and passes the
-captured method, target, headers and body to OCC. The adapter refuses malformed
-binding configuration. Both the adapter and
-`packages/occ/src/credential-proxy.ts:authorizeRequestCredential` refuse request
-bodies above the advertised 4 MiB limit before policy checks or Secret access.
-OCC reserves an operation slot and captured-body byte capacity before copying the
-body. The process admits at most 64 MiB of captured bodies until their policy and
-approval work settles.
-`packages/occ/src/index.ts:checkRequestCredential` verifies the current
-recipient, installation, revision, source, route, provider and IAM permission,
-then classifies the actual request against the admitted model grant. It rejects
-unsupported IAM with `unsupported_authority` before live recipient verification
-or Secret lookup; it never calls an external IAM provider on this path. It calls
+Gateway-signed supervisor identity and reads the installed binding. The
+body-scoped unary hook passes the captured method, target, headers and body to
+OCC. Deployment requires the endpoint registration only for the Agent and
+bound CredentialSource selected by `endpointOnly.agentId` and
+`endpointOnly.sourceId`. It uses stock OpenShell v0.1.9's
+`openshell.supervisor-middleware.http-hooks` capability with a zero-byte
+`HTTP_REQUEST` binding at `PRE_CREDENTIALS`. The preflight passes only the
+captured method, target and headers. The adapter refuses malformed binding
+configuration. On the unary path, both the adapter and
+`packages/occ/src/credential-proxy.ts:authorizeRequestCredential` refuse bodies
+above 4 MiB before policy or Secret access. OCC reserves an operation slot and
+byte capacity before copying the body. Each process can retain up to 64 MiB of
+captured bodies until their policy and approval work settles.
+
+`packages/occ/src/index.ts:checkRequestCredential` verifies the current recipient,
+installation, revision, source, route, provider and IAM permission.
+`apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiRequestProvider`
+classifies body-scoped requests against the admitted model grant. For endpoint-only
+requests, it rechecks the Agent and source selection and verifies the exact
+HTTPS origin, `POST /v1/responses`, an empty query and approved headers visible
+to the hook. Endpoint preflight rejects duplicate header names and accepts the
+optional Codex Responses Lite header only when its value is exactly `true`.
+On approval, the endpoint preflight returns
+`continue_without_body`. OpenShell redeems the same single-use approval and relays
+the body and response. The upstream provider owns model, tool, storage and body
+semantics.
+
+OCC rejects unsupported IAM with `unsupported_authority` before live recipient verification
+or Secret lookup; it never calls an external IAM provider on this path. OCC calls
 `requestTimeCredentials.verifyRequestInstallation` with the persisted installation
 and authenticated recipient. The bundled
 `apps/controller/src/drivers/egress-proxy/openshell.ts:verifyRequestInstallation`
@@ -256,6 +272,12 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-19 07:01: Document Codex Responses Lite header admission during endpoint preflight. (authoring-run/9cad10ef-9d7b-47c1-81b4-74006966fa7f - 687842ef94355f1c39028ebdae5f9c331a27745a)
+
+- 2026-11-19 06:03: Limit endpoint authorization to the selected Agent and source and describe which headers the hook can check. (authoring-run/d835039a-3f8c-4a49-9e1f-cd6987689d9f - f17f526dc21f57f8818f415ab0e4531f6a8e4e0c)
+
+- 2026-11-19 05:48: Trace endpoint-only preflight and the upstream provider's body policy. (authoring-run/96d321d8-e40a-4b12-99d2-68dc5d4a4982 - f17f526dc21f57f8818f415ab0e4531f6a8e4e0c)
 
 - 2026-11-19 02:36: Apply the advertised request-body limit to online credential authorization. (authoring-run/5cec88b7-8faf-42a6-ad05-8b095a0cff0b - ffc3b1a4884178d67853d4d9f5a3dbeb90537f15)
 - 2026-11-18 22:17: Preserve explicit public egress when composing the online model request policy. (authoring-run/3ce33251-ef68-40c5-8773-04654aa781ed - 34ea051e9b1a8b01883cb1542af47ea70e006421)

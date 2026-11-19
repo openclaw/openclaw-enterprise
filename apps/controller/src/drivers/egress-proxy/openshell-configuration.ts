@@ -12,6 +12,7 @@ import {
   openShellRequestAuthorityEndpoint,
   validTokenGrantConfiguration,
 } from "./openshell-token-grant.ts";
+import { openShellEndpointRequestRegistration } from "./openshell-exchange-capabilities.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
 /** Existing Helm listener and mounted files for the OpenShell Git adapter. */
@@ -55,6 +56,21 @@ export function openShellProxyConfiguration(
   repository: OpenShellGitRuntimeConfiguration | undefined,
 ) {
   const egress = object(input, "drivers.credential_proxy.configuration");
+  const endpointOnlyPath = "drivers.credential_proxy.configuration.endpointOnly";
+  let endpointOnly;
+  if (egress.endpointOnly !== undefined) {
+    const selection = object(egress.endpointOnly, endpointOnlyPath);
+    closed(selection, ["agentId", "sourceId"], endpointOnlyPath);
+    endpointOnly = {
+      agentId: nonempty(selection.agentId, `${endpointOnlyPath}.agentId`),
+      sourceId: nonempty(selection.sourceId, `${endpointOnlyPath}.sourceId`),
+    };
+    if (egress.tokenGrant === undefined) {
+      throw new Error(
+        "Endpoint-only model authorization requires explicit tokenGrant configuration.",
+      );
+    }
+  }
   const requestCredentials =
     egress.tokenGrant === undefined
       ? undefined
@@ -81,6 +97,7 @@ export function openShellProxyConfiguration(
             audience: authority.audience,
             tokenEndpoint: tokenGrant.endpoint,
             grpcEndpoint: openShellRequestAuthorityEndpoint(tokenGrant.endpoint, authority.port),
+            ...(endpointOnly && { endpointOnly }),
           };
           return { authority, middlewareName, tokenGrant, policy };
         })();
@@ -97,7 +114,7 @@ export function openShellProxyConfiguration(
     }
     closed(
       egress,
-      ["observedHookPreviewWorkspace", "middlewareName", "authority", "tokenGrant"],
+      ["observedHookPreviewWorkspace", "middlewareName", "authority", "tokenGrant", "endpointOnly"],
       "drivers.credential_proxy.configuration",
     );
     if (
@@ -106,7 +123,15 @@ export function openShellProxyConfiguration(
     ) {
       throw new Error("Repository model authority requires explicit tokenGrant configuration.");
     }
-    if (requestCredentials?.middlewareName === repository.registrationName) {
+    if (
+      requestCredentials &&
+      (requestCredentials.middlewareName === repository.registrationName ||
+        (endpointOnly !== undefined &&
+          openShellEndpointRequestRegistration(
+            requestCredentials.middlewareName,
+            requestCredentials.authority.audience,
+          ).name === repository.registrationName))
+    ) {
       throw new Error("Model and repository requests require distinct middleware registrations.");
     }
     const preview =
@@ -136,10 +161,23 @@ export function openShellProxyConfiguration(
   }
   closed(
     egress,
-    ["middlewareName", "authorityScope", "authority", "preparedGitHub", "tokenGrant"],
+    [
+      "middlewareName",
+      "authorityScope",
+      "authority",
+      "preparedGitHub",
+      "tokenGrant",
+      "endpointOnly",
+    ],
     "drivers.credential_proxy.configuration",
   );
-  const { authority, preparedGitHub, tokenGrant: _tokenGrant, ...policy } = egress;
+  const {
+    authority,
+    preparedGitHub,
+    tokenGrant: _tokenGrant,
+    endpointOnly: _endpointOnly,
+    ...policy
+  } = egress;
   return {
     repository: undefined,
     policy: {

@@ -64,6 +64,7 @@ export function bindOpenShellExchange(
   requestCredentials?: {
     readonly registrationName: string;
     readonly tokenGrant: OpenShellTokenGrantConfiguration;
+    readonly endpointOnly?: { readonly name: string; readonly audience: string };
   },
 ) {
   return withAuthorityFiles(configuration, async (files) => {
@@ -90,6 +91,16 @@ export function bindOpenShellExchange(
         identity,
         { createCredentialProxy: () => proxy },
         requestCredentials?.registrationName,
+        requestCredentials?.endpointOnly && {
+          name: requestCredentials.endpointOnly.name,
+          identity: new OpenShellEgressIdentity({
+            issuer: configuration.issuer,
+            audience: requestCredentials.endpointOnly.audience,
+            keyId: configuration.keyId,
+            publicKey: files.publicKey,
+            sender,
+          }),
+        },
       ),
       files,
     );

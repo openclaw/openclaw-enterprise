@@ -1544,6 +1544,12 @@ async function composeInstallationConfiguration(
     }
     // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
     const repositoryTransport = capabilities.repositoryTransport;
+    const rawProxy = object(drivers.credential_proxy, "drivers.credential_proxy");
+    // This selects the grant on new revisions. Retained endpoint grants recheck it at use.
+    const { endpointOnly: _endpointOnly, ...proxyRegistrationConfiguration } = object(
+      rawProxy.configuration,
+      "drivers.credential_proxy.configuration",
+    );
     const owner = new InstalledDriver(
       {
         ...sandbox,
@@ -1552,7 +1558,7 @@ async function composeInstallationConfiguration(
         configuration: {
           sandbox: sandbox.configuration,
           backend: openShellBackend,
-          proxy: drivers.credential_proxy,
+          proxy: { ...rawProxy, configuration: proxyRegistrationConfiguration },
           ...(repositoryTransport && {
             repositoryAuthorityIdentity: repositoryRuntime!.authorityIdentity,
             modelGateway: drivers.credential_gateway,

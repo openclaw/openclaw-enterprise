@@ -7,6 +7,7 @@ import type {
   CredentialProviderDefinition,
   EgressRequest,
   EgressResponse,
+  EgressRoute,
   EgressOperation,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
@@ -14,6 +15,10 @@ import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 import { validChatRequest, responsesRequestFailure } from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
 import { parseUnambiguousJson } from "../json-members.ts";
+import {
+  matchesEndpointOnlyBinding,
+  type OpenShellEndpointOnlySelection,
+} from "./openshell-exchange-capabilities.ts";
 
 const maximumResponseBytes = 4 * 1024 * 1024;
 
@@ -143,6 +148,48 @@ function protectedResponse(
   }
 }
 
+function matchesRequestEndpoint(route: EgressRoute, request: Omit<EgressRequest, "body">): boolean {
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return false;
+  }
+  return (
+    url.href === request.url &&
+    url.protocol === "https:" &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    request.method === route.method &&
+    url.origin === route.origin &&
+    url.pathname === route.path
+  );
+}
+
+const endpointRequestHeaders = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "content-encoding",
+  "content-type",
+  "originator",
+  "sec-fetch-mode",
+  "session-id",
+  "thread-id",
+  "user-agent",
+  "version",
+  "x-client-request-id",
+  "x-codex-beta-features",
+  "x-codex-installation-id",
+  "x-codex-parent-thread-id",
+  "x-codex-turn-metadata",
+  "x-codex-turn-state",
+  "x-codex-window-id",
+  "x-openai-subagent",
+]);
+
 /** Exact identity shared with bundled composition's new-use admission policy. */
 export const openAiStaticProviderRef = Object.freeze({
   id: "openai-static-https",
@@ -209,23 +256,7 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
       );
     },
     classify(route, request, refused) {
-      let url: URL;
-      try {
-        url = new URL(request.url);
-      } catch {
-        return undefined;
-      }
-      if (
-        url.href !== request.url ||
-        url.protocol !== "https:" ||
-        url.username ||
-        url.password ||
-        url.search ||
-        url.hash ||
-        request.method !== route.method ||
-        url.origin !== route.origin ||
-        url.pathname !== route.path
-      ) {
+      if (!matchesRequestEndpoint(route, request)) {
         return undefined;
       }
       const body = jsonRequest(request);
@@ -277,14 +308,50 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
   });
 }
 
-/** The same bounded request policy, with online release instead of dispatch/response custody. */
-export function createOpenAiRequestProvider(): CredentialProviderDefinition {
+/** Online release for body-scoped requests and one operator-selected Agent and source binding. */
+export function createOpenAiRequestProvider(
+  endpointOnly?: OpenShellEndpointOnlySelection,
+): CredentialProviderDefinition {
   const strict = createOpenAiStaticProvider();
-  return Object.freeze({
+  const selection = endpointOnly && immutableCopy(endpointOnly);
+  return Object.freeze<CredentialProviderDefinition>({
     ...strict,
     ref: { id: "openai-online-request", generation: 1 },
     authorization: "online-request" as const,
+    authorizeRequestEndpoint(route, request) {
+      const names = request.headers.map(([name]) => name.toLowerCase());
+      const encoding = request.headers.find(
+        ([name]) => name.toLowerCase() === "content-encoding",
+      )?.[1];
+      return (
+        matchesRequestEndpoint(route, request) &&
+        route.path === "/v1/responses" &&
+        jsonType.test(contentType(request.headers)) &&
+        validHeaders(request.headers, []) &&
+        (encoding === undefined || encoding === "identity" || encoding === "zstd") &&
+        new Set(names).size === names.length &&
+        request.headers.every(([name, value]) =>
+          name.toLowerCase() === "x-openai-internal-codex-responses-lite"
+            ? value === "true"
+            : endpointRequestHeaders.has(name.toLowerCase()),
+        )
+      );
+    },
+    normalizeGrant(models, config, binding) {
+      const grant = strict.normalizeGrant(models, config);
+      return binding && matchesEndpointOnlyBinding(selection, binding.agentId, binding.sourceId)
+        ? immutableCopy({ ...grant, requestInspection: "endpoint" as const })
+        : grant;
+    },
     routes(...args: Parameters<CredentialProviderDefinition["routes"]>) {
+      const [source, binding] = args;
+      if (
+        binding.grant.kind === "inference" &&
+        binding.grant.requestInspection === "endpoint" &&
+        !matchesEndpointOnlyBinding(selection, binding.execution.agentId, source.id)
+      ) {
+        return [];
+      }
       return strict
         .routes(...args)
         .filter((route) => route.path.endsWith("/responses"))

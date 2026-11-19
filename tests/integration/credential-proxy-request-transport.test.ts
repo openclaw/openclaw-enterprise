@@ -6,7 +6,6 @@ import {
   OpenShellCredentialProxyDriver,
   type OpenShellProxyOptions,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import { createOpenAiRequestProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import { openShellModelRequestPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
 import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -35,7 +34,13 @@ import type {
   RequestCredentialInput,
 } from "../../packages/contracts/src/index.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
+import { createOpenAiRequestProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import { bindOpenShellExchange } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-binding.ts";
+import {
+  bindOpenShellEgressAuthority,
+  createOpenShellEgressAuthority,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
+import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
   COMPUTE_RELEASE_PUBLIC_KEY,
   computeReleasePublicKey,
@@ -52,7 +57,12 @@ import {
   reservedPortArgs,
 } from "../helpers/available-port.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
-import { invoke, openShellMiddlewareClient, token } from "../helpers/openshell-online-wire.mjs";
+import {
+  grpc,
+  invoke,
+  openShellMiddlewareClient,
+  token,
+} from "../helpers/openshell-online-wire.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
@@ -508,6 +518,229 @@ test(
       }),
     );
     assert.equal((await redeem(next)).body.access_token, "synthetic-key-rotated");
+  },
+);
+
+test(
+  "signed endpoint hooks require the selected Agent and source without accepting a unary downgrade (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const fixture = await requestCredentialFixture(t, { endpointOnly: true });
+    const { f, installation } = fixture;
+    // The same source can serve other Agents. Deploy a fresh sibling through the API
+    // with identical model settings and IAM permission to prove it retains body policy.
+    const namespacePath = `/namespaces/${f.namespace.id}`;
+    const sibling = await f.request("POST", `${namespacePath}/agents`, {
+      body: {
+        name: "sibling-inference-agent",
+        configurationId: f.agent.configurationId,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: f.source.id },
+        credentialSources: [{ sourceId: f.source.id }],
+      },
+    });
+    assert.equal(sibling.status, 201, JSON.stringify(sibling.body));
+    const siblingAccess = await f.request("POST", `${namespacePath}/iam/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: sibling.data.servicePrincipalId,
+        roleId: f.grant.roleId,
+        resourceKind: "credential_source",
+        resourceId: f.source.id,
+      },
+    });
+    assert.equal(siblingAccess.status, 201, JSON.stringify(siblingAccess.body));
+    const siblingDeployment = await f.deployAgent(f.namespace.id, sibling.data.id);
+    const controller: OpenClawController = f.controller;
+    const siblingRevision = await controller.transact((state) =>
+      state.revisions.findRevision(f.namespace.id, sibling.data.id, siblingDeployment.id),
+    );
+    const siblingRoute = siblingRevision?.egressPlan?.routes[0];
+    assert.ok(siblingRoute && siblingRoute.binding.grant.kind === "inference");
+    assert.equal(siblingRoute.binding.source.source.id, f.source.id);
+    assert.equal(siblingRoute.binding.grant.requestInspection, undefined);
+
+    const keys = generateKeyPairSync("ed25519");
+    const endpointName = "model-authority-endpoint";
+    const bodyAudience = "model-authorizer";
+    const endpointAudience = `${bodyAudience}/endpoint`;
+    const identity = (audience: string) =>
+      new OpenShellEgressIdentity({
+        issuer: "https://gateway.example.test",
+        audience,
+        keyId: "gateway-key",
+        publicKey: keys.publicKey.export({ type: "spki", format: "pem" }),
+        sender: installation.sender,
+      });
+    const server = createOpenShellEgressAuthority(
+      identity(bodyAudience),
+      f.controller,
+      "model-authority",
+      { name: endpointName, identity: identity(endpointAudience) },
+    );
+    t.after(() => server.forceShutdown());
+    const port = await bindOpenShellEgressAuthority(
+      server,
+      "127.0.0.1:0",
+      Buffer.from(tls.cert),
+      Buffer.from(tls.key),
+    );
+    const hook = openShellMiddlewareClient(t, port, tls.caBundle, "HttpHooks");
+    const unary = openShellMiddlewareClient(t, port, tls.caBundle);
+    const bodyBearer = token(keys, "supervisor", installation.sandboxId, bodyAudience);
+    const endpointBearer = token(keys, "supervisor", installation.sandboxId, endpointAudience);
+    const requestFrame = (input: RequestCredentialInput) => ({
+      phase: 1,
+      middleware_name: endpointName,
+      context: {
+        request_id: input.requestId,
+        sandbox_id: input.recipient.id,
+        workspace: f.namespace.name,
+      },
+      config: {
+        fields: Object.fromEntries(
+          Object.entries({
+            binding_id: input.bindingId,
+            namespace_id: input.execution.namespaceId,
+            agent_id: input.execution.agentId,
+            revision_id: input.execution.revisionId,
+          }).map(([name, value]) => [name, { stringValue: value }]),
+        ),
+      },
+      request: {
+        target: { ...input.http.target, scheme: input.http.target.reportedScheme },
+        headers: input.http.headers.map(([name, value]) => ({ name, value })),
+      },
+      limits: {},
+      declared_body_bytes: "5000000",
+    });
+    const preflight = (input: ReturnType<typeof requestFrame>, bearer = endpointBearer) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const metadata = new grpc.Metadata();
+        metadata.set("authorization", bearer);
+        const rpc = hook.EvaluateHttpRequestHook(metadata, { deadline: Date.now() + 5000 });
+        rpc.once("data", resolve);
+        rpc.once("error", reject);
+        rpc.end({ preflight: input });
+      });
+    const redeem = (input: RequestCredentialInput) =>
+      fixture.exchange.resolveRequestCredential!(fixture.grant(input), AbortSignal.timeout(5000));
+    const initialReads = f.secretReads;
+    const unsupported = fixture.request();
+    const invalid = requestFrame(unsupported);
+    assert.equal((await preflight(invalid, bodyBearer)).result, "deny");
+    assert.equal(
+      (await preflight({ ...invalid, limits: { max_chunk_bytes: 4096 } })).result,
+      "deny",
+    );
+    const wrongHead = {
+      ...invalid.request,
+      target: { ...invalid.request.target, query: "route=elsewhere" },
+    };
+    assert.equal((await preflight({ ...invalid, request: wrongHead })).result, "deny");
+    const unknownHeader = {
+      ...invalid.request,
+      headers: [...invalid.request.headers, { name: "x-http-method-override", value: "GET" }],
+    };
+    assert.equal((await preflight({ ...invalid, request: unknownHeader })).result, "deny");
+    const responsesLiteHeader = { name: "x-openai-internal-codex-responses-lite", value: "true" };
+    for (const headers of [
+      [{ ...responsesLiteHeader, value: "false" }],
+      [{ ...responsesLiteHeader, value: "TRUE" }],
+      [{ ...responsesLiteHeader, value: "true, true" }],
+      [responsesLiteHeader, responsesLiteHeader],
+    ]) {
+      const frame = requestFrame(fixture.request());
+      frame.request.headers.push(...headers);
+      assert.equal((await preflight(frame)).result, "deny", JSON.stringify(headers));
+    }
+    const { request, ...unaryFrame } = invalid;
+    assert.equal(
+      (
+        await invoke(
+          unary,
+          "EvaluateHttpRequest",
+          {
+            ...unaryFrame,
+            ...request,
+            middleware_name: "model-authority",
+            body: unsupported.http.body,
+          },
+          bodyBearer,
+        )
+      ).decision,
+      2,
+    );
+    assert.equal(await redeem(unsupported), undefined);
+    assert.equal(f.secretReads, initialReads);
+
+    // Changing either configured ID after approval withdraws permission to redeem
+    // a retained endpoint grant before the Secret Driver can read material.
+    const { providers } = fixture.owner.require("credential_proxy").sourceControl;
+    const originalProvider = providers[0];
+    assert.ok(originalProvider);
+    for (const selection of [
+      { agentId: sibling.data.id, sourceId: f.source.id },
+      { agentId: f.agent.id, sourceId: randomUUID() },
+    ]) {
+      const withdrawn = fixture.request();
+      assert.equal((await preflight(requestFrame(withdrawn))).result, "preflight_result");
+      try {
+        assert.ok(Reflect.set(providers, 0, createOpenAiRequestProvider(selection)));
+        assert.equal(await redeem(withdrawn), undefined);
+        assert.equal(f.secretReads, initialReads);
+      } finally {
+        assert.ok(Reflect.set(providers, 0, originalProvider));
+      }
+    }
+
+    // Hold live recipient verification while a mutable Driver replaces its
+    // endpoint classifier with an unconditional allow. The old request must fail.
+    const mutableProvider = { ...originalProvider };
+    const verification = fixture.pauseNextVerification();
+    assert.ok(Reflect.set(providers, 0, mutableProvider));
+    const pending = preflight({ ...requestFrame(fixture.request()), request: unknownHeader });
+    try {
+      await Promise.race([
+        verification.reached,
+        pending.then(() => assert.fail("endpoint hook settled before recipient verification")),
+      ]);
+      mutableProvider.authorizeRequestEndpoint = () => true;
+      verification.release();
+      assert.equal((await pending).result, "deny");
+      assert.equal(f.secretReads, initialReads);
+    } finally {
+      verification.release();
+      assert.ok(Reflect.set(providers, 0, originalProvider));
+    }
+
+    const accepted = fixture.request();
+    const acceptedFrame = requestFrame(accepted);
+    const result = await preflight({
+      ...acceptedFrame,
+      request: {
+        ...acceptedFrame.request,
+        headers: [
+          ...acceptedFrame.request.headers,
+          { name: "accept-language", value: "*" },
+          { name: "sec-fetch-mode", value: "cors" },
+          { name: "content-encoding", value: "zstd" },
+          responsesLiteHeader,
+          {
+            name: "x-codex-turn-metadata",
+            value: JSON.stringify({ thread_id: randomUUID(), turn_id: randomUUID() }),
+          },
+        ],
+      },
+    });
+    assert.deepEqual(result.preflight_result, {
+      continue_without_body: {},
+      decision: "continue_without_body",
+    });
+    assert.equal(f.secretReads, initialReads, "only redemption may read material");
+    assert.ok(await redeem(accepted));
+    assert.equal(await redeem(accepted), undefined);
   },
 );
 

@@ -85,41 +85,46 @@ this support; they do not qualify stock OpenShell or any installed deployment.
 
 ### Online model requests
 
-Eligible static sources default to strict admission. Explicit `authorization: "online-request"`
-selects an offered provider; updates retain its ID and generation. Bundled
-`openai-online-request` generation 1 requires same-state native IAM and one dedicated
-Codex HTTPS Responses route, an explicit model and no provider-hosted tools.
+Eligible static sources default to strict admission. Explicit
+`authorization: "online-request"` selects an offered provider. Updates retain
+its ID and generation. Bundled `openai-online-request` generation 1 requires
+same-state native IAM and a dedicated Codex HTTPS Responses route. The
+body-scoped unary hook checks the model and rejects provider-hosted tools.
+See [request limits](#request-time-capacity).
 
-`ProxyPlan.authorization` records the profile. Version 8 admits the model route.
-Version 9 also requires separately authorized Git. The optional `requestTimeCredentials` provides
-`assertAvailable` and `verifyRequestInstallation(context, installation, recipient)`.
-The API checks the recipient against the persisted opaque `requestConfigurationId`.
-OpenShell binds the full policy, model provider/profile and Sandbox/process identities.
-Only `provider_env_revision` is excluded from stored admission/configuration hashes;
-every read still requires current observations to agree, including that epoch.
-The worker verifies Git custody at installation. The API refuses model releases
-when retained evidence changes or disappears.
+`drivers.credential_proxy.configuration.endpointOnly` selects one dedicated
+Agent and its bound CredentialSource by `agentId` and `sourceId` on deployment.
+The signed OpenShell supervisor requests approval for the exact HTTPS origin,
+`POST /v1/responses`, an empty query and approved headers visible to the hook.
+Header names must be unique. If the Codex Responses Lite header is present, its
+value must be exactly `true`. OpenShell can exclude headers such as `Cookie` from
+the hook. Apply any required
+filtering for these headers before the hook or at the provider. Its mandatory
+`HTTP_REQUEST` preflight at `PRE_CREDENTIALS` sends zero body bytes. OCC returns
+`continue_without_body` on approval and the upstream provider enforces model,
+tool and storage rules.
+See [endpoint-only setup](../../guides/credential-proxy/model-requests.md#enable-endpoint-only-authorization).
 
-Git uses its own binding, approval, session and registry. Version 9 refuses
-`policyReduction`. Removing [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
-denies fresh Git requests and can retire the runtime. Removing either binding can
-stop or redeploy execution. Installed proof that model-source IAM denial preserves
-authorized Git remains pending.
+`ProxyPlan.authorization` records the profile. Version 8 admits model access.
+Version 9 adds separately authorized Git and refuses `policyReduction`.
+Withdrawing [Git standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
+denies fresh Git requests. Removing either binding can stop execution.
+The worker verifies Git custody. Installed proof that model IAM denial
+preserves authorized Git remains pending.
 
-`authorizeRequestCredential` checks the captured request and records a nonsecret
-single-use approval. `resolveRequestCredential` authenticates redemption, consumes
-approval and rechecks authority under explicit `READ COMMITTED`. Two outside-lock
-Secret observations must match the final read under the Namespace rotation lock;
-external writers are uncoordinated. See the [release boundary](../../flows/credential-source-egress/model-requests.md#3-redeem-once-against-current-authority).
+OCC checks live recipient, binding and IAM before issuing a one-use approval
+and again on redemption. OpenShell verifies policy, provider, Sandbox and
+process identities against `requestConfigurationId`. Every current observation
+must agree on `provider_env_revision`, which is excluded from that hash.
+`resolveRequestCredential` consumes approval under `READ COMMITTED` and
+rechecks the Secret under the Namespace rotation lock. Approvals last up to
+30 seconds from database admission. Callers deduct monotonic elapsed time from
+`releaseLifetimeMs` and enforce `usableUntil`. See the
+[release flow](../../flows/credential-source-egress/model-requests.md#3-redeem-once-against-current-authority).
 
-Approvals last at most 30 seconds from database admission. Callers deduct
-monotonic time elapsed since resolver invocation from `releaseLifetimeMs` and
-enforce `usableUntil`; these deadlines apply to approval, not key expiry.
-Required middleware and `cache_ttl: 0` prevent reuse. The supervisor injects the
-key; the guest gets a placeholder and the Gateway retains only metadata.
-Withdrawal blocks pending redemption; already released requests may finish.
-This profile gives neither exact dispatch nor response custody.
-See [setup and installed qualification](../../guides/credential-proxy/model-requests.md).
+The supervisor injects the key with `cache_ttl: 0`. The guest receives a
+placeholder and the Gateway retains metadata. Withdrawal blocks redemption.
+Already released requests can finish.
 
 ## IAM
 
