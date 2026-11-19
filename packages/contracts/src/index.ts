@@ -1,4 +1,5 @@
 import type { Static } from "typebox";
+import type { RuntimeAuditSource } from "./runtime-audit.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
@@ -1427,7 +1428,7 @@ export type IdentityLookup = Scope &
 
 /** `access` records an audited read, such as viewing or downloading runtime log text. */
 export type AuditEventKind =
-  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request";
+  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request" | "runtime_activity";
 
 export type AuditOutcome = "success" | "denied" | "failure";
 
@@ -1463,7 +1464,7 @@ export interface AuditEvent extends Scope {
   readonly kind: AuditEventKind;
   readonly actorId: string;
   readonly schemaVersion?: number;
-  readonly source?: "occ";
+  readonly source?: "occ" | RuntimeAuditSource;
   readonly requestId?: string;
   readonly admissionDecisionId?: string;
   readonly actor?: {
@@ -1483,6 +1484,13 @@ export interface AuditEvent extends Scope {
   readonly outcome: AuditOutcome;
   readonly details?: Readonly<Record<string, unknown>>;
 }
+
+export {
+  RUNTIME_AUDIT_ACTIONS,
+  RuntimeAuditObservationSchema,
+  projectRuntimeAgentAuditDetails,
+} from "./runtime-audit.ts";
+export type { RuntimeAuditObservation, RuntimeAuditSource } from "./runtime-audit.ts";
 
 export { DRIVER_CAPABILITIES, isDriverCapability } from "./drivers/index.ts";
 export type {

@@ -1,0 +1,739 @@
+diff --git a/extensions/codex/src/app-server/run-attempt-notification-controller.ts b/extensions/codex/src/app-server/run-attempt-notification-controller.ts
+index 3369c94..df328d7 100644
+--- a/extensions/codex/src/app-server/run-attempt-notification-controller.ts
++++ b/extensions/codex/src/app-server/run-attempt-notification-controller.ts
+@@ -11,7 +11,7 @@ import {
+   readRawResponseToolCallId,
+   updateActiveTurnItemIds,
+ } from "./attempt-notifications.js";
+-import type { CodexPreparedServerNotification } from "./protocol.js";
++import { isJsonObject, type CodexPreparedServerNotification } from "./protocol.js";
+ import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
+ import type { StartedCodexAttemptResources } from "./run-attempt-start.js";
+ import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
+@@ -20,6 +20,17 @@ import { waitForPromiseOrAbort } from "./timeout.js";
+ import { CODEX_APP_SERVER_NATIVE_TURN_WAIT_TIMEOUT_MS } from "./turn-router.js";
+ import type { CodexThreadRouteScope } from "./turn-router.js";
+ 
++const MODEL_CALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
++
++function isAuditModelReference(value: unknown): value is string {
++  return (
++    typeof value === "string" &&
++    value.length >= 1 &&
++    value.length <= 256 &&
++    !/[\s\p{Cc}]/u.test(value)
++  );
++}
++
+ export function createCodexAttemptNotificationController(
+   resources: StartedCodexAttemptResources,
+   turnRuntime: CodexAttemptTurnState,
+@@ -48,6 +59,65 @@ export function createCodexAttemptNotificationController(
+     maybeAnnounceFastModeAutoOff,
+   } = lifecycle;
+   const pendingNativeCommandItems = new Set<string>();
++  const noteAuditReceipt = (
++    notification: CodexPreparedServerNotification,
++    receivedAtMs: number,
++  ) => {
++    if (
++      notification.method !== "turn/started" &&
++      notification.method !== "turn/completed" &&
++      notification.method !== "model/providerAttempt"
++    ) {
++      return;
++    }
++    const auditTurn = state.auditTurn;
++    if (
++      !auditTurn?.nativeTurnId ||
++      auditTurn.nativeTurnId !== notification.turnId ||
++      notification.threadId !== resourceState.thread.threadId
++    ) {
++      return;
++    }
++    if (
++      notification.method === "turn/started" &&
++      isJsonObject(notification.params) &&
++      isJsonObject(notification.params.turn) &&
++      notification.params.turn.id === auditTurn.nativeTurnId
++    ) {
++      return auditTurn.receipt.started(receivedAtMs);
++    }
++    if (notification.method === "model/providerAttempt") {
++      if (!isJsonObject(notification.params)) {
++        return;
++      }
++      const { modelCallId, model, provider, stage } = notification.params;
++      if (
++        typeof modelCallId === "string" &&
++        modelCallId.length === 36 &&
++        MODEL_CALL_ID.test(modelCallId) &&
++        isAuditModelReference(model) &&
++        isAuditModelReference(provider) &&
++        (stage === "started" ||
++          stage === "succeeded" ||
++          stage === "failed" ||
++          stage === "cancelled")
++      ) {
++        return auditTurn.receipt.observeNativeModel(
++          { modelCallId, model, provider, stage },
++          receivedAtMs,
++        );
++      }
++      return;
++    }
++    const nativeStatus = notification.completedTurn?.status;
++    if (
++      nativeStatus === "completed" ||
++      nativeStatus === "failed" ||
++      nativeStatus === "interrupted"
++    ) {
++      return auditTurn.receipt.completed(nativeStatus, receivedAtMs);
++    }
++  };
+   let nativeItemsCompletion: ReturnType<typeof createDeferred<void>> | undefined;
+   const waitForNativeTerminalItems = async (signal: AbortSignal) => {
+     // Exited commands disappear from native inventory before their final item arrives.
+@@ -61,7 +131,7 @@ export function createCodexAttemptNotificationController(
+     }
+   };
+   const handleNotification = async (notification: CodexPreparedServerNotification) => {
+-    if (state.projectionClosed) {
++    if (state.projectionClosed || notification.method === "model/providerAttempt") {
+       return;
+     }
+     const projector = projectorRef.current;
+@@ -75,6 +145,10 @@ export function createCodexAttemptNotificationController(
+     const isCurrentTurn =
+       notification.threadId === resourceState.thread.threadId && notification.turnId === turnId;
+     const completedTurn = isCurrentTurn ? notification.completedTurn : undefined;
++    if (completedTurn) {
++      // A validated terminal snapshot can also arrive directly in the RPC response.
++      await noteAuditReceipt(notification, Date.now());
++    }
+     if (
+       (state.timeout || state.localCompletionRequested) &&
+       completedTurn?.status === "interrupted"
+@@ -222,6 +296,10 @@ export function createCodexAttemptNotificationController(
+     scope: CodexThreadRouteScope,
+     receivedAtMs: number,
+   ) => {
++    void noteAuditReceipt(notification, receivedAtMs);
++    if (notification.method === "model/providerAttempt") {
++      return;
++    }
+     const projector = projectorRef.current;
+     const turnId = turnIdRef.current;
+     if (!projector || !turnId || state.projectionClosed) {
+diff --git a/extensions/codex/src/app-server/run-attempt-runtime-audit.test.ts b/extensions/codex/src/app-server/run-attempt-runtime-audit.test.ts
+new file mode 100644
+index 0000000..41f4ec5
+--- /dev/null
++++ b/extensions/codex/src/app-server/run-attempt-runtime-audit.test.ts
+@@ -0,0 +1,66 @@
++import { expect, it, vi } from "vitest";
++import { prepareCodexServerNotification } from "./protocol-validators.js";
++import { createCodexAttemptNotificationController } from "./run-attempt-notification-controller.js";
++
++it("observes model attempts only for the accepted turn", () => {
++  const observeNativeModel = vi.fn(async () => {});
++  type ControllerInput = Parameters<typeof createCodexAttemptNotificationController>;
++  const resources = {
++    prompt: {
++      context: { attemptTools: {}, runtime: { connection: {} } },
++      turnState: { codexTurnPromptText: "" },
++    },
++    state: { thread: { threadId: "thread" } },
++    projectorRef: {},
++  } as unknown as ControllerInput[0];
++  const turn = {
++    state: {
++      auditTurn: { nativeTurnId: "turn", receipt: { observeNativeModel } },
++    },
++    turnIdRef: {},
++  } as unknown as ControllerInput[1];
++  const controller = createCodexAttemptNotificationController(
++    resources,
++    turn,
++    {} as ControllerInput[2],
++  );
++
++  const receivedAtMs = 42;
++  const call = {
++    modelCallId: "e16d8272-e2b8-4ca8-be44-267ea13986a4",
++    model: "gpt-5.1",
++    provider: "fixture",
++  };
++  function receiveModel(
++    stage: string,
++    provider = call.provider,
++    threadId = "thread",
++    turnId = "turn",
++  ) {
++    const scope = { threadId, turnId };
++    controller.noteNotificationReceived(
++      prepareCodexServerNotification({
++        method: "model/providerAttempt",
++        params: {
++          ...scope,
++          ...call,
++          provider,
++          stage,
++          unexpectedContent: "response body never enters the audit receipt",
++        },
++      }),
++      scope,
++      receivedAtMs,
++    );
++  }
++  receiveModel("started");
++  receiveModel("failed", call.provider, "thread", "other-turn");
++  receiveModel("failed", call.provider, "other-thread");
++  receiveModel("succeeded", "invalid provider label\n");
++  receiveModel("queued");
++  receiveModel("failed");
++  expect(observeNativeModel.mock.calls).toEqual([
++    [{ ...call, stage: "started" }, receivedAtMs],
++    [{ ...call, stage: "failed" }, receivedAtMs],
++  ]);
++});
+diff --git a/extensions/codex/src/app-server/run-attempt-turn-request.ts b/extensions/codex/src/app-server/run-attempt-turn-request.ts
+index c31889f..c1564bc 100644
+--- a/extensions/codex/src/app-server/run-attempt-turn-request.ts
++++ b/extensions/codex/src/app-server/run-attempt-turn-request.ts
+@@ -357,6 +357,8 @@ export async function prepareCodexAttemptTurnRequest(
+       },
+     });
+     let acceptedTurnId: string | undefined;
++    const runtimeAudit = params.hostCapabilities.codexRuntimeAudit;
++    let auditTurn: typeof state.auditTurn;
+     const upstreamUserText = turnStartParams.input
+       .flatMap((item) => (item.type === "text" ? [item.text] : []))
+       .join("\n");
+@@ -387,8 +389,14 @@ export async function prepareCodexAttemptTurnRequest(
+         await turnClient.request("turn/start", turnStartParams, {
+           timeoutMs: params.timeoutMs,
+           signal: runAbortController.signal,
+-          withCurrent: (write) =>
+-            runtime.nativeExecutionPolicy.admit(write, connection.withCurrent),
++          withCurrent: async (write) => {
++            if (runtimeAudit) {
++              assertTurnCurrent();
++              auditTurn = { receipt: await runtimeAudit.admitTurn() };
++              state.auditTurn = auditTurn;
++            }
++            return runtime.nativeExecutionPolicy.admit(write, connection.withCurrent);
++          },
+           assertCurrent: () => {
+             assertTurnCurrent();
+             runtime.nativeExecutionPolicy.source?.();
+@@ -397,6 +405,9 @@ export async function prepareCodexAttemptTurnRequest(
+         }),
+       );
+       acceptedTurnId = startedTurn.turn.id;
++      if (auditTurn) {
++        auditTurn.nativeTurnId = acceptedTurnId;
++      }
+       recordCodexTurnForkSettings(turnClient, turnStartParams);
+       resources.nativeProcessAuthority?.bindTurn(turnClient, threadId, acceptedTurnId);
+       assertTurnCurrent();
+diff --git a/extensions/codex/src/app-server/run-attempt-turn-state.ts b/extensions/codex/src/app-server/run-attempt-turn-state.ts
+index 280cd7d..1822022 100644
+--- a/extensions/codex/src/app-server/run-attempt-turn-state.ts
++++ b/extensions/codex/src/app-server/run-attempt-turn-state.ts
+@@ -2,7 +2,10 @@ import {
+   createAgentHarnessAttemptDeadlineController,
+   type AgentHarnessAttemptTimeout,
+ } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
+-import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
++import {
++  embeddedAgentLog,
++  type EmbeddedRunAttemptParamsV2,
++} from "openclaw/plugin-sdk/agent-harness-runtime";
+ import { createAgentHarnessToolExecutionRegistry } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
+ import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
+ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+@@ -24,7 +27,15 @@ import { createCodexUserInputBridge } from "./user-input-bridge.js";
+ 
+ const CODEX_NATIVE_HOOK_RELAY_RENEW_INTERVAL_MS = 60_000;
+ 
++type CodexAuditCapability = NonNullable<
++  EmbeddedRunAttemptParamsV2["hostCapabilities"]["codexRuntimeAudit"]
++>;
++
+ class CodexAttemptState {
++  auditTurn?: {
++    receipt: Awaited<ReturnType<CodexAuditCapability["admitTurn"]>>;
++    nativeTurnId?: string;
++  };
+   latestStartupErrorNotification?: CodexServerNotification;
+   rateLimitsRevisionBeforeLastTurnStart?: number;
+   completed = false;
+diff --git a/extensions/codex/src/app-server/thread-lifecycle-io.ts b/extensions/codex/src/app-server/thread-lifecycle-io.ts
+index 6fac2b3..7ab1867 100644
+--- a/extensions/codex/src/app-server/thread-lifecycle-io.ts
++++ b/extensions/codex/src/app-server/thread-lifecycle-io.ts
+@@ -549,6 +549,7 @@ export async function startFreshCodexThread(
+     }
+   });
+   const response = assertCodexThreadStartResponse(threadStartResponse);
++  await params.params.hostCapabilities.codexRuntimeAudit?.sessionStarted(response.thread.id);
+   recordCodexThreadForkSettings(params.client, response.thread.id, startParams);
+   const provisionalAppIds = pluginThreadConfig?.provisionalAppIds;
+   const rejectUncommittedThread = async (cause: unknown): Promise<never> => {
+diff --git a/extensions/codex/src/app-server/thread-lifecycle.test.ts b/extensions/codex/src/app-server/thread-lifecycle.test.ts
+index d360e0f..fe3b5a7 100644
+--- a/extensions/codex/src/app-server/thread-lifecycle.test.ts
++++ b/extensions/codex/src/app-server/thread-lifecycle.test.ts
+@@ -952,6 +952,16 @@ describe("Codex plugin binding recovery", () => {
+   it("applies a settled plugin denial before resume without replacing the native binding", async () => {
+     const sessionFile = path.join(tempDir, "session.jsonl");
+     const params = createThreadLifecycleParams(sessionFile, workspaceDir);
++    const sessionStarted = vi.fn(async () => {});
++    params.hostCapabilities = {
++      ...params.hostCapabilities,
++      codexRuntimeAudit: {
++        sessionStarted,
++        admitTurn: async () => {
++          throw new Error("Unexpected turn admission");
++        },
++      },
++    };
+     const respond = createLifecycleRequest(async (method: string) => {
+       if (method === "thread/start" || method === "thread/resume") {
+         return threadStartResult("thread-settled-transition");
+@@ -1021,6 +1031,7 @@ describe("Codex plugin binding recovery", () => {
+     await fixture.endTurn("thread-settled-transition");
+     await startOrResumeThread({ ...common, pluginThreadConfig: settledProvider });
+ 
++    expect(sessionStarted.mock.calls).toEqual([["thread-settled-transition"]]);
+     for (const [, resumeParams] of request.mock.calls.filter(
+       ([method]) => method === "thread/resume",
+     )) {
+diff --git a/src/agents/harness/codex-runtime-audit.test.ts b/src/agents/harness/codex-runtime-audit.test.ts
+new file mode 100644
+index 0000000..7eff8bd
+--- /dev/null
++++ b/src/agents/harness/codex-runtime-audit.test.ts
+@@ -0,0 +1,136 @@
++import { once } from "node:events";
++import { createServer } from "node:http";
++import { expect, it, vi } from "vitest";
++import { applyConfigEnvVars } from "../../config/config-env-vars.js";
++import { initializeOpenClawRuntimeAudit } from "../../infra/openclaw-runtime-audit.js";
++import { bindCodexRuntimeAudit } from "./codex-runtime-audit.js";
++
++it("sends separate Codex provider attempts in the admitted turn and retries the same event", async () => {
++  const first = {
++    modelCallId: "e16d8272-e2b8-4ca8-be44-267ea13986a4",
++    model: "gpt-5.1",
++    provider: "fixture",
++  } as const;
++  const second = { ...first, modelCallId: "06819eb6-d731-41c6-96f1-70454d8e8cfc" };
++  const missingStart = { ...first, modelCallId: "de6e8676-5e42-4c96-a4a9-0bdbb83d0db4" };
++  const firstStartDeliveries: string[] = [];
++  const events: Array<Record<string, unknown>> = [];
++  const headers: Array<{ authorization?: string; source?: string | string[] }> = [];
++  const server = createServer(async (request, response) => {
++    const chunks: Buffer[] = [];
++    for await (const chunk of request) {
++      chunks.push(Buffer.from(chunk));
++    }
++    headers.push({
++      authorization: request.headers.authorization,
++      source: request.headers["x-openclaw-runtime-audit-source"],
++    });
++    const body = Buffer.concat(chunks).toString("utf8");
++    const event = JSON.parse(body) as Record<string, unknown>;
++    if (
++      event.action === "openclaw.runtime.model_call.started" &&
++      event.modelCallId === first.modelCallId
++    ) {
++      firstStartDeliveries.push(body);
++      if (firstStartDeliveries.length === 1) {
++        response.writeHead(503).end();
++        return;
++      }
++    }
++    events.push(event);
++    response.writeHead(204).end();
++  });
++  server.listen(0, "127.0.0.1");
++  await once(server, "listening");
++  try {
++    const address = server.address();
++    if (!address || typeof address === "string") {
++      throw new Error("Fixture failed to get a loopback address");
++    }
++    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_URL", `http://127.0.0.1:${address.port}/runtime-audit`);
++    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN", "fixture-audit-token");
++    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH", undefined);
++    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_CA_PATH", undefined);
++    initializeOpenClawRuntimeAudit();
++    function bindAuditCapability() {
++      const capability = bindCodexRuntimeAudit({
++        sessionId: "host-session",
++        transcript: undefined,
++        assertActive: () => {},
++      });
++      if (!capability) {
++        throw new Error("Fixture failed to initialize Codex runtime audit");
++      }
++      return capability;
++    }
++
++    // An unselected App Server keeps turn audit but cannot supply model records.
++    vi.stubEnv("OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT", undefined);
++    applyConfigEnvVars({ env: { vars: { OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT: "1" } } });
++    expect(process.env.OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT).toBeUndefined();
++    const unselected = await bindAuditCapability().admitTurn();
++    await unselected.started(1);
++    await unselected.observeNativeModel({ ...first, stage: "started" }, 2);
++    await unselected.observeNativeModel({ ...first, stage: "succeeded" }, 3);
++    await unselected.completed("completed", 4);
++    expect(events.map((event) => event.action)).toEqual([
++      "openclaw.runtime.turn.admitted",
++      "openclaw.runtime.turn.started",
++      "openclaw.runtime.turn.completed",
++    ]);
++    events.length = 0;
++    headers.length = 0;
++
++    vi.stubEnv("OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT", "1");
++    const turn = await bindAuditCapability().admitTurn();
++    await turn.started(1);
++    await turn.observeNativeModel({ ...missingStart, stage: "failed" }, 2);
++    const observations = [
++      turn.observeNativeModel({ ...first, stage: "started" }, 3),
++      turn.observeNativeModel({ ...first, stage: "started" }, 3),
++      turn.observeNativeModel({ ...first, model: "wrong-model", stage: "succeeded" }, 4),
++      turn.observeNativeModel({ ...first, stage: "failed" }, 4),
++      turn.observeNativeModel({ ...first, stage: "succeeded" }, 4),
++      turn.observeNativeModel({ ...second, stage: "started" }, 5),
++      turn.observeNativeModel({ ...second, stage: "succeeded" }, 6),
++    ];
++    // The terminal turn record waits for already observed model evidence even during a delivery retry.
++    await turn.completed("completed", 7);
++    await Promise.all(observations);
++    await turn.observeNativeModel({ ...missingStart, stage: "started" }, 8);
++
++    expect(firstStartDeliveries).toHaveLength(2);
++    expect(firstStartDeliveries[0]).toBe(firstStartDeliveries[1]);
++    expect(headers).toHaveLength(events.length + 1);
++    for (const header of headers) {
++      expect(header).toEqual({ authorization: "Bearer fixture-audit-token", source: "codex" });
++    }
++    expect(events.at(0)?.action).toBe("openclaw.runtime.turn.admitted");
++    expect(events.at(1)?.action).toBe("openclaw.runtime.turn.started");
++    expect(events.at(-1)).toMatchObject({
++      action: "openclaw.runtime.turn.completed",
++      outcome: "succeeded",
++    });
++    for (const event of events) {
++      expect(event).toMatchObject({ sessionId: "host-session", turnId: events[0]?.turnId });
++    }
++    expect(new Set(events.map((event) => event.eventId)).size).toBe(events.length);
++    const modelEvents = events.slice(2, -1);
++    expect(modelEvents).toHaveLength(4);
++    for (const [call, outcome] of [
++      [first, "failed"],
++      [second, "succeeded"],
++    ] as const) {
++      const matching = modelEvents.filter((event) => event.modelCallId === call.modelCallId);
++      expect(matching).toMatchObject([
++        { ...call, action: "openclaw.runtime.model_call.started" },
++        { ...call, action: "openclaw.runtime.model_call.completed", outcome },
++      ]);
++    }
++  } finally {
++    vi.unstubAllEnvs();
++    await new Promise<void>((resolve, reject) => {
++      server.close((error) => (error ? reject(error) : resolve()));
++    });
++  }
++});
+diff --git a/src/agents/harness/codex-runtime-audit.ts b/src/agents/harness/codex-runtime-audit.ts
+new file mode 100644
+index 0000000..f00067a
+--- /dev/null
++++ b/src/agents/harness/codex-runtime-audit.ts
+@@ -0,0 +1,143 @@
++import { randomUUID } from "node:crypto";
++import {
++  hasOpenClawRuntimeAudit,
++  recordObservedOpenClawRuntimeAudit,
++  recordOpenClawRuntimeAudit,
++  type OpenClawRuntimeAuditEvent,
++} from "../../infra/openclaw-runtime-audit.js";
++import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
++
++const record = (event: OpenClawRuntimeAuditEvent) => recordOpenClawRuntimeAudit(event, "codex");
++const observe = (event: OpenClawRuntimeAuditEvent) =>
++  recordObservedOpenClawRuntimeAudit(event, "codex");
++
++type NativeTurnStatus = "completed" | "failed" | "interrupted";
++type NativeModelAttempt = Readonly<{
++  modelCallId: string;
++  model: string;
++  provider: string;
++  stage: "started" | "succeeded" | "failed" | "cancelled";
++}>;
++
++export type CodexRuntimeAuditCapability = Readonly<{
++  sessionStarted: (nativeSessionId: string) => Promise<void>;
++  admitTurn: () => Promise<CodexRuntimeAuditTurn>;
++}>;
++
++export type CodexRuntimeAuditTurn = Readonly<{
++  started: (receivedAtMs: number) => Promise<void>;
++  completed: (status: NativeTurnStatus, receivedAtMs: number) => Promise<void>;
++  observeNativeModel: (attempt: NativeModelAttempt, receivedAtMs: number) => Promise<void>;
++}>;
++
++export function bindCodexRuntimeAudit(params: {
++  sessionId: string | undefined;
++  transcript: UserTurnTranscriptRecorder | undefined;
++  assertActive: () => void;
++}): CodexRuntimeAuditCapability | undefined {
++  const { sessionId, transcript, assertActive } = params;
++  if (!sessionId || !hasOpenClawRuntimeAudit()) {
++    return undefined;
++  }
++  // Compute sets this only when it launches its paired, audit-enabled App Server.
++  const auditProviderAttempts = process.env.OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT === "1";
++  const sessionStarts = new Map<string, Promise<void>>();
++  return Object.freeze({
++    sessionStarted: (nativeSessionId: string) => {
++      const previous = sessionStarts.get(nativeSessionId);
++      if (previous) {
++        return previous;
++      }
++      const started = observe({
++        action: "openclaw.runtime.session.started",
++        sessionId,
++        nativeSessionId,
++      });
++      sessionStarts.set(nativeSessionId, started);
++      return started;
++    },
++    admitTurn: async () => {
++      assertActive();
++      const admission = transcript?.getAdmissionReceipt();
++      const identity = {
++        sessionId,
++        turnId: randomUUID(),
++        ...(admission?.sessionId === sessionId ? { messageId: admission.entryId } : {}),
++      };
++      await record({ action: "openclaw.runtime.turn.admitted", ...identity });
++      let started: Promise<void> | undefined;
++      let completed: Promise<void> | undefined;
++      const modelCalls = new Map<
++        string,
++        { model: string; provider: string; recorded: Promise<void>; finished?: true }
++      >();
++      return Object.freeze({
++        started: (receivedAtMs: number) =>
++          (started ??= observe({
++            action: "openclaw.runtime.turn.started",
++            ...identity,
++            occurredAt: new Date(receivedAtMs).toISOString(),
++          })),
++        completed: (status: NativeTurnStatus, receivedAtMs: number) =>
++          (completed ??= Promise.all([
++            started,
++            ...Array.from(modelCalls.values(), ({ recorded }) => recorded),
++          ]).then(() =>
++            observe({
++              action: "openclaw.runtime.turn.completed",
++              ...identity,
++              occurredAt: new Date(receivedAtMs).toISOString(),
++              outcome:
++                status === "completed"
++                  ? "succeeded"
++                  : status === "interrupted"
++                    ? "cancelled"
++                    : "failed",
++            }),
++          )),
++        observeNativeModel: async (
++          { modelCallId, model, provider, stage }: NativeModelAttempt,
++          receivedAtMs: number,
++        ) => {
++          if (!auditProviderAttempts || completed) {
++            return;
++          }
++          const call = modelCalls.get(modelCallId);
++          const details = {
++            ...identity,
++            modelCallId,
++            model,
++            provider,
++            occurredAt: new Date(receivedAtMs).toISOString(),
++          };
++          if (stage === "started") {
++            if (!call) {
++              const recorded = Promise.resolve(started).then(() =>
++                observe({ action: "openclaw.runtime.model_call.started", ...details }),
++              );
++              modelCalls.set(modelCallId, {
++                model,
++                provider,
++                recorded,
++              });
++              await recorded;
++            }
++            return;
++          }
++          if (!call || call.finished || call.model !== model || call.provider !== provider) {
++            return;
++          }
++          call.finished = true;
++          call.recorded = call.recorded.then(() =>
++            observe({
++              action: "openclaw.runtime.model_call.completed",
++              ...details,
++              outcome: stage,
++            }),
++          );
++          await call.recorded;
++        },
++      });
++    },
++  });
++}
+diff --git a/src/agents/harness/host-capability-types.ts b/src/agents/harness/host-capability-types.ts
+index 48bec79..5e38adc 100644
+--- a/src/agents/harness/host-capability-types.ts
++++ b/src/agents/harness/host-capability-types.ts
+@@ -5,6 +5,7 @@ import type {
+ } from "../../../packages/gateway-protocol/src/schema/approvals.js";
+ import type { ImageContent } from "../../../packages/llm-core/src/types.js";
+ import type { AnyAgentTool } from "../tools/common.js";
++import type { CodexRuntimeAuditCapability } from "./codex-runtime-audit.js";
+ 
+ export type AgentHarnessContextMedia = {
+   text?: string;
+@@ -65,6 +66,8 @@ export type AgentHarnessHostCapabilities = Readonly<{
+   version: 1;
+   /** Fails closed unless this exact admitted run capability remains active. */
+   assertActive: () => void;
++  /** Closure-bound audit operations supplied only to the loader-owned bundled Codex harness. */
++  codexRuntimeAudit?: CodexRuntimeAuditCapability;
+   /** Prepare history only when a native thread must be freshly seeded, under this run's authority. */
+   prepareBoundedSeed?: (
+     request: Readonly<{
+diff --git a/src/agents/harness/host-capability.ts b/src/agents/harness/host-capability.ts
+index efb8151..37c23a8 100644
+--- a/src/agents/harness/host-capability.ts
++++ b/src/agents/harness/host-capability.ts
+@@ -47,6 +47,7 @@ import {
+   getCoreTtsToolResultMediaUrls,
+   transferCoreTtsToolResultProvenance,
+ } from "../tools/tts-tool-result-provenance.js";
++import { bindCodexRuntimeAudit } from "./codex-runtime-audit.js";
+ import { bindHostToolSurface } from "./host-bound-tool.js";
+ import type { AgentHarnessHostCapabilities } from "./host-capability-types.js";
+ import {
+@@ -90,6 +91,7 @@ type HostToolSurfaceOptions = Parameters<
+ export function createAgentHarnessHostCapabilities(params: {
+   attempt: AgentHarnessHostAttempt;
+   pluginId: string;
++  auditedBundledCodex?: boolean;
+   requiredNodeCommands?: readonly string[];
+   nativeModelPolicySupport?: "exact";
+   toolCalls?: "deny";
+@@ -450,10 +452,18 @@ export function createAgentHarnessHostCapabilities(params: {
+     withAgentQuestionAnswerAuthority(resolveAgentQuestionAnswerAuthority(capabilities), () =>
+       withInstallationTarget(installationTarget, run),
+     );
++  const codexRuntimeAudit = params.auditedBundledCodex
++    ? bindCodexRuntimeAudit({
++        sessionId: attempt.sessionId,
++        transcript: attempt.userTurnTranscriptRecorder,
++        assertActive,
++      })
++    : undefined;
+   const capabilities: AgentHarnessHostCapabilities = Object.freeze({
+     kind: "agent-harness-host-capability" as const,
+     version: 1 as const,
+     assertActive,
++    ...(codexRuntimeAudit ? { codexRuntimeAudit } : {}),
+     ...bindHostContinuationRetryCount(prepareContinuationRetryCount, assertActive),
+     captureRequestCustody: () => {
+       assertActive();
+diff --git a/src/agents/harness/registry.ts b/src/agents/harness/registry.ts
+index d3202dd..bc7986c 100644
+--- a/src/agents/harness/registry.ts
++++ b/src/agents/harness/registry.ts
+@@ -104,10 +104,7 @@ export function resolveAgentHarnessOwnerPluginId(harness: AgentHarness): string
+   return registration.ownerPluginId ?? "core";
+ }
+ 
+-/** Bundled sinks migrate with this host; external sinks retain the shipped question projection. */
+-export function resolveAgentHarnessQueueInputAdapter(
+-  harness: AgentHarness,
+-): ReplyQueueInputAdapter {
++function isLoaderOwnedBundledHarness(harness: AgentHarness, ownerId?: string): boolean {
+   const registry = getPluginRegistryForContext();
+   const registration = getAgentHarnesses().find((entry) => entry.harness.id === harness.id);
+   if (registration?.harness !== harness) {
+@@ -123,7 +120,24 @@ export function resolveAgentHarnessQueueInputAdapter(
+             plugin.rootDir === registration.rootDir,
+         )
+       : undefined;
+-  return owner?.origin === "bundled" ? "human-and-question-permission" : "legacy-question-category";
++  return owner?.origin === "bundled" && (ownerId === undefined || owner.id === ownerId);
++}
++
++/** Only the exact loader-owned bundled Codex adapter receives audit capabilities. */
++export function isBundledCodexAgentHarness(harness: AgentHarness): boolean {
++  return (
++    harness.id === CODEX_NATIVE_COMPACTION_OWNER_ID &&
++    isLoaderOwnedBundledHarness(harness, CODEX_NATIVE_COMPACTION_OWNER_ID)
++  );
++}
++
++/** Bundled sinks migrate with this host; external sinks retain the shipped question projection. */
++export function resolveAgentHarnessQueueInputAdapter(
++  harness: AgentHarness,
++): ReplyQueueInputAdapter {
++  return isLoaderOwnedBundledHarness(harness)
++    ? "human-and-question-permission"
++    : "legacy-question-category";
+ }
+ 
+ /** Resolves the private Codex compaction bridge from exact registry-owned capability state. */
+diff --git a/src/agents/harness/selection.ts b/src/agents/harness/selection.ts
+index c149cd0..f2fba37 100644
+--- a/src/agents/harness/selection.ts
++++ b/src/agents/harness/selection.ts
+@@ -56,7 +56,7 @@ import {
+   runAgentHarnessLifecycleFinalization,
+ } from "./lifecycle.js";
+ import { preparePluginHarnessParams } from "./plugin-attempt-params.js";
+-import { resolveAgentHarnessQueueInputAdapter } from "./registry.js";
++import { isBundledCodexAgentHarness, resolveAgentHarnessQueueInputAdapter } from "./registry.js";
+ import {
+   buildAgentHarnessSelectionDecision,
+   resolveAgentHarnessSelectionDecision,
+@@ -649,6 +649,7 @@ async function withoutInternalHarnessAuthority(
+     attempt: params,
+     requiredNodeCommands: harness.cloudPlacement?.devicePlacement?.requiredNodeCommands,
+     nativeModelPolicySupport: harness.nativeModelPolicySupport,
++    auditedBundledCodex: isBundledCodexAgentHarness(harness),
+     pluginId:
+       ownerPluginId ??
+       (() => {
+diff --git a/src/config/config-env-values.ts b/src/config/config-env-values.ts
+index 701f789..f6cde6b 100644
+--- a/src/config/config-env-values.ts
++++ b/src/config/config-env-values.ts
+@@ -22,6 +22,7 @@ export function isConfigRuntimeEnvVarAllowed(key: string, value: string): boolea
+     upperKey !== "OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS" &&
+     upperKey !== "OPENCLAW_DISABLE_CRON_HOST_EXECUTION" &&
+     upperKey !== "OPENCLAW_DEV_RELOAD_BUNDLED_PLUGINS" &&
++    upperKey !== "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT" &&
+     !isDangerousHostEnvVarName(key) &&
+     !isDangerousHostEnvOverrideVarName(key) &&
+     !containsEnvVarReference(value)

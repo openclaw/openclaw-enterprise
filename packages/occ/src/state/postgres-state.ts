@@ -1103,7 +1103,14 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
   if (
     !RESOURCE_KINDS.has(resourceKind) ||
     !["success", "denied", "failure"].includes(outcome) ||
-    !["bootstrap", "mutation", "access", "authorization_denial", "api_request"].includes(kind)
+    ![
+      "bootstrap",
+      "mutation",
+      "access",
+      "authorization_denial",
+      "api_request",
+      "runtime_activity",
+    ].includes(kind)
   ) {
     throw new PersistedStateInvalidError("Persisted audit evidence contains an invalid event.");
   }
@@ -1334,6 +1341,15 @@ const IAM_CONFIGURATION_LOCK_KEY = "occ:iam-configuration";
 function prefixPattern(prefix: string): string {
   return `${prefix.replaceAll("_", "\\_")}%`;
 }
+
+export interface GatewayRuntimeAuditGrant {
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly agentRevisionId: string;
+  readonly runtimeSource: "openclaw" | "codex";
+}
+
+type StoredGatewayRuntimeGrant = GatewayRuntimeAuditGrant & { readonly tokenDigest: string };
 
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
@@ -1680,6 +1696,105 @@ export class PostgresPlatformState implements PlatformStateStore {
 
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  async registerGatewayRuntimeGrant(grant: StoredGatewayRuntimeGrant): Promise<void> {
+    const scope = [grant.namespaceId, grant.agentId, grant.agentRevisionId, grant.runtimeSource];
+    await this.transactReadCommitted(async (unit) => {
+      // Serialize enrollment for one Agent. A retry can reuse only its own credential.
+      const eligible = await this.queryInTransaction(
+        unit,
+        `SELECT revision.id FROM occ.agent_revisions AS revision
+         JOIN occ.agents AS agent ON (agent.namespace_id, agent.id) = (revision.namespace_id, revision.agent_id)
+         WHERE (revision.namespace_id, revision.agent_id, revision.id) = ($1, $2, $3)
+           AND agent.status = 'active' AND revision.admitted_spec #>> '{harness,id}' = $4
+         FOR NO KEY UPDATE OF agent`,
+        scope,
+      );
+      if (eligible.rows.length !== 1) {
+        throw new ScopeViolationError(
+          "The runtime audit credential requires a matching Agent revision.",
+        );
+      }
+      await this.queryInTransaction(
+        unit,
+        `INSERT INTO occ.gateway_runtime_audit_grants
+           (namespace_id, agent_id, revision_id, runtime_source, token_digest)
+         SELECT $1, $2, $3, $4, $5
+         WHERE NOT EXISTS (
+           SELECT FROM occ.gateway_runtime_audit_grants
+           WHERE (namespace_id, agent_id, revision_id, runtime_source, token_digest) = ($1, $2, $3, $4, $5)
+           FOR KEY SHARE
+         )`,
+        [...scope, grant.tokenDigest],
+      );
+    });
+  }
+
+  async removeGatewayRuntimeGrant(grant: StoredGatewayRuntimeGrant): Promise<void> {
+    await this.transact((unit) =>
+      this.queryInTransaction(
+        unit,
+        `DELETE FROM occ.gateway_runtime_audit_grants
+       WHERE (namespace_id, agent_id, revision_id, runtime_source, token_digest) = ($1, $2, $3, $4, $5)`,
+        [
+          grant.namespaceId,
+          grant.agentId,
+          grant.agentRevisionId,
+          grant.runtimeSource,
+          grant.tokenDigest,
+        ],
+      ),
+    );
+  }
+
+  async hasGatewayRuntimeGrant(grant: GatewayRuntimeAuditGrant): Promise<boolean> {
+    const grants = await this.readStatement(
+      `SELECT 1 FROM occ.gateway_runtime_audit_grants
+       WHERE (namespace_id, agent_id, revision_id, runtime_source) = ($1, $2, $3, $4)`,
+      [grant.namespaceId, grant.agentId, grant.agentRevisionId, grant.runtimeSource],
+    );
+    return grants.length > 0;
+  }
+
+  async appendGatewayRuntimeAudit(
+    tokenDigest: string,
+    build: (installationId: string, grant: GatewayRuntimeAuditGrant) => AuditEvent,
+  ): Promise<boolean> {
+    return this.transactReadCommitted(async (unit) => {
+      await this.boundAgentAuditTransaction(unit);
+      // Hold the credential through COMMIT. A revoked credential must not authorize a later append.
+      const result = await this.queryInTransaction(
+        unit,
+        `SELECT credential.namespace_id, credential.agent_id, credential.revision_id, credential.runtime_source
+         FROM occ.gateway_runtime_audit_grants AS credential
+         JOIN occ.agent_revisions AS revision
+           ON (revision.namespace_id, revision.agent_id, revision.id) =
+              (credential.namespace_id, credential.agent_id, credential.revision_id)
+         JOIN occ.agents AS agent ON (agent.namespace_id, agent.id) = (revision.namespace_id, revision.agent_id)
+         WHERE credential.token_digest = $1 AND agent.status = 'active'
+           AND revision.admitted_spec #>> '{harness,id}' = credential.runtime_source
+         FOR SHARE OF agent FOR KEY SHARE OF credential`,
+        [tokenDigest],
+      );
+      const row = rows(result.rows)[0];
+      if (row === undefined) {
+        return false;
+      }
+      const installation = await unit.installations.getInstallation();
+      if (installation === undefined) {
+        throw new ScopeViolationError("A runtime audit event requires an Installation.");
+      }
+      await unit.audit.append(
+        build(installation.id, {
+          namespaceId: text(row, "namespace_id"),
+          agentId: text(row, "agent_id"),
+          agentRevisionId: text(row, "revision_id"),
+          runtimeSource: text(row, "runtime_source") as GatewayRuntimeAuditGrant["runtimeSource"],
+        }),
+      );
+      return true;
+    });
   }
 
   async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {

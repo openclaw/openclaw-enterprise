@@ -2,6 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   cp,
   lstat,
   mkdir,
@@ -10,6 +11,7 @@ import {
   readlink,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -36,7 +38,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-codex-full-access-profile.patch",
-    sha256: "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
+    sha256: "06161c5863c7116daa568d7ad65381e9b95a35fbd2e772cbddde4052ce8479a0",
   },
   {
     file: "stock-codex-0.164.0-dependency-pin.patch",
@@ -70,6 +72,14 @@ const appliedPatches: readonly AppliedPatch[] = [
   {
     file: "openclaw-restart-harness-readiness.patch",
     sha256: "fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f",
+  },
+  {
+    file: "openclaw-runtime-audit.patch",
+    sha256: "7aaf5549c6a42c11a9345432dfde7d4f91bdaacca69e25d655fdacc764ebd8c2",
+  },
+  {
+    file: "openclaw-codex-runtime-audit.patch",
+    sha256: "2c2660deb0ebecc3a2957935a60a8041e1a84e2ee98c784f9a2c1053e4c81be3",
   },
 ];
 const runtimePaths = [
@@ -211,6 +221,53 @@ async function readCodexRuntimeIdentity(root: string) {
     resolvedBinary: relativeRuntimePath(root, resolvedBinary, "Codex platform binary target"),
     binarySha256: hash(await readFile(resolvedBinary)),
   };
+}
+
+function codexAuditPaths(
+  root: string,
+  output: string,
+  stock: Awaited<ReturnType<typeof readCodexRuntimeIdentity>>,
+) {
+  const stockBin = dirname(join(root, stock.resolvedBinary));
+  return {
+    installed: join(stockBin, "oce-codex-audit-app-server"),
+    bwrap: join(stockBin, "..", "codex-resources", "bwrap"),
+    launcher: join(output, "bin", "codex-audit-app-server"),
+  };
+}
+
+async function installCodexAuditAppServer(root: string, output: string, bundle: string) {
+  const stock = await readCodexRuntimeIdentity(root);
+  const paths = codexAuditPaths(root, output, stock);
+  const built = await readJsonObject(join(bundle, "provenance.json"));
+  const expectedTarget = `${stock.architecture === "amd64" ? "x86_64" : "aarch64"}-unknown-linux-gnu`;
+  const expectedPackage = `${stock.version}-linux-${process.arch}`;
+  const binary = join(bundle, "codex-app-server");
+  if (
+    built.version !== stock.version ||
+    stock.packageVersion !== expectedPackage ||
+    built.target !== expectedTarget ||
+    built.binarySha256 !== hash(await readFile(binary)) ||
+    built.bwrapSha256 !== hash(await readFile(paths.bwrap))
+  ) {
+    throw new Error(
+      "The audited Codex App Server must match its build and the pinned stock package.",
+    );
+  }
+  await cp(binary, paths.installed, { force: false, errorOnExist: true });
+  await chmod(paths.installed, 0o555);
+  const bin = dirname(paths.launcher);
+  await mkdir(bin, { recursive: true });
+  await symlink(relative(await realpath(bin), paths.installed), paths.launcher);
+  const provenancePath = join(output, "provenance.json");
+  const provenance = await readJsonObject(provenancePath);
+  provenance.codexAuditAppServer = {
+    ...built,
+    source: "https://github.com/openai/codex",
+    installedBinary: relativeRuntimePath(root, paths.installed, "audited Codex App Server"),
+    bundledBwrap: relativeRuntimePath(root, paths.bwrap, "audited Codex bundled bwrap"),
+  };
+  await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
 }
 
 async function writeRuntimeInventory(
@@ -457,7 +514,21 @@ async function inventoryFinalImage(
   const provenancePath = join(output, "provenance.json");
   const provenance = await readJsonObject(provenancePath);
   provenance.runtimeContentsSha256 = hash(contents);
-  provenance.codex = await readCodexRuntimeIdentity(root);
+  const stockCodex = await readCodexRuntimeIdentity(root);
+  provenance.codex = stockCodex;
+  const audit = provenance.codexAuditAppServer;
+  const { installed, launcher, bwrap } = codexAuditPaths(root, output, stockCodex);
+  if (
+    !isJsonObject(audit) ||
+    (await realpath(launcher)) !== installed ||
+    audit.version !== stockCodex.version ||
+    audit.installedBinary !== relativeRuntimePath(root, installed, "audited Codex App Server") ||
+    audit.bundledBwrap !== relativeRuntimePath(root, bwrap, "audited Codex bundled bwrap") ||
+    audit.binarySha256 !== hash(await readFile(installed)) ||
+    audit.bwrapSha256 !== hash(await readFile(bwrap))
+  ) {
+    throw new Error("The installed audited Codex App Server does not match runtime provenance.");
+  }
   provenance.node = node;
   provenance.downloadClients = downloadClients;
   await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
@@ -465,7 +536,8 @@ async function inventoryFinalImage(
 
 const [command, sourceRoot, output, manifestPath, downloadClientSelectionPath] =
   process.argv.slice(2);
-const usage = "Expected inputs, package, or inventory with source root and output directory.";
+const usage =
+  "Expected inputs, package, install-codex-audit, or inventory with source root and output directory.";
 if (sourceRoot === undefined || output === undefined) {
   throw new Error(usage);
 }
@@ -477,6 +549,11 @@ if (command === "inputs") {
     throw new Error("Runtime packaging requires the OpenClaw source manifest path");
   }
   await packageRuntime(root, output, manifestPath);
+} else if (command === "install-codex-audit") {
+  if (!manifestPath) {
+    throw new Error("Installing the audited Codex App Server requires its verified build bundle.");
+  }
+  await installCodexAuditAppServer(root, output, manifestPath);
 } else if (command === "inventory") {
   if (manifestPath === undefined) {
     throw new Error("Runtime inventory requires the installed Node provenance path");

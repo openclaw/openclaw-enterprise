@@ -471,7 +471,8 @@ Defines native IAM rules that deny actions on a resource kind or specific resour
 
 Keeps an append-only record of bootstrap, changes to resources, and authorization denials.
 When Control Plane audit is enabled, it also records covered API requests,
-worker activity, and disclosures of Agent audit records. See the [audit guide](../../guides/topics/audit-log.md).
+worker activity, and disclosures of Agent audit records. It stores session, turn, and model call records
+from registered Gateways. See the [audit guide](../../guides/topics/audit-log.md).
 
 - `id`
 - `occurred_at`
@@ -483,6 +484,18 @@ worker activity, and disclosures of Agent audit records. See the [audit guide](.
 - `resource_id`
 - `outcome`
 - `details`
+
+### `gateway_runtime_audit_grants`
+
+Identifies the Agent revision and Harness for each Gateway audit credential.
+OCC stores the SHA-256 digest of the credential. When OCC deletes a revision,
+PostgreSQL deletes the matching grant.
+
+- `token_digest`
+- `namespace_id`
+- `agent_id`
+- `revision_id`
+- `runtime_source`
 
 ### `controller_work`
 

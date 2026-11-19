@@ -59,7 +59,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * @param options.authSecret the session signing secret (at least 32 characters).
  * @param [options.createAuditSink] receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
- * @param [options.requestAudit] wires the same durable sink for required HTTP request evidence.
+ * @param [options.requestAudit] enables PostgreSQL audit for HTTP requests and the private Gateway listener.
  * @param [options.appOptions] extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
  * @param [options.controllerOptions]
@@ -140,7 +140,9 @@ export async function createPostgresAgentApp(
       secretDriver,
       resolveHarness: resolveApprovedHarness,
       auditSink,
-      ...(requestAudit ? { durableRequestAuditSink: state.auditSink } : {}),
+      ...(requestAudit
+        ? { durableRequestAuditSink: state.auditSink, gatewayRuntimeAuditWriter: state }
+        : {}),
       auth,
       development: { enabled: false },
       ...appOptions,

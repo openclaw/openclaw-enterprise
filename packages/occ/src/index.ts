@@ -713,6 +713,7 @@ export type {
 export {
   PostgresCertificateRejectedError,
   PostgresPlatformState,
+  type GatewayRuntimeAuditGrant,
   type PersistedNativeIAMState,
   type PostgresClient,
   type PostgresPlatformStateOptions,

@@ -1,6 +1,10 @@
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
+import {
+  registerGatewayRuntimeAudit,
+  type GatewayRuntimeAuditWriter,
+} from "./http/runtime-audit.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
@@ -223,6 +227,7 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
+  readonly gatewayRuntimeAuditWriter?: GatewayRuntimeAuditWriter;
   /** Durable sink for required HTTP admission and result records. */
   readonly durableRequestAuditSink?: AuditSink;
   readonly agentAuditCursorSecret?: string;
@@ -1081,7 +1086,7 @@ function permissionDescription(
   operation?: OccApiRoute,
 ): string {
   if (operation?.operationId === "listAgentAuditEvents") {
-    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, and worker records from the preceding 24 hours.";
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, and model call records from the preceding 24 hours.";
   }
   if (operation?.operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
@@ -1465,6 +1470,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
   >();
   const requestAuditSink = options.durableRequestAuditSink;
+  if (options.gatewayRuntimeAuditWriter !== undefined) {
+    registerGatewayRuntimeAudit(app, options.gatewayRuntimeAuditWriter);
+  }
   const factory = options.auditEventFactory ?? new AuditEventFactory();
   const readAgentAudit =
     options.agentAuditCursorSecret === undefined

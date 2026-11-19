@@ -6285,7 +6285,7 @@ List audit metadata for one Agent
 
 **Operation ID:** `listAgentAuditEvents`
 
-**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, and worker records from the preceding 24 hours.
+**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, and model call records from the preceding 24 hours.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -6318,9 +6318,9 @@ List audit metadata for one Agent
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.events` | `array<object or object>` | Yes | max items: 100 |
+| `data.events` | `array<object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
 | `data.nextCursor` | `string or null` | Yes | — |
-| `data.projectionVersion` | `2` | Yes | — |
+| `data.projectionVersion` | `3` | Yes | — |
 | `data.window` | `object` | Yes | — |
 | `data.window.end` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.window.start` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -6332,6 +6332,20 @@ Example response
 {
   "data": {
     "events": [
+      {
+        "action": "openclaw.runtime.turn.completed",
+        "details": {
+          "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+          "outcome": "succeeded",
+          "runtimeSource": "openclaw",
+          "sessionId": "123e4567-e89b-42d3-a456-426614174000",
+          "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+        },
+        "event": "runtime_activity",
+        "id": "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+        "occurredAt": "2026-10-01T11:31:00.000000Z",
+        "outcome": "success"
+      },
       {
         "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
         "event": "api_request",
@@ -6352,7 +6366,7 @@ Example response
       }
     ],
     "nextCursor": null,
-    "projectionVersion": 2,
+    "projectionVersion": 3,
     "window": {
       "end": "2026-10-01T12:00:00.000Z",
       "start": "2026-09-30T12:00:00.000Z"

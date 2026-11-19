@@ -7,7 +7,9 @@ import {
   readdir,
   readFile,
   readlink,
+  realpath,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -19,6 +21,7 @@ import {
   readRuntimeDownloadClients,
 } from "../../scripts/lib/runtime-download-clients.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { readRuntimePatchChecksums } from "../helpers/runtime-patch-checksums.ts";
 
 type RuntimeAsset =
   { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
@@ -166,9 +169,9 @@ test("runtime assembly preserves executable assets and links while excluding dev
 packages:
   '@openai/codex@0.158.0':
     resolution: {integrity: sha512-codex}
-  '@openai/codex-linux-arm64@0.158.0':
+  '@openai/codex@0.158.0-linux-arm64':
     resolution: {integrity: sha512-codexlinuxarm}
-  '@openai/codex-linux-x64@0.158.0':
+  '@openai/codex@0.158.0-linux-x64':
     resolution: {integrity: sha512-codexlinux}
 `,
     "dist/index.js": "export const ready = true;\n",
@@ -187,16 +190,16 @@ packages:
     "dist/extensions/codex/package.json": '{"dependencies":{"@openai/codex":"0.158.0"}}',
     "node_modules/codex/bin.js": { bytes: "#!/usr/bin/env node\n", mode: 0o755 },
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex/package.json":
-      '{"name":"@openai/codex","version":"0.158.0","optionalDependencies":{"@openai/codex-linux-x64":"0.158.0"}}',
+      '{"name":"@openai/codex","version":"0.158.0","optionalDependencies":{"@openai/codex-linux-x64":"npm:@openai/codex@0.158.0-linux-x64","@openai/codex-linux-arm64":"npm:@openai/codex@0.158.0-linux-arm64"}}',
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-arm64/package.json":
-      '{"name":"@openai/codex-linux-arm64","version":"0.158.0"}',
+      '{"name":"@openai/codex","version":"0.158.0-linux-arm64"}',
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex":
       {
         bytes: "#!/usr/bin/env node\nconsole.log('codex-cli 0.158.0');\n",
         mode: 0o755,
       },
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-x64/package.json":
-      '{"name":"@openai/codex-linux-x64","version":"0.158.0"}',
+      '{"name":"@openai/codex","version":"0.158.0-linux-x64"}',
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex":
       {
         bytes: "#!/usr/bin/env node\nconsole.log('codex-cli 0.158.0');\n",
@@ -352,15 +355,7 @@ packages:
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
   // Provenance must name every patch the image build applies, in order, so images with and
   // without a patch differ there (finding 2290: four applied patches were missing).
-  const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
-  const applied = [
-    ...dockerfile.matchAll(
-      /^COPY deploy\/runtime\/(\S+\.patch) \/tmp\/\1\nRUN echo '([a-f0-9]{64}) {2}\/tmp\/\1' \| sha256sum --check --strict \\\n\s+&& git apply /gm,
-    ),
-  ].map(([, file, sha256]): [string, string] => {
-    assert.ok(file && sha256, "Expected an applied patch path and digest");
-    return [file, sha256];
-  });
+  const applied = await readRuntimePatchChecksums();
   // Every patch kept beside the Dockerfile is copied, verified and applied in that form, and
   // each pinned hash is the file's own (a format the pattern misses fails here, not silently).
   const patchFiles = (await readdir("deploy/runtime")).filter((name) => name.endsWith(".patch"));
@@ -382,4 +377,50 @@ packages:
   ] as const) {
     assert.equal(provenance[field], patches[file], field);
   }
+
+  // Assembly must pair the new server with the exact stock package's sandbox
+  // binary and preserve the stock CLI. Execution is checked in the image test.
+  assert.ok(typeof provenance.codex.resolvedBinary === "string");
+  const cli = await realpath(join(root, provenance.codex.resolvedBinary));
+  const bwrap = join(cli, "../../codex-resources/bwrap");
+  const cliBytes = await readFile(cli);
+  const sandboxBytes = "stock sandbox fixture";
+  const serverBytes = "separate App Server fixture";
+  const bundle = join(directory, "app-server-bundle");
+  await mkdir(join(bwrap, ".."), { recursive: true });
+  await mkdir(bundle);
+  await writeFile(bwrap, "different stock sandbox");
+  await writeFile(join(bundle, "codex-app-server"), serverBytes);
+  const buildProvenance = {
+    version: provenance.codex.version,
+    target: process.arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu",
+    bwrapSha256: createHash("sha256").update(sandboxBytes).digest("hex"),
+    binarySha256: createHash("sha256").update(serverBytes).digest("hex"),
+  };
+  await writeFile(join(bundle, "provenance.json"), JSON.stringify(buildProvenance));
+  const installArgs = [
+    "scripts/build-runtime-assets.ts",
+    "install-codex-audit",
+    sourceAlias,
+    output,
+    bundle,
+  ];
+  const mismatchedSandbox = spawnSync(process.execPath, installArgs, { encoding: "utf8" });
+  assert.notEqual(mismatchedSandbox.status, 0);
+  assert.match(mismatchedSandbox.stderr, /match its build and the pinned stock package/);
+  const auditLauncher = join(output, "bin/codex-audit-app-server");
+  await assert.rejects(realpath(auditLauncher), { code: "ENOENT" });
+  await writeFile(bwrap, sandboxBytes);
+  execFileSync(process.execPath, installArgs);
+  assert.deepEqual(await readFile(cli), cliBytes);
+  const auditBinary = await realpath(auditLauncher);
+  assert.equal(auditBinary, join(cli, "../oce-codex-audit-app-server"));
+  assert.equal((await stat(auditBinary)).mode & 0o777, 0o555);
+  assert.equal(await readFile(auditBinary, "utf8"), serverBytes);
+  const withAudit: unknown = JSON.parse(await readFile(provenancePath, "utf8"));
+  assertRecord(withAudit);
+  assert.deepEqual(withAudit.codex, provenance.codex);
+  assertRecord(withAudit.codexAuditAppServer);
+  assert.equal(withAudit.codexAuditAppServer.binarySha256, buildProvenance.binarySha256);
+  assert.equal(withAudit.codexAuditAppServer.bwrapSha256, buildProvenance.bwrapSha256);
 });

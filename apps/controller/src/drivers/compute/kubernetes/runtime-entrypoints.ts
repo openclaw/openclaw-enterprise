@@ -4245,8 +4245,29 @@ function agentRuntimeEntrypoint({
   patRecovery = false,
   boxHttps = false,
   explicitProxy = false,
+  auditModelAttempts = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
+  const disableRetries = disableUnboundedConnectionRetries
+    ? '    "--disable", "unbounded_connection_retries",\n'
+    : "";
+  const auditedArguments = auditModelAttempts
+    ? `];
+const nativeArguments = [
+    ...nativeConfigurationArguments,
+${disableRetries}    "app-server",
+];
+const servingArguments = [
+    ...nativeConfigurationArguments,
+${disableUnboundedConnectionRetries ? '    "-c", "features.unbounded_connection_retries=false",\n' : ""}];
+`
+    : "";
+  const auditedExecutable = auditModelAttempts
+    ? `  const auditedAppServer = "/opt/oce/runtime/bin/codex-audit-app-server";
+  const { accessSync, constants } = require("node:fs");
+  accessSync(auditedAppServer, constants.X_OK);
+`
+    : "";
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
@@ -4848,7 +4869,7 @@ if (digest === undefined) {
   }
   digest = createHash("sha256").update(process.env.APP_SERVER_TOKEN).digest("hex");
 }
-const nativeArguments = [
+const ${auditModelAttempts ? "nativeConfigurationArguments" : "nativeArguments"} = [
     ...nativeTelemetryArguments,
 ${boxHttps ? "    ...httpsProviderArguments,\n" : ""}    // Preserve the admitted model selection for native policy readback.
     "-c",
@@ -4863,9 +4884,12 @@ ${boxHttps ? "    ...httpsProviderArguments,\n" : ""}    // Preserve the admitte
     "shell_environment_policy.set.PATH=" + JSON.stringify(process.env.PATH ?? ""),
     ...shellNodeCaArguments(),
     ...(loginMode === "chatgptAuthTokens" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
-${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_retries",\n' : ""}    "app-server",
+${
+  auditedArguments ||
+  `${disableRetries}    "app-server",
 ];
-(async () => {
+`
+}(async () => {
   if (configuredTokenSha !== undefined && hasEnabledPluginSelections(pluginRuntime)) {
     const preparationStartedAt = Date.now();
     try {
@@ -4881,14 +4905,14 @@ ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_re
       return;
     }
   }
-  publishRuntimeReady();
+${auditedExecutable}  publishRuntimeReady();
   // Preparation, when required, has exited before the serving process starts.
   logStartupPhase("native-spawn", startupPhaseOrigin);
   const child = spawn(
-    "codex",
-    [...nativeArguments, "--listen", "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
+    ${auditModelAttempts ? "auditedAppServer" : '"codex"'},
+    [...${auditModelAttempts ? "servingArguments" : "nativeArguments"}, "--listen", "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
       "--ws-auth", "capability-token", "--ws-token-sha256", digest],
-    { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
+    { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: ${auditModelAttempts ? '{ ...codexChildEnvironment(), CODEX_PROVIDER_ATTEMPT_AUDIT: "1" }' : "codexChildEnvironment()"} },
   );
   forwardTermination(child);
   const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
@@ -5654,6 +5678,7 @@ function compactWorkspaceNodeLaunch(child: string): string {
 export interface CodexLaunch {
   readonly providerOwned: boolean;
   readonly protected: boolean;
+  readonly auditModelAttempts?: boolean;
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
@@ -5670,6 +5695,7 @@ export function codexLaunchEntrypoint(
   {
     providerOwned,
     protected: protectedLaunch,
+    auditModelAttempts,
     openShellProgram,
     withNode,
     workspaceSetup,
@@ -5678,6 +5704,15 @@ export function codexLaunchEntrypoint(
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
   if (!providerOwned) {
+    if (auditModelAttempts) {
+      const child = agentRuntimeEntrypoint({
+        protected: protectedLaunch,
+        computeOwned: true,
+        withNode: Boolean(withNode),
+        auditModelAttempts: true,
+      });
+      return withNode ? agentWithNodeEntrypoint(nodeProgramArguments(child)) : child;
+    }
     if (protectedLaunch) {
       return withNode
         ? COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT

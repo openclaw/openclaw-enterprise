@@ -22499,7 +22499,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
       "get": {
-        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, and worker records from the preceding 24 hours.",
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, and model call records from the preceding 24 hours.",
         "operationId": "listAgentAuditEvents",
         "parameters": [
           {
@@ -22575,6 +22575,20 @@
                       "data": {
                         "events": [
                           {
+                            "action": "openclaw.runtime.turn.completed",
+                            "details": {
+                              "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+                              "outcome": "succeeded",
+                              "runtimeSource": "openclaw",
+                              "sessionId": "123e4567-e89b-42d3-a456-426614174000",
+                              "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+                            },
+                            "event": "runtime_activity",
+                            "id": "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+                            "occurredAt": "2026-10-01T11:31:00.000000Z",
+                            "outcome": "success"
+                          },
+                          {
                             "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
                             "event": "api_request",
                             "id": "aud_123e4567-e89b-42d3-a456-426614174000",
@@ -22594,7 +22608,7 @@
                           }
                         ],
                         "nextCursor": null,
-                        "projectionVersion": 2,
+                        "projectionVersion": 3,
                         "window": {
                           "end": "2026-10-01T12:00:00.000Z",
                           "start": "2026-09-30T12:00:00.000Z"
@@ -22725,6 +22739,602 @@
                                 },
                                 "required": ["id", "occurredAt", "outcome", "event", "action"],
                                 "type": "object"
+                              },
+                              {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.session.started",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "nativeSessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.session.ended",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "nativeSessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.turn.admitted",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "messageId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId",
+                                          "turnId"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.turn.started",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "messageId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId",
+                                          "turnId"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.turn.completed",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "messageId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "outcome": {
+                                            "anyOf": [
+                                              {
+                                                "enum": [
+                                                  "succeeded",
+                                                  "failed",
+                                                  "cancelled",
+                                                  "unknown"
+                                                ]
+                                              },
+                                              { "const": "blocked", "type": "string" }
+                                            ]
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId",
+                                          "turnId",
+                                          "outcome"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.model_call.started",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "messageId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "model": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "modelCallId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "provider": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId",
+                                          "turnId",
+                                          "modelCallId",
+                                          "model",
+                                          "provider"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.model_call.completed",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "messageId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "model": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "modelCallId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "outcome": {
+                                            "enum": ["succeeded", "failed", "cancelled", "unknown"]
+                                          },
+                                          "provider": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId",
+                                          "turnId",
+                                          "modelCallId",
+                                          "model",
+                                          "provider",
+                                          "outcome"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  }
+                                ]
                               }
                             ]
                           },
@@ -22743,7 +23353,7 @@
                             { "type": "null" }
                           ]
                         },
-                        "projectionVersion": { "const": 2, "type": "number" },
+                        "projectionVersion": { "const": 3, "type": "number" },
                         "window": {
                           "additionalProperties": false,
                           "properties": {

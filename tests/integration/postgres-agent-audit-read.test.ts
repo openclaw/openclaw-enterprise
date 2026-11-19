@@ -10,6 +10,7 @@ import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
+import { checkGatewayAudit } from "./postgres-agent-audit-gateway-case.ts";
 
 const authSecret = "agent-audit-reader-postgres-auth-secret";
 const migrationUrl = process.env.OCC_TEST_AGENT_AUDIT_READ_MIGRATION_DATABASE_URL;
@@ -44,7 +45,7 @@ test(
     const proxy = await commitAckProxy(databaseUrl, {
       transactionStatement: "SELECT occ.hold_agent_audit_policy($1)",
     });
-    const { pool, principal, app, adminAccount, computeDriver, inject, deployAgent } =
+    const { pool, state, principal, app, adminAccount, computeDriver, inject, deployAgent } =
       await createPostgresAgentApp(t, {
         label: "agent-audit",
         authSecret,
@@ -279,5 +280,22 @@ test(
     } finally {
       await worker.stop();
     }
+
+    await t.test("the Gateway can write only for its registered Agent revision", async (child) => {
+      await checkGatewayAudit(child, {
+        app,
+        pool,
+        state,
+        migrationUrl,
+        revision,
+        other: other.revision,
+        replacementId: deploymentId,
+        readPage: async () => {
+          const response = await inject("GET", auditPath);
+          assert.equal(response.statusCode, 200, response.body);
+          return response.json().data;
+        },
+      });
+    });
   },
 );

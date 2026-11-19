@@ -1,10 +1,11 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 
+import { runtimeAuditPageEntry } from "../runtime-audit.ts";
 import { AuditId, Meta, RequestId, RevisionId, Timestamp } from "./common.ts";
 
 export const AGENT_AUDIT_PAGE_LIMIT = 100;
-export const AGENT_AUDIT_PROJECTION_VERSION = 2;
+export const AGENT_AUDIT_PROJECTION_VERSION = 3;
 
 export const AGENT_LIFECYCLE_AUDIT_ACTIONS = {
   agent: [
@@ -119,7 +120,11 @@ export function projectAgentLifecycleAuditDetails(
   return Check(AgentLifecycleAuditDetails, projected) ? projected : undefined;
 }
 
-const AgentAuditEntry = Type.Union([ControlPlaneAgentAuditEntry, AgentLifecycleAuditEntry]);
+const AgentAuditEntry = Type.Union([
+  ControlPlaneAgentAuditEntry,
+  AgentLifecycleAuditEntry,
+  runtimeAuditPageEntry(auditEntryFields),
+]);
 
 const AgentAuditPage = Type.Object(
   {
