@@ -259,6 +259,7 @@ const endpointRequestHeaders = new Set([
   "x-codex-window-id",
   "x-openai-subagent",
 ]);
+const responsesLiteHeader = "x-openai-internal-codex-responses-lite";
 
 const classify: CredentialProviderDefinition["classify"] = (route, request, refused) => {
   if (!matchesRequestEndpoint(route, request)) {
@@ -372,14 +373,16 @@ export function createOpenAiRequestProvider(
     },
     classify,
     authorizeRequestEndpoint(route, request) {
-      const names = request.headers.map(([name]) => name.toLowerCase());
+      const headers = new Map(request.headers.map(([name, value]) => [name.toLowerCase(), value]));
       return (
         matchesRequestEndpoint(route, request) &&
         route.path === "/v1/responses" &&
         jsonType.test(contentType(request.headers)) &&
         validHeaders(request.headers, []) &&
-        new Set(names).size === names.length &&
-        names.every((name) => endpointRequestHeaders.has(name))
+        headers.size === request.headers.length &&
+        [...headers].every(([name, value]) =>
+          name === responsesLiteHeader ? value === "true" : endpointRequestHeaders.has(name),
+        )
       );
     },
     inject,

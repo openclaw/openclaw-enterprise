@@ -984,6 +984,17 @@ test(
       headers: [...invalid.request.headers, { name: "x-http-method-override", value: "GET" }],
     };
     assert.equal((await preflight({ ...invalid, request: unknownHeader })).result, "deny");
+    const responsesLiteHeader = { name: "x-openai-internal-codex-responses-lite", value: "true" };
+    for (const headers of [
+      [{ ...responsesLiteHeader, value: "false" }],
+      [{ ...responsesLiteHeader, value: "TRUE" }],
+      [{ ...responsesLiteHeader, value: "true, true" }],
+      [responsesLiteHeader, responsesLiteHeader],
+    ]) {
+      const frame = requestFrame(fixture.request());
+      frame.request.headers.push(...headers);
+      assert.equal((await preflight(frame)).result, "deny", JSON.stringify(headers));
+    }
     const { request, ...unaryFrame } = invalid;
     assert.equal(
       (
@@ -1042,7 +1053,9 @@ test(
     }
 
     const accepted = fixture.request();
-    const result = await preflight(requestFrame(accepted));
+    const acceptedFrame = requestFrame(accepted);
+    acceptedFrame.request.headers.push(responsesLiteHeader);
+    const result = await preflight(acceptedFrame);
     assert.deepEqual(result.preflight_result, {
       continue_without_body: {},
       decision: "continue_without_body",

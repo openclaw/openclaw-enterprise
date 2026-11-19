@@ -99,7 +99,9 @@ Setting `drivers.credential_proxy.configuration.endpointOnly` selects
 endpoint-only authorization for a single dedicated Codex Agent and bound
 CredentialSource by `agentId` and `sourceId` on deployment. This profile requires the signed OpenShell
 supervisor identity and an approved HTTPS origin, `POST /v1/responses`, an empty
-query and approved headers visible to the hook. OpenShell can exclude headers
+query and approved headers visible to the hook. Header names must be unique.
+If the Codex Responses Lite header is present, its value must be exactly `true`.
+OpenShell can exclude headers
 such as `Cookie` from the hook's view. Apply any required filtering for
 hidden headers before the hook or at the upstream provider. OpenShell sends zero payload bytes to the mandatory
 `HTTP_REQUEST` hook at `PRE_CREDENTIALS`. On approval, OCC returns

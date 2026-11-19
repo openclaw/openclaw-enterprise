@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-19
-last_updated_session: authoring-run/d835039a-3f8c-4a49-9e1f-cd6987689d9f
+last_updated_session: authoring-run/a0e804f8-90d6-41a8-bae7-936d2d894355
 ---
 
 # Authorize model credentials per request
@@ -122,7 +122,9 @@ installation, revision, source, route, provider and IAM permission.
 classifies body-scoped requests against the admitted model grant. For endpoint-only
 requests, it rechecks the Agent and source selection and verifies the exact
 HTTPS origin, `POST /v1/responses`, an empty query and approved headers visible
-to the hook. On approval, the endpoint preflight returns
+to the hook. Endpoint preflight rejects duplicate header names and admits the
+optional Codex Responses Lite header only when its value is exactly `true`.
+On approval, the endpoint preflight returns
 `continue_without_body`. OpenShell redeems the same single-use approval and relays
 the body and response. The upstream provider owns model, tool, storage and body
 semantics.
@@ -276,6 +278,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-19 06:59: Document Codex Responses Lite header admission during endpoint preflight. (authoring-run/a0e804f8-90d6-41a8-bae7-936d2d894355 - fdc24a6ffab03ab357b36a03cab9155e8ed66a37)
 
 - 2026-11-19 06:03: Limit endpoint authorization to the selected Agent and source and describe which headers the hook can check. (authoring-run/d835039a-3f8c-4a49-9e1f-cd6987689d9f - f17f526dc21f57f8818f415ab0e4531f6a8e4e0c)
 
