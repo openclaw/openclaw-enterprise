@@ -11,9 +11,10 @@ import {
 const [baselinePath, outputPath] = process.argv.slice(2);
 assert.ok(
   baselinePath && outputPath && process.argv.length === 4,
-  "Usage: node scripts/generate-strands-box-seccomp.mjs <RuntimeDefault.json> <new-profile.json>",
+  "Usage: node scripts/generate-strands-box-seccomp.ts <RuntimeDefault.json> <new-profile.json>",
 );
-const baseline = extractSeccompProfile(JSON.parse(await readFile(baselinePath, "utf8")));
+const captured: unknown = JSON.parse(await readFile(baselinePath, "utf8"));
+const baseline = extractSeccompProfile(captured);
 validateRuntimeDefaultSeccompProfile(baseline);
 assert.ok(baseline.architectures.includes("SCMP_ARCH_AARCH64"), "Only ARM64 is qualified.");
 assert.ok(
@@ -21,8 +22,14 @@ assert.ok(
   "Use the captured RuntimeDefault baseline, not another sandbox's expanded profile.",
 );
 
+type Operation =
+  | [syscall: "unshare", argument: 0, value: number, purpose: string]
+  | [syscall: "mount", argument: 3, value: number, purpose: string]
+  | [syscall: "pivot_root", argument: null, value: null, purpose: string]
+  | [syscall: "umount2", argument: 1, value: number, purpose: string];
+
 // These exact operations match the qualified read-only-root, private-network mount view.
-const operations = [
+const operations: Operation[] = [
   ["unshare", 0, 0x10000000, "private user namespace"],
   ["unshare", 0, 0x4c020000, "private mount, IPC, UTS and network namespaces"],
   ["mount", 3, 0x44000, "private recursive propagation"],
