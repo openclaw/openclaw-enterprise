@@ -1420,18 +1420,7 @@ test(
     const r = await pending;
     expect(r, 503, "DEPENDENCY_UNAVAILABLE");
     assert.equal(proxy.observedCommit, true, "proxy observed the withheld COMMIT request");
-    await until(
-      async () =>
-        Number(
-          (
-            await live.pool!.query<{ n: string }>(
-              "SELECT count(*)::text AS n FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1",
-              [name],
-            )
-          ).rows[0]!.n,
-        ) === 0,
-      "withheld transaction session did not end",
-    );
+    await proxy.waitForHeldSessionEnd(live.pool!);
     await noBinding(a);
     assert.equal(live.events.slice(start).filter((x) => x.operation.endsWith("-delete")).length, 0);
     const c = credentialFor(a);
