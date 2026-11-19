@@ -8,8 +8,7 @@ last_updated_session: authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1
 
 ## Overview
 
-Deployment saves settings and authentication. Compute prepares workloads, publishes
-guarded routes, and retires predecessors.
+Deployment saves settings and authentication. Compute checks workload readiness, including [Strands diagnostics](../reference/drivers/strands-box.md), publishes routes and retires predecessors.
 
 ## Entry Points
 
@@ -95,11 +94,8 @@ harness-auth bindings before deployment; no Agent path is deployable.
 The [Docker gateway authentication reference](../reference/drivers/docker-compute.md#gateway-authentication)
 owns mode and password rules.
 
-Kubernetes supports managed bindings.
-Strands mounts runtime objects read-only in both supervisor and workload.
-SSH supports `{ "method": "runtime" }` only for unmanaged embedded OpenClaw: operator
-credentials remain on the host and OCC checks gateway readiness without model
-validation. See the [SSH flow](pr-24-ssh-compute.md).
+The Strands supervisor and workload share read-only runtime objects. `listenerCertificate` binds the supervisor certificate and Pod UID to the revision.
+[SSH](pr-24-ssh-compute.md) supports runtime authentication for unmanaged embedded OpenClaw. Operator credentials stay on the host. OCC checks Gateway readiness without model validation.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
 
@@ -211,7 +207,7 @@ Login, authentication probes and app-server launch override native log and metri
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.
 
-Kubernetes Compute records admitted inference launch behavior in new protected Codex revisions. The authentication probe and app-server disable unbounded
+Compute records inference launch settings in new protected Codex revisions. The authentication probe and app-server disable unbounded
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
 original retry settings.
 
