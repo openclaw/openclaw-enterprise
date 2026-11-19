@@ -6,16 +6,26 @@ for an acknowledged Secret and do not simulate a completed Kubernetes upgrade.
 import base64
 import json
 import os
-from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 proof = Path(sys.argv[1]).resolve()
 root = Path.cwd()
-tools = ("bash", "git", "jq", "kubectl", "node", "yq")
+tools = ("bash", "git", "jq", "node", "yq")
 missing = [tool for tool in tools if not shutil.which(tool)]
+# Network-routing wrappers may intercept even local subcommands. Look for
+# a standalone client on PATH so the recorder controls all remote verbs.
+kubectl = next((
+    candidate for directory in os.get_exec_path()
+    if (candidate := shutil.which("kubectl", path=directory))
+    and Path(candidate).resolve().name.split("-", 1)[0] == "kubectl"
+), None)
+if kubectl is None:
+    missing.append("standalone kubectl")
 if missing:
     print("requires local tools: " + ", ".join(missing))
     sys.exit(77)
@@ -79,7 +89,6 @@ shim.chmod(0o700)
 helm = binaries / "helm"
 if not helm.exists():
     helm.symlink_to(shim)
-kubectl = shutil.which("kubectl")
 source = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 authority = b"approved authority for fixture"
 replacement = b"replacement authority for fixture"
@@ -131,7 +140,17 @@ def run(case, command, *, swap=False, swap_before_pin=False):
         "CONTROL_CASE":str(case), "CONTROL_KUBECTL": kubectl, "SWAP_AT_BOUNDARY":"yes" if swap else "no",
         "SWAP_BEFORE_PIN":"yes" if swap_before_pin else "no",
     }
-    result = subprocess.run(command,env=environment,text=True,capture_output=True,timeout=20)
+    with subprocess.Popen(
+        command, env=environment, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            raise
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     assert authority.decode() not in result.stdout+result.stderr
     assert replacement.decode() not in result.stdout+result.stderr
     actual = [json.loads(line) for line in events.read_text().splitlines()] if events.exists() else []
@@ -204,7 +223,9 @@ for mode in ("inline", "system", "external"):
         assert original["profiled"] is True
         put(parameters, json.dumps({**original, "profiled": False}).encode())
         result, events = raw(case, "resume")
-        assert result.returncode != 0 and not events, (result.stderr, events)
+        assert result.returncode == 1, result.stderr
+        assert "resume evidence directory or private parameters changed" in result.stderr, result.stderr
+        assert not events, events
     if mode == "system":
         # Model an older receipt with a valid journal but no recorded origin.
         evidence = case / "evidence"
