@@ -2255,6 +2255,57 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
     missingAgentId,
   }));
 
+test("OCC Fastify rejects unsafe guarded Agent stop requests", async () => {
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
+    await admittedDeploymentFixture("guarded-stop", "guarded-stop-agent", {
+      recordOperations: true,
+    });
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stopPath = `${agentPath}/stop`;
+  const expected = `expectedActiveRevisionId=${admitted.data.id}`;
+  const stop = (query) => controller.request("POST", `${stopPath}?${query}`);
+
+  await fixture.platformState.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, admitted.data.id),
+  );
+  const before = (await controller.request("GET", agentPath)).data;
+  const operations = () => fixture.platformState.read((view) => view.operations.list());
+  const queued = await operations();
+  assert.equal(before.activeRevisionId, admitted.data.id);
+  assert.equal(before.desiredRuntimeState, "running");
+  assertApiError(await stop(expected), 409, "RESOURCE_CONFLICT", "queued deployment");
+
+  // A persisted terminal work result can report completion without activation.
+  deploymentWorks.set(
+    work.key,
+    work.record("succeeded", "2026-09-19T20:31:00.000Z", { reasonCode: "REVISION_STOPPED" }),
+  );
+  const deployment = await controller.request(
+    "GET",
+    `${agentPath}/deployments/${admitted.data.id}`,
+  );
+  assert.equal(deployment.data.status, "failed");
+  assertApiError(await stop(expected), 409, "RESOURCE_CONFLICT", "completed without activation");
+
+  for (const query of [
+    "expectedActiveRevisionId=",
+    "expectedActiveRevisionId=invalid",
+    "unexpectedRevisionId=invalid",
+    `${expected}&${expected}`,
+  ]) {
+    assertApiError(await stop(query), 400, "INVALID_REQUEST", query);
+  }
+
+  assert.deepEqual((await controller.request("GET", agentPath)).data, before);
+  assert.deepEqual(await operations(), queued);
+  assert.equal(
+    fixture.auditSink.events.some(
+      (event) => event.kind === "mutation" && event.action === "openclaw.agents.stop",
+    ),
+    false,
+  );
+});
+
 test("credential withdrawal routes authorize the Agent, not the credential source", async () => {
   const controller = await configuredController();
   const { fixture } = controller;
