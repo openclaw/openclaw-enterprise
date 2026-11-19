@@ -37,9 +37,11 @@ export function grantRefusal(cause: unknown) {
   );
 }
 
-// Agent list and detail use the same confirmation and explain which resources deletion keeps.
-export const STOP_CONFIRMATION =
-  "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
+const STOP_TURN_RECOVERY =
+  "Deploy a new version to start the Agent again. Interrupted work may then continue. To cancel a reply, select Stop in the Agent's chat before stopping the Agent.";
+
+// Agent list and detail use the same confirmation.
+export const STOP_CONFIRMATION = `This requests shutdown, which interrupts any reply in progress. ${STOP_TURN_RECOVERY} Configuration, versions, Credentials, and workspace data are retained.`;
 
 // A first deployment that is queued or in progress, with no version selected yet: Stop only
 // cancels it, because no gateway runs yet to interrupt (finding D691).
@@ -48,8 +50,7 @@ export const STOP_FIRST_DEPLOYMENT_CONFIRMATION =
 
 // No version is selected and this viewer cannot read the latest deployment's outcome, so the
 // console cannot say whether Stop cancels a deployment or interrupts a gateway that started.
-export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION =
-  "This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
+export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment in progress or, if a version already started, requests shutdown and interrupts its current reply. ${STOP_TURN_RECOVERY} Configuration, versions, Credentials, and workspace data are retained.`;
 
 // Request Stop again on an Agent already requested to stop: no gateway runs that this would
 // interrupt, so the confirmation says it only repeats the request (finding D815).

@@ -537,7 +537,7 @@ const authoredScenarios = {
     deployed: true,
     actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
     description:
-      "The row's Stop icon opens the same confirmation as Agent detail. Cancel returns focus to the icon without a write; Stop Agent requests the stopped state.",
+      "The row's Stop icon opens the same confirmation as Agent detail, including when interrupted work can continue and where to cancel a reply.",
     steps: [
       "Cancel the dialog and check focus returns to the Stop icon.",
       "Open it again and select Stop Agent. The row shows Stop requested, its Stop icon is disabled but keeps focus with Stop requested as its description, and the list stays open.",
@@ -2199,7 +2199,8 @@ const authoredScenarios = {
     path: revision,
     deployed: true,
     actions: [click("Stop Agent")],
-    description: "Confirm stopping the Agent or cancel without changing its requested state.",
+    description:
+      "Review the shutdown request, what can continue after deployment, and how to cancel a reply in the Agent's chat.",
     steps: [
       "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
       "For the revision clearing after Stop, use Flows / Stop an Agent.",
@@ -2344,7 +2345,7 @@ const authoredScenarios = {
     description:
       "Open the Stop Agent confirmation and request the stopped desired state while preserving draft, revisions, credentials, and workspace data.",
     steps: [
-      "Select Configuration and open Stop Agent. Review the confirmation.",
+      "Select Configuration and open Stop Agent. Check the guidance on interrupted work and cancelling a reply in chat.",
       "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
       "Select Refresh stop status. The fixture clears the current version.",
       "Open Workspace files. It explains why the files are unavailable. Return to Configuration.",

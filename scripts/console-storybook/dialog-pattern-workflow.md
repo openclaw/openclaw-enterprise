@@ -11,6 +11,8 @@ simulated data.
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
    Create Secret).
+   In Stop, check that the confirmation says interrupted work may continue
+   after deployment and tells you how to cancel a reply in the Agent's chat.
    In Delete, read what stays in the Namespace, then open **View separate cleanup
    commands**. Each command includes the Namespace ID. Press Enter on **Copy
    Configuration command**, then on **Copy Secret command** if it appears. Only
