@@ -11,7 +11,7 @@ import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-r
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
-import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
+import { rangeWideningLocale } from "../helpers/utf8-locale.ts";
 
 const executeFile = promisify(execFile);
 const execute = (

@@ -31,6 +31,10 @@ SSH recovery depends on the operator-installed native runtime.
 | Harmless configuration change                            | No OCE compatibility filter prevents recovery. Native checks still apply.   |
 | Explicit native `chat.abort`                             | Cancelled work does not become eligible on startup.                         |
 
+A scheduled (cron) turn that a Gateway restart interrupts is left to its scheduler:
+it gets no continuation and no failure notice. If a user's message was already
+accepted into that turn, it continues like other eligible work.
+
 Recovery runs only when a Gateway starts. When only the Harness of a dedicated
 Codex Agent is replaced while its Gateway keeps running, for example after a node
 drain or failure, an eviction, a Harness container restart, or a repository
