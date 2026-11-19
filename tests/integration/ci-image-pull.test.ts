@@ -17,6 +17,8 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const image =
   "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc";
+// The same digest from the Docker Hub cache, without the tag.
+const seed = `mirror.gcr.io/otel/opentelemetry-collector-contrib${image.slice(image.indexOf("@"))}`;
 
 function pullFailure(
   stderr: string,
@@ -109,10 +111,14 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
     log: (message) => logs.push(message),
   });
 
-  assert.equal(calls.length, 3);
+  // The timed-out attempt also seeds the layers once before the retry.
+  assert.deepEqual(
+    calls.map(({ args }) => args[1]),
+    [image, image, seed, image],
+  );
   for (const call of calls) {
     assert.equal(call.command, "podman");
-    assert.deepEqual(call.args, ["pull", image]);
+    assert.equal(call.args[0], "pull");
     assert.equal(call.options.timeoutMs, 120_000);
   }
   assert.deepEqual(sleeps, [5_000, 10_000]);
@@ -174,13 +180,19 @@ setInterval(() => {}, 1000);
     }),
     (error) => error === failures.at(-1),
   );
-  assert.equal(failures.length, 2);
+  // Attempt 1, the seed it starts and attempt 2 each ran as a real child and timed out.
+  assert.equal(failures.length, 3);
   assert.ok(
     failures.every(
       (error) =>
         "killed" in error && error.killed && "signal" in error && error.signal === "SIGTERM",
     ),
   );
+  const seedFailures = logs.filter((line) => line.startsWith(`Seeding layers from ${seed} failed`));
+  assert.equal(seedFailures.length, 1);
+  // The seed's diagnostic keeps the same bounded, private-text-free layer progress.
+  assert.match(seedFailures[0]!, /\(timeout\); 9 of 11 layers still downloading; /);
+  assert.doesNotMatch(seedFailures[0]!, /aaaaaaaaaaaa|private-marker|https:|12345678901234567890/);
   const diagnostics = logs.filter((line) => line.startsWith("Image pull attempt "));
   assert.equal(diagnostics.length, 2, "retain the final attempt even when no retry follows");
   for (const [index, diagnostic] of diagnostics.entries()) {
@@ -309,9 +321,6 @@ test("pullImage stops at its attempt limit and its retry budget", async () => {
   assert.equal(budgeted.calls.length, 2);
 });
 
-const digest = image.slice(image.indexOf("@"));
-const seed = `mirror.gcr.io/otel/opentelemetry-collector-contrib${digest}`;
-
 test("pullImage seeds a timed-out Docker Hub pull once from mirror.gcr.io by digest, then retries the original", async () => {
   // The 11-19 CI stalls: one large layer stayed stuck through all four attempts.
   const logs: string[] = [];
@@ -340,7 +349,7 @@ test("pullImage seeds a timed-out Docker Hub pull once from mirror.gcr.io by dig
 
 test("pullImage seeds only a digest-pinned docker.io reference, and only after a timeout", async () => {
   const pinned = `sha256:${"a".repeat(64)}`;
-  const cases: [reference: string, seed?: string, failure?: Error][] = [
+  const cases: [reference: string, seed?: string | undefined, failure?: Error][] = [
     [image, seed, pullFailure("", { timedOut: true })],
     // Official images live under library/ on the mirror.
     [`docker.io/postgres:16.15@${pinned}`, `mirror.gcr.io/library/postgres@${pinned}`],
