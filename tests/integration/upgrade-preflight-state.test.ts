@@ -45,6 +45,7 @@ function fixture(t: TestContext, sourceRepository = repository) {
     evidenceDirectory: { path: root, st_dev: info.dev, st_ino: info.ino },
     arguments: [kubeconfig, "fixture", "control", "team", ...Array.from({ length: 11 }, () => "")],
     kubeconfigSha256: sha256(kubeconfig),
+    profiled: false,
     scriptSha256: sha256(join(sourceRepository, "scripts/upgrade-production-images")),
     startupPreflightSha256: sha256(join(sourceRepository, "scripts/upgrade-startup-preflight.ts")),
     selectedImageMigrationSha256: sha256(

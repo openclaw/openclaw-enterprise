@@ -117,15 +117,32 @@ test("operations hand off the selected profile and mode without changing the can
   await mkdir(scripts, { recursive: true });
   const adapter = join(scripts, "upgrade-production");
   const capture = join(f.directory, "argv.json");
+  const binding = join(f.directory, "approval.json");
+  const kubeconfig = JSON.stringify(
+    kubeconfigFor(f.input.context, {
+      "certificate-authority": "server-ca.pem",
+    }),
+  );
+  const ca = randomBytes(32);
+  await writeFile(join(f.directory, f.input.kubeconfig), kubeconfig);
+  await writeFile(join(f.directory, "server-ca.pem"), ca, { mode: 0o644 });
+  const targetBinding = {
+    kubeconfig: createHash("sha256").update(kubeconfig).digest("hex"),
+    "kubeconfig server CA": createHash("sha256").update(ca).digest("hex"),
+  };
   await copyFile(command, adapter);
   const canonical = join(scripts, "upgrade-production-images");
   // This executable records the adapter's dependency contract; the next test invokes the real owner.
   await writeFile(
     canonical,
-    "#!/usr/bin/env python3\nimport json,os,sys\nopen(os.environ['CAPTURE_PATH'],'w').write(json.dumps(sys.argv[1:]))\n",
+    "#!/usr/bin/env python3\nimport json,os,sys\nopen(os.environ['CAPTURE_PATH'],'w').write(json.dumps(sys.argv[1:]))\nopen(os.environ['CAPTURE_BINDING'],'w').write(os.environ['OCC_UPGRADE_APPROVED_INPUTS'])\n",
     { mode: 0o755 },
   );
-  const options = { command: adapter, cwd: checkout, env: { CAPTURE_PATH: capture } };
+  const options = {
+    command: adapter,
+    cwd: checkout,
+    env: { CAPTURE_PATH: capture, CAPTURE_BINDING: binding },
+  };
   const target = [
     "--kubeconfig",
     join(f.directory, "kubeconfig"),
@@ -156,6 +173,17 @@ test("operations hand off the selected profile and mode without changing the can
     "--timeout-seconds",
     "1200",
   ]);
+  const preflightBinding = JSON.parse(await readFile(binding, "utf8"));
+  assert.equal(preflightBinding.kubeconfig, targetBinding.kubeconfig);
+  assert.equal(preflightBinding["kubeconfig server CA"], targetBinding["kubeconfig server CA"]);
+  assert.deepEqual(Object.keys(preflightBinding).sort(), [
+    "baseline Helm values",
+    "baseline Installation",
+    "kubeconfig",
+    "kubeconfig server CA",
+  ]);
+  // The dedicated migration check and cleanup still need no Installation file.
+  await rm(join(f.rendered, "installation.yaml"));
   assert.equal(
     run("migration-check", f, ["--", "--candidate-values", "candidate.yaml"], options).status,
     0,
@@ -174,6 +202,7 @@ test("operations hand off the selected profile and mode without changing the can
     "--candidate-values",
     "candidate.yaml",
   ]);
+  assert.deepEqual(JSON.parse(await readFile(binding, "utf8")), targetBinding);
   assert.equal(
     run(
       "cleanup-preflight",
@@ -191,6 +220,7 @@ test("operations hand off the selected profile and mode without changing the can
     "--previous-process-settled",
     "--evidence-unrestored",
   ]);
+  assert.deepEqual(JSON.parse(await readFile(binding, "utf8")), targetBinding);
 
   // A helper from one checkout cannot execute against another checkout's reviewed Git source.
   const splitCheckout = run("apply", f, [], { cwd: f.directory });
@@ -429,12 +459,15 @@ test("the same local candidate is explained by plan and apply without printing i
     database: { upgradeMigration: "separate" },
     api: { channelDirectoryProxyUrl: proxy },
     installation: { secretName: "occ-staged" },
-    deployment: { internalField: "private-value" },
   });
   await writeFile(values, candidate, { mode: 0o600 });
   await writeFile(
     installation,
-    JSON.stringify({ drivers: { plugin: [{ id: "codex-plugin" }] }, auth: { extra: true } }),
+    JSON.stringify({
+      drivers: {
+        plugin: [{ id: "codex-plugin", configuration: { catalogSource: "openai-curated" } }],
+      },
+    }),
     { mode: 0o600 },
   );
   const receiptCanary = randomBytes(24).toString("hex");
@@ -461,15 +494,13 @@ test("the same local candidate is explained by plan and apply without printing i
   assert.match(plan.stdout, /Helm values change: Slack directory proxy/);
   assert.match(plan.stdout, /Candidate Installation Secret: occ-staged/);
   assert.match(plan.stdout, /Installation change: Plugin Driver registration/);
-  assert.match(plan.stdout, /Helm values change: other settings/);
-  assert.match(plan.stdout, /Installation change: other settings/);
   assert.match(plan.stdout, /overwrite values.yaml and submit a Helm upgrade/);
   assert.match(plan.stdout, /overwrite the local installation.yaml/);
   assert.match(plan.stdout, /live mutable Installation Secret remains selected.*replace its data/);
   assert.match(plan.stdout, /select a staged immutable Installation Secret/);
   assert.ok(plan.stdout.includes(f.input.images.controller));
   const output = plan.stdout + plan.stderr + apply.stdout + apply.stderr;
-  for (const withheld of [password, proxy, "private-value", receiptCanary]) {
+  for (const withheld of [password, proxy, receiptCanary]) {
     assert.ok(!output.includes(withheld));
   }
   for (const file of [
@@ -494,6 +525,43 @@ test("the same local candidate is explained by plan and apply without printing i
     "operator.json",
     "rendered",
   ]);
+
+  const privateValue = randomBytes(32).toString("hex");
+  for (const [file, invalid, description] of [
+    [values, { deployment: { internalField: privateValue } }, "Helm values"],
+    [installation, { auth: { extra: true } }, "Installation"],
+    [
+      installation,
+      { drivers: { plugin: [{ id: "unreviewed-driver", configuration: {} }] } },
+      "Installation",
+    ],
+  ] as const) {
+    const reviewed = await readFile(file);
+    await writeFile(file, JSON.stringify(invalid));
+    for (const action of ["plan", "apply", "preflight"] as const) {
+      const result = run(action, f, options, { automaticEvidence: true });
+      assert.equal(result.status, 2, result.stderr);
+      assert.ok(result.stderr.includes(`candidate ${description} change`), result.stderr);
+      assert.match(result.stderr, /changes? a protected setting/);
+      assert.ok(!result.stderr.includes(privateValue));
+      assert.equal(result.stdout, "");
+    }
+    assert.deepEqual((await readdir(f.directory)).sort(), [
+      "kubeconfig",
+      "operator.json",
+      "rendered",
+    ]);
+    await writeFile(file, reviewed);
+  }
+
+  const baselineValues = join(f.rendered, "values.yaml");
+  await writeFile(baselineValues, JSON.stringify({ controlPlane: { protected: true } }));
+  await writeFile(values, JSON.stringify({ controlPlane: { protected: 1 } }));
+  const changedType = run("plan", f, options);
+  assert.equal(changedType.status, 2);
+  assert.match(changedType.stderr, /Helm values change a protected setting/);
+  assert.equal(changedType.stdout, "");
+  await writeFile(baselineValues, "{}\n");
 
   await writeFile(values, '["a sequence"]\n');
   const invalid = run("plan", f, options);

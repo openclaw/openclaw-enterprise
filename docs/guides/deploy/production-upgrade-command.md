@@ -49,7 +49,8 @@ The offline preview checks the profile, local inputs, image digests, and
 checkout commit. It reads the kubeconfig without showing its contents or digest.
 When you select candidate files or other expert options, pass the same options
 after `--` to `plan` and `apply`. Review the deployment effects and image digests
-before you approve. The preview reads local inputs. Current cluster state and
+before you approve. Plan, apply, and preflight refuse changes to protected
+settings that they can detect in local files. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.
 
 Before the first `apply` or `preflight`,
@@ -75,11 +76,11 @@ output are attached to a terminal, type `yes` to approve the upgrade. For
 automation or redirected output, pass `--auto-approve`. The upgrade checks
 startup and migration compatibility and confirms preflight cleanup before it
 stops writers.
-Apply and resume use a private copy of the approved kubeconfig. If the selected
-context uses a CA file, the command checks its bytes before approval and embeds
-the verified CA in the private copy. Changes to those inputs require a new
-review. Client credential references and credential commands still use their
-original locations. Resume uses the original run's approved CA when recorded.
+Profiled commands use a private kubeconfig copy for cluster requests. If the
+selected context uses a CA file, the command embeds the verified CA in the copy.
+Apply and resume check the kubeconfig and its CA again after approval. Client
+credential references and commands still use their original locations. Resume
+and cleanup of a profiled run retain its recorded cluster trust.
 
 For each fresh `apply`, `preflight`, or `migration check`, the CLI prints
 `Evidence: PATH` and an `Inspect:` command before starting the operation.

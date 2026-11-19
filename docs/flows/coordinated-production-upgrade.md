@@ -86,7 +86,7 @@ graph TD
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` calls
 `scripts/upgrade-production:main`. Plan previews candidate effects.
-Apply binds inputs and selected server CA to approval. New runs print status paths before dispatch.
+Profiled requests pin cluster trust. Resume and cleanup retain it. New runs print status paths before dispatch.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 

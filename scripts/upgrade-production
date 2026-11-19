@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 
@@ -322,6 +323,17 @@ def setting(mapping, *path):
 MISSING = object()
 
 
+def settings_equal(left, right):
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(settings_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(settings_equal(a, b) for a, b in zip(left, right))
+    # Python ordinarily equates True with 1. Kubernetes and jq do not.
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    return left == right
+
+
 def changed_categories(before, after, categories, prefix=()):
     if prefix not in categories:
         if before is MISSING and isinstance(after, dict) and after:
@@ -336,23 +348,112 @@ def changed_categories(before, after, categories, prefix=()):
                 ))
             return changed
     if before is not MISSING and after is not MISSING and (
-        json.dumps(before, sort_keys=True) == json.dumps(after, sort_keys=True)
+        settings_equal(before, after)
     ):
         return set()
     return {categories.get(prefix, "other settings")}
 
 
-def preview_inputs(parser, profile, resolve_path, options):
+VALUES_CHANGES = {
+    ("database", "upgradeMigration"): "migration mode",
+    ("api", "channelDirectoryProxyUrl"): "Slack directory proxy",
+    ("installation", "secretName"): "Installation Secret reference",
+}
+RETIRED_COOKIE = "sharedCookieDomain"
+PLUGIN = ("drivers", "plugin")
+
+
+def protected_values(values):
+    projected = deepcopy(values)
+    for section, key in VALUES_CHANGES:
+        fields = projected.get(section)
+        if isinstance(fields, dict):
+            fields.pop(key, None)
+            if not fields:
+                del projected[section]
+    return projected
+
+
+def installation_candidate_allowed(before, candidate):
+    if settings_equal(before, candidate):
+        return True
+    normalized = deepcopy(before)
+    if normalized.get("drivers") is None:
+        normalized["drivers"] = {}
+    drivers = normalized["drivers"]
+    if not isinstance(drivers, dict):
+        return False
+    plugin = drivers.get("plugin")
+    if isinstance(plugin, dict):
+        # An existing single registration may be wrapped without other changes.
+        if (set(plugin) != {"id", "configuration"}
+                or plugin["id"] not in ("occ-plugin", "codex-plugin")
+                or not isinstance(plugin["configuration"], dict)):
+            return False
+        drivers["plugin"] = [plugin]
+        if settings_equal(normalized, candidate):
+            return True
+    elif plugin is None or plugin is False:
+        drivers["plugin"] = []
+    registrations = drivers["plugin"]
+    selected = setting(candidate, *PLUGIN)
+    for group in (registrations, selected):
+        if not isinstance(group, list) or not all(
+            isinstance(item, dict) and isinstance(item.get("id"), str) for item in group
+        ):
+            return False
+    codex = [item for item in registrations if item["id"] == "codex-plugin"]
+    if not codex:
+        registrations.append({"id": "codex-plugin", "configuration": {"catalogSource": "openai-curated"}})
+    for item in codex:
+        if item.get("configuration") is None:
+            item["configuration"] = {}
+        if not isinstance(item["configuration"], dict):
+            return False
+        item["configuration"]["catalogSource"] = "openai-curated"
+    drivers["plugin"] = sorted(registrations, key=lambda item: item["id"])
+    expected = deepcopy(candidate)
+    expected["drivers"]["plugin"] = sorted(selected, key=lambda item: item["id"])
+    return settings_equal(normalized, expected)
+
+
+def validate_candidate_inputs(parser, before_values, values, before_installation, installation):
+    # The native script still owns validation against the live release.
+    baseline = protected_values(before_values)
+    candidate = protected_values(values)
+    native_admin = candidate.get("agentNativeAdmin")
+    if isinstance(native_admin, dict):
+        if RETIRED_COOKIE in native_admin:
+            parser.error("candidate Helm values contain retired agentNativeAdmin.sharedCookieDomain; remove it")
+        if isinstance(baseline.get("agentNativeAdmin"), dict):
+            baseline["agentNativeAdmin"].pop(RETIRED_COOKIE, None)
+    if not settings_equal(baseline, candidate):
+        parser.error("candidate Helm values change a protected setting; use the chart-owned upgrade procedure")
+    if not installation_candidate_allowed(before_installation, installation):
+        parser.error("candidate Installation changes a protected setting; use the chart-owned upgrade procedure")
+
+
+def preview_target(parser, profile, resolve_path):
     kubeconfig = resolve_path(profile["kubeconfig"])
-    directory = Path(resolve_path(profile["installationDirectory"]))
-    kubeconfig_bytes = preview_file(parser, "kubeconfig", kubeconfig)
-    ca = selected_kubeconfig_ca(parser, kubeconfig, kubeconfig_bytes, profile["context"])
-    paths = {
-        "baseline Helm values": str(directory / "values.yaml"),
-        "baseline Installation": str(directory / "installation.yaml"),
-    }
+    content = preview_file(parser, "kubeconfig", kubeconfig)
+    ca = selected_kubeconfig_ca(parser, kubeconfig, content, profile["context"])
+    paths = {"kubeconfig": kubeconfig}
+    digests = {"kubeconfig": hashlib.sha256(content).hexdigest()}
     if ca is not None:
         paths[KUBECONFIG_SERVER_CA] = ca
+        digests[KUBECONFIG_SERVER_CA] = hashlib.sha256(
+            preview_file(parser, KUBECONFIG_SERVER_CA, ca)
+        ).hexdigest()
+    return paths, digests
+
+
+def preview_inputs(parser, profile, resolve_path, options, *, validate_candidate):
+    paths, digests = preview_target(parser, profile, resolve_path)
+    directory = Path(resolve_path(profile["installationDirectory"]))
+    paths.update({
+        "baseline Helm values": str(directory / "values.yaml"),
+        "baseline Installation": str(directory / "installation.yaml"),
+    })
     for flag, role in (
         ("--candidate-values", "candidate Helm values"),
         ("--candidate-installation", "candidate Installation"),
@@ -360,17 +461,20 @@ def preview_inputs(parser, profile, resolve_path, options):
     ):
         if flag in options:
             paths[role] = options[flag]
-    digests = {"kubeconfig": hashlib.sha256(kubeconfig_bytes).hexdigest()}
     mappings = {}
     for role, filename in paths.items():
+        if role in digests:
+            continue
         content = preview_file(parser, role, filename)
         digests[role] = hashlib.sha256(content).hexdigest()
-        if role not in (KUBECONFIG_SERVER_CA, COMPATIBILITY_RECEIPT):
+        if role != COMPATIBILITY_RECEIPT:
             mappings[role] = preview_mapping(parser, role, content)
     before_values = mappings["baseline Helm values"]
     values = mappings.get("candidate Helm values", before_values)
     before_installation = mappings["baseline Installation"]
     installation = mappings.get("candidate Installation", before_installation)
+    if validate_candidate:
+        validate_candidate_inputs(parser, before_values, values, before_installation, installation)
 
     migration = setting(values, "database", "upgradeMigration")
     if migration is None:
@@ -384,10 +488,8 @@ def preview_inputs(parser, profile, resolve_path, options):
     if migration == "separate":
         effects.append("The upgrade can stop OCC writers and pause for separate database migration (exit 3).")
     values_changes = changed_categories(before_values, values, {
-        ("database", "upgradeMigration"): "migration mode",
-        ("api", "channelDirectoryProxyUrl"): "Slack directory proxy",
-        ("installation", "secretName"): "Installation Secret reference",
-        ("agentNativeAdmin", "sharedCookieDomain"): "retired native admin cookie domain",
+        **VALUES_CHANGES,
+        ("agentNativeAdmin", RETIRED_COOKIE): "retired native admin cookie domain",
     })
     effects.extend(f"Helm values change: {name}" for name in sorted(values_changes))
     if "Installation Secret reference" in values_changes:
@@ -397,7 +499,7 @@ def preview_inputs(parser, profile, resolve_path, options):
         if isinstance(secret, str) and re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", secret):
             effects.append(f"Candidate Installation Secret: {secret}")
     installation_changes = changed_categories(before_installation, installation, {
-        ("drivers", "plugin"): "Plugin Driver registration",
+        PLUGIN: "Plugin Driver registration",
     })
     effects.extend(f"Installation change: {name}" for name in sorted(installation_changes))
     if installation_changes or "runtime" in profile.get("images", {}) or "Installation Secret reference" in values_changes:
@@ -423,12 +525,12 @@ def preview_inputs(parser, profile, resolve_path, options):
         if flag in options:
             number = int(options[flag])
             effects.append(f"{role}: {number}")
-    if ca is not None:
+    if KUBECONFIG_SERVER_CA in digests:
         if digests[KUBECONFIG_SERVER_CA] == hashlib.sha256(b"").hexdigest():
             effects.append("The selected CA file is empty. The run uses the system trust store.")
         else:
             effects.append("The run will use the verified CA from the selected kubeconfig context.")
-    return {"kubeconfig": kubeconfig, **paths}, digests, effects
+    return paths, digests, effects
 
 
 def check_preview_inputs(parser, paths, digests):
@@ -648,25 +750,30 @@ def main():
         parser.error("profile path must be printable")
     if args.operation in NEW_RUNS and args.evidence_dir is not None:
         args.evidence_dir = fresh_evidence(parser, checkout, args.evidence_dir)
-    digests = None
     if args.operation != "cleanup-preflight":
         options = expert_options(parser, args.operation, extra)
     if args.operation in ("plan", "apply", "resume"):
         check_revision(parser, checkout, profile["sourceRevision"])
+    if args.operation in ("plan", "apply", "resume", "preflight"):
+        paths, digests, effects = preview_inputs(
+            parser, profile, path, options, validate_candidate=args.operation != "resume",
+        )
+    else:
+        paths, digests = preview_target(parser, profile, path)
+    if args.operation in ("plan", "apply", "resume"):
         resume_run = args.evidence_dir if args.operation == "resume" else None
-        paths, digests, effects = preview_inputs(parser, profile, path, options)
         show_plan(parser, profile, path, paths, effects, resume_run)
         if args.operation == "plan":
             return
         if not args.auto_approve:
             confirm(parser, args.operation)
-        check_preview_inputs(parser, paths, digests)
     elif args.operation == "cleanup-preflight":
         print("Cleanup removes only the original run's recorded temporary resources. It cannot resume deployment.")
     else:
         if args.evidence_dir is None:
             check_revision(parser, checkout, profile["sourceRevision"])
         print("This check creates temporary cluster resources and confirms cleanup before reporting success.")
+    check_preview_inputs(parser, paths, digests)
 
     if args.operation in NEW_RUNS:
         if args.evidence_dir is None:
@@ -724,9 +831,7 @@ def main():
     canonical = checkout / "scripts" / "upgrade-production-images"
     try:
         environment = os.environ.copy()
-        environment.pop("OCC_UPGRADE_APPROVED_INPUTS", None)
-        if args.operation in ("apply", "resume"):
-            environment["OCC_UPGRADE_APPROVED_INPUTS"] = json.dumps(digests)
+        environment["OCC_UPGRADE_APPROVED_INPUTS"] = json.dumps(digests)
         os.execve(canonical, [str(canonical), *command, *extra], environment)
     except OSError:
         parser.error(
