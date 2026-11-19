@@ -639,7 +639,7 @@ test(
     const mounts = new Set(
       array(migration.volumeMounts ?? []).map((mount) => string(record(mount).name)),
     );
-    const runMigration = async (name: string, args: string[], condition: "Failed" | "Complete") => {
+    const runMigration = async (name: string, args: string[]) => {
       await f.apply({
         apiVersion: "batch/v1",
         kind: "Job",
@@ -672,7 +672,7 @@ test(
         "-n",
         f.system,
         "wait",
-        `--for=condition=${condition}`,
+        "--for=condition=Complete",
         `job/${name}`,
         "--timeout=180s",
       );
@@ -689,24 +689,9 @@ test(
       );
       return logs;
     };
-    // Run the prepared chart's exact verification command with privilege drift.
-    // A separate Job exercises the real migrator without replacing the Helm revision.
-    await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
-    const refused = await runMigration(
-      "separate-migration-refusal",
-      migrationArgs,
-      "Failed",
-    ).finally(() => sql("GRANT SELECT ON occ.iam_identities TO occ_app"));
-    assert.match(refused, /MIGRATION_HISTORY_UNSUPPORTED/);
-    await assertWriterFence();
-
-    const migrated = await runMigration(
-      "separate-database-migration",
-      migrationArgs.slice(0, -1),
-      "Complete",
-    );
+    const migrated = await runMigration("separate-database-migration", migrationArgs.slice(0, -1));
     assert.match(migrated, /"event":"migration.completed","history":"completed"/);
-    const verified = await runMigration("separate-migration-verify", migrationArgs, "Complete");
+    const verified = await runMigration("separate-migration-verify", migrationArgs);
     assert.match(verified, /"event":"migration.checked","history":"completed"/);
 
     // A successful independent check cannot authorize the paused operation by itself.
@@ -726,13 +711,78 @@ test(
     const checked = await f.kubectl("-n", f.system, "logs", `job/${hookName}`, "-c", "migration");
     assert.match(checked, /"event":"migration.checked","history":"completed"/);
     await connection.stop();
-    for (const component of ["api", "worker"]) {
-      await f.currentPod(component);
-      assert.equal(
-        deployment(await f.get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
-        1,
+    const writerComponents = ["api", "worker"];
+    const assertServingWriters = async () => {
+      for (const component of writerComponents) {
+        await f.currentPod(component);
+        assert.equal(
+          deployment(await f.get("deployment", "openclaw-enterprise-" + component)).spec.replicas,
+          1,
+        );
+      }
+    };
+    await assertServingWriters();
+    assert.equal(await receipts(), before);
+
+    // Separately submit a real chart upgrade to exercise Helm's own safety gate
+    // without the CLI's earlier compatibility check. Use the exact deployed values
+    // so the deliberate privilege drift is the only reason the hook can refuse.
+    const deployedValues = record(
+      JSON.parse(
+        await f.run("helm", [
+          "get",
+          "values",
+          f.release,
+          "--kubeconfig",
+          kubeconfigPath,
+          "--kube-context",
+          kubernetesContext,
+          "--namespace",
+          f.system,
+          "--output",
+          "json",
+        ]),
+      ),
+    );
+    assert.equal(record(deployedValues.database).upgradeMigration, "separate");
+    await f.kubectl(
+      "-n",
+      f.system,
+      "scale",
+      ...writerComponents.map((component) => "deployment/openclaw-enterprise-" + component),
+      "--replicas=0",
+    );
+    await f.waitFor(
+      "both writers stopped for the independent Helm check",
+      async () => (await f.pods("api")).length === 0 && (await f.pods("worker")).length === 0,
+    );
+    const writerState = () =>
+      Promise.all(
+        writerComponents.map(async (component) =>
+          deployment(await f.get("deployment", "openclaw-enterprise-" + component)),
+        ),
       );
+    const stopped = await writerState();
+    assert.ok(stopped.every(({ spec }) => spec.replicas === 0));
+    await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
+    try {
+      await assert.rejects(f.upgrade(deployedValues), /failed pre-upgrade|BackoffLimitExceeded/);
+      const logs = await f.kubectl("-n", f.system, "logs", "job/" + hookName, "-c", "migration");
+      assert.match(logs, /MIGRATION_HISTORY_UNSUPPORTED/);
+      assert.equal(await helmRevision(), revision + 2);
+      assert.equal(await receipts(), before);
+      assert.deepEqual(await writerState(), stopped);
+      for (const component of writerComponents) {
+        assert.equal((await f.pods(component)).length, 0);
+      }
+    } finally {
+      await sql("GRANT SELECT ON occ.iam_identities TO occ_app");
     }
+
+    await f.upgrade(deployedValues);
+    const restored = await f.kubectl("-n", f.system, "logs", "job/" + hookName, "-c", "migration");
+    assert.match(restored, /"event":"migration.checked","history":"completed"/);
+    await assertServingWriters();
     assert.equal(await receipts(), before);
     assert.equal(string(record(await f.api("GET", "/installation")).id), installationId);
     // Prove the recovered API and worker can still deploy an Agent through their real caller.

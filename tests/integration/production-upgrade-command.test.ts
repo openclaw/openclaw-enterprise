@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   symlink,
@@ -311,9 +312,10 @@ test("apply requires approval of the current target before reserving private evi
     "rendered",
   ]);
 
-  // The real owner refuses the invalid timeout before contacting the cluster.
+  // The real owner rejects the untrusted local URL before contacting the cluster.
   // Even an early refusal must leave an unambiguous locator, never reuse a prior attempt.
-  const guard = ["--", "--timeout-seconds", "0"];
+  const guard = ["--", "--timeout-seconds", "1"];
+  const nativeRefusal = { OCC_URL: "http://127.0.0.1:9" };
   const terminal = (answer: string) =>
     spawnSync(
       "python3",
@@ -331,7 +333,7 @@ test("apply requires approval of the current target before reserving private evi
         encoding: "utf8",
         input: answer + "\n",
         timeout: 30_000,
-        env: { PATH: process.env.PATH },
+        env: { PATH: process.env.PATH, ...nativeRefusal },
       },
     );
   const decline = terminal("no");
@@ -344,14 +346,17 @@ test("apply requires approval of the current target before reserving private evi
 
   const flags = ["--auto-approve", ...guard];
   const locators = new Set<string>();
-  for (const result of [terminal("yes"), run("apply", f, flags, fresh)]) {
+  for (const result of [
+    terminal("yes"),
+    run("apply", f, flags, { ...fresh, env: nativeRefusal }),
+  ]) {
     assert.equal(result.status, 1);
-    assert.match(result.stdout + result.stderr, /--timeout-seconds must be positive/);
+    assert.match(result.stdout + result.stderr, /OCC_URL must use HTTPS/);
     const evidence = /Evidence: (.+)$/m.exec(result.stdout)?.[1];
     assert.ok(evidence);
     locators.add(evidence);
     const parent = dirname(evidence);
-    assert.equal(dirname(parent), f.directory);
+    assert.equal(dirname(parent), await realpath(f.directory));
     assert.equal((await stat(parent)).mode & 0o777, 0o700);
     assert.deepEqual(await readdir(parent), []);
     assert.doesNotMatch(result.stdout, /occ installation upgrade resume/);
@@ -392,6 +397,7 @@ test("the same local candidate is explained by plan and apply without printing i
   await selectCheckout(f);
   const values = join(f.rendered, "candidate-values.yaml");
   const installation = join(f.rendered, "candidate-installation.yaml");
+  const receipt = join(f.rendered, "compatibility.json");
   const password = randomBytes(24).toString("hex");
   const proxy = syntheticCredentialUrl({ username: "test", password, host: "proxy.example" });
   const candidate = JSON.stringify({
@@ -406,14 +412,18 @@ test("the same local candidate is explained by plan and apply without printing i
     JSON.stringify({ drivers: { plugin: [{ id: "codex-plugin" }] }, auth: { extra: true } }),
     { mode: 0o600 },
   );
+  const receiptCanary = randomBytes(24).toString("hex");
+  await writeFile(receipt, JSON.stringify({ privateReceipt: receiptCanary }), { mode: 0o600 });
   const options = [
     "--",
     "--candidate-values",
     values,
     "--candidate-installation",
     installation,
+    "--controller-compatibility-results",
+    receipt,
     "--timeout-seconds",
-    "0",
+    "1",
   ];
   const plan = run("plan", f, options);
   const apply = run("apply", f, options, { automaticEvidence: true });
@@ -421,17 +431,38 @@ test("the same local candidate is explained by plan and apply without printing i
   assert.equal(apply.status, 2);
   assert.match(apply.stderr, /--auto-approve/);
   assert.equal(apply.stdout, plan.stdout);
-  assert.match(plan.stdout, /Database migration mode: separate.*\n.*pause.*exit 3/);
+  assert.match(plan.stdout, /Database migration mode: separate/);
+  assert.match(plan.stdout, /pause for separate database migration \(exit 3\)/);
   assert.match(plan.stdout, /Helm values change: Slack directory proxy/);
   assert.match(plan.stdout, /Candidate Installation Secret: occ-staged/);
   assert.match(plan.stdout, /Installation change: Plugin Driver registration/);
   assert.match(plan.stdout, /Helm values change: other settings/);
   assert.match(plan.stdout, /Installation change: other settings/);
-  assert.ok(plan.stdout.includes(createHash("sha256").update(candidate).digest("hex")));
-  const kubeconfig = await readFile(join(f.directory, f.input.kubeconfig));
-  assert.ok(!plan.stdout.includes(createHash("sha256").update(kubeconfig).digest("hex")));
-  for (const withheld of [password, proxy, "private-value"]) {
-    assert.ok(!plan.stdout.includes(withheld));
+  assert.match(plan.stdout, /overwrite values.yaml and submit a Helm upgrade/);
+  assert.match(plan.stdout, /overwrite the local installation.yaml/);
+  assert.match(plan.stdout, /live mutable Installation Secret remains selected.*replace its data/);
+  assert.match(plan.stdout, /select a staged immutable Installation Secret/);
+  assert.ok(plan.stdout.includes(f.input.images.controller));
+  const output = plan.stdout + plan.stderr + apply.stdout + apply.stderr;
+  for (const withheld of [password, proxy, "private-value", receiptCanary]) {
+    assert.ok(!output.includes(withheld));
+  }
+  for (const file of [
+    f.profile,
+    join(f.directory, f.input.kubeconfig),
+    join(f.rendered, "values.yaml"),
+    join(f.rendered, "installation.yaml"),
+    values,
+    installation,
+    receipt,
+  ]) {
+    assert.ok(
+      !output.includes(
+        createHash("sha256")
+          .update(await readFile(file))
+          .digest("hex"),
+      ),
+    );
   }
   assert.deepEqual((await readdir(f.directory)).sort(), [
     "kubeconfig",
@@ -462,7 +493,7 @@ test("explicit evidence placement refuses unsafe parents before preview or dispa
       "--auto-approve",
       "--",
       "--timeout-seconds",
-      "0",
+      "1",
     ]);
     assert.equal(result.status, 2);
     assert.match(result.stderr, /safe --evidence-dir/);
@@ -470,4 +501,41 @@ test("explicit evidence placement refuses unsafe parents before preview or dispa
   }
   assert.deepEqual(await readdir(safe), []);
   assert.deepEqual(await readdir(shared), []);
+});
+
+test("plan and apply refuse invalid numeric options before prompting or creating evidence", async (t) => {
+  const f = await fixture(t);
+  await selectCheckout(f);
+  const before = (await readdir(f.directory)).sort();
+  for (const [flag, value] of [
+    ["--timeout-seconds", "0"],
+    ["--timeout-seconds", "86401"],
+    ["--doctor-heap-mib", "0"],
+    ["--doctor-heap-mib", "9223372036854775168"],
+  ]) {
+    for (const action of ["plan", "apply", "preflight"]) {
+      const result = run(action, f, ["--", flag, value], { automaticEvidence: true });
+      assert.equal(result.status, 2);
+      assert.ok(result.stderr.includes(flag + " must be a positive integer"));
+      assert.equal(result.stdout, "");
+    }
+  }
+  assert.deepEqual((await readdir(f.directory)).sort(), before);
+});
+
+test("explicit evidence uses the physical parent behind a trusted macOS system alias", async (t) => {
+  const f = await fixture(t);
+  await selectCheckout(f);
+  const physical = await realpath(f.directory);
+  if (process.platform !== "darwin" || !physical.startsWith("/private/var/")) {
+    t.skip("requires the macOS /var system alias and a temporary directory below it");
+    return;
+  }
+  const evidence = join(physical.slice("/private".length), "alias-evidence");
+  const result = run("apply", { ...f, evidence }, ["--auto-approve"], {
+    env: { OCC_URL: "http://127.0.0.1:9" },
+  });
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes("OCC_URL must use HTTPS"));
+  assert.ok(result.stdout.includes(`Evidence: ${join(physical, "alias-evidence")}`));
 });

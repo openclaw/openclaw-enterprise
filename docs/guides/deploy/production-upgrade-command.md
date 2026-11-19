@@ -48,7 +48,7 @@ occ installation upgrade plan --profile /secure/occ/upgrade.json
 The offline preview checks the profile, local inputs, image digests, and
 checkout commit. It reads the kubeconfig without showing its contents or digest.
 When you select candidate files or other expert options, pass the same options
-after `--` to `plan` and `apply`. Review the candidate settings and file digests
+after `--` to `plan` and `apply`. Review the deployment effects and image digests
 before you approve. The preview reads local inputs. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.
 
@@ -75,6 +75,8 @@ output are attached to a terminal, type `yes` to approve the upgrade. For
 automation or redirected output, pass `--auto-approve`. The upgrade checks
 startup and migration compatibility and confirms preflight cleanup before it
 stops writers.
+Apply and resume use a private copy of the approved kubeconfig for cluster access.
+The copy keeps relative credential and certificate references tied to their original location.
 
 For each fresh `apply`, `preflight`, or `migration check`, the CLI prints
 `Evidence: PATH` and an `Inspect:` command before starting the operation.

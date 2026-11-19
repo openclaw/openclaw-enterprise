@@ -199,6 +199,10 @@ EXPERT_VALUES = {
     "--verify-agent",
     "--verify-agent-namespace",
 }
+EXPERT_LIMITS = {
+    "--timeout-seconds": 86400,
+    "--doctor-heap-mib": 9223372036854775167,
+}
 EXPERT_SWITCHES = {"--collector-config-reviewed", "--verbose"}
 RECOVERY_SWITCHES = {"--recover-helm", "--recovery-reviewed", "--migration-history-checked"}
 
@@ -211,6 +215,13 @@ def expert_options(parser, operation, arguments):
             value = next(items, None)
             if not value or not value.isprintable():
                 parser.error(f"{flag} requires a nonempty printable value")
+            limit = EXPERT_LIMITS.get(flag)
+            if limit is not None and (
+                not re.fullmatch(r"[1-9][0-9]*", value)
+                or len(value) > len(str(limit))
+                or int(value) > limit
+            ):
+                parser.error(f"{flag} must be a positive integer no greater than {limit}")
             options[flag] = value
         elif flag in EXPERT_SWITCHES or (operation == "resume" and flag in RECOVERY_SWITCHES):
             options[flag] = True
@@ -280,7 +291,7 @@ def changed_categories(before, after, categories, prefix=()):
     return {categories.get(prefix, "other settings")}
 
 
-def preview_inputs(parser, kubeconfig, directory, options):
+def preview_inputs(parser, kubeconfig, directory, profile_images, options):
     paths = {
         "kubeconfig": kubeconfig,
         "baseline Helm values": str(directory / "values.yaml"),
@@ -311,7 +322,10 @@ def preview_inputs(parser, kubeconfig, directory, options):
         migration = "hook"
     if migration not in ("hook", "separate"):
         parser.error("candidate Helm values must select hook or separate database.upgradeMigration")
-    effects = [f"Database migration mode: {migration}"]
+    effects = [
+        f"Database migration mode: {migration}",
+        "The upgrade can overwrite values.yaml and submit a Helm upgrade.",
+    ]
     if migration == "separate":
         effects.append("The upgrade can stop OCC writers and pause for separate database migration (exit 3).")
     values_changes = changed_categories(before_values, values, {
@@ -331,6 +345,13 @@ def preview_inputs(parser, kubeconfig, directory, options):
         ("drivers", "plugin"): "Plugin Driver registration",
     })
     effects.extend(f"Installation change: {name}" for name in sorted(installation_changes))
+    if installation_changes or "runtime" in profile_images or "Installation Secret reference" in values_changes:
+        effects.append("A changed Installation can overwrite the local installation.yaml.")
+        effects.append(
+            "If the live mutable Installation Secret remains selected, the upgrade can replace its data."
+        )
+    if "Installation Secret reference" in values_changes:
+        effects.append("A changed live reference can select a staged immutable Installation Secret.")
     if values_changes or installation_changes:
         effects.append("Apply checks candidate changes against the live release and protected settings.")
     if "--collector-config-reviewed" in options:
@@ -345,8 +366,8 @@ def preview_inputs(parser, kubeconfig, directory, options):
         effects.append("Native command output enabled.")
     for flag, role in (("--timeout-seconds", "Wait timeout (seconds)"), ("--doctor-heap-mib", "Doctor heap (MiB)")):
         if flag in options:
-            value = options[flag]
-            effects.append(f"{role}: " + (value if re.fullmatch(r"[0-9]{1,10}", value) else "review supplied value"))
+            number = int(options[flag])
+            effects.append(f"{role}: {number}")
     return paths, digests, effects
 
 
@@ -357,7 +378,7 @@ def check_preview_inputs(parser, paths, digests):
             parser.error(f"{role} changed after the preview; review a fresh plan")
 
 
-def show_plan(parser, profile, profile_relative_path, digests, effects, resume_run):
+def show_plan(parser, profile, profile_relative_path, input_names, effects, resume_run):
     images = profile.get("images", {})
     if not images:
         parser.error("select a controller, broker, or runtime image before planning")
@@ -390,9 +411,9 @@ def show_plan(parser, profile, profile_relative_path, digests, effects, resume_r
         print("  Agents: redeploy those running at the start of the upgrade")
     else:
         print("  Agents: keep current revisions")
-    for name, digest in digests.items():
-        if name != "kubeconfig":
-            print(f"  {name}: sha256:{digest}")
+    for name in input_names:
+        if name not in ("kubeconfig", "baseline Helm values", "baseline Installation"):
+            print(f"  {name}: supplied")
     for effect in effects:
         print(f"  {effect}")
     print("No cluster contact or writes occurred during this preview. Current images and migration requirements are unknown.")
@@ -421,12 +442,27 @@ def confirm(parser, operation):
 
 def evidence_parent(parser, checkout, base):
     try:
-        directory = base.absolute()
+        requested = base.absolute()
+        directory = requested.resolve(strict=True)
+        if ".." in requested.parts:
+            parser.error("evidence paths must not contain '..'; choose a safe --evidence-dir")
+        root_owner = Path("/").stat().st_uid
+        if requested != directory:
+            for component in (requested, *requested.parents):
+                if component.is_symlink() and (
+                    component.lstat().st_uid != root_owner
+                    or any(
+                        ancestor.stat().st_uid != root_owner or ancestor.stat().st_mode & 0o022
+                        for ancestor in component.parents
+                    )
+                ):
+                    parser.error("evidence directory has an untrusted alias; choose a safe --evidence-dir")
         info = directory.stat()
+        if not os.path.samestat(info, requested.stat()):
+            parser.error("evidence parent changed during validation; choose a safe --evidence-dir")
         required = stat.S_IWUSR | stat.S_IXUSR
         if (
-            directory != directory.resolve(strict=True)
-            or directory.is_relative_to(checkout)
+            directory.is_relative_to(checkout)
             or not stat.S_ISDIR(info.st_mode)
             or info.st_uid != os.geteuid()
             or info.st_mode & 0o022
@@ -435,10 +471,10 @@ def evidence_parent(parser, checkout, base):
         ):
             parser.error(
                 "evidence needs a writable directory outside the checkout, owned by you, "
-                "with no symlinks or other writers; choose a safe --evidence-dir"
+                "protected from other writers; choose a safe --evidence-dir"
             )
         # Ancestors must prevent another writer from replacing the private run path.
-        owners = {os.geteuid(), Path("/").stat().st_uid}
+        owners = {os.geteuid(), root_owner}
         for ancestor in directory.parents:
             info = ancestor.stat()
             if info.st_uid not in owners or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
@@ -452,7 +488,7 @@ def fresh_evidence(parser, checkout, value):
     locator = Path(value).absolute()
     if locator.name in ("", ".", ".."):
         parser.error("choose a new name for --evidence-dir")
-    evidence_parent(parser, checkout, locator.parent)
+    locator = evidence_parent(parser, checkout, locator.parent) / locator.name
     if os.path.lexists(locator) or os.path.lexists(str(locator) + ".dispatch-state"):
         parser.error("evidence or its dispatch journal already exists; choose a fresh --evidence-dir")
     return str(locator)
@@ -553,15 +589,16 @@ def main():
     if args.operation in NEW_RUNS and args.evidence_dir is not None:
         args.evidence_dir = fresh_evidence(parser, checkout, args.evidence_dir)
     digests = None
+    if args.operation != "cleanup-preflight":
+        options = expert_options(parser, args.operation, extra)
     if args.operation in ("plan", "apply", "resume"):
         check_revision(parser, checkout, profile["sourceRevision"])
-        options = expert_options(parser, args.operation, extra)
         resume_run = args.evidence_dir if args.operation == "resume" else None
         directory = Path(path(profile["installationDirectory"]))
         paths, digests, effects = preview_inputs(
-            parser, path(profile["kubeconfig"]), directory, options
+            parser, path(profile["kubeconfig"]), directory, profile.get("images", {}), options
         )
-        show_plan(parser, profile, path, digests, effects, resume_run)
+        show_plan(parser, profile, path, paths, effects, resume_run)
         if args.operation == "plan":
             return
         if not args.auto_approve:
@@ -631,7 +668,7 @@ def main():
     try:
         environment = os.environ.copy()
         environment.pop("OCC_UPGRADE_APPROVED_INPUTS", None)
-        if args.operation == "apply":
+        if args.operation in ("apply", "resume"):
             environment["OCC_UPGRADE_APPROVED_INPUTS"] = json.dumps(digests)
         os.execve(canonical, [str(canonical), *command, *extra], environment)
     except OSError:

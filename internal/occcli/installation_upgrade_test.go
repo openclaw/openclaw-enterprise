@@ -21,6 +21,7 @@ func executeUpgrade(args ...string) (string, string, error) {
 }
 
 func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) {
+	t.Setenv("OCC_URL", "http://127.0.0.1:9")
 	repository, err := checkoutRepository("occ installation upgrade", filepath.Join("scripts", "upgrade-production"))
 	if err != nil {
 		t.Fatal(err)
@@ -100,8 +101,8 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	}
 
 	// With closed stdin the adapter must refuse before dispatch, even with a valid profile.
-	// The owner's timeout check prevents cluster contact if dispatch regresses.
-	options := []string{"--", "--timeout-seconds", "0"}
+	// The native owner's URL check prevents cluster contact if dispatch regresses.
+	options := []string{"--", "--timeout-seconds", "1"}
 	apply := []string{"apply", "--profile", profile, "--evidence-dir", target}
 	_, diagnostic, err = executeUpgrade(append(apply, options...)...)
 	var status *ExitStatusError
@@ -112,7 +113,7 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 		t.Fatalf("unapproved apply created evidence: %v", err)
 	}
 	_, diagnostic, err = executeUpgrade(append(append(apply, "--auto-approve"), options...)...)
-	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "--timeout-seconds must be positive") {
+	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "OCC_URL must use HTTPS") {
 		t.Fatalf("approved apply canonical diagnostic = %q, error = %v", diagnostic, err)
 	}
 
@@ -163,13 +164,13 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	input["sourceRevision"] = revision
 	writeProfile()
 	resume := []string{"resume", evidence, "--profile", profile}
-	// Resuming a real run also requires approval. The timeout option keeps dispatch local.
+	// Resuming a real run also requires approval. The URL refusal keeps dispatch local.
 	_, diagnostic, err = executeUpgrade(append(resume, options...)...)
 	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "--auto-approve") {
 		t.Fatalf("unapproved resume diagnostic = %q, error = %v", diagnostic, err)
 	}
 	_, diagnostic, err = executeUpgrade(append(append(resume, "--auto-approve"), options...)...)
-	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "--timeout-seconds must be positive") {
+	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "OCC_URL must use HTTPS") {
 		t.Fatalf("approved resume canonical diagnostic = %q, error = %v", diagnostic, err)
 	}
 	t.Chdir(filepath.Join(repository, "internal"))
