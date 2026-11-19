@@ -18,12 +18,7 @@ import {
 type FixtureOptions = Parameters<typeof createInjectedControllerFixture>[0];
 type Reply = Awaited<ReturnType<FixtureRequest>>;
 export type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | { [key: string]: JsonValue };
+  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 const PublicUser = Type.Object({ id: Type.String(), email: Type.String(), name: Type.String() });
 export const SessionResponse = Type.Object({
