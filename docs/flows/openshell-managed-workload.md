@@ -151,7 +151,7 @@ its service for the app-server transport.
 ### 3. Select storage paths and connect the node
 
 `deploy/runtime/openshell-bootstrap.cjs:prepareManaged` creates the private
-home at `/opt/oce/managed/home` and links retained workspace, generated images
+home at `/opt/oce/managed/private/home` and links retained workspace, generated images
 and Codex sessions from `/sandbox/oce`. The node state variable points to a real
 directory on that volume. OpenClaw checks the node state directory's ancestors
 before starting its native worker. See the

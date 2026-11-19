@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -470,7 +471,10 @@ export function registerManagedOpenShellStartupCases() {
       request.spec.environment.OPENCLAW_NODE_STATE_DIR,
       "/sandbox/oce/workspace-node-codex/state",
     );
-    assert.equal(request.spec.environment.UNRELATED_PATH, "/opt/oce/managed/home/.openclaw-node");
+    assert.equal(
+      request.spec.environment.UNRELATED_PATH,
+      "/opt/oce/managed/private/home/.openclaw-node",
+    );
     assert.match(
       request.spec.command[RUNTIME_WRAPPER_COMMAND.length],
       /require\("\/opt\/oce\/runtime\/openshell-bootstrap.cjs"\)\.prepareManaged/,
@@ -967,11 +971,11 @@ export function registerManagedOpenShellStartupCases() {
         .split("\n")[0]
         .replaceAll("/opt/oce/runtime/openshell-bootstrap.cjs", bootstrap)
         .replaceAll("/sandbox", root)
-        .replaceAll("/opt/oce/managed", runtimeRoot);
+        .replaceAll("/opt/oce/managed/private", runtimeRoot);
       const environment = {
         ...process.env,
         NODE_COMPILE_CACHE: request.spec.environment.NODE_COMPILE_CACHE.replaceAll(
-          "/opt/oce/managed",
+          "/opt/oce/managed/private",
           runtimeRoot,
         ),
       };
@@ -1037,6 +1041,39 @@ export function registerManagedOpenShellStartupCases() {
       requirements,
       workspaceNodeEnrolled: false,
     });
+    // The stock supervisor uses a different UID from the image's node user.
+    // Exercise the image permissions without mounting over the runtime home.
+    const image = process.env.OCC_TEST_RUNTIME_IMAGE;
+    if (image) {
+      const { HOME: home, NODE_COMPILE_CACHE: cache } = request.spec.environment;
+      const bootstrapLine = request.spec.command[RUNTIME_WRAPPER_COMMAND.length].split("\n")[0];
+      await runDocker(
+        [
+          "run",
+          "--rm",
+          "--pull=never",
+          "--network",
+          "none",
+          "--cap-drop",
+          "ALL",
+          "--user",
+          "10001:10001",
+          "--tmpfs",
+          "/sandbox:mode=1777",
+          "--env",
+          `NODE_COMPILE_CACHE=${cache}`,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          bootstrapLine +
+            '\nconst home = require("node:fs").statSync(process.argv[1]);' +
+            "if (home.uid !== process.getuid() || (home.mode & 0o777) !== 0o700) process.exit(1);",
+          home,
+        ],
+        { encoding: "utf8", timeout: 30000 },
+      );
+    }
     launchBootstrap();
     await writeFile(join(runtimeRoot, "home/workspace/USER.md"), "retained native workspace");
     // Enrollment removes the first revision's diagnostic route while it runs.

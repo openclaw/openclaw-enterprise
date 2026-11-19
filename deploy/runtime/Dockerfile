@@ -466,7 +466,8 @@ COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --chmod=0444 deploy/runtime/openshell-bootstrap.cjs /opt/oce/runtime/openshell-bootstrap.cjs
-RUN install -d -m 0700 -o node -g node /opt/oce/managed
+# OpenShell selects the workload UID. Its private child directory stays on the workload filesystem.
+RUN install -d -m 1777 -o root -g root /opt/oce/managed
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
 RUN mkdir -p node_modules/.bin \

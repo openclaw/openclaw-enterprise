@@ -48,7 +48,8 @@ import {
 import { readOpenShellGitEvidence } from "../../egress-proxy/openshell-git-installation.ts";
 
 const DATA = "/sandbox/oce";
-const RUNTIME_ROOT = "/opt/oce/managed";
+const RUNTIME_PARENT = "/opt/oce/managed";
+const RUNTIME_ROOT = `${RUNTIME_PARENT}/private`;
 const BOOTSTRAP = "/opt/oce/runtime/openshell-bootstrap.cjs";
 const REVISION = "openclaw.dev/revision-id";
 const GIT_SCOPE = "openclaw.dev/git-scope";
@@ -251,7 +252,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
           read_write: [
             ...filesystem.read_write.filter((path) => !path.startsWith("/sandbox/")),
             "/sandbox",
-            RUNTIME_ROOT,
+            RUNTIME_PARENT,
           ],
         },
       },

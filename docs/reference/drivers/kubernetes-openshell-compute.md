@@ -50,6 +50,24 @@ The workspace node uses the [Envoy route](../gateway-routing.md#native-node-endp
 The Gateway admits the Envoy Pods, and activation removes obsolete direct
 workspace-node policies. Separate-cluster connectivity remains unqualified.
 
+For an OpenShell-managed namespace, allow its supervisor Pods to reach both
+the OpenShell gateway (TCP 8080) and the Envoy HTTPS listener (default target
+10443). The default OCE development policies select operator-owned namespaces.
+Add an ingress peer to each destination policy, scoped to the managed namespace
+and gateway. Keep both selectors in the same peer.
+
+```yaml
+namespaceSelector:
+  matchLabels:
+    kubernetes.io/metadata.name: YOUR_MANAGED_NAMESPACE
+    openshell.ai/gateway-id: YOUR_OPENSHELL_GATEWAY_ID
+    openshell.ai/sandbox-workspace: YOUR_WORKSPACE
+podSelector:
+  matchLabels:
+    openshell.ai/managed-by: openshell
+    openshell.ai/boundary-role: supervisor
+```
+
 Protected Git verifies execution ownership and readiness through OpenShell's API.
 The worker does not need Kubernetes Pod-read access in OpenShell-managed namespaces.
 OpenShell owns the workload identities and reports them through its authenticated
@@ -86,7 +104,7 @@ Runtime Provider updates delete obsolete keys and preserve unchanged empty
 fields. A changed field must have a nonempty value because OpenShell treats an
 empty update as deletion.
 
-The bootstrap keeps private runtime state under `/opt/oce/managed/home` and the
+The bootstrap keeps private runtime state under `/opt/oce/managed/private/home` and the
 Node compile cache beside it on the workload filesystem. A replacement starts
 with a fresh home and links the workspace, generated images and Codex sessions
 to `/sandbox/oce`. `OPENCLAW_NODE_STATE_DIR` points directly to retained node
