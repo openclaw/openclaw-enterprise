@@ -4,12 +4,12 @@ import { createHash } from "node:crypto";
 import {
   chmod,
   mkdir,
+  open,
   readdir,
   readFile,
   readlink,
   realpath,
   rm,
-  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -412,10 +412,14 @@ packages:
   await writeFile(bwrap, sandboxBytes);
   execFileSync(process.execPath, installArgs);
   assert.deepEqual(await readFile(cli), cliBytes);
-  const auditBinary = await realpath(auditLauncher);
-  assert.equal(auditBinary, join(cli, "../oce-codex-audit-app-server"));
-  assert.equal((await stat(auditBinary)).mode & 0o777, 0o555);
-  assert.equal(await readFile(auditBinary, "utf8"), serverBytes);
+  const auditBinary = await open(auditLauncher);
+  try {
+    assert.equal((await auditBinary.stat()).mode & 0o777, 0o555);
+    assert.equal(await auditBinary.readFile("utf8"), serverBytes);
+  } finally {
+    await auditBinary.close();
+  }
+  assert.equal(await realpath(auditLauncher), join(cli, "../oce-codex-audit-app-server"));
   const withAudit: unknown = JSON.parse(await readFile(provenancePath, "utf8"));
   assertRecord(withAudit);
   assert.deepEqual(withAudit.codex, provenance.codex);
