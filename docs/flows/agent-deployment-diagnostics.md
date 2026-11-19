@@ -167,10 +167,13 @@ state after admission.
   lease of a force-deleted Pod; it exits 1. A Kubernetes Gateway, dedicated or
   embedded, that never served and exits 1 then runs the read-only
   `openclaw gateway recover-lock --json` (never `--confirm`) and holds this
-  check when holders remain (`runtime-entrypoints.ts:holdGatewayStateLock`).
-  Every 5 minutes it retries a failed release of its own child's records,
-  inspects again, and restarts on purpose (exit 75) once no holder remains. A
-  failed inspection, or one with no holder, exits 1. Follow
+  check when holders remain (`runtime-entrypoints.ts:holdGatewayStateLock`);
+  one with no holder, or a failed inspection, exits 1. A dedicated Kubernetes
+  Gateway whose `config validate` met the lock, as a container restarted after
+  a kill does, holds the check without starting OpenClaw
+  (`holdGatewayStartupFailure`). Every 5 minutes either hold retries a failed
+  release of its own child's records and inspects again. It restarts on purpose
+  (exit 75) once no holder remains, and exits 1 if the inspection fails. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 - An `agent` `gateway-state-lock` check is a Kubernetes Harness whose Doctor or
   native setup met node state lock holders. Both fail the deployment with

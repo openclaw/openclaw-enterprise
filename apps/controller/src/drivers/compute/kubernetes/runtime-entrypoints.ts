@@ -3476,12 +3476,19 @@ function holdInvalidGatewayConfiguration(code, signal) {
 // minutes: once no holder remains, it restarts its container on purpose and the next start
 // takes the lock. An inspection that fails, or finds no holder, exits 1 as before.
 const GATEWAY_STATE_LOCK_RECHECK_MS = 300_000;
-function holdGatewayStateLock(code) {
+function holdGatewayStateLock() {
   if (runtimeStatusPort() === undefined) return false;
   const holders = openClawStateLockHolders(gatewayEnvironment());
   if (holders === undefined || holders.length === 0) return false;
+  return holdGatewayStartupFailure(new GatewayStateLockError(holders.join(" ")));
+}
+
+// Holds a refusal of the tool policy step. The state lock that its config validate met, as a
+// container restarted after a kill does, is held and rechecked as the native start's is.
+function holdGatewayStartupFailure(error) {
+  if (!holdGatewayToolPolicyFailure(error)) return false;
+  if (!(error instanceof GatewayStateLockError) || runtimeStatusPort() === undefined) return true;
   gatewayStartupHeld = true;
-  holdGatewayToolPolicyFailure(new GatewayStateLockError(holders.join(" ")));
   const recheck = setInterval(() => {
     if (gatewayTerminating) return;
     // A failed exit release (it timed out, or a foreign record made OpenClaw keep every lock)
@@ -3493,7 +3500,7 @@ function holdGatewayStateLock(code) {
     const current = openClawStateLockHolders(gatewayEnvironment());
     if (current !== undefined && current.length > 0) return;
     clearInterval(recheck);
-    if (current === undefined) process.exit(code);
+    if (current === undefined) process.exit(1);
     else stopContainer("GATEWAY_STATE_LOCK_RELEASED");
   }, GATEWAY_STATE_LOCK_RECHECK_MS);
   return true;
@@ -3525,7 +3532,7 @@ function startGatewayProcess() {
         if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
           return;
         }
-        if (!gatewayTerminating && !gatewayServed && code === 1 && holdGatewayStateLock(code)) {
+        if (!gatewayTerminating && !gatewayServed && code === 1 && holdGatewayStateLock()) {
           return;
         }
         // A native exit never passes as a deliberate restart, which Compute does not count
@@ -3821,7 +3828,7 @@ if (followsPeerStatus) {
       logStartupPhase("gateway-respawn", respawnStartedAt);
     } catch (error) {
       logStartupPhase("gateway-respawn", respawnStartedAt, "failed");
-      if (holdGatewayToolPolicyFailure(error)) {
+      if (holdGatewayStartupFailure(error)) {
         clearInterval(peerStatusPoll);
       } else {
         stopContainer(error?.peerChanged === true ? "HARNESS_PEER_CHANGED" : "HARNESS_PEER_RESPAWN_FAILED");
@@ -3851,7 +3858,7 @@ if (followsPeerStatus) {
   }, 2_000).unref();
 }
 })().catch((error) => {
-  if (!holdGatewayToolPolicyFailure(error) && !holdPluginApproverConfigurationFailure(error)) throw error;
+  if (!holdGatewayStartupFailure(error) && !holdPluginApproverConfigurationFailure(error)) throw error;
 });
 }
 `;
