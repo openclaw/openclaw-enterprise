@@ -141,9 +141,7 @@ async function policyAuthorityApp(t: test.TestContext) {
         signal: AbortSignal.timeout(20_000),
       });
       return {
-        ...(response.status === 204
-          ? {}
-          : ((await response.json()) as Omit<HTTPResult, "status">)),
+        ...(response.status === 204 ? {} : ((await response.json()) as Omit<HTTPResult, "status">)),
         status: response.status,
       };
     };
