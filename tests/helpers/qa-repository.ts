@@ -13,6 +13,7 @@ import {
   REPOSITORY_CONTROL_SOCKET,
 } from "../../scripts/lib/prepared-repository-installation.ts";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
+import type { deployQaAgentAndWait } from "./qa-installation.mjs";
 import { createGitHubAppRepositoryObserver } from "./github-app-observer.ts";
 import {
   createRepositoryObserver,
@@ -58,20 +59,22 @@ type QaPod = {
     containerStatuses?: {
       name: string;
       restartCount: number;
-      lastState?: { terminated?: { reason?: string; exitCode?: number; finishedAt?: string } };
+      lastState?: {
+        terminated?: { reason?: string; exitCode?: number; finishedAt?: string | null };
+      };
     }[];
   };
   spec?: { containers: { env?: { name: string }[] }[] };
 };
 type QaRuntimePod = QaPod & {
-  metadata: { namespace: string; name: string };
+  metadata: { namespace: string; name: string; uid: string };
   spec: { containers: { env?: { name: string }[] }[] };
 };
 type QaStopAgent = { id: string; namespaceId: string; stopCalls?: number; stopped?: boolean };
 type QaAgent = QaStopAgent & {
   preset: string;
   configuration: { id: string };
-  revision: object;
+  revision: { id: string };
 };
 type QaStopFixture = {
   controlPlane: string;
@@ -104,7 +107,8 @@ type QaVerifyFixture = QaPrepareFixture & {
   repositoryEntry: QaRepositoryEntry;
   retained: boolean;
   pendingRepositories: Set<string>;
-  deployAndWait: (agent: QaAgent) => Promise<void>;
+  deployAndWait: (agent: QaAgent) => ReturnType<typeof deployQaAgentAndWait>;
+  get: (kind: "pod", name: string, namespace: string) => Promise<{ metadata: { uid: string } }>;
   pod: (agent: QaAgent, role: string) => Promise<QaRuntimePod>;
 };
 type QaStopCurrent = { desiredRuntimeState?: string; activeRevisionId?: string | null };
@@ -253,7 +257,7 @@ function isQaPod(value: unknown): value is QaPod {
               (isRecord(terminated) &&
                 (terminated.reason === undefined || typeof terminated.reason === "string") &&
                 (terminated.exitCode === undefined || typeof terminated.exitCode === "number") &&
-                (terminated.finishedAt === undefined || typeof terminated.finishedAt === "string"))
+                (terminated.finishedAt == null || typeof terminated.finishedAt === "string"))
             );
           }))))
   ) {
@@ -1406,6 +1410,7 @@ export async function verifyQaRepository(
   scenario = "git-write",
 ): Promise<void> {
   assert.ok(["git-write", "git-push-denied"].includes(scenario));
+  assert.equal(typeof f.get, "function", "repository verification requires Pod lookup");
   const denied = scenario === "git-push-denied";
   assert.ok(!f.retained, "unresolved repository cleanup prevents opening another session");
   assert.equal(
@@ -1567,9 +1572,23 @@ export async function verifyQaRepository(
     // A rejected draft update above creates no session-cleanup obligation.
     f.pendingRepositories.add(agent.id);
     await f.deployAndWait(agent);
+    const revision = record(agent.revision, "deployed Agent revision");
+    assert.ok(typeof revision.id === "string" && revision.id.length > 0, "invalid revision ID");
     const readOnly = denied;
     const gateway = await f.pod(agent, "gateway");
     const consumer = dedicated ? await f.pod(agent, "agent") : gateway;
+    for (const [role, pod] of [
+      ["gateway", gateway],
+      ["consumer", consumer],
+    ] as const) {
+      const metadata = record(pod.metadata, `${role} Pod metadata`);
+      for (const field of ["namespace", "name", "uid"] as const) {
+        assert.ok(
+          typeof metadata[field] === "string" && metadata[field].length > 0,
+          `invalid ${role} Pod ${field}`,
+        );
+      }
+    }
     const consumerName = dedicated ? "agent" : "gateway";
     const execIn = (
       pod: QaRuntimePod,

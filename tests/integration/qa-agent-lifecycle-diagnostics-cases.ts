@@ -564,6 +564,7 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
     assert.ok(QA_STOP_TIMEOUT_MS > 300_000);
     assert.equal(QA_SLOW_STOP_MS, 60_000);
 
+    // Kubernetes can report a disappeared container without a termination time while the Pod drains.
     const gateway = {
       metadata: {
         namespace: "oce-agent-4",
@@ -571,7 +572,18 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
         deletionTimestamp: "2026-10-11T07:23:42Z",
         labels: { "openclaw.dev/agent": "agent-4", "openclaw.dev/workload-role": "gateway" },
       },
-      status: { phase: "Running" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          {
+            name: "gateway",
+            restartCount: 1,
+            lastState: {
+              terminated: { reason: "ContainerStatusUnknown", exitCode: 137, finishedAt: null },
+            },
+          },
+        ],
+      },
     };
     // A fake clock for both the slow-stop threshold and the timeout, and no sleep between
     // reads: each GET advances the clock by the next step; the last step's read finds
