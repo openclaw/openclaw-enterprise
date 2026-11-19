@@ -438,6 +438,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
+      '  t.diagnostic("container log start\\ncontainer log end");',
       `  for (const message of ${JSON.stringify(phaseDiagnostics)}) t.diagnostic(message);`,
       '  assert.fail(`password="fixture,\\nprivate-tail" phase=after\\nOCSF-JSON {"payload":"structured-private-early"}\\n${"stage line\\n".repeat(80)}OCSF-JSON {"payload":"structured-private-late"\\ndecisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
@@ -540,6 +541,8 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert(
     isDeepStrictEqual([...record.output.lines].sort(), [
       "[redacted credential-bearing line]",
+      "diagnostic: container log end",
+      "diagnostic: container log start",
       "diagnostic: phase timings 1234 ms",
       "stderr: credential [env:CI_RUNNER_FIXTURE_CREDENTIAL]",
       "stdout: progress before the failure",

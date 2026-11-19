@@ -481,8 +481,11 @@ function outputTail() {
         push(`${stream}: ${line}`);
       }
     },
+    // A multi-line diagnostic, such as a container log, keeps its last lines like output.
     diagnostic(text: string) {
-      push(`diagnostic: ${text}`);
+      for (const line of text.split("\n")) {
+        push(`diagnostic: ${line}`);
+      }
     },
     finish(): OutputTail {
       for (const stream of ["stdout", "stderr"] as const) {

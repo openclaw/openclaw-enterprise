@@ -38,13 +38,19 @@ const unverifiableHolderWaitMs = 95_000;
 
 // Acts on the first OpenClaw process that holds the state lock: native setup, or Doctor
 // when maintenance is pending. "stop" sends SIGTERM to the container's PID 1, as the
-// kubelet does when the Pod is deleted. "pause" stops every setup process (SIGSTOP:
-// OpenClaw's launcher and the CLI it starts), so the lock stays held by a live process.
-// "report" only says that the lock is taken, for the test to kill the whole container.
+// kubelet does when the Pod is deleted. "pause" stops (SIGSTOP) the process the lock
+// names, so the lock stays held by a live process: that is native setup's CLI, which
+// retitles itself, not the launcher that started it. It says so only while that process
+// still holds the lock. "report" only says that the lock is taken, for the test to kill
+// the whole container.
 const watcher = String.raw`
 const fs = require("node:fs");
 const [lock, action, limit] = process.argv.slice(1);
 const deadline = Date.now() + Number(limit);
+const holder = () => {
+  try { return JSON.parse(fs.readFileSync(lock, "utf8")).pid; }
+  catch { return undefined; }
+};
 const timer = setInterval(() => {
   if (!fs.existsSync(lock)) {
     if (Date.now() > deadline) {
@@ -53,26 +59,20 @@ const timer = setInterval(() => {
     }
     return;
   }
+  if (action === "pause") {
+    const pid = holder();
+    if (pid === undefined) return;
+    clearInterval(timer);
+    try { process.kill(pid, "SIGSTOP"); } catch {}
+    console.error((holder() === pid ? "SETUP_PAUSED " : "SETUP_RELEASED ") + pid);
+    return;
+  }
   clearInterval(timer);
   if (action === "report") {
     console.error("LOCK_TAKEN");
     return;
   }
-  if (action === "stop") {
-    process.kill(1, "SIGTERM");
-    return;
-  }
-  const paused = [];
-  for (const pid of fs.readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
-    let command;
-    try { command = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").split("\0"); }
-    catch { continue; }
-    if (command.includes("setup") && command.includes("--baseline")) {
-      process.kill(Number(pid), "SIGSTOP");
-      paused.push(pid);
-    }
-  }
-  console.error(paused.length > 0 ? "SETUP_PAUSED " + paused.join(",") : "SETUP_NOT_FOUND");
+  process.kill(1, "SIGTERM");
 }, 1);
 `;
 
@@ -252,9 +252,10 @@ test(
     const claim = await workspaceClaim(t);
     // A live holder in another Pod: its setup process is paused while it holds the lock.
     const holder = await startHarnessPod(t, claim, "pause");
-    await waitForOutput(holder, "setup paused while holding the lock", (output) =>
-      /SETUP_PAUSED \d/.test(output),
+    const paused = await waitForOutput(holder, "setup paused while holding the lock", (output) =>
+      /SETUP_(PAUSED|RELEASED) \d/.test(output),
     );
+    assert.match(paused.output, /SETUP_PAUSED \d/);
     // Mutual exclusion stays: the other Pod's setup refuses the state, and the
     // Harness holds the failure instead of starting Codex.
     const other = await startHarnessPod(t, claim);
