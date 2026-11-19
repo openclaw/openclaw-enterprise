@@ -673,7 +673,12 @@ interface GatewayConfigurationSnapshot {
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
 const PROXY_CODEX_LAUNCH = "explicit-proxy-codex-launch:v1:";
 const OPENSHELL_CODEX_LAUNCH = "openshell-codex-launch:v1:";
-const CODEX_LAUNCH_PREFIXES = [OPENSHELL_CODEX_LAUNCH, PROXY_CODEX_LAUNCH];
+const OPENSHELL_CODEX_OAUTH_LAUNCH = "openshell-codex-oauth-launch:v1:";
+const CODEX_LAUNCH_PREFIXES = [
+  OPENSHELL_CODEX_LAUNCH,
+  OPENSHELL_CODEX_OAUTH_LAUNCH,
+  PROXY_CODEX_LAUNCH,
+];
 
 interface PluginRuntimeSnapshot {
   readonly name: string;
@@ -14907,7 +14912,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         !(record.runtime === null || typeof record.runtime === "string") ||
         (typeof record.runtime === "string" &&
           (record.runtime.length === 0 ||
-            !/^(?:model-provider:v1:[a-f0-9]{64}:)?(?:openshell-codex-launch:v1:)?(?:protected-codex-no-connection-retry:v1|public-github-read:v1:[a-f0-9]{64})?$/.test(
+            !/^(?:model-provider:v1:[a-f0-9]{64}:)?(?:openshell-codex(?:-oauth)?-launch:v1:)?(?:protected-codex-no-connection-retry:v1|public-github-read:v1:[a-f0-9]{64})?$/.test(
               record.runtime,
             )))
       ) {
@@ -15009,13 +15014,24 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ) {
       return undefined;
     }
-    return sandbox.implementation === "openshell" ? OPENSHELL_CODEX_LAUNCH : PROXY_CODEX_LAUNCH;
+    if (sandbox.implementation !== "openshell") {
+      return PROXY_CODEX_LAUNCH;
+    }
+    return revision.executionAdmission.mode === "unprotected" &&
+      revision.harnessAuth.method === "credential_source" &&
+      revision.harnessAuth.loginMode === "chatgptAuthTokens"
+      ? OPENSHELL_CODEX_OAUTH_LAUNCH
+      : OPENSHELL_CODEX_LAUNCH;
   }
 
   private codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch {
     const saved = this.savedRuntimeAdmission(revision);
     const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
-    if (prefix !== undefined && prefix !== this.providerCodexLaunchPrefix(revision, sandbox)) {
+    const expectedPrefix = this.providerCodexLaunchPrefix(revision, sandbox);
+    // Reconciliation of an earlier OAuth revision must retain its original program.
+    const priorOAuthLaunch =
+      prefix === OPENSHELL_CODEX_LAUNCH && expectedPrefix === OPENSHELL_CODEX_OAUTH_LAUNCH;
+    if (prefix !== undefined && prefix !== expectedPrefix && !priorOAuthLaunch) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const auth = revision.harnessAuth;
@@ -15025,6 +15041,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       protected: this.hasProtectedCodexAdmission(revision),
       ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
       ...(sandbox?.implementation === "strands-box" && { strandsBox: true }),
+      ...(prefix === OPENSHELL_CODEX_OAUTH_LAUNCH && { openShellProgram: "oauth" as const }),
       ...(prefix === OPENSHELL_CODEX_LAUNCH && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&

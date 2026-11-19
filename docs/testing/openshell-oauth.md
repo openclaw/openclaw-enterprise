@@ -167,6 +167,14 @@ does not prove plugin execution. The remaining qualification boundaries are belo
 
 ## Receiver fixtures and full-stack qualification
 
+The startup verifier cases in `tests/conformance/codex-native-startup.test.mjs`
+replay synthetic native events for both PAT and OAuth. They require a completed
+answer after the exact OpenShell upgrade refusal and reject failed authentication,
+wrong endpoints, incomplete turns, tool events and nonzero exits. The Compute/Sandbox
+composition case in `tests/integration/sandbox-driver-workspace-admission.test.ts`
+executes the generated child with scripted native output and checks legacy commands.
+Neither suite establishes a real OAuth model response or credential injection.
+
 `tests/integration/device-authorization-api.test.ts` exercises real Fastify,
 OCC, IAM and credential-source storage through login, Agent creation/version
 admission and plugin discovery. The external credential services and provider HTTP

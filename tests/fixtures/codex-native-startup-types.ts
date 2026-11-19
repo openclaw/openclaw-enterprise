@@ -41,6 +41,7 @@ export type StartupExpectation = {
 
 export type StartupOptions = {
   providerPat?: boolean;
+  openShellOAuth?: boolean;
   loginMode?: CredentialSourceLoginMode;
   transportToken?: "raw" | "verifier";
   random?: number;
