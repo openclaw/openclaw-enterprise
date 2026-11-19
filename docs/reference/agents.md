@@ -283,6 +283,18 @@ Docker Compute have limits. To resume the Agent,
 deploy a new version; old versions cannot be restarted. See
 [stop and resume](agents/deployment.md#stop-and-resume).
 
+To avoid stopping a successor:
+
+```sh
+occ --namespace NAMESPACE_ID agent stop AGENT_ID --if-active-revision REVISION_ID
+```
+
+The optional `expectedActiveRevisionId` query requires running intent and the
+exact active, newest, successfully deployed revision under lock. Mismatch: `409`;
+unsupported query: `400`; admitted, not yet stopped: `202`. Never retry unguarded.
+If uncertain, inspect `agent get AGENT_ID` and `agent deployment-status AGENT_ID REVISION_ID`;
+these show state, not which request caused it.
+
 ## Deletion
 
 A bodyless `DELETE /namespaces/:namespaceId/agents/:agentId` requires exact-Agent

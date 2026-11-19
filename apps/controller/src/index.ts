@@ -2036,6 +2036,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
+      operation.operationId !== "stopAgent" &&
       operation.operationId !== "listAgentRevisions" &&
       operation.operationId !== "listAgentAuditEvents" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&

@@ -34325,6 +34325,21 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "rev_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "query",
+            "name": "expectedActiveRevisionId",
+            "required": false,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
                 "value": "ns_123e4567-e89b-42d3-a456-426614174000"
               }
             },
