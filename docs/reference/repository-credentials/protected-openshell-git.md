@@ -193,19 +193,6 @@ permissions and branch rules set its limit. See
 [operator verification and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal)
 for profile-specific allowed/denied requests and the required model-source choice.
 
-The prepared installation Git Provider can render a repository network access
-list for a future deployment path. For each canonical `owner/name`, read access
-adds upload-pack discovery and RPC rules. Write access adds receive-pack
-discovery and RPC rules. The profile uses exact `.git` paths, requires the
-matching `service` query for discovery, and contains no REST or GraphQL API
-endpoints. Each distinct access list has its own profile identity. An explicit
-empty list or a list with duplicate repositories is refused.
-
-The current deployment path does not select this profile mode. Before it can,
-the deployed Agent revision must bind the access list, and the effective
-OpenShell policy must pass inspection, enforcement and bypass checks against
-the Sandbox and Git origin.
-
 ## Use the admitted repository
 
 Process-scoped `safe.directory` permits the Sandbox's root-owned mount without trusting
