@@ -66,7 +66,10 @@ async function supervisor(t: TestContext) {
   const writer = new PassThrough();
   const token = randomUUID();
   const frames: Frame[] = [];
-  writer.on("data", (data) => frames.push(...data.toString().trim().split("\n").map(parseFrame)));
+  writer.on("data", (data: unknown) => {
+    assert.ok(Buffer.isBuffer(data));
+    frames.push(...data.toString().trim().split("\n").map(parseFrame));
+  });
   const gateway = createTcpServer((socket) => {
     gateway.connections++;
     socket.destroy();
@@ -240,17 +243,23 @@ test(
     assert.deepEqual(harness.frames.at(-1), { id: racing, type: "close" });
     assert.ok(harness.server.listening);
     assert.equal(harness.gateway.connections, 0);
-    const received = once(clients[0], "data");
+    const firstClient = clients[0];
+    const firstAdmitted = admitted[0];
+    assert.ok(firstClient);
+    assert.ok(firstAdmitted);
+    const received: Promise<unknown[]> = once(firstClient, "data");
     harness.reader.write(
       JSON.stringify({
-        id: admitted[0].id,
+        id: firstAdmitted.id,
         type: "data",
         data: Buffer.from("still connected").toString("base64"),
       }) + "\n",
     );
-    assert.equal((await received)[0].toString(), "still connected");
+    const [chunk] = await received;
+    assert.ok(Buffer.isBuffer(chunk));
+    assert.equal(chunk.toString(), "still connected");
     // Duplicate live IDs remain protocol corruption, even when the table is full.
-    harness.reader.write(JSON.stringify({ id: admitted[0].id, type: "open" }) + "\n");
+    harness.reader.write(JSON.stringify({ id: firstAdmitted.id, type: "open" }) + "\n");
     assert.equal(harness.server.listening, false);
   },
 );
@@ -324,8 +333,10 @@ test(
     assert.equal(sockets.length, MAX_CHANNELS);
     const racing = randomUUID();
     send({ id: racing, type: "open" });
+    const firstId = ids[0];
+    assert.ok(firstId);
     send({
-      id: ids[0],
+      id: firstId,
       type: "data",
       data: Buffer.from("native survives").toString("base64"),
     });
@@ -334,7 +345,7 @@ test(
         frames
           .filter(
             (frame): frame is Extract<Frame, { type: "data" }> =>
-              frame.id === ids[0] && frame.type === "data",
+              frame.id === firstId && frame.type === "data",
           )
           .map((frame) => Buffer.from(frame.data, "base64")),
       ).toString();
@@ -520,7 +531,8 @@ test(
     const id = randomUUID();
     const marker = Buffer.from("new authenticated connection survives prior disconnect");
     const received = new Promise<Buffer>((resolve) =>
-      pipe.on("data", (frame) => {
+      pipe.on("data", (frame: unknown) => {
+        assert.ok(Buffer.isBuffer(frame));
         for (const line of frame.toString().trim().split("\n")) {
           const message = parseFrame(line);
           if (message.id === id && message.type === "data") {
@@ -600,7 +612,10 @@ test(
 test("a terminal frame flushes queued TCP output", { timeout: 10000 }, async (t) => {
   const { client, socket } = await tcpPair(t);
   const chunks: Buffer[] = [];
-  client.on("data", (chunk) => chunks.push(chunk));
+  client.on("data", (chunk) => {
+    assert.ok(Buffer.isBuffer(chunk));
+    chunks.push(chunk);
+  });
   const end = once(client, "end");
   const body = Buffer.alloc(CHUNK, 97);
   // Corking leaves writes in the real socket queue when the terminal frame arrives.
@@ -664,10 +679,11 @@ test(
     );
     t.after(() => inner.kill());
     let result = "";
-    inner.stderr.setEncoding("utf8").on("data", (chunk) => {
+    inner.stderr.setEncoding("utf8").on("data", (chunk: unknown) => {
+      assert.ok(typeof chunk === "string");
       result += chunk;
     });
-    const [code] = await once(inner, "exit");
+    const [code]: unknown[] = await once(inner, "exit");
     assert.equal(code, 0, result);
     assert.ok(
       result.includes("digest=" + createHash("sha256").update(payload).digest("hex")),
