@@ -32,7 +32,7 @@ func installationUpgradeCommand() *cobra.Command {
 		var profile, evidence string
 		var autoApprove bool
 		expert := action != "status"
-		originalEvidence := action == "status" || action == "resume" || action == "cleanup-preflight"
+		originalEvidence := action == "status" || action == "resume" || action == "cleanup-preflight" || action == "migration-apply"
 		use := name
 		if originalEvidence {
 			use += " RUN"
@@ -107,7 +107,7 @@ func installationUpgradeCommand() *cobra.Command {
 		if !originalEvidence && action != "plan" {
 			cmd.Flags().StringVar(&evidence, "evidence-dir", "", "New evidence directory (default: private directory beside the profile)")
 		}
-		if action == "apply" || action == "resume" {
+		if action == "apply" || action == "resume" || action == "migration-apply" {
 			cmd.Flags().BoolVar(&autoApprove, "auto-approve", false, "Approve this operation without the interactive prompt")
 		}
 		return cmd
@@ -120,8 +120,11 @@ func installationUpgradeCommand() *cobra.Command {
 		operation("resume", "resume", "Resume the original upgrade with its recorded evidence"),
 		operation("cleanup-preflight", "cleanup-preflight", "Reconcile interrupted preflight cleanup"),
 	)
-	migration := commandGroup("migration", "Check the selected controller image against installed database history")
-	migration.AddCommand(operation("check", "migration-check", "Check migration history before a production change"))
+	migration := commandGroup("migration", "Check or apply production database migrations")
+	migration.AddCommand(
+		operation("check", "migration-check", "Check migration history before a production change"),
+		operation("apply", "migration-apply", "Apply and verify migrations after the separate database handoff"),
+	)
 	upgrade.AddCommand(migration)
 	config := commandGroup("config", "Find the chart-owned operation for protected Installation settings")
 	for _, action := range []string{"apply", "rollback"} {

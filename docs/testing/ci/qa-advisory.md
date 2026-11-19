@@ -330,7 +330,7 @@ export OCC_TEST_QA_CONTROLLER_IMAGE="$CONTROLLER_IMAGE"
 export OCC_TEST_QA_RUNTIME_IMAGE="$RUNTIME_IMAGE"
 ```
 
-Reuse the builder's intermediate cache, including Node compilation, with consistent
+Reuse the builder's intermediate cache with consistent
 platform and build arguments. Loading final images does not restore intermediate
 cache. For portability, use Docker's [cache export/import options](https://docs.docker.com/build/cache/backends/);
 `mode=max` includes intermediate stages. Hosted CI cache is separate. These commands

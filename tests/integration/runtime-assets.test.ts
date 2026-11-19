@@ -327,21 +327,9 @@ packages:
   );
   assert.equal(provenance.codex.version, "0.158.0");
   assert.equal(Object.hasOwn(provenance, "downloadClients"), false);
-  const nodeProvenance = join(directory, "node-provenance.json");
-  await writeFile(
-    nodeProvenance,
-    JSON.stringify({
-      architecture: process.arch,
-      platform: process.platform,
-      version: process.versions.node,
-      sha256: createHash("sha256")
-        .update(await readFile(process.execPath))
-        .digest("hex"),
-    }),
-  );
   const unselected = spawnSync(
     process.execPath,
-    ["scripts/build-runtime-assets.ts", "inventory", sourceAlias, output, nodeProvenance],
+    ["scripts/build-runtime-assets.ts", "inventory", sourceAlias, output],
     { encoding: "utf8" },
   );
   assert.notEqual(unselected.status, 0);
