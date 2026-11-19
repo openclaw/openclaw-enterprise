@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-19
-last_updated_session: authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b
+last_updated_session: authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676
 ---
 
 # Agent Native Admin UI Flow
@@ -207,17 +207,17 @@ The `onRequest` hook blocks ordinary controller routes on Agent subdomains
 except the Console host, even when native access is disabled.
 
 OCC authenticates the session or handle and resolves the IAM identity. Before
-lookup it requires `agent-`, exactly 32 lowercase hex characters, a dot and the
-configured domain. It scans Installation Agent references and rejects unknown,
-deleted or ambiguous hosts. OCC selects `admin` or `chat` and checks the version
-and Configuration.
+lookup it requires the host `agent-<32 lowercase hex>.<configured domain>`. It
+scans Installation Agent references and rejects unknown, deleted or ambiguous
+hosts. OCC selects `admin` or `chat` and checks the version and Configuration.
 
 Attributable IAM denials get one audit attempt, even after the five-second
 admission wait, disconnect or shutdown. Timely denials await that append before
-returning `403`. Classified dependency failures, append failures and admission
-timeouts return `503`. So does a deployment replacing or activating the version
-for an authorized caller (`agent_transition`), so the Agent UI keeps reconnecting.
-Stopped and unsupported Agents remain `403`.
+returning `403`. Classified dependency failures, append failures, admission
+timeouts and, for an authorized caller, a deployment replacing or activating the
+version (`agent_transition`) return `503`, so the Agent UI keeps reconnecting.
+Stopped and unsupported Agents remain `403`; an authorized page load gets **Agent
+unavailable**.
 For HTTP admission refusals, `http.completed` records a fixed `nativeAdmissionReason`,
 without URLs, cookies, identities or error text. Early guards and post-admission
 failures may omit it.
@@ -232,8 +232,7 @@ Status and proxy checks reuse one Better Auth lookup for identity, expiry and
 attribution. Each WebSocket lease checks the original session, selected mode and Agent again. After handling
 stopped, replacing or unsupported Agents, admission rechecks both Compute owner
 fields. A mismatch returns HTTP `403` or closes an upgrading socket without an
-HTTP response, before gateway-key lookup or connection. A failed lease closes
-both sockets.
+HTTP response, before gateway-key lookup. A failed lease closes both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
@@ -330,6 +329,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 06:03: Add the **Agent unavailable** page. (authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676 - 4c2da280f8ee1c143ac1d34c63b6e7fac6a3ac83)
 
 - 2026-11-19 01:23: A deployment in progress answers authorized Agent-host HTTP with `503`. (authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b - 50ba6e3c180341cddc63528b98c21da57508ad2b)
 
