@@ -19,6 +19,7 @@ import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
 
 import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+import { REPOSITORY_CLEANUP_KEY_SEPARATOR } from "../repository-withdrawal.ts";
 import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
@@ -5624,6 +5625,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         list: async () => {
           await this.requireInitialized(context);
+          // CASE skips revision-specific regex compilation for ordinary lifecycle work.
           const found = rows(
             (
               await client.query(
@@ -5631,7 +5633,10 @@ export class PostgresPlatformState implements PlatformStateStore {
                         namespace_target, agent_target
                  FROM occ.controller_work
                  WHERE work_kind = 'lifecycle'
-                   AND NOT ${repositoryCleanupSql("controller_work")}
+                   AND CASE
+                     WHEN strpos(idempotency_key, '${REPOSITORY_CLEANUP_KEY_SEPARATOR}') = 0 THEN TRUE
+                     ELSE NOT ${repositoryCleanupSql("controller_work")}
+                   END
                  ORDER BY created_at, idempotency_key`,
               )
             ).rows,
