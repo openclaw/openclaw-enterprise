@@ -476,6 +476,21 @@ reports `succeeded` or `failed`. If status access is denied, ask an Installation
 administrator for `read` on that `agent_revision`. After success, verify workspace
 access and a model response below.
 
+### Diagnose a failed deployment
+
+Keep the original revision ID from deployment status. In the control plane's
+worker container logs, find `worker.deployment-failed` for that `revisionId`.
+The remote log collector omits this event. Its `code` reports the terminal
+failure. The optional `compute_prepare` step identifies failed Compute
+preparation, and dependency failures can include an approved RPC diagnostic.
+
+Match any `worker.compute-prepare-failed` record by Namespace, Agent, revision,
+and `workId`. If auditing is enabled, use the matching `attemptId` because a
+refunded attempt can reuse its number. `computeCleanupFailed: true` records a
+failed Compute cleanup. If the field is absent, verify cleanup separately.
+Keep the saved deployment status as the source of truth when the worker loses
+the commit acknowledgment or the log is unavailable.
+
 ## Verify workspace access
 
 After deployment, complete [Verify routing and file access](workspace-routing.md#verify-routing-and-file-access):

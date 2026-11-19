@@ -65,6 +65,7 @@ const ALLOWED_FIELDS = new Set([
   "cause",
   "cleanupCause",
   "code",
+  "computeCleanupFailed",
   "computeDriverId",
   "deployPasses",
   "dependency",
@@ -346,6 +347,26 @@ function safeScalar(key: string, value: unknown): string | number | boolean | un
   return undefined;
 }
 
+/** Project only the RPC details allowed in a terminal deployment receipt. */
+export function deploymentFailureRequestLogFields(
+  fields: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, string | number>> {
+  const { method, grpcStatus, validationCategory } = fields;
+  if (method !== "CreateSandbox" && method !== "UpdateConfig") {
+    return {};
+  }
+  const status = safeScalar("grpcStatus", grpcStatus);
+  if (typeof status !== "number") {
+    return {};
+  }
+  const category = safeScalar("validationCategory", validationCategory);
+  return {
+    method,
+    grpcStatus: status,
+    ...(typeof category === "string" ? { validationCategory: category } : {}),
+  };
+}
+
 // One log record carries at most this many account identifiers.
 export const MAX_LOGGED_IDENTIFIERS = 100;
 
@@ -425,7 +446,11 @@ function sanitizedEvent(
   const rawEvent = event.event;
   const eventName =
     typeof rawEvent === "string" ? (safeString(rawEvent) ?? "occ.event") : "occ.event";
-  const result: Record<string, unknown> = { event: eventName };
+  const deploymentFailed = eventName === "worker.deployment-failed";
+  const result: Record<string, unknown> = {
+    event: eventName,
+    ...(deploymentFailed ? deploymentFailureRequestLogFields(event) : {}),
+  };
   for (const [key, value] of Object.entries(event)) {
     if (CODE_FIELDS.has(key)) {
       const code = safeCode(value);
@@ -480,6 +505,18 @@ function sanitizedEvent(
     if (
       key === "candidatePreparationReached" &&
       (eventName !== "worker.compute-prepare-failed" || typeof value !== "boolean")
+    ) {
+      continue;
+    }
+    if (
+      key === "computeCleanupFailed" &&
+      (eventName !== "worker.deployment-failed" || value !== true)
+    ) {
+      continue;
+    }
+    if (
+      deploymentFailed &&
+      (key === "method" || key === "grpcStatus" || key === "validationCategory")
     ) {
       continue;
     }

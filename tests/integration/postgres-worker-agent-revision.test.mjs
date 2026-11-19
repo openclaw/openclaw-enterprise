@@ -13,6 +13,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
+import { withFailedCleanup } from "../helpers/compute-cleanup-failure.ts";
 import {
   ActivationFailedError,
   ActivationPendingError,
@@ -894,6 +895,10 @@ test(
     }));
     const calls = [];
     const reflected = [];
+    let gatewayAtAdmissionLimit = true;
+    const recoveredCase = cases[0];
+    const lostCommitCase = { ...cases[1], name: "lost-commit-reply" };
+    cases.push(lostCommitCase);
     const server = new grpc.Server();
     let client;
     let fixture;
@@ -908,6 +913,13 @@ test(
     server.addService(OpenShell.service, {
       CreateSandbox(call, callback) {
         const scenario = cases.find(({ name }) => name === call.request.name);
+        if (scenario === recoveredCase && gatewayAtAdmissionLimit) {
+          callback({
+            code: grpc.status.RESOURCE_EXHAUSTED,
+            details: "caller has reached the durable mutation admission limit",
+          });
+          return;
+        }
         calls.push(scenario.name);
         reflected.push(call.request.annotations["fixture-reflection"]);
         // Reflect request material over the real wire. The production client, worker and
@@ -938,6 +950,32 @@ test(
       const { owner, candidate } = await fixture.admitInitialRevision(scenario.name);
       admitted.set(candidate.id, { ...scenario, owner, candidate });
     }
+    const lostCommitWork = [...admitted.values()].find(({ name }) => name === lostCommitCase.name);
+    const pool = fixture.workerPool;
+    let lostCommitReplies = 0;
+    // Commit that candidate's real failure but discard the acknowledgement at the client boundary.
+    const poolWithLostCommitReply = {
+      async connect() {
+        const connection = await pool.connect();
+        let terminalWrite = false;
+        return {
+          async query(sql, values) {
+            const result = await connection.query(sql, values);
+            terminalWrite ||=
+              values?.[0] === lostCommitWork.candidate.idempotencyKey &&
+              result.rows[0]?.failed === true;
+            if (sql === "COMMIT" && terminalWrite) {
+              lostCommitReplies += 1;
+              throw new Error("Controlled loss of terminal COMMIT acknowledgement");
+            }
+            return result;
+          },
+          release: (discard) => connection.release(discard),
+        };
+      },
+      query: (sql, values) => pool.query(sql, values),
+      end: () => pool.end(),
+    };
     const events = [];
     const lines = [];
     const requestFailures = [];
@@ -986,29 +1024,92 @@ test(
                 );
               }
             } catch (error) {
+              if (error instanceof TransientDependencyError) {
+                throw error;
+              }
               requestFailures.push(error);
-              throw error;
+              throw scenario.name === recoveredCase.name ? withFailedCleanup(error) : error;
             }
           }
           return fixture.compute.prepareRevision(revision);
         },
+        describePrepareRevisionFailure(error) {
+          return {
+            code: error instanceof TransientDependencyError ? error.code : "DEPENDENCY_UNAVAILABLE",
+            stage: "sandbox_provision",
+          };
+        },
       },
       {
+        pool: poolWithLostCommitReply,
         emit(event) {
           events.push(event);
           emit(event);
         },
       },
     );
-    for (const { owner, candidate, method, status, category } of admitted.values()) {
+    const recovering = [...admitted.values()].find(({ name }) => name === recoveredCase.name);
+    await completion(
+      events,
+      "the gateway admission limit's pending pass",
+      (event) =>
+        event.event === "worker.completed" &&
+        event.workId === recovering.candidate.idempotencyKey &&
+        event.outcome === "pending" &&
+        event.code === "SANDBOX_ADMISSION_LIMIT_REACHED",
+    );
+    const pendingPreparation = lines.find(
+      (entry) =>
+        entry.event === "worker.compute-prepare-failed" &&
+        entry.workId === recovering.candidate.idempotencyKey &&
+        entry.code === "SANDBOX_ADMISSION_LIMIT_REACHED",
+    );
+    assert.ok(pendingPreparation);
+    assert.equal(
+      (await fixture.deploymentStatus(recovering.owner, recovering.candidate)).status,
+      "running",
+    );
+    assert.ok(
+      !events.some(
+        (event) =>
+          event.event === "worker.deployment-failed" &&
+          event.workId === recovering.candidate.idempotencyKey,
+      ),
+    );
+    gatewayAtAdmissionLimit = false;
+
+    for (const { name, owner, candidate, method, status, category } of admitted.values()) {
       await fixture.work(candidate, "failed_permanent");
+      if (name === lostCommitCase.name) {
+        await completion(
+          events,
+          "the unknown terminal commit outcome",
+          (event) => event.event === "worker.error" && event.code === "COMMIT_OUTCOME_UNKNOWN",
+        );
+        assert.equal(lostCommitReplies, 1);
+        assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+        assert.ok(
+          !events.some(
+            (event) =>
+              event.event === "worker.deployment-failed" &&
+              event.workId === candidate.idempotencyKey,
+          ),
+        );
+        continue;
+      }
       await completion(
         events,
         "the gRPC failure's completion",
-        (event) => event.event === "worker.completed" && event.revisionId === candidate.id,
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === candidate.id &&
+          event.outcome === "retry",
       );
       const [line] = lines.filter(
-        (entry) => entry.event === "worker.completed" && entry.revisionId === candidate.id,
+        (entry) =>
+          entry.event === "worker.completed" &&
+          entry.revisionId === candidate.id &&
+          entry.outcome === "retry",
       );
       assert.ok(line);
       assert.deepEqual(
@@ -1024,6 +1125,53 @@ test(
       assert.equal(line.outcome, "retry");
       assert.equal(line.code, "DEPENDENCY_UNAVAILABLE");
       assert.equal(line.cause, "DependencyUnavailableError");
+      const receipts = lines.filter(
+        (entry) =>
+          entry.event === "worker.deployment-failed" && entry.workId === candidate.idempotencyKey,
+      );
+      assert.equal(receipts.length, 1);
+      const { severity, time, service, attemptId, ...failure } = receipts[0];
+      assert.equal(severity, "ERROR");
+      assert.equal(service, "occ-worker");
+      assert.equal(typeof time, "string");
+      assert.match(attemptId, /^aud_[0-9a-f-]{36}$/u);
+      const terminalPreparation = lines.find(
+        (entry) =>
+          entry.event === "worker.compute-prepare-failed" &&
+          entry.workId === candidate.idempotencyKey &&
+          entry.code === "DEPENDENCY_UNAVAILABLE",
+      );
+      assert.equal(attemptId, terminalPreparation?.attemptId);
+      if (name === recoveredCase.name) {
+        // Deferral returned the same attempt count to the pool. The audit identity still
+        // distinguishes the actual terminal claim from its earlier pending preparation.
+        assert.equal(failure.attempt, pendingPreparation.attempt);
+        assert.match(pendingPreparation.attemptId, /^aud_[0-9a-f-]{36}$/u);
+        assert.notEqual(attemptId, pendingPreparation.attemptId);
+      }
+      const expectedFailure = {
+        event: "worker.deployment-failed",
+        workId: candidate.idempotencyKey,
+        attempt: 1,
+        operation: "agent_revision.reconcile",
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        revisionId: candidate.id,
+        outcome: "failed_permanent",
+        code: "DEPENDENCY_UNAVAILABLE",
+        step: "compute_prepare",
+        ...(method === "CreateSandbox"
+          ? { method, grpcStatus: status, validationCategory: category }
+          : {}),
+        ...(name === recoveredCase.name ? { computeCleanupFailed: true } : {}),
+      };
+      assert.deepEqual(failure, expectedFailure);
+      // The raw emitter receives the same closed receipt before the JSON logger can filter it.
+      const rawReceipts = events.filter(
+        (event) =>
+          event.event === "worker.deployment-failed" && event.workId === candidate.idempotencyKey,
+      );
+      assert.deepEqual(rawReceipts, [{ ...expectedFailure, attemptId }]);
       assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
       assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
     }
@@ -1057,6 +1205,163 @@ test(
         assert.equal(output.includes(`"${field}":`), false);
       }
     }
+  },
+);
+
+test(
+  "the revision worker logs a failure when an active revision change exhausts retries",
+  requiresPostgres,
+  async (context) => {
+    for (const { phase, maxAttempts } of [
+      { phase: "preparation", maxAttempts: 1 },
+      { phase: "activation", maxAttempts: 1 },
+      { phase: "activation", maxAttempts: 2 },
+    ]) {
+      const fixture = await setup(context, { maxAttempts });
+      const { owner, candidate: previous } = await fixture.admitInitialRevision(
+        `pointer-race-${phase}-${maxAttempts}`,
+      );
+      const events = [];
+      let selectionChanged = false;
+      async function clearSelection(expected) {
+        // A separate PostgreSQL transaction changes the selection during the Driver call.
+        // The worker must discover that change when it tries to finish its own attempt.
+        const agent = await fixture.state.transact(async (unit) => {
+          await unit.namespaces.lockNamespace(fixture.namespace.id);
+          await unit.agents.lockAgent(fixture.namespace.id, owner.id);
+          return unit.agents.compareAndClearActiveRevision(
+            fixture.namespace.id,
+            owner.id,
+            expected,
+          );
+        });
+        assert.ok(agent, "the concurrent transaction must change the expected selection");
+        selectionChanged = true;
+      }
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async prepareRevision(revision, deploymentContext) {
+            if (revision.revision === 2 && phase === "preparation" && !selectionChanged) {
+              await clearSelection(previous.id);
+            }
+            return fixture.compute.prepareRevision(revision, deploymentContext);
+          },
+          async activateRevision(revision) {
+            if (revision.revision === 2 && phase === "activation" && !selectionChanged) {
+              await clearSelection(revision.id);
+            }
+          },
+        },
+        { emit: (event) => events.push(event) },
+      );
+      await fixture.work(previous, "succeeded");
+      const candidate = await fixture.revision(owner, 2);
+      const exhausted = maxAttempts === 1;
+      await fixture.work(candidate, exhausted ? "failed_permanent" : "succeeded");
+      await completion(
+        events,
+        "the candidate's final worker pass",
+        (event) =>
+          event.event === "worker.completed" &&
+          event.workId === candidate.idempotencyKey &&
+          event.outcome === (exhausted ? "retry" : "success"),
+      );
+      await fixture.stop();
+      assert.equal(selectionChanged, true);
+      const raceEvidence = await fixture.observerPool.query(
+        `SELECT details->>'attemptId' AS attempt_id, details->>'workState' AS work_state
+         FROM occ.audit_events
+         WHERE namespace_id = $1 AND resource_id = $2 AND action = 'reconcile'
+           AND details->>'workId' = $3 AND details->>'reasonCode' = 'ACTIVE_REVISION_CHANGED'`,
+        [fixture.namespace.id, candidate.id, candidate.idempotencyKey],
+      );
+      assert.equal(raceEvidence.rowCount, 1);
+      const { attempt_id: attemptId, work_state: workState } = raceEvidence.rows[0];
+      assert.match(attemptId, /^aud_[0-9a-f-]{36}$/u);
+      assert.equal(workState, exhausted ? "failed_permanent" : "queued");
+      const receipts = events.filter(
+        ({ event, workId }) =>
+          event === "worker.deployment-failed" && workId === candidate.idempotencyKey,
+      );
+      if (exhausted) {
+        assert.equal(
+          (await fixture.workResult(candidate)).rows[0].reason_code,
+          "ACTIVE_REVISION_CHANGED",
+        );
+        assert.deepEqual(receipts, [
+          {
+            event: "worker.deployment-failed",
+            workId: candidate.idempotencyKey,
+            attempt: 1,
+            operation: "agent_revision.reconcile",
+            namespaceId: fixture.namespace.id,
+            agentId: owner.id,
+            revisionId: candidate.id,
+            attemptId,
+            outcome: "failed_permanent",
+            code: "ACTIVE_REVISION_CHANGED",
+          },
+        ]);
+      } else {
+        assert.deepEqual(receipts, []);
+      }
+    }
+  },
+);
+
+test(
+  "the revision worker logs a failed second Compute preparation after repository material repair",
+  requiresPostgres,
+  async (context) => {
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver, maxAttempts: 1 });
+    const { candidate } = await fixture.admitInitialRevision("failed-repair-preparation", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    const sessions = [];
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, deploymentContext) {
+          const [binding] = deploymentContext?.repositoryCredentials ?? [];
+          assert.ok(binding, "the worker must deliver repository material to each preparation");
+          sessions.push(binding.sessionId);
+          if (sessions.length === 2) {
+            throw new DependencyUnavailableError("The second preparation failed.");
+          }
+          // The first preparation asks the worker to replace material before activation.
+          return {
+            ...(await fixture.compute.prepareRevision(revision, deploymentContext)),
+            ready: false,
+            repositoryCredentialMaterialMissing: [
+              { repositoryRef: binding.repositoryRef, sessionId: binding.sessionId },
+            ],
+          };
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    await fixture.work(candidate, "failed_permanent");
+    await completion(
+      events,
+      "the failed preparation's worker pass",
+      ({ event, workId }) => event === "worker.completed" && workId === candidate.idempotencyKey,
+    );
+    assert.equal(sessions.length, 2);
+    assert.notEqual(sessions[0], sessions[1]);
+    assert.equal(
+      (await fixture.workResult(candidate)).rows[0].reason_code,
+      "DEPENDENCY_UNAVAILABLE",
+    );
+    const receipts = events.filter(
+      ({ event, workId }) =>
+        event === "worker.deployment-failed" && workId === candidate.idempotencyKey,
+    );
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].step, "compute_prepare");
+    assert.equal(receipts[0].code, "DEPENDENCY_UNAVAILABLE");
   },
 );
 
@@ -1108,7 +1413,9 @@ test(
       (event) =>
         event.event === "worker.compute-prepare-failed" && event.revisionId === candidate.id,
     );
-    assert.deepEqual(diagnostic, {
+    const { attemptId, ...preparationFields } = diagnostic;
+    assert.match(attemptId, /^aud_[0-9a-f-]{36}$/u);
+    assert.deepEqual(preparationFields, {
       event: "worker.compute-prepare-failed",
       workId: candidate.idempotencyKey,
       attempt: 1,
