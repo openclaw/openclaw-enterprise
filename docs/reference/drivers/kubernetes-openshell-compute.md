@@ -31,7 +31,7 @@ drivers:
   sandbox:
     id: openshell-sandbox
     configuration:
-      # Retain the existing process/network policy and Kubernetes runtime class.
+      # Retain the existing process and network policy.
       integrationMode: service
       gateway: {}
       kubernetes:
@@ -137,17 +137,19 @@ its temporary startup exposure if the previous revision withdrew it. The route
 uses bearer-passthrough authorization and is withdrawn again after enrollment.
 Codex keeps its exposure as the app-server transport.
 
-The image bootstrap creates retained directories under `/sandbox/oce`. Each
-revision gets `revisions/<revision-hash>/home`. An atomic symlink at
-`/sandbox/.openclaw-runtime` selects that revision. Home-relative session and
-workspace paths link to retained directories. `OPENCLAW_NODE_STATE_DIR` points
-directly to its retained `state` directory so atomic writes do not replace a
-symlink. Conflicting paths and symlink ancestors fail bootstrap. Old revision
-homes remain until Agent deletion; automatic pruning is deferred.
+The image bootstrap uses `/opt/oce/managed/home` on the workload filesystem for
+credentials, configuration, and other private runtime state. Replacing the workload
+starts with a fresh home. The bootstrap links workspace files, generated images,
+and Codex sessions to their retained directories in `/sandbox/oce`. It points
+`OPENCLAW_NODE_STATE_DIR` directly to the retained state directory so atomic writes
+keep working. The bootstrap refuses conflicting paths, symlink ancestors, and
+retained private homes from earlier builds. OpenClaw's Node compile cache lives
+on the workload filesystem outside the home because Node initializes it before
+bootstrap runs.
 
-OpenClaw's Node compile cache uses `/sandbox/oce/node-compile-cache` directly.
-Node creates the cache before bootstrap runs; placing it beneath the runtime
-selector would prevent bootstrap from creating that symlink.
+The dedicated OpenClaw worker also checks the real ancestry of its retained node
+state. Its PVC mount must meet OpenClaw's state-directory permissions, including
+the check for a group- or world-writable ancestor without sticky protection.
 
 Private initial-file delivery still uses authenticated `ExecSandbox` stdin.
 The initializer reads its Agent-owned setup Secret in OCE's namespace and writes
@@ -162,8 +164,8 @@ See the [provisioning flow](../../flows/openshell-managed-workload.md).
   are refused. Bootstrap requires writable `/sandbox`; read-only policy paths
   within that root are refused. The inherited `sandboxDataMount` fields describe a logical
   workspace path; no mount using them is submitted to OpenShell.
-- Changing the Harness type, static policy, non-Git middleware bindings, resource requests
-  or runtime class through workload replacement is refused.
+- Changing the Harness type, static policy, non-Git middleware bindings, or resource requests
+  through workload replacement is refused.
 - Agents can enable or disable Git and change repository selections and resolved
   permissions between revisions. Cleanup closes the old authorization and removes
   its Provider and middleware before preparing the successor. Enabling Git requires

@@ -270,8 +270,9 @@ export function selectQaMatrix(env = process.env) {
       pluginInstall ||
       linearRead ||
       harnessOverrides ||
-      gitModel,
-    providerReplacement,
+      gitModel ||
+      providerReplacement ||
+      gitReplacement,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {

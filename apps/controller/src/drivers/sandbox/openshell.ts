@@ -611,6 +611,7 @@ function environment(
   providerEnvironment: ReadonlySet<string> = new Set(),
   workspacePath = "/sandbox/enterprise",
   workspaceMountPaths: ReadonlyMap<string, string> = new Map(),
+  harnessHome = OPENSHELL_HOME,
 ): Record<string, string> {
   const result: Record<string, string> = {};
   for (const entry of requirements.environment) {
@@ -628,9 +629,9 @@ function environment(
       entry.name === "OCE_CODEX_CHATGPT_ACCOUNT"
         ? entry.value
         : (workspaceMountPaths.get(entry.value) ??
-          entry.value.replaceAll(/\/home\/node(\/|$)/g, `${OPENSHELL_HOME}$1`));
+          entry.value.replaceAll(/\/home\/node(\/|$)/g, `${harnessHome}$1`));
   }
-  result.HOME = OPENSHELL_HOME;
+  result.HOME = harnessHome;
   result.TMPDIR = OPENSHELL_TEMPORARY;
   result.OPENCLAW_WORKSPACE_DIR = workspacePath;
   return result;
@@ -2342,6 +2343,7 @@ function sandboxSpec(
 }
 
 interface OpenShellHarnessLayout {
+  readonly harnessHome?: string;
   readonly templateLabels?: Readonly<Record<string, string>>;
   readonly workspacePath: string;
   readonly workspaceMountPaths?: ReadonlyMap<string, string>;
@@ -2386,6 +2388,7 @@ function sandboxLaunchSpec(
         providerEnvironment,
         layout.workspacePath,
         layout.workspaceMountPaths,
+        layout.harnessHome,
       ),
       ...layout.environment,
       ...(plugin && { [managedCredentialEnvironment]: plugin.environment }),
@@ -2922,7 +2925,7 @@ export function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | u
   };
 }
 
-function verifyRuntimeProvider(
+export function verifyRuntimeProvider(
   provider: OpenShellProviderResponse,
   name: string,
   profileId: string,
@@ -3077,7 +3080,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
   readonly supportsHarnessExecutionMode;
   // environment() sets HOME to this for every Sandbox it creates.
-  readonly harnessHome = OPENSHELL_HOME;
+  readonly harnessHome: string = OPENSHELL_HOME;
   static readonly configurationContributions = configurationContributions;
   readonly networkPolicy = Object.freeze({ wildcards: true, portRanges: true, live: true });
   protected readonly options: OpenShellSandboxDriverOptions;
@@ -4307,8 +4310,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           sandbox: sandbox.resourceName,
           command: ["/usr/local/bin/node", "-e", WORKSPACE_SETUP_EXEC],
           environment: {
-            HOME: OPENSHELL_HOME,
-            OPENCLAW_STATE_DIR: `${OPENSHELL_HOME}/.openclaw`,
+            HOME: this.harnessHome,
+            OPENCLAW_STATE_DIR: `${this.harnessHome}/.openclaw`,
             OPENCLAW_WORKSPACE_DIR: this.workspaceInitializationPath(context),
             OPENCLAW_EXECUTABLE: "/app/openclaw.mjs",
           },

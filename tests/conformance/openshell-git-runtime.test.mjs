@@ -689,12 +689,26 @@ async function observedGitRoute(
     assert.ok(await f.lookup());
     assert.equal(f.calls.rotate, 1, "recovery never replays the credential write");
 
-    // The OCE wrapper can also restart only its Harness child in the same supervisor.
+    // Hold an already acknowledged request across a child restart in the same supervisor.
+    const reading = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    const owns = f.store.owns.bind(f.store);
+    f.store.owns = async (...args) => {
+      f.store.owns = owns;
+      const result = await owns(...args);
+      reading.resolve();
+      await resume.promise;
+      return result;
+    };
+    const staleRequest = f.lookup();
+    await reading.promise;
     startupId = randomUUID();
     await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe);
     assert.equal(f.runtime.previewReleased(revision.id), false);
     await f.reconcile();
     await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    resume.resolve();
+    assert.equal(await staleRequest, undefined, "the previous launcher cannot borrow the new ACK");
     assert.ok(await f.lookup());
 
     if (managed) {

@@ -89,6 +89,7 @@ export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Obj
     AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
   observed: openShellObserved,
   installed: `${openShellObserved} AND observed->>'credentialState'='active' AND write_pending IS NULL
+    AND (NOT (observed ? 'enrollment') OR observed#>>'{enrollment,release}'='acknowledged')
     AND desired->>'credentialState'='active'
     AND observed->>'providerId'=desired->>'providerId'
     AND observed->>'providerResourceVersion'=desired->>'resourceVersion'

@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { waitForRevisionPass, advanceCleanupRetries } from "./postgres-worker-revision-support.mjs";
 import { deferred } from "./deferred.ts";
@@ -173,7 +172,7 @@ export async function repositorySetJourney(
     | "recipient"
     | "approval"
     | "cold-worker"
-    | "expired-original-pods"
+    | "expired-original-execution"
     | "expired-replaced-supervisor",
 ) {
   await repositoryGitJourney(
@@ -198,14 +197,14 @@ async function repositoryGitJourney(
     | "recipient"
     | "approval"
     | "cold-worker"
-    | "expired-original-pods"
+    | "expired-original-execution"
     | "expired-replaced-supervisor",
   startupOptions?: NarrowStartupOptions,
 ) {
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
-  const podContinuity = pendingSuccessor?.startsWith("expired-") === true;
-  const coldWorker = pendingSuccessor === "cold-worker" || podContinuity;
+  const executionContinuity = pendingSuccessor?.startsWith("expired-") === true;
+  const coldWorker = pendingSuccessor === "cold-worker" || executionContinuity;
   const selectedRepositories = repositorySet.slice(0, standing ? 1 : 2);
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
@@ -512,10 +511,10 @@ async function repositoryGitJourney(
   }
   assert.equal(agent.harnessAuth?.method, "credential_source");
   assert.ok(agent.harnessAuth && "sourceId" in agent.harnessAuth);
-  const model = podContinuity ? openShellProviderName(agent.harnessAuth.sourceId) : "openai";
+  const model = executionContinuity ? openShellProviderName(agent.harnessAuth.sourceId) : "openai";
   const wire = await gitExpiryGateway(t, {
     model,
-    ...(podContinuity && {
+    ...(executionContinuity && {
       modelSourceId: agent.harnessAuth.sourceId,
       trackGitExpiry: true,
     }),
@@ -696,56 +695,13 @@ async function repositoryGitJourney(
     execution: async () => "controlled-openshell-execution",
   };
   let preparationError: unknown;
-  // Only the Kubernetes transport is controlled. The production Sandbox reader owns
-  // selectors, Pod readiness and both immutable container/Pod identities.
-  const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { KubernetesObjectApi } = require("@kubernetes/client-node");
-  const kubernetes = new KubernetesObjectApi();
-  const pods = ["supervisor", "workload"].map((role) => ({
-    metadata: {
-      name: `original-${role}`,
-      namespace: workspace,
-      uid: randomUUID(),
-      labels: {
-        "openshell.ai/boundary-role": role,
-        "openclaw.dev/revision": revision.id,
-        "openclaw.dev/agent": revision.agentId,
-      },
-    },
-    status: {
-      phase: "Running",
-      conditions: [{ type: "Ready", status: "True" }],
-      containerStatuses: [
-        {
-          name: role,
-          ready: true,
-          restartCount: 0,
-          state: { running: {} },
-          containerID: `containerd://${randomUUID()}`,
-        },
-      ],
-    },
-  }));
-  kubernetes.list = async (...args: unknown[]) => {
-    assert.ok(wire.world.id);
-    assert.deepEqual(args.slice(0, 3), ["v1", "Pod", workspace]);
-    assert.equal(args[7], `openshell.ai/boundary-pair=${wire.world.id.toLowerCase()}`);
-    return {
-      items: pods.map((pod) => ({
-        ...structuredClone(pod),
-        metadata: {
-          ...pod.metadata,
-          labels: {
-            ...pod.metadata.labels,
-            "openshell.ai/boundary-pair": wire.world.id!.toLowerCase(),
-            "openshell.ai/sandbox-id": wire.world.id!,
-          },
-        },
-      })),
-      metadata: {},
-    };
-  };
-  const repositoryContext = { ...context, kubernetes: podContinuity ? kubernetes : undefined };
+  const repositoryContext = { ...context, kubernetes: undefined };
+  const productionContinuity = executionContinuity
+    ? sandbox.standingGitExecution(repositoryContext)!.continuity
+    : undefined;
+  if (productionContinuity) {
+    wire.setRuntimeProvider(productionContinuity.runtime);
+  }
   const compute = {
     ...f.compute,
     id: kube.id,
@@ -843,7 +799,7 @@ async function repositoryGitJourney(
         if (conversation) {
           startupId = await nativeChallenge.promise;
         }
-        if (podContinuity) {
+        if (executionContinuity) {
           const auth = custody.harnessAuth!;
           assert.equal(auth.method, "credential_source");
           assert.ok("source" in auth);
@@ -875,11 +831,7 @@ async function repositoryGitJourney(
         const entry = runtime["states"].get(revision.id)!.entry!;
         state.gitRule = entry.provider.previewNetworkRule()!;
         stage = "recipient-bind";
-        await runtime.bind(
-          r.id,
-          () => {},
-          podContinuity ? sandbox.standingGitExecution(repositoryContext)!.continuity : continuity,
-        );
+        await runtime.bind(r.id, () => {}, productionContinuity ?? continuity);
         stage = "recipient-observation";
         await reconcile();
         stage = "held-hook-probe";
@@ -1190,7 +1142,7 @@ async function repositoryGitJourney(
       );
       assert.ok(execution);
       const initialSandbox = wire.world.id;
-      const initialBox = podContinuity
+      const initialBox = executionContinuity
         ? await client.getSandbox({ workspace, name: state.sandbox }, t.signal)
         : undefined;
       const first = (await attempts())[0]!;
@@ -1300,14 +1252,14 @@ async function repositoryGitJourney(
             assert.equal(
               await restartRoutes.record(revision.id, saved.route.fence, {
                 ...snapshot,
-                observed: { ...observed, processInstanceId: randomUUID() },
+                observed: { ...observed, sandboxId: randomUUID() },
               }),
               true,
             );
             assert.equal(
               await restartRoutes.standing(revision),
               undefined,
-              "the observed process no longer matches the protected installation recipient",
+              "the observed Sandbox no longer matches the protected installation recipient",
             );
             const beforeMismatchRead = await repositoryRestartState(f.observerPool, revision.id);
             assert.deepEqual(
@@ -1341,9 +1293,9 @@ async function repositoryGitJourney(
         assert.ok(approval);
         // Keep parallel fixtures from claiming the authority port while both
         // owners are stopped. The reservation serves no Git or worker requests.
-        const stoppedPort = podContinuity ? await reservePort({ port }) : undefined;
+        const stoppedPort = executionContinuity ? await reservePort({ port }) : undefined;
         try {
-          if (podContinuity) {
+          if (executionContinuity) {
             // Neither the worker nor its in-process Git writer runs across the deadline.
             await bound.close();
             assert.ok(
@@ -1352,7 +1304,9 @@ async function repositoryGitJourney(
             );
             await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
             if (pendingSuccessor === "expired-replaced-supervisor") {
-              pods[0]!.metadata.uid = randomUUID();
+              wire.world.supervisorSessionId = randomUUID();
+              wire.world.processInstanceId = randomUUID();
+              wire.world.networkInstanceId = randomUUID();
             }
           }
           await replaceRuntime();
@@ -1360,7 +1314,7 @@ async function repositoryGitJourney(
           await stoppedPort?.release();
         }
         assert.deepEqual(await readRoute(), route);
-        assert.equal(Date.now() >= credentials.deadlineWallMs, podContinuity);
+        assert.equal(Date.now() >= credentials.deadlineWallMs, executionContinuity);
         assert.deepEqual(
           await f.state.read((v) =>
             v.repositorySessions.findStandingApproval(revision.namespaceId, revision.agentId, "A"),
@@ -1395,17 +1349,17 @@ async function repositoryGitJourney(
         assert.equal(state.installed, installed);
 
         // A second process recovers the durable cleanup handoff. Only the new expiry
-        // cases supply the model attachment and actual Pod reader needed for retention.
+        // cases supply the model attachment and use the driver’s OpenShell identity checks.
         await replaceRuntime();
-        // Either replacement may decide Pod continuity before the cleanup handoff.
-        if (!podContinuity) {
+        // Either replacement may check execution continuity before the cleanup handoff.
+        if (!executionContinuity) {
           workerEvents.length = 0;
         }
         await start();
         await waitFor(
           "the replacement worker resumes cleanup or observes completed retirement",
           async () => {
-            if (podContinuity) {
+            if (executionContinuity) {
               // The real prepared owner disposes of the closed session's token. Without
               // this external participant the worker correctly leaves cleanup pending.
               await peer.prepared.maintain();
@@ -1417,7 +1371,9 @@ async function repositoryGitJourney(
               workerEvents.some(
                 (event) =>
                   event.code ===
-                  (podContinuity ? "REPOSITORY_ACCESS_WITHDRAWN" : "REPOSITORY_CLEANUP_PENDING"),
+                  (executionContinuity
+                    ? "REPOSITORY_ACCESS_WITHDRAWN"
+                    : "REPOSITORY_CLEANUP_PENDING"),
               )
               ? true
               : undefined;
@@ -1435,17 +1391,17 @@ async function repositoryGitJourney(
         assert.equal(wire.world.id, initialSandbox);
         assert.equal((await evaluate(probe)).decision, 2, "the new listener cannot revive Git");
 
-        if (podContinuity) {
+        if (executionContinuity) {
           assert.equal(
             (await f.currentAgent(agent))?.activeRevisionId,
-            pendingSuccessor === "expired-original-pods" ? revision.id : undefined,
-            "only the original pair may retain the independent model execution",
+            pendingSuccessor === "expired-original-execution" ? revision.id : undefined,
+            "only the original execution may retain independent model access",
           );
           assert.equal(
             wire.world.detaches.length,
-            pendingSuccessor === "expired-original-pods" ? 1 : 0,
+            pendingSuccessor === "expired-original-execution" ? 1 : 0,
           );
-          if (pendingSuccessor === "expired-original-pods") {
+          if (pendingSuccessor === "expired-original-execution") {
             assert.ok(initialBox);
             const retained = await client.getSandbox({ workspace, name: state.sandbox }, t.signal);
             assert.equal(retained?.id, initialBox.id);
@@ -1479,7 +1435,7 @@ async function repositoryGitJourney(
               workerEvents.some(
                 (event) =>
                   event.event === "worker.openshell-git-expiry" &&
-                  event.check === "original-launch-and-pods" &&
+                  event.check === "original-launch-and-execution" &&
                   event.outcome === "retire-runtime",
               ),
             );

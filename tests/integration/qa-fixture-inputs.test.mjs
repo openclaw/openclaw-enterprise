@@ -524,6 +524,15 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     assert.equal(replacement.providerReplacement || replacement.gitReplacement, true);
     assert.ok(replacement.cells.every((cell) => cell.scenarios.length === 0));
     assert.throws(() => validateQaInputs(replacement, {}), /REPLACEMENT_INPUT_FILE/);
+    const withoutProfile = selectQaMatrix({
+      OCC_TEST_QA_SCENARIOS: `git-write,${scenario}`,
+      OCC_TEST_QA_INSTALLATION: "kubernetes",
+      OCC_TEST_QA_PRESET: "Codex",
+      OCC_TEST_QA_CUSTOM_PERMISSION_PROFILES: "0",
+    });
+    assert.equal(withoutProfile.providerReplacement, scenario === "openshell-provider-replacement");
+    assert.equal(withoutProfile.gitReplacement, scenario === "openshell-git-replacement");
+    assert.equal(withoutProfile.exclusions.length, 1);
   }
   assert.equal(full.scope, "full");
   // An equally sized selection still omits default coverage if it substitutes a manual scenario.

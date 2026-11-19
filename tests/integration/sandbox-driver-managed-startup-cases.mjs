@@ -470,10 +470,7 @@ export function registerManagedOpenShellStartupCases() {
       request.spec.environment.OPENCLAW_NODE_STATE_DIR,
       "/sandbox/oce/workspace-node-codex/state",
     );
-    assert.equal(
-      request.spec.environment.UNRELATED_PATH,
-      "/sandbox/.openclaw-runtime/home/.openclaw-node",
-    );
+    assert.equal(request.spec.environment.UNRELATED_PATH, "/opt/oce/managed/home/.openclaw-node");
     assert.match(
       request.spec.command[RUNTIME_WRAPPER_COMMAND.length],
       /require\("\/opt\/oce\/runtime\/openshell-bootstrap.cjs"\)\.prepareManaged/,
@@ -696,6 +693,7 @@ export function registerManagedOpenShellStartupCases() {
     let policyState = "POLICY_STATUS_LOADED";
     let writes = 0;
     let failure;
+    const liveEdit = "live-policy-edit";
     client.createSandbox = async (request) => {
       stored = storedSandbox(structuredClone(request), {
         id: "stable-policy-sandbox",
@@ -715,7 +713,10 @@ export function registerManagedOpenShellStartupCases() {
     client.getService = async () =>
       harnessService(stored.name, "", "http://codex.example.test:8080/");
     client.updatePolicy = async (request) => {
-      assert.equal(stored.phase, "SANDBOX_PHASE_STOPPED");
+      assert.equal(
+        stored.phase,
+        request.requestId === liveEdit ? "SANDBOX_PHASE_READY" : "SANDBOX_PHASE_STOPPED",
+      );
       assert.equal(request.expectedResourceVersion, String(version));
       writes += 1;
       if (failure === "ignored") {
@@ -789,7 +790,10 @@ export function registerManagedOpenShellStartupCases() {
     assert.equal(stored.id, "stable-policy-sandbox");
     await provision(replacement, next);
     assert.equal(writes, 2, "An unchanged retry must not restore the creation policy");
-    const observationContext = { ...context, revision: { ...revision, id: next } };
+    const observationContext = {
+      ...context,
+      revision: { ...revision, id: next, executionAdmission: { version: 2, mode: "unprotected" } },
+    };
     assert.deepEqual(await replacement.observeHarness(observationContext), { state: "starting" });
     policyState = "POLICY_STATUS_LOADED";
     assert.deepEqual(await replacement.observeHarness(observationContext), { state: "starting" });
@@ -799,6 +803,45 @@ export function registerManagedOpenShellStartupCases() {
     const snapshot = replacement.admitNetworkPolicy([], 1);
     assert.equal(
       (await replacement.observeNetworkPolicy(observationContext, snapshot)).matches,
+      true,
+    );
+    const liveSnapshot = replacement.admitNetworkPolicy(
+      [
+        {
+          id: "status",
+          binary: "/usr/bin/curl",
+          host: "status.example.org",
+          ports: [{ from: 443, to: 443 }],
+        },
+      ],
+      2,
+    );
+    const applyLivePolicy = () =>
+      replacement.applyNetworkPolicy(observationContext, {
+        snapshot: liveSnapshot,
+        expectedProviderVersion: stored.resourceVersion,
+        operationId: liveEdit,
+      });
+
+    // An externally added base rule must neither report a match nor survive a live write.
+    const approvedPolicy = structuredClone(policy);
+    policy.network_policies.unapproved = {
+      name: "unapproved",
+      endpoints: [{ host: "unapproved.example.org", ports: [443] }],
+      binaries: [{ path: "/usr/bin/curl" }],
+    };
+    await assert.rejects(
+      replacement.observeNetworkPolicy(observationContext, snapshot),
+      /policy differs from its admitted baseline/,
+    );
+    await assert.rejects(applyLivePolicy(), /policy differs from its admitted baseline/);
+    assert.equal(writes, 2);
+
+    // Agent grants are admitted separately from the revision's base policy.
+    policy = approvedPolicy;
+    await applyLivePolicy();
+    assert.equal(
+      (await replacement.observeNetworkPolicy(observationContext, liveSnapshot)).matches,
       true,
     );
     policyState = "POLICY_STATUS_FAILED";
@@ -811,7 +854,7 @@ export function registerManagedOpenShellStartupCases() {
       undefined,
       "A later revision removes the rule",
     );
-    assert.equal(writes, 3);
+    assert.equal(writes, 4);
     await t.test(
       "combined replacement resumes each committed step without starting early",
       async () => {
@@ -917,16 +960,19 @@ export function registerManagedOpenShellStartupCases() {
     const bootstrap = fileURLToPath(
       new URL("../../deploy/runtime/openshell-bootstrap.cjs", import.meta.url),
     );
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "oce-native-bootstrap-runtime-"));
+    t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
     const launchBootstrap = () => {
       const program = request.spec.command[RUNTIME_WRAPPER_COMMAND.length]
         .split("\n")[0]
         .replaceAll("/opt/oce/runtime/openshell-bootstrap.cjs", bootstrap)
-        .replaceAll("/sandbox", root);
+        .replaceAll("/sandbox", root)
+        .replaceAll("/opt/oce/managed", runtimeRoot);
       const environment = {
         ...process.env,
         NODE_COMPILE_CACHE: request.spec.environment.NODE_COMPILE_CACHE.replaceAll(
-          "/sandbox",
-          root,
+          "/opt/oce/managed",
+          runtimeRoot,
         ),
       };
       delete environment.NODE_DISABLE_COMPILE_CACHE;
@@ -992,10 +1038,7 @@ export function registerManagedOpenShellStartupCases() {
       workspaceNodeEnrolled: false,
     });
     launchBootstrap();
-    await writeFile(
-      join(root, ".openclaw-runtime/home/workspace/USER.md"),
-      "retained native workspace",
-    );
+    await writeFile(join(runtimeRoot, "home/workspace/USER.md"), "retained native workspace");
     // Enrollment removes the first revision's diagnostic route while it runs.
     await driver.withdrawHarnessExposure({ ...context, revision, workspaceNodeEnrolled: true });
     assert.equal(service, undefined);
@@ -1023,9 +1066,10 @@ export function registerManagedOpenShellStartupCases() {
     loseExposureResponse = false;
     await driver.provisionHarness(next);
     assert.equal(starts, 1);
+    await rm(runtimeRoot, { recursive: true });
     launchBootstrap();
     assert.equal(
-      await readFile(join(root, ".openclaw-runtime/home/workspace/USER.md"), "utf8"),
+      await readFile(join(runtimeRoot, "home/workspace/USER.md"), "utf8"),
       "retained native workspace",
     );
     assert.equal(exposures, 2);

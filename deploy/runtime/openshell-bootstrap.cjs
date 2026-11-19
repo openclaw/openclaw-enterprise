@@ -87,25 +87,32 @@ function prepare({ home, links, native }) {
   }
 }
 
-function isRevisionTarget(target, parent) {
-  return path.dirname(target) === parent && /^[a-f0-9]{16}$/.test(path.basename(target));
-}
-
-function prepareManaged({ root, revision, directories, links, native }) {
+function prepareManaged({ root, runtimeRoot, directories, links, native }) {
   absolutePath(root);
-  if (!/^[a-f0-9]{16}$/.test(revision) || !Array.isArray(directories)) {
-    throw new Error("Invalid managed OpenShell filesystem layout.");
+  absolutePath(runtimeRoot);
+  const contains = (parent, candidate) =>
+    candidate === parent || candidate.startsWith(parent + "/");
+  if (
+    contains(root, runtimeRoot) ||
+    contains(runtimeRoot, root) ||
+    !Array.isArray(directories) ||
+    !Array.isArray(links)
+  ) {
+    throw new Error("Managed OpenShell requires separate runtime and retained directories.");
   }
   const data = path.join(root, "oce");
-  // TODO(managed-workload-retention): prune retired homes after the RFC defines
-  // rollback and credential-retention rules. Agent deletion currently removes them.
-  const runtime = path.join(data, "revisions", revision);
-  const home = path.join(runtime, "home");
-  const alias = path.join(root, ".openclaw-runtime");
+  const home = path.join(runtimeRoot, "home");
   directory(root, false);
   privateDirectory(data);
-  privateDirectory(path.join(data, "revisions"));
-  privateDirectory(runtime);
+  // Older builds placed private Homes on the retained volume. Do not expose those
+  // files to a replacement through the new layout or delete them during startup.
+  if (
+    fs.lstatSync(path.join(data, "revisions"), { throwIfNoEntry: false }) ||
+    fs.lstatSync(path.join(root, ".openclaw-runtime"), { throwIfNoEntry: false })
+  ) {
+    throw new Error("Managed OpenShell found retained runtime Homes from an older layout.");
+  }
+  privateDirectory(runtimeRoot);
   for (const relative of directories) {
     if (typeof relative !== "string" || !/^[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(relative)) {
       throw new Error("Invalid retained OpenShell directory.");
@@ -127,21 +134,6 @@ function prepareManaged({ root, revision, directories, links, native }) {
       return { path: path.join(home, relative), target: path.join(data, target) };
     }),
   });
-  const existing = fs.lstatSync(alias, { throwIfNoEntry: false });
-  if (
-    existing !== undefined &&
-    (!existing.isSymbolicLink() ||
-      !isRevisionTarget(fs.readlinkSync(alias), path.join(data, "revisions")))
-  ) {
-    throw new Error("OpenShell runtime selector conflicts with retained state.");
-  }
-  const temporary = alias + "." + require("node:crypto").randomUUID();
-  fs.symlinkSync(runtime, temporary);
-  try {
-    fs.renameSync(temporary, alias);
-  } finally {
-    fs.rmSync(temporary, { force: true });
-  }
 }
 
 module.exports = { prepareManaged };

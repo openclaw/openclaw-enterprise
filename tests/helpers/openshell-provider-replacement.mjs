@@ -8,6 +8,7 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { protectedText } from "./qa-secrets.ts";
 import { validateExplicitK3dLoopbackContext } from "./kubernetes-real.ts";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
 
@@ -59,13 +60,20 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     assert.equal(input.disposable, true, "Explicitly select a disposable installation");
     await validateExplicitK3dLoopbackContext(selection);
   }
-  const serviceKey = (await readFile(input.serviceKeyFile, "utf8")).trim();
   const apiUrl = new URL(input.apiUrl);
-  assert.ok(
-    apiUrl.protocol === "https:" || ["127.0.0.1", "localhost", "[::1]"].includes(apiUrl.hostname),
-  );
+  assert.ok(!apiUrl.username && !apiUrl.password && !apiUrl.search && !apiUrl.hash);
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(apiUrl.hostname);
+  assert.ok(apiUrl.protocol === "https:" || (loopback && apiUrl.protocol === "http:"));
+  // A fixture file alone must never select a remote recipient for the service key.
+  if (!loopback) {
+    assert.ok(input.existingCluster, "Remote API requires an explicitly selected cluster");
+    assert.equal(apiUrl.origin, process.env.OCC_TEST_OPENSHELL_REPLACEMENT_API_ORIGIN);
+  }
+  const serviceKey = await protectedText(input.serviceKeyFile, "replacement service key");
   const api = async (method, path, body, allowMissing = false) => {
-    const response = await fetch(new URL(path, apiUrl), {
+    const destination = new URL(path, apiUrl);
+    assert.equal(destination.origin, apiUrl.origin);
+    const response = await fetch(destination, {
       method,
       headers: {
         "x-api-key": serviceKey,

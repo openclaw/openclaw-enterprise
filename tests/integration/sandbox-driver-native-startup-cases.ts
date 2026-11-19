@@ -233,11 +233,9 @@ export function registerInitialWorkspaceCases(): void {
         execution.environment.OPENCLAW_WORKSPACE_DIR,
         managed ? "/sandbox/oce/workspace" : "/sandbox/enterprise",
       );
-      assert.equal(execution.environment.HOME, "/sandbox/.openclaw-runtime/home");
-      assert.equal(
-        execution.environment.OPENCLAW_STATE_DIR,
-        "/sandbox/.openclaw-runtime/home/.openclaw",
-      );
+      const home = managed ? "/opt/oce/managed/home" : "/sandbox/.openclaw-runtime/home";
+      assert.equal(execution.environment.HOME, home);
+      assert.equal(execution.environment.OPENCLAW_STATE_DIR, `${home}/.openclaw`);
       setup.completed = true;
       setupData["setup.json"] = Buffer.from(JSON.stringify(setup)).toString("base64");
       await provision();

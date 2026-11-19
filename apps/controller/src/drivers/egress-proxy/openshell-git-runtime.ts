@@ -2042,6 +2042,7 @@ export class OpenShellGitRuntime {
         reason = "route_pending";
         break;
       }
+      const acknowledgedStartup = entry.preview.hook?.startupId;
       if (!entry.installed || !entry.material) {
         // A route that had material and lost it names that, so an operator can tell a
         // retired credential (recovery required) from a version still verifying.
@@ -2082,6 +2083,14 @@ export class OpenShellGitRuntime {
         const observed = await this.observation(entry, signal);
         if (entry.blocked || this.stopped.signal.aborted || signal.aborted) {
           reason = entry.blocked ? "route_blocked" : "lookup_aborted";
+          break;
+        }
+        // A recovery during observation must obtain its own release acknowledgment.
+        if (
+          entry.preview.release !== "acknowledged" ||
+          entry.preview.hook?.startupId !== acknowledgedStartup
+        ) {
+          reason = "route_pending";
           break;
         }
         if (entry.material !== material) {

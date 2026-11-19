@@ -10,6 +10,7 @@ import type {
   SandboxNamespaceContext,
   SandboxResourceRef,
 } from "@openclaw-enterprise/contracts";
+import { SandboxNetworkPolicyConflictError } from "@openclaw-enterprise/occ";
 import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 import {
   OpenShellSandboxDriver,
@@ -18,6 +19,7 @@ import {
   runtimeProviderSetupUpdate,
   verifyActiveWorkspace,
   verifyExistingSandbox,
+  verifyRuntimeProvider,
   verifyWorkspaceOwnership,
   workspaceLabels,
   workspaceName,
@@ -36,7 +38,7 @@ import {
 } from "../openshell-gateway-client.ts";
 import type { openShellManagedMcpPolicies } from "../openshell-managed-mcp-policy.ts";
 import type { openShellPluginPolicy } from "../openshell-plugin-policy.ts";
-import { sameOpenShellPolicy } from "../openshell-policy.ts";
+import { openShellPolicyBaselineDigest, sameOpenShellPolicy } from "../openshell-policy.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../compute/kubernetes/runtime-entrypoints.ts";
 import {
   deleteRetiredGitProviders,
@@ -46,9 +48,11 @@ import {
 import { readOpenShellGitEvidence } from "../../egress-proxy/openshell-git-installation.ts";
 
 const DATA = "/sandbox/oce";
+const RUNTIME_ROOT = "/opt/oce/managed";
 const BOOTSTRAP = "/opt/oce/runtime/openshell-bootstrap.cjs";
 const REVISION = "openclaw.dev/revision-id";
 const GIT_SCOPE = "openclaw.dev/git-scope";
+const POLICY_BASELINE = "openclaw.dev/managed-policy-baseline-v1";
 const stopped = (sandbox: OpenShellSandboxResponse) =>
   sandbox.phase === "SANDBOX_PHASE_STOPPED" || sandbox.phase === 7;
 
@@ -78,6 +82,8 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       );
     }
   }
+
+  override readonly harnessHome = `${RUNTIME_ROOT}/home`;
 
   protected override requireLegacyIntegration(_operation: string): void {
     // All overridden storage and lifecycle paths use the managed Workspace API.
@@ -171,10 +177,8 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     const links: { path: string; target: string }[] = [];
     const environment: Record<string, string> = {};
     if (context.revision.harness.id === "openclaw") {
-      // Node creates its compile cache before bootstrap can install the home selector.
-      // Keep the cache on a direct path so startup cannot occupy that symlink.
-      directories.push("node-compile-cache");
-      environment.NODE_COMPILE_CACHE = `${DATA}/node-compile-cache`;
+      // Node initializes this cache before the Harness bootstrap runs.
+      environment.NODE_COMPILE_CACHE = `${RUNTIME_ROOT}/node-compile-cache`;
     }
     for (const directory of context.requirements.retainedDirectories) {
       if (
@@ -209,7 +213,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     const index = RUNTIME_WRAPPER_COMMAND.length;
     command[index] = `require(${JSON.stringify(BOOTSTRAP)}).prepareManaged(${JSON.stringify({
       root: "/sandbox",
-      revision: sha256Hex(context.revision.id, 16),
+      runtimeRoot: RUNTIME_ROOT,
       directories: [...new Set(directories)],
       links,
       native: context.revision.harness.id === "openclaw",
@@ -228,6 +232,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       binding,
       {
         workspacePath: `${DATA}/workspace`,
+        harnessHome: this.harnessHome,
         templateLabels: {
           "openclaw.dev/namespace": context.namespace.id,
           "openclaw.dev/agent": context.revision.agentId,
@@ -246,6 +251,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
           read_write: [
             ...filesystem.read_write.filter((path) => !path.startsWith("/sandbox/")),
             "/sandbox",
+            RUNTIME_ROOT,
           ],
         },
       },
@@ -272,7 +278,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     let provider = await client.getProvider(workspace, name, context.signal);
     if (provider === undefined) {
       try {
-        await client.createProvider(
+        const created = await client.createProvider(
           {
             workspace,
             name,
@@ -284,6 +290,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
           },
           context.signal,
         );
+        verifyRuntimeProvider(created, name, profileId, labels, desired);
         return { name, created: true };
       } catch (error) {
         if (!(error instanceof OpenShellProviderAlreadyExistsError)) {
@@ -292,26 +299,24 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         provider = await client.getProvider(workspace, name, context.signal);
       }
     }
-    if (
-      provider === undefined ||
-      provider.type !== profileId ||
-      !isDeepStrictEqual(provider.labels, labels)
-    ) {
-      throw new Error("Managed runtime Provider ownership or Harness type differs.");
+    if (provider === undefined) {
+      throw new Error("Managed runtime Provider disappeared during creation.");
     }
+    verifyRuntimeProvider(provider, name, profileId, labels);
     if (isDeepStrictEqual(provider.config, desired)) {
       return { name, created: false };
     }
     if (provider.config.oce_revision_id === context.revision.id) {
       const renewal = runtimeProviderSetupUpdate(provider, name, profileId, labels, desired);
       if (renewal !== undefined) {
-        await client.updateProviderConfig(
+        const updated = await client.updateProviderConfig(
           workspace,
           name,
           renewal,
           provider.resourceVersion,
           context.signal,
         );
+        verifyRuntimeProvider(updated, name, profileId, labels, desired);
       }
       return { name, created: false };
     }
@@ -369,6 +374,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     const updated = await client.getProvider(workspace, name, context.signal);
     if (
       updated === undefined ||
+      updated.name !== name ||
       updated.type !== profileId ||
       !isDeepStrictEqual(updated.labels, labels) ||
       !isDeepStrictEqual(updated.config, desired)
@@ -454,7 +460,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         spec: { ...observed.spec, policy: policy.policy, providers: providerNames(observed.spec) },
       },
       {
-        ...create,
+        ...withManagedPolicyBaseline(create),
         spec: { ...create.spec, providers: providerNames(create.spec) },
         requestId: "observation",
       },
@@ -464,9 +470,10 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
   protected override async reconcileHarness(
     context: SandboxHarnessContext,
     sandbox: SandboxResourceRef,
-    create: Omit<OpenShellSandboxCreateRequest, "requestId">,
+    desired: Omit<OpenShellSandboxCreateRequest, "requestId">,
     existingSandboxId?: string,
   ): Promise<SandboxResourceRef> {
+    const create = withManagedPolicyBaseline(desired);
     const client = this.gatewayClientForNamespace(context.namespace.name);
     const selector = { workspace: workspaceName(context.namespace), name: sandbox.resourceName };
     let existing = await client.getSandbox(selector, context.signal);
@@ -775,13 +782,19 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
   protected override async networkPolicyBaseline(
     client: OpenShellGatewayClient,
     request: OpenShellPolicyRequest,
-    _sandbox: OpenShellSandboxResponse,
+    sandbox: OpenShellSandboxResponse,
     signal: AbortSignal,
   ): Promise<Readonly<Record<string, unknown>>> {
     if (client.getPolicyStatus === undefined) {
       throw new Error("Managed Sandbox requires current policy observation.");
     }
-    return (await client.getPolicyStatus(request, signal)).policy;
+    const { policy } = await client.getPolicyStatus(request, signal);
+    if (sandbox.annotations[POLICY_BASELINE] !== openShellPolicyBaselineDigest(policy)) {
+      throw new SandboxNetworkPolicyConflictError(
+        "Live Sandbox policy differs from its admitted baseline.",
+      );
+    }
+    return policy;
   }
 
   override async observeHarness(context: SandboxLogContext): Promise<SandboxHarnessObservation> {
@@ -1017,6 +1030,22 @@ function providerNames(spec: OpenShellSandboxResponse["spec"]): string[] {
 function comparableWorkload(spec: OpenShellSandboxResponse["spec"]) {
   const { policy: _policy, ...workload } = spec ?? {};
   return canonicalSandboxSpec({ ...workload, providers: providerNames(spec) });
+}
+
+function withManagedPolicyBaseline(
+  request: Omit<OpenShellSandboxCreateRequest, "requestId">,
+): Omit<OpenShellSandboxCreateRequest, "requestId"> {
+  const policy = asRecord(request.spec.policy);
+  if (policy === undefined) {
+    throw new Error("Managed Sandbox requires a complete policy.");
+  }
+  return {
+    ...request,
+    annotations: {
+      ...request.annotations,
+      [POLICY_BASELINE]: openShellPolicyBaselineDigest(policy),
+    },
+  };
 }
 
 function fixedPolicy(policy: unknown) {

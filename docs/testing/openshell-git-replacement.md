@@ -11,7 +11,7 @@ configuration or write to GitHub.
 ## Prepare the installation
 
 Use the disposable loopback k3d installation and private JSON input described in
-[Provider replacement](openshell.md#provider-replacement). This Git scenario does
+[Provider replacement](openshell-managed.md#provider-replacement). This Git scenario does
 not need the example.org delegation ceiling or its curl probe.
 For an operator-approved existing cluster, use the
 [explicit cluster selection](#existing-cluster-selection) instead.
@@ -60,6 +60,10 @@ The Provider and Git replacement scenarios can use an existing cluster with
 explicit operator approval. They create and delete their own Agents and IAM
 resources, and the Provider scenario also creates model sources. They preserve
 the prepared Namespace, Configuration, model source and cluster configuration.
+
+For a remote API, set `OCC_TEST_OPENSHELL_REPLACEMENT_API_ORIGIN` to its approved
+HTTPS origin, including any nondefault port. Both scenarios check it before
+reading the service key. Keep the key in a private regular file.
 
 Replace `disposable` in the private input file with:
 

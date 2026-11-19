@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant, SandboxPolicySnapshot } from "@openclaw-enterprise/contracts";
 
@@ -77,6 +77,29 @@ function canonical(value: unknown): unknown {
 
 export function sameOpenShellPolicy(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(canonical(left), canonical(right));
+}
+
+/** Bind the admitted policy while letting live applications replace Agent grants. */
+export function openShellPolicyBaselineDigest(policy: Readonly<Record<string, unknown>>): string {
+  const network = asRecord(policy.network_policies) ?? {};
+  const baseline = canonical({
+    ...policy,
+    network_policies: Object.fromEntries(
+      Object.entries(network).filter(([name]) => !name.startsWith(AGENT_POLICY_PREFIX)),
+    ),
+  });
+  return sha256Hex(
+    JSON.stringify(baseline, (_key, value: unknown) => {
+      const record = asRecord(value);
+      return record === undefined
+        ? value
+        : Object.fromEntries(
+            Object.keys(record)
+              .sort()
+              .map((name) => [name, record[name]]),
+          );
+    }),
+  );
 }
 
 /** The create-time policy carries static restrictions and generated workspace access. */

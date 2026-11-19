@@ -507,5 +507,17 @@ export async function gitExpiryGateway(
     client.close();
     server.forceShutdown();
   });
-  return { client, world };
+  function setRuntimeProvider(name) {
+    assert.ok(supervisor && providers[supervisor.runtimeProvider]);
+    const previous = supervisor.runtimeProvider;
+    const provider = providers[previous];
+    delete providers[previous];
+    provider.metadata.name = name;
+    providers[name] = provider;
+    supervisor.runtimeProvider = name;
+    world.retainedProviders = world.retainedProviders.map((providerName) =>
+      providerName === previous ? name : providerName,
+    );
+  }
+  return { client, world, setRuntimeProvider };
 }

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
 updated: "2026-11-19"
-last_updated_session: authoring-run/b99f4c77-4d5d-4682-8f6f-f1e82c55323d
+last_updated_session: authoring-run/f0ca6751-75e0-4de4-bcdd-df016d2b4a50
 ---
 
 # Managed OpenShell workload flow
@@ -96,7 +96,7 @@ inputs. Explicit directory environment bindings select workspace and node-state
 paths; an unrelated variable with the same value does not select retained state.
 The shared `OpenShellSandboxDriver.harnessSpecForLayout` adds process, network and
 Provider settings without constructing operator PVCs. The managed implementation
-supplies its own filesystem and runtime-class/resource configuration.
+supplies its own filesystem and resource configuration.
 
 ### 2. Reconcile a stopped workload
 
@@ -111,7 +111,7 @@ Rejected or incomplete writes prevent start; retries recognize committed config
 after a lost response.
 
 `reconcileHarness` verifies Namespace and Agent ownership, then requires stopped
-state before changing the revision. It rejects resource and runtime-class changes.
+state before changing the revision. It rejects resource changes.
 `reconcilePolicy` reads the latest stored policy separately from the creation
 specification. Static policy and non-Git middleware bindings must remain unchanged.
 When Provider membership differs, `reconcileHarness` clears base network rules
@@ -147,42 +147,31 @@ and ownership. Failed reads remain retryable; confirmed mismatches close the rou
 See the [repository flow](agent-repository-credentials.md) for credential installation
 and supervisor identity checks.
 
-`OpenShellSandboxDriver.gitContinuity` supplies the exact model and runtime
-Provider names, current source policy, and an execution fingerprint from
-OpenShell's API. It rereads the Sandbox and checks its Namespace, Agent and
-revision ownership, Ready state, and stable main-process identity across its two
-reads. Its execution fingerprint excludes process identity. The Git owner separately
-verifies current Provider receipts, supervisor session, process and network identities.
-`openshell-expired-git.ts:launch` hashes caller annotations and workload configuration,
-excluding OpenShell's internal annotations, which change during runtime recovery.
-Recovery preserves revision authority but requires fresh readiness. These checks trust [OpenShell's execution reports](../reference/repository-credentials/protected-openshell-git.md#execution-identity).
-`previewPolicyAndRecipient` compares exact Provider membership without requiring
-attachment order and checks the effective policy against current source policy.
+`OpenShellSandboxDriver.gitContinuity` checks ownership, readiness and process
+identity across two reads. Git verifies Provider receipts, network and supervisor
+identities against [OpenShell execution reports](../reference/repository-credentials/protected-openshell-git.md#execution-identity).
+The launch fingerprint excludes OpenShell-internal annotations.
 
-`openshell-git-installation.ts:observeOpenShellGitInstallation` adopts fresh runtime
-evidence only during reconciliation. For mandatory online Git, it clears the old
-launcher's acknowledgment after recovery. `openshell-git-runtime.ts:observeHeldPreview`
-also handles a restarted Harness child in the same supervisor. It requires a fresh
-authenticated denial before `releasePreview` signs and acknowledges that startup.
-`persistSnapshot` keeps equivalent observations synchronized with the launcher's
-acknowledgment. The durable route records release intent before sending; uncertain
-release is not replayed. Automatic Harness recovery requires the original OCE
-worker. A replacement worker closes the Git route and requires a new revision;
-it does not restore the saved launcher acknowledgment. The immutable egress receipt
-identifies the Sandbox execution, Provider attachment and admitted configuration. Explicit stop withdraws
-the binding, so recovery cannot reopen an ended execution.
+After a restart, `observeHeldPreview` requires a fresh authenticated denial before
+`releasePreview` acknowledges the launcher. The original worker records release
+intent before sending. Uncertain release or worker replacement requires a new
+revision. Git lookup checks the same startup acknowledgment after observation.
+PostgreSQL checks durable acknowledgment before credential use. Stop withdraws
+the binding.
 
-The Driver then sends `SandboxUpdates.UpdateSandbox` with the latest observed
-resource version and verifies the workload and latest policy separately. OpenShell
-retains the creation-time policy in the Sandbox specification. Only matching
-readbacks can start. The client
-uses the separate service path in `openshell-gateway-client.ts:updateSandbox`.
+`openshell-gateway-client.ts:updateSandbox` sends the latest resource version.
+The Driver verifies the workload and live policy separately before start because
+the specification retains the creation policy.
 
 `ManagedOpenShellSandbox.observeHarness` reports running only when OpenShell reports
 the latest policy loaded and its active version matches. Kubernetes Compute's
 `SandboxHarnessRuntime.ready` uses this observation before activation. A failed
-policy load raises an error. The managed `networkPolicyBaseline` also reads the
-latest policy so later live edits preserve the current revision's rules.
+policy load raises an error. The managed Driver records a fingerprint of the
+admitted policy in the Sandbox's revision annotations. `networkPolicyBaseline`
+checks the live policy against that fingerprint before a live edit or Git
+continuity check. The fingerprint excludes Agent grants so OCE can replace them
+independently. A Git retirement clears the stopped Sandbox's rules through a
+separate path. Replacement records the successor's fingerprint before startup.
 
 `apps/controller/src/drivers/egress-proxy/openshell.ts:loadedPolicyVersion`
 requires the returned policy revision to be loaded and its version to match
@@ -213,15 +202,18 @@ its service for the app-server transport.
 
 ### 3. Select storage paths and connect the node
 
-`ManagedOpenShellSandbox.harnessSpec` places OpenClaw's `NODE_COMPILE_CACHE` at
-`/sandbox/oce/node-compile-cache`. Node initializes this cache before the
-bootstrap runs, so its path must not pass through the runtime selector symlink.
-Bootstrap includes the cache among its process-owned private directories.
+`ManagedOpenShellSandbox.harnessSpec` sets the Harness home to
+`/opt/oce/managed/home` on the workload filesystem. Node initializes its compile
+cache in a sibling directory before the bootstrap runs. The home and cache are
+recreated when OpenShell replaces the workload.
 
 `deploy/runtime/openshell-bootstrap.cjs:prepareManaged` creates process-owned
-retained directories and a revision home before the Harness loader runs. It
-validates existing paths, creates home-relative links and atomically replaces
-the runtime selector symlink. Old homes remain until Agent deletion.
+retained directories under `/sandbox/oce` and links the workspace, generated
+images, and Codex sessions from the private home. The node state environment
+variable points to its real retained directory. The bootstrap refuses existing
+symlink ancestors, conflicting links, and private runtime homes left on the PVC
+by earlier builds. OpenClaw checks the actual ancestry of the retained node
+state directory, so the PVC permissions still gate native worker startup.
 
 `KubernetesComputeDriver.workspaceNodeRelay` omits direct Sandbox ingress in managed
 mode. `prepareWorkspaceNode` supplies the [Envoy node URL](../reference/gateway-routing.md#native-node-endpoint);
@@ -236,7 +228,7 @@ selected plugin request guard before workspace initialization.
 then verifies the setup Secret's Namespace, Agent and setup identifiers in OCE's
 tenant namespace. `ManagedOpenShellSandbox.workspaceInitializationPath` selects
 `/sandbox/oce/workspace` without requiring a PVC mount. The initializer uses the
-bootstrap's selected revision home through `/sandbox/.openclaw-runtime/home`.
+bootstrap's workload home at `/opt/oce/managed/home`.
 Operator mode still requires an approved PVC mount. Both paths deliver the
 payload through authenticated `ExecSandbox` stdin, including completed setup
 records on retries and later revisions. See
@@ -265,27 +257,16 @@ Gateway cleanup. Failure leaves final Agent deletion incomplete. Namespace clean
 
 #### Stop and replacement ordering
 
-If `StopSandbox` fails, or OCE cannot confirm the stopped state, OCE ends the
-replacement attempt before preparing the new workload. On retry, OCE reads the
-Sandbox again: if it is stopped, replacement can proceed; otherwise OCE repeats
-the stop and checks its result. Retryable failures are rescheduled within the
-worker's retry and convergence limits; exhausting those limits fails deployment.
-
-A failed call can leave the original stop running in OpenShell. The ordering
-argument relies on two behaviors:
-
-- Before OpenShell accepts the stop, cancellation removes the pending request.
-- After OpenShell accepts it, the stop continues even if the caller disconnects.
-  Later stops, updates and starts for that Sandbox wait until it finishes.
-
-With one OCE worker, recovery therefore cannot start the replacement ahead of
-the original stop in the tested cancellation and client-process-loss cases.
-These cases do not require an OCE revision field on the stop RPC.
-Provider credential updates and exposure withdrawal are outside this argument.
+OCE requires a confirmed stop before replacement. A retry reads the Sandbox
+and repeats the stop if needed within the worker's convergence limits.
+Cancellation removes a pending stop before admission. After admission OpenShell
+finishes the stop despite disconnection, serializing subsequent lifecycle calls.
+This ordering covers one worker. Provider writes and exposure withdrawal need
+separate verification.
 
 ## Debugging and Verification
 
-Run the [local checks and deferred cluster checklist](../testing/openshell.md#managed-compute-prototype).
+Run the [local checks and deferred cluster checklist](../testing/openshell-managed.md).
 A missing image bootstrap fails launch. An unreachable Envoy endpoint blocks the
 workspace-node connection. Unsupported or incomplete workload updates leave the
 Sandbox stopped and the revision inactive. Local protocol and filesystem checks
@@ -299,6 +280,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 22:11: Isolate private homes, verify policy and fence Git recovery. (authoring-run/f0ca6751-75e0-4de4-bcdd-df016d2b4a50 - caad39a5e6b5f143628f326e5c3959b164a7caab)
 
 - 2026-11-19 11:07: Rename selection to integrationMode, defaulting to legacy. (authoring-run/b99f4c77-4d5d-4682-8f6f-f1e82c55323d - 597acc05cdfe4be5874f3f362a77e927a0855ea6)
 
