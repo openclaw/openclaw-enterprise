@@ -108,7 +108,8 @@ test(
     let opened = false;
     let clientClosed = false;
     let checked = false;
-    let reads = 0;
+    const expectedSandbox = { name: "sandbox", workspace: "workspace" };
+    const requests: (typeof expectedSandbox)[] = [];
     const readback = verifyFirstAgentSandboxPolicy({
       startForward: () => forward,
       parentSignal: context.signal,
@@ -121,8 +122,9 @@ test(
         assert.notEqual(Number(endpoint.port), address.port);
         return {
           async getSandbox(request) {
-            assert.deepEqual(request, sandbox);
-            if (++reads === 1) {
+            requests.push({ ...request });
+            assert.deepEqual(request, expectedSandbox);
+            if (requests.length === 1) {
               throw new Error("Gateway listener is still starting");
             }
             const socket = createConnection({
@@ -161,7 +163,7 @@ test(
       await readback;
     }
     assert.equal(checked, true);
-    assert.equal(reads, 2);
+    assert.deepEqual(requests, [expectedSandbox, expectedSandbox]);
     assert.equal(clientClosed, true);
     assert.equal(closed, true);
   },
