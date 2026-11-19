@@ -233,6 +233,13 @@ was removed. The corrected packaging/conformance/profile group passed 121 cases,
 the Configuration API suite passed 286, and the credential Console suite passed
 36, all with zero skips. Production routing and validation were unchanged.
 
+A further CI failure came from the PostgreSQL provisioning fixture omitting its
+installed Channel Driver. It now supplies the real Slack Driver with the existing
+mocked external request function; production proxy enforcement is unchanged. The
+selected official PostgreSQL run passed 73 tests with zero skips or runner issues
+in 116.3 seconds, and its owned database resources were cleaned. This is
+provisioning and IAM proof, not another claim of real Slack networking.
+
 An audit of Envoy source found that `config_dump` omits in-place filter-chain
 drains. Cleanup now also checks the drain gauge on every serving Pod. It requires
 old source Pods to be absent and their Deployments and ReplicaSets to have no
