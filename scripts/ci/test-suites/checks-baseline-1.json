@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/managed-mcp-tool-discovery.test.ts",
     "tests/integration/occ-api-channel-directory.test.ts",
     "tests/integration/occ-api-auth-accounts.test.ts",
     "tests/integration/occ-api-namespace-iam-policy.test.ts",
@@ -73,7 +74,6 @@
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
-    "tests/integration/production-upgrade-command.test.ts",
     "tests/conformance/test-files.test.ts",
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
@@ -86,7 +86,7 @@
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
-    "tests/conformance/strands-box-status.test.mjs",
+    "tests/conformance/strands-box-status.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.ts",
     "tests/conformance/occ-read.test.ts",
@@ -368,7 +368,7 @@
       "path": "tests/conformance/openshell-harness-status.test.mjs"
     },
     {
-      "path": "tests/conformance/strands-box-status.test.mjs"
+      "path": "tests/conformance/strands-box-status.test.ts"
     },
     {
       "path": "tests/conformance/platform-state-memory.test.ts"
@@ -504,6 +504,13 @@
       "path": "tests/integration/occ-api.test.mjs"
     },
     {
+      "path": "tests/integration/managed-mcp-tool-discovery.test.ts",
+      "expectedTests": [
+        "managed MCP discovery reads tool names using one pinned authenticated session",
+        "managed MCP discovery refuses private DNS answers and redirects"
+      ]
+    },
+    {
       "path": "tests/integration/occ-api-channel-directory.test.ts",
       "expectedTests": [
         "Channel directory accepts Slack's null terminal cursor without losing prior matches",
@@ -570,9 +577,6 @@
     },
     {
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
-    },
-    {
-      "path": "tests/integration/production-upgrade-command.test.ts"
     },
     {
       "path": "tests/integration/secret-api.test.ts"
@@ -767,6 +771,7 @@
         "live adoption keeps catalog order for distinct provider identities",
         "live adoption refuses a provider duplicate added during material resolution",
         "credential exchange refuses a conflicted eligible provider before route fallback",
+        "static deployment refuses ambiguous or incompatible providers without redirecting its exact binding",
         "credential exchange refuses duplicate and substituted providers before material access",
         "credential exchange refuses provider replacement during a pending Secret read",
         "credential exchange withholds a response after provider method replacement",

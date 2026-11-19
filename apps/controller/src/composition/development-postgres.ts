@@ -180,7 +180,9 @@ export async function composePostgresDevelopment(
     });
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
-    const channelDriver = new SlackChannelDriver();
+    const channelDriver =
+      drivers?.channelDrivers?.find(({ provider }) => provider === "slack")?.driver ??
+      new SlackChannelDriver(globalThis.fetch, undefined, { expectProxy: true });
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {

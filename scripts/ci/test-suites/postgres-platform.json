@@ -300,6 +300,7 @@
         "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
+        "Guarded stop protects a queued successor and stops the exact deployed Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
         "Stop during an interrupted runtime-credential write lets the Agent deploy once the claim's lease ends",
         "Stop after failed provisioning left its runtime-credential write unsettled lets the Agent deploy",
@@ -483,6 +484,7 @@
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
+        "a replacement Git Driver waits out a disposed standing predecessor without taking its custody",
         "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",

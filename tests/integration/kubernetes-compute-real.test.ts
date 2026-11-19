@@ -1,3 +1,4 @@
+import { channelEgressOptions } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
@@ -265,7 +266,7 @@ test(
               gatewayNodeSelector: {
                 "kubernetes.io/hostname": await runtimeNodeName(),
               },
-              channels: { proxyUrl: "http://10.42.0.15:3128" },
+              channelEgress: channelEgressOptions,
             },
           },
     );
@@ -752,7 +753,7 @@ test(
           missingConfiguration.error.message,
           /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: /,
         );
-        // This k3d fixture has no runtime.channels proxy and uses the fixture image,
+        // This k3d fixture has no runtime.channelEgress proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret
         // projection. Real Slack channel runtime proof belongs to the real-runtime suite.
         const updated = await request<ConfigurationResponse>(

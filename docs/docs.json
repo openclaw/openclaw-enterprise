@@ -205,8 +205,14 @@
                     "page": "reference/console/create-and-deploy",
                     "label": "Create and Deploy in the Console"
                   },
-                  { "page": "guides/agent-http-chat", "label": "HTTP Chat" },
-                  { "page": "reference/agent-http-chat", "label": "HTTP Chat Contract" },
+                  {
+                    "page": "guides/agent-http-chat",
+                    "label": "HTTP Chat"
+                  },
+                  {
+                    "page": "reference/agent-http-chat",
+                    "label": "HTTP Chat Contract"
+                  },
                   {
                     "page": "reference/agent-native-admin",
                     "label": "Native Admin UI"
@@ -417,6 +423,10 @@
                           {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/channel-egress",
+                            "label": "Channel Egress"
                           },
                           {
                             "page": "reference/drivers/kubernetes-compute/gateway-authentication",
@@ -1323,6 +1333,7 @@
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
+              "flows/channel-egress",
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",

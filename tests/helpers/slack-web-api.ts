@@ -33,6 +33,7 @@ interface PageQuery extends ChannelQuery {
 
 interface HistoryQuery extends PageQuery {
   readonly oldest?: string;
+  readonly latest?: string;
   readonly inclusive?: boolean;
 }
 
@@ -46,6 +47,7 @@ export interface SlackRequests {
   "conversations.history": [body: HistoryQuery];
   "conversations.replies": [body: RepliesQuery];
   "chat.postMessage": [body: ChannelQuery & { readonly text: string }];
+  "chat.getPermalink": [body: ChannelQuery & { readonly message_ts: string }];
 }
 
 interface SlackResults {
@@ -54,6 +56,7 @@ interface SlackResults {
   "conversations.history": MessagePage;
   "conversations.replies": MessagePage;
   "chat.postMessage": { readonly channel: string; readonly ts: string };
+  "chat.getPermalink": { readonly permalink: string };
 }
 
 type SlackMethod = keyof SlackRequests;
@@ -106,6 +109,8 @@ const validate: {
   "conversations.replies": isMessagePage,
   "chat.postMessage": (value): value is ObjectValue & SlackResults["chat.postMessage"] =>
     typeof value.channel === "string" && typeof value.ts === "string",
+  "chat.getPermalink": (value): value is ObjectValue & SlackResults["chat.getPermalink"] =>
+    typeof value.permalink === "string" && value.permalink.startsWith("https://"),
 };
 
 function isTransient(error: unknown): boolean {

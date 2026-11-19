@@ -3301,6 +3301,10 @@ export class ControllerWorker {
     return undefined;
   }
 
+  private outcomeWithAttemptLimit(claim: ClaimedWork, outcome: Outcome): Outcome {
+    return outcome === "retry" && claim.attemptCount >= this.maxAttempts ? "permanent" : outcome;
+  }
+
   private async finalizeAgentDeletion(
     claim: ClaimedWork,
     result: AgentDeletionDispatchResult,
@@ -3340,9 +3344,7 @@ export class ControllerWorker {
         if ((await queue.heartbeat(claim)) === undefined) {
           throw new WorkClaimLostError();
         }
-        const terminalFailure =
-          result.outcome === "permanent" ||
-          (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+        const terminalFailure = this.outcomeWithAttemptLimit(claim, result.outcome) === "permanent";
         if (result.decision !== undefined) {
           await this.appendAgentDenial(unit, claim, result, "deletion");
         } else if (terminalFailure) {
@@ -3362,10 +3364,7 @@ export class ControllerWorker {
         }
       }, this.queueOptions);
     }
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, result.outcome);
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),
@@ -3427,9 +3426,7 @@ export class ControllerWorker {
           );
         }
       }
-      const terminalFailure =
-        result.outcome === "permanent" ||
-        (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+      const terminalFailure = this.outcomeWithAttemptLimit(claim, result.outcome) === "permanent";
       if (result.decision !== undefined) {
         await this.appendAgentDenial(unit, claim, result, "stop");
       } else if (result.outcome === "success" || terminalFailure) {
@@ -3452,10 +3449,7 @@ export class ControllerWorker {
         await queue.retry(claim, { code: result.code });
       }
     }, this.queueOptions);
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, result.outcome);
     if (result.outcome === "success" && result.code !== "STOP_SUPERSEDED") {
       this.metrics?.observeAgentOperation("stop", this.workAgeMs(claim) / 1000);
     }
@@ -6366,10 +6360,7 @@ export class ControllerWorker {
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
-    let committedOutcome: WorkOutcome =
-      resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : resolved.outcome;
+    let committedOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
     if (committedOutcome === "permanent") {
       failureLogFields = {
         ...failureLogFields,
@@ -7657,10 +7648,7 @@ export class ControllerWorker {
       }
       this.auditedPendingLifecycle.set(claim.idempotencyKey, pendingAudit);
     }
-    this.passOutcome =
-      resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : resolved.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
     // The Compute Driver's bounded reason for a failed Namespace pass; the lifecycle audit
     // and Namespace status keep only the failure class.
     const reason =
