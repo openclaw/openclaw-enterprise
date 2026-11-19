@@ -24,6 +24,7 @@ import {
   podList,
   signInConsole,
   wireField,
+  withRefusedTurnAdmission,
   type LocalSetup,
   type SmokeStack,
   type Pod,
@@ -32,6 +33,12 @@ import {
 
 async function assertModelAnswered(nonce: string, label: string) {
   const events = await modelEvents();
+  assert.ok(
+    events.some(
+      ({ event, text, caller }) => event === "request" && text === nonce && caller === label,
+    ),
+    `${label}: the provider recorded no arrival for ${nonce}`,
+  );
   const answered = events.find(
     ({ event, status, text, caller }) =>
       event === "turn-answered" && status === 200 && text === nonce && caller === label,
@@ -235,6 +242,26 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   assertChatReply(result, nonce, agent.label);
   const transport = await assertModelAnswered(nonce, agent.label);
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
+}
+
+export async function proveRefusedTurnAdmission(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const nonce = `OCE_SMOKE_${randomUUID()}`;
+  const result = await withRefusedTurnAdmission(stack, revisionId, () =>
+    gatewayChat(stack, gateway, `Reply with exactly this nonce and no other text: ${nonce}`),
+  );
+  assert.ok(wireField(result, "status"), `${agent.label}: Gateway returned no HTTP response`);
+  // The non-streaming chat has settled. Check arrivals even if the provider
+  // disconnected before it could send a reply.
+  const arrivals = (await modelEvents()).filter(
+    ({ event, text }) => event === "request" && text === nonce,
+  );
+  assert.equal(arrivals.length, 0, `${agent.label}: the refused turn reached the provider`);
+  log(`${agent.label}: PostgreSQL refused admission on ${revisionId} before a model request`);
 }
 
 export async function allowAgentAuditRead(

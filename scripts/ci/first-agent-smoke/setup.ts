@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
@@ -467,6 +468,41 @@ async function queryRevision(
 
 const runtimeRows = `FROM occ.audit_events
   WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
+
+export async function withRefusedTurnAdmission(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  send: () => Promise<unknown>,
+) {
+  const marker = `smoke_admission_${randomUUID().replaceAll("-", "")}`;
+  const query = (sql: string) => queryRevision(stack, revisionId, sql);
+  // Sequence increments survive rollback. Only an admission for this revision
+  // advances the sequence and fails the check. Existing rows remain valid.
+  try {
+    await query(`
+      BEGIN;
+      CREATE SEQUENCE occ.${marker};
+      GRANT USAGE ON SEQUENCE occ.${marker} TO occ_app;
+      ALTER TABLE occ.audit_events ADD CONSTRAINT ${marker}
+        CHECK (CASE WHEN kind = 'runtime_activity'
+          AND details->>'agentRevisionId' = :'revision_id'
+          AND action = 'openclaw.runtime.turn.admitted'
+          THEN nextval('occ.${marker}') = 0 ELSE true END) NOT VALID;
+      COMMIT;
+    `);
+    const result = await send();
+    const called = await query(`SELECT is_called FROM occ.${marker};`);
+    assert.equal(called, "t", `PostgreSQL never refused a turn admission for ${revisionId}.`);
+    return result;
+  } finally {
+    await query(`
+      BEGIN;
+      ALTER TABLE occ.audit_events DROP CONSTRAINT IF EXISTS ${marker};
+      DROP SEQUENCE IF EXISTS occ.${marker};
+      COMMIT;
+    `);
+  }
+}
 
 export async function expectPersistedRuntimeAudit(
   stack: InstalledAuditStack,

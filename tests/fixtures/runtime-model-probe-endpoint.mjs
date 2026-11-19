@@ -253,7 +253,12 @@ function publicReadEvents(model, request) {
 
 // Answer one model turn after the configured delay, unless the caller left.
 function turn(transport, model, request, respond, closed, caller) {
-  emit({ event: "request", transport, turn: true });
+  const text = answerText(request);
+  const evidence = {
+    ...(caller === undefined ? {} : { caller }),
+    ...(echoPattern === undefined ? {} : { text }),
+  };
+  emit({ event: "request", transport, turn: true, ...evidence });
   if (heldPrompt !== undefined && request.includes(heldPrompt)) {
     emit({ event: "turn-held" });
     return;
@@ -261,7 +266,6 @@ function turn(transport, model, request, respond, closed, caller) {
   if (mode === "hang") {
     return;
   }
-  const text = answerText(request);
   setTimeout(() => {
     if (closed()) {
       return;
@@ -271,13 +275,7 @@ function turn(transport, model, request, respond, closed, caller) {
         publicReadEvents(model, request) ??
         answerEvents(model, text),
     );
-    emit({
-      event: "turn-answered",
-      transport,
-      status: 200,
-      ...(caller === undefined ? {} : { caller }),
-      ...(echoPattern === undefined ? {} : { text }),
-    });
+    emit({ event: "turn-answered", transport, status: 200, ...evidence });
   }, delayMs);
 }
 
