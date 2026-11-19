@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { performance } from "node:perf_hooks";
 import test from "node:test";
 
 import { injectJson as inject } from "../helpers/inject-json.mjs";
-import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 import {
   publicOrigin,
   nativeGatewayApiKey,
   requiresPostgres,
-  adminEmail,
   ensureBootstrap,
   startNativeHttpsUpstream,
   trustLocalUpstreamCertificate,
@@ -24,140 +21,16 @@ import {
   assertSocketClosesAfterMutation,
 } from "../helpers/native-admin-postgres.ts";
 import {
+  assertSocketAuditCloseReason,
+  parentSessionRow,
   registerLeaseDependencyCases,
   registerLeaseIndependentCookieCase,
+  registerLeaseParentAndRestrictionCases,
   registerLeaseReplacementAndRevocationCases,
+  registerLeaseStopCase,
+  waitForAuditActions,
+  waitForAuthorizationDenialAudit,
 } from "./native-admin-session-lease-cases.ts";
-
-async function waitForAuditActions(pool, namespaceId, agentId, actions) {
-  let remaining = actions;
-  let rows = [];
-  await waitUntil(
-    () => `audit actions ${remaining.join(", ")}`,
-    async () => {
-      const result = await pool.query(
-        `SELECT action, actor_id, outcome, details
-         FROM occ.audit_events
-        WHERE namespace_id = $1
-          AND resource_kind = 'agent'
-          AND resource_id = $2
-          AND action = ANY($3::text[])
-        ORDER BY occurred_at, id`,
-        [namespaceId, agentId, actions],
-      );
-      rows = result.rows;
-      remaining = actions.filter((action) => !rows.some((row) => row.action === action));
-      return remaining.length === 0;
-    },
-    { timeoutMs: 5_000, intervalMs: 50 },
-  );
-  for (const action of actions) {
-    const row = rows.find((candidate) => candidate.action === action);
-    assert.ok(row, `${action} audit row must exist`);
-    assert.equal(row.outcome, "success", `${action} audit outcome`);
-    assert.ok(row.actor_id, `${action} audit must retain the human actor id`);
-  }
-  return rows;
-}
-
-async function waitForAuthorizationDenialAudit(
-  pool,
-  namespaceId,
-  agentId,
-  action,
-  actorId,
-  options = {},
-) {
-  const row = await waitFor(
-    `${action} authorization-denial audit row`,
-    async () => {
-      const result = await pool.query(
-        `SELECT id, kind, action, actor_id, outcome, details
-         FROM occ.audit_events
-        WHERE namespace_id = $1
-          AND resource_kind = 'agent'
-          AND resource_id = $2
-          AND kind = 'authorization_denial'
-          AND action = $3
-          AND ($4::text IS NULL OR actor_id = $4)
-          AND ($5::text IS NULL OR id <> $5)
-          AND ($6::boolean IS NULL OR (details->'nativeAdmin' ? 'revisionId') = $6)
-        ORDER BY occurred_at DESC, id DESC
-        LIMIT 1`,
-        [
-          namespaceId,
-          agentId,
-          action,
-          actorId ?? null,
-          options.excludeId ?? null,
-          options.leaseRenewal ?? null,
-        ],
-      );
-      return result.rows[0];
-    },
-    { timeoutMs: 5_000, intervalMs: 50 },
-  );
-  assert.equal(row.kind, "authorization_denial");
-  assert.equal(row.outcome, "denied");
-  assert.equal(row.details?.__occAuditMetadata?.reasonCode, "AUTHORIZATION_DENIED");
-  if (actorId !== undefined) {
-    assert.equal(row.actor_id, actorId);
-  } else {
-    assert.ok(row.actor_id, `${action} denial audit must retain the human actor id`);
-  }
-  return row;
-}
-
-function nativeAdminAuditDetails(row, action) {
-  const details = row.details?.nativeAdmin;
-  assert.equal(typeof details, "object", `${action} audit must include nativeAdmin details`);
-  assert.notEqual(details, null, `${action} audit must include nativeAdmin details`);
-  return details;
-}
-
-async function assertSocketAuditCloseReason(scenario, closureReason) {
-  const rows = await waitForAuditActions(
-    scenario.apiA.pool,
-    scenario.namespace.id,
-    scenario.agent.id,
-    [
-      "openclaw.agents.native_admin.websocket.connect",
-      "openclaw.agents.native_admin.websocket.close",
-    ],
-  );
-  const connect = rows.find(
-    (row) => row.action === "openclaw.agents.native_admin.websocket.connect",
-  );
-  const close = rows.find((row) => row.action === "openclaw.agents.native_admin.websocket.close");
-  assert.ok(connect, "native admin WebSocket connect audit row must exist");
-  assert.ok(close, "native admin WebSocket close audit row must exist");
-  const connectDetails = nativeAdminAuditDetails(connect, connect.action);
-  const closeDetails = nativeAdminAuditDetails(close, close.action);
-  assert.equal(typeof connectDetails.connectionId, "string");
-  assert.ok(connectDetails.connectionId.length > 0);
-  assert.equal(closeDetails.connectionId, connectDetails.connectionId);
-  assert.equal(closeDetails.closeReason, closureReason);
-  for (const details of [connectDetails, closeDetails]) {
-    assert.equal(details.mode, scenario.mode);
-    assert.equal(details.parentSessionId, scenario.parentSession.id);
-    assert.equal(details.revisionId, scenario.revision.id);
-    assert.equal(details.host, scenario.native.host);
-  }
-}
-
-async function parentSessionRow(api, email = adminEmail) {
-  const storedSession = await api.pool.query(
-    `SELECT session.id, session.user_id, session.expires_at
-       FROM occ.session AS session
-       JOIN occ."user" AS account ON account.id = session.user_id
-      WHERE account.email = $1
-      ORDER BY session.created_at DESC
-      LIMIT 1`,
-    [email],
-  );
-  assert.equal(storedSession.rowCount, 1, "sign-in must persist a parent session row");
-  return storedSession.rows[0];
-}
 
 async function openNativeAdminSocketScenario(t, label, options = {}) {
   await ensureBootstrap(t);
@@ -212,61 +85,6 @@ async function openNativeAdminSocketScenario(t, label, options = {}) {
     principal,
     port,
     socket,
-  };
-}
-
-async function assertRevokedHttp(api, native, nativeCookie) {
-  const denied = await nativeGet(api, native, nativeCookie, "/after-revocation");
-  assert.notEqual(denied.statusCode, 200);
-  return denied;
-}
-
-function within(promise, milliseconds, description) {
-  let timer;
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(description)), milliseconds);
-    }),
-  ]).finally(() => clearTimeout(timer));
-}
-
-// Keep the real PostgreSQL append; only its timing is controlled. Session and
-// NativeIAM decisions still come from the composed controller and database.
-function holdLeaseDenialAppend(onEntered) {
-  const entered = Promise.withResolvers();
-  const gate = Promise.withResolvers();
-  const pending = [];
-  let attempts = 0;
-  let released = false;
-  return {
-    entered: entered.promise,
-    attempts: () => attempts,
-    released: () => released,
-    wrap(sink) {
-      return {
-        append(event) {
-          if (
-            event.kind !== "authorization_denial" ||
-            event.action !== "openclaw.agents.native_admin.proxy.authorize" ||
-            event.details?.nativeAdmin?.revisionId === undefined
-          ) {
-            return sink.append(event);
-          }
-          attempts += 1;
-          onEntered();
-          entered.resolve(event);
-          const append = gate.promise.then(() => sink.append(event));
-          pending.push(append);
-          return append;
-        },
-      };
-    },
-    async release() {
-      released = true;
-      gate.resolve();
-      await within(Promise.all(pending), 5_000, "the retained denial append did not settle");
-    },
   };
 }
 
@@ -340,209 +158,13 @@ test(
   },
 );
 
-test(
-  "PostgreSQL native admin WebSocket lease closes at the next renewal after parent logout",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "logout");
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-      const signOut = await inject(scenario.apiA.app, "POST", "/api/auth/sign-out", {
-        session: scenario.session,
-      });
-      assert.equal(signOut.statusCode, 200, signOut.body);
-    });
-    t.diagnostic(`parent logout closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "session_invalid");
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
-  },
-);
-
-test(
-  "PostgreSQL native admin WebSocket lease closes at the next renewal after parent session expiry",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "expiry");
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-      const expired = await scenario.apiA.pool.query(
-        `UPDATE occ.session
-            SET expires_at = statement_timestamp() - interval '1 second',
-                updated_at = statement_timestamp()
-          WHERE id = $1`,
-        [scenario.parentSession.id],
-      );
-      assert.equal(expired.rowCount, 1);
-    });
-    t.diagnostic(`parent session expiry closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "session_invalid");
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
-  },
-);
-
-test(
-  "PostgreSQL native admin WebSocket lease closes at the next renewal after both browser permissions are restricted",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const startedAt = performance.now();
-    const phases = [];
-    const mark = (phase) =>
-      phases.push({ phase, elapsedMs: Math.round(performance.now() - startedAt) });
-    const audit = holdLeaseDenialAppend(() => mark("denial_append_pending"));
-    t.after(() => audit.release());
-    const scenario = await openNativeAdminSocketScenario(t, "iam-restriction", {
-      auditSink: audit.wrap,
-    });
-    const peer = scenario.upstream.peers[0];
-    assert.ok(peer, "the real HTTPS upstream must own the admitted relay");
-    // Closed-stream write callbacks below are the oracle for their expected errors.
-    scenario.socket.on("error", () => {});
-    peer.on("error", () => {});
-    let clientBytes = "";
-    let peerBytes = "";
-    scenario.socket.on("data", (chunk) => {
-      clientBytes += chunk.toString();
-    });
-    peer.on("data", (chunk) => {
-      peerBytes += chunk.toString();
-    });
-    const clientClosed = new Promise((resolve) => scenario.socket.once("close", resolve));
-    const peerClosed = new Promise((resolve) => peer.once("close", resolve));
-    const leaseDenialCount = async () => {
-      const result = await scenario.apiA.pool.query(
-        `SELECT count(*)::int AS count FROM occ.audit_events
-          WHERE namespace_id = $1 AND resource_id = $2
-            AND kind = 'authorization_denial'
-            AND action = 'openclaw.agents.native_admin.proxy.authorize'
-            AND details->'nativeAdmin'->>'revisionId' = $3`,
-        [scenario.namespace.id, scenario.agent.id, scenario.revision.id],
-      );
-      return result.rows[0].count;
-    };
-    try {
-      scenario.socket.write("allowed-client-message");
-      peer.write("allowed-upstream-message");
-      await waitFor(
-        "allowed application bytes across both relay directions",
-        () =>
-          clientBytes.includes("allowed-upstream-message") &&
-          peerBytes.includes("allowed-client-message"),
-        2_000,
-      );
-      mark("allowed_bidirectional_relay");
-      assert.equal(await leaseDenialCount(), 0);
-      const closure = within(
-        Promise.all([clientClosed, peerClosed]),
-        3_500,
-        "both relay ends must close before the five-second fallback and audit release",
-      );
-      // Attach a rejection observer while the actual database restriction commits.
-      void closure.catch(() => {});
-      const restricted = await scenario.apiA.pool.query(
-        `INSERT INTO occ.iam_restrictions
-           (id, namespace_id, action, resource_kind, resource_id, effect)
-         VALUES ($1, $2, 'administer', 'agent', $3, 'deny'),
-                ($1 || '-operate', $2, 'operate', 'agent', $3, 'deny')`,
-        [`restriction-native-admin-${randomUUID()}`, scenario.namespace.id, scenario.agent.id],
-      );
-      assert.equal(restricted.rowCount, 2);
-      mark("restriction_commit_acknowledged");
-      await within(audit.entered, 3_000, "the real denied renewal must reach its audit append");
-      await closure;
-      mark("both_transport_ends_closed");
-      assert.equal(audit.released(), false);
-      assert.equal(audit.attempts(), 1);
-      assert.equal(await leaseDenialCount(), 0, "denial persistence must still be pending");
-      await assertSocketAuditCloseReason(scenario, "authorization_denied");
-      assert.equal(scenario.socket.destroyed, true);
-      assert.equal(peer.destroyed, true);
-
-      const before = { clientBytes, peerBytes };
-      // Check actual writes after close, without a sleep or teardown closing the sockets.
-      for (const socket of [scenario.socket, peer]) {
-        const error = await within(
-          new Promise((resolve) => socket.write("after-revocation-message", resolve)),
-          1_000,
-          "a post-revocation write must complete with failure",
-        );
-        assert.ok(error, "a closed relay must refuse later application bytes");
-      }
-      assert.deepEqual({ clientBytes, peerBytes }, before);
-      mark("later_application_bytes_refused");
-      assert.equal(audit.released(), false);
-      mark("audit_gate_released");
-      await audit.release();
-
-      // The lease denial names its revision; the later HTTP denial does not.
-      const leaseDenial = await waitForAuthorizationDenialAudit(
-        scenario.apiA.pool,
-        scenario.namespace.id,
-        scenario.agent.id,
-        "openclaw.agents.native_admin.proxy.authorize",
-        scenario.principal.id,
-        { leaseRenewal: true },
-      );
-      assert.equal(leaseDenial.details.nativeAdmin.revisionId, scenario.revision.id);
-      assert.equal(await leaseDenialCount(), 1);
-      mark("attributable_lease_denial_persisted_once");
-      await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
-      await waitForAuthorizationDenialAudit(
-        scenario.apiA.pool,
-        scenario.namespace.id,
-        scenario.agent.id,
-        "openclaw.agents.native_admin.proxy.authorize",
-        scenario.principal.id,
-        { excludeId: leaseDenial.id, leaseRenewal: false },
-      );
-      assert.equal(await leaseDenialCount(), 1);
-      assert.equal(audit.attempts(), 1);
-    } finally {
-      t.diagnostic(`Composed native-admin revocation phases: ${JSON.stringify(phases)}`);
-      try {
-        await audit.release();
-      } finally {
-        scenario.socket.destroy();
-        peer.destroy();
-        const closed = await Promise.allSettled([
-          scenario.apiA.app.close(),
-          scenario.apiB.app.close(),
-        ]);
-        for (const result of closed) {
-          assert.equal(result.status, "fulfilled", "both owned API replicas must close");
-        }
-      }
-    }
-  },
-);
-
 /** @satisfies {import("./native-admin-session-lease-cases.ts").LeaseDependencies} */
-const leaseDependencies = {
-  openNativeAdminSocketScenario,
-  assertSocketAuditCloseReason,
-  async assertRevokedHttp(scenario) {
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
-  },
-};
+const leaseDependencies = { openNativeAdminSocketScenario };
 
+registerLeaseParentAndRestrictionCases(leaseDependencies);
 registerLeaseDependencyCases(leaseDependencies);
-
-test(
-  "PostgreSQL native admin WebSocket lease closes at the next renewal after Agent stop",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "stop");
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-      const stopped = await inject(
-        scenario.apiA.app,
-        "POST",
-        `/namespaces/${scenario.namespace.id}/agents/${scenario.agent.id}/stop`,
-        { session: scenario.session },
-      );
-      assert.equal(stopped.statusCode, 202, stopped.body);
-    });
-    t.diagnostic(`Agent stop closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "agent_unavailable");
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
-  },
-);
+registerLeaseStopCase(leaseDependencies);
+registerLeaseReplacementAndRevocationCases(leaseDependencies);
 
 registerLeaseReplacementAndRevocationCases(leaseDependencies);
 
