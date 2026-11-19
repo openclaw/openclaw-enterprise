@@ -226,15 +226,6 @@ RUN --mount=type=secret,id=build-ca,required=false \
       --config.supportedArchitectures.libc=glibc; \
     rm -rf /tmp/pnpm-store
 COPY --from=openclaw-source /source/ ./
-# Exercise the original caller through the public RPC before and after the
-# placement acknowledgment, including revocation, against this exact source.
-COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo 'b6261ce5be40e7d3c8f2d263aba7320301cbdd66381540edbb4362e95794139a  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-required-worker-authority-regression.patch
-# Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
-COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo '292609ff7adffb4962c5ff29f46f9179530f052d7a4fd303f5c18e5faafa77c6  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
@@ -255,11 +246,6 @@ RUN echo '1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6  /tmp
 COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
 RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
-
-# TODO: Remove when the pinned OpenClaw retries safe restart admission and passive Codex recovery.
-COPY deploy/runtime/openclaw-restart-harness-readiness.patch /tmp/openclaw-restart-harness-readiness.patch
-RUN echo 'fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-restart-harness-readiness.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
@@ -338,7 +324,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
-    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
+    src/api/gateway-reachability.node.test.ts \
     src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
     src/pages/chat/chat-history-subscription-errors.test.ts
 
