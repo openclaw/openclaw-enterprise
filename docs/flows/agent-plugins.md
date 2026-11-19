@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-18
-last_updated_session: authoring-run/19cca54a-1443-4e43-87cd-86a89718b7e4
+updated: "2026-11-19"
+last_updated_session: "authoring-run/cc87d188-cde6-4d4e-9781-dd8f883dbe3e"
 ---
 
 # Agent Plugin Deployment Flow
@@ -139,25 +139,23 @@ At save and deployment, the OpenClaw Driver's
 [credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts)
 passes the admitted plugin identity and connections to
 [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts), then
-checks the returned connections against OCC-authorized sources. The description
-lists required network access; each connection identifies only requests eligible
-for credential injection. Other requests remain network-only, even on the same
-host. Discovery may be public or authenticated.
+verifies the connections against OCC-authorized sources. Each connection identifies
+the requests eligible for credential injection. Discovery may use credentials.
 
 OCC snapshots the Configuration, Driver and selections. The worker checks
-Driver–Harness compatibility before cutover. Gateway and worker verify artifacts
-against Compute’s package descriptors.
+Driver–Harness compatibility. Gateway and worker verify Compute’s package descriptors.
 
-- **CLI packages.** The Gateway loads skills; the Harness runs the pinned executable.
-  For Google, the [OpenShell Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts)
-  checks the guard version before attachment, and the signed guard enforces the
-  source scope and reviewed requests.
-- **Hosted MCP packages.** The worker advertises selected tools. Gateway grants
-  same-node execution; Gateway hooks and cross-node calls return structured
-  results or policy denials through Code Mode. The credential Driver attaches
-  the source, Sandbox supplies its placeholder, and OpenShell scopes requests,
-  enforces exact tool names and rejects overlapping routes.
-- **Native runtime plugins.** Startup installs packages and verifies tool policy.
+- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable.
+  For Google, [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts)
+  checks the guard version before attachment. The signed guard enforces the source scope.
+- **Hosted MCP packages.** The worker advertises selected tools. Gateway grants same-node
+  execution. Code Mode returns results or denials for Gateway hooks and cross-node calls.
+  Sandbox supplies the attached source’s placeholder. OpenShell checks exact tool names
+  and rejects overlapping routes.
+- **Native runtime plugins.** Startup installs packages and checks tool policy.
+
+Before Sandbox readiness, the Google and [managed MCP](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts)
+checks verify the Provider routes and request rules independently of Gateway-assigned owners.
 
 Withdrawal removes credential injection. Recovery preserves other attachments.
 
@@ -387,6 +385,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 05:29: Describe the effective Provider route checks for managed plugins. (authoring-run/cc87d188-cde6-4d4e-9781-dd8f883dbe3e - 021fa1fee2574c997ec49de28f92892fd8683efd)
 
 - 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)
 

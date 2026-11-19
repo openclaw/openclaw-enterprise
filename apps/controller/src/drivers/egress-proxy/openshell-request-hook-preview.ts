@@ -10,8 +10,12 @@ import type {
   OpenShellGatewayClient,
   OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
-import type { OpenShellPreparedGitInstalled } from "./openshell-prepared-git-provider.ts";
+import type {
+  OpenShellExpectedProviderRule,
+  OpenShellPreparedGitInstalled,
+} from "./openshell-prepared-git-provider.ts";
 import type { OpenShellOnlineHttpRequest } from "./openshell-online-authority.ts";
+import { withOpenShellProviderTokenGrantOwners } from "./openshell-token-grant-owner.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 
 export const observedRequestHook = "request-hook-observed" as const;
@@ -26,7 +30,7 @@ interface Selection {
   readonly registration: string;
   readonly audience: string;
   readonly modelProvider: string;
-  readonly gitRule: { name: string; endpoints: readonly Record<string, unknown>[] };
+  readonly gitRule: OpenShellExpectedProviderRule["rule"];
   readonly workload: (sandboxId: string, signal: AbortSignal) => Promise<string | undefined>;
   readonly signal: AbortSignal;
 }
@@ -37,6 +41,7 @@ function expectedPolicy(
   source: Record<string, unknown>,
   effective: Record<string, unknown>,
   git: Selection["gitRule"],
+  gitProviderId: string,
   modelProvider: string,
   runtimeProvider: string,
 ) {
@@ -46,9 +51,9 @@ function expectedPolicy(
     return false;
   }
   const { [git.name]: rule, ...others } = asRecord(network) ?? {};
-  // Stock 0.1.5 retains the imported port and marks each endpoint provider_credentialed.
-  // Compare the entire rule; accepting another rule because it names port 443 is not enough.
-  if (!rule || !isDeepStrictEqual(wirePolicy(rule), wirePolicy(git))) {
+  // The Gateway binds each endpoint's token-grant owner to the Provider record.
+  const expectedGit = withOpenShellProviderTokenGrantOwners(git, gitProviderId);
+  if (!rule || !expectedGit || !isDeepStrictEqual(wirePolicy(rule), wirePolicy(expectedGit))) {
     return false;
   }
   // Only literal non-Git hosts, including the independently admitted model provider.
@@ -138,7 +143,7 @@ export async function previewPolicyAndRecipient({
     !c ||
     !policy ||
     !source ||
-    !expectedPolicy(source, policy, gitRule, modelProvider, runtimeProvider) ||
+    !expectedPolicy(source, policy, gitRule, o.providerId, modelProvider, runtimeProvider) ||
     c.version !== admission.policy_version ||
     c.workspace !== o.workspace ||
     c.configuration_instance_id !== admission.instance_id ||

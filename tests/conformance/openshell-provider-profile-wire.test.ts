@@ -167,6 +167,463 @@ test("prepared Git provider binds repository read and write rules to its wire pr
   );
 });
 
+test("prepared repository ACL requires a matching loaded effective policy", async (t) => {
+  const modelEndpoint = {
+    host: "model.example.test",
+    port: 443,
+    protocol: "rest",
+    access: "NETWORK_ACCESS_PRESET_FULL" as const,
+  };
+  const modelId = "model-id";
+  const modelRule = {
+    name: "_provider_model",
+    binaries: [{ path: "/usr/bin/codex" }],
+    endpoints: [
+      {
+        ...modelEndpoint,
+        host: "model.example.net",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        provider_credentialed: true,
+      },
+    ],
+  };
+  const runtime = "runtime-files";
+  const runtimeRule = { name: "_provider_runtime_files", binaries: [], endpoints: [] };
+  const scope = {
+    workspace: "loaded-repo-acl",
+    workspaceId: "workspace-id",
+    sandbox: "sandbox",
+    executionId: "revision-1",
+    installationId: "42",
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
+    binaries: ["/usr/bin/git"],
+    repositoryNetworkPolicy: [{ repository: "fixture/a", access: "read" }],
+    expectedProviders: [
+      { name: "model", providerId: modelId, rule: modelRule },
+      { name: runtime, rule: runtimeRule },
+    ],
+  } satisfies OpenShellPreparedGitScope;
+  const hash = "a".repeat(64);
+  const sourceRule = { name: "model", endpoints: [modelEndpoint] };
+  const sourceWithoutMiddleware = { version: 1, network_policies: { model: sourceRule } };
+  const stockSource = {
+    ...sourceWithoutMiddleware,
+    network_middlewares: {
+      model: {
+        name: "model",
+        middleware: "fixture-model-egress",
+        on_error: "fail_closed",
+        endpoints: { include: [modelEndpoint.host] },
+      },
+    },
+  };
+  const generation = { policy_hash: hash, config_revision: "100", provider_env_revision: "120" };
+  const endpoint = {
+    host: "github.com",
+    port: 443,
+    protocol: "rest",
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    provider_credentialed: true,
+    rules: [
+      {
+        allow: {
+          method: "GET",
+          path: "/fixture/a.git/info/refs",
+          query: { service: { glob: "git-upload-pack" } },
+        },
+      },
+      { allow: { method: "POST", path: "/fixture/a.git/git-upload-pack" } },
+    ],
+  };
+  let providerName = "";
+  let elapsedReadbackMs = 0;
+  let overrides: {
+    source?: Record<string, unknown>;
+    effective?: Record<string, unknown>;
+    active?: number;
+    missingConfig?: boolean;
+    config?: Record<string, unknown>;
+    sandboxId?: string;
+    sandboxPolicy?: Record<string, unknown> | null;
+    providers?: string[];
+    ageDuringReadback?: boolean;
+  } = {};
+  const { client }: { client: GrpcOpenShellGatewayClient } = await gitExpiryGateway(t, {
+    model: "model",
+    workspace: scope.workspace,
+    sandbox: scope.sandbox,
+    revisionId: scope.executionId,
+    deadline: "2030-01-01T00:00:00Z",
+    platformProfile: false,
+    configure(methods: Record<string, (request: Record<string, unknown>) => unknown>) {
+      const scopeCheck = (request: Record<string, unknown>, nameField: "name" | "sandbox") => {
+        assert.ok(request.workspace_scope && typeof request.workspace_scope === "object");
+        assert.ok("workspace" in request.workspace_scope);
+        assert.equal(request.workspace_scope.workspace, scope.workspace);
+        assert.equal(request[nameField], scope.sandbox);
+      };
+      methods.GetSandboxPolicyStatus = (request) => {
+        scopeCheck(request, "sandbox");
+        return {
+          active_version: overrides.active ?? 17,
+          revision: {
+            version: 17,
+            policy_hash: "b".repeat(64),
+            status: "POLICY_STATUS_LOADED",
+            policy: overrides.source ?? stockSource,
+          },
+        };
+      };
+      methods.GetSandboxConfig = (request) => {
+        scopeCheck(request, "name");
+        return overrides.missingConfig
+          ? undefined
+          : {
+              version: 17,
+              ...generation,
+              workspace: scope.workspace,
+              policy_source: 1,
+              policy_validation_failure_mode: "fail_closed",
+              configuration_admitted: true,
+              configuration_instance_id: "configuration",
+              provider_attachment_epoch: "original",
+              policy: {
+                ...stockSource,
+                network_policies: {
+                  ...stockSource.network_policies,
+                  ...overrides.effective,
+                },
+              },
+              ...overrides.config,
+            };
+      };
+      methods.GetSandbox = (request) => {
+        scopeCheck(request, "name");
+        if (overrides.ageDuringReadback) {
+          elapsedReadbackMs = 2_000;
+        }
+        return {
+          sandbox: {
+            metadata: {
+              id: overrides.sandboxId ?? "sandbox-id",
+              workspace: scope.workspace,
+              name: scope.sandbox,
+            },
+            spec: {
+              provider_attachment_epoch: "original",
+              providers: overrides.providers ?? ["model", runtime, providerName],
+              ...(overrides.sandboxPolicy === null
+                ? {}
+                : { policy: overrides.sandboxPolicy ?? stockSource }),
+            },
+            status: {
+              main_process_instance_id: "network-instance",
+              configuration_activated: true,
+              configuration_admission: {
+                instance_id: "configuration",
+                state: 2,
+                policy_version: 17,
+                ...generation,
+              },
+            },
+          },
+        };
+      };
+      methods.GetSandboxProviderStatus = (request) => {
+        scopeCheck(request, "sandbox");
+        assert.equal(request.provider, providerName);
+        const now = { seconds: Math.floor(Date.now() / 1000) };
+        const observationAgeSeconds = overrides.ageDuringReadback
+          ? 14 + elapsedReadbackMs / 1000
+          : 0;
+        const snapshot = { ...generation, attachment_epoch: "original" };
+        return {
+          status: {
+            state:
+              observationAgeSeconds < 15
+                ? "PROVIDER_READINESS_STATE_READY"
+                : "PROVIDER_READINESS_STATE_PENDING",
+            receipt: {
+              receipt_id: "observe-git",
+              kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+              workspace: scope.workspace,
+              provider: providerName,
+              desired: {
+                ...snapshot,
+                sandbox: scope.sandbox,
+                sandbox_id: "sandbox-id",
+                provider_id: "git-id",
+                provider_resource_version: "1",
+              },
+            },
+            observed: {
+              ...snapshot,
+              session_id: "supervisor",
+              sequence: "1",
+              process_instance_id: "process",
+              credentials_installed: true,
+              policy_active: true,
+              launch_environment_installed: true,
+            },
+            network_instance_id: "network-instance",
+            evaluated_time: now,
+            observed_time: { seconds: now.seconds - observationAgeSeconds },
+          },
+        };
+      };
+    },
+  });
+  const prepared = new OpenShellPreparedGitProvider(client, scope);
+  const binding = await prepared.prepare(
+    { value: "synthetic-fixture", expiresAt: new Date(Date.now() + 60_000).toISOString() },
+    AbortSignal.timeout(10_000),
+  );
+  providerName = binding.provider;
+  const name = "_provider_" + providerName.replaceAll("-", "_");
+  const gitRule = { name, binaries: [{ path: "/usr/bin/git" }], endpoints: [endpoint] };
+  // Generated independently with OpenShell 0.1.8's protobuf schema and its
+  // policy_identity.rs framing. The Gateway stamps the complete rule per endpoint.
+  const stockGitOwner =
+    "grant-owner:v1:f91498eb9e144f317eea2b4979aa24d368eee926d1040e22d41e355f27f6b412";
+  const stockModelOwner =
+    "grant-owner:v1:f06e4e3075fd5cf5654d660d9186ab91841454eb090e22950206a7c5de3bb50a";
+  const replacementModelOwner =
+    "grant-owner:v1:b824b689ceadbe85c88600cf8344d577eecdfae4ddebd4e55574eac1825a3be0";
+  const stockModelEndpoint = { ...modelRule.endpoints[0]!, token_grant_owner: stockModelOwner };
+  const expected = {
+    [name]: { ...gitRule, endpoints: [{ ...endpoint, token_grant_owner: stockGitOwner }] },
+    [modelRule.name]: { ...modelRule, endpoints: [stockModelEndpoint] },
+    [runtimeRule.name]: runtimeRule,
+  };
+  const observe = () => prepared.observe(binding, "sandbox-id", AbortSignal.timeout(10_000));
+  overrides = { effective: expected };
+  const installed = await observe();
+  assert.ok(installed);
+  assert.equal(installed.policyHash, hash);
+  const predecessor = () =>
+    prepared.observePredecessor(binding, installed, AbortSignal.timeout(10_000));
+  assert.equal(await predecessor(), true);
+
+  await t.test(
+    "ready sibling model generation gains a literal HTTPS REST destination",
+    async () => {
+      // All live generations and the admitted source still agree. Only the sibling
+      // model rule changed, and the new route passes the general non-Git endpoint checks.
+      overrides = {
+        effective: {
+          ...expected,
+          [modelRule.name]: {
+            ...modelRule,
+            endpoints: [
+              stockModelEndpoint,
+              { ...stockModelEndpoint, host: "second-model.example.test" },
+            ],
+          },
+        },
+      };
+      assert.deepEqual(
+        { active: (await observe()) !== undefined, predecessor: await predecessor() },
+        { active: false, predecessor: false },
+      );
+    },
+  );
+
+  await t.test("same-named model Provider has a different token-grant owner", async () => {
+    // Only the Provider record ID used to derive the grant owner changed.
+    // All routes, attached names, and live generation reports agree.
+    overrides = {
+      effective: {
+        ...expected,
+        [modelRule.name]: {
+          ...modelRule,
+          endpoints: [{ ...stockModelEndpoint, token_grant_owner: replacementModelOwner }],
+        },
+      },
+    };
+    assert.equal(await observe(), undefined);
+    assert.equal(await predecessor(), false);
+  });
+
+  await t.test("ACL observation requires an independently selected model Provider ID", async () => {
+    overrides = { effective: expected };
+    const unbound = new OpenShellPreparedGitProvider(client, {
+      ...scope,
+      expectedProviders: [
+        { name: "model", rule: modelRule },
+        { name: runtime, rule: runtimeRule },
+      ],
+    });
+    assert.equal(
+      await unbound.observe(binding, "sandbox-id", AbortSignal.timeout(10_000)),
+      undefined,
+    );
+    assert.equal(
+      await unbound.observePredecessor(binding, installed, AbortSignal.timeout(10_000)),
+      false,
+    );
+  });
+
+  await t.test("ACL observation requires an independently selected sibling policy", async () => {
+    overrides = { effective: expected };
+    const { expectedProviders: _expectedProviders, ...unboundScope } = scope;
+    const unbound = new OpenShellPreparedGitProvider(client, unboundScope);
+    assert.equal(
+      await unbound.observe(binding, "sandbox-id", AbortSignal.timeout(10_000)),
+      undefined,
+    );
+    assert.equal(
+      await unbound.observePredecessor(binding, installed, AbortSignal.timeout(10_000)),
+      false,
+    );
+  });
+
+  const broadGit = { endpoints: [{ host: "github.com", port: 443, protocol: "tcp" }] };
+  const broadApi = { endpoints: [{ host: "API.GITHUB.COM", port: 443, protocol: "rest" }] };
+  const broadSource = {
+    ...stockSource,
+    network_policies: { ...stockSource.network_policies, broadGit },
+  };
+  const opaqueModel = {
+    ...sourceRule,
+    endpoints: [{ host: "alias.example.test", port: 443 }],
+  };
+  const opaqueSource = { ...stockSource, network_policies: { model: opaqueModel } };
+  for (const [label, evidence] of Object.entries({
+    "missing admitted Sandbox policy": { sandboxPolicy: null },
+    "missing policy readback": { missingConfig: true },
+    "missing effective Git rule": { effective: {} },
+    "source revision not active": { active: 16 },
+    "wrong active hash": { config: { policy_hash: "c".repeat(64) } },
+    "wrong active Provider generation": { config: { provider_env_revision: "119" } },
+    "replacement Sandbox": { sandboxId: "replacement" },
+    "unexpected attached Provider": { providers: ["model", runtime, providerName, "other"] },
+    "global policy override": { config: { policy_source: 2 } },
+    "broad source Git route": {
+      source: broadSource,
+      sandboxPolicy: broadSource,
+      effective: { ...expected, broadGit },
+    },
+    "overlapping Provider API route": { effective: { ...expected, _provider_other: broadApi } },
+    "unexpected inspected Provider route": {
+      effective: {
+        ...expected,
+        _provider_other: {
+          name: "_provider_other",
+          endpoints: [{ ...modelRule.endpoints[0], host: "other.example.test" }],
+        },
+      },
+    },
+    "overlapping wildcard Provider route": {
+      effective: { ...expected, _provider_other: { endpoints: [{ host: "**.com", port: 443 }] } },
+    },
+    "opaque Provider alias": {
+      effective: {
+        ...expected,
+        _provider_model: {
+          name: "_provider_model",
+          endpoints: [
+            { ...modelEndpoint, host: "alias.example.test", tls: "NETWORK_TLS_MODE_SKIP" },
+          ],
+        },
+      },
+    },
+    "opaque source endpoint": {
+      source: opaqueSource,
+      sandboxPolicy: opaqueSource,
+      effective: { ...expected, model: opaqueModel },
+    },
+    "missing model token-grant owner": {
+      effective: { ...expected, [modelRule.name]: modelRule },
+    },
+    "missing Git token-grant owner": {
+      effective: { ...expected, [name]: gitRule },
+    },
+    "Git audit": {
+      effective: {
+        ...expected,
+        [name]: {
+          ...gitRule,
+          endpoints: [
+            {
+              ...endpoint,
+              token_grant_owner: stockGitOwner,
+              enforcement: "NETWORK_ENFORCEMENT_MODE_AUDIT",
+            },
+          ],
+        },
+      },
+    },
+    "Git TLS skip": {
+      effective: {
+        ...expected,
+        [name]: {
+          ...gitRule,
+          endpoints: [
+            { ...endpoint, token_grant_owner: stockGitOwner, tls: "NETWORK_TLS_MODE_SKIP" },
+          ],
+        },
+      },
+    },
+    "widened Git query": {
+      effective: {
+        ...expected,
+        [name]: {
+          ...gitRule,
+          endpoints: [
+            {
+              ...endpoint,
+              token_grant_owner: stockGitOwner,
+              rules: [{ allow: { method: "GET", path: "/fixture/a.git/info/refs" } }],
+            },
+          ],
+        },
+      },
+    },
+  })) {
+    await t.test(label, async () => {
+      overrides = { effective: expected, ...evidence };
+      assert.equal(await observe(), undefined);
+    });
+  }
+
+  await t.test("live policy drops admitted middleware from both readbacks", async () => {
+    // The loaded source and effective policy agree with each other, and the Git rule
+    // and live Provider generation still match. The admitted Sandbox policy still has the middleware.
+    overrides = {
+      source: sourceWithoutMiddleware,
+      config: {
+        policy: {
+          ...sourceWithoutMiddleware,
+          network_policies: { ...sourceWithoutMiddleware.network_policies, ...expected },
+        },
+      },
+    };
+    assert.equal(await observe(), undefined);
+    assert.equal(await predecessor(), false);
+  });
+
+  await t.test("matching observation expires during effective policy readback", async (t) => {
+    overrides = { effective: expected, ageDuringReadback: true };
+    elapsedReadbackMs = 0;
+    // Age the same report while the final Sandbox read is in flight.
+    const monotonicNow = performance.now.bind(performance);
+    t.mock.method(performance, "now", () => monotonicNow() + elapsedReadbackMs);
+    assert.equal(await observe(), undefined);
+    assert.equal(elapsedReadbackMs, 2_000);
+  });
+
+  await t.test(
+    "predecessor requires supervisor readiness after effective policy readback",
+    async () => {
+      overrides = { effective: expected, ageDuringReadback: true };
+      elapsedReadbackMs = 0;
+      assert.equal(await predecessor(), false);
+      assert.equal(elapsedReadbackMs, 2_000);
+    },
+  );
+});
+
 test("provider profile wire defaults preserve Git overlap enforcement", async (t) => {
   const workspace = "profile-wire";
   const provider = "oce-runtime-revision-1";

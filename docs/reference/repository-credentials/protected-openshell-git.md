@@ -132,32 +132,31 @@ max_payload_bytes = 4194304
 timeout = "5s"
 ```
 
-The selected repository path and `github-installation` preview require exactly `5s` here. OCE still caps its
-authorization decision at three seconds.
+Both repository access and `github-installation` preview require exactly `5s`.
+OCE caps authorization at three seconds.
 
-Start the configured OCE worker before restarting the Gateway: Gateway startup
-calls authenticated `Describe` and refuses an unavailable or incompatible service.
-OCE advertises the request-phase binding; policy admission calls `ValidateConfig`.
-The allowlist requires that binding: a service advertising only response hooks is
-refused by both Gateway and supervisor. Do not remove the required binding.
-The registration name must match `repository.openShell.registrationName`.
-OCE attaches the selected binding to the sandbox policy with `on_error: fail_closed`
-for `github.com` and `api.github.com`. Do not hand-author its binding identifier.
-Those hosts, and every other name under `github.com` (such as `ssh.github.com`,
-`codeload.github.com`, `gist.github.com`, `docs.github.com` and `*.pkg.github.com`),
-come only from this route: if another Sandbox Driver network policy
-(`policy.networkPolicies`, such as a `source-control` policy) also allows one, the
-Installation refuses to start and names that policy. `ghcr.io` and
-`githubusercontent.com` hosts are not covered. The Driver still needs at
-least one policy, such as the model endpoint's. An Agent network grant for those
-hosts on any port is refused the same way: saving it for an Agent with a repository
-binding, adding the binding beside it, deploy and live application each fail with a
-`409` that names the grant. IP-address hosts (IPv4, IPv6 or a range, private and
-loopback included) may lead to GitHub, so both checks refuse them too; use DNS names,
-such as a Service name. The checks compare names only: a DNS name that resolves to
-GitHub (a wildcard-IP name or your own record) is not detected; do not add one.
-Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enable
-`allow_insecure_transport`. This attachment alone does not establish qualified enforcement.
+Start the configured OCE worker before restarting the Gateway. The Gateway calls
+authenticated `Describe` at startup and policy admission calls `ValidateConfig`.
+The Gateway and supervisor require the request-phase binding. Match the registration
+name to `repository.openShell.registrationName`. OCE writes the binding identifier
+and sets `on_error: fail_closed` for `github.com` and `api.github.com`.
+
+The Installation refuses startup and names any other `policy.networkPolicies` rule
+that admits `github.com`, any subdomain of `github.com`, or an IP address or range.
+The Driver still needs at least one policy, such as the model endpoint's. An Agent network
+grant for those destinations on any port causes saving the grant, adding the
+repository binding, deployment, and live application to return `409` with the grant's
+name. Use DNS names and exclude records that resolve to GitHub. The checks compare
+names and do not cover `ghcr.io` or `githubusercontent.com`.
+Keep HTTPS, hostname verification, and authenticated Gateway JWTs. Leave
+`allow_insecure_transport` disabled. Qualification also requires runtime evidence.
+
+Before prepared repository access, OCE checks the loaded Sandbox policy against
+the selected Provider rules. OCE derives each endpoint's token-grant owner from
+the selected Provider record ID, rule, and endpoint position. For profiles with
+endpoints, an unavailable ID, unsupported rule, or owner mismatch withholds release.
+The protected Git request hook also checks the bound Git Provider's endpoint
+owners before release, including when repository network policy is disabled.
 
 ## Grant access to a GitHub App installation
 

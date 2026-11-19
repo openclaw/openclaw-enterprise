@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-16"
-last_updated_session: "authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/cc87d188-cde6-4d4e-9781-dd8f883dbe3e"
 ---
 
 # Agent repository credential flow
@@ -202,51 +202,46 @@ withdrawal. Frozen identities reject session replacement. Transaction locks rema
 ### 4. Deliver and retain one complete runtime generation
 
 `apps/controller/src/drivers/compute/kubernetes/repository-material.ts:repositoryMaterialSpec`
-validates version bindings and hashes sorted reference/session pairs.
+checks bindings and hashes sorted reference/session pairs.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-store.ts:RepositoryMaterialStore.prepare`
-checks ownership, contents and deadlines before creating immutable Agent/version Secrets.
-It rechecks deadlines after requests and before creation or return. Expiry leaves
-Secrets for cleanup. Missing inventory fails. `RepositoryCredentialLifecycle.repair`
-closes missing retained bindings and retries Compute once after confirmed disposal.
+checks ownership and contents before creating immutable Agent/version Secrets.
+It rechecks deadlines after requests, before creation and return. Expiry defers cleanup. Missing inventory fails.
+`RepositoryCredentialLifecycle.repair` closes missing bindings and retries Compute once after confirmed disposal.
 
 `apps/controller/src/drivers/compute/kubernetes/repository-material.ts:repositoryMaterialDeployment`
-mounts sorted Secrets only in the first initializer. Session replacement causes a rollout.
+mounts sorted Secrets only in the first initializer. Session replacement triggers rollout.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts:REPOSITORY_MATERIAL_INIT_ENTRYPOINT`
-validates the projection before writing in-memory directories (0700) and files (0600).
-`REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts `/run/oce/repository-credentials`
-outside the fsGroup-writable root and calls
+checks the projection and writes in-memory directories (0700) and files (0600).
+`REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts `/run/oce/repository-credentials` outside the fsGroup-writable root.
 `apps/controller/src/drivers/repo/github/access/client/native-git.ts:prepareNativeGitConfiguration`
-to validate private files and write `gitconfig`. Retry removes only validated
-`gitconfig`. Both initializers gate startup. Consumers get a read-only mount.
-Metadata and gateway bearers stay separate.
+checks files and writes `gitconfig`. Retry removes only validated `gitconfig`.
+Both initializers gate startup. Consumers mount read-only with separate metadata and Gateway bearers.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.activateRevision`
-replaces consumers whenever material changes, including within a version. Readiness requires
-role, version, generation and current deadlines. Dedicated replacement preserves enrollment
-and version-private storage.
-`KubernetesComputeDriver.prepareRevision` rechecks material after plugin,
-gateway and node observations; generation changes, lost readiness or expiry return incomplete.
-Activation rechecks deadlines after observation.
-Dedicated gateways lack repository material and repository-gateway egress.
-Both consumers trust CAs through `SSL_CERT_FILE`, `GIT_SSL_CAINFO` and
-`NODE_EXTRA_CA_CERTS`; overrides fail.
-Compute grants consumer egress; Helm admits consumers through
-[credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
-For [prepared native Git](../reference/repository-credentials/prepared-native-git.md),
+replaces consumers when material changes. Readiness requires the matching role,
+version and generation before expiry. Dedicated replacement preserves enrollment and version-private storage.
+`KubernetesComputeDriver.prepareRevision` rechecks material after plugin, Gateway and node checks.
+Generation changes, lost readiness or expiry return incomplete. Activation rechecks deadlines.
+
+`apps/controller/src/drivers/egress-proxy/openshell-repository-policy-readback.ts:verifyOpenShellRepositoryPolicy`
+withholds Git release if the configured repository policy or Provider owners differ.
+`apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts:previewPolicyAndRecipient`
+checks Git endpoint owners against the bound Provider ID before recognizing the
+request-hook recipient, including launches without a repository network policy.
+
+Dedicated gateways lack repository material and broker egress. Consumers trust
+`SSL_CERT_FILE`, `GIT_SSL_CAINFO` and `NODE_EXTRA_CA_CERTS`. Overrides fail.
+Compute grants egress. For [prepared native Git](../reference/repository-credentials/prepared-native-git.md),
 `apps/controller/src/drivers/compute/kubernetes/repository-compute-ingress.ts:reconcilePreparedRepositoryIngress`
-requires the peer’s hostname, TLS port and worker selector to match Helm’s
-broker Service. System Git includes `/run/oce/repository-credentials/gitconfig`
-and preserves global settings.
-Embedded `repositoryNativeConfiguration` puts the `gh` router first in
-`tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
-`allow_login_shell=false` and `shell_environment_policy.set.PATH` and retains
-the Pod's `NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication
-persists. Consumer material excludes App keys, JWTs, installation tokens and
-the control socket. The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
-defines Codex plugin and repository-bound filesystem and proxy access, explicit
-denies and dedicated/embedded eligibility. Unbound policy, broker authorization
-and TLS verification still apply. Codex checks the named profile at thread start,
-resume, fork and turns.
+matches peer hostname, TLS port and worker selector to the Helm broker Service.
+System Git includes `/run/oce/repository-credentials/gitconfig`. Embedded
+`repositoryNativeConfiguration` prepends the `gh` router through `tools.exec.pathPrepend`.
+`AGENT_RUNTIME_ENTRYPOINT` disables the Codex login shell, sets `shell_environment_policy.set.PATH`
+and preserves `NODE_EXTRA_CA_CERTS` and model authentication. Consumers get no
+App keys, JWTs, installation tokens or control socket. See the
+[networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+for explicit denies, Helm ingress and workload eligibility. Codex checks the named
+profile at thread start, resume, fork and turns.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
@@ -355,13 +350,12 @@ Check registry identity and expiry before retry.
 `apps/controller/src/worker.ts:processRepositoryCleanup` logs
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
-`repository-not-admitted` identifies unselected targets; `name-one-repository-target`
-and `name-one-repository-ref` require explicit selection. Inspect metadata
-and Pod generation without printing credentials.
+`repository-not-admitted` flags unselected targets. `name-one-repository-target`
+and `name-one-repository-ref` require selection. Inspect metadata and Pod generation.
 
-See [repository credential tests](../testing/repository-credentials.md) for installed
-runtime and live provider checks. [Docker and Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
-exclude CNI.
+[Installed runtime and live provider checks](../testing/repository-credentials.md)
+supplement [Docker and Helm coverage](../testing/docker.md#repository-runtime-volume-test-environment),
+which excludes CNI.
 
 ## Related docs
 
@@ -377,6 +371,9 @@ exclude CNI.
 
 ## Changelog
 
+- 2026-11-19 05:29: Trace the request-hook recipient check for Gateway-stamped Git endpoints. (authoring-run/cc87d188-cde6-4d4e-9781-dd8f883dbe3e - 021fa1fee2574c997ec49de28f92892fd8683efd)
+
+- 2026-11-19 05:15: Trace the OpenShell Provider token-grant owner check. (authoring-run/053e4ac7-23f2-4990-a1e6-9af8e924cb1a - 609dae94d2d704873a1ee2d3fda2ba62e214cd7c)
 - 2026-11-16 13:30: Trace the worker-side installation check and reply limits. (authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d - 7a8e52f38b378151c8c08ef1b6dd466ab24834bb)
 
 - 2026-11-12 12:38: Admit GitHub CLI authentication discovery under current API grants. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb5113e006f7aeee9d5e2a04b504232bbead)
