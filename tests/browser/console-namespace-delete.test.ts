@@ -4,7 +4,7 @@ import type { Locator } from "playwright";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";

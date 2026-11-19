@@ -7,7 +7,7 @@ import {
 } from "../../apps/controller/src/auth/index.ts";
 import type { HumanAuthenticationRecovery } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie } from "../../packages/utils/src/http.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   assertProviderAttached,
   assertReservedLane,
