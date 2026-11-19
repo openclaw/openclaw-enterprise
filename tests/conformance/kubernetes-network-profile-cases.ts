@@ -78,7 +78,6 @@ export function profileNetworkDriver() {
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://192.0.2.15:3128" },
       },
     }),
   );

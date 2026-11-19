@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -451,6 +452,34 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           out({ ...properties(review), status: { allowed: !state.denyWorkerPatch } });
           return io.exit(0);
         }
+        if (field(attributes, "verb") === "get") {
+          const values = await yamlFile(join(root, "live-values"));
+          const database = field(values, "database");
+          const name = field(attributes, "name");
+          assert.ok(
+            name === (optionalField(database, "secretName") ?? "occ-database") ||
+              (typeof name === "string" && name === optionalField(database, "caSecretName")),
+          );
+          assert.deepEqual(review, {
+            apiVersion: "authorization.k8s.io/v1",
+            kind: "SelfSubjectAccessReview",
+            spec: {
+              resourceAttributes: {
+                namespace: "system",
+                verb: "get",
+                group: "",
+                version: "v1",
+                resource: "secrets",
+                name,
+              },
+            },
+          });
+          if (state.reviewUnavailable) {
+            return fail(1, "private self-review diagnostic");
+          }
+          out({ ...properties(review), status: { allowed: !take("deny-migrator-secret-get") } });
+          return io.exit(0);
+        }
         const expectedReview: unknown = {
           apiVersion: "authorization.k8s.io/v1",
           kind: "SelfSubjectAccessReview",
@@ -714,6 +743,22 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           );
         }
         save();
+        if (fault === "migration-apply-ack-staging") {
+          // The API has accepted the Job and its child before local receipt publication fails.
+          const attempt = join(root, "evidence", "migration-deploy-apply");
+          assert.equal(
+            realpathSync(source),
+            realpathSync(join(attempt, "preflight-migration-job.json")),
+          );
+          assert.equal(kind, "job.batch");
+          assert.equal(fileArg("-o"), "jsonpath={.metadata.uid}");
+          writeFileSync(join(attempt, ".preflight-migration-identity.json.tmp"), uid + "\n", {
+            flag: "wx",
+            mode: 0o600,
+          });
+          out(uid);
+          return io.exit(0);
+        }
         if (fault === "lost") {
           out(uid);
           return fail(9, "create acknowledgement lost: private-response-marker");
@@ -732,6 +777,8 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const raw = args.find((arg) => arg.startsWith("--raw="));
         let named = resource;
         let uid: unknown;
+        let options: unknown;
+        let propagationPolicy: unknown;
         if (raw) {
           const match =
             /^--raw=\/(api\/v1|apis\/networking\.k8s\.io\/v1|apis\/batch\/v1)\/namespaces\/system\/(pods|secrets|networkpolicies|jobs)\/([a-z0-9.-]+)$/.exec(
@@ -750,20 +797,23 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           assert.equal(fileArg("-f"), "-");
           // An empty raw body is a real unguarded DELETE, not a fixture rejection.
           const body = await io.readInput();
-          const options: unknown = body ? JSON.parse(body) : {};
+          options = body ? JSON.parse(body) : {};
           uid = optionalField(field(options, "preconditions"), "uid");
-          if (uid) {
-            assert.equal(field(options, "apiVersion"), "v1");
-            assert.equal(field(options, "kind"), "DeleteOptions");
-            assert.equal(
-              field(options, "propagationPolicy"),
-              plural === "jobs" ? "Foreground" : "Background",
-            );
-          }
+          propagationPolicy = field(options, "propagationPolicy");
           named = `${resourceType.kind}/${name}`;
         }
         assert.ok(named, "delete must identify a preflight resource");
+        // Record requests before applying faults, including refused and already-absent deletes.
+        appendFileSync(
+          join(root, "delete-requests.jsonl"),
+          JSON.stringify({ resource: named, uid, propagationPolicy }) + "\n",
+        );
         const { kind, name } = resourceAddress(named);
+        if (uid) {
+          assert.equal(field(options, "apiVersion"), "v1");
+          assert.equal(field(options, "kind"), "DeleteOptions");
+          assert.equal(propagationPolicy, kind === "job.batch" ? "Foreground" : "Background");
+        }
         const inventory = record(field(preflight, collections[kind]), collections[kind]);
         const target =
           kind === "job.batch"
@@ -941,6 +991,12 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           return fail(1, `Error from server (NotFound): ${resource} not found`);
         }
         if (args.includes("logs")) {
+          const selected = requiredArg("--container");
+          assert.deepEqual(
+            args.slice(args.indexOf("logs")),
+            ["logs", resource, "--container", selected],
+            "kubectl logs takes one Pod and its exact container selector",
+          );
           const component = requiredContainerName(field(object, "spec"));
           assert.ok(typeof component === "string", "logs require a preflight container");
           list(
@@ -973,7 +1029,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               "installation-startup-ready\nunbound-log-sentinel\n";
           }
           save();
-          const selected = fileArg("--container");
           if (selected !== component) {
             const initContainers = field(field(object, "spec"), "initContainers");
             if (
@@ -1278,8 +1333,8 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               .join(" "),
           );
         } else {
-          const generation =
-            optionalField(optionalField(state.deploymentIdentities, component), "generation") ?? 1;
+          const identity = optionalField(state.deploymentIdentities, component);
+          const generation = optionalField(identity, "generation") ?? 1;
           const reportedGeneration =
             component === "worker" && take("report-worker-generation-drift")
               ? journalInteger(generation, "Deployment generation", 1) + 1
@@ -1287,14 +1342,8 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           out({
             metadata: {
               name: "openclaw-enterprise-" + component,
-              uid:
-                optionalField(optionalField(state.deploymentIdentities, component), "uid") ??
-                component + "-deployment-uid",
-              resourceVersion:
-                optionalField(
-                  optionalField(state.deploymentIdentities, component),
-                  "resourceVersion",
-                ) ?? "1",
+              uid: optionalField(identity, "uid") ?? component + "-deployment-uid",
+              resourceVersion: optionalField(identity, "resourceVersion") ?? "1",
               generation: reportedGeneration,
               labels: {
                 "app.kubernetes.io/instance": state.release,
