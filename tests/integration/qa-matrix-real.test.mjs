@@ -135,6 +135,33 @@ test(
     for (const exclusion of selection.exclusions) {
       context.diagnostic(`Excluded: ${exclusion}`);
     }
+    if (selection.nativeRestart) {
+      const { arrangeProductionTopology, assertInterruptedGatewayTurnResumes } =
+        await import("../helpers/harness-topology-k3d-real.mjs");
+      const { boundedTeardown } = await import("../helpers/bounded-teardown.ts");
+      await stage(
+        context,
+        "kubernetes/Codex",
+        "native restart continuation and cancellation",
+        async () => {
+          const { context: topologyContext } = boundedTeardown(context, {
+            label: "native restart topology teardown",
+          });
+          const topology = await arrangeProductionTopology(
+            topologyContext,
+            "dedicated",
+            undefined,
+            {
+              gatewayPassword: true,
+              nativeAdmin: { enabled: true },
+            },
+          );
+          // Reuse the real Agent API workflow, retained volumes and native model turns.
+          await assertInterruptedGatewayTurnResumes(topologyContext, topology);
+        },
+        "native-restart",
+      );
+    }
     if (selection.namespaceLifecycle) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(context, "kubernetes/OpenShell", "Namespace gateway before any Agent", () =>

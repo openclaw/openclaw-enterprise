@@ -19,7 +19,6 @@ export function replacementCompatibility(
   delete definition.id;
   delete definition.revision;
   delete definition.createdAt;
-  delete definition.restartContinuation;
   definition.compute = {
     id: revision.compute.id,
     implementation: revision.compute.implementation,

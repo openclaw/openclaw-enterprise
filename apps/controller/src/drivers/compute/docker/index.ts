@@ -60,7 +60,6 @@ import {
 } from "./embedded-gateway-recovery.ts";
 import { embeddedGatewayRecoveryPreamble } from "../embedded-gateway-owner.ts";
 import {
-  GATEWAY_RESTART_RESUME_SCOPE,
   gatewayManagedModeEnvironment,
   gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
@@ -1297,7 +1296,6 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         OPENCLAW_CONFIG_PATH: CONFIGURATION_DOCUMENT,
         OPENCLAW_GATEWAY_PORT: String(GATEWAY_PORT),
         // Only a restart of this revision resumes an interrupted turn (finding 3347).
-        [GATEWAY_RESTART_RESUME_SCOPE]: revision.id,
         OPENCLAW_STATE_DIR: "/home/node/.openclaw",
         HOME: "/home/node",
       },
