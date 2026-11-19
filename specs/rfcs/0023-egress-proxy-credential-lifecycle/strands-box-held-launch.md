@@ -4,225 +4,164 @@ rfc: index.md
 
 # Hold protected startup until the trusted delivery is current
 
-This proposed amendment defines the generic Sandbox and Compute boundary needed by the
-[Strands and Box plan](../../plans/0053-strands-box-convergence.md). It extends the
-[Installation credential ownership amendment](installation-credential-ownership.md):
-the selected TokenService owns credential material and issuance, CredentialProxy owns
-versioned delivery, and Compute releases an exact startup only after the Sandbox has
-established containment and trusted delivery is current. It adds no delivery profile,
-issuer, or Box-specific branch to core Compute.
+**Proposed amendment to [RFC-0023](index.md). Human review and merge required.**
 
 ## Problem and decision
 
-The normal Worker must deploy an Agent without letting its workload run with missing or
-stale protection. A trusted companion must be able to hold the workload, report why it
-cannot start, accept the admitted projections, and release only the startup that was
-checked.
+A failed startup can leave the Worker waiting until the deployment deadline. At commit
+`962a41087083053b585b477d4791f8aded6a9f4e`,
+[Kubernetes Compute](../../../apps/controller/src/drivers/compute/kubernetes/index.ts) checks
+`providerHarnessReady` before reading provider
+[Harness status](../../../packages/contracts/src/drivers/sandbox/index.ts). Protected enrollment
+(`enrollHarness`) can run earlier. Reporting a validated failure through `harnessStatus` requires
+[exactly one matching live Pod with `Ready=True`](../../../docs/reference/drivers/kubernetes-compute.md#sandbox-provisioning).
+A Pod that fails while held may never pass that check. Box Sandbox support was absent at this
+baseline.
 
-At source commit `962a41087083053b585b477d4791f8aded6a9f4e`, the
-[Sandbox contract](../../../packages/contracts/src/drivers/sandbox/index.ts)
-provides `harnessStatus` and `enrollHarness`. In
-[Kubernetes Compute](../../../apps/controller/src/drivers/compute/kubernetes/index.ts),
-preparation checks `providerHarnessReady` before reading provider Harness status. The
-[current Pod gate](../../../docs/reference/drivers/kubernetes-compute.md#sandbox-provisioning)
-requires exactly one matching live Pod with `Ready=True`. Compute can already report a
-validated held failure from a provider-owned Harness after that gate, and protected
-enrollment can run before it. Neither behavior lets Compute read a terminal diagnostic
-from an unready provider Pod. The baseline contained no Strands/Box Sandbox implementation.
-
-Add a generic, authenticated observation of the held startup through the selected Sandbox.
-Compute may read that observation before conventional Pod readiness, after establishing
-the exact target and safe scope for the read. A held observation never means the Pod or
-Harness is serving. Activation still requires the normal workload, transport, and routing
-checks. Preserve the existing OpenShell readiness and exposure-withdrawal requirements.
-[RFC-0024](../0024-sandbox-harness-mode-support.md) concerns OpenClaw mode reporting; it
-does not approve Box or Codex support.
-
-For Box, the selected Sandbox experiment uses one trusted native parent in the Agent
-Pod container. That parent directly starts its trampoline and contained child in the
-same container. This removes the second Kubernetes workload-container boundary; native
-containment and the installed path remain unqualified.
+Let Compute authenticate the target and ask the selected Sandbox why startup is held **before** the
+Pod becomes ready. A scoped observation can report pending or a sanitized terminal failure. Only
+Compute can authorize release, and only for the startup whose containment and credential delivery it
+verified. Activation still requires authenticated serving status and the normal workload, transport,
+and routing checks. Bypassing Pod readiness globally could expose an untrusted workload.
 
 ## CredentialProxy contract selection
 
-Select the deployment contract explicitly in Installation configuration with
-`drivers.credential_proxy.contract: 'deployment'`. For `credential_proxy` only, the
-pinned installed package manifest declares its view with
-`oce.credentialProxyContract: 'deployment'`. An absent declaration means legacy;
-omitting the operator's `contract` selector also retains the unchanged legacy
-CredentialProxy contract and its existing Git binding authority. Other Driver categories
-and unrelated manifest keys are unaffected.
+For `credential_proxy`, compare the Installation setting `drivers.credential_proxy.contract` with
+`oce.credentialProxyContract` in the pinned, verified installed package manifest. Each defaults to
+legacy when absent. The rule applies only to this Driver category and manifest key.
 
-Before loading the package module or invoking its factory, Installation composition must
-match the effective operator selection to the declaration in the verified installed
-manifest and validate the required Sandbox/CredentialProxy pairing. Refuse malformed or
-unsupported selections or declarations, a missing required deployment declaration, and
-conflicting or incompatible pairings with zero factory calls. Do not infer a contract
-from a Driver or Sandbox name, an identifier, or detected methods, and do not fall back
-to legacy when deployment is selected.
+| Check                    | Required decision                                                                                                                                                                                                                                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Selection                | With both fields omitted, use the legacy contract and its Git binding authority. Deployment requires the literal value `'deployment'` in both fields. Never infer the contract from names, IDs, or methods, or fall back to legacy.                                                                                                         |
+| Before module load       | Refuse malformed, unsupported, or mismatched inputs, a missing required declaration, or an incompatible Sandbox/CredentialProxy pair. Require **zero module loads and factory calls**, even if a legacy package has the expected deployment ID.                                                                                             |
+| After factory invocation | The manifest declares compatibility. It cannot attest to or contain factory code. Validate the returned view and identifiers. For a defective result, require **one factory call, zero caller provisioning, and zero credential use by callers**. Refuse the result, run existing cleanup, and record partial or uncertain factory effects. |
 
-The declaration is static compatibility metadata. It does not attest to the package's
-implementation or sandbox arbitrary factory code. Only after invoking a compatible
-factory can composition validate the actual returned contract view and identifiers.
-Refuse a defective or misdeclared result before caller provisioning or credential use;
-use existing cleanup and preserve any partial or uncertain factory effects. A factory
-may itself have side effects, so this refusal cannot promise zero factory effects.
-
-The selected CredentialProxy registration must expose a typed deployment view for the
-required deployment operations. Installation composition, Compute preparation, and the
-normal Worker must use that view from the same selected CredentialProxy owner. They must
-not create a second owner or obtain deployment operations through an unchecked cast.
-The deployment view does not transfer TokenService issuance or legacy Git binding
-authority to another component.
+Installation, Compute preparation, and the normal Worker must consume the typed deployment view from
+the same selected CredentialProxy registration. Prohibit unchecked casts and second owners. Preserve
+the [Installation's credential ownership](installation-credential-ownership.md), delivery profiles,
+and legacy Git authority. Current registration rejects a deployment-only CredentialProxy. This
+selection mechanism is proposed.
 
 ## Ownership and release
 
-| Owner           | Required responsibility                                                                                                                                                                                                                                                         |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OCC/IAM         | OpenClaw Control Plane owns metadata and Agent bindings; IAM admits credential use.                                                                                                                                                                                             |
-| Compute         | Own the Agent revision Pod, storage, placement, lifecycle, generic readiness or refusal, and the decision to sign release. Do not interpret Box internals.                                                                                                                      |
-| Sandbox         | Enforce process and network isolation, mandatory egress, private control transport, startup hold, and authenticated observation and release for the exact target incarnation, process instance, and fresh challenge. Its trusted native parent implements these duties for Box. |
-| TokenService    | Commit the authoritative source value and version, retain issuer keys and refresh grants, and issue or renew usable credentials under the Installation's selected owner.                                                                                                        |
-| CredentialProxy | Commit effective credential policy, deliver the expected version and withdrawal to the trusted target, observe serving copies, and acknowledge a push only after every serving copy can use that version.                                                                       |
-| Harness         | Own the Agent process and its conversation or session after release.                                                                                                                                                                                                            |
+| Owner                                | Responsibility                                                                                                                                                                                       |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenClaw Control Plane (OCC) and IAM | OCC owns metadata and Agent bindings. IAM admits credential use.                                                                                                                                     |
+| TokenService                         | Commit source values and versions, retain issuer keys and refresh grants, and issue or renew credentials.                                                                                            |
+| CredentialProxy                      | Commit effective credential policy. Deliver versions and withdrawals to the trusted target. Read back each serving copy.                                                                             |
+| Compute                              | Manage Agent revision Pods, storage, placement, and lifecycle. Interpret generic startup status and sign the release.                                                                                |
+| Sandbox                              | Isolate processes and networks, enforce mandatory egress, hold the workload, and authenticate observation and release over private transport. The native parent would enforce these controls in Box. |
+| Harness                              | Own the Agent process and conversation after release. Source resolution stays with the credential owners.                                                                                            |
 
-The Worker uses the regular Compute preparation path. The selected Sandbox stages a
-contained target with credential-using execution held and returns an authenticated
-observation bound to the Agent revision, target incarnation, process instance, and fresh
-startup challenge. Compute accepts a sanitized terminal failure only from that trusted
-route and validates it for the requested revision. Missing, forged, stale, foreign,
-ambiguous, or unauthenticated status cannot establish readiness or authorize release.
+The proposed Worker path separates observing, releasing, and activating a startup.
 
-CredentialProxy prepares the admitted policy and projections and confirms the expected
-delivery version on the target and every applicable serving copy. The trusted launcher
-acknowledges installation of the reviewed projections for that same startup. Compute
-rechecks the current tool, network, proxy, and workload conditions before authorizing
-release. Sandbox accepts release only for the bound startup; a transport bearer alone
-cannot release it. Compute then confirms authenticated serving status before activation.
+```mermaid
+---
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontSize: 14px
+    primaryColor: "#F3F4F6"
+    primaryBorderColor: "#98A2AE"
+    primaryTextColor: "#344054"
+    lineColor: "#68798C"
+    edgeLabelBackground: "#FFFFFF"
+  flowchart:
+    curve: linear
+    padding: 10
+    rankSpacing: 28
+---
+flowchart TB
+  Held["<b>Sandbox</b><br/>Contain and hold child"] -.->|authenticate startup| Read["<b>Compute</b><br/>Read held status"]
+  Read -.->|terminal failure| Stop["Report sanitized failure"]
+  Read -.->|pending| Check["<b>Compute</b><br/>Verify release conditions"]
+  Check -.->|missing or stale| Wait["Keep child held"]
+  Check -.->|all checks pass| Sign["<b>Compute</b><br/>Sign for this startup"]
+  Sign -.->|verify release| Run["<b>Sandbox</b><br/>Release bound child"]
+  Run -.->|serving and ready| Active["<b>Compute</b><br/>Activate"]
+  classDef control fill:#EDF2F7,stroke:#879AB0,color:#25364A
+  classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532
+  classDef trusted fill:#EBF3F0,stroke:#7F9D93,color:#2B4038
+  class Read,Check,Sign,Active control
+  class Stop,Wait blocked
+  class Held,Run trusted
+```
 
-Revocation, expiry, replacement, loss of a trusted companion, or an unreadable current
-version prevents release and further protected use. A failed push leaves the committed
-source version authoritative and does not count as delivery acknowledgement. After worker
-loss or a lost reply, observe the current incarnation and delivery state before adopting
-or releasing it; do not replay an operation with an unknown effect. A replacement rejects
-the previous process's challenge, projections, acknowledgement, and release.
+1. **Observe.** Through regular Worker preparation, Compute establishes the authorized scope of the
+   read. Sandbox authenticates the observation against the Agent revision, target incarnation,
+   process instance, and fresh startup challenge. Compute validates terminal diagnostics against
+   that identity. Missing, forged, stale, foreign, ambiguous, or unauthenticated status keeps
+   startup held.
+2. **Release.** CredentialProxy confirms the expected policy and credential version on the target
+   and every applicable serving copy. The trusted launcher acknowledges installation of the reviewed
+   projections for that same startup. Compute rechecks tool, network, proxy, and workload conditions
+   before signing. Sandbox must verify the release against the full startup identity. A transport
+   bearer alone confers no release authority.
+3. **Maintain protection.** Loss of authorization, revocation, expiry, replacement, companion loss,
+   or an unreadable current version blocks release and further protected use. CredentialProxy
+   acknowledges a push, policy change, rotation, or withdrawal only after every applicable serving
+   copy reports the effective version and can enforce it. Missing, stale, foreign, or ambiguous
+   readback leaves delivery unconfirmed. A failed push leaves the committed source version
+   authoritative. A rejected withdrawal is incomplete.
+4. **Recover.** After Worker loss or a lost reply, observe the current incarnation and delivery
+   state before adoption or release. Never replay an operation with an unknown effect or fall back
+   to direct egress.
+
+**Walkthrough.** The launcher installs the projections, but its acknowledgment is lost. When the
+Worker checks again, it finds a replacement child. That child must reject the old challenge,
+projections, acknowledgment, and release. Compute must verify delivery and installation against the
+replacement’s fresh challenge before signing.
 
 ## Trust boundary
 
-Box Policy is the sole authorizer for Box network, shell, and filesystem operations.
-The Sandbox authors supported Policy from admitted declarations; declarations do not
-grant operations, missing Policy denies, and floor restrictions can only deny. OpenClaw
-Enterprise (OCE) IAM
-and repository policy independently authorize credential use. Binding or injecting a
-credential requires both a Box Policy permit and current OCE authorization, and cannot
-grant a Box operation. Refuse policy that cannot be represented without widening access.
+In the native experiment, one trusted Box parent directly starts its trampoline and contained Codex
+child in the same Agent Pod container. Kubernetes NetworkPolicy applies to the Pod as a whole.
+Qualify the native boundary before protected use.
 
-Every process in one Box can use its routes, and the current callback cannot identify
-the originating executable. The proposed [Agent-wide Box policy capability](strands-box-agent-policy.md)
-allows this sharing only when explicitly admitted for one authenticated Agent Sandbox,
-initially in an isolated pilot deployment.
-It cannot satisfy an executable-specific assertion. Sandbox must enforce any asserted
-executable or port restriction or refuse the policy, as the
-[credential ownership amendment](installation-credential-ownership.md) requires.
-Executable-specific enforcement remains pending.
+| Boundary            | Sandbox requirement                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Process and network | Bind launch provenance, inherited state, and the fresh challenge to the intended child. Qualify user, mount, PID, and network namespaces, restricted filesystem, and seccomp. Isolate control interfaces. Block loopback, direct DNS, direct upstream connections, and raw-socket bypasses.                                                                                                                          |
+| Files and trust     | Pin the parent's live configuration and Policy files. Refuse writable aliases. Grant the child read-only access to the same pinned public CA object. Copying its bytes loses object identity. Keep the CA signing key in trusted memory.                                                                                                                                                                             |
+| Credential custody  | The parent owns the vault and HTTP injector. Limit the child to reviewed filesystem grants, public trust material, and opaque placeholders without retrieval or release authority. Protect user secrets, GitHub App keys and installation tokens, model keys, PATs, issuer and broker material, private configuration, proxy controls, release authority, reusable ingress bearers, and other privileged identities. |
+| Disclosure paths    | Prevent access through inherited descriptors, process inspection, file aliases, environment, arguments, mounts, shared state, home, temporary directories, persistent volumes, Pod manifests, logs, output, authentication or control endpoints, proxies, and redirects.                                                                                                                                             |
 
-For the native experiment, the trusted parent creates the trampoline and child directly.
-Prove that launch provenance, inherited state, exact process incarnation, and fresh
-challenge bind only the intended child. Qualify native user, mount, PID, and network
-namespaces, the restricted filesystem, and seccomp as protection for the trusted side.
-
-If a privileged launch descriptor is transferred to an independently launched receiver,
-the trusted installer or runtime must first supply either independently trusted bindings
-that authenticate both exact endpoint incarnations on the live connection, or an
-independently provisioned authenticated preconnected channel for that pair. Both endpoints
-must authenticate before transfer. A matching UID, mode-0700 directory, peer-supplied
-image digest, in-band nonce, or observed PID or pidfd without independently authenticated
-expected identity is insufficient. Refuse substitute listeners, foreign first connectors,
-stale peers, and cross-run connections before sending a descriptor. The separate Box
-handoff candidate does not satisfy this rule, and its Kubernetes bootstrap remains
-unresolved. It is not needed for direct child creation.
-
-Preserve the parent's live authored-configuration and Policy file identities and
-protections against writable aliases. The child receives the public CA only as a
-read-only grant to the same pinned object; a byte copy does not establish that identity.
-Private state, authored files, vault contents, and the CA signing key remain trusted.
-
-The child may receive reviewed filesystem grants, public trust material, and opaque
-placeholders with no retrieval or release authority. It must not obtain user secrets,
-issuer keys, provider tokens, proxy control credentials, a reusable ingress bearer, or
-another privileged reusable identity through inherited descriptors, process inspection,
-filesystem aliases, environment, arguments, mounts, logs, control endpoints, or any other
-workload-visible surface. Kubernetes NetworkPolicy selects Pods, not processes. Sandbox
-must isolate trusted control interfaces and block loopback, direct DNS or upstream routes,
-and raw-socket bypass. The trusted parent retains the vault and injector. A separate
-trusted proxy Pod is a possible later deployment, not a v1 prerequisite.
+Apply
+[Box Policy and independent OCE credential authorization](strands-box-agent-policy.md#policy-and-credential-boundary).
+The [Agent-wide pilot](strands-box-agent-policy.md#decision) requires separate admission. Enforce
+any asserted executable or port restriction or refuse the policy.
 
 ## Acceptance Criteria
 
-- **AC-0 — Contract selection (P0):** Through real OCC Installation setup, normal
-  composition with the default installed-package loader, and the Worker/Compute caller,
-  prove valid legacy and deployment selection and the same selected deployment owner and
-  typed view throughout. Preserve legacy Git success and refusal with `contract` omitted.
-  Prove zero module loads and factory calls for malformed or unsupported selections or
-  declarations, a missing deployment declaration, selector/declaration mismatch, and
-  incompatible pairings, including a matching-ID legacy package selected as deployment.
-  Prove no inference or fallback. For a factory that declares deployment but returns a
-  wrong view or identifier, observe one factory call, zero caller provisioning or
-  credential use, refusal, and cleanup or an accurately recorded uncertain effect.
-- **AC-1 — Held observation:** Through the normal Worker and selected Compute/Sandbox path,
-  stage one contained startup whose Pod is not conventionally ready. An authorized,
-  authenticated scoped read reports pending or a validated terminal failure for that
-  startup; neither result activates it. Refuse forged, cross-revision, stale-incarnation,
-  and replacement reports.
-- **AC-2 — Release:** Deliver an admitted version, authenticate the launcher's challenge,
-  acknowledge the projections, release that startup, and observe authenticated serving
-  status before activation. A missing or stale target copy, one stale serving peer, expired
-  or revoked authority, companion loss, or a previous startup's release keeps work held or
-  refused. Verify failed push and lost-reply recovery without blind replay.
-- **AC-3 — Launch authority:** Through the real native Box caller and contained child,
-  prove direct-parent provenance and exact child binding; refuse substitution, replacement,
-  stale release, and unintended descriptor inheritance. Verify live source identity,
-  writable-alias refusal, the read-only same-object CA grant, and cleanup. If an
-  independently launched receiver is later selected, authenticate both exact endpoints
-  before transfer and prove that substitute listeners, foreign first connectors, stale or
-  cross-run peers, and unbound same-UID processes receive no privileged descriptor. A nonce
-  exchange alone must not authorize transfer.
-- **AC-4 — Containment and compatibility:** Extend maintained integration coverage through
-  the real Agent workflow. Use invented sentinels to prove workload surfaces and same-Pod
-  loopback cannot expose credentials or control authority. Verify an authored Box Policy
-  permit, deny, and absent-Policy refusal independently of OCE credential admission.
-  Qualify the separately admitted Agent-wide capability through the real Agent as
-  specified in its [amendment](strands-box-agent-policy.md#acceptance-criteria). Verify
-  Sandbox executable/port enforcement or policy refusal when the callback cannot
-  distinguish the caller. Preserve OpenShell's existing positive and refusal cases and its
-  conventional readiness gate.
-- **AC-5 — Installed qualification:** On clean ARM64 Helm installation, use the exact
-  reviewed images and source to complete a real HTTP provider model turn, Git push, and
-  draft pull request with independent provider readback. Withdraw Git access, refuse a
-  fresh Git operation, and complete another model turn in the same conversation. Record
-  real prerequisites and failures separately from fixture and source evidence.
+Extend maintained integration coverage through the real Agent workflow.
+
+| Criterion                            | Required evidence                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AC-0 — Contract selection (P0)       | Exercise real OCC Installation setup, default installed-package loading, and Worker/Compute. Verify both valid selections, legacy Git success and refusal with the selector omitted, and the same typed deployment owner throughout. Check each [selection decision](#credentialproxy-contract-selection), including the call counts, cleanup, and refusal to infer or fall back. |
+| AC-1 — Held observation              | Read pending and validated terminal status from an unready Pod without activation. Reject forged, cross-revision, stale-incarnation, and replacement reports.                                                                                                                                                                                                                     |
+| AC-2 — Release                       | Prove the [release sequence](#ownership-and-release) through authenticated serving and activation. Exercise each blocking condition, including one stale peer, and reject attempts to use the launcher’s authority for another startup. Reconcile failed pushes and lost replies.                                                                                                 |
+| AC-3 — Launch authority              | Through the native caller and child, verify provenance, process binding, file identities, read-only CA access, and cleanup. Refuse substitution, replacement, stale release, unintended descriptor inheritance, and writable aliases. Apply the endpoint checks below if transferring a descriptor.                                                                               |
+| AC-4 — Containment and compatibility | Probe the [trust boundary](#trust-boundary) with invented sentinels. Verify Box Policy permit, deny, and absence independently of OCE admission. Exercise the [pilot criteria](strands-box-agent-policy.md#acceptance-criteria), including executable and port restrictions. Preserve OpenShell success, refusal, readiness, and exposure withdrawal.                             |
+| AC-5 — Installed qualification       | Complete the [clean ARM64 Helm journey](../../plans/0053-strands-box-convergence.md#outcome-and-scope) with exact reviewed source and images, independent provider readback, and the [installation checks](../../plans/0053-strands-box-convergence.md#ordered-pull-requests).                                                                                                    |
 
 ## Delivery, alternatives, and open decisions
 
-Submit this Driver-contract amendment for human review before changing required behavior,
-configuration, or interfaces. RFC merge requires a human. Coordinate the exact status and
-release contract with v1 push-admission work; the incumbent owners retain the public
-startup/status and release fields. Select names only after they agree on the contract.
-The native parent/child experiment does not depend on an installer-provisioned receiver
-bootstrap. If a separate receiver is selected later, its installer/runtime owner must
-supply that bootstrap before descriptor transfer. The paired Box Sandbox/CredentialProxy
-registration, trusted target-bound serving recipient and real callback, generic observation
-and release contract, credential delivery, independent review, provider behavior, and
-installed qualification remain dependencies or unproved outcomes. The explicit deployment
-contract and its typed admission remain proposed; current registration rejects a
-deployment-only CredentialProxy. The baseline
-[#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098) changes Sandbox
-maintenance cadence, not the Box topology.
+Submit this amendment for human review before changing Driver contracts. Agree on public startup,
+status, and release fields with the incumbent v1 push-admission owners before choosing names. Those
+owners retain the public fields. Keep Box internals in the paired Drivers. Their registration, the
+real callback and trusted recipient, generic observation and release, delivery, independent review,
+and provider and installed qualification remain pending.
 
-Keeping the current fail-closed behavior is safe but leaves a held failure in an unready
-provider Pod invisible until the deployment deadline. A global Pod-readiness bypass is
-rejected because it could activate an unready or untrusted workload. A separate trusted
-proxy can strengthen the network boundary later and requires its own deployment qualification.
+**Conditional descriptor transfer.** Direct child creation avoids a separate receiver bootstrap. If
+a future design introduces an independently launched receiver, the installer or runtime must
+authenticate both exact endpoint incarnations on the live connection using independent trust, or
+independently provision an authenticated preconnected channel for that pair. Before transfer, prove
+refusal of substitute listeners, foreign first connectors, stale or cross-run peers, and unbound
+same-UID processes. A UID, mode-0700 directory, peer-supplied image digest, in-band nonce, or
+observed PID or pidfd alone cannot establish the expected identities.
+[Box #482](https://github.com/strands-agents/box/pull/482) checks the UID and lacks this proof.
+Kubernetes bootstrap for that design is unresolved. A separate trusted proxy Pod and stronger node
+isolation are future options requiring qualification.
 
 ## Changelog
 

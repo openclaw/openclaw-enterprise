@@ -4,138 +4,111 @@ rfc: index.md
 
 # Agent-wide Box policy for protected execution
 
-**Status: PROPOSED.** This amendment to [RFC-0023](index.md) proposes an opt-in,
-separately named **Agent-wide Box policy** capability. It changes the principal
-used to admit a route or credential injection: one authenticated Agent Sandbox,
-rather than a particular executable. The capability is not implemented or
-qualified, and requires human review.
+**Proposed amendment to [RFC-0023](index.md). Human review and merge required.**
+
+At Box commit `956764b58f2c5ccb12bb7048fd1ced3d8ca1b5d4`, the callback identifies a route within a
+Box but cannot identify the calling executable. **Agent-wide Box policy** would let an operator
+select one authenticated Agent Sandbox as the principal for routes and injections, initially only in
+an isolated pilot. Implementation and qualification are pending.
 
 ## Decision
 
-For the initial qualification, an operator may explicitly select Agent-wide Box
-policy only in an isolated pilot deployment, when all processes in one Agent
-Sandbox may use the same admitted routes and credential injections. Broader
-release depends on qualification through the real Agent workflow below.
-The Sandbox must contain exactly one authenticated Agent revision and execution
-incarnation. Every process in that Sandbox, including a shell, tool, Model Context Protocol (MCP)
-server, or compromised subprocess, can use the routes and injections admitted
-for that Agent. The policy provides no distinction among those processes. Use
-separate Agents with separate Sandbox identities and policies when work needs
-different trust or credential access. A compromised tool or MCP server can make
-any admitted Git or API operation, spend model quota, or send data through an
-allowed route even though it cannot read a raw credential.
+Select this capability only if **every process may use every admitted route and credential binding**
+in that Sandbox. A compromised shell, tool, or Model Context Protocol (MCP) server could push an
+allowed ref, spend model quota, or send data over an allowed route without learning the credential.
+Use separate Agents with distinct Sandbox identities and policies when their trust or access
+differs.
 
-Public Box source commit `956764b58f2c5ccb12bb7048fd1ced3d8ca1b5d4` provides
-routes per Box; its callback does not identify the executable that originated a
-request. Agent-wide policy makes that scope explicit. Admission must never
-silently substitute it for an executable-specific requirement or report that it
-satisfies one. If an admitted assertion requires a particular executable, the
-selected Sandbox must enforce that assertion or refuse admission. A deployment
-that does not explicitly select the new capability retains its existing
-requirements.
+Before provisioning, admission must check the complete effective policy.
 
-The selected Sandbox Driver must explicitly support this capability, and admission
-must check the complete effective policy before provisioning. An authorized
-administrator must delegate Agent-wide authority for the route, and credential
-injection needs reviewed consumer authority at that same scope. One or more
-executable-specific rules cannot authorize an Agent-wide grant. For conflict
-detection, an Agent-wide allowance overlaps executable-specific restrictions on
-the same route and cannot weaken them. The Box pilot must refuse a policy that
-mixes these subjects or contains an executable-specific assertion it cannot
-enforce. Missing capability support or any unsupported policy bound also refuses
-admission.
+| Question                    | Required decision                                                                                                                                                                                                                                                 |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Who can share access?       | Require explicit operator selection, support from the selected Sandbox Driver, and exactly one authenticated Agent revision and execution incarnation per Sandbox. Omission retains existing requirements.                                                        |
+| Who grants access?          | An authorized administrator must delegate the route at Agent scope. Injection also requires reviewed consumer authority at that scope. Combining executable grants cannot confer Agent-wide authority.                                                            |
+| Which restrictions overlap? | Treat an Agent-wide grant as overlapping every executable restriction on the route. Refuse mixed subjects in the pilot. Enforce each asserted executable, port, or other bound or refuse admission. Executable-specific enforcement needs separate qualification. |
 
-Principal granularity is independent of the protection levels in RFC-0023.
-Agent-wide policy does not change exact dispatch, online request authorization,
-their admission rules, or their evidence requirements. It cannot substitute one
-level for another.
+The capability selects the principal. RFC-0023 still determines the protection level. Preserve the
+admission, connection, dispatch, authorization, and evidence requirements of the selected level,
+including exact dispatch or online request authorization.
 
 ## Policy and credential boundary
 
-Box Policy remains the mandatory, unavoidable, default-deny authorizer for Box
-network, shell, and filesystem operations. The selected Sandbox authors and
-installs Policy from admitted declarations, prevents bypass, and refuses an
-absent or unsupported Policy. Declarations and floor restrictions cannot grant
-operations; floor restrictions can only deny them.
+In the proposed pilot, both subprocesses below can use the same binding. Each credentialed request
+needs two independent permissions.
 
-A Policy permit is necessary but does not authorize credential use. OpenClaw
-Enterprise (OCE), its IAM Driver, and applicable repository or source policy
-must independently authorize the current Agent, credential source, destination,
-port, HTTP method, and path before protected use. The trusted sender must
-preserve the admitted request and credential-presentation bounds, verified
-upstream TLS, and redirect restrictions. If the selected Sandbox and sender
-cannot enforce a required bound, admission must refuse it. An injection cannot
-grant a Box operation, widen a route, or authorize another Agent.
+```mermaid
+---
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontSize: 14px
+    primaryColor: "#F3F4F6"
+    primaryBorderColor: "#98A2AE"
+    primaryTextColor: "#344054"
+    lineColor: "#68798C"
+    edgeLabelBackground: "#FFFFFF"
+  flowchart:
+    curve: linear
+    padding: 10
+    subGraphTitleMargin:
+      top: 8
+      bottom: 12
+---
+flowchart TB
+  subgraph Agent["One contained Agent execution"]
+    Shell["Shell"]
+    Tool["Tool"]
+  end
+  Shell -.-> Route
+  Tool -.-> Route
+  Route["<b>Box Policy</b><br/>Permit the operation"] -.-> Sender
+  Auth["<b>OCE authorization</b><br/>Permit the binding"] -.-> Sender
+  Sender["<b>Trusted Box parent</b><br/>Inject only with both permits"] -.->|verified TLS| Origin["Admitted provider"]
+  classDef policy fill:#EDF2F7,stroke:#879AB0,color:#25364A
+  classDef trusted fill:#EBF3F0,stroke:#7F9D93,color:#2B4038
+  class Route,Auth policy
+  class Sender trusted
+  style Agent fill:#FAFBFC,stroke:#D8DEE6
+```
 
-The trusted side retains usable credentials, issuer keys, vault contents,
-private signing material, and control and release authority. Workload processes
-may receive reviewed filesystem grants, public trust material, and opaque
-binding-specific placeholders. A placeholder grants neither credential retrieval
-nor startup release authority. Sandbox must protect trusted control channels and
-prevent workload access to protected material through process state, inherited
-descriptors, files or writable aliases, environment, arguments, logs, or network
-and proxy control interfaces. Direct upstream, DNS, loopback, and raw-socket bypass must be
-blocked.
+- **Box Policy authorizes the operation.** The Sandbox authors and installs Policy from admitted
+  declarations and prevents bypass. Only Policy can permit network, shell, or filesystem operations.
+  Deny each operation unless a Policy rule explicitly permits it. Missing Policy denies access.
+  Floor restrictions can only deny. Refuse unsupported representations.
+- **OpenClaw Enterprise (OCE) authorizes credential use.** IAM and applicable repository or source
+  policy must authorize the current Agent execution, credential source, destination, port, HTTP
+  method, and path. Binding and injection require both permissions. The trusted parent replaces a
+  binding-specific placeholder from its vault only on an admitted HTTP request. Its injector checks
+  the execution, origin, port, method, path, and credential presentation, verifies upstream TLS,
+  refuses dangerous redirects, and blocks known disclosures in responses and diagnostics.
+
+Limit credentialed origins to trusted providers. Protection assumes an uncompromised host kernel and
+a provider that does not maliciously encode or reflect the credential.
 
 ## Startup, withdrawal, and audit
 
-The [held-start amendment](strands-box-held-launch.md) continues to govern
-startup. CredentialProxy delivers the expected policy and credential version to
-the exact trusted target and checks every applicable serving copy. Compute may
-authorize release only after containment, current delivery, and projection
-acknowledgment are established for that startup. Agent-wide admission and a
-binding placeholder confer no release authority.
-
-CredentialProxy must deliver policy changes and withdrawal and read back the
-effective version from every applicable serving copy before acknowledging them.
-Missing, stale, foreign, or ambiguous readback cannot establish success. Expiry,
-revocation, or loss of current authorization must refuse fresh protected use;
-a lost reply requires reconciliation before recovery. Audit must attribute
-admission, protected use, denial, version changes, and withdrawal to the
-Agent execution and selected capability without exposing protected material or
-claiming executable attribution that Box cannot establish.
+Apply the [release and withdrawal rules](strands-box-held-launch.md#ownership-and-release) and
+[containment requirements](strands-box-held-launch.md#trust-boundary). An Agent-wide grant confers
+no release authority. Attribute admission, use, denial, version changes, and withdrawal to the Agent
+execution and selected capability. Omit secrets and executable attribution from audit records.
 
 ## Acceptance criteria
 
-The isolated pilot must use the normal deployed Agent path and the actual Box
-callback and trusted injector, with invented credential sentinels and an
-independently observed trusted origin:
+Broader release requires qualification through the normal deployed Agent, actual Box callback, and
+trusted injector. Use an invented sentinel for one binding. In one contained execution, run two
+distinct real subprocesses against the **same route and binding**. An independently observed trusted
+origin must distinguish and accept both requests. Independently verify injection of the sentinel on
+each. Both processes must be unable to read or retrieve it.
 
-- Start one authenticated Agent revision and execution incarnation in one
-  contained Box. Run two distinct real subprocesses in that same incarnation.
-  Both must use the **same admitted route and credential binding**. Have the
-  trusted origin distinguish and accept both requests, and independently verify
-  that the trusted injector supplied the binding's sentinel for each request.
-  Neither subprocess may read or retrieve the sentinel.
-- Refuse use by another Agent. Replace the Sandbox and refuse authority from
-  the previous execution incarnation. Also refuse a wrong route, destination,
-  port, method, or path.
-- With Box Policy still permitting the route, revoke its credential binding and
-  refuse a fresh request. Separately withdraw the admitted credential policy,
-  read back its effective version from every serving copy, and refuse a fresh
-  request. Remove Box Policy and verify refusal. With stale or missing delivery
-  readback, verify that startup remains held.
-- Measure each refusal at the layer that enforces it. For a denied application
-  request on an otherwise permitted proxy connection, require zero denied
-  application-request bytes forwarded to the origin, zero unauthorized
-  credential injections, and zero provider operations. Observe and record TCP
-  establishment separately; an allowed TCP connection alone is not an accepted
-  application request. For a forbidden destination or port, require no
-  connection to that destination or port. Attempt direct egress and require no
-  direct connection.
-- Attempt access to trusted control and release interfaces from the workload.
-  Across all refusal cases, require zero protected-material disclosure, control
-  mutation, and unauthorized release. Preserve any stronger connection, dispatch,
-  authorization, or evidence requirement of the admitted RFC-0023 protection
-  level; the application-layer criterion does not relax it.
-- Verify that an executable-only grant cannot authorize Agent-wide access, that
-  overlapping restrictions are not weakened, and that the Box pilot refuses
-  mixed subjects or unsupported capability before provisioning. Request an
-  executable-specific assertion and verify admission refuses it unless a
-  separately qualified mechanism enforces it.
-  Preserve the existing exact-dispatch and online-authorization acceptance
-  cases.
+| Exercise                                                                                                                                                                            | Required observation                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Present executable-only grants, overlapping restrictions, mixed subjects, an unsupported capability, or an unenforceable assertion.                                                 | Enforce the [admission decisions](#decision) before provisioning. Preserve the existing exact-dispatch and online-authorization cases.                                                               |
+| Try another Agent, the previous incarnation after replacement, or the wrong route, destination, port, method, or path.                                                              | Refuse each request at the enforcing layer.                                                                                                                                                          |
+| Keep Box Policy permissive and revoke the binding. Separately withdraw credential policy and read back its effective version from every serving copy. Separately remove Box Policy. | Refuse a fresh request in each case. Stale or missing delivery readback keeps startup held.                                                                                                          |
+| Deny an application request on a permitted proxy connection.                                                                                                                        | Record TCP establishment separately. At the enforcing proxy, verify zero denied application-request bytes forwarded toward the origin. Require zero unauthorized injections and provider operations. |
+| Try a forbidden destination or port, then direct egress.                                                                                                                            | Require zero connections to the forbidden destination or port and zero direct connections.                                                                                                           |
+| Probe trusted control and release interfaces from the workload.                                                                                                                     | Across **all** refusals, require zero protected-material disclosures, control mutations, and unauthorized releases. Apply any stronger requirements of the selected protection level.                |
 
-These observations qualify only the tested source, runtime, and deployment.
-The [Strands and Box plan](../../plans/0053-strands-box-convergence.md) retains
-ownership of implementation and installed qualification.
+Results cover only the tested source, runtime, and deployment.
+[TASK-0053](../../plans/0053-strands-box-convergence.md) owns installed qualification.

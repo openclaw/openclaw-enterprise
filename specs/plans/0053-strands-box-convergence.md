@@ -6,195 +6,90 @@ rfc: ../rfcs/0023-egress-proxy-credential-lifecycle/index.md
 
 - **ID:** TASK-0053
 - **Delivery status:** Planned
-- **Authority:** [RFC-0023](../rfcs/0023-egress-proxy-credential-lifecycle/index.md), its proposed [Installation credential ownership amendment](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md), the proposed [held-start amendment](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md), and the proposed [Agent-wide Box policy amendment](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md)
+- **Authority:** [RFC-0023](../rfcs/0023-egress-proxy-credential-lifecycle/index.md)
 - **Source baseline:** `962a41087083053b585b477d4791f8aded6a9f4e`
 
 ## Outcome and scope
 
-For v1, qualify one trusted native Box parent in the Agent Pod container. It
-directly starts its trampoline and contained Codex Agent child in that same
-container. This removes the separate Kubernetes workload-container boundary;
-Box's native isolation must be qualified before protected use.
+On a clean ARM64 Helm installation, the normal Worker deploys a Codex Agent in Box. The Agent must
+complete a real HTTP model turn, push a commit to its assigned GitHub repository, and open a draft
+pull request. Withdraw its Git access. The next Git operation must fail, and the next model turn
+must succeed in the same conversation.
 
-On a clean ARM64 Helm installation, the normal Worker must deploy the Agent.
-The deployed Agent must complete a real HTTP model turn, push a commit, and open
-a draft pull request in its assigned GitHub repository. After Git access is
-withdrawn, the same Agent
-must refuse fresh Git use and complete another model turn in the same
-conversation. V1 qualifies HTTP API-key inference only. Admission refuses
-personal access tokens (PATs), interactive login, and WebSocket credential
-delivery.
+V1 covers HTTP API-key inference only. Admission must refuse personal access tokens (PATs),
+interactive login, and WebSocket credential delivery. All five milestones below are pending.
 
 ## Credential and execution boundary
 
-Box Policy alone authorizes Box network, shell, and filesystem operations.
-The selected Sandbox Driver authors supported Policy and configuration from
-admitted declarations. A tool or configuration declaration requests a
-capability; it does not grant an operation. Missing Policy denies, floor
-restrictions can only deny, and an unsupported Policy representation must
-refuse. OpenClaw Enterprise (OCE) IAM and repository policy independently admit or refuse credential
-use. Credential binding or injection requires both a Box Policy permit and
-current OCE authorization; it cannot grant a Box operation.
+Qualify one trusted native Box parent that directly starts its trampoline and contained child in the
+same Agent Pod container. Three proposed amendments govern this work.
 
-Box routes are available to every process in the same Box, and the current
-callback cannot identify the executable that originated a request. The proposed
-[Agent-wide Box policy capability](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md)
-requires explicit admission for one authenticated Agent Sandbox in the initial
-isolated pilot. It cannot satisfy an
-executable-specific assertion. Sandbox must enforce an asserted executable or port
-restriction or refuse the policy, as required by the
-[credential ownership amendment](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md).
-Per-executable enforcement remains an implementation dependency.
-
-The trusted Box parent owns its vault and HTTP injector. The vault replaces an
-opaque placeholder only on an admitted HTTP request. The injector checks the
-execution, origin, port, method, path, and credential presentation, verifies
-upstream TLS, refuses dangerous redirects, and blocks known credential
-disclosure in responses and diagnostics. Limit credentialed origins to trusted
-providers. This design assumes that an admitted provider does not maliciously
-encode or reflect its credential and that the host kernel is not compromised;
-it cannot guarantee protection under either attack. The TLS certificate
-authority's private signing key stays in trusted memory.
-
-The child may receive reviewed filesystem grants, public trust material, and
-opaque placeholders that convey no retrieval authority. It must neither receive
-nor retrieve GitHub App signing keys, installation tokens, model API keys,
-PATs, OCE issuer material, repository broker credentials, private configuration,
-release authority, or a reusable ingress bearer. Sandbox must prevent access
-through inherited descriptors, process inspection, filesystem aliases,
-environment, mounts, shared state, home, temporary directories, persistent
-volume claims, Pod manifests, arguments, logs, output, authentication or control
-interfaces, proxy endpoints, and redirects.
-
-The selected Sandbox must qualify Box's native user, mount, PID, and network
-namespaces, restricted filesystem, and seccomp policy as the boundary between
-parent and child. Kubernetes NetworkPolicy selects Pods, not processes;
-Sandbox must isolate trusted control interfaces and prevent direct egress,
-including loopback, direct DNS or upstream connections, and raw sockets. A
-separate trusted proxy Pod and stronger node isolation remain future work.
-
-OpenClaw Control Plane (OCC) and IAM own metadata, bindings, and admission. Compute owns Agent revision
-Pods, storage, placement, lifecycle, generic observation, and the release
-decision. TokenService holds usable credentials and issuer keys and issues or
-renews tokens. CredentialProxy owns effective credential policy, target-bound
-versioned delivery to the trusted recipient, serving-copy readback, and
-withdrawal delivery. Sandbox owns containment, private transport, startup hold,
-and enforcement of release for the exact child incarnation, process, and fresh
-startup challenge. Compute authorizes release only after current delivery and
-projection acknowledgment; missing, stale, or ambiguous readback keeps startup
-held. Harness owns Codex and its session. The proposed paired Box Sandbox and
-CredentialProxy registration must connect the real Box callback to that trusted
-serving recipient; it does not introduce another credential issuer or give the
-Harness source-resolution authority. The proposed
-[contract selection](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#credentialproxy-contract-selection)
-requires explicit `drivers.credential_proxy.contract: 'deployment'` paired with
-`oce.credentialProxyContract: 'deployment'` in the pinned, verified installed package
-manifest for `credential_proxy`. An absent declaration and omitted selector mean legacy.
-Before loading the module or invoking its factory, refuse malformed or unsupported
-selection or declaration, a mismatch, or an incompatible pairing without inference or
-fallback. The declaration is compatibility metadata, not attestation or a sandbox. After
-a compatible factory runs, validate its returned view and identifiers; refuse a defective
-result before caller provisioning or credential use, clean up through the existing path,
-and record partial or uncertain factory effects. Installation, Compute, and Worker must
-consume the typed deployment view from the same selected owner. Legacy Git authority is
-unchanged. This admission remains pending.
-
-The native parent creates its child directly, so it must prove that launch
-provenance and inherited state bind only that child. If a future design transfers
-a privileged descriptor to an independently launched receiver, the trusted
-installer or runtime must first authenticate both exact endpoint incarnations
-using independently supplied trust, or provision an authenticated preconnected
-channel for that pair. A shared UID, protected socket directory, peer-supplied
-image digest, or nonce exchanged on the same unauthenticated stream is
-insufficient. That separate bootstrap remains unresolved; it is not a
-prerequisite for the direct-parent experiment.
+| Decision                                                                          | Contract                                                                                                                   |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Who holds, issues, and delivers credentials?                                      | [Installation credential ownership](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md)   |
+| How does Installation select the Drivers, and when can Compute release the child? | [Held startup](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md)                                  |
+| When may every process in one Sandbox use a binding?                              | [Agent-wide Box policy for the isolated pilot](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md) |
 
 ## Ordered pull requests
 
-Deliver five dependent PRs, preferably below 2,000 changed lines each. Update
-the owning references and flows with each behavior change. Submit a covering
-RFC for human review before changing a Driver contract, including required
-behavior or configuration, and preserve every explicit hold. [RFC-0024](../rfcs/0024-sandbox-harness-mode-support.md)
-proposes OpenClaw mode reporting; it does not approve Box or Codex support.
+Deliver these in order, preferably under 2,000 changed lines per PR. Update the owning references
+and flows with each behavior change. Submit a covering RFC for human review before changing a Driver
+interface, required behavior, or configuration. Respect explicit holds and existing branch
+ownership. Import only reviewed changes.
 
-1. **Boundary and ingress.** First extend real OCC Installation setup, normal
-   composition with its default installed-package loader, and the Worker/Compute path to
-   consume the selected CredentialProxy deployment view from the same owner. Verify valid
-   legacy and deployment packages; preserve legacy Git success and refusal. Require zero
-   module loads and factory calls for invalid selection or declaration, missing deployment
-   declaration, mismatch, or incompatible pairing, including matching IDs with a legacy
-   package selected as deployment. Reject inference and fallback. For a lying factory,
-   verify one invocation, returned-view and identifier checks, zero caller provisioning or
-   credential use, and cleanup or recorded uncertainty. Then exercise the real native Box parent, trampoline,
-   and contained child with invented sentinels. Verify an authored Policy permit,
-   denial and absent-Policy refusal. In the isolated Agent-wide pilot, run the
-   [same-route/binding subprocess and refusal cases](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md#acceptance-criteria)
-   through the real Agent. Verify executable/port enforcement or policy refusal,
-   native isolation, exact child and challenge
-   binding, unintended descriptor inheritance refusal, live authored-source
-   identities, writable-alias refusal, and the public CA's read-only same-object
-   grant. Deny credential and control leaks, loopback, direct upstream and DNS,
-   and raw-socket bypass. Then extend the real Worker, paired Sandbox and
-   CredentialProxy path with honest held observation, target-bound delivery and
-   serving-copy readback, Compute-authorized release, and stale, cross-revision,
-   replacement, and confused-deputy refusals. If a separate receiver is later
-   selected, also refuse substitute listeners, foreign first connectors, and
-   stale or cross-run peers before descriptor transfer.
-2. **Protected inference.** Route a real Codex turn through mandatory egress to
-   the selected HTTP provider. Verify a genuine reply and injection at the
-   admitted origin. Refuse another destination, dangerous redirect, known
-   response disclosure, missing credential, incompatible presentation, and
-   unsupported authentication mode through the real admission and request
-   paths. Use invented sentinels to test response headers, bodies, trailers,
-   errors, and logs.
-3. **Prepared Git.** Extend the shipped [Worker and prepared Git path](../../docs/reference/drivers/selection.md#select-a-protected-sender)
-   through Sandbox `repositoryAccess` and `CredentialProxyDriver.bindRepositoryGit`.
-   Reuse the selected issuer. Authorize the assigned repository, permitted push
-   refs, and explicitly granted REST pull request operations and head/base refs.
-   Deny GraphQL by default. Stock `gh` draft creation requires a pending, narrowly
-   scoped correction for its exact GraphQL request shapes, variables, repository
-   identity, head/base refs, and draft restrictions, with trusted effect readback
-   and uncertain one-draft recovery. The current scoped selector does not admit
-   those shapes; installation-wide GitHub API authority is not a substitute.
-   From the running Agent, push and create a draft PR only after that correction
-   is qualified; read both effects back at GitHub. Deny another eligible
-   repository and out-of-scope refs and PR actions. Preserve existing OpenShell
-   Git behavior and coverage.
-4. **Rotation, withdrawal, and recovery.** Acknowledge rotation only after every
-   serving copy reports the effective version. Refuse fresh Git use after
-   withdrawal or expiry; a rejected withdrawal is not complete. Exercise failed
-   delivery, a stale copy, and a lost reply. Reconcile the current instance and
-   policy before recovery; do not replay an uncertain operation or fall back to
-   direct egress. Prove a further model turn succeeds in the same conversation.
-5. **Clean ARM64 qualification.** Install the Helm chart and Worker built from
-   the exact candidate commit. Record chart, image, and source identities.
-   Verify installer egress, RBAC, DNS, bootstrap, and held-start diagnostics; run
-   the installed Agent journey, denials, rotation, withdrawal, recovery, and
-   cleanup with authorized provider and GitHub access. Capture independent
-   effect readback. Fixture results establish only their tested boundaries.
+1. **Establish the boundary.** Start with
+   [contract selection](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#credentialproxy-contract-selection)
+   through Installation setup, the default package loader, Compute, and the Worker. Next exercise
+   the native parent, trampoline, and child with invented sentinels. Connect the real Box callback
+   to the trusted recipient through the paired Sandbox and CredentialProxy. Prove the
+   [startup and containment criteria (AC-0 through AC-4)](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#acceptance-criteria)
+   and the
+   [two-subprocess pilot criteria](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md#acceptance-criteria)
+   through the real Agent.
+2. **Protect inference.** Route a Codex turn through mandatory egress. Verify injection at the
+   admitted HTTP origin and a genuine model reply. Exercise admission and request handling with
+   another destination, a dangerous redirect, a missing credential, incompatible presentation, and
+   unsupported authentication. Require refusal. Use invented sentinels to verify that the injector
+   blocks known disclosures in response headers, bodies, trailers, errors, and logs.
+3. **Enable prepared Git.** Extend the
+   [Worker path](../../docs/reference/drivers/selection.md#select-a-protected-sender) through
+   Sandbox `repositoryAccess` and `CredentialProxyDriver.bindRepositoryGit`. Reuse the selected
+   issuer.
+   - Limit pushes to permitted refs in the assigned repository and REST pull request operations to
+     explicit grants and head/base refs. Deny GraphQL by default.
+   - Stock `gh` needs a selector change for its exact GraphQL requests and variables, repository
+     identity, head/base refs, and draft restrictions. Qualify that change with trusted effect
+     readback and recovery that reconciles an uncertain creation to a single draft. Keep
+     installation-wide GitHub API access out of scope.
+   - Only then push and create a draft from the running Agent. Read back both effects at GitHub.
+     Refuse another eligible repository, unauthorized refs, and out-of-scope PR actions. Preserve
+     OpenShell Git behavior and coverage.
+4. **Rotate and withdraw access.** Exercise a failed delivery, a stale serving copy, a rejected
+   withdrawal, expiry, and a lost reply against the
+   [delivery and recovery rules](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#ownership-and-release).
+   Verify that fresh Git use fails after withdrawal or expiry and that the Agent can continue its
+   model conversation.
+5. **Qualify the installation.** Install the Helm chart and Worker built from the exact reviewed
+   candidate on clean ARM64. Record chart, image, and source identities. Check installer egress,
+   RBAC, DNS, bootstrap, and diagnostics for held startups. Run the
+   [full journey](#outcome-and-scope), denials, rotation, withdrawal, recovery, and cleanup with
+   authorized provider and GitHub access. Capture independent evidence at each provider. Report
+   unmet prerequisites and failures separately from source and fixture results.
 
 ## Delivery baseline
 
-The original source baseline above is historical. At that revision, Kubernetes
-Compute required exactly one matching live Pod with `Ready=True` before reading
-provider Harness status. It could observe a held failure only after that gate,
-so the plan proposed scoped observation for an unready protected startup. The
-baseline [#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098)
-concerns Sandbox maintenance cadence, not the Box topology.
+Start the native experiment at Box commit `956764b58f2c5ccb12bb7048fd1ced3d8ca1b5d4`.
+[Box #311](https://github.com/strands-agents/box/pull/311) provides a reverse HTTPS backend without
+CONNECT proxy support. Qualify TLS, addressing, identity, and request handling for the selected
+route.
 
-The native experiment starts from public Box commit
-`956764b58f2c5ccb12bb7048fd1ced3d8ca1b5d4`. It must qualify the direct parent,
-contained child, paired serving path, and ordinary Worker integration. Treat
-[Box #482](https://github.com/strands-agents/box/pull/482) as a separate,
-unqualified descriptor-handoff candidate; its UID check cannot identify the
-exact authorized endpoint pair. Preserve incumbent branches and import only
-reviewed changes. The reverse HTTPS backend route
-([Box #311](https://github.com/strands-agents/box/pull/311)) is not a CONNECT
-proxy; TLS, address, identity, and request semantics still need qualification.
-The [implementation status](../../docs/design.md#implementation-status) lists
-general credential-free inference as planned. Local or container evidence does
-not establish clean ARM64 Helm, installed Worker, provider, or GitHub proof.
-All five milestones remain incomplete.
+The
+[historical Pod readiness gate](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#problem-and-decision)
+explains the first milestone. [#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098)
+covers Sandbox maintenance cadence. [RFC-0024](../rfcs/0024-sandbox-harness-mode-support.md) covers
+OpenClaw mode reporting. Box and Codex require their own qualification. The
+[platform design](../../docs/design.md#implementation-status) lists general credential-free
+inference as planned.
 
 ## Manual Notes
 
