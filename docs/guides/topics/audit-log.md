@@ -132,10 +132,11 @@ rows. It cannot update, delete, or truncate them. Automatic expiry, purge,
 archive, and export are outside the current audit workflow. Use approved
 database access to inspect raw audit rows.
 
-PostgreSQL checks each new Control Plane request, work, or audit disclosure event
-against an 8 KiB limit on its JSON row. At 1 GiB of allocated space for the
-`occ.audit_events` table and its indexes, PostgreSQL refuses new Control Plane
-audit events by default. Existing event types can still grow the table.
+PostgreSQL checks each new Control Plane request, work, audit disclosure, and
+runtime activity record against an 8 KiB limit on its JSON row. At 1 GiB of
+allocated space for the `occ.audit_events` table and its indexes, PostgreSQL
+refuses new records of these types by default. Other event types can still grow
+the table.
 Concurrent writes and page allocations can take the table above the threshold.
 
 Check the storage threshold before enabling Control Plane audit and while it runs.
@@ -147,7 +148,9 @@ SELECT pg_total_relation_size('occ.audit_events') AS used_bytes,
 ```
 
 If `accepts_new_events` is `false`, the API can block covered requests or
-withhold audit results. The worker cannot claim covered jobs or save the
+withhold audit results. A managed revision cannot start a covered turn if it
+cannot save the admission record. OpenClaw also requires a model start record
+before it sends the request. The worker cannot claim covered jobs or save the
 results of audited attempts until space is available. It reports
 `worker.error` with code `AUDIT_CAPACITY_EXCEEDED`. Preserve the existing
 records. Monitor free disk space separately. Reserve space for other tables,
