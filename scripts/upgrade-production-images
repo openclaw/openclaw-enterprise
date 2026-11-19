@@ -312,7 +312,7 @@ PYTHON
 }
 
 read_original_upgrade_parameters() {
-  python3 - "$upgrade_evidence_dir" "$kubeconfig" "$context" "$namespace" "$release" "$cleanup_only" <<'PYTHON'
+  python3 - "$upgrade_evidence_dir" "$kubeconfig" "$context" "$namespace" "$release" <<'PYTHON'
 import json
 import os
 import re
@@ -327,7 +327,7 @@ try:
     values = state["parameters"](root)
     if values["arguments"][:4] != sys.argv[2:6]:
         raise ValueError
-    if sys.argv[6] == "1" and state["journal"](root)["parametersSha256"] != state["digest"](values):
+    if state["journal"](root)["parametersSha256"] != state["digest"](values):
         raise ValueError
     profiled = values.get("profiled")
     if not isinstance(profiled, bool):

@@ -425,3 +425,24 @@ for (const kind of ["fifo", "symlink-to-fifo"]) {
     assert.match(result.stderr, /evidence.*directory/i);
   });
 }
+
+test("profiled upgrade checks and recovery bind Kubernetes requests to the approved target", (t) => {
+  const directory = temporaryDirectorySync(t, "upgrade-profiled-target-");
+  // A local kubeconfig decoder checks the actual client input. The fixture records
+  // and refuses Kubernetes and Helm requests before they leave the process.
+  const result = spawnSync(
+    "python3",
+    [join(repository, "tests/fixtures/production-upgrade-target-control.py"), directory],
+    {
+      cwd: repository,
+      encoding: "utf8",
+      timeout: 120_000,
+    },
+  );
+  assert.ifError(result.error);
+  if (result.status === 77) {
+    t.skip(result.stdout.trim());
+    return;
+  }
+  assert.equal(result.status, 0, result.stderr);
+});
