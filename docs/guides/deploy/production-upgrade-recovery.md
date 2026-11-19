@@ -7,6 +7,9 @@ For runtime upgrades, preserve `<evidence-directory>.dispatch-state` separately
 from evidence backups. Missing or invalid journals stop resume before live access.
 After possible restoration, reconcile OCC history and audit records.
 
+For [separate migration recovery](separate-database-upgrade.md#apply-and-verify-the-prepared-migration),
+retain the sibling journal and keep writers stopped until verification and cleanup succeed.
+
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.
 
@@ -87,12 +90,13 @@ history, then finish verification separately.
 Never start old writers against a migrated database. For a retry within the recorded pair, wait
 until the initialization Job and Pods are terminal. Run the **candidate controller
 image** with the [selected-image read-only check](separate-database-upgrade.md#run-a-selected-image-migration)
-against the retained database. Use its migrator credential and required CA. The
-Kubernetes maintenance Job must select the same candidate image.
-Retain exit-zero `migration.checked` output. [Separate migrations](separate-database-upgrade.md) require `--require-current`.
-Attest the checked outcome with `--resume --migration-history-checked`. The helper returns OCC to zero replicas
-and records the next expected revision before retrying. Prefer a reviewed forward
-fix; neither Helm rollback nor the helper reverses committed migrations.
+against the retained database. Use its migrator credential and required CA. Use the
+same image for the maintenance Job. Require exit-zero `migration.checked`.
+[Separate migrations](separate-database-upgrade.md) require `--require-current`.
+Pass `--resume --migration-history-checked`. If Helm still reports the original
+revision in separate mode, keep the original API and worker stopped and preserve
+`database-migration-handoff.json`. Prefer a reviewed forward fix. Helm rollback
+leaves committed SQL in place.
 
 Consider an image-only return when the earlier image can read retained state and
 meets the applicable rollback guidance.
@@ -142,7 +146,7 @@ the previous controller image after the check below.
 
 Before selecting an older image, verify it can read candidate state.
 [Restore the retained candidate database](upgrade-baseline.md#restore-the-retained-candidate-database) if needed.
-Preserve Agents, versions, PVCs and the bootstrap volume.
+Preserve Agents, versions, PVCs and retained bootstrap credentials.
 After return, [check the original conversation](production-handoff.md#check-conversation-continuity).
 
 For stalled ReplicaSet creation, check [namespace object capacity](upgrade-checklist.md#check-replicaset-capacity).

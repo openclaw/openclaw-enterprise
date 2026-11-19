@@ -11,8 +11,7 @@ status: Proposed
 This proposal requires human review and merge.
 
 The proposed [Installation credential ownership amendment](installation-credential-ownership.md) revises the v1 custody, delivery and deployment decisions below.
-
-Two further amendments propose how to [hold an Agent until credential delivery is current](strands-box-held-launch.md) and when to [share a binding across processes in one isolated Box pilot](strands-box-agent-policy.md).
+The later proposed [TokenService instance and update amendment](token-service-instance-and-updates.md) revises source ownership records and proxy delivery notifications.
 
 ## Decision
 

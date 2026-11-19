@@ -15,28 +15,46 @@ a resumed turn. An HTTP chat request is not in that queue; see
 
 ## Recovery boundary
 
-For locally managed Kubernetes dedicated Codex, OCC stores a server-owned recovery
-generation and compatibility domain. A compatible deployment retains this
-generation. The selected Compute Driver compares the admitted execution settings,
-retained storage, and exact Agent scope; image changes alone do not end continuity.
-Configuration, policy, credential, placement, or Harness changes can change the
-domain and end the generation.
+Native OpenClaw checks retained state whenever a Gateway starts. The continuation
+cases below describe work created without a scope; see the
+[transition limit](#native-enforcement-and-limits) for previously scoped work. OCE does not
+allocate recovery generations, compare recovery compatibility domains, or supply
+a restart scope. Kubernetes, Docker, and SSH use their normal workload startup.
+SSH recovery depends on the operator-installed native runtime.
 
-| Operation                                                                    | Interrupted work                                            |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Compatible redeployment of a running Agent                                   | Eligible work continues in its retained session.            |
-| Gateway or Harness replacement within the generation                         | Eligible work continues after reconnection.                 |
-| [Explicit stop](deployment.md#stop-and-resume), then one or more deployments | Stays stopped; the next deployment starts a new generation. |
-| Incompatible deployment or deletion                                          | Ends the previous generation.                               |
+| Operation                                                | Interrupted work                                                            |
+| -------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Redeployment with retained state and a supported Harness | Eligible work can continue in the same session.                             |
+| Gateway replacement, alone or with the Harness           | Eligible work can continue after reconnection.                              |
+| Replacement of only the Harness (dedicated Codex)        | The turn ends and does not resume; send the request again.                  |
+| [Stop](deployment.md#stop-and-resume), then deployment   | Stop shuts down the workload; the later startup may continue eligible work. |
+| Harmless configuration change                            | No OCE compatibility filter prevents recovery. Native checks still apply.   |
+| Explicit native `chat.abort`                             | Cancelled work does not become eligible on startup.                         |
 
-Stop ends the generation in the lifecycle transaction, before workload teardown.
-A failed stop cannot let a later deployment reuse that permission. An older
-revision retry cannot prepare or activate with an ended generation.
+A scheduled (cron) turn that a Gateway restart interrupts is left to its scheduler:
+it gets no continuation and no failure notice. If a user's message was already
+accepted into that turn, it continues like other eligible work.
 
-Other Compute Drivers and provider-managed Harnesses use a new recovery scope
-for each deployment. Missing Driver support never selects an Agent-wide scope.
-[SSH Compute](../drivers/ssh-compute.md#namespace-and-revision-lifecycle) supplies the scope setting,
-but stop protection depends on the operator-installed OpenClaw supporting it.
+Recovery runs only when a Gateway starts. When only the Harness of a dedicated
+Codex Agent is replaced while its Gateway keeps running, for example after a node
+drain or failure, an eviction, a Harness container restart, or a repository
+session replacement, the Gateway sees its Codex connection close and ends the
+turn. The reply shows "Couldn't finish this reply", and its details can say the
+work may still be running, but the running command stopped with the Harness. The
+session and its history remain. Check for partial effects, then send the request
+again or select **Try again**. Redeployment, Stop then deployment, and upgrades
+replace the Gateway too and use normal recovery.
+
+Deploying a stopped Agent currently starts it again. Keeping stopped Agents
+stopped on deployment is tracked separately by
+[issue #6500](https://github.com/openclaw/openclaw-enterprise/issues/6500).
+Workload Stop is distinct from native turn cancellation. A failed teardown does
+not mean the old workload has stopped; normal ownership and replacement checks
+still apply.
+
+Changing Harnesses does not make an incompatible saved session usable. Retained
+storage, native state validity, current authority, and Harness support remain
+prerequisites. Deletion removes resources according to the Agent deletion contract.
 
 ## HTTP chat callers
 
@@ -53,11 +71,16 @@ label to read it.
 
 ## Native enforcement and limits
 
-In OCE runtime images containing the recovery bridge, both graceful shutdown
-markers and persisted crash ownership must match the Gateway's admitted scope. Missing or mismatched evidence prevents continuation
-and cancels orphaned queued inputs. Recovery also refuses to reacquire child
-completion custody from an ended scope. Current authority and cancellation checks
-still apply; the generation grants no permissions.
+Native OpenClaw checks session identity, the owner's current authority, and
+explicit cancellation before admitting continuation. Its optional restart-scope
+fields and policy remain unchanged. OCE does not set the scope; new work created
+without one uses normal native restart eligibility.
+
+A retained nonempty scope does not match an unset startup scope. Previously scoped
+unfinished work may therefore be refused during the transition, including queued
+input and child-completion recovery where applicable. This accepted limit does not
+prevent new unscoped work from using normal recovery. OCE does not translate native
+records or patch this policy.
 
 These are native Gateway authority checks. OCC's native browser proxy uses a
 shared native identity; it does not give each OCC user a distinct native profile.
@@ -65,7 +88,9 @@ See [native authority](../agent-native-admin.md#native-authority-and-drift).
 
 A surviving Codex turn can finish before adoption. Recovery waits for up to two
 minutes of polling and refuses takeover if it stays active; an in-flight read
-keeps its native RPC timeout. Completed or explicitly cancelled work does not
+keeps its native RPC timeout. The reply then tells the user that the Gateway
+restarted, that the work is still running and its result is not in this
+reply, and to send a new message after it finishes. Completed or explicitly cancelled work does not
 become eligible merely because a Gateway starts.
 
 This is best-effort continuation. It does not guarantee exactly-once external

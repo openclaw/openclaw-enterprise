@@ -127,12 +127,10 @@ controlPlaneAudit:
 
 bootstrap:
   adminEmail: ""
-  password:
-    claimName: ""
-    mountPath: /var/lib/openclaw/bootstrap
-    fileName: initial-admin-password
-  serviceKey:
-    fileName: initial-admin-service-key.json
+  credentials:
+    secretName: ""
+    passwordKey: admin-password
+    serviceKeyKey: admin-service-key
 
 backend:
   openshell:
@@ -197,6 +195,10 @@ publicGithubRead:
   # Operator-approved IPv4 CIDRs for api.github.com; no default Internet grant.
   upstreamCidrs: []
 
+# Enable when the Installation selects the in-Pod Strands Box Sandbox Driver.
+strandsBox:
+  workerReadiness: false
+
 gatewayRouting:
   # Requires operator-installed routing controllers/CRDs, an existing GatewayClass,
   # and the service-key Secret below. Helm does not install those prerequisites.
@@ -258,9 +260,6 @@ api:
     checksum: ""
   port: 8080
   clients: []
-  # Optional exact HTTP(S) proxy endpoint for API-side Slack directory lookup.
-  # The proxy must allow CONNECT to slack.com:443; empty disables lookup in production.
-  channelDirectoryProxyUrl: ""
   # API-only HTTPS egress to explicit provider IPv4 /32 hosts for discovery and login.
   # Hosted codex-plugin needs auth.openai.com and chatgpt.com. Its installation
   # profile resolves these unless CIDRs are supplied; refresh on DNS changes.
@@ -289,19 +288,27 @@ api:
     # generic only; ingress-nginx and aws always read x-forwarded-for.
     clientAddressHeader: ""
 
-slackProxy:
-  # Optional chart-managed HTTP CONNECT proxy for Slack channel traffic. It is
-  # inert until enabled. HTTPS egress excludes private and reserved IPv4 ranges.
+channelEgress:
   enabled: false
-  serviceName: openclaw-enterprise-slack-proxy
-  port: 3128
+  gatewayName: openclaw-channel-egress
+  gatewayClassName: eg
+  envoyNamespace: envoy-gateway-system
+  serviceName: openclaw-channel-egress
+  listenerPortStart: 10001
+  listenerPortEnd: 10062
+  occListenerPort: 10000
+  inspectionPort: 19004
+  # Include every Pod, Service and node CIDR, including public node addresses.
+  excludedCidrs: []
+  image: envoyproxy/envoy@sha256:ccb37e93d8274a525fe00d67287716dbe3d58bc4237d7627af9e64fae0fd25c8
+  replicas: 1
   resources:
     requests:
-      cpu: 25m
-      memory: 64Mi
+      cpu: 100m
+      memory: 128Mi
     limits:
-      cpu: 250m
-      memory: 256Mi
+      cpu: "1"
+      memory: 512Mi
 
 cluster:
   cidrs: []

@@ -1,12 +1,12 @@
 ---
-rfc: ../rfcs/0023-egress-proxy-credential-lifecycle/index.md
+rfc: ../rfcs/20261118-strands-box/index.md
 ---
 
 # Strands and Box protected execution
 
 - **ID:** TASK-0053
 - **Delivery status:** Planned
-- **Authority:** [RFC-0023](../rfcs/0023-egress-proxy-credential-lifecycle/index.md)
+- **Authority:** [RFC-20261118-strands-box](../rfcs/20261118-strands-box/index.md)
 - **Source baseline:** `962a41087083053b585b477d4791f8aded6a9f4e`
 
 ## Outcome and scope
@@ -22,13 +22,13 @@ interactive login, and WebSocket credential delivery. All five milestones below 
 ## Credential and execution boundary
 
 Qualify one trusted native Box parent that directly starts its trampoline and contained child in the
-same Agent Pod container. Three proposed amendments govern this work.
+same Agent Pod container. This RFC builds on the Installation credential ownership amendment.
 
-| Decision                                                                          | Contract                                                                                                                   |
-| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Who holds, issues, and delivers credentials?                                      | [Installation credential ownership](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md)   |
-| How does Installation select the Drivers, and when can Compute release the child? | [Held startup](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md)                                  |
-| When may every process in one Sandbox use a binding?                              | [Agent-wide Box policy for the isolated pilot](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md) |
+| Decision                                                                          | Contract                                                                                                                 |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Who holds, issues, and delivers credentials?                                      | [Installation credential ownership](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md) |
+| How does Installation select the Drivers, and when can Compute release the child? | [Held startup](../rfcs/20261118-strands-box/strands-box-held-launch.md)                                                  |
+| When may every process in one Sandbox use a binding?                              | [Agent-wide Box policy for the isolated pilot](../rfcs/20261118-strands-box/strands-box-agent-policy.md)                 |
 
 ## Ordered pull requests
 
@@ -38,13 +38,13 @@ interface, required behavior, or configuration. Respect explicit holds and exist
 ownership. Import only reviewed changes.
 
 1. **Establish the boundary.** Start with
-   [contract selection](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#credentialproxy-contract-selection)
+   [contract selection](../rfcs/20261118-strands-box/strands-box-held-launch.md#credentialproxy-contract-selection)
    through Installation setup, the default package loader, Compute, and the Worker. Next exercise
    the native parent, trampoline, and child with invented sentinels. Connect the real Box callback
    to the trusted recipient through the paired Sandbox and CredentialProxy. Prove the
-   [startup and containment criteria (AC-0 through AC-4)](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#acceptance-criteria)
+   [startup and containment criteria (AC-0 through AC-4)](../rfcs/20261118-strands-box/strands-box-held-launch.md#acceptance-criteria)
    and the
-   [two-subprocess pilot criteria](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md#acceptance-criteria)
+   [two-subprocess pilot criteria](../rfcs/20261118-strands-box/strands-box-agent-policy.md#acceptance-criteria)
    through the real Agent.
 2. **Protect inference.** Route a Codex turn through mandatory egress. Verify injection at the
    admitted HTTP origin and a genuine model reply. Exercise admission and request handling with
@@ -66,7 +66,7 @@ ownership. Import only reviewed changes.
      OpenShell Git behavior and coverage.
 4. **Rotate and withdraw access.** Exercise a failed delivery, a stale serving copy, a rejected
    withdrawal, expiry, and a lost reply against the
-   [delivery and recovery rules](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#ownership-and-release).
+   [delivery and recovery rules](../rfcs/20261118-strands-box/strands-box-held-launch.md#ownership-and-release).
    Verify that fresh Git use fails after withdrawal or expiry and that the Agent can continue its
    model conversation.
 5. **Qualify the installation.** Install the Helm chart and Worker built from the exact reviewed
@@ -84,7 +84,7 @@ CONNECT proxy support. Qualify TLS, addressing, identity, and request handling f
 route.
 
 The
-[historical Pod readiness gate](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#problem-and-decision)
+[historical Pod readiness gate](../rfcs/20261118-strands-box/strands-box-held-launch.md#problem-and-decision)
 explains the first milestone. [#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098)
 covers Sandbox maintenance cadence. [RFC-0024](../rfcs/0024-sandbox-harness-mode-support.md) covers
 OpenClaw mode reporting. Box and Codex require their own qualification. The

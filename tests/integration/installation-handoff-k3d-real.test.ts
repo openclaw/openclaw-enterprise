@@ -406,8 +406,9 @@ test("first install retains exact attempt evidence after a lost client", { skip 
   await kubectl("create", "namespace", namespace);
   t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
   const values = join(dir, "values.json");
-  // Missing input Secrets/PVC keep the genuine chart Job pending. This proves
-  // Helm dispatch and handoff, without claiming database initialization ran.
+  // Missing input Secrets keep the genuine chart Job pending. Select existing
+  // credentials below so neither install generates inputs or creates a Secret.
+  // This proves Helm dispatch and handoff, not database initialization.
   await writeFile(
     values,
     JSON.stringify({
@@ -417,7 +418,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
       agentNativeAdmin: { domain: "agents.example.invalid" },
       bootstrap: {
         adminEmail: "admin@example.invalid",
-        password: { claimName: "absent-bootstrap" },
+        credentials: { secretName: "absent-bootstrap" },
       },
       api: { clients: [{ namespace: "operator-tools", podLabels: { app: "operator" } }] },
       database: { cidrs: ["10.45.0.12/32"] },
@@ -438,6 +439,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
   const args = [
     "installation",
     "install",
+    "--bootstrap-credentials=existing",
     ...target,
     "--chart",
     "deploy/helm/openclaw-enterprise",

@@ -575,6 +575,13 @@
       "when": 1787000000082,
       "tag": "0082_authentication_states",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1787000000083,
+      "tag": "0083_native_restart_recovery",
+      "breakpoints": true
     }
   ]
 }

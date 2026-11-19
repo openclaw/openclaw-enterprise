@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
+import { sha256Hex } from "../../packages/utils/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   failNativeProvisioningDeadline,
@@ -760,8 +761,16 @@ test(
     let nativeNamespace;
     let nativeWork;
     if (selectedSandboxDriver === "openshell") {
+      assert.ok(
+        typeof recorded.installationId === "string" && recorded.installationId.length > 0,
+        "Local Setup must record the authenticated Installation ID",
+      );
       const installation = await requestLocalApi(env.OCC_URL, serviceKey, "GET", "/installation");
-      assert.equal(installation.id, administratorKey.meta.installationId);
+      assert.equal(
+        installation.id,
+        recorded.installationId,
+        "The administrator key must authenticate the recorded Installation",
+      );
       const namespaces = await requestLocalApi(env.OCC_URL, serviceKey, "GET", "/namespaces");
       const defaults = namespaces.filter(({ name }) => name === "default");
       assert.equal(defaults.length, 1, "Local Setup must own exactly one default Namespace");
@@ -1213,6 +1222,8 @@ test(
       first.model,
       `${selectedHarness === "codex" ? "codex" : "openai"}/${expectedModel}`,
     );
+    const base = `/namespaces/${first.namespaceId}`;
+    const agentPath = `${base}/agents/${first.identity.agentId}`;
     if (selectedSandboxDriver === "openshell") {
       const kube = { stateDirectory, cluster: recorded.cluster, env };
       const deployments = await readKubernetesJson(
@@ -1328,6 +1339,23 @@ test(
           "Existing stack has no python-web startup rule; override delivery was not exercised.",
         );
       }
+      // Both OpenShell fixtures use single-cluster runtime Compute with private
+      // Gateway routing. The newly admitted first-Agent revision enables HTTP chat.
+      const { agentId, revisionId } = first.identity;
+      const admitted = await requestLocalApi(
+        first.origin,
+        serviceKey,
+        "GET",
+        `${agentPath}/revisions/${revisionId}`,
+      );
+      assert.equal(admitted.id, revisionId);
+      // Admission pins the Harness workspace to Local Setup's selected Sandbox data mount.
+      assert.equal(admitted.configuration.agents.defaults.workspace, "/sandbox/enterprise");
+      assert.equal(
+        admitted.configuration.gateway?.http?.endpoints?.chatCompletions?.enabled,
+        true,
+        "The admitted first-Agent revision must enable HTTP chat",
+      );
       const services = await readKubernetesJson(
         kube,
         [
@@ -1336,35 +1364,55 @@ test(
           "--namespace",
           namespaces.items[0].metadata.name,
           "--selector",
-          `openclaw.dev/agent=${first.identity.agentId}`,
+          `openclaw.dev/agent=${agentId}`,
         ],
-        "the Agent Service",
+        "the Agent Services",
       );
-      // Both Services share the canonical tenant namespace. The Gateway serves
-      // traffic, while OpenShell's advertised endpoint keeps the direct Harness
-      // Service parked so it cannot bypass the provider's authenticated route.
-      assert.equal(services.items.length, 2);
+      const agentSuffix = sha256Hex(agentId, 12);
+      const gatewayName = gateway.metadata.name;
+      const harnessName = `agent-${agentSuffix}`;
+      const chatName = `chat-${agentSuffix}-rev-${sha256Hex(revisionId, 12)}`;
+      assert.deepEqual(
+        services.items.map((service) => service.metadata.name).sort(),
+        [gatewayName, harnessName, chatName].sort(),
+        "The Agent must have exactly its Gateway, parked Harness and revision-scoped chat Services",
+      );
       const gatewayService = services.items.find(
-        (service) => service.spec.selector["openclaw.dev/workload-role"] === "gateway",
+        (service) => service.metadata.name === gatewayName,
       );
       const harnessService = services.items.find(
-        (service) => service.spec.selector["openclaw.dev/workload-role"] === "agent",
+        (service) => service.metadata.name === harnessName,
       );
-      assert.ok(gatewayService, "the Agent must retain its serving Gateway Service");
-      assert.ok(harnessService, "the direct Harness Service must remain parked");
-      assert.deepEqual(gatewayService.spec.selector, {
+      const chatService = services.items.find((service) => service.metadata.name === chatName);
+      const gatewaySelector = {
         "openclaw.dev/namespace": first.namespaceId,
-        "openclaw.dev/agent": first.identity.agentId,
+        "openclaw.dev/agent": agentId,
         "openclaw.dev/workload-role": "gateway",
         "app.kubernetes.io/name": gateway.spec.template.metadata.labels["app.kubernetes.io/name"],
-      });
+      };
+      assert.deepEqual(gatewayService.spec.selector, gatewaySelector);
+      // The direct Harness Service stays parked so it cannot bypass the
+      // provider's authenticated route.
       assert.equal(harnessService.spec.selector["openclaw.dev/namespace"], first.namespaceId);
-      assert.equal(harnessService.spec.selector["openclaw.dev/agent"], first.identity.agentId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/agent"], agentId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/revision"], revisionId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/workload-role"], "agent");
       assert.equal(
-        harnessService.spec.selector["openclaw.dev/revision"],
-        first.identity.revisionId,
+        harnessService.spec.selector["app.kubernetes.io/name"],
+        `${harnessName}-inactive`,
       );
-      assert.match(harnessService.spec.selector["app.kubernetes.io/name"], /-inactive$/);
+      assert.equal(
+        chatService.metadata.labels["app.kubernetes.io/managed-by"],
+        "openclaw-enterprise",
+      );
+      assert.equal(chatService.metadata.labels["openclaw.dev/revision"], revisionId);
+      assert.equal(chatService.metadata.annotations?.["openclaw.dev/revision-id"], revisionId);
+      assert.equal(chatService.spec.type, "ClusterIP");
+      assert.deepEqual(chatService.spec.ports, gatewayService.spec.ports);
+      assert.deepEqual(chatService.spec.selector, {
+        ...gatewaySelector,
+        "openclaw.dev/revision": revisionId,
+      });
     }
     const reuseEnv = { ...env };
     delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;
@@ -1433,8 +1481,6 @@ test(
       "Both invocations must use the same local controller and Namespace",
     );
 
-    const base = `/namespaces/${first.namespaceId}`;
-    const agentPath = `${base}/agents/${first.identity.agentId}`;
     const agent = await requestLocalApi(first.origin, serviceKey, "GET", agentPath);
     assert.ok(
       /^cfg_[A-Za-z0-9_-]+$/.test(agent.configurationId ?? ""),
@@ -1514,16 +1560,6 @@ test(
       original.values?.tools?.deny?.includes("*"),
       "The native Configuration must deny tools before the regression check",
     );
-    if (selectedSandboxDriver === "openshell") {
-      // Admission pins the Harness workspace to Local Setup's selected Sandbox data mount.
-      const admitted = await requestLocalApi(
-        first.origin,
-        serviceKey,
-        "GET",
-        `${agentPath}/revisions/${first.identity.revisionId}`,
-      );
-      assert.equal(admitted.configuration.agents.defaults.workspace, "/sandbox/enterprise");
-    }
     if (selectedControlUi) {
       assert.equal(original.generation, 2);
       assert.equal(original.values.gateway.publicOrigin, first.controlUiOrigin);
