@@ -390,6 +390,90 @@ test("credential exchange refuses a conflicted eligible provider before route fa
   assert.equal(synthetic.reads, 1);
 });
 
+test("static deployment refuses ambiguous or incompatible providers without redirecting its exact binding", async (t) => {
+  const f = await staticEgressFixture(t, { admitRevision: false });
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((provider) => provider.sourceType.type === "openai")!;
+  const alternate = { ...original, ref: { ...original.ref, id: "another-provider" } };
+  const deploy = () =>
+    f.request("POST", `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`);
+  const controller: OpenClawController = f.controller;
+  const reads = f.countSecretReads();
+
+  // Source admission succeeded. A changed catalog cannot redirect the saved reference.
+  const incompatible: CredentialProviderDefinition = {
+    ...original,
+    sourceType: {
+      ...original.sourceType,
+      harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+    },
+  };
+  const duplicateDuringPlanning: CredentialProviderDefinition = {
+    ...original,
+    normalizeGrant(...args) {
+      const grant = original.normalizeGrant.apply(this, args);
+      providers.push(original);
+      return grant;
+    },
+  };
+  const changedLifecycle: CredentialProviderDefinition = {
+    ...original,
+    sourceType: { ...original.sourceType },
+    routes(...args) {
+      const routes = original.routes.apply(this, args);
+      Reflect.set(this.sourceType, "rotation", "refresh");
+      return routes;
+    },
+  };
+  // A valid plan must not survive replacement while OCC finishes admission.
+  const replacedAfterPlanning = { ...original };
+  const compute = controller.selectedDriver("compute");
+  const validate = compute.validateExecutionAdmission;
+  assert.ok(validate);
+  t.after(() => {
+    compute.validateExecutionAdmission = validate;
+  });
+  compute.validateExecutionAdmission = function (...args) {
+    validate.apply(this, args);
+    if (providers[0] === replacedAfterPlanning) {
+      providers[0] = original;
+    }
+  };
+  for (const [reason, entries, status] of [
+    ["replaced after plan construction", [replacedAfterPlanning], 409],
+    ["duplicated while building the grant", [duplicateDuringPlanning], 409],
+    ["incompatible while building routes", [changedLifecycle], 409],
+    ["missing", [alternate], 503],
+    ["duplicate", [original, { ...original }], 409],
+    ["managed login", [incompatible], 409],
+    [
+      "different type",
+      [{ ...original, sourceType: { ...original.sourceType, type: "other" } }],
+      409,
+    ],
+  ] as const) {
+    providers.splice(0, providers.length, ...entries);
+    const response = await deploy();
+    const revisions = await controller.transact((unit) =>
+      unit.revisions.listRevisionMetadata(f.namespace.id, f.agent.id),
+    );
+    assert.deepEqual(
+      { status: response.status, revisions: revisions.length, reads: f.countSecretReads() - reads },
+      { status, revisions: 0, reads: 0 },
+      reason,
+    );
+  }
+  providers.splice(0, providers.length, alternate, original);
+  const healthy = await deploy();
+  assert.equal(healthy.status, 202);
+  const revision = await controller.transact((unit) =>
+    unit.revisions.findRevision(f.namespace.id, f.agent.id, healthy.data.id),
+  );
+  assert.deepEqual(revision?.egressPlan?.routes[0]?.binding.source.provider, original.ref);
+});
+
 test("credential exchange refuses duplicate and substituted providers before material access", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
@@ -405,6 +489,22 @@ test("credential exchange refuses duplicate and substituted providers before mat
   ]) {
     providers.splice(0, providers.length, ...entries);
     assert.ok((await f.resolve(f.capture())).refused);
+  }
+
+  // A matching reference alone does not authorize a different credential lifecycle.
+  for (const sourceType of [
+    { ...original.sourceType, type: "other" },
+    {
+      ...original.sourceType,
+      harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+    },
+  ] as const) {
+    providers.splice(0, providers.length, { ...original, sourceType });
+    const result = await f.resolve(f.capture());
+    assert.deepEqual(
+      { refused: Boolean(result.refused), reads: f.secretReads - reads },
+      { refused: true, reads: 0 },
+    );
   }
 
   let substituteClassifications = 0;
