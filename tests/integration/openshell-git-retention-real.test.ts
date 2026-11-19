@@ -1092,8 +1092,20 @@ test(
     assert.equal(installed.providerResourceVersion, binding.resourceVersion);
 
     const guest = async (script: string) => execute(target, ["sh", "-ceu", script]);
-    const gitSetup =
-      'test "$GITHUB_TOKEN" = "openshell:resolve:env:GITHUB_TOKEN"; export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0; export HOME=/tmp; git config --global credential.helper \'!f() { printf "%s\\n" username=x-access-token "password=$GITHUB_TOKEN"; }; f\'';
+    // Check the stable alias before either client uses the original credential value.
+    const requireGitHubPlaceholder = `require_github_placeholder() (
+  case \${GITHUB_TOKEN-} in
+    openshell:resolve:env:s*_GITHUB_TOKEN)
+      handle=\${GITHUB_TOKEN#openshell:resolve:env:s}
+      handle=\${handle%_GITHUB_TOKEN}
+      case $handle in *[!0123456789abcdef]*) exit 1 ;; esac
+      [ "\${#handle}" -eq 64 ]
+      ;;
+    *) exit 1 ;;
+  esac
+)
+require_github_placeholder`;
+    const gitSetup = `${requireGitHubPlaceholder}; export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0; export HOME=/tmp; git config --global credential.helper '!f() { printf "%s\\n" username=x-access-token "password=$GITHUB_TOKEN"; }; f'`;
     const beforeAllowed = network.requests().length;
     const success = await guest(
       `${gitSetup}; cd /tmp; git clone -q https://github.com/fixture/a.git a; git -C a fetch -q origin; git clone -q https://github.com/fixture/b.git b; git -C b fetch -q origin; git -C b -c user.name=Fixture -c user.email=fixture@example.test commit -q --allow-empty -m change; git -C b push -q origin HEAD:refs/heads/approved; git -C b rev-parse HEAD`,
@@ -1139,7 +1151,7 @@ test(
           : "";
       const replay = async (repository: string) =>
         guest(
-          `test "$GITHUB_TOKEN" = "openshell:resolve:env:GITHUB_TOKEN"; '${curl}' -sS -o /dev/null -w '%{http_code} %{content_type}' -u "x-access-token:$GITHUB_TOKEN" -X '${request.method}' ${rpc} 'https://github.com/fixture/${repository}.git/${suffix}'`,
+          `${requireGitHubPlaceholder}; '${curl}' -sS -o /dev/null -w '%{http_code} %{content_type}' -u "x-access-token:$GITHUB_TOKEN" -X '${request.method}' ${rpc} 'https://github.com/fixture/${repository}.git/${suffix}'`,
         );
       const before = network.requests().length;
       const calibration = await replay(request.allowed);
