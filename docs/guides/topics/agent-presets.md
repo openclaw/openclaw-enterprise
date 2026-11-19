@@ -67,7 +67,7 @@ Fill the Preset variables with:
 - The owner's Slack user ID, a channel ID where the bot is already invited,
   and an IANA timezone. The timezone defaults to `UTC`.
 
-Configure the Installation's [Slack channel proxy](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+Configure the Installation's [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md)
 and use compatible gateway, Codex plugin, and Codex app-server images before deployment.
 
 The owner is initially the only allowed channel user. DMs and bot messages are

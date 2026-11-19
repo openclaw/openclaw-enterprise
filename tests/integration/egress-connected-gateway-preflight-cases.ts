@@ -112,8 +112,11 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
           process.kill(process.pid, "SIGKILL");
           break;
         case "overflow":
+          // execFile closes the pipe before sending SIGKILL. Let the kill end this fixture.
+          process.stdout.once("error", (error) => {
+            if (error.code !== "EPIPE") throw error;
+          });
           process.stdout.write("x".repeat(5 * 1024 * 1024));
-          // Keep the local child alive until execFile reacts to the overflow.
           setInterval(() => {}, 1000);
           break;
         case "deadline":

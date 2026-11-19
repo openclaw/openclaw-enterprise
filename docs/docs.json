@@ -205,8 +205,14 @@
                     "page": "reference/console/create-and-deploy",
                     "label": "Create and Deploy in the Console"
                   },
-                  { "page": "guides/agent-http-chat", "label": "HTTP Chat" },
-                  { "page": "reference/agent-http-chat", "label": "HTTP Chat Contract" },
+                  {
+                    "page": "guides/agent-http-chat",
+                    "label": "HTTP Chat"
+                  },
+                  {
+                    "page": "reference/agent-http-chat",
+                    "label": "HTTP Chat Contract"
+                  },
                   {
                     "page": "reference/agent-native-admin",
                     "label": "Native Admin UI"
@@ -419,6 +425,10 @@
                             "label": "Networking and Isolation"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/channel-egress",
+                            "label": "Channel Egress"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/gateway-authentication",
                             "label": "Gateway Authentication"
                           },
@@ -621,16 +631,29 @@
                     "label": "Overview"
                   },
                   {
-                    "page": "guides/deploy/kubernetes",
-                    "label": "Kubernetes"
-                  },
-                  {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup Without OpenShell"
-                  },
-                  {
-                    "page": "guides/deploy/production-installation",
-                    "label": "Control Plane Setup"
+                    "group": "Control Plane Setup",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/control-plane-setup",
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "guides/deploy/kubernetes",
+                        "label": "Prepare the Cluster"
+                      },
+                      {
+                        "page": "guides/deploy/production-installation",
+                        "label": "Install the Control Plane"
+                      },
+                      {
+                        "page": "guides/deploy/openshift",
+                        "label": "OpenShift"
+                      },
+                      {
+                        "page": "guides/deploy/azure-postgresql",
+                        "label": "Azure PostgreSQL"
+                      }
+                    ]
                   },
                   {
                     "page": "guides/deploy/installation-profiles",
@@ -830,6 +853,7 @@
               }
             ],
             "hidden": [
+              "guides/quickstart",
               "guides/deploy/production-installation-preparation",
               "guides/deploy/service-keys",
               "guides/deploy/oidc-upgrade",
@@ -1115,6 +1139,10 @@
                         "label": "Sandbox"
                       },
                       {
+                        "page": "reference/drivers/strands-box",
+                        "label": "Strands Box"
+                      },
+                      {
                         "page": "reference/drivers/secret",
                         "label": "Secret"
                       },
@@ -1295,6 +1323,7 @@
               "flows/service-account-driver-credential-delivery",
               "flows/service-api-keys",
               "flows/harness-execution-topology",
+              "flows/strands-box-companion",
               "flows/harness-restart-recovery",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
@@ -1304,6 +1333,7 @@
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
+              "flows/channel-egress",
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",

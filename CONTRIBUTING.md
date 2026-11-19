@@ -21,7 +21,7 @@ can proceed while the RFC is reviewed and revised. Changes outside approved
 milestones still need a decision from the responsible maintainers.
 
 Use [RFCs and implementation plans](docs/contributing/specifications.md) to
-choose the document, number it, and track delivery. Larger features with an RFC
+choose the document, name it, and track delivery. Larger features with an RFC
 need an implementation plan; standalone plans can build on existing architecture.
 
 Use a focused branch or worktree. Preserve other contributors' changes, local

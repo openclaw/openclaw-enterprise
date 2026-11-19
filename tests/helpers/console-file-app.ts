@@ -1,14 +1,13 @@
 import { after } from "node:test";
 
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 import type { createConsoleAppFixture } from "./console-app.mjs";
+
+export type { CleanupRegistrar } from "./cleanup-registrar.ts";
 
 type ConsoleAppFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type SharedConsoleAppFixture = ConsoleAppFixture & { sharedByFile: true };
 type Cleanup = () => void | Promise<void>;
-
-export interface CleanupRegistrar {
-  after(cleanup: Cleanup): void;
-}
 
 // Restore own enumerable policy arrays in place so existing IAM readers keep their references.
 function restorePolicy<Policy extends Record<keyof Policy, unknown[]>>(

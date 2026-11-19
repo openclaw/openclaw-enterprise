@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { text } from "node:stream/consumers";
 
 import { selfSigned } from "./certificates.ts";
-import type { CleanupRegistrar } from "./console-file-app.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 import { listen } from "./listen.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
 

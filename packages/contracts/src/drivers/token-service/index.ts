@@ -10,16 +10,22 @@ export interface InstallationClientSecretRef {
   readonly namespaceId?: never;
 }
 
-/** Nonsecret owner output. Native delivery must validate the backend and workspace before attach. */
-export type TokenServiceRegistration =
-  | { readonly delivery: "push"; readonly backendRef?: Readonly<Record<string, string>> }
-  | { readonly delivery: "native"; readonly backendRef: Readonly<Record<string, string>> };
+/** Private nonsecret locator; a shared implementation validates it before provider attachment. */
+export interface TokenServiceRegistration {
+  readonly backendRef?: Readonly<Record<string, string>>;
+}
 
-export interface RegisteredTokenServiceSource<
+/** A credential store instance retains its identity across ordinary restarts and redeployments. */
+export interface TokenServiceSourceInstance<
   Ref extends TokenServiceSourceRef = TokenServiceSourceRef,
 > {
   readonly sourceRef: Ref;
-  readonly driverId: string;
+  readonly tokenServiceInstanceId: string;
+}
+
+export interface RegisteredTokenServiceSource<
+  Ref extends TokenServiceSourceRef = TokenServiceSourceRef,
+> extends TokenServiceSourceInstance<Ref> {
   readonly registration: TokenServiceRegistration;
 }
 
@@ -31,8 +37,7 @@ export interface SourceLifecycleConfig {
 
 type SecretFields = Readonly<Record<string, string>>;
 
-export interface SourceRegistrationInput {
-  readonly sourceRef: TokenServiceSourceRef;
+export interface SourceRegistrationInput extends TokenServiceSourceInstance {
   readonly secret: SecretFields;
   readonly lifecycleConfig: SourceLifecycleConfig;
 }
@@ -61,9 +66,7 @@ export interface CredentialRefreshStatus {
   readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
 }
 
-export interface SourceRefreshOperation {
-  readonly sourceRef: CredentialSourceReference;
-  readonly driverId: string;
+export interface SourceRefreshOperation extends TokenServiceSourceInstance<CredentialSourceReference> {
   readonly operationId: string;
 }
 
@@ -91,10 +94,9 @@ export interface TokenServiceDriver extends Omit<Driver, "capability"> {
     operation: SourceRefreshOperation,
     signal: AbortSignal,
   ): Promise<CredentialRefreshStatus>;
-  /** The reference alone permits cleanup after an uncertain registration on supporting owners. */
+  /** Instance identity remains required when registration failed before returning a locator. */
   removeSource(
-    sourceRef: TokenServiceSourceRef,
-    registration: TokenServiceRegistration | undefined,
+    source: TokenServiceSourceInstance & { readonly registration?: TokenServiceRegistration },
     signal: AbortSignal,
   ): Promise<void>;
 }
