@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, verify } from "node:crypto";
-import { open, rename, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { link, open, rename } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
@@ -1575,7 +1576,10 @@ for (const withdrawal of ["local", "durable"] as const) {
     const { f, store, revision, client, entry, reconcile, lookup } = await heldGit(t, true);
     const directory = await temporaryDirectory(t, "acl-git-auth-");
     const bearer = join(directory, "bearer");
-    await writeFile(bearer, "fixture-bearer");
+    const regularBearer = join(directory, "regular-bearer");
+    await using bearerFile = await open(regularBearer, "wx", 0o600);
+    await bearerFile.writeFile("fixture-bearer");
+    await link(regularBearer, bearer);
     const delayedBearer = join(directory, "delayed-bearer");
     execFileSync("mkfifo", [delayedBearer]);
 
@@ -1587,8 +1591,13 @@ for (const withdrawal of ["local", "durable"] as const) {
       await rename(delayedBearer, bearer);
       // The FIFO opens when the real Gateway client reads the bearer. Commit
       // the withdrawal before that read finishes, with the supervisor still live.
-      appliedWithdrawal = open(bearer, "w").then(async (output) => {
-        try {
+      let writerConnected = false;
+      let authenticationFinished = false;
+      const withdrawalDuringRead = open(bearer, constants.O_WRONLY | constants.O_NOFOLLOW).then(
+        async (handle) => {
+          await using output = handle;
+          writerConnected = true;
+          assert.equal(authenticationFinished, false, "Gateway must read the held bearer");
           assert.equal(store.rows.get(revision.id)?.writePending, "rotate");
           if (withdrawal === "local") {
             f.runtime.withdraw(revision.id);
@@ -1599,16 +1608,29 @@ for (const withdrawal of ["local", "durable"] as const) {
           }
           assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
           await output.writeFile("fixture-bearer");
-        } finally {
-          await output.close();
-        }
-      });
+        },
+      );
+      appliedWithdrawal = withdrawalDuringRead;
+      const authentication = Promise.resolve()
+        .then(authenticate)
+        .finally(async () => {
+          authenticationFinished = true;
+          if (!writerConnected) {
+            // If authentication exits before reading the FIFO, release the writer and
+            // let its assertion report that the Gateway missed the controlled read.
+            await using _reader = await open(
+              bearer,
+              constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+            );
+            await Promise.allSettled([withdrawalDuringRead]);
+          }
+        });
       try {
-        const [result] = await Promise.all([authenticate(), appliedWithdrawal]);
+        const [result] = await Promise.all([authentication, withdrawalDuringRead]);
         return result;
       } finally {
-        await unlink(bearer);
-        await writeFile(bearer, "fixture-bearer");
+        await Promise.allSettled([authentication, withdrawalDuringRead]);
+        await rename(regularBearer, bearer);
       }
     };
     // The runtime fixture supplies the selected Sandbox, provider and policy
