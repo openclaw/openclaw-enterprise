@@ -145,22 +145,31 @@ type GatewayClass = {
   spec?: { controllerName?: string };
 };
 
-type Deployment = {
-  metadata?: KubernetesMetadata;
-  spec?: { replicas?: number };
+type DeploymentReadiness = {
+  metadata: {
+    uid: string | null;
+    generation?: number | null;
+    deletionTimestamp?: string | null;
+  } | null;
+  spec?: { replicas?: number | null } | null;
   status?: {
-    conditions?: Condition[];
-    observedGeneration?: number;
-    updatedReplicas?: number;
-    availableReplicas?: number;
-    replicas?: number;
-  };
+    conditions?: ({ type: string | null; status: string | null } | null)[] | null;
+    observedGeneration?: number | null;
+    updatedReplicas?: number | null;
+    availableReplicas?: number | null;
+    replicas?: number | null;
+  } | null;
 };
 
 type ClientContainer = {
   name: string;
   restartPolicy?: string;
-  volumeMounts?: { name: string; mountPath: string; subPath?: string; subPathExpr?: string }[];
+  volumeMounts?: {
+    name: string;
+    mountPath: string;
+    subPath?: string | null;
+    subPathExpr?: string | null;
+  }[];
 };
 
 type ClientWorkload = {
@@ -168,18 +177,33 @@ type ClientWorkload = {
   kind?: string;
   metadata?: NamedMetadata;
   spec?: {
-    volumeClaimTemplates?: { metadata?: { name?: string } }[];
+    volumeClaimNames?: (string | null)[] | null;
     template?: {
       spec?: {
         containers?: ClientContainer[];
         initContainers?: ClientContainer[];
         volumes?: {
           name: string;
-          secret?: { secretName: string; items?: { key: string; path: string }[] };
+          secret?: {
+            secretName: string;
+            optional: boolean | null;
+            items: { key: string; path: string }[] | null;
+          };
         }[];
       };
     };
   };
+};
+
+type MountedCertificateSecret = {
+  name: string;
+  requiredKeys: string[];
+};
+
+type ObservedTlsSecret = {
+  metadata?: NamedMetadata;
+  certificate: string;
+  keys?: string[] | null;
 };
 
 type QuotaResource = "count/jobs.batch" | "count/replicasets.apps";
@@ -384,6 +408,25 @@ function clientCertificate(value: unknown): ClientCertificate | undefined {
 }
 
 function validateConfig(value: unknown): DiagnosticPlan {
+  if (
+    !isObject(value, [
+      "kubeconfig",
+      "context",
+      "namespace",
+      "gatewayClass",
+      "controllers",
+      "crds",
+      "apiCidrs",
+      "serviceDependency",
+      "clientCertificate",
+      "peakAdditional",
+      "eks",
+    ])
+  ) {
+    throw new DiagnosticError(
+      "The plan must be a JSON object with only supported top-level fields.",
+    );
+  }
   const config = value as PlanInput;
   const kubeconfig = requireSelection(config.kubeconfig, "kubeconfig");
   const context = requireSelection(config.context, "context");
@@ -451,7 +494,12 @@ function validateConfig(value: unknown): DiagnosticPlan {
 
 // A credential plugin can inherit its parent's pipes. Bound both the wait and the
 // captured bytes even when the CLI or a descendant never closes those pipes.
-async function commandOutput(command: string, args: string[], deadline: number): Promise<string> {
+async function commandOutput(
+  command: string,
+  args: string[],
+  deadline: number,
+  stderrMode: "classify" | "discard" = "classify",
+): Promise<string> {
   const timeout = Math.min(20_000, deadline - performance.now());
   if (timeout <= 0) {
     throw new DiagnosticError("The collection deadline expired.");
@@ -459,7 +507,7 @@ async function commandOutput(command: string, args: string[], deadline: number):
   const grouped = process.platform !== "win32";
   const child = spawn(command, args, {
     detached: grouped,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", stderrMode === "discard" ? "ignore" : "pipe"],
     env: { ...process.env, KUBECTL_KUBERC: "false", AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off" },
   });
   const stdout: Buffer[] = [];
@@ -478,8 +526,8 @@ async function commandOutput(command: string, args: string[], deadline: number):
       } else {
         child.kill("SIGKILL");
       }
-      child.stdout.destroy();
-      child.stderr.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
       reject(new DiagnosticError(reason));
     }
     const timer = setTimeout(() => stop("The selected command exceeded its deadline."), timeout);
@@ -487,7 +535,7 @@ async function commandOutput(command: string, args: string[], deadline: number):
       [child.stdout, stdout],
       [child.stderr, stderr],
     ] as const) {
-      stream.on("data", (chunk: Buffer) => {
+      stream?.on("data", (chunk: Buffer) => {
         size += chunk.length;
         if (size > 2 * 1024 * 1024) {
           stop("The read exceeded the output limit.");
@@ -512,6 +560,11 @@ async function commandOutput(command: string, args: string[], deadline: number):
     });
   });
   if (result !== 0) {
+    if (stderrMode === "discard") {
+      throw new DiagnosticError(
+        "The named resource could not be read. Verify it exists and the selected identity has get access.",
+      );
+    }
     const text = Buffer.concat(stderr).toString();
     let reason = "The read failed or returned incomplete data.";
     if (/Forbidden|forbidden|AccessDenied|UnauthorizedOperation/.test(text)) {
@@ -710,44 +763,164 @@ async function serviceEgress(
   };
 }
 
-// Project a fixed allowlist at the kubectl printer. Full Secret JSON can include
-// key bytes or client-side apply annotations containing a previous private key.
-const tlsColumns =
-  "NAME:.metadata.name,NS:.metadata.namespace,UID:.metadata.uid,RV:.metadata.resourceVersion,DELETED:.metadata.deletionTimestamp,CERT:.data.tls\\.crt";
+// Guard the traversal and print only scalar leaves. On a template execution
+// error kubectl's Go-template printer can dump the original object to stdout.
+const observationTemplates = `
+{{define "text"}}{{if eq (printf "%T" .) "string"}}{{printf "%q" .}}{{else}}""{{end}}{{end}}
+{{define "nullableText"}}{{if eq (printf "%T" .) "string"}}{{printf "%q" .}}{{else}}null{{end}}{{end}}
+{{define "identity"}}
+  {{if eq (printf "%T" .) "map[string]interface {}"}}
+    {"name":{{template "text" .name}},"namespace":{{template "text" .namespace}},
+     "uid":{{template "text" .uid}},"resourceVersion":{{template "text" .resourceVersion}},
+     "deletionTimestamp":{{template "text" .deletionTimestamp}}}
+  {{else}}null{{end}}
+{{end}}
+`;
+
+const clientWorkloadProjection = `${observationTemplates}
+{{define "mounts"}}
+  [{{if eq (printf "%T" .) "[]interface {}"}}{{range $i, $mount := .}}{{if $i}},{{end}}
+    {{if eq (printf "%T" $mount) "map[string]interface {}"}}
+      {"name":{{template "text" $mount.name}},"mountPath":{{template "text" $mount.mountPath}}
+       {{range $field, $value := $mount}}
+         {{if or (eq $field "subPath") (eq $field "subPathExpr")}}
+           ,{{printf "%q" $field}}:{{template "nullableText" $value}}
+         {{end}}
+       {{end}}}
+    {{else}}null{{end}}
+  {{end}}{{end}}]
+{{end}}
+{{define "containers"}}
+  {{if eq (printf "%T" .) "[]interface {}"}}
+    [{{range $i, $container := .}}{{if $i}},{{end}}
+      {{if eq (printf "%T" $container) "map[string]interface {}"}}
+        {"name":{{template "text" $container.name}},"restartPolicy":{{template "text" $container.restartPolicy}},
+         "volumeMounts":{{template "mounts" $container.volumeMounts}}}
+      {{else}}null{{end}}
+    {{end}}]
+  {{else}}null{{end}}
+{{end}}
+{{define "items"}}
+  {{if eq (printf "%T" .) "[]interface {}"}}
+    [{{range $i, $item := .}}{{if $i}},{{end}}
+      {{if eq (printf "%T" $item) "map[string]interface {}"}}
+        {"key":{{template "text" $item.key}},"path":{{template "text" $item.path}}}
+      {{else}}null{{end}}
+    {{end}}]
+  {{else if eq (printf "%T" .) "<nil>"}}[]{{else}}null{{end}}
+{{end}}
+{{define "claimNames"}}
+  {{if eq (printf "%T" .) "[]interface {}"}}
+    [{{range $i, $claim := .}}{{if $i}},{{end}}
+       {{if exists $claim "metadata" "name"}}{{template "nullableText" $claim.metadata.name}}{{else}}null{{end}}
+    {{end}}]
+  {{else}}null{{end}}
+{{end}}
+{{define "secretVolume"}}
+  {{if eq (printf "%T" .) "map[string]interface {}"}}
+    {"secretName":{{template "text" .secretName}},"items":{{template "items" .items}},
+     "optional":{{if eq (printf "%T" .optional) "bool"}}{{.optional}}
+                 {{else if eq (printf "%T" .optional) "<nil>"}}false{{else}}null{{end}}}
+  {{else}}null{{end}}
+{{end}}
+{"apiVersion":{{template "text" .apiVersion}},"kind":{{template "text" .kind}},
+ "metadata":{{template "identity" .metadata}},
+ "spec":{
+   {{if eq (printf "%T" .spec) "map[string]interface {}"}}
+     {{range $field, $value := .spec}}
+       {{if eq $field "volumeClaimTemplates"}}"volumeClaimNames":{{template "claimNames" $value}},{{end}}
+     {{end}}
+   {{end}}
+   "template":{"spec":{{if and (exists . "spec" "template" "spec") (eq (printf "%T" .spec.template.spec) "map[string]interface {}")}}
+     {{with .spec.template.spec}}
+       {"containers":{{template "containers" .containers}},
+        "initContainers":{{template "containers" .initContainers}},
+        "volumes":[{{if eq (printf "%T" .volumes) "[]interface {}"}}{{range $i, $volume := .volumes}}{{if $i}},{{end}}
+          {{if eq (printf "%T" $volume) "map[string]interface {}"}}
+            {"name":{{template "text" $volume.name}},"secret":{{template "secretVolume" $volume.secret}}}
+          {{else}}null{{end}}
+        {{end}}{{end}}]}
+     {{else}}null{{end}}
+   {{else}}null{{end}}}
+ }}
+`;
+
+const deploymentReadinessProjection = `${observationTemplates}
+{{define "number"}}
+  {{if or (eq (printf "%T" .) "int64") (eq (printf "%T" .) "float64")}}{{.}}{{else}}null{{end}}
+{{end}}
+{{define "rolloutConditions"}}
+  {{if eq (printf "%T" .) "[]interface {}"}}
+    [{{range $i, $condition := .}}{{if $i}},{{end}}
+       {{if eq (printf "%T" $condition) "map[string]interface {}"}}
+         {"type":{{template "nullableText" $condition.type}},"status":{{template "nullableText" $condition.status}}}
+       {{else}}null{{end}}
+    {{end}}]
+  {{else}}null{{end}}
+{{end}}
+{"metadata":{{if eq (printf "%T" .metadata) "map[string]interface {}"}}
+                {"uid":{{template "nullableText" .metadata.uid}}
+                  {{range $field, $value := .metadata}}{{if ne (printf "%T" $value) "<nil>"}}
+                    {{if eq $field "generation"}},"generation":{{template "number" $value}}{{end}}
+                    {{if eq $field "deletionTimestamp"}},"deletionTimestamp":{{template "nullableText" $value}}{{end}}
+                  {{end}}{{end}}}
+              {{else}}null{{end}}
+ {{range $field, $value := .}}{{if ne (printf "%T" $value) "<nil>"}}
+   {{if eq $field "spec"}}
+     ,"spec":{{if eq (printf "%T" $value) "map[string]interface {}"}}
+       { {{range $key, $count := $value}}{{if and (eq $key "replicas") (ne (printf "%T" $count) "<nil>")}}"replicas":{{template "number" $count}}{{end}}{{end}} }
+       {{else}}null{{end}}
+   {{end}}
+   {{if eq $field "status"}}
+     ,"status":{{if eq (printf "%T" $value) "map[string]interface {}"}}
+       { {{$separator := ""}}
+         {{range $key, $fieldValue := $value}}{{if ne (printf "%T" $fieldValue) "<nil>"}}
+           {{if or (eq $key "observedGeneration") (eq $key "updatedReplicas") (eq $key "availableReplicas") (eq $key "replicas")}}
+             {{$separator}}{{printf "%q" $key}}:{{template "number" $fieldValue}}{{$separator = ","}}
+           {{else if eq $key "conditions"}}
+             {{$separator}}"conditions":{{template "rolloutConditions" $fieldValue}}{{$separator = ","}}
+           {{end}}
+         {{end}}{{end}} }
+       {{else}}null{{end}}
+   {{end}}
+ {{end}}{{end}}}
+`;
+
+const tlsSecretFields = `${observationTemplates}
+{"metadata":{{template "identity" .metadata}},
+ "certificate":{{if exists . "data" "tls.crt"}}{{template "text" (index .data "tls.crt")}}{{else}}""{{end}}`;
+const secretKeyNames = `,
+ "keys":{{if eq (printf "%T" .data) "map[string]interface {}"}}
+   [{{$first := true}}{{range $key, $value := .data}}{{if $first}}{{$first = false}}{{else}},{{end}}{{printf "%q" $key}}{{end}}]
+ {{else if eq (printf "%T" .data) "<nil>"}}[]{{else}}null{{end}}`;
 
 function inspectCertificate(
   selection: DeploymentSelection,
   output: string,
   serverName?: string,
+  requiredKeys: string[] = [],
 ): CheckResult {
-  if (output === "") {
+  const secret = parseJson<ObservedTlsSecret | null>(output);
+  if (!secret) {
     return { status: "failed", summary: "The selected TLS Secret does not exist." };
   }
-  const fields = output.split(/\s+/u);
-  const [name, observedNamespace, uid, resourceVersion, deletionTimestamp, certificate] = fields;
-  if (
-    fields.length !== 6 ||
-    !name ||
-    !observedNamespace ||
-    !uid ||
-    uid === "<none>" ||
-    !resourceVersion ||
-    resourceVersion === "<none>" ||
-    !certificate
-  ) {
-    throw new DiagnosticError("The response lacks the selected TLS Secret fields.");
-  }
-  const resources = [
-    observeResource("Secret", selection, {
-      namespace: observedNamespace,
-      name,
-      uid,
-      resourceVersion,
-    }),
-  ];
+  const resources = [observeResource("Secret", selection, secret.metadata)];
   const failure = (summary: string): CheckResult => ({ status: "failed", summary, resources });
-  if (deletionTimestamp !== "<none>") {
+  if (secret.metadata?.deletionTimestamp) {
     return failure("The selected TLS Secret is terminating.");
+  }
+  const { certificate, keys } = secret;
+  if (requiredKeys.length) {
+    if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string")) {
+      return {
+        status: "unknown",
+        summary: "The response did not establish which keys the selected TLS Secret contains.",
+        resources,
+      };
+    }
+    if (requiredKeys.some((key) => !keys.includes(key))) {
+      return failure("The selected Secret volume maps a required key that the Secret lacks.");
+    }
   }
   const bytes = Buffer.from(certificate, "base64");
   const pem = bytes
@@ -810,7 +983,7 @@ function inspectCertificate(
 function mountedClientSecret(
   selection: ClientCertificate,
   observed: ClientWorkload,
-): string | undefined {
+): MountedCertificateSecret | undefined {
   const pod = observed.spec?.template?.spec;
   if (!Array.isArray(pod?.containers)) {
     throw new DiagnosticError("The selected workload response lacks its Pod template containers.");
@@ -825,20 +998,33 @@ function mountedClientSecret(
   }
 
   const path = selection.certificatePath;
-  const mounts = (container.volumeMounts ?? []).filter(({ mountPath }) => {
+  const observedMounts = container.volumeMounts ?? [];
+  if (observedMounts.some((mount) => !mount?.name || !posix.isAbsolute(mount.mountPath))) {
+    throw new DiagnosticError("The response lacks valid mount paths in the selected container.");
+  }
+  const mounts = observedMounts.filter(({ mountPath }) => {
     const normalized = posix.normalize(mountPath).replace(/\/$/u, "");
     return path === normalized || path.startsWith(`${normalized}/`);
   });
   const [mount] = mounts;
-  if (mounts.length !== 1 || !mount || mount.subPath || mount.subPathExpr) {
+  if (mounts.length !== 1 || !mount) {
+    return undefined;
+  }
+  if (mount.subPath === null || mount.subPathExpr === null) {
+    throw new DiagnosticError("The selected volume mount has an invalid subpath.");
+  }
+  if (mount.subPath || mount.subPathExpr) {
     return undefined;
   }
   // The StatefulSet controller gives claims precedence over same-name Pod volumes.
-  if (
-    selection.workload.kind === "StatefulSet" &&
-    observed.spec?.volumeClaimTemplates?.some(({ metadata }) => metadata?.name === mount.name)
-  ) {
-    return undefined;
+  if (selection.workload.kind === "StatefulSet") {
+    const claimNames = observed.spec?.volumeClaimNames;
+    if (claimNames === null || claimNames?.some((name) => name === null || !isDnsName(name))) {
+      throw new DiagnosticError("The response lacks a valid StatefulSet volume claim inventory.");
+    }
+    if (claimNames?.includes(mount.name)) {
+      return undefined;
+    }
   }
   const prefix = mount.mountPath.endsWith("/") ? mount.mountPath : `${mount.mountPath}/`;
   if (!path.startsWith(prefix)) {
@@ -850,8 +1036,11 @@ function mountedClientSecret(
   if (!secret || typeof secret.secretName !== "string" || !isDnsName(secret.secretName)) {
     return undefined;
   }
+  if (secret.optional === null || !Array.isArray(secret.items)) {
+    throw new DiagnosticError("The response lacks the selected Secret volume's item mapping.");
+  }
   const file = path.slice(prefix.length);
-  if (secret.items?.length) {
+  if (secret.items.length) {
     const keys: string[] = [];
     for (const { key, path: target } of secret.items) {
       // Match what the volume writer resolves, including "./" and repeated slashes.
@@ -876,9 +1065,15 @@ function mountedClientSecret(
         keys.push(key);
       }
     }
-    return keys.length === 1 && keys[0] === "tls.crt" ? secret.secretName : undefined;
+    if (keys.length !== 1 || keys[0] !== "tls.crt") {
+      return undefined;
+    }
+    return {
+      name: secret.secretName,
+      requiredKeys: secret.optional ? [] : secret.items.map(({ key }) => key),
+    };
   }
-  return file === "tls.crt" ? secret.secretName : undefined;
+  return file === "tls.crt" ? { name: secret.secretName, requiredKeys: [] } : undefined;
 }
 
 function quantity(value: unknown) {
@@ -935,7 +1130,7 @@ async function diagnose(
   let transport: string[] = [];
   const checks: CheckReport[] = [];
   let kubeUnavailable: string | undefined;
-  const kubeOutput = (...args: string[]) => {
+  const kubectl = (args: string[], stderrMode?: "discard") => {
     if (kubeUnavailable) {
       throw new DiagnosticError(kubeUnavailable);
     }
@@ -951,27 +1146,47 @@ async function diagnose(
         ...args,
       ],
       deadline,
+      stderrMode,
     );
   };
+  const kubeOutput = (...args: string[]) => kubectl(args);
   const kube = async <T>(...args: string[]) => parseJson<T>(await kubeOutput(...args));
   const getNamed = <T>(kind: string, { namespace, name }: DeploymentSelection) =>
     kube<T | null>("-n", namespace, "get", kind, name, "--ignore-not-found", "-o", "json");
-  const readCertificate = async (selection: DeploymentSelection, serverName?: string) =>
-    inspectCertificate(
-      selection,
-      await kubeOutput(
+  // Refusals and diagnostics from sensitive GETs can contain API-supplied text.
+  const projectNamed = (
+    kind: string,
+    { namespace, name }: DeploymentSelection,
+    projection: string,
+  ) =>
+    kubectl(
+      [
         "-n",
-        selection.namespace,
+        namespace,
         "get",
-        "secret",
-        selection.name,
+        kind,
+        name,
         "--ignore-not-found",
-        "--no-headers",
         "--v=0",
         "-o",
-        `custom-columns=${tlsColumns}`,
+        `go-template=${projection}`,
+      ],
+      "discard",
+    );
+  const readCertificate = async (
+    selection: DeploymentSelection,
+    serverName?: string,
+    requiredKeys?: string[],
+  ) =>
+    inspectCertificate(
+      selection,
+      await projectNamed(
+        "secret",
+        selection,
+        `${tlsSecretFields}${requiredKeys?.length ? secretKeyNames : ""}}`,
       ),
       serverName,
+      requiredKeys,
     );
   async function check(
     id: string,
@@ -1291,12 +1506,32 @@ async function diagnose(
       `controller:${controller.namespace}/${controller.name}`,
       "Inspect this Deployment's rollout, Pods and events; restore its intended replicas before installing OCE.",
       async () => {
-        const item = await getNamed<Deployment>("deployments.apps", controller);
+        const item = parseJson<DeploymentReadiness | null>(
+          await projectNamed("deployments.apps", controller, deploymentReadinessProjection),
+        );
         if (item === null) {
           return {
             status: "failed",
             summary: "The selected controller Deployment does not exist.",
           };
+        }
+        const rolloutCounts = [
+          item.metadata?.generation,
+          item.spec?.replicas,
+          item.status?.observedGeneration,
+          item.status?.updatedReplicas,
+          item.status?.availableReplicas,
+          item.status?.replicas,
+        ];
+        if (
+          item.metadata?.deletionTimestamp === null ||
+          item.spec === null ||
+          item.status === null ||
+          rolloutCounts.some((count) => count !== undefined && !Number.isInteger(count)) ||
+          item.status?.conditions === null ||
+          item.status?.conditions?.some((condition) => !condition?.type || !condition.status)
+        ) {
+          throw new DiagnosticError("The response lacks valid controller rollout fields.");
         }
         const desired = item.spec?.replicas ?? 1;
         const current =
@@ -1304,7 +1539,7 @@ async function diagnose(
           Number.isInteger(item.metadata?.generation) &&
           item.status?.observedGeneration === item.metadata?.generation;
         const available = item.status?.conditions?.some(
-          (condition) => condition.type === "Available" && condition.status === "True",
+          (condition) => condition?.type === "Available" && condition.status === "True",
         );
         const ready =
           current &&
@@ -1318,7 +1553,7 @@ async function diagnose(
           summary: ready
             ? "All intended controller replicas are updated and available."
             : "The controller has not completed its current rollout.",
-          resource: `${controller.namespace}/${controller.name}@${item.metadata?.uid}`,
+          resource: `${controller.namespace}/${controller.name}@${item.metadata?.uid ?? undefined}`,
         };
       },
     );
@@ -1397,9 +1632,12 @@ async function diagnose(
       "Verify the selected container's certificate path and renew its mounted Secret through the certificate owner.",
       async () => {
         const { kind, namespace } = client.workload;
-        const workload = await getNamed<ClientWorkload>(
-          kind === "Deployment" ? "deployments.apps" : "statefulsets.apps",
-          client.workload,
+        const workload = parseJson<ClientWorkload | null>(
+          await projectNamed(
+            kind === "Deployment" ? "deployments.apps" : "statefulsets.apps",
+            client.workload,
+            clientWorkloadProjection,
+          ),
         );
         if (!workload) {
           return { status: "failed", summary: "The selected client workload does not exist." };
@@ -1419,8 +1657,8 @@ async function diagnose(
           };
         }
         try {
-          const name = mountedClientSecret(client, workload);
-          if (!name) {
+          const mount = mountedClientSecret(client, workload);
+          if (!mount) {
             return {
               status: "failed",
               summary:
@@ -1428,7 +1666,11 @@ async function diagnose(
               resources,
             };
           }
-          const certificate = await readCertificate({ namespace, name });
+          const certificate = await readCertificate(
+            { namespace, name: mount.name },
+            undefined,
+            mount.requiredKeys,
+          );
           return { ...certificate, resources: [...resources, ...(certificate.resources ?? [])] };
         } catch (error) {
           return { ...unreadable(error), resources };

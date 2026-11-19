@@ -10,7 +10,8 @@ context, or run commands inside Pods.
 
 Save a JSON plan outside the checkout. Use the names of your installed controller
 Deployments, the intended GatewayClass owner, and the exact IPv4 `/32` addresses
-in your reviewed network configuration:
+in your reviewed network configuration. Unknown top-level plan fields stop the
+command before it reads Kubernetes or AWS resources.
 
 ```json
 {
@@ -70,6 +71,9 @@ intended calling Pods in the policy's namespace. The check observes destination
 grants in the named policy. It does not check for obsolete or additional grants.
 The report records the observed resource UIDs and resource versions.
 
+Use the DNS name from the intended client's reviewed TLS configuration for
+`serverName`. Ask the certificate owner to repair a mismatch for that name.
+
 Omit `tls` for a policy check alone. Kubernetes `get` on the named Secret
 authorizes reading the entire object, including `tls.key`. Use an identity
 already authorized to read that Secret or ask the certificate owner to run the
@@ -99,13 +103,20 @@ the configured [OpenShell Backend](../../reference/backends.md#openshell-gateway
 Run a separate check for each selected Deployment or StatefulSet and container.
 The path must resolve through one direct Secret volume mount in that container
 or restartable init container to the public `tls.crt` key. Secret item mappings
-may give the file a different name. The check rejects overlapping item paths
-at the selected file and StatefulSet claims that replace its volume. Subpath
-mounts and mixed projected volumes are outside the supported check.
+may give the file a different name. For a required Secret volume, every mapped
+key must exist. An optional volume can omit other mapped keys, but the selected
+`tls.crt` must still exist. The check rejects overlapping item paths at the
+selected file and StatefulSet claims that replace its volume. Subpath mounts
+and mixed projected volumes are outside the supported check.
 
 Use named `get` access to the selected workload and its mounted Secret.
-The report records their UIDs and resource versions. A missing workload or
-Secret fails the check. Denied access leaves the relevant observation unknown.
+This permission grants access to the whole object. The command collects only
+the workload identity and relevant mount fields, plus rollout fields if you
+also select the Deployment as a controller. For the Secret, it collects
+identity, the public `tls.crt`, and key names for required mappings. The report
+records the resource UIDs and resource versions. A missing workload or
+Secret fails the check. If a read fails, the check reports `unknown`. Verify
+that the resource exists and the selected identity has named `get` access.
 The check validates the public leaf's dates and reads its extended key usage
 for TLS client authentication. An absent or unreadable extension yields
 `unknown` because the check cannot establish client suitability. Confirm

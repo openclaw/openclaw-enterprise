@@ -81,8 +81,7 @@ Queries reconnect.
 ### 1. Prepare native production inputs
 
 `scripts/diagnose-kubernetes-prerequisites.ts:diagnose` checks controllers, CRDs, addresses,
-quotas, Service grants and serving TLS. Client checks bind public leaves to
-workload mounts. EKS verifies identity.
+quotas, Service grants and serving TLS. It verifies mounted public certificates and required Secret keys. EKS verifies identity.
 [Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`

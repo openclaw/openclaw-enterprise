@@ -270,6 +270,7 @@ test(
     const configPath = join(dir, "plan.json");
     type Check = {
       id: string;
+      resource?: string;
       status: string;
       summary?: string;
       limits?: { resource: string; status: string }[];
@@ -283,12 +284,16 @@ test(
         resourceVersion: string;
       }[];
     };
-    async function invokeDiagnostic(plan: Plan, sensitiveValues: string[] = []) {
+    async function invokeDiagnostic(
+      plan: Plan,
+      sensitiveValues: string[] = [],
+      env?: NodeJS.ProcessEnv,
+    ) {
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
         ["scripts/diagnose-kubernetes-prerequisites.ts", "--config", configPath, "--json"],
-        { encoding: "utf8", timeout: 100_000 },
+        { encoding: "utf8", timeout: 100_000, env },
       );
       assert.equal(result.error, undefined);
       for (const sensitiveValue of sensitiveValues) {
@@ -484,15 +489,22 @@ test(
     };
     const dependencyPlan = { ...config, serviceDependency: dependency };
     const egressOnly = { service: dependency.service, policy: dependency.policy };
+    // A misspelled optional selection must not silently remove the requested checks.
+    const unknownSelection = { ...config, serviceDependecy: dependency };
+    const unknownRoot = await invokeDiagnostic(unknownSelection, protectedValues);
+    assert.equal(unknownRoot.status, 2);
+    assert.equal(unknownRoot.stdout, "");
+    assert.match(unknownRoot.stderr, /only supported top-level fields/u);
+
     const typoPlan = { ...config, serviceDependency: { ...egressOnly, tsl: dependency.tls } };
     const typo = await invokeDiagnostic(typoPlan, protectedValues);
     assert.equal(typo.status, 2);
     assert.equal(typo.stdout, "");
     assert.match(typo.stderr, /serviceDependency accepts only service, policy and tls/u);
 
-    async function checkDependency(plan = dependencyPlan) {
+    async function checkDependency() {
       const versions = await readVersions();
-      const result = await diagnose(plan, protectedValues);
+      const result = await diagnose(dependencyPlan, protectedValues);
       assert.deepEqual(
         await readVersions(),
         versions,
@@ -512,13 +524,13 @@ test(
 
     // Split selectors create two broad peers and do not establish the combined edge.
     await setPolicy(cidr, [{ namespaceSelector }, { podSelector }]);
-    const replacement = await signedLeaf(dir, ca, {
-      name: "replacement",
+    const wrongSan = await signedLeaf(dir, ca, {
+      name: "wrong-san",
       commonName: serverName,
       subjectAltName: `DNS:${otherName}`,
       keyPem: expired.key,
     });
-    await setLeaf(replacement.cert);
+    await setLeaf(wrongSan.cert);
     const split = await checkDependency();
     assert.equal(split.egress?.status, "failed");
     assert.deepEqual(split.egress?.missing, [
@@ -528,11 +540,15 @@ test(
     assert.match(split.tls?.summary ?? "", /DNS SAN/u);
 
     await setPolicy(cidr, [{ namespaceSelector, podSelector }]);
-    const validPlan = {
-      ...dependencyPlan,
-      serviceDependency: { ...dependency, tls: { secretName, serverName: otherName } },
-    };
-    const corrected = await checkDependency(validPlan);
+    // Repair the certificate to match the intended client's unchanged server name.
+    const repaired = await signedLeaf(dir, ca, {
+      name: "repaired",
+      commonName: serverName,
+      subjectAltName: `DNS:${serverName}`,
+      keyPem: expired.key,
+    });
+    await setLeaf(repaired.cert);
+    const corrected = await checkDependency();
     assert.equal(corrected.egress?.status, "passed");
     assert.equal(corrected.tls?.status, "passed");
     const policyOnly = await diagnose(
@@ -556,7 +572,7 @@ test(
     assert.match(noSan.tls?.summary ?? "", /DNS SAN/u);
 
     // Keep the SAN and other validity bound intact while corrupting one ASN.1 UTCTime.
-    const leaf = new X509Certificate(replacement.cert);
+    const leaf = new X509Certificate(repaired.cert);
     const validityFields = ["validFromDate", "validToDate"] as const;
     for (const field of validityFields) {
       const utc = leaf[field].toISOString().slice(2, 19).replace(/\D/g, "") + "Z";
@@ -570,14 +586,14 @@ test(
       for (const validityField of validityFields) {
         assert.equal(Number.isFinite(corrupt[validityField].getTime()), validityField !== field);
       }
-      assert.equal(corrupt.checkHost(otherName, { subject: "never" }), otherName);
+      assert.equal(corrupt.checkHost(serverName, { subject: "never" }), serverName);
       const encoded = der
         .toString("base64")
         .match(/.{1,64}/g)
         ?.join("\n");
       assert.ok(encoded);
       await setLeaf(`-----BEGIN CERTIFICATE-----\n${encoded}\n-----END CERTIFICATE-----\n`);
-      const result = await checkDependency(validPlan);
+      const result = await checkDependency();
       assert.equal(result.tls?.status, "failed");
       assert.match(result.tls?.summary ?? "", /unreadable validity window/u);
     }
@@ -605,10 +621,12 @@ test(
     }
     protectedValues.push(clientLeaf.cert, Buffer.from(clientLeaf.cert).toString("base64"));
     const clientLabels = { app: clientName };
+    const excludedValue = randomUUID();
     const mountPath = "/etc/openclaw/openshell";
     const worker = {
       name: "worker",
       image: "example.invalid/client:test",
+      env: [{ name: "UNRELATED_FIXTURE_VALUE", value: excludedValue }],
       volumeMounts: [{ name: "client", mountPath, readOnly: true }],
     };
     const publicItem = { key: "tls.crt", path: "admin.pem" };
@@ -625,7 +643,11 @@ test(
       JSON.stringify({
         apiVersion: "apps/v1",
         kind: "Deployment",
-        metadata: { name: clientName, namespace },
+        metadata: {
+          name: clientName,
+          namespace,
+          annotations: { "example.test/unrelated": excludedValue },
+        },
         spec: {
           replicas: 0,
           selector: { matchLabels: clientLabels },
@@ -640,6 +662,61 @@ test(
       }),
     );
     const clientPlan = { ...config, clientCertificate };
+    const overlapPlan = {
+      ...clientPlan,
+      controllers: [...config.controllers, { namespace, name: clientName }],
+    };
+
+    // Observe real kubectl stdout at the subprocess boundary. Checking only
+    // the final report would miss unrelated data already captured by the CLI.
+    const kubectlPath = execFileSync("sh", ["-c", "command -v kubectl"], {
+      encoding: "utf8",
+    }).trim();
+    const commandLog = join(dir, "kubectl-observations");
+    await writeFile(
+      join(dir, "kubectl"),
+      String.raw`#!${process.execPath}
+const { spawnSync } = require("node:child_process");
+const { appendFileSync, fstatSync, statSync } = require("node:fs");
+const args = process.argv.slice(2);
+const result = spawnSync(${JSON.stringify(kubectlPath)}, args, {
+  encoding: "utf8", env: { ...process.env, PATH: process.env.OCC_FIXTURE_ORIGINAL_PATH },
+});
+let observation = {};
+if (args.includes("get") && args.includes("deployments.apps") && args.includes(${JSON.stringify(clientName)})) {
+  const stderr = fstatSync(2);
+  observation = {
+    workload: true,
+    selectedMount: result.stdout?.includes(${JSON.stringify(mountPath)}),
+    excludedValue: result.stdout?.includes(${JSON.stringify(excludedValue)}),
+    excludedFields: /"env"|"annotations"/u.test(result.stdout ?? ""),
+    stderrDiscarded: stderr.isCharacterDevice() && stderr.rdev === statSync("/dev/null").rdev,
+  };
+}
+appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(observation) + "\n");
+process.stdout.write(result.stdout ?? "");
+process.stderr.write(result.stderr ?? "");
+process.exit(result.status ?? 1);
+`,
+      { mode: 0o700 },
+    );
+    const projectionEnv = {
+      ...process.env,
+      PATH: `${dir}:${process.env.PATH}`,
+      OCC_FIXTURE_ORIGINAL_PATH: process.env.PATH,
+    };
+    await writeFile(commandLog, "");
+    const misspelledSelection = { ...config, clientCertifcate: clientCertificate };
+    const misspelledClient = await invokeDiagnostic(
+      misspelledSelection,
+      protectedValues,
+      projectionEnv,
+    );
+    assert.equal(misspelledClient.status, 2);
+    assert.equal(misspelledClient.stdout, "");
+    assert.match(misspelledClient.stderr, /only supported top-level fields/u);
+    assert.equal(await readFile(commandLog, "utf8"), "");
+
     const clientCheck = async (plan: Plan = clientPlan) =>
       (await diagnose(plan, protectedValues)).checks.get("client-certificate");
     const identity = async (kind: string, resourceKind: string, name: string) => {
@@ -652,7 +729,42 @@ test(
     });
     const workloadIdentity = await identity("Deployment", "deployment", clientName);
     const secretIdentity = await identity("Secret", "secret", clientSecret);
-    const bound = await clientCheck();
+    const observedClient = await invokeDiagnostic(
+      overlapPlan,
+      [...protectedValues, excludedValue],
+      projectionEnv,
+    );
+    assert.equal(observedClient.stderr, "");
+    const observedChecks = JSON.parse(observedClient.stdout).checks as Check[];
+    const bound = observedChecks.find(({ id }) => id === "client-certificate");
+    const rollout = observedChecks.find(({ id }) => id === `controller:${namespace}/${clientName}`);
+    assert.equal(
+      rollout?.status,
+      "failed",
+      "the selected certificate Deployment has zero replicas",
+    );
+    assert.equal(rollout?.resource, `${namespace}/${clientName}@${workloadIdentity.uid}`);
+    const workloadOutput = (await readFile(commandLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter(({ workload }) => workload);
+    assert.deepEqual(workloadOutput, [
+      {
+        workload: true,
+        selectedMount: false,
+        excludedValue: false,
+        excludedFields: false,
+        stderrDiscarded: true,
+      },
+      {
+        workload: true,
+        selectedMount: true,
+        excludedValue: false,
+        excludedFields: false,
+        stderrDiscarded: true,
+      },
+    ]);
     assert.equal(bound?.status, "passed");
     assert.deepEqual(bound?.resources, [workloadIdentity, secretIdentity]);
     assert.deepEqual(await identity("Deployment", "deployment", clientName), workloadIdentity);
@@ -663,7 +775,7 @@ test(
     assert.equal(expiredClient?.status, "failed");
     assert.match(expiredClient?.summary ?? "", /expired/u);
     assert.equal(expiredClient?.resources?.at(-1)?.name, clientSecret);
-    await setLeaf(replacement.cert, clientSecret);
+    await setLeaf(repaired.cert, clientSecret);
     const wrongUsage = await clientCheck();
     assert.equal(wrongUsage?.status, "failed");
     assert.match(wrongUsage?.summary ?? "", /extended key usage does not permit client/u);
@@ -861,7 +973,7 @@ test(
     );
     const deniedSecret = deniedClient.checks.get("client-certificate");
     assert.equal(deniedSecret?.status, "unknown");
-    assert.match(deniedSecret?.summary ?? "", /not authorized/u);
+    assert.match(deniedSecret?.summary ?? "", /named resource could not be read.*get access/u);
     assert.deepEqual(deniedSecret?.resources, [workloadIdentity]);
     // A Secret read under this identity would be unknown, like the control above.
     for (const name of [claimName, aliasName]) {
@@ -875,11 +987,44 @@ test(
       assert.deepEqual(result?.resources, [await identity("StatefulSet", "statefulset", name)]);
     }
 
+    // The same companion entry blocks a required volume and is skipped in an
+    // optional volume. The selected public leaf remains required in both cases.
+    const companionItems = [publicItem, { key: "companion", path: "companion.txt" }];
+    async function updateClientVolume(secret: typeof clientVolume.secret & { optional?: boolean }) {
+      await kubectl(
+        "-n",
+        namespace,
+        "patch",
+        "deployment",
+        clientName,
+        "--type=json",
+        "-p",
+        JSON.stringify([
+          { op: "replace", path: "/spec/template/spec/volumes/0/secret", value: secret },
+        ]),
+      );
+    }
+    await updateClientVolume({ ...clientVolume.secret, items: companionItems });
+    const requiredCompanion = await clientCheck();
+    assert.equal(requiredCompanion?.status, "failed");
+    assert.match(requiredCompanion?.summary ?? "", /maps a required key that the Secret lacks/u);
+    await updateClientVolume({ ...clientVolume.secret, items: companionItems, optional: true });
+    assert.equal((await clientCheck())?.status, "passed");
+    const noLeafSecret = "client-without-public-leaf";
+    await kubectl("-n", namespace, "create", "secret", "generic", noLeafSecret);
+    await updateClientVolume({ ...clientVolume.secret, secretName: noLeafSecret, optional: true });
+    const noLeaf = await clientCheck();
+    assert.equal(noLeaf?.status, "failed");
+    assert.match(noLeaf?.summary ?? "", /lacks a readable X.509 leaf in tls\.crt/u);
+    await updateClientVolume(clientVolume.secret);
+
     await kubectl("-n", namespace, "delete", "secret", clientSecret);
     const missingClient = await clientCheck();
     assert.equal(missingClient?.status, "failed");
     assert.match(missingClient?.summary ?? "", /TLS Secret does not exist/u);
-    assert.deepEqual(missingClient?.resources, [workloadIdentity]);
+    assert.deepEqual(missingClient?.resources, [
+      await identity("Deployment", "deployment", clientName),
+    ]);
 
     const missingService = "missing-middleware";
     const role = "missing-service-reader";
