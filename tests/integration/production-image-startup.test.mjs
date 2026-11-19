@@ -1,3 +1,4 @@
+import { channelEgressOptions } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -101,9 +102,7 @@ function productionInstallation(adminKeyPath) {
           runtime: {
             transportSecretPrefix: "agent-transport",
             gatewayStorageClassName: "sqlite-block",
-            channels: {
-              proxyUrl: "http://198.51.100.10:8080",
-            },
+            channelEgress: channelEgressOptions,
           },
         },
       },

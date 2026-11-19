@@ -956,6 +956,11 @@ export async function createScopedController(context, installationId, platformNa
       {
         op: "add",
         path: "/rules/-",
+        value: { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["get", "list"] },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
         value: {
           apiGroups: [""],
           resources: ["secrets"],

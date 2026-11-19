@@ -81,6 +81,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxy,
+  supportsStaticCredentials,
   resolveCredentialProxyCapacity,
   type CredentialProxyCapacity,
   type RequestCredentialRelease,
@@ -438,6 +439,11 @@ import {
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
+import {
+  isRepositoryCleanupWork,
+  repositoryCleanupWorkKey,
+  repositoryRetirementWorkKey,
+} from "./repository-withdrawal.ts";
 import {
   validAdmittedRepositoryBindings,
   validRepositoryAccess,
@@ -1485,6 +1491,16 @@ function registeredCredentialProvider(
     return "ambiguous";
   }
   return matches.length === 1 && isDeepStrictEqual(matches[0]!.ref, ref) ? matches[0] : undefined;
+}
+
+function matchesAdmittedSourceType(
+  source: CredentialSource,
+  provider: CredentialProviderDefinition,
+) {
+  return (
+    source.egress?.adoption !== "live" ||
+    (provider.sourceType.type === source.type && supportsStaticCredentials(provider.sourceType))
+  );
 }
 
 /** The revision was admitted with the source, as its Harness authentication or in its list. */
@@ -6043,6 +6059,18 @@ export class OpenClawController {
     agentId: string,
     revisionId: string,
   ): Promise<Readonly<AgentRevision>> {
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, revisionId);
+    return this.read(
+      async (state) => (await this.exactRevision(state, namespaceId, agentId, revisionId)).revision,
+    );
+  }
+
+  private async authorizeRevisionRead(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+  ): Promise<void> {
     if (!isNonEmptyString(namespaceId)) {
       throw new ScopeViolationError("The exact Namespace identity is missing.");
     }
@@ -6060,16 +6088,22 @@ export class OpenClawController {
       namespaceId,
       parentAgentId: agentId,
     });
-    return this.read(async (state) => {
-      const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
-      const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
-      if (!revision) {
-        throw new ScopeViolationError(
-          "The AgentRevision does not belong to the exact Agent and Namespace.",
-        );
-      }
-      return revision;
-    });
+  }
+
+  private async exactRevision(
+    state: PlatformReadView,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+  ) {
+    const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
+    const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
+    if (!revision) {
+      throw new ScopeViolationError(
+        "The AgentRevision does not belong to the exact Agent and Namespace.",
+      );
+    }
+    return { revision, agent };
   }
 
   async getRevisionForBrowsing(
@@ -6078,23 +6112,7 @@ export class OpenClawController {
     agentId: string,
     revisionId: string,
   ): Promise<Readonly<AgentRevisionRead>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
-    if (!isNonEmptyString(agentId)) {
-      throw new ScopeViolationError("The exact Agent identity is missing.");
-    }
-    if (!isNonEmptyString(revisionId)) {
-      throw new ScopeViolationError("The exact AgentRevision identity is missing.");
-    }
-    // The route's Agent is the parent: the lookups below accept only this Agent's revision, so a
-    // revision of another Agent ends as not found, as an unknown ID does.
-    await this.authorize(principalId, "read", {
-      kind: "agent_revision",
-      id: revisionId,
-      namespaceId,
-      parentAgentId: agentId,
-    });
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, revisionId);
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgentForBrowsing(namespace.id, agentId);
@@ -6200,8 +6218,14 @@ export class OpenClawController {
     agentId: string,
     deploymentId: string,
   ): Promise<DeploymentStatusResult> {
-    const revision = await this.getRevision(principalId, namespaceId, agentId, deploymentId);
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, deploymentId);
     return this.read(async (state) => {
+      const { revision, agent } = await this.exactRevision(
+        state,
+        namespaceId,
+        agentId,
+        deploymentId,
+      );
       const idempotencyKey = `agent_revision:${revision.id}:reconcile`;
       const work = await state.operations.findWork(idempotencyKey);
       if (work === undefined || !workMatchesRevision(work, revision)) {
@@ -6220,12 +6244,15 @@ export class OpenClawController {
           revisionId: revision.id,
         }),
       );
+      const status = deploymentStatusForWork(work, attempt, this.clock());
+      const stopped = work.state === "succeeded" && work.reasonCode === "REVISION_STOPPED";
+      const lostSelection = status === "succeeded" && agent.activeRevisionId !== revision.id;
       return Object.freeze({
         deploymentId: revision.id,
         namespaceId: revision.namespaceId,
         agentId: revision.agentId,
-        status: deploymentStatusForWork(work, attempt, this.clock()),
-        cleanup: await this.deploymentCleanupStatus(state, revision),
+        status,
+        cleanup: await this.deploymentCleanupStatus(state, revision, stopped || lostSelection),
         error: deploymentErrorForWork(work),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
         warnings: deploymentWarningsForWork(work),
@@ -6237,26 +6264,51 @@ export class OpenClawController {
   private async deploymentCleanupStatus(
     state: PlatformReadView,
     revision: Readonly<AgentRevision>,
+    includeSessionDisposal: boolean,
   ): Promise<DeploymentStatusResult["cleanup"]> {
-    const key = `agent_revision:${revision.id}:repository_cleanup:retire:${createHash("sha256").update(revision.id, "utf8").digest("hex")}`;
-    const cleanup = await state.operations.findWork(key);
-    if (cleanup === undefined) {
-      return null;
-    }
-    if (!workMatchesRevision(cleanup, revision)) {
+    const retirementKey = repositoryRetirementWorkKey(revision.id);
+    const sessionsKey = repositoryCleanupWorkKey(revision.id, "sessions");
+    const workByKey = await state.operations.findWorkByKeys([retirementKey, sessionsKey]);
+    const retirement = workByKey.get(retirementKey);
+    const sessions = workByKey.get(sessionsKey);
+    if (
+      [retirement, sessions].some(
+        (work) =>
+          work !== undefined &&
+          (!isRepositoryCleanupWork(work) || !workMatchesRevision(work, revision)),
+      )
+    ) {
       throw new ScopeViolationError("Deployment cleanup does not match its revision.");
     }
-    // A started cleanup stays running between its attempts, as a deployment does (finding 2466).
+
+    const disposal = retirement !== undefined || includeSessionDisposal ? sessions : undefined;
+    if (retirement === undefined && disposal === undefined) {
+      return null;
+    }
+    if (retirement?.state === "failed_permanent" || disposal?.state === "failed_permanent") {
+      return Object.freeze({ status: "failed", nextAttemptAt: null });
+    }
+
+    const nextAttemptAt = [retirement, disposal].reduce<Date | null>(
+      (earliest, work) =>
+        work?.state === "queued" && (earliest === null || work.availableAt < earliest)
+          ? work.availableAt
+          : earliest,
+      null,
+    );
+    // Terminal retirement preserves progress across retries. The session row is reused,
+    // so its current queue state is the only evidence that this disposal is running.
     const attempt =
-      cleanup.state === "queued" && cleanup.attemptCount === 0
-        ? await state.operations.findWorkAttempt(key)
+      retirement?.state === "queued" && retirement.attemptCount === 0
+        ? await state.operations.findWorkAttempt(retirementKey)
         : undefined;
+    const running =
+      disposal?.state === "claimed" ||
+      (retirement !== undefined &&
+        deploymentStatusForWork(retirement, attempt, this.clock()) === "running");
     return Object.freeze({
-      status:
-        cleanup.state === "succeeded"
-          ? "succeeded"
-          : deploymentStatusForWork(cleanup, attempt, this.clock()),
-      nextAttemptAt: cleanup.state === "queued" ? cleanup.availableAt.toISOString() : null,
+      status: running ? "running" : nextAttemptAt === null ? "succeeded" : "queued",
+      nextAttemptAt: nextAttemptAt?.toISOString() ?? null,
     });
   }
 
@@ -8321,6 +8373,9 @@ export class OpenClawController {
       return deny("stale_configuration");
     }
     const provider = selectedProvider.receiver;
+    if (!matchesAdmittedSourceType(source, provider)) {
+      return deny("stale_configuration");
+    }
     try {
       const routes = Reflect.apply(selectedProvider.methods.routes, provider, [
         source,
@@ -8740,7 +8795,7 @@ export class OpenClawController {
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
-  ): Promise<ProxyPlan | undefined> {
+  ): Promise<{ plan: ProxyPlan; assertProvidersCurrent: () => void } | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
     for (const binding of agent.credentialSources ?? []) {
@@ -8798,16 +8853,50 @@ export class OpenClawController {
     if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
       throw new CredentialSourceUnprotectedError();
     }
-    const profiles = sources.map((source) => {
-      const provider = registeredCredentialProvider(
-        driver.sourceControl.providers,
-        source.egress!.key.provider,
-      );
-      if (!provider || provider === "ambiguous") {
-        throw new DependencyUnavailableError("The admitted credential provider is unavailable.");
+    const control = driver.sourceControl;
+    const requireProvider = (
+      source: CredentialSource,
+      expected?: {
+        readonly provider: CredentialProviderDefinition;
+        readonly authorization: CredentialProviderDefinition["authorization"];
+      },
+    ) => {
+      const admitted = source.egress!;
+      const provider = registeredCredentialProvider(control.providers, admitted.key.provider);
+      if (
+        provider === "ambiguous" ||
+        (expected &&
+          (provider !== expected.provider || provider.authorization !== expected.authorization)) ||
+        (provider && !matchesAdmittedSourceType(source, provider))
+      ) {
+        throw new ResourceStateConflictError(
+          "The admitted credential provider changed or is incompatible. Ask an Installation administrator to restore its unique registration.",
+        );
       }
-      return provider.authorization;
+      if (!provider || !isDeepStrictEqual(control.backend, admitted.key.backend)) {
+        throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
+      }
+      return provider;
+    };
+    const registrations = sources.map((source) => {
+      const provider = requireProvider(source);
+      return { source, provider, authorization: provider.authorization };
     });
+    // The plan is durable; the receiver identities stay local to this admission.
+    const assertProvidersCurrent = () => {
+      if (registrations.length === 0) {
+        return;
+      }
+      if (this.selectedProxyOwner() !== owner || driver.sourceControl !== control) {
+        throw new ResourceStateConflictError(
+          "The selected Credential Proxy changed during deployment.",
+        );
+      }
+      for (const registration of registrations) {
+        requireProvider(registration.source, registration);
+      }
+    };
+    const profiles = registrations.map(({ authorization }) => authorization);
     const online = profiles.includes("online-request");
     if (online && profiles.some((profile) => profile !== "online-request")) {
       throw new ResourceStateConflictError(
@@ -8860,7 +8949,7 @@ export class OpenClawController {
       online && repositoryGit === undefined
         ? undefined
         : await repositoryGitAuthorization(
-            driver.sourceControl,
+            control,
             AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
             gitProfile,
           );
@@ -8915,14 +9004,9 @@ export class OpenClawController {
       revisionId,
       executionId: repositoryGit ? randomBytes(24).toString("base64url") : crypto.randomUUID(),
     };
-    const routes = sources.flatMap((source) => {
+    assertProvidersCurrent();
+    const routes = registrations.flatMap(({ source, provider }) => {
       const admitted = source.egress!;
-      const provider = driver.sourceControl.providers.find((entry) =>
-        isDeepStrictEqual(entry.ref, admitted.key.provider),
-      );
-      if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
-        throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
-      }
       const grant = provider.normalizeGrant([modelId], source.config, {
         agentId: agent.id,
         sourceId: source.id,
@@ -8951,7 +9035,7 @@ export class OpenClawController {
         harnessConfiguration,
       );
     });
-    return immutableCopy({
+    const plan: ProxyPlan = immutableCopy({
       id: crypto.randomUUID(),
       generation: 1,
       execution,
@@ -8968,6 +9052,7 @@ export class OpenClawController {
       ...(harnessCredentialSource && { harnessCredentialSource }),
       routes,
     });
+    return { plan, assertProvidersCurrent };
   }
 
   /**
@@ -14132,7 +14217,7 @@ export class OpenClawController {
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
       const revisionId = this.nextIdentifier("agent_revision");
-      const egressPlan = await this.admitProxyPlan(
+      const proxyAdmission = await this.admitProxyPlan(
         state,
         lockedAgent,
         revisionId,
@@ -14142,6 +14227,7 @@ export class OpenClawController {
         harnessAuth,
         revisionHarness.configuration,
       );
+      const egressPlan = proxyAdmission?.plan;
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };
@@ -14255,6 +14341,7 @@ export class OpenClawController {
             });
           }
           // The Driver creates only missing owned Secrets; a failed admission can reuse them.
+          proxyAdmission?.assertProvidersCurrent();
           const provisioned = this.runtimeCredentialStatus(
             await this.runtimeCredentialOperation(() =>
               compute.provisionAgentRuntimeCredentials!(binding, {}),
@@ -14312,20 +14399,19 @@ export class OpenClawController {
         },
       });
       const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
+      const candidate = freezeAgentRevision({
+        ...admittedDraft,
+        compute: {
+          ...admittedDraft.compute,
+          ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
+        },
+      });
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
-      const revision = await state.revisions.createRevision(
-        freezeAgentRevision({
-          ...admittedDraft,
-          compute: {
-            ...admittedDraft.compute,
-            ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
-          },
-        }),
-        first?.digest,
-      );
+      proxyAdmission?.assertProvidersCurrent();
+      const revision = await state.revisions.createRevision(candidate, first?.digest);
       if (
         lockedAgent.activeRevisionId &&
         (lockedAgent.desiredRuntimeState === "stopped" ||
@@ -14664,6 +14750,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     agentId: string,
+    expectedActiveRevisionId?: string,
   ): Promise<Readonly<Agent>> {
     if (!isNonEmptyString(namespaceId)) {
       throw new ScopeViolationError("The exact Namespace identity is missing.");
@@ -14672,17 +14759,53 @@ export class OpenClawController {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "operate", {
-        kind: "agent",
-        id: agentId,
-        namespaceId,
-      });
+      const target = { kind: "agent", id: agentId, namespaceId } as const;
+      if (expectedActiveRevisionId !== undefined) {
+        await this.holdAuthority(state);
+      }
+      await this.authorize(principalId, "operate", target);
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (expectedActiveRevisionId !== undefined) {
+        await this.authorize(principalId, "operate", target);
+      }
       if (agent === undefined) {
         throw new ScopeViolationError(
           "The Agent does not belong to the exact Installation and Namespace.",
         );
+      }
+      if (expectedActiveRevisionId !== undefined) {
+        // Stop is Agent-wide. A queued successor need not have replaced the active pointer yet.
+        const conflict = () =>
+          new ResourceStateConflictError(
+            "Stop requires the expected revision to be active, latest, and successfully deployed. Inspect the current Agent before stopping it.",
+          );
+        if (
+          agent.status !== "active" ||
+          agent.desiredRuntimeState !== "running" ||
+          agent.activeRevisionId !== expectedActiveRevisionId
+        ) {
+          throw conflict();
+        }
+        const { revisions } = await state.revisions.pageRevisionSummaries(namespaceId, agentId, {
+          limit: 1,
+        });
+        const latest = revisions[0];
+        if (
+          latest?.id !== expectedActiveRevisionId ||
+          latest.namespaceId !== namespaceId ||
+          latest.agentId !== agentId
+        ) {
+          throw conflict();
+        }
+        const work = await state.operations.findWork(`agent_revision:${latest.id}:reconcile`);
+        if (
+          !work ||
+          !workMatchesRevision(work, latest) ||
+          controllerWorkDeploymentStatus(work, this.clock()) !== "succeeded"
+        ) {
+          throw conflict();
+        }
       }
       if (agent.status === "deleting") {
         return agent;
@@ -17865,12 +17988,10 @@ export class OpenClawController {
     type: CredentialSourceType,
     provider?: CredentialSourceType,
   ): boolean {
-    // Externally rotated static inputs still use explicit Secret updates, not Refresh.
-    const isStatic = (candidate: CredentialSourceType) =>
-      candidate.rotation !== "refresh" &&
-      candidate.deviceAuthorization === undefined &&
-      candidate.harnessAuth?.loginMode !== "chatgptAuthTokens";
-    return isStatic(type) && (provider === undefined || isStatic(provider));
+    return (
+      supportsStaticCredentials(type) &&
+      (provider === undefined || supportsStaticCredentials(provider))
+    );
   }
 
   private staticSourceTypeAvailable(type: CredentialSourceType): boolean {

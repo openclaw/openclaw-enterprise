@@ -47,6 +47,7 @@ import {
   AgentParams,
   FirstDeploymentIntent,
   AgentDeploymentBody,
+  AgentStopQuery,
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
@@ -2293,7 +2294,7 @@ export const occApiRoutes = [
     summary: "Stop one Agent and keep its saved Agent revision and persistent state",
     tags: ["Agents"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: AgentStopQuery,
       params: AgentParams,
       response: { 202: AgentResponse, ...mutationErrors },
     },

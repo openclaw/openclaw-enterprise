@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a"
+last_updated_session: "authoring-run/2a21f845-f67a-4ab9-96a3-391c0f267049"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -269,29 +269,28 @@ See [document initialization](workspace-files.md#2-deployment-initializes-storag
 
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createSandbox`
 
-Send Workspace identity/spec, a unique name and `request_id` (revision UUID,
-then 15 derived IDs). For uncertain outcomes, payload mismatch or unavailable
-replay, advance only on confirmed absence. At 1,000 live or unresolved records,
-[`SANDBOX_ADMISSION_LIMIT_REACHED`](../reference/drivers/openshell-sandbox.md#troubleshooting)
-defers preparation within the deadline without spending attempts. Namespace
-work retries. [Replay diagnostics](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures)
-explain refusals.
+Send the Workspace spec, unique name and `request_id` (revision UUID, then 15
+derived IDs). After [an uncertain outcome, payload mismatch or unavailable replay](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures),
+advance only if `getSandbox` confirms absence. At 1,000 live or unresolved
+records, [`SANDBOX_ADMISSION_LIMIT_REACHED`](../reference/drivers/openshell-sandbox.md#troubleshooting)
+defers preparation within its deadline without spending attempts. Namespace work
+retries. `describePrepareRevisionFailure` sends [startup refusal](../reference/drivers/openshell-sandbox/harness-providers.md#sandbox-startup-refusals)
+codes and stages to `worker.compute-prepare-failed`.
 
 The [Sandbox and preparer](../reference/drivers/openshell-sandbox.md#configuration)
-omit RuntimeClass and PSA exemptions. Adoption after `ALREADY_EXISTS` also
-requires matching Workspace, labels, annotations and spec. A stopped or deleting
-Sandbox cannot be adopted. Workspace `sandbox:write` permits replacement. Each
-Harness has one unnamed bearer-passthrough `APP_SERVER_PORT` exposure. Codex
-returns its URL. Native held-failure exposure ends after confirmed deletion via
+omit RuntimeClass and PSA exemptions. Adoption after `ALREADY_EXISTS` requires
+matching Workspace, labels, annotations and spec. A stopped or deleting Sandbox
+cannot be adopted. `sandbox:write` permits replacement. Each Harness has one
+unnamed bearer-passthrough `APP_SERVER_PORT` exposure. Codex returns its URL.
+Native held-failure exposure ends on confirmed deletion via
 `withdrawHarnessExposure`, adoption or recreation with `workspaceNodeEnrolled`.
 
 After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
 require the recorded release acknowledgment and authenticated WebSocket. Other
 non-`200` responses stay pending or refuse enrollment without an upgrade.
 
-The Backend reuses clients and retries setup. Cancellation starts after
-setup and credential preparation. It stops local gRPC after dispatch, while
-remote mutations may still need recovery.
+The Backend reuses clients and retries setup. After setup and credential
+preparation, cancellation stops local gRPC. Remote mutations may need recovery.
 
 `GetService` separates control/workload addresses. `harnessEndpoint` returns the WebSocket
 origin and `sandboxDataMount.mountPath` (default `/sandbox/enterprise`). Native hooks
@@ -314,8 +313,8 @@ and `requiresOpenaiAuth:true` permit serving; other replies stay `starting`. The
 real thread grants. Native OpenClaw uses the authenticated WebSocket handshake. Unavailable WebSockets
 permit held-failure reads. Timeouts yield transient `SANDBOX_GATEWAY_UNAVAILABLE`.
 
-Provider files use reported absolute paths. Gateway failure blocks readiness.
-After uncertain creates, cleanup deletes the Sandbox before its providers.
+Use reported absolute provider-file paths. Gateway failure blocks readiness.
+After uncertain creation, cleanup deletes the Sandbox before its providers.
 Both control planes use scoped WSS. Envoy rewrites worker-transfer paths and
 attributes clients. Policy binds executable/host/port. On group `EPERM`, the
 supervisor signals the process directly.
@@ -324,13 +323,11 @@ supervisor signals the process directly.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-`apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness` checks policy
-readback when the operator-managed Gateway is qualified for public TCP. For a
-revision marked `public`, readiness requires an explicit `true` from the current
-supervisor and a matching effective policy, supervisor instance, policy version
-and hash, configuration revision, and provider-environment revision. An omitted
-report leaves the same Sandbox pending within the deployment deadline. A
-contradictory report blocks readiness. Saved revisions that omit the mode use
+On a Gateway qualified for public TCP, `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
+checks policy readback. A `public` revision requires explicit supervisor `true` and
+matching effective policy, instance, version, hash, configuration revision and
+provider-environment revision. Missing confirmation keeps the Sandbox pending
+until the deadline. Contradictory evidence blocks readiness. Omission selects
 restricted policy. [Agent policy admission](agent-sandbox-policy.md#2-freeze-deployment-or-enqueue-live-application)
 checks Installation and Driver support before saving the mode.
 
@@ -426,6 +423,10 @@ retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 20:20: Reconcile Sandbox admission and startup refusal diagnostics. (authoring-run/2a21f845-f67a-4ab9-96a3-391c0f267049 - 9eaabadabd776c17801af7767d9d64f69516d855)
+
+- 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
 - 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)
 

@@ -25,7 +25,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   authenticatedHeaders,
   cookieHeaderFromSetCookie,

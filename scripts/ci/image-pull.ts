@@ -35,8 +35,13 @@ function pullFailureEvidence(error: unknown) {
   };
 }
 
+// A layer in one of these phases has not finished downloading.
+const downloadPending = new Set(["Pulling fs layer", "Waiting", "Downloading"]);
+
 // Piped Docker output omits numeric progress. Retain only layer IDs and known
-// phases, never image references, error text, terminal escapes or URLs.
+// phases, never image references, error text, terminal escapes or URLs. Up to 8
+// layers are named, those still downloading first: finished layers must not hide
+// the one a stalled pull waits on.
 function pullProgress(evidence: ReturnType<typeof pullFailureEvidence>): string {
   const layers = new Map<string, string>();
   for (const output of [evidence.stdout, evidence.stderr]) {
@@ -66,14 +71,18 @@ function pullProgress(evidence: ReturnType<typeof pullFailureEvidence>): string 
         continue;
       }
       layers.delete(layer);
-      layers.set(layer, `${layer}: ${phase}`);
-      const oldest = layers.keys().next();
-      if (layers.size > 8 && !oldest.done) {
-        layers.delete(oldest.value);
-      }
+      layers.set(layer, phase);
     }
   }
-  return [...layers.values()].join("; ") || "no layer progress captured";
+  if (layers.size === 0) {
+    return "no layer progress captured";
+  }
+  // Still-downloading layers longest-unchanged first, then the latest finished ones.
+  const all = [...layers].map(([layer, phase]) => ({ phase, line: `${layer}: ${phase}` }));
+  const pending = all.filter(({ phase }) => downloadPending.has(phase));
+  const finished = all.filter(({ phase }) => !downloadPending.has(phase)).reverse();
+  const shown = [...pending, ...finished].slice(0, 8).map(({ line }) => line);
+  return [`${pending.length} of ${all.length} layers still downloading`, ...shown].join("; ");
 }
 
 // Bounded retry for `docker pull`, the image counterpart of

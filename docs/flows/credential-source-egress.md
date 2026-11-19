@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf
+last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 ---
 
 # Protected credential request flow
@@ -71,10 +71,12 @@ return 409 on mismatch; refused adoption preserves the Gateway copy.
 `admitStaticEgressSource` rechecks both declarations before reading and injecting material.
 
 OCC checks source and Secret grants; adoption requires consent. Version 3 binds
-Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from saved Harness
-settings and consent; empty routes deny all. Plans retain execution, digest, grant
-and source generation. `checkEgressUseIn` rechecks delivery and send authorization;
-`createCredentialProxy` rechecks ownership after metadata lookup, before Secret reads.
+Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
+settings and consent; empty routes deny all. Plans pin execution, digest, grant
+and source generation. Deployment rechecks the unique compatible provider before
+provisioning transport credentials and saving the revision. `checkEgressUseIn`
+rechecks send and delivery; `createCredentialProxy` rechecks ownership between
+metadata and material reads.
 `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
 submitted settings for OCC normalization and grant checks.
 
@@ -348,6 +350,7 @@ None.
 
 ## Changelog
 
+- 2026-11-19 10:37: Check admitted provider identity. (authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4 - 6ff25175b)
 - 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
 
 - 2026-11-19 07:31: Reconcile response protection and static material checks with the online model flow. (authoring-run/8502e0d3-905b-43ff-9c00-e3b1a03856c6 - 01922f334313161236682955fa851628cf8a5ef1)

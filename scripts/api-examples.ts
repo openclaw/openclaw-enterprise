@@ -322,6 +322,7 @@ export const parameterExamples = {
   connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
+  expectedActiveRevisionId: revisionId,
   expectedGeneration: "1",
   harnessOverrides: "{}",
   networkEgressMode: "public",

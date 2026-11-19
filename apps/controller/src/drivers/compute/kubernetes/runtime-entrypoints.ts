@@ -3107,8 +3107,9 @@ function pinCodexProviderTransport(config) {
         // declaring a request-transport override. Other compat fields can trigger
         // a handoff to the Gateway-local runtime, including thinkingLevels.
         const efforts = isPlainObject(model.compat) ? model.compat.supportedReasoningEfforts : undefined;
-        const keepsEfforts = Array.isArray(efforts) && efforts.length > 0 && efforts.every(
-          (effort) => typeof effort === "string" && /^(minimal|low|medium|high|xhigh|max|ultra)$/u.test(effort),
+        // Codex lists "none" beside its other efforts; a list of only "none" disables reasoning.
+        const keepsEfforts = Array.isArray(efforts) && efforts.some((effort) => effort !== "none") && efforts.every(
+          (effort) => typeof effort === "string" && /^(none|minimal|low|medium|high|xhigh|max|ultra)$/u.test(effort),
         );
         if (keepsEfforts) kept.compat = { supportedReasoningEfforts: efforts };
         for (const name of Object.keys(model)) {

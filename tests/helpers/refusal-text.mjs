@@ -292,7 +292,7 @@ export const MODEL_CREDENTIAL_REJECTED_RECORDED =
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
 // slack.ts). A member reads who to ask, not Helm keys; the guide lists them (findings D750, D753).
 export const SLACK_ROUTE_NOT_CONFIGURED =
-  "The API could not reach Slack and has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.";
+  "Managed channel egress is not configured for OCC provider requests. Ask an Installation administrator to enable the channel egress fleet.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",
@@ -654,11 +654,11 @@ export const CHANNEL_BINDING_CREDENTIALS_REMEDY = `To fix it, ${CHANNEL_BINDING_
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
   "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.";
-// Kubernetes Compute's Configuration rule for a channel other than Slack or Microsoft Teams, at
+// Kubernetes Compute's Configuration rule for an uninstalled channel provider, at
 // Configuration and Preset save and at deployment (apps/controller/src/drivers/compute/kubernetes/
 // configuration-rules.ts). `setting` is channels.<name>.
 export const unsupportedChannelRefusal = (setting) =>
-  `Configuration setting ${setting} is not a supported channel: use slack or msteams, or set its enabled to false.`;
+  `Configuration setting ${setting} is not a supported channel: use slack, or set its enabled to false.`;
 // The Slack card's setup step, shown until both token Secrets are bound (finding 2438), and never
 // on an Embedded Agent, which cannot have channels (finding D708).
 export const SLACK_SETUP_HINT =
