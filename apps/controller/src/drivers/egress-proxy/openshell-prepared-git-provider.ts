@@ -194,7 +194,7 @@ function snapshotRepositoryNetworkPolicy(
   }
   return Object.freeze(
     [...grants.entries()]
-      .sort(([left], [right]) => left.localeCompare(right, "en"))
+      .sort(([left], [right]) => (left < right ? -1 : 1))
       .map(([repository, access]) => Object.freeze({ repository, access })),
   );
 }
@@ -217,6 +217,38 @@ function repositoryNetworkRules(
       { allow: { method: "POST", path: `${root}/${service}` } },
     ]);
   });
+}
+
+function installationEndpoints(
+  git: URL,
+  api: URL,
+  policy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]> | undefined,
+): readonly OpenShellProviderProfileEndpoint[] {
+  if (policy !== undefined) {
+    return [
+      { host: git.hostname, port: 443, protocol: "rest", rules: repositoryNetworkRules(policy) },
+    ];
+  }
+  return [
+    {
+      host: git.hostname,
+      port: 443,
+      protocol: "rest",
+      rules: [
+        { allow: { method: "GET", path: "/**/info/refs" } },
+        { allow: { method: "POST", path: "/**/git-upload-pack" } },
+        { allow: { method: "POST", path: "/**/git-receive-pack" } },
+      ],
+    },
+    { host: api.hostname, port: 443, protocol: "rest", access: "NETWORK_ACCESS_PRESET_FULL" },
+    {
+      host: api.hostname,
+      port: 443,
+      protocol: "graphql",
+      path: "/graphql",
+      access: "NETWORK_ACCESS_PRESET_FULL",
+    },
+  ];
 }
 
 /**
@@ -271,7 +303,6 @@ export class OpenShellPreparedGitProvider {
     this.scope = Object.freeze({
       ...deliveryScope,
       binaries: Object.freeze([...scope.binaries]),
-      ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
     });
     this.fingerprint = createHash("sha256")
       .update(
@@ -295,10 +326,6 @@ export class OpenShellPreparedGitProvider {
       ? openShellInstallationGitProviderPrefix
       : REPOSITORY_PROVIDER_PREFIX;
     this.provider = prefix + this.fingerprint.slice(0, 32);
-    const repositoryRules =
-      repositoryNetworkPolicy === undefined
-        ? undefined
-        : repositoryNetworkRules(repositoryNetworkPolicy);
     this.profile = {
       id: this.provider,
       displayName: "Prepared Git installation token",
@@ -316,35 +343,7 @@ export class OpenShellPreparedGitProvider {
       // This profile bounds transport, not credential placement or GitHub permissions. Release
       // must independently verify the mandatory request phase, verified TLS and sole recipient.
       endpoints: scope.installationId
-        ? [
-            {
-              host: git.hostname,
-              port: 443,
-              protocol: "rest",
-              rules: repositoryRules ?? [
-                { allow: { method: "GET", path: "/**/info/refs" } },
-                { allow: { method: "POST", path: "/**/git-upload-pack" } },
-                { allow: { method: "POST", path: "/**/git-receive-pack" } },
-              ],
-            },
-            ...(repositoryRules === undefined
-              ? ([
-                  {
-                    host: api.hostname,
-                    port: 443,
-                    protocol: "rest",
-                    access: "NETWORK_ACCESS_PRESET_FULL",
-                  },
-                  {
-                    host: api.hostname,
-                    port: 443,
-                    protocol: "graphql",
-                    path: "/graphql",
-                    access: "NETWORK_ACCESS_PRESET_FULL",
-                  },
-                ] as const)
-              : []),
-          ]
+        ? installationEndpoints(git, api, repositoryNetworkPolicy)
         : [
             {
               host: git.hostname,

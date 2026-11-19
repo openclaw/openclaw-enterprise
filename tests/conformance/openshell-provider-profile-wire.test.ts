@@ -27,7 +27,7 @@ test("prepared Git provider binds repository read and write rules to its wire pr
     binaries: ["/usr/bin/git"],
   };
   const scope = { ...commonScope, installationId: "42" } satisfies OpenShellPreparedGitScope;
-  const { client }: { client: GrpcOpenShellGatewayClient } = await gitExpiryGateway(t, {
+  const { client } = await gitExpiryGateway(t, {
     model: "model",
     workspace: scope.workspace,
     sandbox: scope.sandbox,
@@ -36,10 +36,10 @@ test("prepared Git provider binds repository read and write rules to its wire pr
     platformProfile: false,
   });
   const signal = AbortSignal.timeout(10_000);
-  const a = { repository: "fixture/a", access: "read" } as const;
-  const b = { repository: "fixture/b", access: "write" } as const;
-  const readGrant: { repository: string; access: "read" | "write" } = { ...a };
-  const policy = [{ ...b }, readGrant];
+  const read = { repository: "fixture/a", access: "read" } as const;
+  const write = { repository: "fixture/b", access: "write" } as const;
+  const readGrant: { repository: string; access: "read" | "write" } = { ...read };
+  const policy = [{ ...write }, readGrant];
   const scoped = new OpenShellPreparedGitProvider(client, {
     ...scope,
     repositoryNetworkPolicy: policy,
@@ -85,16 +85,25 @@ test("prepared Git provider binds repository read and write rules to its wire pr
     },
   ]);
 
-  function providerId(
+  function profileIdForPolicy(
     repositoryNetworkPolicy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
   ) {
     return new OpenShellPreparedGitProvider(client, { ...scope, repositoryNetworkPolicy }).restore(
       binding,
     ).profile;
   }
-  assert.equal(providerId([a, b]), binding.profile);
-  assert.notEqual(providerId([{ ...a, access: "write" }, b]), binding.profile);
-  assert.notEqual(providerId([a, { ...b, repository: "fixture/c" }]), binding.profile);
+  assert.equal(profileIdForPolicy([read, write]), binding.profile);
+  assert.notEqual(profileIdForPolicy([{ ...read, access: "write" }, write]), binding.profile);
+  assert.notEqual(
+    profileIdForPolicy([read, { ...write, repository: "fixture/c" }]),
+    binding.profile,
+  );
+
+  const punctuationRead = { repository: "fixture/a-b", access: "read" } as const;
+  const punctuationWrite = { repository: "fixture/a_b", access: "write" } as const;
+  const punctuationProfile = "oce-github-installation-3cb27d015493c84eeba6d445f69af0cc";
+  assert.equal(profileIdForPolicy([punctuationWrite, punctuationRead]), punctuationProfile);
+  assert.equal(profileIdForPolicy([punctuationRead, punctuationWrite]), punctuationProfile);
 
   const legacy = await new OpenShellPreparedGitProvider(client, scope).bootstrap(signal);
   assert.equal(legacy.profile, "oce-github-installation-f941504fe8c04d629f0fcd8569984de1");
@@ -128,24 +137,31 @@ test("prepared Git provider binds repository read and write rules to its wire pr
     },
   ]);
 
-  for (const invalid of [
-    [],
-    [a, { ...a, access: "write" as const }],
-    [{ ...a, repository: "Fixture/a" }],
-    [{ ...a, repository: "fixture/a.git" }],
-    [{ ...a, repository: "fixture/.." }],
-    [{ ...a, repository: "fixture/a\n" }],
-    [{ ...a, repository: "fixture/a*" }],
-    [{ ...a, repository: "fixture/a%2Fb" }],
-  ]) {
-    assert.throws(() => providerId(invalid), OpenShellPreparedGitProviderError);
+  for (const { name, policy } of [
+    { name: "empty policy", policy: [] },
+    { name: "duplicate repository", policy: [read, { ...read, access: "write" }] },
+    { name: "uppercase repository", policy: [{ ...read, repository: "Fixture/a" }] },
+    { name: "Git suffix", policy: [{ ...read, repository: "fixture/a.git" }] },
+    { name: "parent path", policy: [{ ...read, repository: "fixture/.." }] },
+    { name: "trailing newline", policy: [{ ...read, repository: "fixture/a\n" }] },
+    { name: "wildcard", policy: [{ ...read, repository: "fixture/a*" }] },
+    { name: "encoded separator", policy: [{ ...read, repository: "fixture/a%2Fb" }] },
+  ] satisfies {
+    name: string;
+    policy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>;
+  }[]) {
+    assert.throws(
+      () => new OpenShellPreparedGitProvider(client, { ...scope, repositoryNetworkPolicy: policy }),
+      { name: OpenShellPreparedGitProviderError.name, outcome: "refused" },
+      name,
+    );
   }
   assert.throws(
     () =>
       new OpenShellPreparedGitProvider(client, {
         ...commonScope,
         repository: "fixture/a",
-        repositoryNetworkPolicy: [a],
+        repositoryNetworkPolicy: [read],
       }),
     OpenShellPreparedGitProviderError,
   );
