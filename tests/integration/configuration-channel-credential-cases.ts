@@ -33,7 +33,7 @@ import {
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const schemaContext = {
