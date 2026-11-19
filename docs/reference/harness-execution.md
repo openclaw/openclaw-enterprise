@@ -205,8 +205,8 @@ enabled for WebSocket app-server transport.
 
 On Kubernetes, a dedicated Codex Gateway with a workspace-node ID or binding
 path keeps `reasoning`, `thinkingLevelMap`, and
-`compat.supportedReasoningEfforts` of only `none`, `minimal`, `low`, `medium`,
-`high`, `xhigh`, `max`, or `ultra`, not only `none`. It drops other `compat`
+`compat.supportedReasoningEfforts` listing only `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`, or `ultra`, not all `none`. It drops other `compat`
 fields, including `thinkingLevels`, and infers no capabilities.
 
 An embedded or dedicated Gateway cannot start when an active plugin's startup
