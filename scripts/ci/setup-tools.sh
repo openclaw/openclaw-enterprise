@@ -4,19 +4,18 @@ set -euo pipefail
 profile="${1:-baseline}"
 root_dir="$(CDPATH="" cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 platform="$(/usr/bin/uname -s)-$(/usr/bin/uname -m)"
-system_tools_path="/usr/bin:/bin"
-bin_dir="$(/usr/bin/python3 -I - "${RUNNER_TEMP:-}" <<'PYTHON'
+bin_dir="$(/usr/bin/python3 -I -S - "${RUNNER_TEMP:-}" <<'PYTHON'
 import os
 from pathlib import Path
+import pwd
 import stat
 import sys
-import tempfile
 
 uid = os.geteuid()
 system_owner = Path("/").stat().st_uid
 
 
-def safe_directory(original, shared=False):
+def safe_directory(original):
     if not original.is_absolute() or not str(original).isprintable() or ".." in original.parts:
         raise ValueError
     # Account for system-owned Darwin aliases such as /var and /tmp.
@@ -38,39 +37,61 @@ def safe_directory(original, shared=False):
         info = component.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid not in {uid, system_owner}:
             raise ValueError
-        if info.st_mode & 0o022 and not (info.st_mode & stat.S_ISVTX and (shared or component != physical)):
+        if info.st_mode & 0o022 and not (info.st_mode & stat.S_ISVTX and component != physical):
             raise ValueError
-    if not shared and physical.stat().st_uid != uid:
+    if physical.stat().st_uid != uid:
         raise ValueError
     return physical
 
 
-try:
-    if sys.argv[1]:
-        root = safe_directory(Path(sys.argv[1]))
-    else:
-        root = Path(tempfile.mkdtemp(prefix="claw-ent-ci.", dir=safe_directory(Path("/tmp"), shared=True)))
-    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+def owned_subdirectory(parent, name, *, private=True):
+    if not name or not name.isprintable():
+        raise ValueError
+    child = parent / name
+    directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        if not os.path.samestat(os.fstat(directory), root.stat()):
+        if not os.path.samestat(os.fstat(directory), parent.stat()):
             raise ValueError
         try:
-            os.mkdir("bin", mode=0o700, dir_fd=directory)
+            os.mkdir(name, mode=0o700, dir_fd=directory)
         except FileExistsError:
             pass
-        binary_directory = os.open("bin", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
         try:
-            info = os.fstat(binary_directory)
-            if info.st_uid != uid or info.st_mode & 0o022 or not os.path.samestat(info, (root / "bin").stat()):
+            info = os.fstat(fd)
+            if info.st_uid != uid or info.st_mode & 0o022 or not os.path.samestat(info, child.stat()):
                 raise ValueError
-            os.fchmod(binary_directory, 0o700)
+            if private:
+                os.fchmod(fd, 0o700)
         finally:
-            os.close(binary_directory)
+            os.close(fd)
     finally:
         os.close(directory)
-    print(root / "bin")
-except (OSError, RuntimeError, ValueError):
-    sys.exit("CI tool setup requires a safe owner-controlled RUNNER_TEMP and a physical private bin directory.")
+    return child
+
+
+def local_tool_directory():
+    configured = os.environ.get("XDG_CACHE_HOME")
+    if configured:
+        cache = Path(configured)
+        if not cache.is_absolute() or not configured.isprintable() or ".." in cache.parts:
+            raise ValueError
+        if cache.exists() or cache.is_symlink():
+            cache = safe_directory(cache)
+        else:
+            cache = owned_subdirectory(safe_directory(cache.parent), cache.name, private=False)
+    else:
+        home = safe_directory(Path(pwd.getpwuid(uid).pw_dir))
+        cache = owned_subdirectory(home, ".cache", private=False)
+    app_cache = owned_subdirectory(cache, "openclaw-enterprise", private=False)
+    return owned_subdirectory(app_cache, "ci-tools")
+
+
+try:
+    root = safe_directory(Path(sys.argv[1])) if sys.argv[1] else local_tool_directory()
+    print(owned_subdirectory(root, "bin"))
+except (KeyError, OSError, RuntimeError, ValueError):
+    sys.exit("CI tool setup requires an owner-controlled RUNNER_TEMP or local cache and a physical private bin directory.")
 PYTHON
 )"
 
@@ -88,10 +109,22 @@ need_command() {
 # Keep verification, transport, and the kubectl probe off the caller's PATH
 # and away from shell startup files and exported functions.
 run_system_tool() {
-  /usr/bin/env -i PATH="${system_tools_path}" LC_ALL=C \
-    HTTPS_PROXY="${HTTPS_PROXY:-}" https_proxy="${https_proxy:-}" \
-    NO_PROXY="${NO_PROXY:-}" no_proxy="${no_proxy:-}" \
-    "$@"
+  /usr/bin/python3 -I -S -c '
+import os
+import sys
+
+program = sys.argv[1]
+if not os.path.isabs(program):
+    sys.exit("CI tool setup requires an absolute tool path")
+environment = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+for name in (
+    "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy",
+    "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR",
+):
+    if name in os.environ:
+        environment[name] = os.environ[name]
+os.execve(program, sys.argv[1:], environment)
+  ' "$@"
 }
 
 download_file() {
@@ -403,4 +436,6 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
 fi
 if [[ -n "${GITHUB_PATH:-}" ]]; then
   echo "${bin_dir}" >>"${GITHUB_PATH}"
+elif [[ -z "${RUNNER_TEMP:-}" ]]; then
+  printf 'Use the verified tools in your current shell with this command\nexport PATH=%q:"$PATH"\n' "${bin_dir}" >&2
 fi

@@ -81,6 +81,22 @@ def copy_decoder(directory, expected, maximum):
     sys.exit("requires the pinned native kubectl executable on PATH")
 
 
+def setup_decoder(directory):
+    architecture = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(platform.machine())
+    pins = json.loads(Path("scripts/ci/kubectl-pins.json").read_text())
+    expected = pins.get(sys.platform, {}).get(architecture)
+    if expected is None:
+        sys.exit("requires an official pinned kubectl for a supported Linux or macOS build")
+    tools = ("bash", "git", "jq", "node", "yq")
+    missing = [tool for tool in tools if not shutil.which(tool)]
+    if missing:
+        sys.exit("requires local tools: " + ", ".join(missing))
+    copy_decoder(directory, expected, MAX_DECODER_BYTES)
+
+
+if sys.argv[1] == "--setup-decoder":
+    setup_decoder(Path(sys.argv[2]))
+    sys.exit(0)
 if sys.argv[1] == "--copy-decoder":
     copy_decoder(Path(sys.argv[2]), sys.argv[3], min(MAX_DECODER_BYTES, int(sys.argv[4])))
     sys.exit(0)
@@ -113,14 +129,46 @@ def stop_fixture(signum, _frame):
     raise SystemExit(128 + signum)
 
 
-def stage_decoder(directory, expected, *, environment=None, maximum=MAX_DECODER_BYTES):
-    result = run_command(
-        [sys.executable, str(Path(__file__).resolve()), "--copy-decoder", str(directory), expected, str(maximum)],
-        environment=environment,
-    )
+def stage_decoder(directory, expected=None, *, environment=None, maximum=MAX_DECODER_BYTES, timeout=20):
+    worker = [sys.executable, str(Path(__file__).resolve())]
+    if expected is None:
+        worker += ["--setup-decoder", str(directory)]
+    else:
+        worker += ["--copy-decoder", str(directory), expected, str(maximum)]
+    result = run_command(worker, environment=environment, timeout=timeout)
     if result.returncode != 0:
         sys.exit(result.stderr.strip() or "could not stage the pinned decoder")
     return str(directory / "kubectl")
+
+
+def prove_setup_deadline(proof):
+    # Stall the worker's real prerequisite discovery through a local shim.
+    # The empty PATH prevents this control from finding or copying a real pin.
+    with tempfile.TemporaryDirectory(prefix="setup-control-", dir=proof) as scratch:
+        control = Path(scratch)
+        (control / "sitecustomize.py").write_text(
+            'import shutil, time\n'
+            'real_which = shutil.which\n'
+            'def slow_which(tool, *args, **options):\n'
+            '    if tool == "bash":\n'
+            '        print("reached fixture PATH probe", flush=True)\n'
+            '        time.sleep(6)\n'
+            '    return real_which(tool, *args, **options)\n'
+            'shutil.which = slow_which\n'
+        )
+        destination = control / "staged"
+        destination.mkdir(mode=0o700)
+        try:
+            stage_decoder(
+                destination,
+                environment={"PATH": str(control), "PYTHONPATH": str(control)},
+                timeout=2,
+            )
+        except subprocess.TimeoutExpired as error:
+            assert error.timeout == 2 and b"reached fixture PATH probe" in (error.output or b"")
+            assert not (destination / "kubectl").exists()
+        else:
+            raise AssertionError("deliberately stalled prerequisite discovery did not time out")
 
 
 def prove_copy_isolation(proof):
@@ -167,10 +215,6 @@ def prove_copy_isolation(proof):
 
 proof = private_directory(Path(sys.argv[1]))
 root = Path.cwd()
-tools = ("bash", "git", "jq", "node", "yq")
-missing = [tool for tool in tools if not shutil.which(tool)]
-if missing:
-    sys.exit("requires local tools: " + ", ".join(missing))
 for number in (signal.SIGHUP, signal.SIGTERM):
     signal.signal(number, stop_fixture)
 
@@ -188,13 +232,10 @@ except subprocess.TimeoutExpired as error:
 else:
     raise AssertionError("deliberately blocked fixture failed to time out")
 
-architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
-if sys.platform != "linux" or architecture is None:
-    sys.exit("the upgrade target regression requires a supported Linux kubectl build")
-pins = json.loads((root / "scripts/ci/kubectl-pins.json").read_text())
+prove_setup_deadline(proof)
 prove_copy_isolation(proof)
 decoder_directory = tempfile.TemporaryDirectory(prefix="decoder-", dir=proof)
-kubectl = stage_decoder(Path(decoder_directory.name), pins["linux"][architecture])
+kubectl = stage_decoder(Path(decoder_directory.name))
 
 adapter_cmd = ["python3", "scripts/upgrade-production"]
 native_cmd = ["bash", "scripts/upgrade-production-images"]
