@@ -25,5 +25,6 @@ registerCancellationCases();
 registerLogsCases();
 registerCredentialsCases();
 registerWorkloadCases();
+registerOidcCases();
 
 registerManagedWorkloadCases();
