@@ -27,6 +27,54 @@ See [stop and replacement ordering](../flows/openshell-managed-workload.md#stop-
 The Provider and [Git replacement](openshell-git-replacement.md) scenarios
 exercise parts of that workflow.
 
+## Template resource delivery
+
+Select `openshell-template-resources` to check actual Agent container sizing in
+both integration modes. The input labels `operator` and `managed` select
+`integrationMode: legacy` and `integrationMode: service`, respectively.
+Prepare two disposable loopback k3d installations with
+enforcing NetworkPolicies, this branch's API and worker, compatible OpenShell
+APIs, and digest-pinned Codex and Gateway images. Use an existing authorized model
+Credential Source. The test observer needs Pod-read access in the Harness
+namespaces; OCE does not need that access in managed mode.
+
+Create two private input files using the [Provider replacement inputs](#provider-replacement).
+No network-policy ceiling is needed for this scenario. Each file also needs
+`expectedResources`, the independently selected Kubernetes container requests and
+limits. Include the ephemeral-storage request `256Mi` and limit `1Gi`; use the
+quantity spelling returned by Kubernetes. The operator file also needs
+`expectedMounts`, a nonempty array of approved volume-mount objects such as
+`{ "mountPath": "/sandbox/enterprise", "subPath": "workspace" }`. If configured,
+include `sandboxNamePrefix` (default `sb`). Managed mode uses its stable Agent name.
+
+Disable OpenShell's `allow_driver_config` permission for the managed installation.
+The test first deploys through OCE, then sends a negative-control create request
+with caller driver config. That request must fail specifically because caller
+driver config is disabled. Cleanup deletes the probe if the server unexpectedly
+accepts it. Keep this installation disposable.
+
+Set `OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE` to a private JSON file that maps
+`operator` and `managed` to the absolute paths of those two input files:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
+  OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_SCENARIOS=openshell-template-resources \
+  OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE=/tmp/oce-test/resources.json \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+Also select `OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`
+as described below. Both modes must pass without skips: the scenario deploys an
+Agent through the API, compares its real Pod resources, verifies operator mounts,
+reads and writes a workspace file, and completes a real model turn. Cleanup removes
+run-owned Agents, grants, and sources, not the prepared Namespace or source.
+
+Focused lifecycle tests additionally check missing or changed resource readback,
+protobuf round trips, and refusal of managed sizing changes before update/start.
+Those controlled responses are not cluster proof of failed replacement.
+This scenario is registered in the QA lane but is not in hosted advisory jobs;
+those jobs do not prepare compatible managed installations.
+
 ## Provider replacement
 
 Use a disposable loopback k3d installation with this branch's API and worker,

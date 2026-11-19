@@ -88,6 +88,11 @@ against the latest stored policy, including credential inspection rules.
 
 ## Lifecycle and retained files
 
+Managed creation sends `kubernetes.agentResources` in the `spec.template.resources`
+protobuf Struct and omits `driver_config`. Caller driver-config permission is not
+required. Per-Agent sizing overrides remain legacy-mode only. See
+[resource settings](openshell-sandbox.md#configuration) for validation and defaults.
+
 The Sandbox and runtime Provider names derive from the Agent ID. Stop and
 revision retirement retain the Sandbox and its storage. Replacement updates
 runtime material, policy and workload while stopped. Each update checks the
@@ -130,8 +135,8 @@ failure handling.
   are refused. Bootstrap requires writable `/sandbox`; read-only policy paths
   within that root are refused. The inherited `sandboxDataMount` fields describe a logical
   workspace path; no mount using them is submitted to OpenShell.
-- Changing the Harness type, static policy, non-Git middleware bindings, or resource requests
-  through workload replacement is refused.
+- Changing the Harness type, static policy, non-Git middleware bindings, or resource
+  requests or limits through workload replacement is refused.
 - Agents can enable or disable Git and change repository selections and resolved
   permissions between revisions. Cleanup closes the old authorization and removes
   its Provider and middleware before preparing the successor. Enabling Git requires

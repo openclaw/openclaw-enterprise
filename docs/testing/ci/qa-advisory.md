@@ -72,6 +72,7 @@ for Codex.
 | `openshell-linear-read`          | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
 | `codex-search-config`            | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
 | `openshell-git-model`            | No                   | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                   |
+| `openshell-template-resources`   | No                   | Codex           | [Template resource delivery](../openshell-managed.md#template-resource-delivery).                                                                                                |
 | `openshell-provider-replacement` | No                   | Codex           | [Managed Provider replacement](../openshell-managed.md#provider-replacement), network changes, model turns and peer isolation.                                                   |
 | `openshell-git-replacement`      | No                   | Codex           | [Managed Git recovery](../openshell-git-replacement.md), workspace retention and revision-scoped repository grants.                                                              |
 

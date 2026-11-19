@@ -17,8 +17,11 @@ import { validateExplicitK3dLoopbackContext } from "./kubernetes-real.ts";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
 
 /** Real API/worker workflow with run-owned resources in a selected managed installation. */
-export async function verifyOpenShellProviderReplacement(context, { gitReplacement = false } = {}) {
-  const path = process.env.OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE;
+export async function verifyOpenShellProviderReplacement(
+  context,
+  { gitReplacement = false, templateResources = false, inputFile, workspaceMode = "managed" } = {},
+) {
+  const path = inputFile ?? process.env.OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE;
   assert.ok(path, "Select the prepared managed installation input file");
   const input = JSON.parse(await readFile(path, "utf8"));
   // Validate file-supplied path segments before reading credentials or contacting the cluster.
@@ -32,6 +35,19 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
       new RegExp(CredentialSourceId.pattern, "u").test(input.modelSourceId),
     "Invalid replacement Credential Source ID",
   );
+  if (templateResources) {
+    assert.equal(input.disposable, true, "Resource proof requires a disposable installation");
+    assert.equal(input.existingCluster, undefined);
+    assert.ok(["operator", "managed"].includes(workspaceMode));
+    assert.ok(input.expectedResources, "Supply independently expected Agent container resources");
+    if (workspaceMode === "operator") {
+      assert.ok(input.expectedMounts?.length, "Select the approved operator mounts");
+      for (const mount of input.expectedMounts) {
+        assert.ok(mount.mountPath?.startsWith("/sandbox/"));
+        assert.ok(mount.subPath, "Select the approved PVC subpath, not just its mount path");
+      }
+    }
+  }
   if (gitReplacement) {
     assert.ok(input.git?.repositoryRef, "Select an enrolled repository reference");
     assert.ok(input.git.additionalRepositoryRef, "Select a second enrolled repository reference");
@@ -198,14 +214,17 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     });
     return revision;
   };
-  const sandbox = (agent) =>
-    gateway.getSandbox(
-      {
-        workspace,
-        name: `oc-${createHash("sha256").update(agent.id).digest("hex").slice(0, 16)}`,
-      },
-      signal(),
-    );
+  const sandbox = (agent, revision) => {
+    const prefix = input.sandboxNamePrefix ?? "sb";
+    const name =
+      workspaceMode === "managed"
+        ? `oc-${createHash("sha256").update(agent.id).digest("hex").slice(0, 16)}`
+        : `${prefix}-${createHash("sha256")
+            .update(revision.id)
+            .digest("hex")
+            .slice(0, 18 - prefix.length)}`;
+    return gateway.getSandbox({ workspace, name }, signal());
+  };
   const turn = async (agent, revision) => {
     const pods = await fixture.resources("pods", input.gatewayNamespace);
     const pod = pods.find(
@@ -253,7 +272,7 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     });
     assert.ok(result.assistant.includes(nonce), "The real model turn must return its nonce");
   };
-  for (let index = 0; index < 2; index++) {
+  for (let index = 0; index < (templateResources ? 1 : 2); index++) {
     const agent = await api("POST", `${base}/agents`, {
       name: `provider-replacement-${randomUUID()}`,
       configurationId: input.configurationId,
@@ -284,6 +303,109 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
         }),
       );
     }
+  }
+  if (templateResources) {
+    const agent = agents[0];
+    const revision = await deploy(agent);
+    const current = await sandbox(agent, revision);
+    assert.ok(current?.id);
+    assert.ok(current.spec.template.resources, "OpenShell must retain template sizing");
+    const pods = JSON.parse(
+      await fixture.kubectl("get", "pods", "--all-namespaces", "-o", "json"),
+    ).items;
+    const pod = pods.find(
+      (entry) =>
+        !entry.metadata.deletionTimestamp &&
+        entry.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
+        entry.spec.containers.some((container) => container.name === "agent"),
+    );
+    assert.ok(pod, "OpenShell must create the real Agent Pod");
+    const container = pod.spec.containers.find((entry) => entry.name === "agent");
+    assert.deepEqual(container.resources, input.expectedResources);
+    assert.equal(container.resources.requests["ephemeral-storage"], "256Mi");
+    assert.equal(container.resources.limits["ephemeral-storage"], "1Gi");
+    if (workspaceMode === "managed") {
+      assert.equal(current.spec.template.driver_config, undefined);
+      // A negative control distinguishes disabled caller config from merely omitting
+      // it in a permissive installation. Cleanup removes an unexpectedly accepted probe.
+      const probeName = `rp-${randomUUID().slice(0, 12)}`;
+      context.after(async () => {
+        const probe = await gateway.getSandbox({ workspace, name: probeName }, signal());
+        if (probe) {
+          await gateway.deleteSandbox({ workspace, name: probeName }, signal());
+        }
+      });
+      await assert.rejects(
+        gateway.createSandbox(
+          {
+            name: probeName,
+            workspace,
+            requestId: randomUUID(),
+            labels: {},
+            annotations: {},
+            spec: {
+              ...current.spec,
+              template: {
+                ...current.spec.template,
+                driver_config: {
+                  fields: {
+                    kubernetes: {
+                      structValue: {
+                        fields: { pod: { structValue: { fields: {} } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          signal(),
+        ),
+        /driver.config.*(?:disabled|not allowed|forbidden|not permitted)/i,
+      );
+    } else {
+      assert.ok(current.spec.template.driver_config);
+      for (const expected of input.expectedMounts) {
+        assert.ok(
+          container.volumeMounts.some((mount) =>
+            Object.entries(expected).every(([key, value]) => mount[key] === value),
+          ),
+          "Operator mount must survive resource serialization",
+        );
+      }
+    }
+    const nonce = randomUUID();
+    const workspacePath = current.spec.environment.OPENCLAW_WORKSPACE_DIR;
+    assert.ok(workspacePath?.startsWith("/sandbox/"));
+    assert.equal(
+      await gateway.execSandbox(
+        {
+          workspace,
+          sandbox: current.name,
+          command: [
+            "/bin/sh",
+            "-ec",
+            'printf %s "$2" > "$1"; test "$(cat "$1")" = "$2"; rm "$1"',
+            "resources-proof",
+            `${workspacePath}/resources-${nonce}`,
+            nonce,
+          ],
+          stdin: "",
+          timeoutSeconds: 25,
+        },
+        signal(),
+      ),
+      0,
+      "The deployed Harness must retain workspace access",
+    );
+    await turn(agent, revision);
+    return {
+      workspaceMode,
+      agentId: agent.id,
+      revisionId: revision.id,
+      podUid: pod.metadata.uid,
+      resources: container.resources,
+    };
   }
   if (gitReplacement) {
     // Read-only Git against explicitly selected repositories. Exercise the regular

@@ -240,9 +240,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         },
         environment,
         command,
-        driverConfig: {
-          containers: { agent: { resources } },
-        },
+        resources,
         filesystem: {
           ...filesystem,
           read_only: [

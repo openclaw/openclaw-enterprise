@@ -122,11 +122,12 @@ apply a different policy.
 
 Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
 `kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
-The Driver submits `256Mi` and `1Gi` for ephemeral-storage request and limit.
-Provider template resource keys take precedence. Verify CPU, memory, and
-ephemeral storage on the rendered Agent container.
+Sizing uses the `spec.template.resources` protobuf Struct. Ephemeral-storage:
+request `256Mi`, limit `1Gi`. Operator mounts remain in
+`spec.template.driver_config`. Provider templates override sizing;
+verify container resources.
 
-`kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
+In operator mode, `kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
 pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
 `agentResources`. Startup rejects malformed IDs, duplicates, and requests above
 limits. Before replacement, check scheduling. Redeploy after changes. Adoption

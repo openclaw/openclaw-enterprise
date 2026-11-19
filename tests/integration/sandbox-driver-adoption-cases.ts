@@ -391,8 +391,8 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
   const selected = {
     namespaceId: context.namespace.id,
     agentId: selectedAgent,
-    requests: { cpu: "88", memory: "344Gi" },
-    limits: { cpu: "90", memory: "352Gi" },
+    requests: { cpu: "88" },
+    limits: { cpu: "90" },
   };
   const options: OpenShellSandboxDriverOptions = {
     ...base,
@@ -426,9 +426,7 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
   );
   const templateFor = (sandbox: string) => record(sandboxes.get(sandbox)?.spec?.template);
   const resources = (template: Record<string, unknown>, section: "requests" | "limits") => {
-    const driverConfig = record(record(template.driver_config).fields);
-    const containers = structFields(structFields(driverConfig.kubernetes).containers);
-    const agentResources = structFields(structFields(containers.agent).resources);
+    const agentResources = record(record(template.resources).fields);
     return Object.fromEntries(
       Object.entries(structFields(agentResources[section])).map(([resource, entry]) => {
         const value = record(entry).stringValue;
@@ -440,13 +438,13 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
   const saved = templateFor(name);
   assert.deepEqual(resources(saved, "requests"), {
     cpu: "88",
-    memory: "344Gi",
+    memory: "1Gi",
     "example.com/gpu": "1",
     "ephemeral-storage": "256Mi",
   });
   assert.deepEqual(resources(saved, "limits"), {
     cpu: "90",
-    memory: "352Gi",
+    memory: "2Gi",
     "example.com/gpu": "1",
     "ephemeral-storage": "1Gi",
   });
@@ -551,6 +549,17 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
     },
   });
   assert.deepEqual(await provision(), first);
+  sandboxes.set(name, decoded);
+
+  // A server that drops or changes template sizing must not be adopted, even
+  // when identity and all other workload fields still match.
+  for (const resources of [undefined, { fields: {} }]) {
+    sandboxes.set(name, {
+      ...decoded,
+      spec: { ...spec, template: { ...record(spec.template), resources } },
+    });
+    await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  }
   sandboxes.set(name, decoded);
 
   // Another revision's Sandbox, or one without its Harness service, is never adopted.

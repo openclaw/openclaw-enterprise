@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-19"
-last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
+updated: "2026-11-20"
+last_updated_session: "01a1f50f-138b-756e-be12-ada2880622e2"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -216,12 +216,9 @@ updates only `node_setup_json`. `sandboxCommand` adds workspace links, setup wai
 and account bootstrap. OpenShell caps arguments at 32 KiB each and 256 KiB total.
 Tests target 64 KiB serialized.
 `filesystemPolicy` grants read and execute access to `/opt/devtools` by default.
-`verifyExistingSandbox` compares the full spec, including the command and filesystem
-policy. An existing Sandbox with a different spec requires
+`verifyExistingSandbox` compares the full spec; differences require
 [revision recovery](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
-`internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
-development startup delay. Compute rolls the Gateway before checking enrollment;
-`harnessStatus` below gates readiness.
+Compute rolls the Gateway before enrollment; `harnessStatus` gates readiness.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
@@ -278,8 +275,9 @@ advance only if `getSandbox` confirms absence. At 1,000 live/unresolved records,
 For [Sandbox startup refusals](../reference/drivers/openshell-sandbox/harness-providers.md#sandbox-startup-refusals),
 `describePrepareRevisionFailure` passes the code and stage to `worker.compute-prepare-failed`.
 
-Provisioning reads [sizing](../reference/drivers/openshell-sandbox.md#configuration);
-Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
+`sandboxLaunchSpec` sends [sizing](../reference/drivers/openshell-sandbox.md#configuration)
+in `template.resources`; `template.driver_config` retains mounts.
+Adoption normalizes both Structs; missing or changed resources fail. Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
 annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
@@ -419,6 +417,8 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 08:09: Serialize sizing. (01a1f50f-138b-756e-be12-ada2880622e2 - 6967d8e4dea2b4c5bb769c8697e7d4cfd046c55a)
 
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
