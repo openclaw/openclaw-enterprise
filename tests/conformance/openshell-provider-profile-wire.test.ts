@@ -81,6 +81,8 @@ test("provider profile wire defaults preserve Git overlap enforcement", async (t
   });
   assert.ok(client instanceof GrpcOpenShellGatewayClient);
   const signal = AbortSignal.timeout(10_000);
+  const checkProviders = () =>
+    checkOpenShellGitProviders(client, workspace, [provider], {}, signal);
 
   for (const lists of [{}, { endpoints }, { credentials }, { endpoints, credentials }]) {
     await t.test(
@@ -88,7 +90,7 @@ test("provider profile wire defaults preserve Git overlap enforcement", async (t
       async () => {
         // The real codec omits empty repeated fields; the guard must still inspect this profile.
         response = { profile: { ...runtime, ...lists } };
-        await checkOpenShellGitProviders(client, workspace, [provider], signal);
+        await checkProviders();
         const profile = await client.getProviderProfile(workspace, id, signal);
         assert.deepEqual(profile?.definition?.files, files);
         assert.deepEqual(profile?.definition?.endpoints, "endpoints" in lists ? endpoints : []);
@@ -103,7 +105,7 @@ test("provider profile wire defaults preserve Git overlap enforcement", async (t
   await t.test("missing profile remains unverified", async () => {
     response = undefined;
     assert.equal(await client.getProviderProfile(workspace, id, signal), undefined);
-    await assert.rejects(checkOpenShellGitProviders(client, workspace, [provider], signal), {
+    await assert.rejects(checkProviders(), {
       name: OpenShellGitRouteError.name,
       reason: "provider_overlap",
     });
@@ -114,10 +116,7 @@ test("provider profile wire defaults preserve Git overlap enforcement", async (t
       profile ? "rejects mismatched profile ID" : "rejects absent profile envelope",
       async () => {
         response = profile ? { profile } : {};
-        await assert.rejects(
-          checkOpenShellGitProviders(client, workspace, [provider], signal),
-          /GetProviderProfile returned another profile/,
-        );
+        await assert.rejects(checkProviders(), /GetProviderProfile returned another profile/);
       },
     );
   }
@@ -130,7 +129,7 @@ test("provider profile wire defaults preserve Git overlap enforcement", async (t
       `rejects overlap through ${overlap.endpoints === endpoints ? "GITHUB_TOKEN" : "GitHub hostname"}`,
       async () => {
         response = { profile: { ...runtime, ...overlap } };
-        await assert.rejects(checkOpenShellGitProviders(client, workspace, [provider], signal), {
+        await assert.rejects(checkProviders(), {
           name: OpenShellGitRouteError.name,
           reason: "provider_overlap",
         });

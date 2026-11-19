@@ -4,6 +4,7 @@ import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import type { AgentRevision, OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
+import { exactDnsName } from "../credential-source-endpoint.ts";
 import { AGENT_POLICY_PREFIX } from "./openshell-policy.ts";
 
 // These are the two native entrypoints shipped by the qualified bundled Codex release.
@@ -13,13 +14,16 @@ export const OPEN_SHELL_CODEX_BINARIES = [
 ] as const;
 const CODEX_BINARIES = new Set<string>(OPEN_SHELL_CODEX_BINARIES);
 
-function refuse(): never {
+const ENDPOINT_KEYS = ["host", "ports", "protocol", "enforcement", "access"];
+
+function refuse(
+  message = "Protected Codex artifacts require the exact declared credential-free, inspected, read-only rules.",
+): never {
   throw new ConfigurationValidationError([
     {
       path: "/policy/codexArtifactRuleNames",
       code: "INVALID_VALUE",
-      message:
-        "Protected Codex artifacts require the exact declared credential-free, inspected, read-only rules.",
+      message,
     },
   ]);
 }
@@ -52,7 +56,7 @@ function ruleName(name: string): boolean {
   );
 }
 
-function literalArtifactHost(value: unknown): boolean {
+function literalArtifactHost(value: unknown): value is string {
   if (
     typeof value !== "string" ||
     value.length > 253 ||
@@ -84,6 +88,7 @@ function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
   if (!map) {
     refuse();
   }
+  const syntaxByHost = new Map<string, boolean>();
   for (const [name, value] of Object.entries(map)) {
     if (!ruleName(name)) {
       refuse();
@@ -114,20 +119,33 @@ function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
     for (const value of rule.endpoints) {
       // Stock 0.1.6 REST uses verified auto TLS inspection when tls is omitted;
       // explicit terminate is unsupported, and skip would remove inspection.
-      const endpoint = exactKeys(value, ["host", "ports", "protocol", "enforcement", "access"]);
+      const record = asRecord(value) ?? refuse();
+      const hasEncodedSlash = Object.hasOwn(record, "allow_encoded_slash");
+      const endpoint = exactKeys(
+        record,
+        hasEncodedSlash ? [...ENDPOINT_KEYS, "allow_encoded_slash"] : ENDPOINT_KEYS,
+      );
       if (
         !literalArtifactHost(endpoint.host) ||
-        hosts.has(endpoint.host as string) ||
+        hosts.has(endpoint.host) ||
         !Array.isArray(endpoint.ports) ||
         endpoint.ports.length !== 1 ||
         endpoint.ports[0] !== 443 ||
         endpoint.protocol !== "rest" ||
         endpoint.enforcement !== "NETWORK_ENFORCEMENT_MODE_ENFORCE" ||
-        endpoint.access !== "NETWORK_ACCESS_PRESET_READ_ONLY"
+        endpoint.access !== "NETWORK_ACCESS_PRESET_READ_ONLY" ||
+        (hasEncodedSlash && endpoint.allow_encoded_slash !== true)
       ) {
         refuse();
       }
-      hosts.add(endpoint.host as string);
+      hosts.add(endpoint.host);
+      const previous = syntaxByHost.get(endpoint.host);
+      if (previous !== undefined && previous !== hasEncodedSlash) {
+        refuse(
+          "Artifact endpoints for the same HTTPS destination must agree on protectedArtifactAllowEncodedSlash.",
+        );
+      }
+      syntaxByHost.set(endpoint.host, hasEncodedSlash);
     }
   }
   return immutableCopy(map as OpenClawConfigurationDocument);
@@ -180,4 +198,76 @@ export function openShellProtectedCodexArtifacts(
     refuse();
   }
   return qualifiedMap(snapshot.defaults);
+}
+
+/** Read only from a qualified artifact map or the exact source policy that contains it. */
+export function openShellEncodedSlashArtifactHosts(rules: unknown): ReadonlySet<string> {
+  const hosts = new Set<string>();
+  for (const rule of Object.values(asRecord(rules) ?? {})) {
+    const endpoints = asRecord(rule)?.endpoints;
+    if (Array.isArray(endpoints)) {
+      for (const raw of endpoints) {
+        const endpoint = asRecord(raw);
+        if (endpoint?.allow_encoded_slash === true && typeof endpoint.host === "string") {
+          hosts.add(endpoint.host);
+        }
+      }
+    }
+  }
+  return hosts;
+}
+
+/** Apply the same restriction to the attached profile and its generated effective rule. */
+export function openShellArtifactProviderConflict(
+  hosts: ReadonlySet<string>,
+  endpoints: unknown,
+): string | undefined {
+  if (hosts.size === 0) {
+    return;
+  }
+  if (
+    Array.isArray(endpoints) &&
+    endpoints.some((endpoint) => asRecord(endpoint)?.allow_encoded_slash === true)
+  ) {
+    return "OpenShell credential provider endpoints cannot enable allow_encoded_slash. Remove it from the attached provider profile.";
+  }
+  if (openShellArtifactRouteOverlap(hosts, endpoints)) {
+    return "OpenShell requires encoded-slash artifact endpoints to be separate from credential provider routes. Choose a separate artifact endpoint or remove protectedArtifactAllowEncodedSlash.";
+  }
+}
+
+/** Compare the destinations supplied by the provider or enrollment owner. A route
+ * that may reach port 443 needs a verifiable literal DNS host. */
+export function openShellArtifactRouteOverlap(
+  hosts: ReadonlySet<string>,
+  endpoints: unknown,
+): boolean {
+  if (hosts.size === 0) {
+    return false;
+  }
+  if (!Array.isArray(endpoints)) {
+    return true;
+  }
+  return endpoints.some((raw) => {
+    const endpoint = asRecord(raw);
+    if (!endpoint || (endpoint.ports !== undefined && !Array.isArray(endpoint.ports))) {
+      return true;
+    }
+    // OpenShell uses ports when nonempty and otherwise normalizes the singular port.
+    const ports: readonly unknown[] =
+      Array.isArray(endpoint.ports) && endpoint.ports.length > 0 ? endpoint.ports : [endpoint.port];
+    if (
+      ports.some(
+        (port) => typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535,
+      )
+    ) {
+      return true;
+    }
+    if (!ports.includes(443)) {
+      return false;
+    }
+    const host =
+      typeof endpoint.host === "string" ? endpoint.host.toLowerCase().replace(/\.$/, "") : "";
+    return !exactDnsName(host) || hosts.has(host);
+  });
 }

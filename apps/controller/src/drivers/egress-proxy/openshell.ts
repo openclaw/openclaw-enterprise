@@ -37,6 +37,7 @@ import {
   CredentialProxyRepositoryOnlyError,
   DependencyUnavailableError,
   RepositoryGitProfileUnsupportedError,
+  SandboxRevisionUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RetryLaterError,
 } from "@openclaw-enterprise/occ";
@@ -54,7 +55,12 @@ import {
   type OpenShellEndpointOnlySelection,
 } from "./openshell-exchange-capabilities.ts";
 import { createOpenAiStaticProvider, createOpenAiRequestProvider } from "./openai-provider.ts";
-import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
+import {
+  openShellArtifactProviderConflict,
+  openShellArtifactRouteOverlap,
+  openShellEncodedSlashArtifactHosts,
+  openShellProtectedCodexArtifacts,
+} from "../sandbox/openshell-codex-artifacts.ts";
 import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
 
 /** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
@@ -273,6 +279,13 @@ export function openShellEgressConfiguration(
     const model = openShellModelRequestPolicy(plan, options, revision);
     if (!model || (plan.repositoryGit && !options.repositoryMiddlewareName)) {
       throw new DependencyUnavailableError("Request-authorized model delivery is unavailable.");
+    }
+    const artifactConflict = openShellArtifactProviderConflict(
+      openShellEncodedSlashArtifactHosts(artifacts),
+      model.provider.profile.endpoints,
+    );
+    if (artifactConflict !== undefined) {
+      throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", artifactConflict);
     }
     return immutableCopy({
       ...(revision.networkEgressMode === "public" && { allow_unconfigured_public_tcp: true }),
@@ -781,7 +794,18 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const expected = prepared.configuration;
     const expectedPolicies = asRecord(expected.network_policies);
     if (expectedPolicies && Object.hasOwn(expectedPolicies, "workspace-node-enrollment")) {
-      assertBoundedWorkspaceNodeRule(expectedPolicies["workspace-node-enrollment"]);
+      const enrollment = expectedPolicies["workspace-node-enrollment"];
+      assertBoundedWorkspaceNodeRule(enrollment);
+      if (
+        openShellArtifactRouteOverlap(
+          openShellEncodedSlashArtifactHosts(protectedConfiguration.network_policies),
+          asRecord(enrollment)?.endpoints,
+        )
+      ) {
+        throw new Error(
+          "A protected encoded-slash artifact endpoint overlaps workspace enrollment.",
+        );
+      }
     }
     // SandboxResourceRef carries the paired Sandbox's exact WorkspaceNodeBinding-derived
     // auxiliary rule. It grants no artifact authority: every other rule comes from admission.

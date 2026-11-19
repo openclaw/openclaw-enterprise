@@ -11,6 +11,7 @@ import {
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitProvider,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { previewPolicyAndRecipient } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -19,6 +20,7 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import type { AgentRevision, SandboxDriver } from "../../packages/contracts/src/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
@@ -155,7 +157,7 @@ async function selectedV5(t: TestContext) {
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext) {
+async function heldGit(t: TestContext, artifactRules: Readonly<Record<string, unknown>> = {}) {
   const selected = await selectedV5(t);
   const { f, store, revision, executionId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
@@ -176,9 +178,10 @@ async function heldGit(t: TestContext) {
   const gitEndpoint = gitRule.endpoints.find((endpoint) => endpoint.host === "github.com");
   assert.ok(gitEndpoint);
   const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
-  const sourcePolicy = { network_policies: {} };
+  const sourcePolicy = { network_policies: artifactRules };
   const effectivePolicy = {
     network_policies: {
+      ...artifactRules,
       [gitRule.name]: gitRule,
       _provider_openai: {
         name: "_provider_openai",
@@ -662,8 +665,90 @@ test("a failed withdrawal still refuses its original route after local collectio
 });
 
 test("fresh repository Git v5 holds and releases one verified launch", async (t) => {
-  const held = await heldGit(t);
-  const { f, store, revision, client } = held;
+  const npm = {
+    host: "registry.npmjs.org",
+    ports: [443],
+    protocol: "rest",
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+  };
+  const strictMirror = { ...npm, host: "artifacts.example.test" };
+  const mirror = { ...strictMirror, allow_encoded_slash: true };
+  const artifact = {
+    name: "codex-artifacts",
+    binaries: [
+      {
+        path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+      },
+    ],
+    endpoints: [npm, mirror],
+  };
+  const held = await heldGit(t, { [artifact.name]: artifact });
+  const { f, store, revision, client, entry } = held;
+  const sandbox = await client.getSandbox(
+    { workspace: f.sandbox.workspace, name: f.sandbox.name },
+    t.signal,
+  );
+  const getConfig = client.getSandboxConfig;
+  const observed = entry.supervisor;
+  const continuity = entry.continuity;
+  assert.ok(sandbox && getConfig && observed && continuity);
+  const recipient = () =>
+    previewPolicyAndRecipient({
+      mandatory: true,
+      client,
+      sandbox,
+      observed,
+      registration: "oce-prepared-git",
+      audience: "preview",
+      gitRule: entry.provider.previewNetworkRule(),
+      modelProvider: continuity.model,
+      workload: continuity.workload,
+      signal: t.signal,
+    });
+  assert.match((await recipient()) ?? "", /^[a-f0-9]{64}$/);
+  // Hold the admitted Sandbox source and policy hash fixed while changing one effective rule.
+  const replaceEffectiveRule = (rule: { name: string; endpoints: readonly unknown[] }) => {
+    client.getSandboxConfig = async (...args) => {
+      const config = await getConfig(...args);
+      const policy = asRecord(config.policy);
+      const rules = asRecord(policy?.network_policies);
+      assert.ok(policy && rules);
+      return {
+        ...config,
+        policy: { ...policy, network_policies: { ...rules, [rule.name]: rule } },
+      };
+    };
+  };
+  for (const endpoints of [
+    [npm, strictMirror],
+    [npm, { ...mirror, allow_encoded_slash: false }],
+    [{ ...npm, allow_encoded_slash: true }, mirror],
+    [{ ...npm, allow_encoded_slash: true }, strictMirror],
+  ]) {
+    replaceEffectiveRule({ ...artifact, endpoints });
+    assert.equal(await recipient(), undefined);
+  }
+  // The profile can expand only the effective map, even with an exact artifact source.
+  const model = "_provider_" + continuity.model.replaceAll("-", "_");
+  const modelEndpoint = {
+    host: "api.openai.com",
+    port: 443,
+    path: "/v1/**",
+    allow_encoded_slash: false,
+  };
+  replaceEffectiveRule({ name: model, endpoints: [modelEndpoint] });
+  assert.match((await recipient()) ?? "", /^[a-f0-9]{64}$/);
+  modelEndpoint.allow_encoded_slash = true;
+  assert.equal(await recipient(), undefined, "the effective model route must parse strictly");
+  modelEndpoint.allow_encoded_slash = false;
+  modelEndpoint.host = "ARTIFACTS.example.test";
+  assert.equal(await recipient(), undefined, "the effective model route cannot share port 443");
+  modelEndpoint.port = 8443;
+  modelEndpoint.host = mirror.host;
+  assert.match((await recipient()) ?? "", /^[a-f0-9]{64}$/);
+  client.getSandboxConfig = getConfig;
+
   const read = f.owner.readOpenShellMaterial.bind(f.owner);
   const selects: NonNullable<Parameters<typeof read>[2]>[] = [];
   f.owner.readOpenShellMaterial = async (...args) => {

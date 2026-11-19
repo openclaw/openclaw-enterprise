@@ -126,7 +126,17 @@ test("qualified-looking ambient defaults grant no protected artifact access with
 test("artifact qualification refuses routes that widen destination, process, write or TLS authority", async (t) => {
   const original = artifact();
   const endpoint = original.endpoints[0]!;
+  const npm = { ...endpoint, host: "registry.npmjs.org" };
+  const nativeFlag = { ...npm, allow_encoded_slash: true };
+  const camelCaseFlag = { ...npm, allowEncodedSlash: true };
+  const flagged = { ...endpoint, protectedArtifactAllowEncodedSlash: true as const };
+  const namedBinary = { path: native, name: "unexpected" };
+  const extraRuleField = { ...original, provider: "unexpected" };
   const cases: Array<[string, OpenShellNetworkPolicyRule]> = [
+    ["supplied native flag", { ...original, endpoints: [nativeFlag] }],
+    ["supplied camel-case flag", { ...original, endpoints: [camelCaseFlag] }],
+    ["extra binary field", { ...original, binaries: [namedBinary] }],
+    ["extra rule field", extraRuleField],
     ["wildcard", { ...original, endpoints: [{ ...endpoint, host: "*.oaiusercontent.com" }] }],
     ["IP", { ...original, endpoints: [{ ...endpoint, host: "198.18.0.5" }] }],
     ["numeric address alias", { ...original, endpoints: [{ ...endpoint, host: "0x7f.0.0.1" }] }],
@@ -139,13 +149,17 @@ test("artifact qualification refuses routes that widen destination, process, wri
     ],
     ["audit only", { ...original, endpoints: [{ ...endpoint, enforcement: "audit" }] }],
     ["write access", { ...original, endpoints: [{ ...endpoint, access: "read_write" }] }],
+    ["opt-in on uninspected TLS", { ...original, endpoints: [{ ...flagged, tls: "skip" }] }],
+    ["opt-in on write access", { ...original, endpoints: [{ ...flagged, access: "read_write" }] }],
+    ["opt-in on another port", { ...original, endpoints: [{ ...flagged, ports: [8443] }] }],
+    ["opt-in on a wildcard", { ...original, endpoints: [{ ...flagged, host: "*.example.test" }] }],
     ["another process", { ...original, binaries: [{ path: "/usr/bin/curl" }] }],
     [
       "package registry for a non-Codex executable",
       {
         ...original,
         binaries: [{ path: "/usr/local/bin/node" }],
-        endpoints: [{ ...endpoint, host: "registry.npmjs.org" }],
+        endpoints: [{ ...flagged, host: "registry.npmjs.org" }],
       },
     ],
   ];
@@ -168,6 +182,57 @@ test("artifact declaration rejects unknown and duplicate rule names instead of i
       );
     });
   }
+});
+
+test("Installation rejects invalid, unselected or conflicting artifact endpoint flags", (t) => {
+  const rule = artifact();
+  const endpoint = rule.endpoints[0]!;
+  const optedIn = {
+    ...rule,
+    endpoints: [{ ...endpoint, protectedArtifactAllowEncodedSlash: true as const }],
+  };
+  assert.throws(() => sandbox(t, [optedIn]), ConfigurationValidationError);
+  for (const value of [false, "true", 1]) {
+    const invalid = {
+      ...rule,
+      endpoints: [{ ...endpoint, protectedArtifactAllowEncodedSlash: value }],
+    };
+    assert.throws(
+      () => sandbox(t, [invalid as OpenShellNetworkPolicyRule], [rule.name]),
+      ConfigurationValidationError,
+    );
+  }
+  const sibling = { ...rule, name: "same-host" };
+  assert.throws(
+    () => sandbox(t, [optedIn, sibling], [rule.name, sibling.name]),
+    ConfigurationValidationError,
+  );
+
+  // The same destination can serve both native binaries when they agree on syntax.
+  const otherArchitecture = {
+    ...optedIn,
+    name: sibling.name,
+    binaries: [
+      {
+        path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+      },
+    ],
+  };
+  const driver = sandbox(t, [optedIn, otherArchitecture], [rule.name, sibling.name]);
+  const snapshot = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
+  // Replay two valid wire rules that disagree only about parsing on this destination.
+  const strict = driver.admitNetworkPolicy([], 1).defaults[sibling.name];
+  assert.ok(strict);
+  assert.throws(
+    () =>
+      openShellProtectedCodexArtifacts(
+        protectedRevision({
+          ...snapshot,
+          defaults: { ...snapshot.defaults, [sibling.name]: strict },
+        }),
+      ),
+    ConfigurationValidationError,
+  );
 });
 
 function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
@@ -219,11 +284,44 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
   };
 }
 
-test("protected Git compilation carries the complete frozen artifact map without ambient defaults", (t) => {
-  const snapshot = sandbox(t, [artifact()], [artifact().name]).admitProtectedCodexArtifactPolicy(
-    1,
-  ).snapshot;
-  const revision = protectedRevision(snapshot);
+test("protected request-hook Git compilation replays the explicit opt-in and ordinary defaults stay strict", (t) => {
+  const original = artifact();
+  const mirror = {
+    ...original.endpoints[0]!,
+    host: "packages.example.test",
+    protectedArtifactAllowEncodedSlash: true as const,
+  };
+  const npm = { ...original.endpoints[0]!, host: "registry.npmjs.org" };
+  const selected = { ...original, endpoints: [npm, mirror] };
+  const unselected = { ...original, name: "unselected-npm", endpoints: [npm] };
+  const driver = sandbox(t, [selected, unselected], [selected.name]);
+  const ordinary = driver.admitNetworkPolicy([], 1).defaults;
+  const endpoint = {
+    host: npm.host,
+    ports: [443],
+    protocol: "rest",
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+  };
+  const wireMirror = { ...endpoint, host: mirror.host };
+  const legacy = {
+    name: selected.name,
+    binaries: selected.binaries.map(({ path }) => ({ path })),
+    endpoints: [endpoint, wireMirror],
+  };
+  assert.deepEqual(ordinary, {
+    [selected.name]: legacy,
+    [unselected.name]: { ...legacy, name: unselected.name, endpoints: [endpoint] },
+  });
+
+  const snapshot = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
+  assert.deepEqual(driver.admitNetworkPolicy([], 1).defaults, ordinary);
+  const flagged = { ...wireMirror, allow_encoded_slash: true };
+  assert.deepEqual(snapshot.defaults, {
+    [selected.name]: { ...legacy, endpoints: [endpoint, flagged] },
+  });
+  const savedBytes = JSON.stringify(snapshot);
+  const revision = protectedRevision(JSON.parse(savedBytes) as SandboxPolicySnapshot);
   const compiled = openShellEgressConfiguration(
     revision.egressPlan!,
     {
@@ -235,6 +333,30 @@ test("protected Git compilation carries the complete frozen artifact map without
   );
   assert.deepEqual(compiled.network_policies, snapshot.defaults);
   assert.equal(Object.hasOwn(compiled, "providers"), false);
+  assert.equal(JSON.stringify(revision.sandboxPolicy), savedBytes);
+  assert.equal(JSON.stringify(compiled.network_policies), JSON.stringify(snapshot.defaults));
+
+  const legacySnapshot = { ...snapshot, defaults: { [selected.name]: legacy } };
+  assert.equal(
+    JSON.stringify(openShellProtectedCodexArtifacts(protectedRevision(legacySnapshot))),
+    JSON.stringify(legacySnapshot.defaults),
+  );
+  for (const endpoint of [
+    { ...flagged, host: "api.github.com" },
+    { ...flagged, allow_encoded_slash: false },
+    { ...flagged, allow_encoded_slash: "true" },
+  ]) {
+    assert.throws(
+      () =>
+        openShellProtectedCodexArtifacts(
+          protectedRevision({
+            ...snapshot,
+            defaults: { [selected.name]: { ...legacy, endpoints: [endpoint] } },
+          }),
+        ),
+      ConfigurationValidationError,
+    );
+  }
   const absent = { ...revision };
   delete absent.sandboxPolicy;
   assert.deepEqual(openShellProtectedCodexArtifacts(absent), {});

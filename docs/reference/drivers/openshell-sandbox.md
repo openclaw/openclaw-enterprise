@@ -117,66 +117,58 @@ An explicit policy replaces these defaults. The Driver still adds required
 mounts, the runtime root, and `/tmp`. Add `/opt/devtools` to
 `policy.filesystem.readOnly` for packaged native tools.
 
-An existing Sandbox keeps its launch policy. Deploy a new Agent revision to
-apply a different policy.
+Deploy a new Agent revision to change a Sandbox launch policy.
 
-Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
-`kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
-The Driver submits `256Mi` and `1Gi` for ephemeral-storage request and limit.
-Provider template resource keys take precedence. Verify CPU, memory, and
-ephemeral storage on the rendered Agent container.
+Startup rejects unknown Kubernetes, policy, or Gateway readiness keys.
+`kubernetes.agentResources` uses quoted non-negative quantities. Ephemeral
+storage defaults to `256Mi` request and `1Gi` limit. Provider templates override
+both. Verify rendered CPU, memory and ephemeral storage.
 
-`gateway.publicNetworkEgress: qualified` is accepted only in `operator`
-workspace mode. It declares that the Gateway and supervisor support public TCP
-policy and applied-mode readback. To make public mode available, set
-`networkEgressMode: public` in the Installation startup file. Deploy an Agent
-with `networkEgressMode: public` in its request to select the mode for that
-revision. Deployments that omit the mode use restricted policy. See the
-[Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md#5-observe-readiness-or-clean-up)
-for the readiness checks.
+Only `operator` workspaces accept `gateway.publicNetworkEgress: qualified`, confirming
+public TCP and applied policy readback. Set `networkEgressMode: public` in Installation
+startup and the Agent deploy request. Omission selects restricted policy.
+See [readiness checks](../../flows/openshell-sandbox-provisioning.md#5-observe-readiness-or-clean-up).
 
-`kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
-pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
-`agentResources`. Startup rejects malformed IDs, duplicates, and requests above
-limits. Before replacement, check scheduling. Redeploy after changes. Adoption
-checks the exact Sandbox spec. OCE does not accept installation-wide or per-Agent
-RuntimeClass settings; runtime selection belongs to Kubernetes and the independently
-managed OpenShell deployment.
+`kubernetes.agentResourceOverrides` sets CPU or memory requests and limits for
+an exact `namespaceId` and `agentId`. Omitted values inherit `agentResources`.
+Startup rejects malformed IDs, duplicates and requests above limits. Check
+scheduling before redeploying. Adoption compares the Sandbox spec. Kubernetes
+and OpenShell own RuntimeClass selection.
 
-Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs
-Sandbox processes as the workload identity, normally `10001:10001`.
+Set `policy.process.runAsUser` and `runAsGroup`. OpenShell uses the workload
+identity, usually `10001:10001`. Uninspected `api.openai.com` rules conflict with
+the credential provider's TLS inspection.
 
-The credential provider already configures TLS inspection for `api.openai.com`.
-An uninspected rule for that host conflicts.
-
-Use unique network policy names and nonempty executable paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
-and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
-`tls: skip` bypasses inspection. The pinned gateway rejects explicit `terminate`
-and `passthrough`. An endpoint `protocol` is `tcp`, `rest`, `websocket`, `graphql` or
-`sql` in any case (OCE sends it lowercase), or omitted. `tcp` takes neither
-`access` nor `enforcement`; the other protocols need `access`, and `sql` allows
-only `enforcement: audit`. `json-rpc` and `mcp` need rules this setting cannot
-express, so startup refuses them. `gatewayConfigured` is the only ServiceAccount mode; the
-gateway's configured sandbox ServiceAccount applies to every Sandbox and does
-not satisfy the per-Agent production requirement below.
+Use unique policy names and nonempty executable paths. `workspace-node-enrollment`
+is reserved. Omit `tls` for inspection. `skip` bypasses it. The pinned Gateway
+refuses `terminate` and `passthrough`. OCE lowercases `tcp`, `rest`, `websocket`,
+`graphql`, and `sql`; you can omit the protocol. `tcp` takes no `access` or
+`enforcement`. Other protocols require `access` (`read_only`, `read_write`, or
+`full`). Enforcement is `enforce` or `audit`; `sql` only supports `audit`.
+Startup refuses `json-rpc` and `mcp`. Only `gatewayConfigured` is accepted.
+It uses one Gateway ServiceAccount across Sandboxes and cannot supply
+per-Agent production identity.
 
 ### Protected Codex artifact rules
 
-For protected, dedicated Codex repository execution, select
-[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
-with `policy.codexArtifactRuleNames`, for example
-`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
-one existing `policy.networkPolicies` rule. Omission grants no artifact access.
+Select [artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
+with `policy.codexArtifactRuleNames`. Protected dedicated Codex repositories
+receive only the selected rules. Each requires bundled Codex executables,
+literal DNS hosts outside GitHub, port 443, `protocol: rest`, `enforcement: enforce`,
+`access: read_only`, and omitted `tls` for inspection. Reserved names, credentials,
+and unknown fields are refused.
 
-Selected rules require the bundled Codex executable paths, exact DNS hosts,
-port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
-Omit `tls` for verified REST TLS inspection. Admission refuses explicit skip and
-deprecated termination modes. Wildcards, numeric
-addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
+Set `protectedArtifactAllowEncodedSlash: true` on an eligible
+`policy.networkPolicies[].endpoints[]` entry to permit `%2F` on all its paths.
+For example, scoped npm packages use this syntax at `registry.npmjs.org`.
+Omission keeps strict parsing. Settings must agree per destination.
+Opted-in artifacts require separate provider and workspace enrollment routes
+and strict parsing on provider endpoints.
 
-Admission freezes only that qualified map with empty Agent additions. Preparation
-and replay use the revision, even if Installation defaults change. Select a new
-revision to change artifact authority. Live Agent policy apply remains unavailable.
+Use a compatible Installation configuration and deploy a new Agent revision.
+Before returning to an older reader, remove the option and deploy an unflagged
+revision on a compatible controller. Verify the return path with retained
+revisions. Live Agent policy apply is unavailable.
 
 ### Gateway readiness and workspace
 
