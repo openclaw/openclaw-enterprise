@@ -7,6 +7,8 @@ status_note: "The record gives the 0.x direction; explicit acceptance applies to
 
 # Agent egress for 0.x
 
+Proposed companion: [Per-Agent repository network policy](repository-network-policy.md).
+
 <a id="current-disposition"></a>
 
 ## Problem and decision
