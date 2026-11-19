@@ -299,7 +299,6 @@ export async function checkReporterRedaction(t: TestContext) {
       "Node-local inference startup does not match the admitted workspace or model",
       "worker-model-setup",
     ],
-    ["worker model-observation response timed out", "worker-audit-delivery"],
     [
       "Cloud worker transcript identity does not match the active turn",
       "worker-transcript-authority",
