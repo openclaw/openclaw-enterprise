@@ -62,6 +62,9 @@ New contributors wait for maintainer feedback.
 
 Follow these rules when developing or changing code.
 
+Do not maintain forks or patched builds of core dependencies in OCE. Report bugs
+and submit fixes upstream only after human approval (record locally).
+
 ### Build platform capabilities
 
 Every new capability must belong to a platform primitive. Identify its existing

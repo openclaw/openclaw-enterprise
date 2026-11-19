@@ -9,8 +9,9 @@ Replace `github-login` with the original RFC PR author's GitHub login (without `
 The author is required and is treated as the RFC owner. The index uses this
 frontmatter value; do not repeat it in the body or add a separate owner field.
 Describe team responsibilities in the proposal where relevant.
-Keep Acceptance Criteria; adapt the other headings to the change and remove
-sections that do not apply. See the
+Keep Interface changes, Simplifications, and Acceptance Criteria. Keep each
+Interface changes subsection and write “No changes” when it does not apply.
+Adapt the other headings to the change and remove sections that do not apply. See the
 [RFC process](rfcs.md) for review, length, and diagram guidance.
 
 Adapted from the [OpenClaw RFC template](https://github.com/openclaw/rfcs/blob/main/rfcs/0000-template.md).
@@ -129,6 +130,43 @@ sequenceDiagram
     Owner-->>Caller: Refusal or recovery status
   end
 ```
+
+## Interface changes
+
+[Describe additions, changes, and removals to existing contracts. For each
+unchanged category, replace its table or list with “No changes.” Link current
+source or contracts and distinguish proposed behavior from existing behavior.]
+
+### APIs
+
+| Change                      | Operation                      | Behavior and contract change                 |
+| --------------------------- | ------------------------------ | -------------------------------------------- |
+| [Added / changed / removed] | [Method and path or signature] | [Inputs, outputs, side effects; source link] |
+
+### IAM
+
+| Operation or capability | Required permission and scope | What changes                            |
+| ----------------------- | ----------------------------- | --------------------------------------- |
+| [Operation]             | [Action, resource, and scope] | [New or reused permission; source link] |
+
+### Database entities
+
+| Entity            | Change                                   | Persistence semantics                            |
+| ----------------- | ---------------------------------------- | ------------------------------------------------ |
+| [Table or entity] | [Columns, constraints, or relationships] | [Lifecycle or concurrency behavior; source link] |
+
+### Driver contracts
+
+- [Public interface, configuration, or required-behavior change; source link.
+  Distinguish Driver contract changes from internal adapter changes.]
+
+## Simplifications
+
+[Can this RFC be radically simplified while meeting its goals? Describe the
+simpler approach and any tradeoffs, or explain why no further simplification is
+practical. Does this proposal simplify other parts of OpenClaw Enterprise (OCE)
+infrastructure? Name the existing components, contracts, or operational steps
+that it simplifies or removes, or state “No infrastructure simplifications.”]
 
 ## Acceptance Criteria
 

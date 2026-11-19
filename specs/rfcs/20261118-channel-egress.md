@@ -6,8 +6,8 @@ author: kevinlin-openai
 
 # Proposal: Per-Agent channel egress through Envoy
 
-- **ID:** RFC-0044
-- **Original submission:** RFC-0043 in [PR #6507](https://github.com/openclaw/openclaw-enterprise/pull/6507); renumbered after main allocated 0043 to native restart recovery.
+- **ID:** RFC-20261118-channel-egress
+- **Original submission:** RFC-0043 in [PR #6507](https://github.com/openclaw/openclaw-enterprise/pull/6507). The proposal briefly used RFC-0044 after main allocated 0043 to native restart recovery.
 - **Created:** 2026-11-18
 - **Last updated:** 2026-11-19
 - **Related:** [Gateway outbound proxy proposal, PR #4952](https://github.com/openclaw/openclaw-enterprise/pull/4952), [workload identity scope, #106](https://github.com/openclaw/openclaw-enterprise/issues/106), [workload delivery, #107](https://github.com/openclaw/openclaw-enterprise/issues/107).
@@ -371,8 +371,7 @@ implementation; they do not change the private workspace ingress fleet.
 
 ## Installation follow-up
 
-[TASK-0054](../plans/0054-channel-egress-installation-upgrade.md) covers managed
-installation defaults and the one-off upgrade. It preserves disabled
-channels, patches only channel settings, and uses Stop then Deploy from
-current saved drafts. Uncertain submissions require operator inspection. Ordinary
+[TASK-0054](../plans/0054-channel-egress-installation-upgrade.md) covers managed defaults
+and the one-off upgrade. It keeps disabled channels off and patches only channel
+settings. Stop then Deploy uses current saved drafts. Uncertain submissions require operator inspection. Ordinary
 upgrades do not replay the transition.

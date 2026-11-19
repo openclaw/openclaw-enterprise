@@ -1,6 +1,6 @@
 ---
 status: In progress
-rfc: ../rfcs/0044-channel-egress.md
+rfc: ../rfcs/20261118-channel-egress.md
 ---
 
 # Implementation plan: Install channel egress and provide a one-off upgrade
@@ -8,7 +8,7 @@ rfc: ../rfcs/0044-channel-egress.md
 - **ID:** TASK-0054
 - **Delivery status:** In progress; approved for implementation on 2026-11-19.
 - **Owner:** kevinlin-openai
-- **Authority:** [RFC-0044](../rfcs/0044-channel-egress.md) and the user's decision to use a documented one-off script and existing Stop → Deploy operations.
+- **Authority:** [RFC-20261118-channel-egress](../rfcs/20261118-channel-egress.md) and the user's decision to use a documented one-off script and existing Stop → Deploy operations.
 - **Source baseline:** Merged implementation `32662b9d22aed39f782a7058ace80d0f82df44a6` ([PR #6529](https://github.com/openclaw/openclaw-enterprise/pull/6529)); implementation baseline `ebcbd2f60535c36b3a9b63847a2d052363cd29a6`.
 
 ## Outcome and scope

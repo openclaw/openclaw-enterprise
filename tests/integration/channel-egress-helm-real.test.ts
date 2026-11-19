@@ -36,7 +36,6 @@ import {
   createProductionTuiRequest,
   ProductionTuiRequestError,
 } from "../helpers/production-tui-request.ts";
-import { parseProductionChart } from "../helpers/production-chart.ts";
 import { createUpgradeResponseProxy } from "../helpers/channel-upgrade-response-proxy.ts";
 import { availablePort } from "../helpers/available-port.ts";
 
@@ -866,64 +865,6 @@ test(
         assert.equal(lost.stopRequests(), 0);
         assert.equal((await api("GET", agentPath)).activeRevisionId, before.activeRevisionId);
         assert.equal((await api("GET", agentPath)).desiredRuntimeState, "running");
-        const migrateSeparately = async (image: string) => {
-          const rendered = await run("helm", [
-            "template",
-            release,
-            "deploy/helm/openclaw-enterprise",
-            "--namespace",
-            namespace,
-            "--is-upgrade",
-            "--values",
-            join(candidate, "values.yaml"),
-            "--set",
-            `images.controller=${image}`,
-          ]);
-          const resources = (await parseProductionChart(rendered)).map(object);
-          const initializer = resources.find((item) => item.kind === "Job");
-          assert.ok(initializer);
-          const pod = object(object(object(initializer.spec).template).spec);
-          const migration = array(pod.initContainers).find(
-            (container) => container.name === "migration",
-          );
-          assert.ok(migration);
-          // Run the chart-selected migrator with its real limited role, first to
-          // apply pending SQL, then to require the complete selected schema.
-          for (const checkOnly of [false, true]) {
-            const name = `channel-database-${randomUUID().slice(0, 12)}`;
-            const task = structuredClone(initializer);
-            task.metadata = { name, namespace };
-            const taskPod = object(object(object(task.spec).template).spec);
-            delete taskPod.initContainers;
-            const container = structuredClone(migration);
-            const arguments_ = container.args as string[];
-            assert.equal(arguments_.at(-1), "--require-current");
-            container.args = checkOnly ? arguments_ : arguments_.slice(0, -1);
-            taskPod.containers = [container];
-            await run("kubectl", kube.kubectlArguments(["create", "-f", "-"]), {
-              input: JSON.stringify(task),
-            });
-            try {
-              await kubectl(
-                "wait",
-                `job/${name}`,
-                "--namespace",
-                namespace,
-                "--for=condition=Complete",
-                "--timeout=180s",
-              );
-            } finally {
-              await kubectl(
-                "delete",
-                `job/${name}`,
-                "--namespace",
-                namespace,
-                "--wait=true",
-                "--timeout=120s",
-              );
-            }
-          }
-        };
         const executeUpgrade = async (resume: boolean) => {
           try {
             return await run(
@@ -950,7 +891,12 @@ test(
             0,
             "separate-mode handoff must precede all Deploy requests",
           );
-          await migrateSeparately(controller);
+          const applied = await run(
+            "scripts/upgrade-channel-egress",
+            [...arguments_, "--migration-apply-only"],
+            { env: environment, timeout: 900_000 },
+          );
+          assert.match(applied, /Database migration verified and its Jobs and Pods are gone/);
           await assert.rejects(executeUpgrade(true), /incomplete|unknown|failed/i);
         } else {
           await assert.rejects(executeUpgrade(false), /incomplete|unknown|failed/i);
@@ -1042,7 +988,12 @@ test(
           );
         if (migrationMode === "separate") {
           await assert.rejects(ordinary(false), /separate database deployment/i);
-          await migrateSeparately(nextController!);
+          const applied = await run(
+            "scripts/upgrade-production-images",
+            [...ordinaryArguments, "--migration-apply-only"],
+            { env: environment, timeout: 900_000 },
+          );
+          assert.match(applied, /Database migration verified and its Jobs and Pods are gone/);
           await ordinary(true);
         } else {
           await ordinary(false);

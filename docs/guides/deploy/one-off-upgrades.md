@@ -120,9 +120,12 @@ after inspecting actual cluster state. Completed operations are not repeated;
 the script checks that Agents still select their recorded new revisions.
 While both OCC writers are quiesced, it validates the recorded Stop inventory
 instead of calling the offline API.
-For database mode `separate`, follow the
-[database handoff](separate-database-upgrade.md) and resume with
-`--migration-history-checked`. For an uncertain Helm outcome, use the existing
+For database mode `separate`, repeat the same one-off `run` command with
+`--migration-apply-only` after exit 3, without `--resume`. It applies and verifies
+the original Installation's database through the shared guarded Jobs. Then repeat
+the original command with `--resume --migration-history-checked`. Follow the
+[database handoff](separate-database-upgrade.md) for Secret identity, quiescence
+and unresolved-Job requirements. For an uncertain Helm outcome, use the existing
 [Helm recovery procedure](production-upgrade-recovery.md).
 
 A journal operation marked `sending` has an **unknown outcome**. The script stops

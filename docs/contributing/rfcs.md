@@ -55,6 +55,12 @@ Cover the details that matter to this decision:
 - **Security and failure:** state relevant authority, trust and credential
   boundaries, defaults, denial behavior, and consequential failure or recovery.
   Explain what survives an uncertain outcome and who can act next.
+- **Interface changes:** keep the template's [Interface changes](rfc-template.md#interface-changes)
+  section and its API, IAM, database entity, and Driver contract subsections.
+  State “No changes” for each unchanged category.
+- **Simplifications:** use the template's [Simplifications](rfc-template.md#simplifications)
+  section to assess a radically simpler proposal and any simplifications to
+  existing OpenClaw Enterprise infrastructure.
 - **Acceptance criteria:** use the template's [Acceptance Criteria](rfc-template.md#acceptance-criteria)
   section to define observable outcomes and end-to-end verification before
   implementation begins.
