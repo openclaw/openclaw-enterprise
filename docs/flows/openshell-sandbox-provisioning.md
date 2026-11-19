@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a"
+last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -275,7 +275,8 @@ Send Workspace-scoped identity/spec, a unique name and `request_id` (revision UU
 After `REQUEST_OUTCOME_UNCERTAIN`, `REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE`,
 advance only if `getSandbox` confirms absence. At 1,000 live/unresolved records, `RESOURCE_EXHAUSTED`
 ([`SANDBOX_ADMISSION_LIMIT_REACHED`](../reference/drivers/openshell-sandbox.md#troubleshooting)) defers preparation until its deadline without spending attempts. Namespace work retries.
-After replay, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures) only explain refusals.
+For [Sandbox startup refusals](../reference/drivers/openshell-sandbox/harness-providers.md#sandbox-startup-refusals),
+`describePrepareRevisionFailure` passes the code and stage to `worker.compute-prepare-failed`.
 
 Provisioning reads [sizing](../reference/drivers/openshell-sandbox.md#configuration);
 Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
@@ -418,6 +419,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
 - 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)
 
