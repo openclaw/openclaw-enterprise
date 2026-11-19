@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
-import test from "node:test";
-import { createServer as createTcpServer, connect } from "node:net";
+import test, { type TestContext } from "node:test";
+import { createServer as createTcpServer, connect, type Server, type Socket } from "node:net";
 import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID, createHash } from "node:crypto";
@@ -24,22 +24,55 @@ import { connect as tlsConnect } from "node:tls";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { serveHarness } from "../../deploy/runtime/strands-box/supervisor.mjs";
 
-async function supervisor(t) {
+type Frame =
+  | { id: string; type: "open" | "opened" | "probe" | "close" | "abort" }
+  | { id: string; type: "data"; data: string };
+
+function assertFrame(value: unknown): asserts value is Frame {
+  assert.ok(value !== null && typeof value === "object");
+  assert.ok("id" in value && typeof value.id === "string");
+  assert.ok("type" in value);
+  if (value.type === "data") {
+    assert.ok("data" in value && typeof value.data === "string");
+  } else {
+    assert.ok(
+      value.type === "open" ||
+        value.type === "opened" ||
+        value.type === "probe" ||
+        value.type === "close" ||
+        value.type === "abort",
+    );
+  }
+}
+
+function parseFrame(line: string): Frame {
+  const value: unknown = JSON.parse(line);
+  assertFrame(value);
+  return value;
+}
+
+function tcpPort(server: Pick<Server, "address">): number {
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  return address.port;
+}
+
+async function supervisor(t: TestContext) {
   const reservation = createTcpServer();
-  await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
-  const port = reservation.address().port;
-  await new Promise((resolve) => reservation.close(resolve));
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = tcpPort(reservation);
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
   const reader = new PassThrough();
   const writer = new PassThrough();
   const token = randomUUID();
-  const frames = [];
-  writer.on("data", (data) => frames.push(...data.toString().trim().split("\n").map(JSON.parse)));
+  const frames: Frame[] = [];
+  writer.on("data", (data) => frames.push(...data.toString().trim().split("\n").map(parseFrame)));
   const gateway = createTcpServer((socket) => {
     gateway.connections++;
     socket.destroy();
   });
   gateway.connections = 0;
-  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
   const tls = await harnessTlsFixture(t);
   const probePath = join(tls.directory, "probe.sock");
   const serving = serveHarness(
@@ -48,9 +81,16 @@ async function supervisor(t) {
       statusPort: 0,
       revisionId: "test-revision",
       transportHash: createHash("sha256").update(token).digest("hex"),
-      gateway: { host: "127.0.0.1", port: gateway.address().port },
+      gateway: { host: "127.0.0.1", port: tcpPort(gateway) },
     },
-    { reader, writer, tls, probePath, status: async () => ({ state: "starting" }), terminate() {} },
+    {
+      reader,
+      writer,
+      tls,
+      probePath,
+      status: async () => ({ state: "starting" }),
+      terminate() {},
+    },
   );
   await once(serving.server, "listening");
   t.after(() => {
@@ -64,15 +104,14 @@ async function supervisor(t) {
       local ? serving.probeServer : serving.server,
       local ? "connection" : "secureConnection",
     );
-    const socket = local
-      ? connect(probePath)
-      : tlsConnect({
-          port,
-          host: "127.0.0.1",
-          servername: "localhost",
-          ca: tls.caBundle,
-          allowHalfOpen: true,
-        });
+    const tlsOptions = {
+      port,
+      host: "127.0.0.1",
+      servername: "localhost",
+      ca: tls.caBundle,
+      allowHalfOpen: true,
+    };
+    const socket = local ? connect(probePath) : tlsConnect(tlsOptions);
     socket.on("error", () => {});
     t.after(() => socket.destroy());
     await accepted;
@@ -97,7 +136,7 @@ test(
         assert.match(response, path === "/" ? /401 Unauthorized/u : /404 Not Found/u);
       }
     }
-    assert.deepEqual(harness.frames, [], "rejection must precede contained Harness I/O");
+    assert.deepEqual([...harness.frames], [], "rejection must precede contained Harness I/O");
     const client = await harness.client();
     client.write(`GET / HTTP/1.1\r\nAuthorization: Bearer ${harness.token}\r\n\r\n`);
     for (let i = 0; harness.frames.length < 2 && i < 100; i++) {
@@ -114,18 +153,19 @@ test(
 
 test("the worker port allows readiness but refuses native upgrades with the same valid bearer", async (t) => {
   const { diagnostics, tls, token, frames } = await supervisor(t);
-  const read = async (path) => {
+  const read = async (path: string) => {
     const socket = tlsConnect({
       host: "127.0.0.1",
-      port: diagnostics.address().port,
+      port: tcpPort(diagnostics),
       servername: "localhost",
       ca: tls.caBundle,
     });
     socket.write(
       `GET ${path} HTTP/1.1\r\nAuthorization: Bearer ${token}\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n`,
     );
-    const chunks = [];
+    const chunks: Buffer[] = [];
     for await (const chunk of socket) {
+      assert.ok(Buffer.isBuffer(chunk));
       chunks.push(chunk);
     }
     return Buffer.concat(chunks).toString();
@@ -159,13 +199,13 @@ test(
   },
 );
 
-async function tcpPair(t) {
+async function tcpPair(t: TestContext) {
   const server = createTcpServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const accepted = once(server, "connection");
-  const client = connect({ host: "127.0.0.1", port: server.address().port });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const accepted = new Promise<Socket>((resolve) => server.once("connection", resolve));
+  const client = connect({ host: "127.0.0.1", port: tcpPort(server) });
   client.on("error", () => {}); // A bounded peer may deliberately reset it.
-  const [socket] = await accepted;
+  const socket = await accepted;
   t.after(() => {
     socket.destroy();
     client.destroy();
@@ -221,13 +261,13 @@ test(
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "strands-channel-test-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
-    const sockets = [];
+    const sockets: Socket[] = [];
     const native = createTcpServer((socket) => {
       sockets.push(socket);
       socket.on("error", () => {});
       socket.pipe(socket);
     });
-    await new Promise((resolve) => native.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => native.listen(0, "127.0.0.1", resolve));
     t.after(() => {
       for (const socket of sockets) {
         socket.destroy();
@@ -238,7 +278,7 @@ test(
     await writeFile(
       manifest,
       JSON.stringify({
-        port: native.address().port,
+        port: tcpPort(native),
         // A non-Node lifetime fixture does not load the image-only proxy preload.
         command: ["/bin/sleep", "60"],
         environment: {},
@@ -261,16 +301,19 @@ test(
         await ended;
       }
     });
-    const frames = [];
+    const frames: Frame[] = [];
     const output = new PassThrough();
     output.resume();
     framed(
       inner.stdout,
       output,
-      (frame) => frames.push(frame),
+      (frame: unknown) => {
+        assertFrame(frame);
+        frames.push(frame);
+      },
       () => {},
     );
-    const send = (frame) => inner.stdin.write(JSON.stringify(frame) + "\n");
+    const send = (frame: Frame) => inner.stdin.write(JSON.stringify(frame) + "\n");
     const ids = Array.from({ length: MAX_CHANNELS }, () => randomUUID());
     for (const id of ids) {
       send({ id, type: "open" });
@@ -281,11 +324,18 @@ test(
     assert.equal(sockets.length, MAX_CHANNELS);
     const racing = randomUUID();
     send({ id: racing, type: "open" });
-    send({ id: ids[0], type: "data", data: Buffer.from("native survives").toString("base64") });
+    send({
+      id: ids[0],
+      type: "data",
+      data: Buffer.from("native survives").toString("base64"),
+    });
     const echoed = () =>
       Buffer.concat(
         frames
-          .filter((frame) => frame.id === ids[0] && frame.type === "data")
+          .filter(
+            (frame): frame is Extract<Frame, { type: "data" }> =>
+              frame.id === ids[0] && frame.type === "data",
+          )
           .map((frame) => Buffer.from(frame.data, "base64")),
       ).toString();
     for (
@@ -326,7 +376,8 @@ test(
     framed(
       input,
       output,
-      (message) => {
+      (message: unknown) => {
+        assertFrame(message);
         if (message.id === slow && !socket.destroyed) {
           deliver(message, socket);
         }
@@ -378,11 +429,12 @@ test(
     assert.ok(pipe.writableLength <= MAX_BUFFER);
     const sink = new PassThrough();
     t.after(() => sink.destroy());
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       framed(
         pipe,
         sink,
-        (message) => {
+        (message: unknown) => {
+          assertFrame(message);
           if (message.type !== "data") {
             return;
           }
@@ -405,7 +457,11 @@ test(
 test("Strands malformed or oversized IPC fails closed exactly once", async () => {
   for (const frame of [
     "not-json\n",
-    JSON.stringify({ id: randomUUID(), type: "execute", command: "unapproved" }) + "\n",
+    JSON.stringify({
+      id: randomUUID(),
+      type: "execute",
+      command: "unapproved",
+    }) + "\n",
     "x".repeat(MAX_FRAME + 1),
   ]) {
     const input = new PassThrough();
@@ -463,10 +519,10 @@ test(
     const second = await tcpPair(t);
     const id = randomUUID();
     const marker = Buffer.from("new authenticated connection survives prior disconnect");
-    const received = new Promise((resolve) =>
+    const received = new Promise<Buffer>((resolve) =>
       pipe.on("data", (frame) => {
         for (const line of frame.toString().trim().split("\n")) {
-          const message = JSON.parse(line);
+          const message = parseFrame(line);
           if (message.id === id && message.type === "data") {
             resolve(Buffer.from(message.data, "base64"));
           }
@@ -481,12 +537,12 @@ test(
 );
 
 test("Strands routing keeps explicit connection factories on the provider proxy", async (t) => {
-  const observed = [];
+  const observed: Array<string | undefined> = [];
   const proxy = createServer((request, response) => {
     observed.push(request.url);
     response.end("proxy reached");
   });
-  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   t.after(() => proxy.close());
   const preload = new URL("../../deploy/runtime/strands-box/proxy-preload.mjs", import.meta.url);
   // ws supplies a connection factory; Node otherwise skips the global Agent
@@ -516,7 +572,7 @@ test("Strands routing keeps explicit connection factories on the provider proxy"
     http.globalAgent.destroy();
   `;
   await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script], {
-    env: { HTTP_PROXY: `http://127.0.0.1:${proxy.address().port}`, NO_PROXY: "" },
+    env: { HTTP_PROXY: `http://127.0.0.1:${tcpPort(proxy)}`, NO_PROXY: "" },
     timeout: 10_000,
   });
   assert.deepEqual(observed, ["http://unresolvable.invalid/", "http://unresolvable.invalid/"]);
@@ -543,7 +599,7 @@ test(
 
 test("a terminal frame flushes queued TCP output", { timeout: 10000 }, async (t) => {
   const { client, socket } = await tcpPair(t);
-  const chunks = [];
+  const chunks: Buffer[] = [];
   client.on("data", (chunk) => chunks.push(chunk));
   const end = once(client, "end");
   const body = Buffer.alloc(CHUNK, 97);
@@ -566,7 +622,7 @@ test(
     const upstream = createTcpServer((socket) => {
       socket.once("data", () => socket.end(payload));
     });
-    await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
     t.after(() => upstream.close());
     const client = join(directory, "read-response.cjs");
     // The synthetic native command speaks TCP through the proxy inherited from inner.mjs.
@@ -599,7 +655,10 @@ test(
       process.execPath,
       [new URL("../../deploy/runtime/strands-box/inner.mjs", import.meta.url).pathname, manifest],
       {
-        env: { ...process.env, HTTPS_PROXY: "http://127.0.0.1:" + upstream.address().port },
+        env: {
+          ...process.env,
+          HTTPS_PROXY: "http://127.0.0.1:" + tcpPort(upstream),
+        },
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
