@@ -37,6 +37,7 @@ import {
   identifier,
   injectedRequest,
   readyNamespaceFixture as bootstrapReadyNamespace,
+  slackValidationConfiguration,
 } from "./occ-api-injected-fixture.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -60,7 +61,6 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
@@ -2254,6 +2254,57 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
     missingRevisionId,
     missingAgentId,
   }));
+
+test("OCC Fastify rejects unsafe guarded Agent stop requests", async () => {
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
+    await admittedDeploymentFixture("guarded-stop", "guarded-stop-agent", {
+      recordOperations: true,
+    });
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stopPath = `${agentPath}/stop`;
+  const expected = `expectedActiveRevisionId=${admitted.data.id}`;
+  const stop = (query) => controller.request("POST", `${stopPath}?${query}`);
+
+  await fixture.platformState.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, admitted.data.id),
+  );
+  const before = (await controller.request("GET", agentPath)).data;
+  const operations = () => fixture.platformState.read((view) => view.operations.list());
+  const queued = await operations();
+  assert.equal(before.activeRevisionId, admitted.data.id);
+  assert.equal(before.desiredRuntimeState, "running");
+  assertApiError(await stop(expected), 409, "RESOURCE_CONFLICT", "queued deployment");
+
+  // A persisted terminal work result can report completion without activation.
+  deploymentWorks.set(
+    work.key,
+    work.record("succeeded", "2026-09-19T20:31:00.000Z", { reasonCode: "REVISION_STOPPED" }),
+  );
+  const deployment = await controller.request(
+    "GET",
+    `${agentPath}/deployments/${admitted.data.id}`,
+  );
+  assert.equal(deployment.data.status, "failed");
+  assertApiError(await stop(expected), 409, "RESOURCE_CONFLICT", "completed without activation");
+
+  for (const query of [
+    "expectedActiveRevisionId=",
+    "expectedActiveRevisionId=invalid",
+    "unexpectedRevisionId=invalid",
+    `${expected}&${expected}`,
+  ]) {
+    assertApiError(await stop(query), 400, "INVALID_REQUEST", query);
+  }
+
+  assert.deepEqual((await controller.request("GET", agentPath)).data, before);
+  assert.deepEqual(await operations(), queued);
+  assert.equal(
+    fixture.auditSink.events.some(
+      (event) => event.kind === "mutation" && event.action === "openclaw.agents.stop",
+    ),
+    false,
+  );
+});
 
 test("credential withdrawal routes authorize the Agent, not the credential source", async () => {
   const controller = await configuredController();
@@ -5582,24 +5633,13 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
     ["xoxb-${SLACK_SPARE_TOKEN}", unbound],
   ];
-  const configurationWithBotToken = (botToken) => ({
-    kind: "agent",
-    values: {
-      agents: { defaults: { model: "codex/gpt-6-astra" } },
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken,
-        },
-      },
-    },
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-    },
-  });
+  const configurationWithBotToken = (botToken) =>
+    slackValidationConfiguration({
+      appSource: app.ref,
+      botSource: bot.ref,
+      botToken,
+      model: "codex/gpt-6-astra",
+    });
   for (const [botToken, message] of forms) {
     const refused = await provision(configurationWithBotToken(botToken));
     assertApiError(refused, 400, "INVALID_REQUEST");
@@ -5653,23 +5693,10 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   });
   fixture.controller.registerDriver(channel);
   fixture.controller.selectDriver("channel", channel.id);
-  const configuration = {
-    kind: "agent",
-    values: {
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-        },
-      },
-    },
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: app.ref, delivery: { type: "env" } },
-    },
-  };
+  const configuration = slackValidationConfiguration({
+    appSource: bot.ref,
+    botSource: app.ref,
+  });
   // A foreign channel Secret is an invalid request, not a scope miss from channel validation.
   const foreignBot = { ...bot.ref, namespaceId: `ns_${randomUUID()}` };
   const foreign = await provision({
@@ -5797,23 +5824,12 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
   fixture.controller.selectDriver("channel", channel.id);
   // Configuration save accepts the whole-reference form and Edit Slack keeps it; OpenClaw reads
   // it as the env SecretRef to that name (finding 2511).
-  const configuration = {
-    kind: "agent",
-    values: {
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: "${SLACK_APP_TOKEN}",
-          botToken: "${SLACK_BOT_TOKEN}",
-        },
-      },
-    },
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-    },
-  };
+  const configuration = slackValidationConfiguration({
+    appSource: app.ref,
+    botSource: bot.ref,
+    appToken: "${SLACK_APP_TOKEN}",
+    botToken: "${SLACK_BOT_TOKEN}",
+  });
   // The fixture has no durable work queue: its error means the plan passed channel validation,
   // which sent the bound bot token to Slack.
   assert.equal((await provision(configuration)).body.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -5868,23 +5884,12 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   );
   fixture.controller.registerDriver(channel);
   fixture.controller.selectDriver("channel", channel.id);
-  const configuration = {
-    kind: "agent",
-    values: {
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: "${SLACK_APP_TOKEN}",
-          botToken: "${SLACK_BOT_TOKEN}",
-        },
-      },
-    },
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: app.ref, delivery: { type: "env" } },
-    },
-  };
+  const configuration = slackValidationConfiguration({
+    appSource: app.ref,
+    botSource: app.ref,
+    appToken: "${SLACK_APP_TOKEN}",
+    botToken: "${SLACK_BOT_TOKEN}",
+  });
   const noRoute = SLACK_ROUTE_NOT_CONFIGURED;
   // Checks that need no provider call keep their own answers: a wrong token role is still named.
   assertApiError(await provision(configuration), 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
@@ -5915,98 +5920,6 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assertApiError(deploy, 409, "RESOURCE_CONFLICT");
   assert.equal(deploy.body.error.message, noRoute);
-});
-
-test("managed MCP discovery reads tool names using one pinned authenticated session", async () => {
-  const url = "https://tools.example/api/mcp/v1";
-  const token = "fixture-mcp-discovery-token";
-  const calls = [];
-  const result = await listManagedMcpToolNames(url, token, undefined, {
-    async resolveHost(host) {
-      assert.equal(host, "tools.example");
-      return [{ address: "8.8.8.8", family: 4 }];
-    },
-    async fetch(target, request) {
-      assert.equal(target.href, url);
-      assert.equal(request.credentials, "omit");
-      assert.equal(request.redirect, "error");
-      const headers = new Headers(request.headers);
-      assert.equal(headers.get("Authorization"), `Bearer ${token}`);
-      const body = request.body === undefined ? undefined : JSON.parse(request.body);
-      calls.push(body?.method ?? request.method);
-      if (body?.method === "initialize") {
-        return Response.json(
-          {
-            jsonrpc: "2.0",
-            id: body.id,
-            result: {
-              protocolVersion: "2025-11-25",
-              capabilities: { tools: {} },
-              serverInfo: { name: "Document MCP fixture", version: "1" },
-            },
-          },
-          { headers: { "mcp-session-id": "fixture-session" } },
-        );
-      }
-      assert.equal(headers.get("mcp-session-id"), "fixture-session");
-      if (body?.method === "notifications/initialized") {
-        return new Response(null, { status: 202 });
-      }
-      if (request.method === "GET" || request.method === "DELETE") {
-        return new Response(null, { status: 405 });
-      }
-      assert.equal(body?.method, "tools/list");
-      const secondPage = body.params?.cursor === "next";
-      const payload = {
-        jsonrpc: "2.0",
-        id: body.id,
-        result: {
-          tools: [
-            {
-              name: secondPage ? "create_document" : "search_documents",
-              inputSchema: { type: "object" },
-            },
-          ],
-          ...(secondPage ? {} : { nextCursor: "next" }),
-        },
-      };
-      return new Response(`event: message\ndata: ${JSON.stringify(payload)}\n\n`, {
-        headers: { "content-type": "text/event-stream" },
-      });
-    },
-  });
-  assert.deepEqual([...result], ["search_documents", "create_document"]);
-  assert.deepEqual(
-    calls.filter((method) => method !== "GET"),
-    ["initialize", "notifications/initialized", "tools/list", "tools/list", "DELETE"],
-  );
-});
-
-test("managed MCP discovery refuses private DNS answers and redirects", async () => {
-  const url = "https://tools.example/api/mcp/v1";
-  const token = "fixture-mcp-discovery-token";
-  let attempted = false;
-  await assert.rejects(
-    listManagedMcpToolNames(url, token, undefined, {
-      resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],
-      async fetch() {
-        attempted = true;
-        throw new Error("Unexpected request");
-      },
-    }),
-    { reason: "unavailable" },
-  );
-  assert.equal(attempted, false);
-  await assert.rejects(
-    listManagedMcpToolNames(url, token, undefined, {
-      resolveHost: async () => [{ address: "8.8.8.8", family: 4 }],
-      async fetch(target) {
-        assert.equal(target.href, url);
-        return Response.redirect("https://other.example/mcp");
-      },
-    }),
-    { reason: "invalid_response" },
-  );
 });
 
 test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {

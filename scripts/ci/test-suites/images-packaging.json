@@ -30,6 +30,7 @@
     "tests/integration/production-kubernetes-packaging.test.mjs",
     "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
+    "tests/integration/production-image-bootstrap-mounts.test.mjs",
     "tests/integration/container-registry-real.test.ts",
     "tests/integration/logging-packaging.test.ts",
     "tests/integration/repository-runtime-volume.test.ts",
@@ -68,7 +69,6 @@
     {
       "path": "tests/integration/production-image-startup.test.mjs",
       "expectedTests": [
-        "development bootstrap mount copies support a different reader UID",
         "production image server startup loads bundled Kubernetes, OpenShell, and ChatGPT modules",
         "production image startup rejects an invalid gateway StorageClass before persistence",
         "production image worker startup loads the shared runtime graph",
@@ -76,6 +76,10 @@
         "production image includes the OpenShell gRPC proto asset",
         "production image includes console shell and public assets"
       ]
+    },
+    {
+      "path": "tests/integration/production-image-bootstrap-mounts.test.mjs",
+      "expectedTests": ["development bootstrap mount copies support a different reader UID"]
     },
     {
       "path": "tests/integration/production-image-upgrade-recovery.test.ts"
@@ -87,7 +91,12 @@
       ]
     },
     {
-      "path": "tests/integration/upgrade-preflight-state.test.ts"
+      "path": "tests/integration/upgrade-preflight-state.test.ts",
+      "expectedTests": [
+        "profiled upgrade checks and recovery bind Kubernetes requests to the approved target",
+        "CI tool launcher preserves proxy and certificate settings without exposing their values",
+        "CI setup action starts without caller shell startup and reuses pinned yq"
+      ]
     },
     {
       "path": "tests/integration/production-image-qualification.test.ts"

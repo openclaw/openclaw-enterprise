@@ -125,6 +125,327 @@ require_private_file() {
   (((8#$mode & 077) == 0)) || die "$path must not grant group or other permissions."
 }
 
+# A sibling preserves the relative path base used by Kubernetes client configuration.
+pin_execution_kubeconfig() {
+  python3 - "$1" "$2" "$3" "$4" 3<<<"$5" <<'PYTHON'
+import base64
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+
+
+def load_kubeconfig(content):
+    # Match the profiled preview's decoder. Without merging, local config view
+    # keeps references relative to the declared kubeconfig, which we rebase below.
+    return json.loads(subprocess.check_output(
+        ["kubectl", "--kubeconfig", "/dev/stdin", "config", "view", "--merge=false", "--raw", "-o", "json"],
+        input=content,
+        env={**os.environ, "KUBECTL_KUBERC": "false"},
+        stderr=subprocess.DEVNULL,
+    ))
+
+def selected_config_entry(entries, name, field):
+    matches = [entry[field] for entry in entries or [] if entry["name"] == name]
+    if len(matches) != 1:
+        raise ValueError(f"the selected Kubernetes {field} is missing or ambiguous")
+    return matches[0]
+
+
+def pin_selected_server_ca(config, context, parent, approved_ca):
+    cluster = selected_config_entry(config.get("clusters"), context["cluster"], "cluster")
+    ca_path = cluster.get("certificate-authority")
+    ca_data = cluster.get("certificate-authority-data")
+    if ca_path and ca_data:
+        raise ValueError("the selected cluster cannot use both a certificate-authority file and inline CA data")
+    if (ca_path or ca_data) and cluster.get("insecure-skip-tls-verify"):
+        raise ValueError("the selected cluster cannot combine CA material and insecure TLS verification")
+    if not ca_path:
+        if approved_ca is not None:
+            raise ValueError("the approved external server CA does not match the selected cluster")
+        return False
+    if approved_ca is None:
+        raise ValueError("the selected cluster's external server CA was not approved")
+
+    # Follow a configured CA symlink just as Kubernetes does. The bytes from
+    # this single open are checked and then embedded, so no client reopens it.
+    path = ca_path if os.path.isabs(ca_path) else os.path.normpath(parent / ca_path)
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise ValueError("the selected external server CA must be a readable regular file")
+            content = source.read()
+    except FileNotFoundError:
+        raise ValueError("the selected external server CA changed after approval (file is missing)") from None
+    if hashlib.sha256(content).hexdigest() != approved_ca:
+        raise ValueError("the selected external server CA changed after approval")
+    cluster["certificate-authority-data"] = base64.b64encode(content).decode("ascii")
+    del cluster["certificate-authority"]
+    return True
+
+
+def relocated_config(config, parent, evidence):
+    def rebase(section, key, *, path_command=False):
+        value = section.get(key)
+        if value and not os.path.isabs(value) and (not path_command or "/" in value):
+            section[key] = os.path.normpath(parent / value)
+
+    for entry in config.get("clusters") or []:
+        rebase(entry["cluster"], "certificate-authority")
+    for entry in config.get("users") or []:
+        user = entry["user"]
+        for key in ("client-certificate", "client-key", "tokenFile"):
+            rebase(user, key)
+        if user.get("exec"):
+            rebase(user["exec"], "command", path_command=True)
+    encoded = json.dumps(config).encode()
+    directory = Path(tempfile.mkdtemp(prefix=".kubeconfig-pin.", dir=evidence))
+    execution = directory / "kubeconfig"
+    try:
+        with execution.open("xb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fchmod(output.fileno(), 0o400)
+            os.fsync(output.fileno())
+        return execution, encoded, directory
+    except BaseException:
+        execution.unlink(missing_ok=True)
+        directory.rmdir()
+        raise
+
+def physical_parent(parent, system_owner):
+    physical = parent.resolve(strict=True)
+    if parent == physical:
+        return physical
+    for component in (parent, *parent.parents):
+        if not component.is_symlink():
+            continue
+        if component.lstat().st_uid != system_owner or any(
+            ancestor.stat().st_uid != system_owner or ancestor.stat().st_mode & 0o022
+            for ancestor in component.parents
+        ):
+            raise ValueError("kubeconfig directory has an untrusted alias")
+        target = component.parent.resolve(strict=True) / os.readlink(component)
+        if any(path.is_symlink() for path in (target, *target.parents)):
+            raise ValueError("kubeconfig directory has an indirect alias")
+    return physical
+
+
+try:
+    with os.fdopen(3, encoding="utf-8") as approval_file:
+        approval = json.load(approval_file)
+    verify_server_ca = approval.get("verifyServerCa", False)
+    expected = approval["kubeconfig"] if verify_server_ca else approval.get("kubeconfig")
+    evidence, context_name, check_exec = sys.argv[2:]
+    original = Path(os.path.abspath(sys.argv[1]))
+    parent = original.parent
+    uid = os.geteuid()
+    system_owner = Path("/").stat().st_uid
+    owners = {uid, system_owner}
+    physical = physical_parent(parent, system_owner)
+    if Path(sys.argv[1]).parent.resolve(strict=True) != physical:
+        raise ValueError("kubeconfig directory changed while resolving the original path")
+    for ancestor in physical.parents:
+        info = ancestor.stat()
+        if info.st_uid not in owners or info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
+            raise ValueError("kubeconfig directory has an unsafe ancestor")
+
+    directory = os.open(physical, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(directory)
+        required = stat.S_IWUSR | stat.S_IXUSR
+        if info.st_uid not in owners or info.st_mode & 0o022:
+            raise ValueError("kubeconfig needs a directory protected from other writers")
+        can_create_sibling = info.st_uid == uid and info.st_mode & required == required
+        if not (os.path.samestat(info, physical.stat()) and os.path.samestat(info, parent.stat())):
+            raise ValueError("kubeconfig directory changed")
+        # Keep the original logical origin for Kubernetes' relative file resolution.
+        with os.fdopen(os.open(original.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                               dir_fd=directory), "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_mode & 0o077:
+                raise ValueError("kubeconfig must be an owner-only regular file")
+            content = source.read()
+        source_digest = hashlib.sha256(content).hexdigest()
+        if (verify_server_ca or expected is not None) and source_digest != expected:
+            raise ValueError("kubeconfig changed after approval")
+
+        config = load_kubeconfig(content)
+        context = selected_config_entry(config.get("contexts"), context_name, "context")
+        user_name = context.get("user")
+        user = selected_config_entry(config.get("users"), user_name, "user") if user_name else {}
+        if check_exec == "1" and "exec" in user:
+            raise ValueError(
+                "the selected Kubernetes user uses an exec credential plugin while kubectl preferences are enabled. "
+                "Use a token or client certificate under your approved credential policy"
+            )
+        # A provider can rotate a credential that the private snapshot cannot preserve.
+        if "auth-provider" in user:
+            raise ValueError(
+                "the selected Kubernetes user uses a built-in auth-provider. "
+                "Use a token or client certificate"
+            )
+        has_external_ca = verify_server_ca and pin_selected_server_ca(
+            config, context, parent, approval.get("kubeconfig server CA")
+        )
+        if check_exec == "1":
+            # Give both clients only the checked target and its selected credentials.
+            cluster_name = context["cluster"]
+            cluster = selected_config_entry(config.get("clusters"), cluster_name, "cluster")
+            config["clusters"] = [{"name": cluster_name, "cluster": cluster}]
+            config["contexts"] = [{"name": context_name, "context": context}]
+            config["current-context"] = context_name
+            config["users"] = [{"name": user_name, "user": user}] if user_name else []
+            content = json.dumps(config).encode()
+        fd = None
+        if can_create_sibling and not has_external_ca:
+            name = ".occ-upgrade-kubeconfig." + uuid.uuid4().hex
+            try:
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                             dir_fd=directory)
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+                    raise
+        if fd is not None:
+            try:
+                with os.fdopen(fd, "wb") as snapshot:
+                    snapshot.write(content)
+                    snapshot.flush()
+                    os.fchmod(snapshot.fileno(), 0o400)
+                    os.fsync(snapshot.fileno())
+                execution, encoded, private_parent = parent / name, content, None
+            except BaseException:
+                os.unlink(name, dir_fd=directory)
+                raise
+        else:
+            execution, encoded, private_parent = relocated_config(config, parent, evidence)
+        print(json.dumps({"path": str(execution), "sha256": hashlib.sha256(encoded).hexdigest(),
+                          "sourceSha256": source_digest,
+                          "directory": str(private_parent) if private_parent else None}))
+    finally:
+        os.close(directory)
+except ValueError as error:
+    sys.exit(f"Cannot pin the approved kubeconfig: {error}. Review a fresh plan.")
+except (KeyError, OSError, TypeError, subprocess.CalledProcessError):
+    sys.exit("Cannot pin the approved kubeconfig. Check its private directory and review a fresh plan.")
+PYTHON
+}
+
+read_original_upgrade_parameters() {
+  python3 - "$upgrade_evidence_dir" "$kubeconfig" "$context" "$namespace" "$release" <<'PYTHON'
+import json
+import os
+import re
+import runpy
+import sys
+
+state = runpy.run_path("scripts/upgrade-preflight-state.py")
+try:
+    root, physical = state["directory"](sys.argv[1])
+    if state["identity"](os.fstat(8)) != physical:
+        raise ValueError
+    values = state["parameters"](root)
+    if values["arguments"][:4] != sys.argv[2:6]:
+        raise ValueError
+    if state["journal"](root)["parametersSha256"] != state["digest"](values):
+        raise ValueError
+    profiled = values.get("profiled")
+    if not isinstance(profiled, bool):
+        sys.exit("The original run has no verifiable target origin. Use its original release checkout and evidence.")
+    if "kubeconfigServerCaSha256" in values and not profiled:
+        raise ValueError
+    for key in ("kubeconfigSha256", "kubeconfigServerCaSha256"):
+        if key in values and re.fullmatch(r"[0-9a-f]{64}", values[key]) is None:
+            raise ValueError
+    if "kubeconfigSha256" not in values:
+        raise ValueError
+except (KeyError, OSError, TypeError, ValueError):
+    sys.exit("Cannot read the original private parameters and Kubernetes target for this evidence directory.")
+print(json.dumps(values, sort_keys=True))
+PYTHON
+}
+
+select_recovery_target() {
+  local recorded current
+  if jq -e '.profiled == true' <<<"$original_parameters" >/dev/null; then
+    recorded=$(jq -cS '
+      {kubeconfig: .kubeconfigSha256} +
+      (if has("kubeconfigServerCaSha256") then {"kubeconfig server CA": .kubeconfigServerCaSha256} else {} end)
+    ' <<<"$original_parameters")
+    if [[ -n "$approved_upgrade_inputs" ]]; then
+      current=$(jq -cS \
+        'with_entries(select(.key == "kubeconfig" or .key == "kubeconfig server CA"))' <<<"$approved_upgrade_inputs")
+      [[ "$current" == "$recorded" ]] ||
+        die "The approved Kubernetes target differs from the original run's kubeconfig or external server CA."
+    fi
+    approved_upgrade_inputs=$recorded
+  elif [[ -n "$approved_upgrade_inputs" ]]; then
+    # A raw-owned run has no recorded external CA. Preserve its receipt while
+    # verifying the kubeconfig and the profiled recovery's current CA approval.
+    [[ "$(jq -er .kubeconfig <<<"$approved_upgrade_inputs")" == "$(jq -er .kubeconfigSha256 <<<"$original_parameters")" ]] ||
+      die "The approved kubeconfig differs from the original run."
+  fi
+}
+
+setup_execution_kubeconfig() {
+  execution_kubeconfig=$kubeconfig
+  if [[ -z "$approved_upgrade_inputs" ]] && ((check_kubectl_exec == 0)); then
+    return 0
+  fi
+  local binding kubeconfig_binding
+  kubeconfig_binding='{}'
+  if [[ -n "$approved_upgrade_inputs" ]]; then
+    kubeconfig_binding=$(jq -ce '. + {verifyServerCa: true}' <<<"$approved_upgrade_inputs")
+  elif [[ -n "$original_parameters" ]]; then
+    kubeconfig_binding=$(jq -ce '{kubeconfig: .kubeconfigSha256}' <<<"$original_parameters")
+  fi
+  binding=$(pin_execution_kubeconfig "$kubeconfig" "$upgrade_evidence_dir" "$context" \
+    "$check_kubectl_exec" "$kubeconfig_binding")
+  execution_kubeconfig=$(jq -er '.path' <<<"$binding")
+  kubeconfig_snapshot_directory=$(jq -r '.directory // ""' <<<"$binding")
+  execution_kubeconfig_source_sha=$(jq -er '.sourceSha256' <<<"$binding")
+  python3 - "$execution_kubeconfig" 3<<<"$binding" <<'PYTHON'
+import hashlib
+import json
+import os
+import stat
+import sys
+
+try:
+    with os.fdopen(3, encoding="utf-8") as input_binding:
+        snapshot = json.load(input_binding)
+    with os.fdopen(os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as config:
+        info = os.fstat(config.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o400:
+            raise ValueError
+        if sys.argv[1] != snapshot["path"] or hashlib.sha256(config.read()).hexdigest() != snapshot["sha256"]:
+            raise ValueError
+except (KeyError, OSError, TypeError, ValueError):
+    sys.exit("The approved kubeconfig snapshot changed. Review the original target before proceeding.")
+PYTHON
+  # Retain the locator privately if interrupted children may still use the snapshot.
+  kubeconfig_snapshot_receipt=$(mktemp "$upgrade_evidence_dir/kubeconfig-snapshot.XXXXXXXX")
+  printf '%s\n' "$execution_kubeconfig" >"$kubeconfig_snapshot_receipt"
+}
+
+release_kubeconfig_snapshot() {
+  if [[ "$execution_kubeconfig" != "$kubeconfig" ]]; then
+    rm -f -- "$execution_kubeconfig" || return 1
+    if [[ -n "$kubeconfig_snapshot_directory" ]]; then
+      rmdir -- "$kubeconfig_snapshot_directory" || return 1
+    fi
+    if [[ -n "$kubeconfig_snapshot_receipt" ]]; then
+      rm -f -- "$kubeconfig_snapshot_receipt"
+    fi
+  fi
+}
+
 # Input checks set LC_ALL=C locally: under a locale such as en_US.UTF-8, bash
 # regex ranges like [a-f0-9] also match accented letters and non-ASCII digits.
 # Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as one
@@ -326,46 +647,6 @@ matches_yaml() {
   yaml_object "$expected" "$evidence_dir/compare-expected.json" 2>/dev/null || die "$unusable"
   [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || die "$unusable"
   [[ "$actual_text" == "$yaml_object_text" ]]
-}
-
-normalize_bootstrap_outputs() {
-  local before=$1 input=$2 output=$3 transition
-  local before_json="$evidence_dir/compare-expected.json"
-  local input_json="$evidence_dir/compare-actual.json"
-  local unusable='Cannot compare upgrade YAML: both inputs must be readable and contain only YAML mappings (no empty documents). Check that the evidence directory is writable.'
-  yaml_object "$before" "$before_json" 2>/dev/null || die "$unusable"
-  yaml_object "$input" "$input_json" 2>/dev/null || die "$unusable"
-  transition=$(jq -rs --slurpfile before "$before_json" '
-    def retired:
-      .bootstrap | if type == "object" then with_entries(
-        select(.key == "password" or .key == "serviceKey")
-      ) else {} end;
-    def retained:
-      .bootstrap | if type == "object" then del(.password, .serviceKey) else . end;
-    if all(($before + .)[]; (retired | length) == 0) then "none"
-    elif length != 1 or ($before | length) != 1 then error("expected one values document")
-    else
-      (.[0] | retired) as $candidate |
-      ($before[0] | retired) as $installed |
-      if (.[0] | retained) != ($before[0] | retained) or
-        any($candidate | to_entries[]; .key as $key |
-          ($installed | has($key) | not) or .value != $installed[$key])
-      then error("protected bootstrap setting changed")
-      elif ($candidate | length) == 0 then "omitted"
-      else "normalize" end
-    end
-  ' "$input_json" 2>/dev/null) ||
-    die "candidate values change a protected bootstrap setting; only unchanged retired output settings may be omitted."
-  if [[ "$transition" == normalize ]]; then
-    jq -S 'del(.bootstrap.password, .bootstrap.serviceKey)' "$input_json" >"$output"
-  else
-    cp "$input" "$output"
-  fi
-  if [[ "$transition" != none ]] && ((migration_check_only)); then
-    helm get values "$release" "${helm_args[@]}" --output yaml >"$evidence_dir/before-live-values.yaml"
-    matches_yaml "$before" "$evidence_dir/before-live-values.yaml" ||
-      die "retired bootstrap outputs require the protected values to match the live release; refresh --values before checking."
-  fi
 }
 
 require_mutable_installation_secret() {
@@ -593,6 +874,43 @@ while (($#)); do
   esac
 done
 
+check_kubectl_preferences() {
+  if [[ "${KUBECTL_KUBERC:-}" == false || "${KUBERC:-}" == off ]]; then
+    return
+  fi
+  python3 - <<'PYTHON' || exit 2
+import os
+from pathlib import Path
+
+try:
+    if not os.environ.get("KUBERC"):
+        (Path(os.environ.get("HOME", "")) / ".kube" / "kuberc").lstat()
+except FileNotFoundError:
+    pass
+except OSError:
+    raise SystemExit("Cannot inspect default kubectl preferences. Follow your approved procedure and credential policy.")
+else:
+    raise SystemExit("Active kubectl preferences are unsupported for this upgrade. Follow your approved procedure and credential policy.")
+PYTHON
+  # A policy can appear after this check. Only a pinned config without a
+  # runnable credential plugin may reach live clients with defaults suppressed.
+  check_kubectl_exec=1
+}
+
+admit_live_kubeconfig() {
+  setup_execution_kubeconfig
+  export KUBECTL_KUBERC=false KUBERC=off
+}
+
+approved_upgrade_inputs=${OCC_UPGRADE_APPROVED_INPUTS:-}
+unset OCC_UPGRADE_APPROVED_INPUTS
+original_parameters=
+check_kubectl_exec=0
+execution_kubeconfig_source_sha=
+execution_kubeconfig=$kubeconfig
+kubeconfig_snapshot_directory=
+kubeconfig_snapshot_receipt=
+
 # The cleanup path consumes original identity evidence only. It never prepares or
 # resumes an upgrade and needs no OCC credential or candidate image inputs.
 if ((cleanup_only)); then
@@ -607,13 +925,19 @@ if ((cleanup_only)); then
   for command in python3 jq kubectl node mktemp; do
     require_command "$command"
   done
+  check_kubectl_preferences
   umask 077
   exec 8<"$evidence_dir" || die "cannot open the original evidence directory." 2
   python3 scripts/upgrade-preflight-state.py lock "$evidence_dir" 8 ||
     die "cannot lock the original evidence directory; a helper or child may still be running." 2
+  require_private_file "$kubeconfig"
+  upgrade_evidence_dir=$evidence_dir
   cleanup_state=$(python3 scripts/upgrade-preflight-state.py inspect "$evidence_dir" \
     "$kubeconfig" "$context" "$namespace" "$release") ||
     die "invalid preflight recovery evidence; no Kubernetes cleanup was attempted." 2
+  original_parameters=$(read_original_upgrade_parameters) ||
+    die "invalid preflight recovery target; no Kubernetes cleanup was attempted." 2
+  select_recovery_target
   resources_text=$(jq -r '.resources[]' <<<"$cleanup_state") || die "cannot read cleanup resources." 2
   children_text=$(jq -r '.children[]' <<<"$cleanup_state") || die "cannot read cleanup children." 2
   unknown_count=$(jq '.unknown | length' <<<"$cleanup_state") || die "cannot read uncertain creates." 2
@@ -627,7 +951,13 @@ if ((cleanup_only)); then
   while IFS= read -r entry; do
     [[ -z "$entry" ]] || preflight_children+=("$entry")
   done <<<"$children_text"
-  kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
+  # Leave the pinned config in private evidence if a child may still be active.
+  trap 'release_kubeconfig_snapshot || true' EXIT
+  trap 'trap - EXIT; exit 129' HUP
+  trap 'trap - EXIT; exit 130' INT
+  trap 'trap - EXIT; exit 143' TERM
+  admit_live_kubeconfig
+  kube=(kubectl --kubeconfig "$execution_kubeconfig" --context "$context")
   # Keep each cleanup's result and observations separate from original receipts.
   evidence_dir=$(mktemp -d "$evidence_dir/preflight-cleanup.XXXXXXXX")
   # Do not rerun cleanup in an EXIT trap: a signal may leave a remote operation
@@ -648,6 +978,10 @@ if ((cleanup_only)); then
 fi
 ((previous_process_settled == 0 && evidence_unrestored == 0)) ||
   die "--previous-process-settled and --evidence-unrestored require --cleanup-preflight." 2
+
+# Use the same release history for preparation, upgrade, and recovery.
+[[ "${HELM_DRIVER:-secret}" == secret ]] ||
+  die "unset HELM_DRIVER or set it to secret; the upgrade requires Helm release Secrets in the selected cluster."
 
 # Helm reads these independently of --kubeconfig/--kube-context. Keep its
 # endpoint and TLS settings bound to the same selected file as kubectl.
@@ -835,6 +1169,8 @@ if ((resume)); then
   (((8#$mode & 077) == 0)) || die "the evidence directory must not grant group or other permissions."
 else
   [[ ! -e "$evidence_dir" ]] || die "--evidence-dir must not already exist."
+  [[ ! -e "${evidence_dir}.migration-state.json" && ! -L "${evidence_dir}.migration-state.json" ]] ||
+    die "the evidence path has an original separate migration journal; reconcile that operation."
   ((migration_history_checked == 0)) || die "--migration-history-checked is only valid with --resume."
 fi
 
@@ -875,6 +1211,7 @@ fi
 for command in cmp helm jq kubectl mktemp node yq; do
   require_command "$command"
 done
+check_kubectl_preferences
 
 umask 077
 if ((resume == 0)); then
@@ -885,7 +1222,23 @@ exec 8<"$evidence_dir"
 python3 scripts/upgrade-preflight-state.py lock "$evidence_dir" 8 ||
   die "the evidence directory is locked by another helper or child."
 mkdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
-trap 'rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+finish_migration_apply() {
+  local migration_state
+  # A create or DELETE without a settled result still belongs to its original
+  # journal. General preflight cleanup would bypass that ownership record.
+  if ! migration_state=$(python3 scripts/upgrade-preflight-state.py migration-status "$upgrade_evidence_dir") ||
+      ! jq -e 'all(.[]; .state == "settled" or .state == "cleaned")' <<<"$migration_state" >/dev/null; then
+    warn "migration Job observation or cleanup is unresolved; retain the evidence lock and kubeconfig snapshot. Keep writers stopped." || true
+    return
+  fi
+  release_kubeconfig_snapshot || return 0
+  rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true
+}
+if ((migration_apply_only)); then
+  trap finish_migration_apply EXIT
+else
+  trap 'release_kubeconfig_snapshot || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+fi
 
 # An interrupted caller does not establish that its child or remote operation stopped.
 # Keep the lock and preflight resources until the operator reconciles that work.
@@ -898,31 +1251,36 @@ trap 'interrupted_upgrade 129' HUP
 trap 'interrupted_upgrade 130' INT
 trap 'interrupted_upgrade 143' TERM
 
-# Bind resume to the original physical directory, inputs and chart. The
-# separate dispatch journal protects against restoring stale evidence in place.
-# Kubeconfig bytes bind the context to the same cluster if the file is replaced.
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" <<'PYTHON'
+# Bind recovery to its original physical directory and Kubernetes target.
+if ((resume)); then
+  original_parameters=$(read_original_upgrade_parameters) ||
+    die "resume evidence directory or private parameters changed; use the original evidence directory."
+  select_recovery_target
+fi
+admit_live_kubeconfig
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" "$execution_kubeconfig_source_sha" 3<<<"$approved_upgrade_inputs" 4<<<"$original_parameters" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+with os.fdopen(3, encoding="utf-8") as approval_file:
+    approval = approval_file.read().strip()
+with os.fdopen(4, encoding="utf-8") as original_file:
+    original_parameters = original_file.read().strip()
+approved = json.loads(approval) if approval else None
+original = json.loads(original_parameters) if original_parameters else None
+kubeconfig_sha = sys.argv[21] or digest(sys.argv[1])
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+parameters = {"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": kubeconfig_sha, "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}
+# Keep recovery's original operation mode in its parameter and dispatch identity.
+parameters["profiled"] = original["profiled"] if original is not None else approved is not None
+if parameters["profiled"] and approved and approved.get("kubeconfig server CA") is not None:
+    parameters["kubeconfigServerCaSha256"] = approved["kubeconfig server CA"]
+print(json.dumps(parameters, sort_keys=True))
 PYTHON
 )
 migration_progress='{}'
 if ((resume)); then
-  require_private_file "$evidence_dir/parameters.json"
-  original_parameters=$(python3 - "$evidence_dir/parameters.json" <<'PYTHON'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as source:
-    values = json.load(source)
-values.pop("pairEvidence", None)
-values.pop("preparedEvidence", None)
-values.pop("dispatchJournal", None)
-print(json.dumps(values, sort_keys=True))
-PYTHON
-  )
   [[ "$parameters" == "$original_parameters" ]] || die "resume evidence directory, inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; use the original evidence directory and investigate before continuing."
   [[ ! -e "$evidence_dir/completed" && ! -L "$evidence_dir/completed" ]] ||
     die "a completion marker exists; this upgrade cannot be resumed. Preserve its evidence and investigate if completion was unexpected."
@@ -969,8 +1327,8 @@ if ((resume == 0)); then
   python3 scripts/upgrade-preflight-state.py init "$evidence_dir"
 fi
 
-kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
-helm_args=(--kubeconfig "$kubeconfig" --kube-context "$context" --namespace "$namespace")
+kube=(kubectl --kubeconfig "$execution_kubeconfig" --context "$context")
+helm_args=(--kubeconfig "$execution_kubeconfig" --kube-context "$context" --namespace "$namespace")
 occ_json=("$occ" --output json)
 
 # Only a successful create acknowledgement establishes Job or dependency cleanup ownership.
@@ -1090,7 +1448,7 @@ acknowledge_preflight_check() {
 }
 source scripts/lib/upgrade-preflight-cleanup.sh
 if ((migration_apply_only == 0)); then
-  trap 'cleanup_preflight || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+  trap 'cleanup_preflight || true; release_kubeconfig_snapshot || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 fi
 
 # Read the current Job and validate the child against its original controller and UID.
@@ -1122,7 +1480,7 @@ sys.stdout.buffer.write(data)'
 # The migration check keeps the initializer's database identity; API and worker
 # use the candidate configuration and their own startup identities.
 run_preflight_jobs() {
-  local components=("$@") job_uids=()
+  local components=("$@") job_uids=() builder=()
   local component job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid log_container logs logs_status draft_refusals
   local index=0 writer_qualifier=''
   ((resume == 0)) || writer_qualifier='additional '
@@ -1131,10 +1489,15 @@ run_preflight_jobs() {
   job_prefix=${job_prefix%.}
   for component in "${components[@]}"; do
     job="$job_prefix-upgrade-preflight-$component-$suffix"
-    node scripts/upgrade-startup-preflight.ts "${preflight_action:-job}" "$evidence_dir/preflight-rendered.jsonl" \
-      "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret" \
-      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
-      >"$evidence_dir/preflight-$component-job.json" ||
+    if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
+      builder=(migration-job "$evidence_dir/preflight-rendered.jsonl" "$job" "$namespace" "$release"
+        "$selected_controller" "$timeout_seconds" check-installation "$guarded_migration_id")
+    else
+      builder=("${preflight_action:-job}" "$evidence_dir/preflight-rendered.jsonl"
+        "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret"
+        "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag")
+    fi
+    node scripts/upgrade-startup-preflight.ts "${builder[@]}" >"$evidence_dir/preflight-$component-job.json" ||
       die "cannot build the $component startup preflight Job from the rendered chart; no ${writer_qualifier}OCC writer was stopped."
     delete_options=$(create_preflight "$component" "$evidence_dir/preflight-$component-job.json" \
       "preflight-$component-job-create.err") ||
@@ -1229,7 +1592,11 @@ run_preflight_jobs() {
           message="the $component startup preflight Job failed; see preflight-$component-job-status.json. No ${writer_qualifier}OCC writer was stopped."
           ;;
         Succeeded)
-          if [[ "$component" == migration ]]; then
+          if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
+            migration_history_result migration.checked-for-installation \
+              "$evidence_dir/preflight-migration.log" >/dev/null 2>&1 ||
+              message="the selected controller image did not report a successful guarded database migration check; no ${writer_qualifier}OCC writer was stopped. Inspect preflight-migration.log in $evidence_dir and select an image that supports --check-for-installation."
+          elif [[ "$component" == migration ]]; then
             jq -Rse 'split("\n") | any(.[]; try (fromjson |
               .event == "migration.checked" and (.history | type == "string")) catch false)' \
               "$evidence_dir/preflight-$component.log" >/dev/null 2>&1 ||
@@ -1259,7 +1626,9 @@ run_preflight_jobs() {
             draft_refusals=$(node scripts/upgrade-startup-preflight.ts refusals \
               "$evidence_dir/preflight-api.log") || draft_refusals=
           fi
-          if [[ "$component" == migration ]]; then
+          if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
+            message="the selected controller image failed the guarded database migration check for the expected Installation. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No ${writer_qualifier}OCC writer was stopped. Confirm that the image supports --check-for-installation and reconcile the migrator connection or database history before retrying."
+          elif [[ "$component" == migration ]]; then
             message="the selected controller image could not confirm database migration compatibility. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No additional OCC writer was stopped; reconcile the database history, migrator access, or database connectivity before retrying."
           elif [[ -n "$draft_refusals" ]]; then
             message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
@@ -1307,6 +1676,34 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
   fi
 }
 
+# Bind the retained migration connection before running its guarded check.
+# Keep Secret identity metadata only.
+check_separate_migration_preconditions() {
+  local writer_qualifier=$1 secret_names name decision identities
+  require_immutable_image "selected controller" "$selected_controller"
+  python3 scripts/upgrade-preflight-state.py migration-status "$upgrade_evidence_dir" \
+    --require-protected-parent >/dev/null ||
+    die "cannot use the protected separate migration journal location; no ${writer_qualifier}OCC writer was stopped."
+  rendered_helm_hooks "$upgrade_evidence_dir/before-helm-status.json" >"$evidence_dir/preflight-installed-hooks.jsonl" ||
+    die "cannot read the deployed Helm revision's initialization hook; no ${writer_qualifier}OCC writer was stopped."
+  secret_names=$(node scripts/upgrade-startup-preflight.ts migration-database \
+    "$evidence_dir/preflight-installed-hooks.jsonl" "$evidence_dir/preflight-rendered.jsonl" "$release" "$namespace") ||
+    die "cannot confirm the retained migrator connection; no ${writer_qualifier}OCC writer was stopped."
+  while IFS= read -r name; do
+    decision=$(named_access_review get "" secrets "$name" 15) ||
+      die "cannot verify Kubernetes get access to migration Secret $namespace/$name. Enable the exact SelfSubjectAccessReview and retry. No ${writer_qualifier}OCC writer was stopped."
+    [[ "$decision" == true ]] ||
+      die "Kubernetes denied get on migration Secret $namespace/$name. Obtain get access to this Secret and retry. No ${writer_qualifier}OCC writer was stopped."
+  done <<<"$secret_names"
+  if ((resume)); then
+    recheck_migration_secrets "$secret_names"
+  else
+    identities=$(migration_secret_identities "$secret_names") ||
+      die "cannot confirm the migrator and database CA Secret identities; no OCC writer was stopped."
+    printf '%s\n' "$identities" >"$upgrade_evidence_dir/migration-secret-identities.json"
+  fi
+}
+
 # Before any writer stops, start the selected controller image on the candidate
 # Installation the way the API and worker start: the rendered chart's env, mounts
 # and service account, with the candidate Installation in a temporary Secret.
@@ -1318,8 +1715,8 @@ preflight_startup() {
   local preflight_action=${1:-job} attempt=. writer_qualifier=''
   ((resume == 0)) || writer_qualifier='additional '
   [[ "$evidence_dir" == "$upgrade_evidence_dir" ]] || attempt=${evidence_dir##*/}
-  local suffix secret delete_options
-  local drafts='' drafts_flag=none drafts_status=0
+  local suffix secret delete_options upgrade_migration
+  local drafts='' drafts_flag=none drafts_status=0 guarded_migration_id=''
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ "$preflight_action" == job && -s "${agent_drafts:-}" ]]; then
     drafts="$evidence_dir/inventory/agent-drafts.json.gz"
@@ -1337,6 +1734,11 @@ preflight_startup() {
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for the startup preflight; no ${writer_qualifier}OCC writer was stopped."
+  upgrade_migration=$(yq -er '.database.upgradeMigration // "hook"' "$candidate_values")
+  if [[ "$upgrade_migration" == separate ]]; then
+    check_separate_migration_preconditions "$writer_qualifier"
+    guarded_migration_id=$installation_id
+  fi
   if [[ "$preflight_action" == job ]]; then
     # Helm's server-side dry-run renders the release but does not submit each
     # Certificate for admission. Check these before creating the startup Jobs.
@@ -1381,6 +1783,7 @@ preflight_startup() {
     run_preflight_jobs api worker migration
   fi
   cleanup_preflight || die "startup preflight cleanup is incomplete; no ${writer_qualifier}OCC writer was stopped."
+  recheck_prepared_migration_secrets
   touch "$evidence_dir/startup-preflight-passed"
 }
 
@@ -1491,7 +1894,7 @@ verify_agent_continuity() {
 
 # Inventory is an authorized, complete view. Missing collections are not an empty fleet.
 read_restart_inventory() {
-  local destination=$1
+  local destination=$1 preflight_rehearsal=${2:-0}
   "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
     die "cannot read the complete deployment inventory before stopping the worker. Restore access to the existing API if quiescence stopped it, then resume; no additional OCC writer was stopped."
   jq -es --arg installationId "$installation_id" '
@@ -1517,16 +1920,25 @@ read_restart_inventory() {
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
   if [[ -z "$runtime_image" ]]; then
-    local refusals
-    refusals=$(jq -r '
+    local assessment refusals original_worker_only
+    assessment=$(jq -c '
       [.namespaces[] as $namespace | $namespace.agents[] |
         select(.status == "active" and .desiredRuntimeState == "running" and .activeRevisionId != null) |
         select(.repositoryWorkerRestart != "reverification-supported" and .repositoryWorkerRestart != "not-applicable") |
         {namespace: $namespace.id, agent: .id, revision: .activeRevisionId,
          reason: (if .repositoryWorkerRestart == "original-worker-required" then "original-worker-required" else "unknown" end)}] |
-      .[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"
+      {originalWorkerOnly: all(.[]; .reason == "original-worker-required"),
+       refusals: ([.[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"] | join("\n"))}
     ' "$destination")
-    [[ -z "$refusals" ]] || die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
+    json_fields "$assessment" refusals=refusals original_worker_only=originalWorkerOnly
+    if [[ -z "$refusals" ]]; then
+      return
+    fi
+    if ((preflight_rehearsal)) && [[ "$original_worker_only" == true ]]; then
+      retained_revision_blockers=$refusals
+      return
+    fi
+    die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
 $refusals
 Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $destination for the complete inventory. No additional OCC writer was stopped."
   fi
@@ -1626,7 +2038,7 @@ check_migration() {
   local before_values="$evidence_dir/before-values.yaml" input_values
   input_values=$before_values
   [[ -z "$requested_values" ]] || input_values="$evidence_dir/requested-values.yaml"
-  normalize_bootstrap_outputs "$before_values" "$input_values" "$evidence_dir/candidate-values.yaml"
+  cp "$input_values" "$evidence_dir/candidate-values.yaml"
   CONTROLLER_IMAGE="$controller_image" yq -i '.images.controller = strenv(CONTROLLER_IMAGE)' \
     "$evidence_dir/candidate-values.yaml"
   helm template "$release" "$chart" "${helm_args[@]}" --is-upgrade \
@@ -1714,15 +2126,15 @@ migration_secret_identities() {
 recheck_migration_secrets() {
   local secret_names=$1 observed
   observed=$(migration_secret_identities "$secret_names") ||
-    die "cannot confirm the original migrator and database CA Secret identities; keep writers stopped."
+    die "cannot confirm the original migrator and database CA Secret identities. Reconcile the database target under exclusive maintenance control."
   printf '%s\n' "$observed" | cmp -s - "$upgrade_evidence_dir/migration-secret-identities.json" ||
-    die "the migrator or database CA Secret changed during the separate database deployment; keep writers stopped and reconcile the database target."
+    die "the migrator or database CA Secret changed during the separate database deployment. Reconcile the database target under exclusive maintenance control."
 }
 
-recheck_applied_migration_secrets() {
-  [[ "$migration_progress" != "{}" ]] || return 0
-  local secret_names
-  secret_names=$(jq -er '.[].name' "$upgrade_evidence_dir/migration-secret-identities.json")
+recheck_prepared_migration_secrets() {
+  local identity_file="$upgrade_evidence_dir/migration-secret-identities.json" secret_names
+  [[ -e "$identity_file" ]] || return 0
+  secret_names=$(jq -er '.[].name' "$identity_file")
   recheck_migration_secrets "$secret_names"
 }
 
@@ -1870,7 +2282,7 @@ run_migration_stage() {
 }
 
 apply_database_migration() {
-  local secret_names current_secrets staged_secrets
+  local secret_names
   [[ $(yq -er '.database.upgradeMigration // "hook"' "$candidate_values") == separate ]] ||
     die "migration apply requires a prepared separate database deployment."
   [[ ! -e "$evidence_dir/helm-started" && ! -L "$evidence_dir/helm-started" ]] ||
@@ -1886,21 +2298,36 @@ apply_database_migration() {
     die "migration apply refused before creating a Job."
   recheck_migration_release pre-apply "$evidence_dir/before-helm-status.json"
   require_migration_writers_stopped
-  if [[ "$migration_progress" == "{}" ]]; then
-    current_secrets=$(migration_secret_identities "$secret_names") ||
-      die "cannot confirm the migrator and database CA Secret identities; no migration Job was submitted."
-    staged_secrets=$(mktemp "$evidence_dir/migration-secret-identities.XXXXXXXX")
-    printf '%s\n' "$current_secrets" >"$staged_secrets"
-    mv -f "$staged_secrets" "$evidence_dir/migration-secret-identities.json"
-  else
-    recheck_migration_secrets "$secret_names"
-  fi
+  recheck_migration_secrets "$secret_names"
   run_migration_stage apply "$evidence_dir/migration-rendered.jsonl" "$secret_names"
   run_migration_stage verify "$evidence_dir/migration-rendered.jsonl" "$secret_names"
   recheck_migration_release post-verification "$evidence_dir/before-helm-status.json"
   recheck_migration_secrets "$secret_names"
   require_migration_writers_stopped
   printf 'Database migration verified and its Jobs and Pods are gone. Keep writers stopped. Resume the original upgrade with --migration-history-checked.\n'
+}
+
+# The profiled apply approves the input bytes. Check the native copies that
+# the candidate builder will consume, before they can influence cluster writes.
+verify_approved_upgrade_inputs() {
+  [[ -n "$approved_upgrade_inputs" ]] || return 0
+  python3 - "$@" 3<<<"$approved_upgrade_inputs" <<'PYTHON'
+import hashlib
+import json
+import os
+import sys
+
+try:
+    with os.fdopen(3, encoding="utf-8") as approval:
+        digests = json.load(approval)
+    for role, path in zip(sys.argv[1::2], sys.argv[2::2]):
+        with open(path, "rb") as source:
+            actual = hashlib.sha256(source.read()).hexdigest()
+        if actual != digests[role]:
+            sys.exit("An upgrade input changed after approval. Review a fresh plan.")
+except (KeyError, OSError, TypeError, ValueError):
+    sys.exit("Cannot verify the approved upgrade inputs. Review a fresh plan.")
+PYTHON
 }
 
 prepare_upgrade() {
@@ -1916,6 +2343,13 @@ cp "$values" "$evidence_dir/before-values.yaml"
 cp "$installation" "$evidence_dir/before-installation.yaml"
 [[ -z "$requested_values" ]] || cp "$requested_values" "$evidence_dir/requested-values.yaml"
 [[ -z "$requested_installation" ]] || cp "$requested_installation" "$evidence_dir/requested-installation.yaml"
+approved_copies=("baseline Helm values" "$evidence_dir/before-values.yaml"
+  "baseline Installation" "$evidence_dir/before-installation.yaml")
+[[ -z "$requested_values" ]] ||
+  approved_copies+=("candidate Helm values" "$evidence_dir/requested-values.yaml")
+[[ -z "$requested_installation" ]] ||
+  approved_copies+=("candidate Installation" "$evidence_dir/requested-installation.yaml")
+verify_approved_upgrade_inputs "${approved_copies[@]}"
 
 if ! preprovisioned_namespace=$(yq -r '(.preprovisionedNamespace // {} | length) > 0' \
   "$evidence_dir/before-values.yaml" 2>"$evidence_dir/preprovisioned-namespace.err") ||
@@ -1995,7 +2429,8 @@ targets="$evidence_dir/targets.jsonl"
 : >"$targets"
 target_count=0
 inventory="$evidence_dir/inventory/deployment-inventory.json"
-read_restart_inventory "$inventory"
+retained_revision_blockers=
+read_restart_inventory "$inventory" "$preflight_only"
 normalize_restart_inventory "$inventory" >"$evidence_dir/inventory/restart-preflight.json"
 
 if [[ -z "$runtime_image" ]]; then
@@ -2109,6 +2544,7 @@ selected_controller=${controller_image:-$current_controller}
 if [[ -n "$controller_compatibility_results" ]]; then
   require_regular_file "$controller_compatibility_results"
   cp "$controller_compatibility_results" "$evidence_dir/controller-compatibility-results.json"
+  verify_approved_upgrade_inputs "controller compatibility receipt" "$evidence_dir/controller-compatibility-results.json"
   validate_controller_compatibility
 fi
 
@@ -2121,11 +2557,11 @@ if [[ -n "$requested_installation" ]]; then
 else
   cp "$evidence_dir/before-installation.yaml" "${candidate_installation}.requested"
 fi
-normalize_bootstrap_outputs "$evidence_dir/before-values.yaml" "$candidate_values_input" "$candidate_values"
+cp "$candidate_values_input" "$candidate_values"
 matches_yaml "${candidate_installation}.requested" "${candidate_installation}.requested" || die "candidate Installation must be a YAML object."
 # Keep all settings protected except the supported database phase, proxy and curated catalog
 # selections. New configuration fields remain protected until explicitly reviewed.
-values_guard='del(.api.channelDirectoryProxyUrl, .installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .api == {} then del(.api) else . end | if .installation == {} then del(.installation) else . end | if (.bootstrap | type) == "object" then .bootstrap |= del(.password, .serviceKey) else . end'
+values_guard='del(.api.channelDirectoryProxyUrl, .installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .api == {} then del(.api) else . end | if .installation == {} then del(.installation) else . end'
 project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "$candidate_values" "$values_guard" "$evidence_dir/candidate-values-guard.json"
 # The chart refuses the retired agentNativeAdmin.sharedCookieDomain whatever its
@@ -2320,8 +2756,15 @@ preflight_startup
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
   verify_installation_switch
 fi
+if ((preflight_only)) && [[ -n "$retained_revision_blockers" ]]; then
+  touch "$evidence_dir/preflight-blocked-original-worker" ||
+    die "cannot record the original-worker blocker in the evidence directory."
+  die "Candidate startup and migration checks passed and temporary resources are gone. The upgrade remains blocked because retained Agent revisions require their original worker:
+$retained_revision_blockers
+Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $inventory for the complete inventory. No OCC writer was stopped. Same-revision continuity is unverified."
+fi
 if ((preflight_only)); then
-  printf 'Preflight passed; no OCC writer was stopped. To deploy, omit --preflight-only and use the same reviewed inputs with a fresh evidence directory.\n'
+  printf 'Preflight passed; no OCC writer was stopped. Deploy during the maintenance window with the same reviewed inputs and fresh evidence.\n'
   exit 0
 fi
 printf '%s\n' "$installation_id" >"$evidence_dir/installation-id"
@@ -2472,20 +2915,20 @@ fi
 helm_complete=0
 recovered_revision=
 if [[ -e "$evidence_dir/helm-recovery" || -L "$evidence_dir/helm-recovery" ]]; then
-  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace") ||
+  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace") ||
     die "Helm recovery is unresolved; preserve its evidence and reconcile manually. Do not replay recovery."
   helm_complete=1
 elif ((recover_helm)); then
   matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation" ||
     die "Helm recovery requires the exact candidate Installation."
-  recovery_attempt=$(python3 scripts/upgrade-helm-state.py check-recovery "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace") ||
+  recovery_attempt=$(python3 scripts/upgrade-helm-state.py check-recovery "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace") ||
     die "Helm recovery preconditions failed; no recovery preflight or rollback was started."
   rendered="$evidence_dir/helm-attempts/$recovery_attempt/rendered.yaml"
   preflight_resume
-  recheck_applied_migration_secrets
-  python3 scripts/upgrade-helm-state.py recover "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace" ||
+  recheck_prepared_migration_secrets
+  python3 scripts/upgrade-helm-state.py recover "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace" ||
     die "Helm recovery did not complete; preserve its evidence and reconcile before further action."
-  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace")
+  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace")
   helm_complete=1
 fi
 if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
@@ -2596,6 +3039,7 @@ if ((helm_complete == 0)); then
     cmp -s "$evidence_dir/inventory/restart-preflight.json" "$evidence_dir/inventory/before-stop-selection.json" ||
       die "the deployment inventory selections or repository restart assessments changed after preparation; no additional OCC writer was stopped. Reconcile the fleet and prepare a new upgrade under exclusive maintenance ownership."
   fi
+  recheck_prepared_migration_secrets
   # These writes are sequential; a later conflict can leave the API stopped.
   for component in api worker; do
     # A stopped worker cannot receive a prospective assessment. Reconcile its
@@ -2633,6 +3077,7 @@ if ((helm_complete == 0)); then
   done
 
   if ((separate_handoff)) && { [[ ! -f "$handoff" ]] || ((migration_history_checked == 0)); }; then
+    recheck_prepared_migration_secrets
     if [[ ! -f "$handoff" ]]; then
       staged_handoff=$(mktemp "$evidence_dir/database-migration-handoff.XXXXXXXX")
       jq -nes --slurpfile api "$evidence_dir/quiescence-api-deployment.json" \
@@ -2642,19 +3087,19 @@ if ((helm_complete == 0)); then
       ' >"$staged_handoff" || die "Cannot record the stopped Deployment generations."
       mv "$staged_handoff" "$handoff"
     fi
-    die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers stopped. Use occ installation upgrade migration apply with the original profile, evidence directory and candidate options. After verification, use --resume --migration-history-checked. The Helm hook independently requires the complete candidate schema." 3
+    die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers stopped. Use occ installation upgrade migration apply RUN --profile PROFILE with the original evidence directory and candidate options. After verification, resume the original run with --migration-history-checked. The Helm hook independently requires the complete candidate schema." 3
   fi
 
   if ((separate_handoff)) && [[ "$migration_progress" != "{}" ]]; then
     recheck_migration_release pre-resume "$evidence_dir/before-helm-status.json"
   fi
-  recheck_applied_migration_secrets
+  recheck_prepared_migration_secrets
   progress "Applying reviewed settings and the Helm release."
   install_atomically "$candidate_values" "$values"
   if [[ -f "$evidence_dir/installation-changed" ]]; then
     install_atomically "$candidate_installation" "$installation"
     if ((replace_installation_secret)); then
-      recheck_applied_migration_secrets
+      recheck_prepared_migration_secrets
       python3 - "$live_secret" "$candidate_installation" "$installation_key" <<'PYTHON' |
 import base64, json, sys
 with open(sys.argv[1]) as f:
@@ -2681,7 +3126,7 @@ PYTHON
   if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
     verify_installation_switch
   fi
-  recheck_applied_migration_secrets
+  recheck_prepared_migration_secrets
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
   helm_status=0
@@ -2735,7 +3180,7 @@ for component in api worker; do
 done
 
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
-  python3 scripts/upgrade-helm-state.py verify-installation "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace" ||
+  python3 scripts/upgrade-helm-state.py verify-installation "$evidence_dir" "$release" "$execution_kubeconfig" "$context" "$namespace" ||
     die "the deployed Installation consumers do not match the staged reference."
   verify_installation_switch
 fi

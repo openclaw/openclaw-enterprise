@@ -27,11 +27,14 @@ let logger = createOccLogger({ component: "occ-migration", level: "info", destin
 
 try {
   const [option, ...extra] = process.argv.slice(2);
+  const guardedCheck = option === "--check-for-installation";
   const guarded =
-    option === "--apply-for-installation" || option === "--require-current-for-installation";
+    guardedCheck ||
+    option === "--apply-for-installation" ||
+    option === "--require-current-for-installation";
   const requireCurrent =
     option === "--require-current" || option === "--require-current-for-installation";
-  const checkOnly = option === "--check" || requireCurrent;
+  const checkOnly = option === "--check" || guardedCheck || requireCurrent;
   const expectEmpty = option === "--expect-empty";
   if (
     guarded
@@ -39,7 +42,7 @@ try {
       : extra.length || (option !== undefined && !checkOnly && !expectEmpty)
   ) {
     throw new Error(
-      "The migration command accepts no arguments, --check, --require-current, --expect-empty, --apply-for-installation ID, or --require-current-for-installation ID.",
+      "The migration command accepts no arguments, --check, --check-for-installation ID, --require-current, --expect-empty, --apply-for-installation ID, or --require-current-for-installation ID.",
     );
   }
   const installationId = guarded ? extra[0] : undefined;
@@ -109,7 +112,8 @@ try {
     migrationFinished = true;
     await cancellation;
   }
-  const event = checkOnly ? "migration.checked" : "migration.completed";
+  const checkedEvent = guardedCheck ? "migration.checked-for-installation" : "migration.checked";
+  const event = checkOnly ? checkedEvent : "migration.completed";
   process.stdout.write(`${JSON.stringify({ event, history })}\n`);
   emitOccLogEvent(logger, { event });
 } catch (error) {

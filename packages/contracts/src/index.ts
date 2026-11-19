@@ -153,7 +153,6 @@ export {
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
-  sandboxNetworkGrantsWithinCeiling,
 } from "./sandbox-policy.ts";
 
 export type {
@@ -785,8 +784,10 @@ export interface PluginToolCatalogEntry {
 }
 
 export interface PluginPolicyCapabilities {
-  /** An entry limits this plugin to its master switch. Unlisted plugins use the Driver defaults. */
-  readonly policyScopeByPlugin?: Readonly<Record<string, "enablement_only">>;
+  /** Per-plugin policy scope; unlisted plugins use the Driver defaults. */
+  readonly policyScopeByPlugin?: Readonly<
+    Record<string, "enablement_only" | "tool_human_approval">
+  >;
   readonly approvers?: {
     readonly agent: boolean;
     readonly plugin: boolean;
@@ -1145,14 +1146,7 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
   readonly configuration?: Readonly<Record<string, unknown>>;
 }
 
-/** Server-owned permission to continue interrupted work within a compatible lifecycle. */
-export interface RestartContinuation {
-  readonly generation: string;
-  readonly domain: string;
-}
-
 export interface AgentRevision extends Scope {
-  readonly restartContinuation?: RestartContinuation;
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
   readonly id: string;
@@ -1622,6 +1616,15 @@ export {
   StaticKeyConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
 export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-providers.ts";
+export {
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  TokenServiceSourceMetadata,
+} from "./api/token-service-sources.ts";
+export {
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
+} from "./api/agent-credential-push.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 
@@ -1708,6 +1711,7 @@ export type {
   TokenServiceSourceRef,
   InstallationClientSecretRef,
   TokenServiceRegistration,
+  TokenServiceSourceInstance,
   RegisteredTokenServiceSource,
   SourceLifecycleConfig,
   SourceRegistrationInput,
@@ -1717,6 +1721,20 @@ export type {
   SourceRefreshOperation,
   TokenServiceDriver,
 } from "./drivers/token-service/index.ts";
+
+export {
+  credentialProxyRoutingDetails,
+  networkGrantAdmissionDetails,
+  sandboxNetworkGrantsWithinCeiling,
+  validateDeploymentPolicy,
+} from "./deployment-policy.ts";
+export type {
+  CredentialBindingAuthority,
+  CredentialInjectionCapabilities,
+  DeploymentPolicy,
+  DeploymentPolicyValidationContext,
+  NetworkPolicyCapabilities,
+} from "./deployment-policy.ts";
 
 export type {
   BearerCredentialProjection,
@@ -1748,4 +1766,7 @@ export type {
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
 
-export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";
+export type {
+  CredentialUpdateNotification,
+  CredentialProxyDeploymentContract,
+} from "./drivers/credential-proxy/deployment.ts";

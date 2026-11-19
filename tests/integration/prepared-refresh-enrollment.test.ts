@@ -219,8 +219,10 @@ async function enrollmentFixture(t: TestContext, rotation: Rotation, refreshInst
   return {
     app,
     namespace,
-    path,
     body,
+    enroll(options: NonNullable<Parameters<typeof app.request>[2]> = {}) {
+      return app.request("POST", path, { body, ...options });
+    },
     async effects() {
       // Registration awaits configuration and minting; also observe the next event-loop turn.
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -241,15 +243,15 @@ type EnrollmentFixture = Awaited<ReturnType<typeof enrollmentFixture>>;
 
 async function assertAdmissionDiagnostics(f: EnrollmentFixture) {
   // Existing authentication, exact create authorization and schema diagnostics win first.
-  const anonymous = await f.app.request("POST", f.path, { body: f.body, session: null });
+  const anonymous = await f.enroll({ session: null });
   assert.equal(anonymous.status, 401);
   const reader = await f.app.createNamespaceMember("reader", f.namespace.id, [
     ["read", "credential_source"],
   ]);
   const readerSession = await f.app.signIn(reader.credentials);
-  const forbidden = await f.app.request("POST", f.path, { body: f.body, session: readerSession });
+  const forbidden = await f.enroll({ session: readerSession });
   assert.equal(forbidden.status, 403);
-  const malformed = await f.app.request("POST", f.path, { body: { ...f.body, config: {} } });
+  const malformed = await f.enroll({ body: { ...f.body, config: {} } });
   assert.equal(malformed.status, 400);
   assert.equal(malformed.body.error.code, "INVALID_REQUEST");
   assert.deepEqual(malformed.body.error.details, [
@@ -257,11 +259,21 @@ async function assertAdmissionDiagnostics(f: EnrollmentFixture) {
   ]);
 }
 
+const noEnrollmentEffects = {
+  configure: 0,
+  resolve: 0,
+  legacyConfigure: 0,
+  legacyRotate: 0,
+  sourceCreates: 0,
+  secretReads: 0,
+  rows: 0,
+};
+
 for (const refreshInstalled of [true, false]) {
   test(`prepared refresh enrollment refuses before effects (legacy Refresh ${refreshInstalled ? "installed" : "missing"})`, async (t) => {
     const f = await enrollmentFixture(t, "refresh", refreshInstalled);
     await assertAdmissionDiagnostics(f);
-    const response = await f.app.request("POST", f.path, { body: f.body });
+    const response = await f.enroll();
     const effects = await f.effects();
     assert.equal(response.status, 501, JSON.stringify({ response: response.body, effects }));
     assert.equal(response.body.error.code, "NOT_IMPLEMENTED");
@@ -269,29 +281,21 @@ for (const refreshInstalled of [true, false]) {
       response.body.error.message,
       "This prepared issuer does not support on-demand rotation. Use a Credential Gateway-owned refresh source instead.",
     );
-    assert.deepEqual(effects, {
-      configure: 0,
-      resolve: 0,
-      legacyConfigure: 0,
-      legacyRotate: 0,
-      sourceCreates: 0,
-      secretReads: 0,
-      rows: 0,
-    });
+    // Rejection must precede persistence, secret access, and either issuer or legacy work.
+    assert.deepEqual(effects, noEnrollmentEffects);
   });
 }
 
 test("non-refresh prepared enrollment uses only its issuer with legacy Refresh installed", async (t) => {
   const f = await enrollmentFixture(t, "external", true);
-  const response = await f.app.request("POST", f.path, { body: f.body });
+  const response = await f.enroll();
   assert.equal(response.status, 201, JSON.stringify(response.body));
   assert.equal(response.data.state, "ready");
   assert.equal(response.data.ownerCapability, "credential_proxy");
+  // Only the prepared issuer may configure the persisted source and read its secret.
   assert.deepEqual(await f.effects(), {
+    ...noEnrollmentEffects,
     configure: 1,
-    resolve: 0,
-    legacyConfigure: 0,
-    legacyRotate: 0,
     sourceCreates: 1,
     secretReads: 1,
     rows: 1,

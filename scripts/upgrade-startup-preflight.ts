@@ -790,7 +790,7 @@ function migrationJob(
   release: string,
   image: string,
   timeoutSeconds: number,
-  mode: "check" | "apply" | "verify" = "check",
+  mode: "check" | "check-installation" | "apply" | "verify" = "check",
   installationId = "",
 ): JobManifest {
   const { job, template, spec, initializer } = migrationInitializer(renderedPath, release);
@@ -827,6 +827,7 @@ function migrationJob(
   container.command = ["node"];
   const options = {
     check: ["--check"],
+    "check-installation": ["--check-for-installation", installationId],
     apply: ["--apply-for-installation", installationId],
     verify: ["--require-current-for-installation", installationId],
   };
@@ -1262,7 +1263,10 @@ function parseCommand([action, ...input]: string[]): Command {
     case "migration-job": {
       const [rendered, name, namespace, release, image, timeout, mode, installationId] =
         argumentsOf(input, 8);
-      if (mode !== "apply" && mode !== "verify") {
+      if (
+        !installationId ||
+        (mode !== "check-installation" && mode !== "apply" && mode !== "verify")
+      ) {
         return failUsage();
       }
       return {

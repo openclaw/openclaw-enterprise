@@ -69,6 +69,11 @@ Prepare:
 - PostgreSQL backups for controller migrations and Agent-volume backups for
   runtime releases that can require data restoration.
 
+Upgrades ignore `bootstrap.password` and `bootstrap.serviceKey` from earlier charts.
+Keep the legacy PVC through [release verification](#verify-the-release).
+Before deleting it, confirm no workloads reference it and preserve any
+initial administrator credentials it holds.
+
 Repository-enabled releases require `--controller-image` and `--broker-image`,
 even for unchanged digests. Stage trusted images as UID 1000 on Linux with OpenSSL
 and Docker Engine supporting platform-specific inspection and export. Nodes
@@ -83,13 +88,10 @@ Use an Installation-scoped OCC service key with Installation `read` and
 Agents with a selected revision and no pending deployment also require Agent
 `deploy` and selected AgentRevision `read`.
 
-Before shutdown, controller-only upgrades require readable saved Harness settings
-from `occ agent revision` and an accepted
-[repository restart disposition](../../reference/repository-credentials/worker-replacement.md)
-for each retained running Agent. Missing assessments, including from older
-controllers, block retention. Stop and settle affected Agents under an authorized
-interruption or plan normal runtime replacement. If the pre-stop inventory
-changes, prepare again. Check
+Before shutdown, controller-only upgrades require each retained running Agent's
+readable Harness settings (`occ agent revision`) and an accepted
+[restart assessment](../../reference/repository-credentials/worker-replacement.md).
+Missing assessments block retention. Prepare again if inventory changes. Check
 [Git session continuity](upgrade-checklist.md#record-the-starting-state) and
 [apply the release in order](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
@@ -142,15 +144,14 @@ cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
 chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
 ```
 
-Candidates support [separate migrations](separate-database-upgrade.md), [immutable Installation Secrets](immutable-installation-upgrade.md),
-[Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies) changes and
-[curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs) selection.
-They can wrap one existing `drivers.plugin` registration in an array, preserving
-its `id` and `configuration`. Remove retired `agentNativeAdmin.sharedCookieDomain`
-regardless of value; preserve `auth.baseUrl` and `agentNativeAdmin.domain` for cookie scope.
-The baseline remains in evidence. Unchanged retired bootstrap outputs are
-[removed from the prepared candidate](production-upgrade-command.md#retired-bootstrap-outputs).
-Other configuration changes remain unsupported.
+Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
+These copies can change the [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
+and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+A candidate can wrap one existing `drivers.plugin` registration in an array
+with the same `id` and `configuration`. Remove `agentNativeAdmin.sharedCookieDomain`
+and preserve `auth.baseUrl` and `agentNativeAdmin.domain` for cookie scope.
+The helper preserves the baseline during preparation. Other configuration
+changes are unsupported.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
 Candidate files cannot change IAM, authentication, Installation identity, database credentials,
@@ -159,11 +160,10 @@ settings, including the GitHub Backend, registry path, Repo Driver and Compute c
 Select images with their flags; do not edit image fields or the managed
 Installation checksum in candidate files.
 
-Keep the referenced repository registry ConfigMap, broker trust Secrets, and
-other external credential-service configuration unchanged through the release
-and recovery. The helper compares their references, not their contents; review
-them with the [repository installation guide](../repository-credentials/installation.md)
-before upgrading.
+Keep the referenced repository registry ConfigMap, broker trust Secrets and
+other external credential-service configuration unchanged through release
+and recovery. The helper compares references, not contents; review them first
+with the [repository installation guide](../repository-credentials/installation.md).
 
 Add either or both flags:
 
@@ -182,8 +182,7 @@ unchanged for recovery.
 
 Unsupported candidate settings stop the helper with `candidate
 Installation changes a protected setting`. Apply other changes, such as newly
-recommended resource values, separately with
-[apply other Installation changes](production-installation-changes.md).
+recommended resource values, [separately](production-installation-changes.md).
 
 ## Bind the Installation once
 
@@ -215,19 +214,22 @@ Never overwrite a different ID; reconcile cluster and bootstrap records.
 ## Rehearse before the maintenance window
 
 Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
-upgrade command. With writers active, it checks inputs, repository image pairs,
-Helm's server dry run, rendered Certificate admission, then startup and migration
-compatibility in temporary Jobs.
-The migration Job runs the candidate image's migration entry with `--check` and
-the initializer's migrator credential and CA. Recognized pending history
-is allowed; migrations are not applied. The Helm hook rechecks history; separate
-migrations require completion with `--require-current`.
+upgrade command. Preflight checks inputs, image pairs, Helm server dry run,
+Certificate admission, startup and migration compatibility while writers run.
+The migration Job uses the candidate image and the initializer's credential
+and CA. Hook mode uses `--check`. [Separate mode](separate-database-upgrade.md)
+checks Installation identity with `--check-for-installation`. Both allow
+recognized pending history. The separate Helm hook requires completed history.
+Pods retain chart security and NetworkPolicy labels. Cleanup confirms Jobs and
+Pods disappear before Secrets and NetworkPolicies.
 
-Pods retain chart security and NetworkPolicy labels. Upgrade waits for Jobs and
-Pods to disappear, then Secrets and NetworkPolicies.
+After checks and cleanup, control-plane preflight exits 1 if a retained
+revision requires its original worker. The upgrade remains blocked.
+Stop and settle affected Agents in an authorized interruption or plan a revision
+replacement. With `--verify-agent`, preflight observes the workload before the upgrade.
 
-With an immutable Installation Secret, keep the live configuration or
-[stage an immutable successor](immutable-installation-upgrade.md) before preflight.
+Keep the live immutable Installation Secret or
+[stage a successor](immutable-installation-upgrade.md) before preflight.
 
 After [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources), begin the maintenance window.
 Freeze other Helm changes and disable automation that restarts or scales OCC
@@ -311,7 +313,7 @@ scripts/upgrade-production-images "${target[@]}" \
   --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
-When repository credentials are enabled, also pass `--controller-image` (current
+With repository credentials, also pass `--controller-image` (current
 digest) and `--broker-image` (selected digest). The worker and broker still restart.
 
 Check preflight warnings. The controller image checks saved Agent Configurations
@@ -323,15 +325,15 @@ Before mutation, the command requires a complete authorized inventory with no
 deployment in progress. Every running Agent must have a readable selected version
 in a ready Namespace. A running Agent without one, usually a failed initial
 deployment, stops the command before any change; the refusal lists up to ten
-such Agents by ID, name, and Namespace. Stop or delete each such Agent, or
-deploy it until it succeeds, then start again with a new evidence directory.
+by ID, name and Namespace. Stop, delete or successfully deploy each, then start
+again with a new evidence directory.
 
 The command writes the runtime digest to both Kubernetes Compute image fields,
 updates the mutable Installation Secret or selects its staged immutable successor,
 and runs Helm after quiescing OCC with the
 current controller image.
-The Installation checksum restarts the API and worker so they load the new
-configuration; their software version does not change.
+The Installation checksum restarts API and worker to load the new configuration
+without changing their software version.
 
 After OCC recovers, the command deploys every recorded running Agent, waits for
 durable success, confirms each new selected version, and requires its Pods to be
@@ -358,8 +360,8 @@ for [older state](../../reference/drivers/kubernetes-compute/storage-and-credent
 Upgraded runtime image; controller image remained unchanged and <count> running Agents selected new revisions.
 ```
 
-To release both images together, pass both image options. The command applies
-both changes in one Helm release before deploying the recorded fleet.
+To release both images together, pass both options; one Helm release applies
+both before deploying the recorded fleet.
 
 ## Verify the release
 
@@ -388,12 +390,12 @@ After promotion, [verify the served Console](../../release/container-promotion.m
 ## Recover from a partial failure
 
 Keep the original evidence directory, the runtime upgrade's sibling
-`.dispatch-state` journal, and the applicable maintenance restrictions. If the
+`.dispatch-state` journal, and maintenance restrictions. If the
 terminal disconnected, inspect the `completed` marker and the recorded Helm,
 rollout and Agent results. A missing marker leaves the outcome uncertain.
 
 If initialization is unclear, inspect the current Helm initialization Job with
-the matching CLI and a trusted kubeconfig that can read the named Job:
+the matching CLI and a trusted kubeconfig that can read it:
 
 ```bash
 job_target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'

@@ -247,7 +247,10 @@ export async function runPreflight(
   const name = field(container, "name");
   const migrationMode = list(field(container, "args") ?? [], "preflight container arguments").find(
     (argument) =>
-      argument === "--apply-for-installation" || argument === "--require-current-for-installation",
+      argument === "--check" ||
+      argument === "--check-for-installation" ||
+      argument === "--apply-for-installation" ||
+      argument === "--require-current-for-installation",
   );
   const scripted =
     optionalField(state.preflightResults, String(migrationMode ?? name)) ??
@@ -259,9 +262,13 @@ export async function runPreflight(
   // execute source; the installed migration test owns real database proof.
   // providerCompleted is a supported earlier receipt lineage with migrations pending.
   if (name === "migration") {
+    const event =
+      migrationMode === "--check-for-installation"
+        ? "migration.checked-for-installation"
+        : "migration.checked";
     return {
       phase: "Succeeded",
-      log: '{"event":"migration.checked","history":"providerCompleted"}\n',
+      log: JSON.stringify({ event, history: "providerCompleted" }) + "\n",
     };
   }
   const variables = field(container, "env");

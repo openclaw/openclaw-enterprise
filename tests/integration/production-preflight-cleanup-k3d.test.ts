@@ -267,6 +267,7 @@ test(
         await mkdir(join(directory, ".upgrade-lock"));
         const info = await stat(directory);
         const parameters = {
+          profiled: false,
           evidenceDirectory: { path: directory, st_dev: info.dev, st_ino: info.ino },
           arguments: [
             selection.kubeconfigPath,

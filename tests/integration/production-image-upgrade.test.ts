@@ -329,7 +329,10 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "\${!#}" == */after-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
+  const dispatchJson = `if [[ "$*" == '-e .profiled == true' ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
+fi
+if [[ "\${!#}" == */before-helm-status.json || "\${!#}" == */after-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -412,7 +415,8 @@ esac
       "$1" == scripts/upgrade-preflight-state.py ||
       ( "$1" == - && "$4" == */oce-upgrade-preflight-* ) ||
       ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
-        "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
+        "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ||
+      ( "$#" == 6 && "$1" == - && "$3" == "$UPGRADE_TEST_KUBECONFIG" ) ]]; then
   command -p python3 "$@"
 elif (($# == 3)); then
   printf '%s\\n' '${"e".repeat(64)}'
@@ -497,6 +501,7 @@ fi
   const environment = {
     ...process.env,
     AGENT_DEPLOY_RESPONSE: deployResponse,
+    KUBERC: "off",
     CLUSTER_INSTALLATION_ID: "ins_upgrade_test",
     CURRENT_CONTROLLER_IMAGE: baselineControllerImage,
     ORIGINAL_TOOL_PATH: process.env.PATH,

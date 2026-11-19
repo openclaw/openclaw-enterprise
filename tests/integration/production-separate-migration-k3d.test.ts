@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createServer } from "node:tls";
 import test from "node:test";
 import { promisify } from "node:util";
 import { Check } from "typebox/value";
-import { NamespaceId } from "../../packages/contracts/src/index.ts";
+import { AgentId, NamespaceId } from "../../packages/contracts/src/index.ts";
+import { run as runCommand } from "../fixtures/repository-credentials/process.ts";
 import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
@@ -62,9 +63,9 @@ test(
   "separate migration Helm upgrades keep writers stopped until the database passes verification",
   observabilitySelection,
   async (t) => {
-    // The unused dedicated runtime slot gives the real upgrade helper a change
-    // to make while the embedded runtime stays usable for the Agent journey.
-    const f = await installObservabilityControlPlane(t, { nodeForDedicatedRuntime: true });
+    // Use the same approved manifest in both runtime slots. The explicit incumbent
+    // tag makes the dedicated slot a distinct reference for the image upgrade.
+    const f = await installObservabilityControlPlane(t, { initialAgentImageTag: "incumbent" });
     const installation = record(await f.api("GET", "/installation"));
     const installationId = string(installation.id);
     const { kubeconfigPath, kubernetesContext } = f.selection;
@@ -119,8 +120,7 @@ test(
 
     // Exercise the ordinary helper against this installed API and database. A
     // runtime-only plan selects the incumbent controller for compatibility checks;
-    // no Agent is admitted until these checks finish. The imported Node image
-    // is only an unlaunched candidate input; this proves no runtime usability.
+    // no Agent is admitted until these checks finish.
     const occ = join(f.directory, "occ");
     await f.run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
     const source = (await f.run("git", ["rev-parse", "HEAD"])).trim();
@@ -224,7 +224,10 @@ test(
       ),
     );
     assert.equal(string(connected.id), installationId);
-    const preflight = (name: string, preflightOnly: boolean) =>
+    const valuesPath = join(f.directory, "values.json");
+    const upgradeTimeout = ["--timeout-seconds", "120"];
+    const upgradeExecution = { timeout: 240_000, env: cliEnvironment };
+    const preflight = (name: string) =>
       f.run(
         "bash",
         [
@@ -238,25 +241,21 @@ test(
           "--release",
           f.release,
           "--values",
-          join(f.directory, "values.json"),
+          valuesPath,
           "--installation",
           installationPath,
           "--runtime-image",
-          f.images.node,
+          f.images.runtime,
           "--source-revision",
           source,
           "--evidence-dir",
           join(f.directory, name),
           "--occ",
           occ,
-          "--timeout-seconds",
-          "120",
-          ...(preflightOnly ? ["--preflight-only"] : []),
+          ...upgradeTimeout,
+          "--preflight-only",
         ],
-        {
-          timeout: 240_000,
-          env: cliEnvironment,
-        },
+        upgradeExecution,
       );
     // Keep full dumps private. Authenticating the real CLI updates exactly this
     // key's last_request and updated_at. Ignore COPY row order, but retain every
@@ -395,21 +394,21 @@ test(
     // serve. The reviewed configuration change never becomes the Helm release.
     const profileDirectory = join(f.directory, "migration-profile");
     await mkdir(profileDirectory, { mode: 0o700 });
-    await writeFile(join(profileDirectory, "values.yaml"), JSON.stringify(f.values), {
+    await writeFile(join(profileDirectory, "values.yaml"), await readFile(valuesPath), {
       mode: 0o600,
     });
+    const targetProfile = {
+      kubeconfig: kubeconfigPath,
+      context: kubernetesContext,
+      namespace: f.system,
+      release: f.release,
+      installationDirectory: profileDirectory,
+      sourceRevision: source,
+    };
     const profile = join(profileDirectory, "upgrade.json");
     await writeFile(
       profile,
-      JSON.stringify({
-        kubeconfig: kubeconfigPath,
-        context: kubernetesContext,
-        namespace: f.system,
-        release: f.release,
-        installationDirectory: profileDirectory,
-        sourceRevision: source,
-        images: { controller: f.images.controller },
-      }),
+      JSON.stringify({ ...targetProfile, images: { controller: f.images.controller } }),
       { mode: 0o600 },
     );
     const helmRevision = async () =>
@@ -498,15 +497,43 @@ test(
     assert.ok(Number.isSafeInteger(interiorId));
     await sql(`UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=${interiorId}`);
     const corruptSnapshot = await databaseSnapshot("corrupt-before");
-    for (const preflightOnly of [true, false]) {
-      const name = preflightOnly ? "incompatible-preflight" : "incompatible-upgrade";
-      await assert.rejects(
-        preflight(name, preflightOnly),
-        /migration.*preflight|migration history/i,
+    // The earlier migration check runs without installation.yaml. Stage
+    // the same Installation bytes and runtime image as standalone preflight for apply.
+    await writeFile(join(profileDirectory, "installation.yaml"), await readFile(installationPath), {
+      mode: 0o600,
+    });
+    const applyProfile = join(profileDirectory, "apply.json");
+    await writeFile(
+      applyProfile,
+      JSON.stringify({ ...targetProfile, occ, images: { runtime: f.images.runtime } }),
+      { mode: 0o600 },
+    );
+    const applyUpgrade = (name: string) =>
+      f.run(
+        occ,
+        [
+          "installation",
+          "upgrade",
+          "apply",
+          "--profile",
+          applyProfile,
+          "--auto-approve",
+          "--evidence-dir",
+          join(f.directory, name),
+          "--",
+          ...upgradeTimeout,
+        ],
+        upgradeExecution,
       );
+    for (const [name, run] of [
+      ["incompatible-preflight", preflight],
+      ["incompatible-upgrade", applyUpgrade],
+    ] as const) {
+      await assert.rejects(run(name), /migration.*preflight|migration history/i);
       const log = await readFile(join(f.directory, name, "preflight-migration.log"), "utf8");
       assert.match(log, /MIGRATION_HISTORY_UNSUPPORTED/);
       await assertDatabase(corruptSnapshot, `${name}-after`);
+      assert.equal(await helmRevision(), revision);
       await assertIncumbent();
       await assertPreflightClean();
     }
@@ -516,7 +543,7 @@ test(
       `UPDATE drizzle.__drizzle_migrations SET hash='${interiorHash}' WHERE id=${interiorId}`,
     );
     const repairedSnapshot = await databaseSnapshot("repaired-before");
-    await preflight("compatible-preflight", true);
+    await preflight("compatible-preflight");
     assert.match(
       await readFile(join(f.directory, "compatible-preflight", "preflight-migration.log"), "utf8"),
       /"event":"migration.checked","history":"completed"/,
@@ -524,229 +551,266 @@ test(
     await assertDatabase(repairedSnapshot, "compatible-after");
     await assertIncumbent();
 
-    // The operator's maintenance window stops both writers before either database phase.
-    await f.kubectl(
-      "-n",
-      f.system,
-      "scale",
-      "deployment/openclaw-enterprise-api",
-      "deployment/openclaw-enterprise-worker",
-      "--replicas=0",
-    );
-    await f.waitFor(
-      "both writers stopped",
-      async () => (await f.pods("api")).length === 0 && (await f.pods("worker")).length === 0,
-    );
-    const stopped: Record<string, ReturnType<typeof deployment>> = {};
-    for (const component of ["api", "worker"]) {
-      stopped[component] = deployment(
-        await f.get("deployment", `openclaw-enterprise-${component}`),
-      );
-    }
-
-    // A real privilege drift must fail the chart's migration init container before
-    // Helm restores either Deployment. Rendering the right argument alone cannot prove this.
-    await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
-    await assert.rejects(
-      f.upgrade({
-        database: { ...record(f.values.database), upgradeMigration: "separate" },
-      }),
-      /failed pre-upgrade|BackoffLimitExceeded/,
-    );
-    const hook = record(await f.get("job", `${f.release}-initialization`));
-    const hookName = string(record(hook.metadata).name);
-    const logs = await f.kubectl("-n", f.system, "logs", `job/${hookName}`, "-c", "migration");
-    assert.match(logs, /MIGRATION_HISTORY_UNSUPPORTED/);
-    assert.equal(await receipts(), before);
-    for (const component of ["api", "worker"]) {
-      const currentDeployment = deployment(
-        await f.get("deployment", `openclaw-enterprise-${component}`),
-      );
-      const previous = stopped[component];
-      assert.ok(previous);
-      assert.equal(currentDeployment.metadata.uid, previous.metadata.uid);
-      assert.equal(currentDeployment.metadata.generation, previous.metadata.generation);
-      assert.equal(currentDeployment.spec.replicas, 0);
-      assert.equal((await f.pods(component)).length, 0);
-    }
-
-    // Recover the failed Helm revision before entering a new tool-owned handoff.
-    await sql("GRANT SELECT ON occ.iam_identities TO occ_app");
-    await f.upgrade({});
-    const predecessorRevision = await helmRevision();
-    assert.ok(predecessorRevision > revision);
-    const recoveredValues = { ...f.values };
-    await writeFile(join(profileDirectory, "values.yaml"), JSON.stringify(recoveredValues), {
-      mode: 0o600,
-    });
-    await writeFile(join(profileDirectory, "installation.yaml"), await readFile(installationPath), {
-      mode: 0o600,
-    });
-    const applyProfile = join(profileDirectory, "apply.json");
+    // Retain a provisioned, undeployed Agent through the handoff. The fixture
+    // runtime cannot run Doctor for a fleet replacement, so deploy this Agent
+    // through the real API after the verified resume.
+    const agent = await f.createAgent();
+    const agentId = agent.agent.id;
+    assert.ok(Check(AgentId, agentId));
+    assert.equal(agent.agent.desiredRuntimeState, "stopped");
+    const revisionIds = async () =>
+      array(await f.api("GET", `${agent.path}/revisions`)).map((revision) => record(revision).id);
+    assert.deepEqual(await revisionIds(), []);
+    const candidateValues = join(profileDirectory, "separate-migration.json");
     await writeFile(
-      applyProfile,
+      candidateValues,
       JSON.stringify({
-        kubeconfig: kubeconfigPath,
-        context: kubernetesContext,
-        namespace: f.system,
-        release: f.release,
-        installationDirectory: profileDirectory,
-        sourceRevision: source,
-        occ,
-        images: { runtime: f.images.runtime },
+        ...f.values,
+        database: { ...record(f.values.database), upgradeMigration: "separate" },
       }),
       { mode: 0o600 },
     );
-    const upgradeEvidence = join(f.directory, "separate-upgrade");
-    const upgrade = (operation: string[], ...extra: string[]) =>
-      f.run(
-        occ,
-        [
-          "installation",
-          "upgrade",
-          ...operation,
-          "--profile",
-          applyProfile,
-          "--evidence-dir",
-          upgradeEvidence,
-          "--",
-          "--timeout-seconds",
-          "120",
-          ...extra,
-        ],
-        { env: cliEnvironment, timeout: 360_000 },
+    const upgradeRun = join(f.directory, "separate-migration-upgrade");
+    const upgradeExpertOptions = [...upgradeTimeout, "--candidate-values", candidateValues];
+    const upgradeArguments = (operation: string[], attestations: string[], approved: boolean) => [
+      "installation",
+      "upgrade",
+      ...operation,
+      "--profile",
+      applyProfile,
+      ...(approved ? ["--auto-approve"] : []),
+      "--",
+      ...upgradeExpertOptions,
+      ...attestations,
+    ];
+    const runUpgrade = (operation: string[], attestations: string[] = []) =>
+      runCommand(occ, upgradeArguments(operation, attestations, true), {
+        ...upgradeExecution,
+        timeout: 360_000,
+        allowFailure: true,
+      });
+    const assertMigrationPause = (result: Awaited<ReturnType<typeof runUpgrade>>) => {
+      assert.equal(result.code, 3, "the installed CLI must preserve the migration handoff status");
+      assert.ok(
+        result.stderr.includes("API and worker stopped for the separate database deployment"),
+        "the native process must identify the stopped-writer handoff",
       );
-    await assert.rejects(
-      upgrade([]),
-      /API and worker stopped for the separate database deployment/,
-    );
-    const frozen = async () =>
-      Promise.all(
-        ["api", "worker"].map(async (component) => {
-          assert.equal((await f.pods(component)).length, 0);
-          const observed = deployment(
-            await f.get("deployment", `openclaw-enterprise-${component}`),
-          );
-          assert.equal(observed.spec.replicas, 0);
-          return observed;
-        }),
-      );
-    const handoff = await frozen();
-    assert.equal(await helmRevision(), predecessorRevision);
-
-    // Recreate the recognized 0081 predecessor in this disposable database.
-    // The genuine migrator must execute the pending 0082 SQL and append its receipt.
-    const completeReceipts = array(JSON.parse(before));
-    const manifest = record(
-      JSON.parse(await readFile("migrations/meta/_canonical-history.json", "utf8")),
-    );
-    const entries = array(manifest.entries);
-    const last = record(entries.at(-1));
-    assert.equal(last.tag, "0082_authentication_states");
-    assert.equal(entries.length, completeReceipts.length);
-    const digest = string(last.sha256);
-    const timestamp = number(last.when);
-    assert.match(digest, /^[a-f0-9]{64}$/);
-    assert.ok(Number.isSafeInteger(timestamp));
-    assert.equal((await sql("SELECT count(*) FROM occ.authentication_states")).trim(), "0");
-    const statements = (await readFile("migrations/0070_saved_connections.sql", "utf8")).split(
-      "--> statement-breakpoint",
-    );
-    const restore = [
-      /CREATE TABLE occ\.connection_sessions \(/,
-      /CREATE INDEX connection_sessions_expiry_idx ON occ\.connection_sessions/,
-      /GRANT SELECT, INSERT, DELETE ON occ\.connection_sessions TO occ_app/,
-      /CREATE TRIGGER connection_session_checks_template_scope BEFORE INSERT ON occ\.connection_sessions/,
-    ].map((pattern) => {
-      const matched = statements.filter((statement) => pattern.test(statement));
-      assert.equal(matched.length, 1, "the predecessor DDL must come from the canonical migration");
-      return string(matched[0]);
-    });
-    const [create, index, grant, trigger] = restore;
-    await sql(`
-      BEGIN;
-      SET LOCAL ROLE occ_migrator;
-      DROP TABLE occ.authentication_states;
-      DROP FUNCTION occ.guard_authentication_state_update();
-      ${create}
-      ${index}
-      REVOKE ALL ON occ.connection_sessions FROM PUBLIC, occ_app;
-      ${grant}
-      ${trigger}
-      DELETE FROM drizzle.__drizzle_migrations WHERE hash = '${digest}' AND created_at = ${timestamp};
-      COMMIT;
-    `);
-    const pending = array(JSON.parse(await receipts()));
-    assert.deepEqual(pending, completeReceipts.slice(0, -1));
-    const schemaState = () =>
-      sql(
-        "SELECT to_regclass('occ.connection_sessions') IS NOT NULL, to_regclass('occ.authentication_states') IS NOT NULL, to_regprocedure('occ.guard_authentication_state_update()') IS NOT NULL",
-      );
-    assert.equal((await schemaState()).trim(), "t|f|f");
+    };
+    // The real CLI stops the writers and records their identity before submitting Helm.
+    const paused = await runUpgrade(["apply", "--evidence-dir", upgradeRun]);
+    assertMigrationPause(paused);
     assert.match(
-      await migrationCheck("pending-canonical", recoveredValues),
-      /Migration check passed \(history: preAuthenticationStates\)/,
+      await readFile(join(upgradeRun, "preflight-migration.log"), "utf8"),
+      /"event":"migration.checked-for-installation","history":"completed"/,
     );
-    assert.deepEqual(array(JSON.parse(await receipts())), pending);
-    assert.deepEqual(await frozen(), handoff);
+    const evidenceIdentity = await stat(upgradeRun);
+    const handoffFile = join(upgradeRun, "database-migration-handoff.json");
+    const handoffBytes = await readFile(handoffFile, "utf8");
+    const handoff = record(JSON.parse(handoffBytes));
+    const assertWriterFence = async () => {
+      assert.equal(await helmRevision(), revision);
+      assert.equal(await receipts(), before);
+      assert.equal(
+        (await sql(`SELECT count(*) FROM occ.agent_revisions WHERE agent_id='${agentId}'`)).trim(),
+        "0",
+        "the fenced upgrade must leave the retained Agent without a revision",
+      );
+      assert.equal(await readFile(handoffFile, "utf8"), handoffBytes);
+      const currentEvidence = await stat(upgradeRun);
+      assert.equal(currentEvidence.dev, evidenceIdentity.dev);
+      assert.equal(currentEvidence.ino, evidenceIdentity.ino);
+      const markers = await readdir(upgradeRun);
+      assert.ok(markers.includes("prepared"));
+      assert.ok(!markers.includes("helm-started"));
+      assert.ok(!markers.includes("completed"));
+      for (const component of ["api", "worker"]) {
+        const current = deployment(await f.get("deployment", `openclaw-enterprise-${component}`));
+        const previous = incumbent[component];
+        assert.ok(previous);
+        assert.equal(current.metadata.uid, previous.metadata.uid);
+        assert.ok(current.metadata.generation > previous.metadata.generation);
+        assert.deepEqual(current.metadata, handoff[component]);
+        assert.equal(current.spec.replicas, 0);
+        assert.equal((await f.pods(component)).length, 0);
+      }
+      await assertPreflightClean();
+    };
+    await assertWriterFence();
 
-    // The new CLI owns both Jobs. The old schema disappears and the live
-    // ledger gains exactly the canonical receipt while Helm and writers wait.
-    assert.match(await upgrade(["migration", "apply"]), /Database migration verified/);
+    const attempt = record(
+      JSON.parse(await readFile(join(upgradeRun, "prepared-helm-attempt.json"), "utf8")),
+    );
+    const hookName = `${f.release}-initialization`;
+    const hook = record(
+      JSON.parse(
+        await f.run("yq", [
+          "-o=json",
+          `select(.kind == "Job" and .metadata.name == "${hookName}")`,
+          join(upgradeRun, "helm-attempts", string(attempt.nonce), "rendered.yaml"),
+        ]),
+      ),
+    );
+    const template = record(record(record(hook.spec).template).spec);
+    const migration = array(template.initContainers).find(
+      (container) => named(container) && container.name === "migration",
+    );
+    assert.ok(named(migration));
+    assert.equal(migration.image, f.images.controller);
+    assert.equal(array(migration.args).at(-1), "--require-current");
+    // PostgreSQL compatibility tests cover applying pending SQL from a canonical
+    // predecessor. Here the installed release starts current, so applying and
+    // verifying through the real Jobs must preserve its schema, data and receipts.
+    const fencedDatabase = await databaseSnapshot("migration-fenced-before");
+
+    // Declining approval must leave the original run untouched while Helm and
+    // both writers stay fenced.
+    const migrationApply = ["migration", "apply", upgradeRun];
+    const beforeDecline = (await readdir(upgradeRun)).sort();
+    const declined = await runCommand(
+      "python3",
+      [
+        "-c",
+        "import os,pty,sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))",
+        occ,
+        ...upgradeArguments(migrationApply, [], false),
+      ],
+      { ...upgradeExecution, input: "no\n", allowFailure: true },
+    );
+    assert.equal(declined.code, 1, declined.stdout + declined.stderr);
+    assert.match(declined.stdout, /cancelled; no command dispatched/);
+    assert.deepEqual((await readdir(upgradeRun)).sort(), beforeDecline);
+    await assert.rejects(stat(`${upgradeRun}.migration-state.json`), { code: "ENOENT" });
+    await assertDatabase(fencedDatabase, "migration-declined-after");
+    await assertWriterFence();
+
+    // Both Jobs must complete and clean up before the explicit resume.
+    const applied = await runUpgrade(migrationApply);
+    assert.equal(applied.code, 0, applied.stdout + applied.stderr);
+    assert.match(applied.stdout, /Database migration verified and its Jobs and Pods are gone/);
     for (const [stage, option] of [
       ["apply", "--apply-for-installation"],
       ["verify", "--require-current-for-installation"],
     ]) {
-      const path = join(
-        upgradeEvidence,
-        `migration-deploy-${stage}`,
-        "preflight-migration-job.json",
-      );
+      const path = join(upgradeRun, `migration-deploy-${stage}`, "preflight-migration-job.json");
       const job = record(JSON.parse(await readFile(path, "utf8")));
       const template = record(record(job.spec).template);
       const migrator = record(array(record(template.spec).containers)[0]);
       assert.deepEqual(array(migrator.args).slice(-2), [option, installationId]);
     }
     assert.match(
-      await readFile(
-        join(upgradeEvidence, "migration-deploy-apply", "preflight-migration.log"),
-        "utf8",
-      ),
-      /"event":"migration.completed","history":"preAuthenticationStates"/,
+      await readFile(join(upgradeRun, "migration-deploy-apply", "preflight-migration.log"), "utf8"),
+      /"event":"migration.completed","history":"completed"/,
     );
     assert.match(
       await readFile(
-        join(upgradeEvidence, "migration-deploy-verify", "preflight-migration.log"),
+        join(upgradeRun, "migration-deploy-verify", "preflight-migration.log"),
         "utf8",
       ),
       /"event":"migration.checked","history":"completed"/,
     );
-    const migrated = array(JSON.parse(await receipts()));
-    assert.equal(migrated.length, pending.length + 1);
-    assert.deepEqual(migrated.slice(0, -1), pending);
-    assert.equal(record(migrated.at(-1)).hash, digest);
-    assert.equal(record(migrated.at(-1)).created_at, timestamp);
-    assert.equal((await schemaState()).trim(), "f|t|t");
-    assert.deepEqual(await frozen(), handoff);
-    assert.equal(await helmRevision(), predecessorRevision);
-    await assertPreflightClean();
+    await assertDatabase(fencedDatabase, "migration-verified-after");
+    await assertWriterFence();
 
-    await upgrade(["resume"], "--migration-history-checked");
-    assert.equal(await helmRevision(), predecessorRevision + 1);
+    // The original run also needs the explicit resume attestation.
+    const resume = ["resume", upgradeRun];
+    assertMigrationPause(await runUpgrade(resume));
+    await assertWriterFence();
+
+    const resumed = await runUpgrade(resume, ["--migration-history-checked"]);
+    assert.equal(resumed.code, 0, "verified history must allow the original CLI run to finish");
+    assert.equal(await helmRevision(), revision + 1);
+    const submittedHook = record(await f.get("job", hookName));
+    assert.equal(
+      record(record(submittedHook.metadata).annotations)["openclaw.dev/upgrade-attempt"],
+      attempt.nonce,
+    );
+    assert.ok((await readdir(upgradeRun)).includes("completed"));
     const checked = await f.kubectl("-n", f.system, "logs", `job/${hookName}`, "-c", "migration");
     assert.match(checked, /"event":"migration.checked","history":"completed"/);
-    for (const component of ["api", "worker"]) {
-      await f.currentPod(component);
-      assert.equal(
-        deployment(await f.get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
-        1,
-      );
-    }
-    assert.deepEqual(JSON.parse(await receipts()), migrated);
-    assert.equal(string(record(await f.api("GET", "/installation")).id), installationId);
-    // Prove the recovered API and worker can still deploy an Agent through their real caller.
-    const agent = await f.createAgent();
-    await agent.deploy();
+    await connection.stop();
+    const writerComponents = ["api", "worker"];
+    const assertServingWriters = async () => {
+      for (const component of writerComponents) {
+        await f.currentPod(component);
+        assert.equal(
+          deployment(await f.get("deployment", "openclaw-enterprise-" + component)).spec.replicas,
+          1,
+        );
+      }
+    };
+    await assertServingWriters();
+    assert.equal(await receipts(), before);
+    const retainedAgent = record(await f.api("GET", agent.path));
+    assert.equal(retainedAgent.id, agentId);
+    assert.equal(retainedAgent.desiredRuntimeState, "stopped");
+    assert.deepEqual(await revisionIds(), []);
+    const admission = await agent.deploy();
+    assert.equal(admission.agentId, agentId);
+    assert.deepEqual(await revisionIds(), [admission.id]);
     await agent.stop();
+
+    // Separately submit a real chart upgrade to exercise Helm's own safety gate
+    // without the CLI's earlier compatibility check. Use the exact deployed values
+    // so the deliberate privilege drift is the only reason the hook can refuse.
+    const deployedValues = record(
+      JSON.parse(
+        await f.run("helm", [
+          "get",
+          "values",
+          f.release,
+          "--kubeconfig",
+          kubeconfigPath,
+          "--kube-context",
+          kubernetesContext,
+          "--namespace",
+          f.system,
+          "--output",
+          "json",
+        ]),
+      ),
+    );
+    assert.equal(record(deployedValues.database).upgradeMigration, "separate");
+    await f.kubectl(
+      "-n",
+      f.system,
+      "scale",
+      ...writerComponents.map((component) => "deployment/openclaw-enterprise-" + component),
+      "--replicas=0",
+    );
+    await f.waitFor(
+      "both writers stopped for the independent Helm check",
+      async () => (await f.pods("api")).length === 0 && (await f.pods("worker")).length === 0,
+    );
+    const writerState = () =>
+      Promise.all(
+        writerComponents.map(async (component) =>
+          deployment(await f.get("deployment", "openclaw-enterprise-" + component)),
+        ),
+      );
+    const stopped = await writerState();
+    assert.ok(stopped.every(({ spec }) => spec.replicas === 0));
+    await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
+    try {
+      await assert.rejects(f.upgrade(deployedValues), /failed pre-upgrade|BackoffLimitExceeded/);
+      const logs = await f.kubectl("-n", f.system, "logs", "job/" + hookName, "-c", "migration");
+      assert.match(logs, /MIGRATION_HISTORY_UNSUPPORTED/);
+      assert.equal(await helmRevision(), revision + 2);
+      assert.equal(await receipts(), before);
+      assert.deepEqual(await writerState(), stopped);
+      for (const component of writerComponents) {
+        assert.equal((await f.pods(component)).length, 0);
+      }
+    } finally {
+      await sql("GRANT SELECT ON occ.iam_identities TO occ_app");
+    }
+
+    await f.upgrade(deployedValues);
+    const restored = await f.kubectl("-n", f.system, "logs", "job/" + hookName, "-c", "migration");
+    assert.match(restored, /"event":"migration.checked","history":"completed"/);
+    await assertServingWriters();
+    assert.equal(await receipts(), before);
+    assert.equal(string(record(await f.api("GET", "/installation")).id), installationId);
+    assert.equal(record(await f.api("GET", agent.path)).id, agentId);
+    assert.deepEqual(await revisionIds(), [admission.id]);
   },
 );

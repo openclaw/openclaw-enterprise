@@ -194,6 +194,310 @@
       }
     },
     "schemas": {
+      "PushAgentCredentialsBody": {
+        "additionalProperties": false,
+        "description": "Proposed manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
+        "properties": {
+          "sources": {
+            "anyOf": [
+              { "const": "all", "type": "string" },
+              {
+                "items": {
+                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            ],
+            "description": "Select all eligible sources or name each source to retry. Eligible sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on the source."
+          }
+        },
+        "required": ["sources"],
+        "title": "PushAgentCredentialsBody",
+        "type": "object"
+      },
+      "PushAgentCredentialsResponse": {
+        "additionalProperties": false,
+        "description": "Proposed response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "results": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "outcome": {
+                      "anyOf": [
+                        {
+                          "const": "succeeded",
+                          "description": "The Credential Proxy completed the update notification according to its binding. A push confirms that every serving copy can use the resolved version. If no delivery resource exists, the proxy succeeds without resolving or creating one.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "resolution_failed",
+                          "description": "The proxy requested the credential, but its source-bound resolver failed.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "delivery_failed",
+                          "description": "The Credential Proxy could not complete the update notification, including when material required for a push had no resolved version.",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "sourceId": {
+                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["sourceId", "outcome"],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["results"],
+            "type": "object"
+          },
+          "meta": {
+            "additionalProperties": false,
+            "properties": {
+              "requestId": {
+                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "required": ["requestId"],
+            "type": "object"
+          }
+        },
+        "required": ["data", "meta"],
+        "title": "PushAgentCredentialsResponse",
+        "type": "object"
+      },
+      "RegisterTokenServiceSourceBody": {
+        "additionalProperties": false,
+        "description": "Proposed registration body for a Namespace credential source. OCC allocates the identity and selects the TokenService Driver. An attached Connection Template supplies its current settings. Supply the secret fields required by the source type.",
+        "properties": {
+          "config": {
+            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+            "description": "Non-secret source configuration keyed by catalog field name.",
+            "maxProperties": 32,
+            "type": "object"
+          },
+          "connectionTemplateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+            "type": "string"
+          },
+          "secret": {
+            "additionalProperties": {
+              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+              "maxLength": 65536,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$",
+              "type": "string"
+            },
+            "description": "Credential values keyed by the secret fields declared by the source type.",
+            "maxProperties": 16,
+            "minProperties": 1,
+            "type": "object",
+            "writeOnly": true
+          },
+          "type": {
+            "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "type": "string"
+          }
+        },
+        "required": ["name", "type"],
+        "title": "RegisterTokenServiceSourceBody",
+        "type": "object"
+      },
+      "TokenServiceSourceMetadata": {
+        "additionalProperties": false,
+        "description": "Proposed public metadata for a Namespace source. OCC keeps the TokenService instance and private registration reference internally. Metadata reads do not resolve a usable credential.",
+        "properties": {
+          "config": {
+            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+            "description": "Non-secret source configuration keyed by catalog field name.",
+            "maxProperties": 32,
+            "type": "object"
+          },
+          "connectionTemplateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+            "type": "string"
+          },
+          "namespaceId": {
+            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "ref": {
+            "additionalProperties": false,
+            "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+            "properties": {
+              "id": {
+                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              "kind": { "const": "credential_source", "type": "string" },
+              "namespaceId": {
+                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "required": ["kind", "namespaceId", "id"],
+            "type": "object"
+          },
+          "state": {
+            "anyOf": [
+              { "const": "registering", "type": "string" },
+              { "const": "ready", "type": "string" },
+              { "const": "deleting", "type": "string" }
+            ]
+          },
+          "status": {
+            "additionalProperties": false,
+            "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+            "properties": {
+              "reason": { "maxLength": 512, "type": "string" },
+              "refresh": {
+                "additionalProperties": false,
+                "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                "properties": {
+                  "expiresAt": { "format": "date-time", "type": "string" },
+                  "failureCode": { "maxLength": 128, "type": "string" },
+                  "lastRefreshAt": { "format": "date-time", "type": "string" },
+                  "nextRefreshAt": { "format": "date-time", "type": "string" },
+                  "recoveryAction": {
+                    "anyOf": [
+                      { "const": "retry", "type": "string" },
+                      { "const": "reauthorize", "type": "string" },
+                      { "const": "fix_configuration", "type": "string" },
+                      { "const": "investigate", "type": "string" }
+                    ]
+                  },
+                  "state": {
+                    "anyOf": [
+                      { "const": "pending", "type": "string" },
+                      { "const": "ready", "type": "string" },
+                      { "const": "failed", "type": "string" }
+                    ]
+                  }
+                },
+                "required": ["state"],
+                "type": "object"
+              },
+              "state": {
+                "anyOf": [
+                  { "const": "ready", "type": "string" },
+                  { "const": "pending", "type": "string" },
+                  { "const": "failed", "type": "string" },
+                  { "const": "absent", "type": "string" }
+                ]
+              }
+            },
+            "required": ["state"],
+            "type": "object"
+          },
+          "type": {
+            "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "type": "string"
+          },
+          "version": {
+            "description": "Opaque usable credential version when recorded by the owner.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": ["id", "namespaceId", "ref", "name", "type", "config", "state"],
+        "title": "TokenServiceSourceMetadata",
+        "type": "object"
+      },
+      "UpdateTokenServiceSourceBody": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "config": {
+                "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+                "description": "Non-secret source configuration keyed by catalog field name.",
+                "maxProperties": 32,
+                "type": "object"
+              },
+              "secret": {
+                "additionalProperties": {
+                  "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+                  "maxLength": 65536,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$",
+                  "type": "string"
+                },
+                "description": "Credential values keyed by the secret fields declared by the source type.",
+                "maxProperties": 16,
+                "minProperties": 1,
+                "type": "object",
+                "writeOnly": true
+              }
+            },
+            "required": ["config"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "config": {
+                "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+                "description": "Non-secret source configuration keyed by catalog field name.",
+                "maxProperties": 32,
+                "type": "object"
+              },
+              "secret": {
+                "additionalProperties": {
+                  "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+                  "maxLength": 65536,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$",
+                  "type": "string"
+                },
+                "description": "Credential values keyed by the secret fields declared by the source type.",
+                "maxProperties": 16,
+                "minProperties": 1,
+                "type": "object",
+                "writeOnly": true
+              }
+            },
+            "required": ["secret"],
+            "type": "object"
+          }
+        ],
+        "description": "Proposed update to credential material, mutable lifecycle settings, or both. Omitted fields retain their values.",
+        "title": "UpdateTokenServiceSourceBody"
+      },
       "def-0": {
         "anyOf": [
           { "type": "string" },
@@ -766,12 +1070,12 @@
               },
               "status": {
                 "additionalProperties": false,
-                "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                 "properties": {
                   "reason": { "maxLength": 512, "type": "string" },
                   "refresh": {
                     "additionalProperties": false,
-                    "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                    "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
                     "properties": {
                       "expiresAt": { "format": "date-time", "type": "string" },
                       "failureCode": { "maxLength": 128, "type": "string" },
@@ -809,7 +1113,7 @@
                 "type": "object"
               },
               "type": {
-                "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                 "maxLength": 64,
                 "minLength": 1,
                 "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -13061,7 +13365,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -13167,8 +13471,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -13485,7 +13791,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -13591,8 +13897,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -15741,7 +16049,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -15847,8 +16155,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -24503,7 +24813,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete."
+                          "description": "Status of recorded runtime retirement and session disposal for retiring or nonserving Agent revisions. Session disposal reports its current queue state. `null` means there is no applicable work record. `succeeded` means the applicable records show completion at the time of the read."
                         },
                         "deploymentId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -29021,7 +29331,12 @@
                         "driver": { "$ref": "#/components/schemas/def-1" },
                         "driverPolicySchema": { "additionalProperties": {}, "type": "object" },
                         "policyScopeByPlugin": {
-                          "additionalProperties": { "const": "enablement_only", "type": "string" },
+                          "additionalProperties": {
+                            "anyOf": [
+                              { "const": "enablement_only", "type": "string" },
+                              { "const": "tool_human_approval", "type": "string" }
+                            ]
+                          },
                           "type": "object"
                         },
                         "toolDefaults": {
@@ -34010,6 +34325,21 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "rev_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "query",
+            "name": "expectedActiveRevisionId",
+            "required": false,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
                 "value": "ns_123e4567-e89b-42d3-a456-426614174000"
               }
             },
@@ -37281,12 +37611,12 @@
                           },
                           "status": {
                             "additionalProperties": false,
-                            "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                            "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                             "properties": {
                               "reason": { "maxLength": 512, "type": "string" },
                               "refresh": {
                                 "additionalProperties": false,
-                                "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                                "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
                                 "properties": {
                                   "expiresAt": { "format": "date-time", "type": "string" },
                                   "failureCode": { "maxLength": 128, "type": "string" },
@@ -37324,7 +37654,7 @@
                             "type": "object"
                           },
                           "type": {
-                            "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                            "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                             "maxLength": 64,
                             "minLength": 1,
                             "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -37507,7 +37837,7 @@
                     "type": "object"
                   },
                   "type": {
-                    "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                    "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                     "maxLength": 64,
                     "minLength": 1,
                     "pattern": "^[a-z][a-z0-9-]{0,63}$",

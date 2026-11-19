@@ -2,12 +2,11 @@ import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-mi
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { bashString } from "../helpers/fixture-command-server.ts";
 import { continuityNamespace } from "../helpers/production-upgrade-continuity-fixture.ts";
 import {
   assertStoppedBeforeWriters,
@@ -22,7 +21,6 @@ import {
   field,
   list,
   requireRecoveryPreflight,
-  type RecoveryState,
 } from "../helpers/production-upgrade-recovery-state.ts";
 import {
   controller,
@@ -30,6 +28,7 @@ import {
   newController,
   skipWithoutHelm,
 } from "../helpers/production-upgrade-recovery-tools.ts";
+import { restartInventory } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
 import { registerPreflightCleanupTests } from "../helpers/production-upgrade-preflight-cleanup.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
@@ -181,7 +180,7 @@ async function readMigrationStages(f: RecoveryFixture) {
   return evidenceObject(readJsonObject(raw, "migration journal").stages, "journal stages");
 }
 
-async function prepareSeparateMigration(
+async function separateMigrationFixture(
   t: TestContext,
   fixture: RecoveryFixtureFactory,
   helm: string,
@@ -190,6 +189,7 @@ async function prepareSeparateMigration(
   const f = await fixture(t, {
     controllerOnly: true,
     candidates: true,
+    migrationSecrets: true,
     chart: { installation: (installation) => installation },
   });
   await writeFile(
@@ -211,6 +211,26 @@ async function prepareSeparateMigration(
   );
   const { stdout } = await renderInitializerChart(helm, repository, valuesPath);
   const initializer = await installChartInitializer(f, stdout);
+  const originalSecrets = evidenceObject(
+    requireRecoveryPreflight(await f.state()).secrets,
+    "original migration Secrets",
+  );
+  assert.equal(Object.keys(originalSecrets).length, 2, "fixture needs the migrator and CA Secrets");
+  return { f, initializer, originalSecrets };
+}
+
+async function prepareSeparateMigration(
+  t: TestContext,
+  fixture: RecoveryFixtureFactory,
+  helm: string,
+  repository: string,
+) {
+  const { f, initializer, originalSecrets } = await separateMigrationFixture(
+    t,
+    fixture,
+    helm,
+    repository,
+  );
   const statePath = join(f.directory, "state.json");
   await assert.rejects(f.run(), { code: 3, stderr: /separate database deployment/ });
   const frozen = await f.state();
@@ -254,14 +274,9 @@ async function prepareSeparateMigration(
     ...Object.fromEntries(caSecrets),
     [databaseSecretName]: databaseSecret,
   };
-  const stopped: RecoveryState = {
-    ...frozen,
-    preflight: { ...preflight, secrets: migrationSecrets },
-  };
-  const beforeJobs = evidenceArray(
-    requireRecoveryPreflight(stopped).created,
-    "preflight creations",
-  ).length;
+  assert.deepEqual(originalSecrets, migrationSecrets);
+  assert.deepEqual(preflight.secrets, originalSecrets);
+  const beforeJobs = evidenceArray(preflight.created, "preflight creations").length;
   const attempt = () => f.run("--migration-apply-only");
   const assertHeld = async (created: number) => {
     const current = await f.state();
@@ -274,13 +289,12 @@ async function prepareSeparateMigration(
     );
     return requireRecoveryPreflight(current);
   };
-  await writeFile(statePath, JSON.stringify(stopped));
   return {
     f,
     initializer,
     statePath,
     frozen,
-    stopped,
+    stopped: frozen,
     databaseSecretName,
     databaseSecret,
     migrationSecrets,
@@ -288,6 +302,14 @@ async function prepareSeparateMigration(
     attempt,
     assertHeld,
   };
+}
+
+async function clearSettledMigrationLock(f: RecoveryFixture) {
+  const lock = join(f.evidence, ".upgrade-lock");
+  assert.ok((await stat(lock)).isDirectory(), "an unresolved write must retain its lock");
+  // The test has joined the previous process and reconciled the original
+  // operation. Leave the journal and Job receipts available for readback.
+  await rmdir(lock);
 }
 
 async function stopAtApplyCleanup(prepared: Awaited<ReturnType<typeof prepareSeparateMigration>>) {
@@ -309,6 +331,7 @@ async function stopAtApplyCleanup(prepared: Awaited<ReturnType<typeof prepareSep
     }),
   );
   await assert.rejects(attempt(), /migration Job or Pod cleanup is unresolved/);
+  await assert.rejects(attempt(), /evidence directory is locked/);
   const preflight = await assertHeld(1);
   const stages = await readMigrationStages(f);
   assert.deepEqual(Object.keys(stages), ["apply"]);
@@ -495,292 +518,249 @@ export function registerStartupPreflightCases({
     assert.deepEqual(preflight.pods, {});
   });
 
-  test("upgrade retires unchanged legacy bootstrap output values before Helm render", async (t) => {
+  test("upgrade preserves legacy bootstrap values in the saved Helm release", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    const bootstrap = {
+      adminEmail: "admin@example.invalid",
+      password: { claimName: "occ-bootstrap-admin-password" },
+      serviceKey: { fileName: "initial-admin-service-key.json" },
+    };
+    const f = await fixture(t, {
+      controllerOnly: true,
+      chart: {
+        values: (values) => ({ ...values, bootstrap }),
+        installation: (installation) => installation,
+      },
+    });
+
+    // The ordinary upgrade renders the current chart with the predecessor's saved values.
+    const { stdout } = await f.run();
+    assert.match(stdout, /Upgraded controller image/);
+    assert.equal((await f.state()).controller, newController);
+    const installed = await yamlFile(join(f.directory, "live-values"));
+    assert.deepEqual(field(installed, "bootstrap"), bootstrap);
+  });
+
+  test("migration check renders captured values after source paths are replaced", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    assert.ok(realHelm);
+    const f = await fixture(t, {
+      controllerOnly: true,
+      chart: { installation: (installation) => installation },
+      preflightResults: {
+        migration: {
+          phase: "Succeeded",
+          log: '{"event":"migration.checked","history":"completed"}\n',
+        },
+      },
+    });
+    const valuesPath = join(f.directory, "values.json");
+    const candidatePath = join(f.directory, "reviewed-values.json");
+    const baseline = await readFile(valuesPath, "utf8");
+    const values = readJsonObject(baseline, "installed values");
+    const candidate = { ...values, bootstrap: { adminEmail: "check@example.invalid" } };
+    const requested = JSON.stringify(candidate);
+    await writeFile(candidatePath, requested, { mode: 0o600 });
+    const { stdout: installedChart } = await renderInitializerChart(
+      realHelm,
+      repository,
+      valuesPath,
+      "--is-upgrade",
+    );
+    await installChartInitializer(f, installedChart);
+
+    // The first Helm read happens after capture. Swap both original paths at
+    // that boundary. A render that reopens a source path would use the wrong bytes.
+    const replacement = "{";
+    await writeFile(join(f.directory, "baseline.next"), replacement, { mode: 0o600 });
+    await writeFile(join(f.directory, "candidate.next"), replacement, { mode: 0o600 });
+    const mockHelm = join(f.directory, "bin", "helm");
+    await rename(mockHelm, `${mockHelm}.fixture`);
+    await writeFile(
+      mockHelm,
+      `#!/bin/bash
+set -eu
+root=\${0%/bin/helm}
+if [[ "$1" == status && -f "$root/baseline.next" ]]; then
+  mv -- "$root/baseline.next" "$root/values.json"
+  mv -- "$root/candidate.next" "$root/reviewed-values.json"
+fi
+exec "$0.fixture" "$@"
+`,
+      { mode: 0o700 },
+    );
+
+    const { stdout } = await f.run("--migration-check-only", "--candidate-values", candidatePath);
+    assert.match(stdout, /Migration check passed \(history: completed\)/);
+    await assertStoppedBeforeWriters(f);
+    const [attempt] = (await readdir(f.evidence)).filter((name) =>
+      name.startsWith("migration-preflight."),
+    );
+    assert.ok(attempt);
+    const directory = join(f.evidence, attempt);
+    const beforeSnapshot = join(directory, "before-values.yaml");
+    const candidateSnapshot = join(directory, "requested-values.yaml");
+    assert.equal(await readFile(valuesPath, "utf8"), replacement);
+    assert.equal(await readFile(candidatePath, "utf8"), replacement);
+    assert.equal(await readFile(beforeSnapshot, "utf8"), baseline);
+    assert.equal(await readFile(candidateSnapshot, "utf8"), requested);
+    assert.equal((await stat(beforeSnapshot)).mode & 0o777, 0o600);
+    assert.equal((await stat(candidateSnapshot)).mode & 0o777, 0o600);
+    const renderedValues = await yamlFile(join(directory, "candidate-values.yaml"));
+    assert.deepEqual(field(renderedValues, "bootstrap"), candidate.bootstrap);
+  });
+
+  test("separate migration requires a guarded check before stopping writers", async (t) => {
     if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     assert.ok(realHelm);
     const helm = realHelm;
-    // The predecessor production example and profile renderer wrote this
-    // bootstrap object into Helm's user values. The old chart also accepted an
-    // explicit service-key output file name.
-    const historical = {
-      adminEmail: "admin@example.invalid",
-      password: { claimName: "occ-bootstrap-admin-password" },
+    const ordinary = {
+      phase: "Succeeded",
+      log: '{"event":"migration.checked","history":"providerCompleted"}\n',
     };
-    const credentials = { secretName: "retained-bootstrap-credentials" };
-    const serviceKey = { fileName: "initial-admin-service-key.json" };
-    type Bootstrap = typeof historical & {
-      serviceKey?: typeof serviceKey;
-      credentials?: typeof credentials;
-    };
-
-    const prepare = async (t: TestContext, bootstrap: Bootstrap = historical) => {
-      const f = await fixture(t, {
-        controllerOnly: true,
-        chart: {
-          values: (values) => ({ ...values, bootstrap }),
-          installation: (installation) => installation,
-        },
-        preflightResults: {
-          migration: {
-            phase: "Succeeded",
-            log: '{"event":"migration.checked","history":"completed"}\n',
-          },
-        },
-      });
-      const valuesPath = join(f.directory, "values.json");
-      const livePath = join(f.directory, "live-values");
-      const candidatePath = join(f.directory, "reviewed-values.json");
-      const baseline = await readFile(valuesPath, "utf8");
-      const values = evidenceObject(await yamlFile(valuesPath), "installed Helm values");
-      const retained = {
-        adminEmail: bootstrap.adminEmail,
-        ...(bootstrap.credentials ? { credentials: bootstrap.credentials } : {}),
-      };
-      const render = (path: string) =>
-        renderInitializerChart(helm, repository, path, "--is-upgrade");
-      return { f, valuesPath, livePath, candidatePath, baseline, values, retained, render };
-    };
-
-    const assertHeld = async (f: RecoveryFixture, replicas = [1, 1]) => {
-      const observed = await f.state();
-      assert.equal(observed.helmSubmissions ?? 0, 0);
-      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
-      assert.deepEqual([observed.api, observed.worker], replicas);
-      return observed;
-    };
-
-    const assertNormalized = async (
-      directory: string,
-      valuesFile: string,
-      retained: { adminEmail: string; credentials?: typeof credentials },
-    ) => {
-      const candidate = await yamlFile(join(directory, valuesFile));
-      assert.deepEqual(field(candidate, "bootstrap"), retained);
-      const rendered = renderedDocuments(await readFile(join(directory, "rendered.yaml"), "utf8"));
-      assert.ok(
-        chartInitializer(rendered),
-        "expected the normalized values to render the initialization Job",
-      );
-    };
-
-    const assertUpgradeEvidence = async (
-      { f, valuesPath, livePath, candidatePath, baseline }: Awaited<ReturnType<typeof prepare>>,
-      requested?: string,
-    ) => {
-      assert.equal(await readFile(valuesPath, "utf8"), baseline);
-      assert.equal(await readFile(livePath, "utf8"), baseline);
-      assert.equal(await f.readEvidence("before-values.yaml"), baseline);
-      if (requested !== undefined) {
-        assert.equal(await readFile(candidatePath, "utf8"), requested);
-        assert.equal(await f.readEvidence("requested-values.yaml"), requested);
-      }
-    };
-
-    const assertUpgradeRender = async (f: RecoveryFixture, retained: { adminEmail: string }) => {
-      const [attempt] = await readdir(join(f.evidence, "helm-attempts"));
-      assert.ok(attempt);
-      await assertNormalized(join(f.evidence, "helm-attempts", attempt), "values.yaml", retained);
-    };
-
-    await t.test("default candidate", async (t) => {
-      const prepared = await prepare(t);
-      const { f, valuesPath, retained, render } = prepared;
-      await assert.rejects(render(valuesPath), /bootstrap output settings are removed/);
-      await f.run("--preflight-only");
-      await assertHeld(f);
-      await assertUpgradeEvidence(prepared);
-      await assertUpgradeRender(f, retained);
-    });
-
-    await t.test("omitted output settings", async (t) => {
-      const prepared = await prepare(t, { ...historical, serviceKey });
-      const { f, values, retained, candidatePath } = prepared;
-      const requested = JSON.stringify({
-        ...values,
-        bootstrap: retained,
-        database: {
-          ...evidenceObject(values.database, "database values"),
-          upgradeMigration: "separate",
-        },
-      });
-      await writeFile(candidatePath, requested, { mode: 0o600 });
-      await assert.rejects(f.run("--candidate-values", candidatePath), {
-        code: 3,
-        stderr: /separate database deployment/,
-      });
-      await assertHeld(f, [0, 0]);
-      await assertUpgradeEvidence(prepared, requested);
-      await assertUpgradeRender(f, retained);
-    });
-
-    const assertNoPreflight = async (f: RecoveryFixture, observed: RecoveryState) => {
-      assert.deepEqual(await f.events(), []);
-      assert.deepEqual(asRecord(observed.preflight)?.created ?? [], []);
-    };
-
-    const protectedEdits = [
-      { name: "changed password claim", edit: { password: { claimName: "another-claim" } } },
-      {
-        name: "changed service-key file",
-        installed: { serviceKey },
-        edit: { serviceKey: { fileName: "other-key.json" } },
-      },
-      { name: "changed admin email", edit: { adminEmail: "other@example.invalid" } },
-      { name: "added credentials", edit: { credentials } },
-      {
-        name: "repointed credentials",
-        installed: { credentials },
-        edit: { credentials: { secretName: "other-bootstrap-credentials" } },
-      },
-    ];
-    for (const { name, installed, edit } of protectedEdits) {
-      await t.test(name, async (t) => {
-        const bootstrap = { ...historical, ...installed };
-        const prepared = await prepare(t, bootstrap);
-        const { f, candidatePath, values } = prepared;
-        const requested = JSON.stringify({ ...values, bootstrap: { ...bootstrap, ...edit } });
-        await writeFile(candidatePath, requested, { mode: 0o600 });
-        await assert.rejects(
-          f.run("--candidate-values", candidatePath),
-          /candidate values change a protected bootstrap setting/,
+    for (const [scenario, guarded, refusal] of [
+      [
+        "unsupported option",
+        { phase: "Failed", log: '{"event":"migration.failed","code":"MIGRATION_FAILED"}\n' },
+        /failed the guarded database migration check/,
+      ],
+      [
+        "ordinary receipt",
+        ordinary,
+        /did not report a successful guarded database migration check/,
+      ],
+    ] as const) {
+      await t.test(scenario, async (t) => {
+        const { f, originalSecrets } = await separateMigrationFixture(t, fixture, helm, repository);
+        await writeFile(
+          join(f.directory, "state.json"),
+          JSON.stringify({
+            ...(await f.state()),
+            // The command fixture supplies an older image's outcomes. The real
+            // helper must require its guarded invocation and result before any stop.
+            preflightResults: { "--check": ordinary, "--check-for-installation": guarded },
+          }),
         );
-        const observed = await assertHeld(f);
-        await assertUpgradeEvidence(prepared, requested);
-        await assertNoPreflight(f, observed);
+        if (scenario === "unsupported option") {
+          const { stdout } = await f.run(
+            "--migration-check-only",
+            "--candidate-installation",
+            "",
+            "--evidence-dir",
+            join(f.directory, "standalone-migration-check"),
+          );
+          assert.match(stdout, /Migration check passed/);
+        }
+        await assert.rejects(f.run(), { code: 1, stderr: refusal });
+        await assertStoppedBeforeWriters(f, [], originalSecrets);
+        const observed = await f.state();
+        assert.equal(observed.helmSubmissions ?? 0, 0);
+        const pod = await readPreflightPod(f, "migration");
+        const [migration] = podContainers(pod.spec);
+        assert.equal(migration?.image, newController);
+        assert.deepEqual(migration?.args, [
+          ...selectedImageMigrationEntry,
+          "--check-for-installation",
+          "ins_test",
+        ]);
+        assert.equal(existsSync(join(f.evidence, "database-migration-handoff.json")), false);
+        assert.equal(existsSync(join(f.evidence, "migration-deploy-apply")), false);
+        assert.equal(existsSync(`${f.evidence}.migration-state.json`), false);
+        assert.equal(existsSync(join(f.evidence, "helm-started")), false);
       });
     }
+  });
 
-    const prepareReadOnly = async (t: TestContext) => {
-      const prepared = await prepare(t);
-      const { f, candidatePath, values, retained, render } = prepared;
-      // The recorded Job supplies the real chart's unchanged migrator
-      // connection contract. The persisted predecessor values stay legacy.
-      const requested = JSON.stringify({ ...values, bootstrap: retained });
-      await writeFile(candidatePath, requested, { mode: 0o600 });
-      const { stdout } = await render(candidatePath);
-      await installChartInitializer(f, stdout);
-      return { ...prepared, requested };
+  test("separate migration checks apply prerequisites before stopping writers", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    assert.ok(realHelm);
+    const helm = realHelm;
+    for (const [scenario, refusal] of [
+      ["denied Secret read", /Kubernetes denied get on migration Secret system\/occ-database/],
+      ["unavailable Secret review", /cannot verify Kubernetes get access to migration Secret/],
+      ["unprotected journal parent", /migration journal's parent must protect files/],
+    ] as const) {
+      await t.test(scenario, async (t) => {
+        const { f, originalSecrets } = await separateMigrationFixture(t, fixture, helm, repository);
+        if (scenario === "denied Secret read") {
+          await f.failNext("deny-migrator-secret-get");
+        } else if (scenario === "unavailable Secret review") {
+          await writeFile(
+            join(f.directory, "state.json"),
+            JSON.stringify({ ...(await f.state()), reviewUnavailable: true }),
+          );
+        }
+        if (scenario === "unprotected journal parent") {
+          await chmod(f.directory, 0o777);
+          try {
+            await assert.rejects(f.run(), { code: 1, stderr: refusal });
+          } finally {
+            await chmod(f.directory, 0o700);
+          }
+        } else {
+          await assert.rejects(f.run(), { code: 1, stderr: refusal });
+        }
+        await assertStoppedBeforeWriters(f, [], originalSecrets);
+        assert.equal(existsSync(`${f.evidence}.migration-state.json`), false);
+        assert.equal(existsSync(join(f.evidence, "preflight-migration-job.json")), false);
+      });
+    }
+  });
+
+  test("Secret drift after handoff refuses the first migration apply", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    assert.ok(realHelm);
+    const { f, statePath, stopped, migrationSecrets, attempt, assertHeld } =
+      await prepareSeparateMigration(t, fixture, realHelm, repository);
+    const migrationReady = {
+      ...stopped,
+      preflightResults: {
+        "--apply-for-installation": {
+          phase: "Succeeded",
+          log: '{"event":"migration.completed","history":"preAuthenticationStates"}\n',
+        },
+        "--require-current-for-installation": {
+          phase: "Succeeded",
+          log: '{"event":"migration.checked","history":"completed"}\n',
+        },
+      },
     };
-
-    const assertReadOnlyEvidence = async (
-      { f, valuesPath, livePath, baseline }: Awaited<ReturnType<typeof prepareReadOnly>>,
-      expectedLive = baseline,
-      expectedProtected = baseline,
-    ) => {
-      assert.equal(await readFile(valuesPath, "utf8"), expectedProtected);
-      assert.equal(await readFile(livePath, "utf8"), expectedLive);
-      const attempt = (await readdir(f.evidence)).find((name) =>
-        name.startsWith("migration-preflight."),
-      );
-      assert.ok(attempt);
-      const directory = join(f.evidence, attempt);
-      const snapshot = join(directory, "before-values.yaml");
-      assert.equal(await readFile(snapshot, "utf8"), baseline);
-      assert.equal((await stat(snapshot)).mode & 0o777, 0o600);
-      return directory;
-    };
-
-    await t.test("read-only check", async (t) => {
-      const prepared = await prepareReadOnly(t);
-      const { f, retained } = prepared;
-      const { stdout } = await f.run("--migration-check-only");
-      assert.match(stdout, /Migration check passed \(history: completed\)/);
-      await assertHeld(f);
-      const directory = await assertReadOnlyEvidence(prepared);
-      await assertNormalized(directory, "candidate-values.yaml", retained);
-    });
-
-    const changedBaseline = (values: Record<string, unknown>) =>
-      JSON.stringify({
-        ...values,
-        bootstrap: { ...historical, adminEmail: "changed@example.invalid" },
-      });
-
-    await t.test("read-only check stale baseline", async (t) => {
-      const prepared = await prepareReadOnly(t);
-      const { f, livePath, values } = prepared;
-      const live = changedBaseline(values);
-      await writeFile(livePath, live);
-      await assert.rejects(
-        f.run("--migration-check-only"),
-        /protected values to match the live release/,
-      );
-      const observed = await assertHeld(f);
-      await assertReadOnlyEvidence(prepared, live);
-      await assertNoPreflight(f, observed);
-    });
-
-    await t.test("read-only check replaces baseline during Helm read", async (t) => {
-      const prepared = await prepareReadOnly(t);
-      const { f, livePath, values } = prepared;
-      const live = changedBaseline(values);
-      await writeFile(livePath, live);
-      const mockHelm = join(f.directory, "bin", "helm");
-      await writeFile(join(f.directory, "values.next"), live, { mode: 0o600 });
-      await rename(mockHelm, `${mockHelm}.fixture`);
+    for (const [name, secret] of Object.entries(migrationSecrets)) {
+      // The named Secret still exists and is readable, but the guarded check
+      // ran against an earlier version. The operator cannot approve this drift.
       await writeFile(
-        mockHelm,
-        `#!/bin/bash
-set -eu
-root=\${0%/bin/helm}
-if [[ "$1" == get && "$2" == values ]]; then
-  mv -- "$root/values.next" "$root/values.json"
-fi
-exec "$0.fixture" "$@"
-`,
-        { mode: 0o700 },
+        statePath,
+        JSON.stringify({
+          ...migrationReady,
+          preflight: {
+            ...requireRecoveryPreflight(stopped),
+            secrets: {
+              ...migrationSecrets,
+              [name]: {
+                metadata: { ...secret.metadata, resourceVersion: "2" },
+              },
+            },
+          },
+        }),
       );
-      await assert.rejects(
-        f.run("--migration-check-only"),
-        /protected values to match the live release/,
-      );
-      const observed = await assertHeld(f);
-      await assertReadOnlyEvidence(prepared, live, live);
-      await assertNoPreflight(f, observed);
-    });
-
-    await t.test("read-only check replaces candidate during parsing", async (t) => {
-      const prepared = await prepareReadOnly(t);
-      const { f, values, retained, candidatePath, requested } = prepared;
-      const replacement = JSON.stringify({
-        ...values,
-        bootstrap: { ...retained, adminEmail: "changed@example.invalid" },
-      });
-      await writeFile(join(f.directory, "reviewed-values.next"), replacement, { mode: 0o600 });
-      const { stdout: yq } = await execute("/bin/sh", ["-c", "command -v yq"], {
-        cwd: repository,
-      });
-      const parser = bashString(yq.trim());
-      await writeFile(
-        join(f.directory, "bin", "yq"),
-        `#!/bin/bash
-set -eu
-root=\${0%/bin/yq}
-if [[ $# == 4 && "$1" == -p=yaml && "$2" == -o=json && "$3" == . ]]; then
-  case "$4" in
-    "$root/reviewed-values.json"|"$root/evidence"/migration-preflight.*/requested-values.yaml)
-      ${parser} "$@"
-      mv -- "$root/reviewed-values.next" "$root/reviewed-values.json"
-      exit 0
-      ;;
-  esac
-fi
-exec ${parser} "$@"
-`,
-        { mode: 0o700 },
-      );
-      const { stdout } = await f.run("--migration-check-only", "--candidate-values", candidatePath);
-      assert.match(stdout, /Migration check passed \(history: completed\)/);
-      await assertHeld(f);
-      const directory = await assertReadOnlyEvidence(prepared);
-      assert.equal(await readFile(candidatePath, "utf8"), replacement);
-      const snapshot = join(directory, "requested-values.yaml");
-      assert.equal(await readFile(snapshot, "utf8"), requested);
-      assert.equal((await stat(snapshot)).mode & 0o777, 0o600);
-      await assertNormalized(directory, "candidate-values.yaml", retained);
-    });
+      await assert.rejects(attempt(), /migrator or database CA Secret changed/);
+      await assertHeld(0);
+      assert.equal(existsSync(`${f.evidence}.migration-state.json`), false);
+    }
+    await writeFile(statePath, JSON.stringify(migrationReady));
+    const { stdout } = await attempt();
+    assert.match(stdout, /Database migration verified and its Jobs and Pods are gone/);
+    await assertHeld(2);
   });
 
   test("separate migration apply holds uncertain operations before Helm", async (t) => {
@@ -852,6 +832,7 @@ exec ${parser} "$@"
             preflightFault: { target: "migration", mode: "lost" },
           }),
         );
+        const deletesBeforeApply = await readDeleteRequests(f);
         await assert.rejects(attempt(), /apply Job create outcome is unknown/);
         assert.match(
           await f.readEvidence("migration-deploy-apply/preflight-migration-create.err"),
@@ -860,14 +841,25 @@ exec ${parser} "$@"
         const retained = await assertHeld(1);
         const jobs = evidenceObject(retained.jobs, "retained migration Jobs");
         assert.equal(Object.keys(jobs).length, 1);
-        await assert.rejects(attempt(), /apply Job create outcome is unknown/);
+        await assert.rejects(attempt(), /evidence directory is locked/);
         await assert.rejects(
           f.run("--resume", "--migration-history-checked"),
-          /Job outcomes or cleanup are unresolved/,
+          /evidence directory is locked/,
         );
+        assert.deepEqual(await readDeleteRequests(f), deletesBeforeApply);
+        const stages = await readMigrationStages(f);
+        const originalJob = field(stages.apply, "name");
+        assert.ok(typeof originalJob === "string");
+        assert.deepEqual(Object.keys(jobs), [originalJob]);
+        // Explicit preflight cleanup can reconcile its own resources. It must
+        // leave the SQL Job from the separate migration journal alone.
         await f.cleanup("--previous-process-settled", "--evidence-unrestored");
         assert.deepEqual((await assertHeld(1)).jobs, jobs);
-        // Restoring in-directory evidence cannot reset the sibling create witness.
+        const deleted = await readDeleteRequests(f);
+        assert.ok(deleted.every(({ resource }) => resource !== `job.batch/${originalJob}`));
+        // The accepted Job was observed directly. Restoring local evidence
+        // after the original helper exited still must not replay CREATE.
+        await clearSettledMigrationLock(f);
         await rm(join(f.evidence, "migration-deploy-apply"), { recursive: true });
         await assert.rejects(attempt(), /original separate migration journal/);
         await assertHeld(1);
@@ -939,7 +931,7 @@ exec ${parser} "$@"
         const manifestPath = join(directory, "preflight-migration-job.json");
         const manifest = await f.readEvidence(manifestPath);
 
-        await assert.rejects(attempt(), /apply Job create outcome is unknown/);
+        await assert.rejects(attempt(), /evidence directory is locked/);
         const retained = await assertHeld(1);
         assert.deepEqual(retained.jobs, jobs);
         assert.deepEqual(retained.pods, pods);
@@ -996,6 +988,7 @@ exec ${parser} "$@"
         const [onlyPod] = pods;
         assert.ok(pods.length === 1 && onlyPod);
         const [podName, pod] = onlyPod;
+        assert.equal(field(pod, "phase"), "Succeeded");
         const attemptPath = `migration-deploy-${stage}`;
         const jobReceipt = await readEvidenceObject(
           f,
@@ -1015,7 +1008,7 @@ exec ${parser} "$@"
         assert.equal(existsSync(join(f.evidence, attemptPath, "preflight-migration.log")), false);
         await assert.rejects(
           f.run("--resume", "--migration-history-checked"),
-          /Job outcomes or cleanup are unresolved/,
+          /evidence directory is locked/,
         );
         receipts.set(stage, { job: jobReceipt, pod: podReceipt });
         await writeFile(
@@ -1028,6 +1021,9 @@ exec ${parser} "$@"
             },
           }),
         );
+        // The original Job and Pod are terminal, their UIDs still match, and
+        // the fixture restored log access for that same Pod.
+        await clearSettledMigrationLock(f);
       }
       await attempt();
       const cleaned = await assertHeld(2);
@@ -1183,7 +1179,7 @@ exec ${parser} "$@"
       assert.deepEqual(Object.keys(stages), ["apply"]);
       assert.equal(field(stages.apply, "state"), "creating");
       assert.equal(field(stages.apply, "history"), null);
-      await assert.rejects(attempt(), /apply Job did not succeed with a valid migration result/);
+      await assert.rejects(attempt(), /evidence directory is locked/);
       await assertHeld(1);
     });
 
@@ -1192,6 +1188,7 @@ exec ${parser} "$@"
       async (t) => {
         const prepared = await prepare(t);
         const {
+          f,
           statePath,
           databaseSecretName,
           databaseSecret,
@@ -1219,6 +1216,7 @@ exec ${parser} "$@"
             },
           }),
         );
+        await clearSettledMigrationLock(f);
         await assert.rejects(attempt(), /migrator or database CA Secret changed/);
         await assertHeld(1);
       },
@@ -1253,6 +1251,7 @@ exec ${parser} "$@"
             preflight: { ...preflight, jobs: {}, pods: {} },
           }),
         );
+        await clearSettledMigrationLock(f);
         await attempt();
         const cleaned = await assertHeld(2);
         assert.deepEqual(cleaned.jobs, {});
@@ -2037,14 +2036,17 @@ exec ${parser} "$@"
   // Bash must not remove a NUL and turn malformed output into the literal ready marker.
   test("startup preflight rejects a ready marker containing a NUL byte", async (t) => {
     const f = await fixture(t, {
+      agent: true,
       controllerOnly: true,
+      inventoryResponses: [restartInventory("original-worker-required")],
       preflightResults: {
         api: { phase: "Succeeded", log: "installation-startup-\0ready\n" },
       },
     });
     await assert.rejects(f.run("--preflight-only"), /cannot read the api startup preflight logs/);
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
-    await assertStoppedBeforeWriters(f);
+    assert.equal(existsSync(join(f.evidence, "preflight-blocked-original-worker")), false);
+    await assertStoppedBeforeWriters(f, ["revision-read rev_old"]);
   });
 
   test("kubectl log warnings do not reject a valid migration check", async (t) => {
@@ -2058,7 +2060,13 @@ exec ${parser} "$@"
     await f.run("--preflight-only");
     assert.equal(await f.readEvidence("preflight-migration.log"), log);
     assert.equal(await f.readEvidence("preflight-migration-logs.err"), warning);
-    assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
+    const { stdout } = await execute(
+      "scripts/upgrade-production",
+      ["status", "--evidence-dir", f.evidence],
+      { cwd: repository },
+    );
+    assert.match(stdout, /Candidate startup checks passed/u);
+    assert.doesNotMatch(stdout, /original worker/u);
     await assertStoppedBeforeWriters(f);
   });
 

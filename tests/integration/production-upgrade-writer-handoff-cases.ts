@@ -33,6 +33,7 @@ import type {
   RecoveryFixture,
   RecoveryFixtureFactory,
 } from "../helpers/production-upgrade-recovery-fixture.ts";
+import { renderedDocuments } from "../helpers/production-upgrade-recovery-render.ts";
 import {
   field,
   list,
@@ -41,6 +42,7 @@ import {
   type RecoveryState,
 } from "../helpers/production-upgrade-recovery-state.ts";
 import {
+  execute,
   runtime,
   skipWithoutHelm,
   upgradeDiagnosticLines,
@@ -96,6 +98,7 @@ export function registerWriterHandoffCases({
       candidates: true,
       chart: { installation: (installation) => installation },
       databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
+      migrationSecrets: true,
     });
     // This handoff changes migration ownership, not the example's Plugin Drivers.
     await writeFile(
@@ -109,6 +112,30 @@ export function registerWriterHandoffCases({
     assert.ok(database, "expected staged database settings");
     values.database = { ...database, upgradeMigration: "separate" };
     await writeFile(path, JSON.stringify(values));
+    const { stdout } = await execute(
+      realHelm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "system",
+        "--values",
+        join(f.directory, "values.json"),
+      ],
+      { cwd: repository },
+    );
+    const initializer = renderedDocuments(stdout).find(
+      (resource) => field(field(resource, "metadata"), "name") === "oce-initialization",
+    );
+    assert.ok(initializer);
+    await writeFile(
+      join(f.directory, "state.json"),
+      JSON.stringify({
+        ...(await f.state()),
+        installationRelease: { hooks: [{ manifest: JSON.stringify(initializer) }] },
+      }),
+    );
     await runWithInjectedFault(f, "fail-scale-worker");
     await assert.rejects(f.run("--resume", "--migration-history-checked"), (error: unknown) => {
       const failure = readUpgradeFailure(error);

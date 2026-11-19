@@ -452,6 +452,34 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           out({ ...properties(review), status: { allowed: !state.denyWorkerPatch } });
           return io.exit(0);
         }
+        if (field(attributes, "verb") === "get") {
+          const values = await yamlFile(join(root, "live-values"));
+          const database = field(values, "database");
+          const name = field(attributes, "name");
+          assert.ok(
+            name === (optionalField(database, "secretName") ?? "occ-database") ||
+              (typeof name === "string" && name === optionalField(database, "caSecretName")),
+          );
+          assert.deepEqual(review, {
+            apiVersion: "authorization.k8s.io/v1",
+            kind: "SelfSubjectAccessReview",
+            spec: {
+              resourceAttributes: {
+                namespace: "system",
+                verb: "get",
+                group: "",
+                version: "v1",
+                resource: "secrets",
+                name,
+              },
+            },
+          });
+          if (state.reviewUnavailable) {
+            return fail(1, "private self-review diagnostic");
+          }
+          out({ ...properties(review), status: { allowed: !take("deny-migrator-secret-get") } });
+          return io.exit(0);
+        }
         const expectedReview: unknown = {
           apiVersion: "authorization.k8s.io/v1",
           kind: "SelfSubjectAccessReview",
