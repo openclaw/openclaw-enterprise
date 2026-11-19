@@ -671,7 +671,7 @@ export const CredentialRefreshStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+      "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
   },
 );
 
@@ -689,7 +689,7 @@ export const CredentialSourceStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+      "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 

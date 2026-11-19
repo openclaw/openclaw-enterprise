@@ -551,6 +551,7 @@ const OPENSHELL_DEFAULT_READ_ONLY_PATHS = Object.freeze([
   "/etc",
   "/var/log",
   "/app",
+  "/opt/devtools",
 ]);
 const OPENSHELL_DEFAULT_READ_WRITE_PATHS = Object.freeze(["/tmp", "/dev/null"]);
 const APP_SERVER_PORT_ENVIRONMENT = "APP_SERVER_PORT";

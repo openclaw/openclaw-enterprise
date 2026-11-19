@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-11-19"
-last_updated_session: "authoring-run/8502e0d3-905b-43ff-9c00-e3b1a03856c6"
+updated: 2026-11-19
+last_updated_session: authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf
 ---
 
 # Protected credential request flow
@@ -65,6 +65,10 @@ Bundled OpenShell rejects new static OpenAI use via
 reads; deployment refusal precedes counterpart probes. Retained revisions keep
 their provider, authorization, withdrawal and cleanup under the
 [current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
+
+Static admission hides incompatible types from capabilities. Creation and adoption
+return 409 on mismatch; refused adoption preserves the Gateway copy.
+`admitStaticEgressSource` rechecks both declarations before reading and injecting material.
 
 OCC checks source and Secret grants; adoption requires consent. Version 3 binds
 Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from saved Harness
@@ -344,8 +348,9 @@ None.
 
 ## Changelog
 
-- 2026-11-19 07:31: Reconcile response protection and static material checks with the online model flow. (authoring-run/8502e0d3-905b-43ff-9c00-e3b1a03856c6 - 01922f334313161236682955fa851628cf8a5ef1)
+- 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
 
+- 2026-11-19 07:31: Reconcile response protection and static material checks with the online model flow. (authoring-run/8502e0d3-905b-43ff-9c00-e3b1a03856c6 - 01922f334313161236682955fa851628cf8a5ef1)
 - 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
