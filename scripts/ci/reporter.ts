@@ -153,6 +153,12 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
     "bundle-file-changed",
   ];
   const turnErrors = [
+    "workspace-discovery",
+    "worker-model-output",
+    "worker-model-setup",
+    "worker-audit-delivery",
+    "worker-transcript-authority",
+    "worker-turn-failed",
     "session-read-changed",
     "session-binding-changed",
     "model-authentication",

@@ -257,6 +257,21 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
     }
     const detail = value.slice(0, 4096);
     const patterns = [
+      ["workspace-discovery", /Remote workspace skill discovery failed/],
+      ["worker-model-output", /Runtime-local inference failed its output boundary/],
+      [
+        "worker-model-setup",
+        /(?:Invalid node-local inference startup configuration|Node-local inference (?:startup|workspace binding)|Native runtime (?:credential is unavailable|model selection is not configured|requires the exact selected local model|workspace does not match)|Worker-local inference cannot use)/,
+      ],
+      [
+        "worker-audit-delivery",
+        /(?:OpenClaw Enterprise runtime audit did not accept the event|Worker model (?:audit start failed|observation requires an admitted turn)|Pending audit observation limit reached|worker model-observation response timed out)/,
+      ],
+      [
+        "worker-transcript-authority",
+        /Cloud worker (?:transcript (?:identity|authority)|placement authority changed)/,
+      ],
+      ["worker-turn-failed", /^(?:Error: )?(?:Cloud worker turn failed|Worker turn failed)$/i],
       [
         "session-read-changed",
         /^(?:Error: )?Session changed while preparing its description; retry the request$/,

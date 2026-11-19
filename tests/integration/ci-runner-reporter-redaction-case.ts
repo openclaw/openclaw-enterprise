@@ -293,6 +293,17 @@ export async function checkReporterRedaction(t: TestContext) {
   assert.equal(diagnosticSignals.size, 1, "Failure reads must share one deadline");
   // Keep foreign turns and private error suffixes out of the real reporter artifact.
   const turnCases = [
+    ["Remote workspace skill discovery failed", "workspace-discovery"],
+    ["Runtime-local inference failed its output boundary", "worker-model-output"],
+    [
+      "Node-local inference startup does not match the admitted workspace or model",
+      "worker-model-setup",
+    ],
+    ["worker model-observation response timed out", "worker-audit-delivery"],
+    [
+      "Cloud worker transcript identity does not match the active turn",
+      "worker-transcript-authority",
+    ],
     ["Incorrect API key provided", "model-authentication"],
     ["insufficient_quota", "model-rate-or-quota"],
     ["Worker model is not approved for this session", "model-unavailable"],
