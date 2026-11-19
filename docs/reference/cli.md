@@ -103,7 +103,9 @@ Use the [HTTP API](api.md) for configured Backends, ServiceAccount operations
 outside this inventory and [Preset writes](presets.md#crud-and-permissions).
 Configuration listing is unavailable. After deployment, `agent get` reports
 desired state, lifecycle and selected version. Use `agent deployment-status ID`
-for the latest status and error. Verify model execution separately.
+for the latest status and error. The table shows a `CLEANUP` column when OCC
+reports [cleanup status](agents.md#deployment-status) for that revision.
+Verify model execution separately.
 
 For [unreadable saved settings](agents.md#unreadable-saved-settings), Agent
 reads retain metadata and identify the field in `CONFIGURATION ERROR` or

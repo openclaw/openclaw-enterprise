@@ -1,12 +1,12 @@
 # Agent native admin UI
 
-Native browser access is disabled by default. OCC proxies Gateway HTTP/WebSocket
+Native browser access defaults to disabled. OCC proxies HTTP/WebSocket
 chat or administration using OCE sessions and exact-Agent permissions.
 [Gateway managed mode](#gateway-managed-mode) limits administration.
 
 ## Host-only session exchange
 
-For guarded OIDC sign-in, select `agentNativeAdmin.sessionMode: host-only-exchange`
+For guarded OIDC, select `agentNativeAdmin.sessionMode: host-only-exchange`
 (`OCC_AGENT_NATIVE_ADMIN_SESSION_MODE=host-only-exchange`) and omit
 `agentNativeAdmin.sharedCookieDomain` and `OCC_AUTH_COOKIE_DOMAIN`. Console and Agent
 origins must use same-site HTTPS and route to OCC. Launch creates no account or grant.
@@ -129,9 +129,9 @@ access get the same `403` in every state; refused WebSocket upgrades close.
 
 The Console’s authenticated `GET /native-admin/return/<key>` operation checks exact Agent `operate` or `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
 
-A signed-in person who has neither chat nor administration access to the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`. JSON requests still receive the JSON `403`; WebSocket upgrades still close.
+A signed-in person who has neither chat nor administration access to the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`.
 
-If a failed reconnect's health probe and Control UI configuration get `401` or `403`, the Control UI shows **Sign in to continue loading content**. **Sign in** opens `/` in a new tab; **Check again** rechecks access. This prompts an access check, not proof of expiry; OCC decides whether to offer sign-in or refuse.
+If a failed reconnect's health probe and Control UI configuration get `401` or `403`, the Control UI shows **Sign in to continue loading content**, an access check, not proof of expiry. **Sign in** opens `/` in a new tab, then offers **Check again**. After **Not now** the prompt stays closed; the tab reconnects and recovers after a sign-in elsewhere or a reload, which drops the draft.
 
 ### Unsupported reasons
 
