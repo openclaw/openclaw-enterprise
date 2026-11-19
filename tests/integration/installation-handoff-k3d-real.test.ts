@@ -558,6 +558,42 @@ test(
     assert.equal(policyOnly.checks.get("service-egress")?.status, "passed");
     assert.equal(policyOnly.checks.has("service-tls"), false);
 
+    // ExternalName is a DNS alias in both API shapes. A declared port cannot
+    // supply the ClusterIP and Pod edges that the check requires.
+    for (const hasPort of [false, true]) {
+      const name = hasPort ? "alias-with-port" : "alias-without-port";
+      await applyManifest(
+        JSON.stringify({
+          apiVersion: "v1",
+          kind: "Service",
+          metadata: { name, namespace },
+          spec: {
+            type: "ExternalName",
+            externalName: "middleware.example.test",
+            ports: hasPort ? [{ port: servicePort }] : undefined,
+          },
+        }),
+      );
+      const observed = await resource("service", name);
+      assert.equal(observed.spec.ports?.[0]?.port, hasPort ? servicePort : undefined);
+      const alias = await diagnose({
+        ...config,
+        serviceDependency: { ...egressOnly, service: { ...egressOnly.service, name } },
+      });
+      const egress = alias.checks.get("service-egress");
+      assert.equal(egress?.status, "failed", name);
+      assert.match(egress?.summary ?? "", /ExternalName/u);
+      assert.deepEqual(egress?.resources, [
+        {
+          kind: "Service",
+          namespace,
+          name,
+          uid: observed.metadata.uid,
+          resourceVersion: observed.metadata.resourceVersion,
+        },
+      ]);
+    }
+
     const commonNameOnly = await signedLeaf(dir, ca, {
       name: "common-name-only",
       commonName: serverName,

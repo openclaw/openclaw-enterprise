@@ -180,10 +180,16 @@ A failed check can coexist with unknown checks; inspect the complete report.
 | Workload client certificate        | The selected container's Secret mount supplies a currently valid public leaf whose extended key usage allows client authentication.                              |
 | EKS identity and webhook addresses | The account, ARN, TLS endpoint and CA identify the intended EKS cluster, and expected webhook `/32`s match the filtered control-plane interface inventory.       |
 
-`missing` addresses are observed but absent from the plan; `stale` addresses occur
-only in the plan. Reconcile drift through your infrastructure workflow and review
-the actual policies before changing the plan. Copying observed addresses into the
-plan alone does not repair deployed rules.
+For `api-addresses` and `webhook-addresses`, `missing` lists observed `/32` addresses
+absent from the plan. `stale` lists planned `/32` addresses absent from the current
+inventory. An incomplete or unreadable inventory yields `unknown`.
+
+For `service-egress`, `missing` lists required grants absent from the named
+NetworkPolicy. An `ExternalName` Service is a DNS alias without a ClusterIP.
+The check reports `failed` for that Service even when it declares ports.
+
+Reconcile address drift and missing grants through your infrastructure workflow.
+Review the deployed policies before changing the plan.
 
 The report is a sequence of observations, not an atomic snapshot or an installation
 approval. API access from the operator does not establish access from Pods.
