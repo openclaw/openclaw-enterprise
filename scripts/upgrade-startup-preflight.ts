@@ -770,19 +770,19 @@ function migrationDatabase([installed, candidate, release, namespace]: [
   string,
   string,
 ]) {
-  if (
-    !isDeepStrictEqual(
-      migrationConnection(installed, release, namespace),
-      migrationConnection(candidate, release, namespace),
-    )
-  ) {
+  const original = migrationConnection(installed, release, namespace);
+  if (!isDeepStrictEqual(original, migrationConnection(candidate, release, namespace))) {
     fail("the candidate changes the deployed release's migrator database connection inputs.");
   }
-  return "";
+  const names = [original.secret.name, original.volumes[0]?.secret?.secretName].filter(isString);
+  if (names.some((name) => name.length > 253 || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(name))) {
+    fail("the rendered chart contains an invalid migration Secret name.");
+  }
+  return [...new Set(names)].join("\n");
 }
 
-// Run the candidate's read-only compatibility check while the incumbent is
-// serving. Keep the database identity and CA without copying other containers.
+// Run only the selected image's migration program. Keep its database identity
+// and CA without copying other initialization containers.
 function migrationJob(
   renderedPath: string,
   name: string,
@@ -790,6 +790,8 @@ function migrationJob(
   release: string,
   image: string,
   timeoutSeconds: number,
+  mode: "check" | "check-installation" | "apply" | "verify" = "check",
+  installationId = "",
 ): JobManifest {
   const { job, template, spec, initializer } = migrationInitializer(renderedPath, release);
   if (initializer.image !== image) {
@@ -823,7 +825,13 @@ function migrationJob(
   }
   const container: Container = selectFields(initializer, containerFields);
   container.command = ["node"];
-  container.args = [...entry, "--check"];
+  const options = {
+    check: ["--check"],
+    "check-installation": ["--check-for-installation", installationId],
+    apply: ["--apply-for-installation", installationId],
+    verify: ["--require-current-for-installation", installationId],
+  };
+  container.args = [...entry, ...options[mode]];
   const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
   return {
     apiVersion: "batch/v1",
@@ -1203,6 +1211,7 @@ type Command =
   | { action: "secret"; input: Parameters<typeof secret>[0] }
   | { action: "job" | "identity-job"; input: JobArguments }
   | { action: "migration-database"; input: Parameters<typeof migrationDatabase>[0] }
+  | { action: "migration-job"; input: Parameters<typeof migrationJob> }
   | { action: "child"; input: Parameters<typeof child>[0] }
   | { action: "remaining"; input: Parameters<typeof remaining>[0] }
   | { action: "refusals"; input: Parameters<typeof refusals>[0] }
@@ -1251,6 +1260,20 @@ function parseCommand([action, ...input]: string[]): Command {
       return { action, input: argumentsOf(input, 4) };
     case "migration-database":
       return { action, input: argumentsOf(input, 4) };
+    case "migration-job": {
+      const [rendered, name, namespace, release, image, timeout, mode, installationId] =
+        argumentsOf(input, 8);
+      if (
+        !installationId ||
+        (mode !== "check-installation" && mode !== "apply" && mode !== "verify")
+      ) {
+        return failUsage();
+      }
+      return {
+        action,
+        input: [rendered, name, namespace, release, image, Number(timeout), mode, installationId],
+      };
+    }
     case "remaining":
       return { action, input: argumentsOf(input, 5) };
     case "refusals":
@@ -1266,7 +1289,7 @@ function parseCommand([action, ...input]: string[]): Command {
 
 function failUsage(): never {
   return fail(
-    "expected drafts, secret, job, identity-job, migration-database, child, remaining, refusals, networkpolicy, or phase with its arguments.",
+    "expected drafts, secret, job, identity-job, migration-database, migration-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
   );
 }
 
@@ -1301,6 +1324,8 @@ function run(command: Command): string | number {
       return child(command.input);
     case "migration-database":
       return migrationDatabase(command.input);
+    case "migration-job":
+      return JSON.stringify(migrationJob(...command.input));
     case "remaining":
       return remaining(command.input);
     case "refusals":

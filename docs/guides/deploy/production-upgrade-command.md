@@ -41,7 +41,7 @@ field selects the matching CLI file. Omit it to use `occ` on `PATH`.
 ## Run the image upgrade
 
 `plan` checks `HELM_DRIVER` offline and requires it to be unset or `secret`.
-Apply, preflight, migration check, and resume read Helm release history from
+Apply, preflight, migration check, migration apply, and resume read Helm history from
 Kubernetes Secrets in the selected cluster. If your release uses SQL or
 ConfigMaps, stop here and keep the existing store. `status` reads local evidence.
 Preflight cleanup uses Kubernetes directly.
@@ -96,9 +96,9 @@ automation or redirected output, pass `--auto-approve`. The upgrade checks
 startup and migration compatibility and confirms preflight cleanup before it
 stops writers.
 Profiled commands use a private kubeconfig copy for Kubernetes requests.
-Apply and resume recheck the kubeconfig and any explicit CA after approval.
+Apply, migration apply, and resume recheck the kubeconfig and any explicit CA after approval.
 The CLI embeds the checked bytes from a CA file in the copy. Client credential
-references and commands use their original locations. Resume and cleanup bind
+references and commands use their original locations. Migration apply, resume, and cleanup bind
 the recorded kubeconfig and explicit CA bytes. When the context uses system roots,
 changes to the host trust store can affect later recovery commands.
 
@@ -118,12 +118,19 @@ If `apply` reports a separate database migration pause and exits with status
 migration history. Keep the maintenance window active, other writers and
 autoscalers fenced, and the original evidence in place.
 
-[Deploy and verify the database](separate-database-upgrade.md#deploy-the-database)
-with the selected controller image and the dedicated migrator credential.
-Require a successful `--require-current` check that reports `migration.checked`
-with history `completed`. After the Jobs and their Pods are gone, use
-[the original run to resume](#recover-an-interrupted-run). Repeat the original
-expert options after `--` and add `--migration-history-checked`.
+Use [migration apply](separate-database-upgrade.md#apply-and-verify-the-prepared-migration)
+with the original run and profile:
+
+```bash
+occ installation upgrade migration apply /path/to/original/evidence \
+  --profile /secure/occ/upgrade.json
+```
+
+Repeat the original expert options after `--`. Review the original run and
+the warning about irreversible SQL. Type `yes` at a terminal or pass
+`--auto-approve` before `--`. After verification and Job cleanup,
+[resume the original run](#recover-an-interrupted-run) with the same expert
+options and `--migration-history-checked`.
 
 ## Check database migration compatibility
 
