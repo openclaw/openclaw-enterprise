@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -1021,7 +1021,7 @@ test(
               version: 1,
               filesystem: {
                 read_only: ["/usr", "/bin", "/lib", "/lib64", "/etc"],
-                read_write: ["/tmp"],
+                read_write: ["/tmp", "/dev/null"],
               },
               process: { run_as_user: "1000", run_as_group: "1000" },
               network_policies: {},
@@ -1048,7 +1048,7 @@ test(
 
     // Resolve the real networking executables in the selected image before binding
     // the Provider. The probe has no credential or network grant.
-    const probe = await createSandbox(`git-probe-${randomUUID()}`, []);
+    const probe = await createSandbox(`gp-${randomBytes(8).toString("hex")}`, []);
     const paths = await execute(probe, [
       "sh",
       "-ceu",
@@ -1061,7 +1061,7 @@ test(
     );
     assert.ok(/^\/[A-Za-z0-9_./-]+$/.test(curl!), "ACL_CURL_IDENTITY");
 
-    const name = `git-acl-${randomUUID()}`;
+    const name = `ga-${randomBytes(8).toString("hex")}`;
     const provider = new OpenShellPreparedGitProvider(gatewayClient, {
       workspace,
       workspaceId: workspaceResource.id,
@@ -1166,18 +1166,18 @@ test(
       }
     }
 
-    // Native Git can fail during discovery; it also must never reach the origin.
-    const denied = async (script: string) => {
+    // Require Git's HTTP response, not just a nonzero shell status: a failed
+    // redirection must never count as a repository-policy denial. Keep raw Git
+    // stderr private to the Sandbox and return only fixed diagnostics.
+    const denied = async (command: string) => {
       const before = origin.snapshot().requests;
-      await guest(script);
+      await guest(
+        `${gitSetup}; export LC_ALL=C; umask 077; err=$(mktemp /tmp/git-acl-denial.XXXXXX); trap 'rm -f "$err"' EXIT; if ${command} >/dev/null 2>"$err"; then printf 'ACL_NATIVE_UNEXPECTED_SUCCESS\\n' >&2; exit 1; fi; if ! grep -Eq '^fatal: .*The requested URL returned error: 403$' "$err"; then printf 'ACL_NATIVE_HTTP\\n' >&2; exit 1; fi`,
+      );
       assert.equal(origin.snapshot().requests, before, "ACL_NATIVE_DENIAL_ORIGIN");
     };
-    await denied(
-      `${gitSetup}; if git -C /tmp/a push -q origin HEAD:refs/heads/approved >/dev/null 2>&1; then exit 1; fi`,
-    );
+    await denied("git -C /tmp/a push -q origin HEAD:refs/heads/approved");
     assert.equal(await network.ref("fixture/a", "refs/heads/approved"), undefined);
-    await denied(
-      `${gitSetup}; if git clone -q https://github.com/fixture/c.git /tmp/denied-c >/dev/null 2>&1; then exit 1; fi`,
-    );
+    await denied("git clone -q https://github.com/fixture/c.git /tmp/denied-c");
   },
 );
