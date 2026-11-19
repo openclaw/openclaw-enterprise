@@ -196,8 +196,10 @@ existing core dependencies.
 The custom npm-distribution packer rejects that combination because it requires
 one shared dependency version.
 
-Node bases require 24.22.1 on Bookworm. See the
-[worker-termination repair](node/README.md) for validation and provenance.
+The Bookworm bases supply stock Node.js 24.22.1+ in the 24 series. On 24.22.1,
+terminating a worker during synchronous CommonJS-to-ESM loading can abort the
+Gateway and interrupt active turns. Native qualification must check Gateway
+shutdown and restart.
 
 The Dedicated command and bundled plugin both resolve the same
 [Codex 0.164.0](https://github.com/openai/codex/releases/tag/rust-v0.164.0) installation.

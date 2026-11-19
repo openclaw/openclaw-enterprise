@@ -43,6 +43,7 @@
       "expectedTests": [
         "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns",
         "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner",
+        "runtime image embedded Gateway serves a new turn after its child dies mid-turn",
         "a new Gateway Pod starts on state whose previous Gateway was stopped during startup admission",
         "a new Gateway Pod starts on state whose previous Gateway was stopped while it took its Gateway lock",
         "a Gateway that exits beside a live Gateway on the same state leaves that Gateway's lock in place"

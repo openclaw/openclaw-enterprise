@@ -40,26 +40,6 @@ export async function probePackagedCodex(
     "codex-cli " + stagingCodexVersion,
   );
   const provenance = read(parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8")));
-  if (!historicalCodex) {
-    // The manifest is from the tested checkout; the binary and its ABI are read
-    // inside the built image, independently of its recorded provenance.
-    const expectedNode = read(parse(asText(process.argv[3])));
-    assert.equal(process.versions.node, expectedNode.version);
-    assert.equal(process.versions.modules, expectedNode.modules);
-    assert.equal(process.versions.napi, expectedNode.napi);
-    assert.deepEqual(provenance.node, {
-      source: "https://github.com/nodejs/node",
-      ...expectedNode,
-      version: process.versions.node,
-      architecture: process.arch,
-      platform: process.platform,
-      modules: process.versions.modules,
-      napi: process.versions.napi,
-      icu: process.versions.icu,
-      executable: "/usr/local/bin/node",
-      sha256: createHash("sha256").update(readFileSync(process.execPath)).digest("hex"),
-    });
-  }
   assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
   const expectedSource = read(parse(asText(process.argv[2])));
   assert.equal(typeof expectedSource.commit, "string");

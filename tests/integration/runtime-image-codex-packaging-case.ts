@@ -66,9 +66,6 @@ export async function verifyCodexPackaging(
         sourceArchiveSha256: "1532c8e1baf84ecae6080aee6d15003afd2458aeaaeaa30b0504818b000c82d9",
       }
     : await readOpenclawSource();
-  const nodeSource = parseJson(
-    await readFile(new URL("../../deploy/runtime/node/source.json", import.meta.url), "utf8"),
-  );
   assert.equal(
     source.commit,
     historicalController?.commit ?? GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
@@ -108,7 +105,6 @@ export async function verifyCodexPackaging(
     script,
     JSON.stringify(defaultPluginPolicy),
     JSON.stringify(source),
-    JSON.stringify(nodeSource),
   ]);
   assert.match(stdout, /shared-reviewed-codex-ready/);
   if (!historicalCodex) {

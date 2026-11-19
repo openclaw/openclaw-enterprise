@@ -16,6 +16,7 @@ import { connect } from "node:net";
 // with an epoch timestamp.
 const mode = process.env.PROBE_ENDPOINT_MODE; // "answer" | "reject" | "hang"
 const delayMs = Number(process.env.PROBE_ENDPOINT_DELAY_MS ?? 0);
+const heldPrompt = process.env.PROBE_ENDPOINT_HELD_PROMPT;
 const listenHost = process.env.PROBE_ENDPOINT_HOST ?? "127.0.0.1";
 // When set, a turn answers with the last match of this pattern in its request
 // (a caller's nonce) instead of READY, so a caller can prove its own turn arrived.
@@ -253,6 +254,10 @@ function publicReadEvents(model, request) {
 // Answer one model turn after the configured delay, unless the caller left.
 function turn(transport, model, request, respond, closed, caller) {
   emit({ event: "request", transport, turn: true });
+  if (heldPrompt !== undefined && request.includes(heldPrompt)) {
+    emit({ event: "turn-held" });
+    return;
+  }
   if (mode === "hang") {
     return;
   }
