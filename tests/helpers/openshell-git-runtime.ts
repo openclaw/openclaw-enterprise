@@ -188,9 +188,9 @@ export function openShellGitRuntimeFixture({
     observedWith: [] as (Entry["installed"] | undefined)[],
   };
   const faults: Faults = world?.faults ?? {};
-  // The gateway's own prepared Git profiles and providers, which a route's bootstrap writes
-  // (oce-git- plus 32 hex digits). Any other name is the Agent's model provider.
-  const prepared = /^oce-git-[0-9a-f]{32}$/;
+  // Bootstrap writes prepared Git profiles and providers under these prefixes.
+  // Any other name belongs to the Agent's model provider.
+  const prepared = /^oce-(?:git|github-installation)-[0-9a-f]{32}$/;
   const profiles = new Map<string, Record<string, unknown>>();
   const providers = new Map<string, FixtureProvider>();
   const answer = (method: string, name?: string) => {

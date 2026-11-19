@@ -29,7 +29,50 @@ export function openShellExpectedProviderRule(
   };
 }
 
-export type OpenShellExpectedProviderRule = ReturnType<typeof openShellExpectedProviderRule>;
+export interface OpenShellExpectedProviderRule {
+  readonly name: string;
+  readonly providerId?: string;
+  readonly rule: {
+    readonly name: string;
+    readonly binaries: readonly unknown[];
+    readonly endpoints: readonly { readonly host: string }[];
+  };
+}
+
+/** Capture the selected credential profile's stock wire fields before Sandbox creation. */
+export function openShellExpectedWireProviderRule(
+  name: string,
+  providerId: string,
+  profile: {
+    readonly binaries: readonly unknown[];
+    readonly endpoints: readonly unknown[];
+    readonly credentials: readonly unknown[];
+  },
+): OpenShellExpectedProviderRule | undefined {
+  const endpoints = [];
+  for (const raw of profile.endpoints) {
+    const endpoint = asRecord(raw);
+    if (!endpoint || typeof endpoint.host !== "string" || !endpoint.host) {
+      return;
+    }
+    const { host, provider_credentialed: _ignored, ...configured } = endpoint;
+    endpoints.push({
+      ...configured,
+      host,
+      ...(profile.credentials.length > 0 && { provider_credentialed: true }),
+    });
+  }
+  return {
+    name,
+    providerId,
+    rule: {
+      name: "_provider_" + name.replaceAll("-", "_"),
+      binaries: profile.binaries,
+      endpoints,
+    },
+  };
+}
+
 type GitRule = OpenShellExpectedProviderRule["rule"];
 
 const inspectedProtocols = new Set(["rest", "websocket", "graphql", "sql", "json-rpc", "mcp"]);
@@ -55,6 +98,8 @@ function hasOnlyInspectedNonGitEndpoints(rule: unknown, gitRule: GitRule): boole
         typeof endpoint.protocol === "string" &&
         inspectedProtocols.has(endpoint.protocol) &&
         (endpoint.tls === undefined || endpoint.tls === "NETWORK_TLS_MODE_UNSPECIFIED") &&
+        (endpoint.allow_uninspected_credentials === undefined ||
+          endpoint.allow_uninspected_credentials === false) &&
         (endpoint.allowed_ips === undefined ||
           (Array.isArray(endpoint.allowed_ips) && endpoint.allowed_ips.length === 0))
       );

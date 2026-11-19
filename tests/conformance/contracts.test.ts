@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 import {
   inferenceKeyDestination,
@@ -26,6 +27,9 @@ import {
   normalizeLoggingLevel,
   ConfigurationValidationError,
   ConnectionTemplateValidationError,
+  admitRepositoryNetworkPolicy,
+  admitSandboxRepositoryNetworkPolicy,
+  RepositoryNetworkPolicyAdmissionError,
   sandboxNetworkGrantsWithinCeiling,
   validateSandboxNetworkGrants,
   type AgentRevision,
@@ -34,6 +38,7 @@ import {
   type SecretReference,
   type ServiceAccountReference,
   type SandboxNetworkGrant,
+  type SandboxPolicySnapshot,
 } from "../../packages/contracts/src/index.ts";
 import { registerConfigurationCases } from "./contracts-configuration-cases.ts";
 import { registerRuntimeDiagnosticCases } from "./contracts-runtime-diagnostic-cases.ts";
@@ -197,6 +202,237 @@ test("network delegation covers every requested host label and port without broa
       },
     );
   }
+});
+
+test("repository policy preserves absent and deny-all intent and binds canonical access immutably", () => {
+  const a = { repository: "example/project-a", access: "read" as const };
+  const b: { repository: string; access: "read" | "write" } = {
+    repository: "example/project-b",
+    access: "write",
+  };
+  const ceiling = [{ ...a, access: "write" }, { ...b }];
+  assert.equal(admitRepositoryNetworkPolicy(undefined, undefined), undefined);
+  assert.deepEqual(admitRepositoryNetworkPolicy([], undefined), {
+    version: 1,
+    grants: [],
+    identity: '{"version":1,"grants":[]}',
+  });
+
+  const admitted = admitRepositoryNetworkPolicy([b, a], ceiling);
+  assert.ok(admitted);
+  assert.equal(
+    admitted.identity,
+    '{"version":1,"grants":[{"repository":"example/project-a","access":"read"},{"repository":"example/project-b","access":"write"}]}',
+  );
+  assert.equal(admitRepositoryNetworkPolicy([a, b], ceiling)?.identity, admitted.identity);
+  assert.notEqual(
+    admitRepositoryNetworkPolicy([a, { ...b, access: "read" }], ceiling)?.identity,
+    admitted.identity,
+  );
+
+  b.access = "read";
+  assert.equal(admitted.grants[1]?.access, "write");
+  assert.ok(Object.isFrozen(admitted) && Object.isFrozen(admitted.grants));
+  assert.ok(admitted.grants.every(Object.isFrozen));
+});
+
+test("repository admission refuses malformed ACLs, ambiguous names and excess delegation", () => {
+  const read = { repository: "example/project-a", access: "read" };
+  for (const candidate of [
+    null,
+    {},
+    new Array<unknown>(1),
+    [read, read],
+    [read, { ...read, repository: "example/Project-a" }],
+    [{ ...read, repository: "example/project-a.git" }],
+    [{ ...read, repository: "example/%70roject-a" }],
+    [{ ...read, repository: "example/project-a\n" }],
+    [{ ...read, repository: "https://example.org/example/project-a" }],
+    [{ ...read, access: "admin" }],
+    [{ ...read, alias: "example/project-b" }],
+  ]) {
+    assert.throws(() => admitRepositoryNetworkPolicy(candidate, [read]), {
+      name: "RepositoryNetworkPolicyAdmissionError",
+      code: "INVALID_VALUE",
+    });
+  }
+  assert.throws(() => admitRepositoryNetworkPolicy([], [read, read]), {
+    name: "RepositoryNetworkPolicyAdmissionError",
+    code: "INVALID_VALUE",
+    path: "/repositoryNetworkPolicyCeiling/1/repository",
+  });
+  for (const [candidate, ceiling] of [
+    [[{ ...read, access: "write" }], [read]],
+    [[{ ...read, repository: "example/project-b" }], [read]],
+    [[read], undefined],
+  ]) {
+    assert.throws(() => admitRepositoryNetworkPolicy(candidate, ceiling), {
+      name: "RepositoryNetworkPolicyAdmissionError",
+      code: "OUTSIDE_CEILING",
+      path: "/repositoryNetworkPolicy/0",
+    });
+  }
+});
+
+test("repository admission bounds grants in both the request and ceiling", () => {
+  const grants = Array.from({ length: 33 }, (_, index) => ({
+    repository: `example/project-${index}`,
+    access: "read",
+  }));
+  const withinLimit = grants.slice(0, 32);
+  assert.equal(admitRepositoryNetworkPolicy(withinLimit, withinLimit)?.grants.length, 32);
+  for (const [value, ceiling, path] of [
+    [grants, grants, "/repositoryNetworkPolicy"],
+    [[], grants, "/repositoryNetworkPolicyCeiling"],
+  ] as const) {
+    assert.throws(() => admitRepositoryNetworkPolicy(value, ceiling), {
+      name: "RepositoryNetworkPolicyAdmissionError",
+      code: "INVALID_VALUE",
+      path,
+    });
+  }
+});
+
+const baseRepositoryPolicySnapshot = {
+  driverId: "sandbox-a",
+  implementation: "test-sandbox",
+  version: 3,
+  defaults: { inherited: true },
+  additions: [],
+} satisfies SandboxPolicySnapshot;
+const sandboxDriverWithoutRepositoryPolicy = {
+  id: baseRepositoryPolicySnapshot.driverId,
+  implementation: baseRepositoryPolicySnapshot.implementation,
+};
+
+test("Sandbox repository policy omission rejects a prepopulated ACL even without Driver support", () => {
+  const snapshot = baseRepositoryPolicySnapshot;
+  const write = { repository: "example/project-a", access: "write" };
+  const repositoryNetworkPolicy = admitRepositoryNetworkPolicy([write], [write]);
+  assert.ok(repositoryNetworkPolicy);
+  assert.throws(
+    () =>
+      admitSandboxRepositoryNetworkPolicy(
+        { ...snapshot, repositoryNetworkPolicy },
+        undefined,
+        [],
+        sandboxDriverWithoutRepositoryPolicy,
+      ),
+    {
+      name: "RepositoryNetworkPolicyAdmissionError",
+      code: "INVALID_VALUE",
+      path: "/repositoryNetworkPolicy",
+    },
+  );
+});
+
+test("Sandbox repository policy admission rejects invalid Driver defaults for an empty ACL", () => {
+  const invalidDefaults: readonly unknown[] = [undefined, null, [], { nested: new Map() }];
+  for (const defaults of invalidDefaults) {
+    assert.throws(
+      () =>
+        admitSandboxRepositoryNetworkPolicy(baseRepositoryPolicySnapshot, [], [], {
+          ...sandboxDriverWithoutRepositoryPolicy,
+          // A Driver can return invalid data at runtime despite its TypeScript signature.
+          admitRepositoryNetworkPolicy: () => defaults as SandboxPolicySnapshot["defaults"],
+        }),
+      {
+        name: "RepositoryNetworkPolicyAdmissionError",
+        code: "UNSUPPORTED_POLICY",
+        path: "/repositoryNetworkPolicy",
+      },
+    );
+  }
+});
+
+test("Sandbox repository policy admission returns a safe contract error for Driver failures", async (t) => {
+  const privateDiagnostic = new Error("Sandbox provider diagnostic");
+  function assertSafeError(
+    driver: NonNullable<Parameters<typeof admitSandboxRepositoryNetworkPolicy>[3]>,
+  ) {
+    assert.throws(
+      () => admitSandboxRepositoryNetworkPolicy(baseRepositoryPolicySnapshot, [], [], driver),
+      (error: unknown) => {
+        assert.ok(error instanceof RepositoryNetworkPolicyAdmissionError);
+        assert.equal(error.code, "UNSUPPORTED_POLICY");
+        assert.equal(error.path, "/repositoryNetworkPolicy");
+        assert.equal(
+          error.message,
+          "The Sandbox Driver must return an effective repository network policy document.",
+        );
+        assert.equal(error.cause, undefined);
+        return true;
+      },
+    );
+  }
+  await t.test("throwing capability getter", () => {
+    assertSafeError({
+      ...sandboxDriverWithoutRepositoryPolicy,
+      get admitRepositoryNetworkPolicy(): never {
+        throw privateDiagnostic;
+      },
+    });
+  });
+
+  const invalidAdmissions: Readonly<Record<string, () => unknown>> = {
+    "throwing capability method": () => {
+      throw privateDiagnostic;
+    },
+    "uncloneable defaults": () => ({ uncloneable: () => undefined }),
+    "rejected Promise": () => Promise.reject(privateDiagnostic),
+    "rejected Promise from another realm": () =>
+      runInNewContext("Promise.reject(privateDiagnostic)", { privateDiagnostic }),
+  };
+  for (const [name, admit] of Object.entries(invalidAdmissions)) {
+    await t.test(name, () => {
+      assertSafeError({
+        ...sandboxDriverWithoutRepositoryPolicy,
+        admitRepositoryNetworkPolicy: () => admit() as SandboxPolicySnapshot["defaults"],
+      });
+    });
+  }
+});
+
+test("Sandbox repository policy admission requires the selected Driver and preserves its result", () => {
+  const snapshot = baseRepositoryPolicySnapshot;
+  assert.throws(
+    () =>
+      admitSandboxRepositoryNetworkPolicy(snapshot, [], [], sandboxDriverWithoutRepositoryPolicy),
+    { name: "RepositoryNetworkPolicyAdmissionError", code: "UNSUPPORTED_POLICY" },
+  );
+  const effective = { evaluated: { version: 1 } };
+  let capabilityReads = 0;
+  let calls = 0;
+  const driver = {
+    id: snapshot.driverId,
+    implementation: snapshot.implementation,
+    get admitRepositoryNetworkPolicy() {
+      capabilityReads += 1;
+      return function (this: unknown) {
+        assert.equal(this, driver);
+        calls += 1;
+        return effective;
+      };
+    },
+  };
+  assert.throws(
+    () => admitSandboxRepositoryNetworkPolicy(snapshot, [], [], { ...driver, id: "other" }),
+    { name: "RepositoryNetworkPolicyAdmissionError", code: "UNSUPPORTED_POLICY" },
+  );
+  assert.equal(calls, 0);
+  capabilityReads = 0;
+  const admitted = admitSandboxRepositoryNetworkPolicy(snapshot, [], [], driver);
+  assert.equal(capabilityReads, 1);
+  assert.equal(calls, 1);
+  assert.deepEqual(admitted.repositoryNetworkPolicy?.grants, []);
+  effective.evaluated.version = 2;
+  assert.deepEqual(admitted.defaults, { evaluated: { version: 1 } });
+  assert.deepEqual(snapshot.defaults, { inherited: true });
+  assert.throws(
+    () => admitSandboxRepositoryNetworkPolicy(admitted, [], [], driver),
+    RepositoryNetworkPolicyAdmissionError,
+  );
+  assert.equal(calls, 1);
 });
 
 test("the Driver contract exposes the supported platform capabilities", () => {
@@ -380,6 +616,9 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     configuration: {},
   };
   const listTool: { enabled: boolean } = { enabled: true };
+  const write = { repository: "example/project-a", access: "write" };
+  const repositoryNetworkPolicy = admitRepositoryNetworkPolicy([write], [write]);
+  assert.ok(repositoryNetworkPolicy);
   const mutableRevision = {
     id: "revision-a-1",
     namespaceId: "namespace-a",
@@ -406,6 +645,13 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
       },
     },
     sandboxDriverId: "sandbox-test",
+    sandboxPolicy: {
+      driverId: "sandbox-test",
+      implementation: "test-sandbox",
+      version: 1,
+      defaults: { properties: { version: 1 } },
+      additions: [],
+    },
     plugins: {
       driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
       plugins: {
@@ -437,6 +683,15 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     createdAt: "2026-08-15T00:00:00.000Z",
   } satisfies AgentRevision;
 
+  const base = mutableRevision.sandboxPolicy;
+  const omitted = admitSandboxRepositoryNetworkPolicy(base, undefined, [], {
+    id: base.driverId,
+    implementation: base.implementation,
+  });
+  // A caller retaining the input cannot add write access after omission was admitted.
+  Object.assign(base, { repositoryNetworkPolicy: structuredClone(repositoryNetworkPolicy) });
+  const admittedWithoutAcl = freezeAgentRevision({ ...mutableRevision, sandboxPolicy: omitted });
+  assert.equal(admittedWithoutAcl.sandboxPolicy?.repositoryNetworkPolicy, undefined);
   const admitted = freezeAgentRevision(mutableRevision);
   assert.ok(isServiceAccountHarnessAuth(admitted.harnessAuth));
   assert.ok(admitted.repositoryCredentials?.bindings[0]);
@@ -465,6 +720,15 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   mutableRevision.harness.mode = "embedded";
   mutableRevision.compute.implementation = "changed-after-admission";
   mutableRevision.sandboxDriverId = "changed-after-admission";
+  mutableRevision.sandboxPolicy.defaults.properties.version = 2;
+  assert.deepEqual(admitted.sandboxPolicy?.defaults, { properties: { version: 1 } });
+  const admittedPolicy = admitted.sandboxPolicy?.repositoryNetworkPolicy;
+  assert.ok(admittedPolicy);
+  assert.deepEqual(admittedPolicy.grants, [{ repository: "example/project-a", access: "write" }]);
+  assert.equal(admittedPolicy.identity, repositoryNetworkPolicy.identity);
+  assert.ok(Object.isFrozen(admittedPolicy));
+  assert.ok(Object.isFrozen(admittedPolicy.grants));
+  assert.ok(Object.isFrozen(admittedPolicy.grants[0]));
   mutableRevision.harnessAuth.credential.secretRef.name = "replacement-source";
   mutableRevision.harnessAuth.backendBinding.workspaceId = "replacement-workspace";
   const draftPlugin = mutableRevision.plugins.plugins["codex-plugin:github@openai-curated-remote"];

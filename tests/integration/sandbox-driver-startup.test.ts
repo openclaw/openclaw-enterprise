@@ -18,6 +18,7 @@ import {
 import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import test from "node:test";
 import {
+  verifyLegacyPackedSandboxAdoption,
   verifyNativeOpenClawProvisioning,
   verifyConfirmedSandboxCleanup,
   verifyNativeHeldFailureExposure,
@@ -48,6 +49,11 @@ registerManagedPluginPolicyCases(credentialGatewayOverProviders);
 test(
   "OpenShell provisions native OpenClaw without exposing an inbound Harness service",
   verifyNativeOpenClawProvisioning,
+);
+
+test(
+  "OpenShell adopts a legacy Sandbox whose prelude requires repacking the command",
+  verifyLegacyPackedSandboxAdoption,
 );
 
 // Finding 1676: OpenShell answers NOT_FOUND for a Sandbox this identity may not see exactly as

@@ -403,7 +403,33 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
   assert.equal(installed.policyHash, hash);
   const predecessor = () =>
     prepared.observePredecessor(binding, installed, AbortSignal.timeout(10_000));
-  assert.equal(await predecessor(), true);
+  assert.deepEqual(await predecessor(), installed);
+
+  await t.test("an exact sibling profile still cannot allow uninspected credentials", async () => {
+    const unsafe = {
+      ...modelRule,
+      endpoints: modelRule.endpoints.map((endpoint) => ({
+        ...endpoint,
+        allow_uninspected_credentials: true,
+      })),
+    };
+    const matchingProfile = new OpenShellPreparedGitProvider(client, {
+      ...scope,
+      expectedProviders: [
+        { name: "model", providerId: modelId, rule: unsafe },
+        { name: runtime, rule: runtimeRule },
+      ],
+    });
+    overrides = { effective: { ...expected, [modelRule.name]: unsafe } };
+    assert.equal(
+      await matchingProfile.observe(binding, "sandbox-id", AbortSignal.timeout(10_000)),
+      undefined,
+    );
+    assert.equal(
+      await matchingProfile.observePredecessor(binding, installed, AbortSignal.timeout(10_000)),
+      undefined,
+    );
+  });
 
   await t.test(
     "ready sibling model generation gains a literal HTTPS REST destination",
@@ -424,7 +450,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
       };
       assert.deepEqual(
         { active: (await observe()) !== undefined, predecessor: await predecessor() },
-        { active: false, predecessor: false },
+        { active: false, predecessor: undefined },
       );
     },
   );
@@ -442,7 +468,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
       },
     };
     assert.equal(await observe(), undefined);
-    assert.equal(await predecessor(), false);
+    assert.equal(await predecessor(), undefined);
   });
 
   await t.test("ACL observation requires an independently selected model Provider ID", async () => {
@@ -460,7 +486,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     );
     assert.equal(
       await unbound.observePredecessor(binding, installed, AbortSignal.timeout(10_000)),
-      false,
+      undefined,
     );
   });
 
@@ -474,7 +500,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     );
     assert.equal(
       await unbound.observePredecessor(binding, installed, AbortSignal.timeout(10_000)),
-      false,
+      undefined,
     );
   });
 
@@ -600,7 +626,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
       },
     };
     assert.equal(await observe(), undefined);
-    assert.equal(await predecessor(), false);
+    assert.equal(await predecessor(), undefined);
   });
 
   await t.test("matching observation expires during effective policy readback", async (t) => {
@@ -618,7 +644,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     async () => {
       overrides = { effective: expected, ageDuringReadback: true };
       elapsedReadbackMs = 0;
-      assert.equal(await predecessor(), false);
+      assert.equal(await predecessor(), undefined);
       assert.equal(elapsedReadbackMs, 2_000);
     },
   );

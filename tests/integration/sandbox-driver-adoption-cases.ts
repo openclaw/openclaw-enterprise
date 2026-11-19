@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   OpenShellSandboxAlreadyExistsError,
   type OpenShellSandboxCreateRequest,
@@ -31,6 +32,7 @@ import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-
 import {
   codexRequirements,
   dedicatedRevision,
+  harnessRuntimeCommand,
   harnessService,
   namespaceContext,
   ownedWorkspace,
@@ -47,6 +49,52 @@ function record(value: unknown): Record<string, unknown> {
 
 function structFields(value: unknown): Record<string, unknown> {
   return record(record(record(value).structValue).fields);
+}
+
+export async function verifyLegacyPackedSandboxAdoption(): Promise<void> {
+  let existing: OpenShellSandboxResponse | undefined;
+  let creates = 0;
+  const gateway = workspaceGatewayClient();
+  gateway.createSandbox = async (request) => {
+    creates++;
+    existing = storedSandbox(structuredClone(request), { serviceUrls: {} });
+    return existing;
+  };
+  gateway.getSandbox = async () => existing;
+  const driver = openShellDriver(gateway);
+  const {
+    context,
+    revision: fixtureRevision,
+    requirements,
+  } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  const revision = completeSandboxRevision(fixtureRevision);
+  const chunks = Array.from({ length: 1510 }, (_, index) =>
+    createHash("sha256").update(String(index)).digest(),
+  );
+  const command = harnessRuntimeCommand(
+    "const fixture = " + JSON.stringify(Buffer.concat(chunks).toString("base64")) + ";",
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(command)) < 65_536);
+  const workload = { ...context, revision, requirements: { ...requirements, command } };
+  await driver.ensureNamespace(context);
+  const original = await driver.provisionHarness(workload);
+  assert.ok(existing?.spec);
+  const stored = existing.spec.command;
+  // This fixture crosses the bound only after the Driver adds its prelude.
+  assert.ok(Array.isArray(stored));
+  const loader = command.find((argument) => argument.includes("inflateRawSync"));
+  assert.ok(loader);
+  assert.ok(stored.includes(loader), "the prelude must have been packed into the program");
+  // The digest was captured from the DEFLATE-based Driver's CreateSandbox request.
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(stored)).digest("hex"),
+    "68ee8498984f9ec6615361186d6299d70826db65e2263283987be5973e8f5c34",
+  );
+  // A matching installed Sandbox spec must adopt without sending another CreateSandbox.
+  assert.deepEqual(await driver.provisionHarness(workload), original);
+  assert.equal(creates, 1);
 }
 
 export async function verifyNativeOpenClawProvisioning(): Promise<void> {

@@ -316,11 +316,16 @@ export async function observeOpenShellGitPredecessor(
         current.mainProcessInstanceId === git.networkInstanceId,
     );
   }
-  return !!evidence(status, git, git.attachmentEpoch, provider, providerId, {
+  const verified = evidence(status, git, git.attachmentEpoch, provider, providerId, {
     old: true,
     resourceVersion: providerResourceVersion,
     readStartedAt,
   });
+  if (verified) {
+    // evidence() requires valid wire timestamps on every verified report.
+    const age = timestampNanos(status.evaluatedTime)! - timestampNanos(status.observedTime)!;
+    return { validUntil: readStartedAt + 15_000_000_000n - age };
+  }
 }
 
 async function modelProvider(client: Client, git: Git, model: string, signal: AbortSignal) {

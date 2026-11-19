@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-18
-last_updated_session: authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99
+updated: 2026-11-19
+last_updated_session: authoring-run/c7cd8fa9-6181-469c-b712-11fae4a91393
 ---
 
 # Protected credential request flow
@@ -121,18 +121,23 @@ The helper matches the manifest before opening the authenticated listener.
 The provider receives only the verifier; Compute withholds the private status
 revision, port, container name and Pod UID.
 
-The Harness waits before its first model probe. Compute awaits installation commit, rechecks evidence
-and calls the Sandbox Driver. The Driver verifies the Sandbox and service and reads
-the execution/plan challenge. Compute signs the fresh process nonce and current
-installation with its control-plane key. The listener closes before Codex starts.
-Restart invalidates the old release. After 180 seconds startup fails closed and remains held.
-Reconciliation can repeat readiness checks without resolving material or retrying
-business requests. Active revisions require queued work; default Kubernetes has
-no periodic maintenance for [Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration).
+Before the first model probe, Compute rechecks committed installation evidence.
+The Sandbox Driver verifies the Sandbox and service and reads the execution and
+plan challenge. Compute signs the fresh nonce and installation. The listener
+closes before Codex starts. Restart invalidates release. Startup fails closed
+after 180 seconds. Reconciliation can recheck readiness without resolving material
+or retrying requests. Default Kubernetes needs queued work to reconcile
+[Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration).
 
-During held Git enrollment, `openshell-git-runtime.ts:observeHeldPreview` logs
+With a repository network policy, the held launcher verifies Compute's signature
+over the startup ID, enrolled path and nonce before sending its probe. Legacy
+launchers check the startup ID and synthetic probe path. The Git authority
+refuses marked requests before credential lookup. Unmarked discovery with a
+repository network policy uses regular Git authorization.
+
+`openshell-git-runtime.ts:observeHeldPreview` logs
 [curl and response failures](../reference/repository-credentials/protected-openshell-git.md#worker-log).
-An unconfirmed one-shot probe blocks the route with `bootstrap_failed` before credential delivery or release.
+An unconfirmed probe blocks credential delivery and release with `bootstrap_failed`.
 
 `openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
 OBSERVE per active environment for observed Git routes, including rotations.
@@ -346,6 +351,12 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-19 05:12: Scope the synthetic Git probe path to legacy bindings. (authoring-run/c7cd8fa9-6181-469c-b712-11fae4a91393 - 42847c74f)
+
+- 2026-11-19 04:52: Verify the Compute signature before sending the repository Git probe. (authoring-run/6d450558-148a-4118-8bc7-31483e18da22 - 52ffc8982)
+
+- 2026-11-19 04:41: Bind the Git probe to launcher enrollment. (authoring-run/0b7efadc-accd-4592-b3d1-65dbdcfbaa17 - 3b7d42bc3)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
 

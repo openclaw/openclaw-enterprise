@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-18"
-last_updated_session: "authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/a3db59dd-60f7-43de-ae03-81615db94f35"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -210,14 +210,13 @@ Dedicated Codex and OpenClaw require Landlock. The Driver validates filesystem,
 process and [binary-scoped network policy](agent-sandbox-policy.md) before Kubernetes
 calls. Labels outside `allowed_pod_labels` fail with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
 
-`provisionHarness` creates or adopts providers. Renewal updates only `node_setup_json` after checking
-the version. `sandboxCommand` adds applicable workspace links, setup wait and account bootstrap.
-Tests target 64 KiB serialized; OpenShell permits 256 KiB across arguments, 32 KiB each.
-Adoption compares the full spec including the command. Changed immutable commands require
+`provisionHarness` creates or adopts providers. Renewal version-checks updates to `node_setup_json`.
+`sandboxCommand` adds workspace links, setup wait and account bootstrap. Above 64 KiB,
+it packs the prelude and program with Brotli for repository network policy and DEFLATE
+for other revisions. Adoption compares the full spec. Changed commands require
 [revision recovery](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
-`internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
-development startup delay. Compute rolls the Gateway before checking enrollment;
-`harnessStatus` below gates readiness.
+`openShellInstallationConfiguration` omits the development startup delay.
+Compute rolls the Gateway before checking enrollment.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
@@ -229,15 +228,12 @@ Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
 Readiness does not attest HMAC plugin status.
 
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
-Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` reads
-the projected Secret; `packages/utils/src/workspace-node-setup.ts:validateWorkspaceNodeSetupSecret`
-checks ownership and setup material without further reads. OpenShell keeps provider output private; failures become `OpenShellSandboxConfigurationFailure`.
-Validated setup, including `bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
-at admission and supervisor replacement. WebSocket rewriting is unsupported:
-device proofs sign the literal token.
-Renewal requires expired stored setup, later live expiry and unchanged endpoint,
-TLS fingerprint, runtime and CA. Policy permits that Gateway and `/usr/local/bin/node` only;
-foreign ownership/drift prevents creation.
+Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` validates Secret ownership and setup without further reads.
+The Provider stores `bootstrapToken` in private `node-setup.json`.
+Invalid input returns `OpenShellSandboxConfigurationFailure`. TLS-pinned setup
+requires `wss://` at admission and replacement. Device proofs sign the literal token.
+Renewal requires expired stored setup, later live expiry and unchanged endpoint, TLS
+fingerprint, runtime and CA. Policy permits only that Gateway and `/usr/local/bin/node`.
 
 State uses `/sandbox/.openclaw-runtime`; subpaths use `/sandbox/.openclaw-mounts`.
 Admitted `/home/node` paths relocate to `harnessHome` for hooks. Codex hooks
@@ -347,8 +343,23 @@ supervisor restarts workspace-node one second after every exit until shutdown.
 checks policy, recipient and launcher proof. Strict grants require `PRE_CREDENTIALS`;
 legacy preview accepts absent binding fields.
 
+`apps/controller/src/drivers/sandbox/openshell.ts:admitRepositoryNetworkPolicy`
+requires qualified protected defaults, a nonempty grant list and no Agent
+additions. The selected-repository token stays unchanged. Each grant must
+fit its repository scope and contents permission.
+
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
-arms one-use denial: `git-write` probes
+reads the loaded bootstrap policy, then sends upload-pack discovery for the
+first canonical grant with a fresh nonce and no credentials. Compute binds the
+path to trusted enrollment and release. Only the exact middleware denial permits
+credential installation. The supervisor's 15-second observation lease covers
+recipient reads and must still be valid when the worker selects material, writes
+the Provider, and sends the signed launcher release. Sibling routes that disable
+TLS inspection or allow uninspected credentials block qualification.
+See [credential egress](credential-source-egress.md).
+
+For existing profiles without explicit grants, the runtime arms a one-use denial.
+`git-write` probes
 `/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`;
 installation-shaped providers, including `github-repository`, probe
 `/oce-observe-request/<nonce>.git/info/refs`. Both use `service=git-upload-pack`.
@@ -358,7 +369,8 @@ Observation alone cannot release the Harness.
 
 `attachmentStatus`/`GetSandboxProviderStatus` retries pending/missing status;
 `failed`, `withheld`, `revoked` or `absent` fails preparation. Version `cleanup`
-calls `GetSandbox`, `DeleteSandbox`, then deletes runtime and Git providers/profile.
+calls `GetSandbox`, `DeleteSandbox`, then deletes the runtime and Git providers and profiles.
+Git cleanup derives the provider name from the same revision grants.
 Absence requires `GetWorkspace` and another `GetSandbox`. `cleanupNativeWorkspace`
 retires interrupted preparers without a Sandbox, refusing foreign/replaced resources.
 
@@ -420,32 +432,8 @@ setup, retry and restart under setgid parents.
 
 ## Changelog
 
-- 2026-11-18 14:08: Accept Podman cache misses. (authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604 - f07a2b05a8db5e88142ca1a2c9fd90f0ec812284)
+- 2026-11-19 04:29: Verify the loaded repository policy and challenge before releasing selected Git. (authoring-run/a3db59dd-60f7-43de-ae03-81615db94f35 - a2d2cfb139953c1d1675e46c2a65279279726789)
 
-- 2026-11-16 13:04: Remove RuntimeClass selection. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)
-
-- 2026-11-16 13:30: Trace Gateway reply checks in the operator turn helper. (authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d - 7a8e52f38b378151c8c08ef1b6dd466ab24834bb)
-
-- 2026-11-14 14:53: Explain workspace lock and retry timing. (authoring-run/e22da2ae-8be7-42d3-876f-6355fa901e9f - 8a15b18175c508fe54672fc12ea0ff5a0847967d)
-
-- 2026-11-11 21:41: Bind controller preload to node identity. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - 7a2f352a44c42459a3a33c784199a47d11d98e1e)
-
-- 2026-11-11 21:12: Preload Agent Sandbox locally. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
-
-- 2026-11-11 16:37: Check the managed controller before local Agent deployment. (authoring-run/8dc2b49c-caf2-4594-9d69-06d1826b336e - 98da01c910)
-
-- 2026-11-11 06:13: Trace attachment refusals. (authoring-run/04448580-0c4a-4965-8c27-7f586386c885 - fef779767c622b30bab45c7a0a94f16fc04f70ab)
-
-- 2026-11-11 05:33: Record lazy packing and PAT evidence. (authoring-run/1354aaee-dc47-423c-864d-41dfc9608912 - f633bf27c890)
-
-- 2026-11-11 05:03: Explain revision-bound command selection and PAT startup refusal. (authoring-run/d486197b-c9d9-437a-8a99-f54368ab9e69 - a7d8e6a5d2b0)
-
-- 2026-11-10 21:21: Guard scratch storage. (authoring-run/77c6dd8e-42d7-4688-9561-cf468610374c - 011cd43b9c88d4123b19f12bd5d7bd0938e905d2)
-
-- 2026-11-10 21:04: Trace scratch PVC admission and mounts. (authoring-run/0029d37a-209b-4105-8242-a8c48c959c81 - 8b0d0518cb8786253d9632ae4beb8a75758a2e61)
-
-- 2026-11-10 20:33: Wait for the native Gateway node binding and rollout before readiness. (authoring-run/01a1b316-df53-7fc0-b967-6e23527300dc - 5b7ee9438050)
-
-- 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
+- 2026-11-19 03:46: Bind prepared Git providers to admitted repository grants. (authoring-run/46f2e1fe-81ba-4e99-88e7-53e8acde8687 - 57bef798f650b78f42f279c936a80f705f3450c7)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

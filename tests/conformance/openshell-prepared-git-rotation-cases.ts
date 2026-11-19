@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { open, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import {
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitReadFailure,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { scope, signal, token, wire, type RecordedRequest } from "./openshell-prepared-git-wire.ts";
 
 function isUpdate(
@@ -124,6 +128,42 @@ export function registerPreparedGitRotationCases(): void {
       replacement.rotate(receipt, async () => token(), signal()),
       /refused/,
     );
+  });
+
+  test("prepared Git records an unsent update when its lease expires during authentication", async (t) => {
+    const directory = await temporaryDirectory(t, "prepared-git-auth-");
+    const bearer = join(directory, "bearer");
+    const delayedBearer = join(directory, "delayed-bearer");
+    await writeFile(bearer, "fixture-bearer");
+    execFileSync("mkfifo", [delayedBearer]);
+
+    const { state, binding } = await wire(t, bearer);
+    const receipt = await binding.prepare(token(), signal());
+    let expired = false;
+    let reachedAuthentication: Promise<void> | undefined;
+    const result = await binding.rotate(
+      receipt,
+      async () => {
+        await rename(delayedBearer, bearer);
+        // Opening the FIFO for writing waits for the production file reader. Its metadata
+        // cannot finish until we expire the lease and allow the bearer read to complete.
+        reachedAuthentication = open(bearer, "w").then(async (output) => {
+          try {
+            expired = true;
+            await output.writeFile("fixture-bearer");
+          } finally {
+            await output.close();
+          }
+        });
+        return { ...token("successor"), isCurrent: () => !expired };
+      },
+      signal(),
+    );
+    await reachedAuthentication;
+    assert.equal(expired, true);
+    assert.equal(state.requests.filter(isUpdate).length, 0);
+    assert.equal(result, undefined, "the writer must report that nothing was sent");
+    assert.equal(state.provider?.metadata.resource_version, receipt.resourceVersion);
   });
 
   test("prepared Git preserves uncertain write outcomes and redacts private gateway failures", async (t) => {

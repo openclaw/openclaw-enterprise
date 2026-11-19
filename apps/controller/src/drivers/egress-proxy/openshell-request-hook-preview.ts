@@ -6,6 +6,10 @@ import type {
   ProxyRevisionContext,
   RepositoryGitRecipient,
 } from "@openclaw-enterprise/contracts";
+import {
+  HARNESS_REPOSITORY_GIT_PROBE_HEADER,
+  repositoryGitDiscoveryProbePath,
+} from "../compute/harness-egress-enrollment.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellSandboxResponse,
@@ -231,6 +235,7 @@ export class ObservedHookPreview {
   private armed?: {
     startupId: string;
     path: string;
+    nonce?: string;
     reason: string;
     until: number;
     requestId?: string;
@@ -289,24 +294,43 @@ export class ObservedHookPreview {
     this.bindingId = bindingId;
   }
   arm(startupId: string, repository?: string) {
-    if (this.armed || !this.recipient || !this.bootstrapRevision) {
-      throw new Error("Preview challenge is not fresh.");
-    }
     // git-write has an exact repository endpoint; installation-shaped providers
     // admit the root discovery probe. Both check policy before invoking the hook.
     const prefix = repository === undefined ? "" : `/${repository}.git`;
     const path = prefix + observedHookPath + randomBytes(16).toString("hex") + ".git/info/refs";
+    this.armPath(startupId, path);
+    return path;
+  }
+  /** The selected repository must come from the independently observed ACL profile. */
+  armRepositoryDiscovery(startupId: string, repository: string) {
+    const probePath = `/${repository}.git/info/refs`;
+    if (
+      !this.mandatory ||
+      repository.endsWith(".git") ||
+      !repositoryGitDiscoveryProbePath.test(probePath)
+    ) {
+      throw new Error("Repository discovery requires a mandatory hook and a canonical repository.");
+    }
+    const probeNonce = randomBytes(16).toString("hex");
+    this.armPath(startupId, probePath, probeNonce);
+    return { probePath, probeNonce };
+  }
+  private armPath(startupId: string, path: string, nonce?: string) {
+    if (this.armed || !this.recipient || !this.bootstrapRevision) {
+      throw new Error("Preview challenge is not fresh.");
+    }
     this.armed = {
       startupId,
       path,
+      ...(nonce !== undefined && { nonce }),
       reason: "oce_hook_" + randomBytes(18).toString("hex"),
       until: Date.now() + 30_000,
     };
-    return path;
   }
   deny(q: OpenShellOnlineHttpRequest, sandboxId: string) {
     const a = this.armed;
     const t = q.target;
+    const markers = q.headers.filter(([name]) => name === HARNESS_REPOSITORY_GIT_PROBE_HEADER);
     if (
       !a ||
       a.requestId ||
@@ -320,6 +344,9 @@ export class ObservedHookPreview {
       t.method !== "GET" ||
       t.path !== a.path ||
       t.query !== "service=git-upload-pack" ||
+      (a.nonce === undefined
+        ? markers.length !== 0
+        : markers.length !== 1 || markers[0]?.[1] !== a.nonce) ||
       q.body.length ||
       q.headers.some(([k]) =>
         ["authorization", "proxy-authorization", "cookie"].includes(k.toLowerCase()),
@@ -339,6 +366,7 @@ export class ObservedHookPreview {
       Date.now() >= a.until ||
       r?.startupId !== a.startupId ||
       r.probePath !== a.path ||
+      r.probeNonce !== a.nonce ||
       r.reasonCode !== a.reason
     ) {
       throw new Error("The held launcher did not receive its exact middleware denial.");

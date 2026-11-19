@@ -1,6 +1,17 @@
+import { immutableCopy } from "@openclaw-enterprise/utils";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
+import {
+  ConfigurationValidationError,
+  requireConfiguration,
+  validateConfiguration,
+} from "./configuration-definition.ts";
+import type { SandboxDriver } from "./drivers/sandbox/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  RepositoryNetworkPolicyAdmissionError,
+  type RepositoryNetworkPolicy,
+} from "./repository-network-policy.ts";
 import type { ErrorDetail } from "./api/common.ts";
 import type { OpenClawConfigurationDocument } from "./index.ts";
 
@@ -49,6 +60,63 @@ export interface SandboxPolicySnapshot {
   readonly version: number;
   readonly defaults: Readonly<OpenClawConfigurationDocument>;
   readonly additions: readonly SandboxNetworkGrant[];
+  /** Present only after repository policy admission, including an explicit deny-all ACL. */
+  readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
+}
+
+const EffectiveRepositoryPolicySchema = { type: "object" };
+
+/** Enrich a base snapshot during revision admission, before any provisioning effects. */
+export function admitSandboxRepositoryNetworkPolicy(
+  snapshot: SandboxPolicySnapshot,
+  value: unknown,
+  ceiling: unknown,
+  driver: Pick<SandboxDriver, "id" | "implementation" | "admitRepositoryNetworkPolicy"> | undefined,
+): SandboxPolicySnapshot {
+  const network = immutableCopy(snapshot);
+  if (Object.hasOwn(network, "repositoryNetworkPolicy")) {
+    throw new RepositoryNetworkPolicyAdmissionError(
+      "INVALID_VALUE",
+      "/repositoryNetworkPolicy",
+      "Use a base network snapshot without a repository network policy.",
+    );
+  }
+  const policy = admitRepositoryNetworkPolicy(value, ceiling);
+  if (policy === undefined) {
+    return network;
+  }
+  let result: SandboxPolicySnapshot["defaults"] | undefined;
+  let message = "The Sandbox Driver must return an effective repository network policy document.";
+  try {
+    const admit = driver?.admitRepositoryNetworkPolicy;
+    if (
+      driver === undefined ||
+      typeof admit !== "function" ||
+      driver.id !== network.driverId ||
+      driver.implementation !== network.implementation
+    ) {
+      message = "Select a Sandbox Driver that supports repository network policy.";
+    } else {
+      result = Reflect.apply(admit, driver, [policy, network]);
+      const defaults = immutableCopy(result);
+      if (
+        defaults !== undefined &&
+        validateConfiguration(EffectiveRepositoryPolicySchema, defaults).success
+      ) {
+        return Object.freeze({ ...network, defaults, repositoryNetworkPolicy: policy });
+      }
+    }
+  } catch {
+    // A rejected Promise cannot be cloned. Handle its rejection even across realms.
+    void Promise.resolve()
+      .then(() => result)
+      .catch(() => undefined);
+  }
+  throw new RepositoryNetworkPolicyAdmissionError(
+    "UNSUPPORTED_POLICY",
+    "/repositoryNetworkPolicy",
+    message,
+  );
 }
 
 /** Explicit, nonsecret acknowledgement; only its validated snapshot is persisted. */

@@ -134,3 +134,57 @@ test("observed-hook preview has its own durable admission and cannot reinterpret
     );
   }
 });
+
+test("the mandatory repository discovery challenge requires its own exact nonce and denial", () => {
+  const startupId = randomUUID();
+  const preview = new ObservedHookPreview(workspace, bindingId, true);
+  preview.recipient = "fixture-observed-recipient";
+  preview.bootstrapRevision = "72";
+  assert.throws(
+    () => new ObservedHookPreview(workspace, bindingId).armRepositoryDiscovery(startupId, "a/b"),
+    /requires a mandatory hook/,
+  );
+  assert.throws(() => preview.armRepositoryDiscovery(startupId, "a/../b"), /canonical repository/);
+  const { probePath, probeNonce } = preview.armRepositoryDiscovery(startupId, "a/b");
+  assert.equal(probePath, "/a/b.git/info/refs");
+  assert.match(probeNonce, /^[a-f0-9]{32}$/);
+  const marker = ["x-oce-git-startup-probe", probeNonce] as const;
+  const request: OpenShellOnlineHttpRequest = {
+    sandboxId,
+    workspace,
+    bindingId,
+    requestId: randomUUID(),
+    target: {
+      reportedScheme: "https",
+      host: "github.com",
+      port: 443,
+      method: "GET",
+      path: probePath,
+      query: "service=git-upload-pack",
+    },
+    headers: [marker],
+    body: new Uint8Array(),
+    deadlineAt: new Date(Date.now() + 5000).toISOString(),
+  };
+  // Ordinary Git discovery remains distinct from challenge traffic. A marker with the wrong
+  // nonce, duplicate markers and a different repository cannot consume the challenge either.
+  assert.equal(preview.deny({ ...request, headers: [] }, sandboxId), undefined);
+  assert.equal(
+    preview.deny({ ...request, headers: [[marker[0], "0".repeat(32)]] }, sandboxId),
+    undefined,
+  );
+  assert.equal(preview.deny({ ...request, headers: [marker, marker] }, sandboxId), undefined);
+  assert.equal(
+    preview.deny(
+      { ...request, target: { ...request.target, path: "/a/c.git/info/refs" } },
+      sandboxId,
+    ),
+    undefined,
+  );
+  const reasonCode = preview.deny(request, sandboxId);
+  assert.match(reasonCode ?? "", /^oce_hook_[a-f0-9]{36}$/);
+  assert.equal(preview.deny(request, sandboxId), undefined);
+  assert.throws(() => preview.confirm({ startupId, probePath, reasonCode }), /exact/);
+  preview.confirm({ startupId, probePath, probeNonce, reasonCode });
+  assert.equal(preview.hook?.startupId, startupId);
+});

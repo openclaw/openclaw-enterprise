@@ -16,6 +16,10 @@ import type {
   OpenShellPreparedGitProvider,
 } from "./openshell-prepared-git-provider.ts";
 import {
+  openShellExpectedWireProviderRule,
+  type OpenShellExpectedProviderRule,
+} from "./openshell-repository-policy-readback.ts";
+import {
   previewPolicyAndRecipient,
   type ObservedHookPreview,
 } from "./openshell-request-hook-preview.ts";
@@ -226,7 +230,9 @@ export async function checkOpenShellGitProviders(
   workspace: string,
   providers: readonly string[],
   signal: AbortSignal,
-): Promise<void> {
+  captureRules = false,
+): Promise<OpenShellExpectedProviderRule[]> {
+  const expected: OpenShellExpectedProviderRule[] = [];
   for (const name of providers) {
     const provider = await client.getProvider(workspace, name, signal);
     if (!provider) {
@@ -266,7 +272,26 @@ export async function checkOpenShellGitProviders(
         "OpenShell Git cannot share an unverified or overlapping credential provider.",
       );
     }
+    if (captureRules) {
+      const binaries = definition.binaries ?? [];
+      const rule =
+        provider.id && Array.isArray(binaries)
+          ? openShellExpectedWireProviderRule(name, provider.id, {
+              binaries,
+              credentials,
+              endpoints,
+            })
+          : undefined;
+      if (!rule) {
+        throw new OpenShellGitRouteError(
+          "provider_overlap",
+          "OpenShell Git cannot verify the selected credential provider rule.",
+        );
+      }
+      expected.push(rule);
+    }
   }
+  return expected;
 }
 
 /**
@@ -355,8 +380,8 @@ export async function observeOpenShellGitInstallation(
     Date.parse(entry.binding.expiresAt) <= Date.now()
   ) {
     // Identity only. Lookup and the post-rotation installation check never take this path.
-    const last = entry.supervisor;
-    if (await entry.provider.observePredecessor(entry.binding, last, signal)) {
+    const last = await entry.provider.observePredecessor(entry.binding, entry.supervisor, signal);
+    if (last) {
       if (entry.preview) {
         // Expiry removes credentials, not the released launch's mandatory request hook.
         // Recheck its policy and exact recipient before authorizing another session.
@@ -378,7 +403,7 @@ export async function observeOpenShellGitInstallation(
           return;
         }
       }
-      return last;
+      return entry.provider.repositoryPolicyIsFresh(last) ? last : undefined;
     }
     return;
   }
@@ -422,7 +447,7 @@ export async function observeOpenShellGitInstallation(
       workload: entry.continuity.workload,
       signal,
     });
-    if (!recipient) {
+    if (!recipient || !entry.provider.repositoryPolicyIsFresh(observed)) {
       return;
     }
     if (!preview.recipient && observed.credentialState === "bootstrap" && adopt) {
@@ -569,5 +594,5 @@ export async function observeOpenShellGitInstallation(
       }
     }
   }
-  return observed;
+  return entry.provider.repositoryPolicyIsFresh(observed) ? observed : undefined;
 }
