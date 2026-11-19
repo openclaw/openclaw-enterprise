@@ -566,6 +566,7 @@ async function nativeWorkerProof({
   namespaceId,
   agentId,
   timeout,
+  plainChat,
   workspaceFile,
   expectedNodeId,
   session: existingSession,
@@ -590,6 +591,7 @@ async function nativeWorkerProof({
   const { loadYaml } = await import(pathToFileURL(require.resolve("@kubernetes/client-node")));
   let stage = "startup";
   let client;
+  let temporarySession;
   let helloTimer;
   let collectFailure;
   let lastPlacement;
@@ -698,6 +700,9 @@ async function nativeWorkerProof({
       const { sessionId } = created;
       assert.ok(typeof sessionId === "string" && sessionId.trim().length > 0);
       session = { key, sessionId };
+      if (plainChat) {
+        temporarySession = session;
+      }
       stage = "required-placement";
       while (!signal.aborted) {
         let described;
@@ -746,21 +751,26 @@ async function nativeWorkerProof({
     assert.match(sessionFile.sha256, /^[a-f0-9]{64}$/);
     const marker = `FIRST_AGENT_NATIVE_${randomUUID()}`;
     const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
-    const program = nativeWorkerProofProgram({
-      sessionFile,
-      sessionFileContent,
-      workspaceFile,
-      toolPrefix,
-      createSessionFile: existingSession === undefined,
-    });
-    const command = `node -e '${program.replaceAll("'", "'\\''")}'`;
+    let command;
+    let message = `Reply with exactly ${marker}. Do not use tools.`;
+    if (!plainChat) {
+      const program = nativeWorkerProofProgram({
+        sessionFile,
+        sessionFileContent,
+        workspaceFile,
+        toolPrefix,
+        createSessionFile: existingSession === undefined,
+      });
+      command = `node -e '${program.replaceAll("'", "'\\''")}'`;
+      message = `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`;
+    }
     stage = "send";
     selectedTurn = { key, runId: randomUUID() };
     const sent = await call("sessions.send", {
       key,
       agentId: "main",
       idempotencyKey: selectedTurn.runId,
-      message: `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`,
+      message,
     });
     assert.ok(sent.runId);
     runId = sent.runId;
@@ -796,13 +806,7 @@ async function nativeWorkerProof({
       });
       historyPredicates = evidence.observation;
       const { tool, final, messages } = evidence;
-      if (tool && final) {
-        stage = "exec-proof";
-        const output = evidence.output;
-        const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
-        assert.ok(line);
-        const proof = JSON.parse(line.slice(toolPrefix.length));
-        assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
+      if (final && (plainChat || tool)) {
         stage = "current-placement";
         const current = await call("sessions.describe", { key, agentId: "main" });
         assert.equal(current.session?.sessionId, session.sessionId);
@@ -812,6 +816,23 @@ async function nativeWorkerProof({
         assert.equal(placement.providerId, required.providerId);
         assert.equal(placement.inference, "worker");
         assert.ok(placement.environmentId && placement.remoteWorkspaceDir);
+        const verified = {
+          verified: true,
+          profileId: required.id,
+          providerId: required.providerId,
+          environmentId: placement.environmentId,
+          session,
+        };
+        if (plainChat) {
+          emit(verified);
+          return;
+        }
+        stage = "exec-proof";
+        const output = evidence.output;
+        const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
+        assert.ok(line);
+        const proof = JSON.parse(line.slice(toolPrefix.length));
+        assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
         assert.equal(proof.cwd, placement.remoteWorkspaceDir);
         assert.equal(proof.modelCredentialPresent, false);
         assert.equal(proof.sessionFileSha256, sessionFile.sha256);
@@ -821,15 +842,7 @@ async function nativeWorkerProof({
             createHash("sha256").update(workspaceFile.content).digest("hex"),
           );
         }
-        emit({
-          verified: true,
-          profileId: required.id,
-          providerId: required.providerId,
-          environmentId: placement.environmentId,
-          hostname: proof.hostname,
-          session,
-          sessionFile,
-        });
+        emit({ ...verified, hostname: proof.hostname, sessionFile });
         return;
       }
       assert.ok(
@@ -846,6 +859,16 @@ async function nativeWorkerProof({
     process.exitCode = 1;
   } finally {
     clearTimeout(helloTimer);
+    if (temporarySession) {
+      // Release this turn's worker slot before the retained-session check.
+      await client
+        .request(
+          "sessions.delete",
+          { key: temporarySession.key, expectedSessionId: temporarySession.sessionId },
+          { timeoutMs: 10_000 },
+        )
+        .catch(() => undefined);
+    }
     client?.stop();
     await client?.stopAndWait({ timeoutMs: 1_000 }).catch(() => undefined);
   }
@@ -859,6 +882,7 @@ export async function assertNativeWorkerProofInController(
     environment,
     namespaceId,
     agentId,
+    plainChat = false,
     workspaceFile,
     expectedNodeId,
     session,
@@ -875,7 +899,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: plainChat ? 3 * 60_000 : nativeFirstAgentProofTimeout, plainChat, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
@@ -960,8 +984,10 @@ export async function assertNativeWorkerProofInController(
   }
   assert.equal(result.proof?.verified, true);
   assert.ok(result.proof.profileId && result.proof.providerId && result.proof.environmentId);
-  assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);
   assert.ok(result.proof.session?.key && result.proof.session.sessionId);
-  assert.ok(result.proof.sessionFile?.path && result.proof.sessionFile.sha256);
+  if (!plainChat) {
+    assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);
+    assert.ok(result.proof.sessionFile?.path && result.proof.sessionFile.sha256);
+  }
   return result.proof;
 }
