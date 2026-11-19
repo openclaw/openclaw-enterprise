@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: authoring-run/c7cd8fa9-6181-469c-b712-11fae4a91393
+last_updated_session: "authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0"
 ---
 
 # Protected credential request flow
@@ -122,18 +122,17 @@ The provider receives only the verifier; Compute withholds the private status
 revision, port, container name and Pod UID.
 
 Before the first model probe, Compute rechecks committed installation evidence.
-The Sandbox Driver verifies the Sandbox and service and reads the execution and
-plan challenge. Compute signs the fresh nonce and installation. The listener
-closes before Codex starts. Restart invalidates release. Startup fails closed
-after 180 seconds. Reconciliation can recheck readiness without resolving material
-or retrying requests. Default Kubernetes needs queued work to reconcile
-[Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration).
+The Sandbox Driver verifies the Sandbox and service and reads the challenge.
+Compute signs the nonce and installation. The listener closes before Codex starts.
+Restart invalidates release. Startup fails closed after 180 seconds. Readiness
+checks neither resolve material nor retry requests. Default Kubernetes reconciles
+[Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration)
+during queued work.
 
-With a repository network policy, the held launcher verifies Compute's signature
-over the startup ID, enrolled path and nonce before sending its probe. Legacy
-launchers check the startup ID and synthetic probe path. The Git authority
-refuses marked requests before credential lookup. Unmarked discovery with a
-repository network policy uses regular Git authorization.
+For repository network policy, the launcher verifies Compute's signature over
+the startup ID, enrolled path and nonce before probing. Legacy launchers check the
+startup ID and synthetic path. The Git authority refuses marked requests before
+credential lookup. Unmarked discovery uses regular Git authorization.
 
 `openshell-git-runtime.ts:observeHeldPreview` logs
 [curl and response failures](../reference/repository-credentials/protected-openshell-git.md#worker-log).
@@ -309,7 +308,8 @@ independent confirmation for registered recipients; snapshots require their rese
 worker, including bootstrap. Neither grants request authority.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
-cancels definitely unsent writes. Uncertain writes remain blocked.
+cancels definitely unsent writes, including a credential write timeout during
+Gateway authentication before the RPC starts. Uncertain writes remain blocked.
 `release` drops closed routes after Sandbox deletion, preserving refusal.
 `prepare` requires a held launch or explicit installation preview and closes
 another worker's persisted route before credential access. `verifyExecution`
@@ -351,6 +351,8 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-19 05:56: Cancel writes that expire before dispatch. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
 
 - 2026-11-19 05:12: Scope the synthetic Git probe path to legacy bindings. (authoring-run/c7cd8fa9-6181-469c-b712-11fae4a91393 - 42847c74f)
 

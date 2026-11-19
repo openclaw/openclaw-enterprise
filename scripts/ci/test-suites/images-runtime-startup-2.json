@@ -69,6 +69,8 @@
       "path": "tests/integration/sandbox-driver-startup.test.ts",
       "expectedTests": [
         "OpenShell reconciles renewed codex workspace-node setup into its revision provider",
+        "OpenShell adopts the shared openclaw runtime-files Provider profile without updates",
+        "OpenShell adopts the shared codex runtime-files Provider profile without updates",
         "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider",
         "OpenShell delivers codex initial workspace files privately after supervisor readiness",
         "OpenShell delivers openclaw initial workspace files privately after supervisor readiness",

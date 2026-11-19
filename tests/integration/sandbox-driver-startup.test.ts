@@ -19,6 +19,7 @@ import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import test from "node:test";
 import {
   verifyLegacyPackedSandboxAdoption,
+  verifyLegacyRuntimeProfileAdoption,
   verifyNativeOpenClawProvisioning,
   verifyConfirmedSandboxCleanup,
   verifyNativeHeldFailureExposure,
@@ -55,6 +56,15 @@ test(
   "OpenShell adopts a legacy Sandbox whose prelude requires repacking the command",
   verifyLegacyPackedSandboxAdoption,
 );
+
+// Captured from the base Driver's profile imports for both Harnesses.
+for (const [harnessId, digest] of [
+  ["openclaw", "dbd3d152cc62ed92be784c6a2d89119a9c1d240fc899d7e9b03db3b7f1127c13"],
+  ["codex", "cb8f9005cad4f166a9393b3873544eca5b53e0ede43d333d0a105acd2035dcd0"],
+] as const) {
+  test(`OpenShell adopts the shared ${harnessId} runtime-files Provider profile without updates`, () =>
+    verifyLegacyRuntimeProfileAdoption(harnessId, digest));
+}
 
 // Finding 1676: OpenShell answers NOT_FOUND for a Sandbox this identity may not see exactly as
 // for one that is gone (GetSandbox and DeleteSandbox alike), so a stop, retirement or deletion

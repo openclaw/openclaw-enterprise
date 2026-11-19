@@ -487,7 +487,10 @@ async function observedGitRoute(
   f.faults.observe = false;
   await f.reconcile();
   assert.ok(f.entry.installed, "active generation completes its original launch witness");
-  await f.runtime.releasePreview(revision.id, startupId, async () => true);
+  await f.runtime.releasePreview(revision.id, startupId, {
+    prepare: async () => {},
+    deliver: async () => true,
+  });
   assert.ok(await f.lookup(), "first read after held launch ACK");
   if (afterRelease) {
     await afterRelease(f, revision);

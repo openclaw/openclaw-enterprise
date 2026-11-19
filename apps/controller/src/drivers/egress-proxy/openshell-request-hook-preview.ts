@@ -245,7 +245,7 @@ export class ObservedHookPreview {
   bootstrapRevision?: string;
   /** A local deadline to stop and retire, never a lease or an authorization deadline. */
   verifyInstallBy?: number | undefined;
-  release?: "sending" | "acknowledged";
+  release?: "preparing" | "sending" | "acknowledged";
 
   private modelOperation?: { revision: string; id?: string; complete?: true };
 

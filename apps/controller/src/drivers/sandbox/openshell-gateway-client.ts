@@ -2295,7 +2295,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
-    canDispatch?: () => boolean,
+    canDispatch: () => boolean = () => true,
   ): Promise<OpenShellProviderResponse> {
     if (
       !/^[1-9]\d*$/u.test(expectedResourceVersion) ||
@@ -2676,14 +2676,22 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     timeoutMs: number = this.requestTimeoutMs,
     canDispatch?: () => boolean,
   ): Promise<RecordValue> {
-    signal.throwIfAborted();
+    const unsent = () =>
+      new OpenShellGatewayDispatchRefusedError("OpenShell credential update was not sent.");
+    const checkSignalBeforeDispatch = () => {
+      if (canDispatch !== undefined && signal.aborted) {
+        throw unsent();
+      }
+      signal.throwIfAborted();
+    };
+    checkSignalBeforeDispatch();
     const { grpc, client } = await this.ensureClient();
-    signal.throwIfAborted();
+    checkSignalBeforeDispatch();
     const headers = await openShellGatewayGrpcMetadata(grpc, this.options.auth);
-    signal.throwIfAborted();
     if (canDispatch?.() === false) {
-      throw new OpenShellGatewayDispatchRefusedError("OpenShell credential update was not sent.");
+      throw unsent();
     }
+    checkSignalBeforeDispatch();
     return new Promise<RecordValue>((resolve, reject) => {
       let call: ClientUnaryCall | undefined;
       const abort = () => {

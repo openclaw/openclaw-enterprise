@@ -1141,10 +1141,10 @@ export class OpenShellGitRuntime {
 
   /** Deliver one release, and open ordinary authorization only on the same launcher's ACK.
    * A lost response may mean the workload started. Block and retire this family, never resend. */
-  async releasePreview(
+  async releasePreview<T>(
     revisionId: string,
     startupId: string,
-    deliver: (canSend: () => boolean) => Promise<boolean | "unsent">,
+    release: { prepare: () => Promise<T>; deliver: (prepared: T) => Promise<boolean> },
     signal: AbortSignal = this.stopped.signal,
   ): Promise<void> {
     const entry = this.states.get(revisionId)?.entry;
@@ -1160,7 +1160,7 @@ export class OpenShellGitRuntime {
     ) {
       throw new Error("Cannot release this preview startup.");
     }
-    let canSend = () => true;
+    let canSend = () => !signal.aborted && !this.stopped.signal.aborted && !entry.blocked;
     if (entry.authorization.repositoryNetworkPolicy !== undefined) {
       // A prior readiness result cannot authorize release if the loaded policy has since changed.
       const installed = entry.installed;
@@ -1180,20 +1180,27 @@ export class OpenShellGitRuntime {
         throw new Error("Cannot release this preview startup.");
       }
     }
-    preview.release = "sending";
-    let delivered: boolean | "unsent";
+    preview.release = "preparing";
+    let prepared: T;
     try {
-      delivered = await deliver(canSend);
-      if (delivered === false || entry.blocked) {
+      prepared = await release.prepare();
+      if (!canSend()) {
+        throw new Error("Cannot release this preview startup.");
+      }
+    } catch (error) {
+      // Compute may need a fresh installation observation. This attempt sent nothing.
+      delete preview.release;
+      throw error;
+    }
+
+    preview.release = "sending";
+    try {
+      if (!(await release.deliver(prepared)) || entry.blocked) {
         throw new Error("The preview release was not acknowledged.");
       }
     } catch (error) {
       this.block(entry, "preview_release_unconfirmed");
       throw error;
-    }
-    if (delivered === "unsent") {
-      delete preview.release;
-      throw new Error("Cannot release this preview startup.");
     }
     preview.release = "acknowledged";
   }

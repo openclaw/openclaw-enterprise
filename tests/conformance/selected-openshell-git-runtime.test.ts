@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, verify } from "node:crypto";
 import test, { type TestContext } from "node:test";
+import {
+  COMPUTE_RELEASE_PROFILE,
+  HARNESS_EGRESS_ENROLLMENT_PATH,
+  harnessEgressEnrollment,
+  repositoryGitStartupProbePath,
+  signComputeExecutionRelease,
+  signComputeRepositoryGitProbe,
+} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { HARNESS_REPOSITORY_GIT_PROBE_HEADER } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
@@ -23,12 +33,23 @@ import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/
 import {
   admitRepositoryNetworkPolicy,
   type AgentRevision,
+  type EgressInstallation,
+  type ProxyPlan,
+  type ProxyWiring,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
+import { InstalledDriver } from "../../packages/occ/src/index.ts";
+import { buildSandboxInstallation } from "../integration/sandbox-driver-startup-installation-fixture.ts";
+import { backendFor } from "../integration/sandbox-driver-openshell-fixture.ts";
+import {
+  harnessService,
+  runtimeSandboxFixture,
+} from "../integration/sandbox-driver-startup-orchestration.ts";
+import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway-fixture.ts";
 import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { deferred } from "../helpers/deferred.ts";
@@ -631,6 +652,10 @@ async function heldGit(t: TestContext, acl = false) {
   };
 }
 
+function releaseAttempt(deliver: () => Promise<boolean>) {
+  return { prepare: async () => {}, deliver };
+}
+
 async function heldReleased(t: TestContext) {
   return releaseHeldGit(await heldGit(t), t);
 }
@@ -670,12 +695,16 @@ async function releaseHeldGit(
   );
   assert.ok(receiptReads.some((r) => r.provider === "openai" && r.operation === "model-observe"));
   assert.equal(await lookup(), undefined, "installed material is held until launch ACK");
-  await f.runtime.releasePreview(revision.id, startupId, async () => {
-    activity.releases += 1;
-    assert.equal(preview.release, "sending");
-    assert.equal(await lookup(), undefined, "sending is not acknowledged");
-    return true;
-  });
+  await f.runtime.releasePreview(
+    revision.id,
+    startupId,
+    releaseAttempt(async () => {
+      activity.releases += 1;
+      assert.equal(preview.release, "sending");
+      assert.equal(await lookup(), undefined, "sending is not acknowledged");
+      return true;
+    }),
+  );
   assert.equal(preview.release, "acknowledged");
   const scope = await lookup();
   assert.ok(scope);
@@ -686,10 +715,14 @@ async function releaseHeldGit(
   assert.equal(scope.repositoryId, revision.repositoryCredentials!.bindings[0]!.grant.repositoryId);
   assert.equal(scope.pushRef, "refs/heads/review/task");
   await assert.rejects(
-    f.runtime.releasePreview(revision.id, startupId, async () => {
-      activity.releases += 1;
-      return true;
-    }),
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      releaseAttempt(async () => {
+        activity.releases += 1;
+        return true;
+      }),
+    ),
     /Cannot release this preview startup/,
   );
   assert.equal(
@@ -911,8 +944,12 @@ test("mandatory Git request-hook release refuses a different Provider's token-gr
   assert.equal(await lookup(), undefined);
   assert.equal(f.calls.rotate, 0);
   await assert.rejects(
-    f.runtime.releasePreview(revision.id, startupId, async () =>
-      assert.fail("The unchanged route with a different owner must remain held."),
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      releaseAttempt(async () =>
+        assert.fail("The unchanged route with a different owner must remain held."),
+      ),
     ),
     /Cannot release this preview startup/,
   );
@@ -1222,7 +1259,7 @@ test("ACL Git reads the loaded policy again before releasing its selected-reposi
     return true;
   };
   await assert.rejects(
-    f.runtime.releasePreview(revision.id, startupId, deliver, t.signal),
+    f.runtime.releasePreview(revision.id, startupId, releaseAttempt(deliver), t.signal),
     /Cannot release this preview startup/,
   );
   assert.equal(activity.releases, 0);
@@ -1230,12 +1267,12 @@ test("ACL Git reads the loaded policy again before releasing its selected-reposi
   setPolicyLoaded(true);
   setAllowUninspectedCredentials(true);
   await assert.rejects(
-    f.runtime.releasePreview(revision.id, startupId, deliver, t.signal),
+    f.runtime.releasePreview(revision.id, startupId, releaseAttempt(deliver), t.signal),
     /Cannot release this preview startup/,
   );
   assert.equal(activity.releases, 0);
   setAllowUninspectedCredentials(false);
-  await f.runtime.releasePreview(revision.id, startupId, deliver, t.signal);
+  await f.runtime.releasePreview(revision.id, startupId, releaseAttempt(deliver), t.signal);
   assert.equal(activity.releases, 1);
   const scope = await lookup();
   assert.equal(scope?.scope, "github-repository");
@@ -1287,10 +1324,10 @@ test("ACL Git refuses credentials and launcher release when the supervisor lease
     f.runtime.releasePreview(
       revision.id,
       startupId,
-      async () => {
+      releaseAttempt(async () => {
         activity.releases += 1;
         return true;
-      },
+      }),
       t.signal,
     ),
     /Cannot release this preview startup/,
@@ -1304,13 +1341,14 @@ test("ACL Git refuses credentials and launcher release when the supervisor lease
     f.runtime.releasePreview(
       revision.id,
       startupId,
-      async (canSend) => {
-        elapsed += 2_000;
-        if (!canSend()) {
-          return "unsent";
-        }
-        activity.releases += 1;
-        return true;
+      {
+        prepare: async () => {
+          elapsed += 2_000;
+        },
+        deliver: async () => {
+          activity.releases += 1;
+          return true;
+        },
       },
       t.signal,
     ),
@@ -1321,13 +1359,219 @@ test("ACL Git refuses credentials and launcher release when the supervisor lease
   await f.runtime.releasePreview(
     revision.id,
     startupId,
-    async () => {
+    releaseAttempt(async () => {
       activity.releases += 1;
       return true;
-    },
+    }),
     t.signal,
   );
   assert.equal(activity.releases, 1);
+});
+
+test("ACL Git blocks a release when the POST acknowledgment is lost", async (t) => {
+  const { f, revision, startupId, reconcile, lookup } = await heldGit(t, true);
+  await reconcile();
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  let posts = 0;
+  const release = () =>
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      releaseAttempt(async () => {
+        posts++;
+        throw new Error("release transport lost its response");
+      }),
+      t.signal,
+    );
+  await assert.rejects(release(), /release transport lost its response/);
+  assert.deepEqual(f.runtime.route(revision.id), {
+    state: "blocked",
+    reason: "preview_release_unconfirmed",
+  });
+  assert.equal(await lookup(), undefined);
+  await assert.rejects(release(), /Cannot release this preview startup/);
+  assert.equal(posts, 1);
+});
+
+test("Compute retries an unsent release after the final recipient observation expires", async (t) => {
+  const {
+    f,
+    revision: selected,
+    client,
+    reconcile,
+    startupId,
+    setObservationAge,
+    onWorkloadRead,
+  } = await heldGit(t, true);
+  await reconcile();
+  assert.equal(f.runtime.route(selected.id).state, "installed");
+
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const registration = "oce-prepared-git";
+  const driverId = "openshell-sandbox";
+  const serviceUrl = "http://held-codex.openshell.test/";
+  const posts: Readonly<Record<string, unknown>>[] = [];
+  let wiring: ProxyWiring;
+  let committed: EgressInstallation | undefined;
+  const gateway = workspaceGatewayClient();
+  gateway.getGatewayInfo = async () => ({
+    extensions: [{ configured_name: registration, kind: 4, protocol_major: 1 }],
+  });
+  gateway.getSandbox = async () => {
+    const sandbox = await client.getSandbox(f.sandbox, t.signal);
+    assert.ok(sandbox);
+    return {
+      ...sandbox,
+      annotations: {
+        ...sandbox.annotations,
+        "openclaw.dev/namespace-id": selected.namespaceId,
+        "openclaw.dev/agent-id": selected.agentId,
+      },
+    };
+  };
+  gateway.getSandboxPolicyStatus = async () => ({
+    active_version: 1,
+    revision: { version: 1, status: 2, policy: wiring.configuration },
+  });
+  gateway.getService = async (_workspace, name, service) =>
+    harnessService(name, service, serviceUrl);
+  const backend = backendFor(gateway);
+  const sandbox = new OpenShellSandboxDriver(
+    buildSandboxInstallation().drivers.sandbox.configuration,
+    { id: driverId, backend, openShellGit: f.runtime },
+  );
+  const proxyOptions = {
+    middlewareName: registration,
+    repositoryMiddlewareName: registration,
+    authorityScope: "execution",
+  } as const;
+  const proxy = new OpenShellCredentialProxyDriver(proxyOptions, {
+    id: driverId,
+    backend,
+    sandbox,
+    mandatoryEnforcement: f.runtime.mandatoryEnforcement.bind(f.runtime),
+  });
+  const owner = new InstalledDriver(
+    { id: driverId, implementation: "openshell", configuration: proxyOptions },
+    { capabilities: { sandbox, credential_proxy: proxy } },
+  );
+  const compute = new ProtectedExecutionDriver(owner);
+  const plan: ProxyPlan = {
+    id: randomUUID(),
+    generation: 1,
+    driver: owner.ref,
+    sandboxDriverId: driverId,
+    egressDriverId: driverId,
+    execution: {
+      installationId: "fixture-installation",
+      namespaceId: selected.namespaceId,
+      agentId: selected.agentId,
+      servicePrincipalId: "fixture-principal",
+      revisionId: selected.id,
+      executionId: selected.egressPlan!.execution.executionId,
+    },
+    routes: [],
+    repositoryGit: selected.repositoryCredentials!,
+    repositoryGitAuthorization: "online-request",
+  };
+  const revision: AgentRevision = {
+    ...selected,
+    sandboxPolicy: { ...selected.sandboxPolicy!, driverId },
+    sandboxDriverId: driverId,
+    egressPlan: plan,
+  };
+  const fixture = runtimeSandboxFixture(sandbox);
+  const namespace = {
+    ...fixture.context.namespace,
+    id: selected.namespaceId,
+    name: f.sandbox.workspace,
+  };
+  const context = { namespace, revision, plan, signal: t.signal };
+  const harness = {
+    ...fixture.context,
+    ...context,
+    requirements: fixture.requirements,
+    transportToken: "fixture-bearer",
+  };
+  const probePath = repositoryGitStartupProbePath(revision)!;
+  const challenge = {
+    profile: COMPUTE_RELEASE_PROFILE,
+    startupId,
+    ...harnessEgressEnrollment(plan, probePath),
+  };
+  gateway.getServiceDocument = async (url, path) => {
+    assert.equal(url, serviceUrl);
+    assert.equal(path, HARNESS_EGRESS_ENROLLMENT_PATH);
+    return { status: 200, json: challenge };
+  };
+  gateway.postServiceDocument = async (url, path, _bearer, body) => {
+    assert.equal(url, serviceUrl);
+    assert.equal(path, HARNESS_EGRESS_ENROLLMENT_PATH);
+    posts.push(body);
+    return { status: 200, json: { enrolled: true, startupId } };
+  };
+  wiring = await compute.configure(context);
+
+  const realNow = performance.now.bind(performance);
+  let elapsed = 0;
+  t.mock.method(performance, "now", () => realNow() + elapsed);
+  let stale = true;
+  let finalReads = 0;
+  const custody = {
+    recordEgressInstallation: async (value: EgressInstallation) => {
+      committed = value;
+    },
+    currentEgressInstallation: async () => {
+      finalReads++;
+      if (stale) {
+        // The launcher and custody receipt remain the same. Only the recipient read
+        // inside Compute's final verification crosses its supervisor lease.
+        setObservationAge(14_000);
+        onWorkloadRead(() => {
+          elapsed += 2_000;
+        });
+      }
+      return committed;
+    },
+  };
+  const enroll = () =>
+    compute.enroll(
+      context,
+      wiring,
+      custody,
+      async () => true,
+      async () => harness,
+      (id, installation) => signComputeExecutionRelease(privateKey, id, installation, probePath),
+      (id, nonce) => signComputeRepositoryGitProbe(privateKey, id, probePath, nonce),
+    );
+  await assert.rejects(
+    enroll(),
+    /Compute release requires the exact current committed installation/,
+  );
+  assert.equal(finalReads, 1);
+  assert.ok(elapsed >= 2_000, "the final recipient read crosses the lease");
+  assert.equal(posts.length, 0);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.equal(f.runtime.previewReleased(revision.id), false);
+
+  stale = false;
+  setObservationAge(0);
+  onWorkloadRead(() => {});
+  assert.equal(await enroll(), true);
+  assert.equal(finalReads, 2);
+  assert.equal(posts.length, 1);
+  const release = posts[0]!;
+  assert.deepEqual(release.challenge, challenge);
+  assert.equal(typeof release.signature, "string");
+  assert.ok(
+    verify(
+      null,
+      Buffer.from(JSON.stringify([release.challenge, release.installation, release.expiresAt])),
+      publicKey,
+      Buffer.from(String(release.signature), "base64url"),
+    ),
+  );
+  assert.equal(f.runtime.previewReleased(revision.id), true);
 });
 
 // Preserve the admission checks on the supported selected-repository workflow.

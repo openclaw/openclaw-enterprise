@@ -8,6 +8,8 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-19 03:46: Bind prepared Git providers to admitted repository grants. (authoring-run/46f2e1fe-81ba-4e99-88e7-53e8acde8687 - 57bef798f650b78f42f279c936a80f705f3450c7)
+
 - 2026-11-18 14:08: Accept Podman cache misses. (authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604 - f07a2b05a8db5e88142ca1a2c9fd90f0ec812284)
 
 - 2026-11-16 13:04: Remove RuntimeClass selection. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)

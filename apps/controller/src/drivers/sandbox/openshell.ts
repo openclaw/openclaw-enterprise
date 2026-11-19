@@ -914,7 +914,7 @@ function harnessRuntimeFiles(
     id: RUNTIME_PROFILE_IDS[harnessId],
     displayName: `${codex ? "Codex" : "OpenClaw"} runtime files (OpenClaw Enterprise)`,
     category: "PROVIDER_PROFILE_CATEGORY_OTHER",
-    ...runtimeFileProviderNetwork,
+    credentials: runtimeFileProviderNetwork.credentials,
     files: [
       ...files.map((file) => ({
         path: file.name,
@@ -932,6 +932,9 @@ function harnessRuntimeFiles(
         environmentVariable: WORKSPACE_NODE_CA_PATH_ENVIRONMENT,
       },
     ],
+    // Ownership hashes this object in its historical field order.
+    endpoints: runtimeFileProviderNetwork.endpoints,
+    binaries: runtimeFileProviderNetwork.binaries,
     inferenceCapable: false,
   };
   return {
@@ -4054,11 +4057,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Harness enrollment challenge does not match the admitted execution.",
       );
     }
-    const deliver = async (canSend = () => true): Promise<boolean | "unsent"> => {
-      const body = await release(startupId);
-      if (!canSend()) {
-        return "unsent";
-      }
+    const deliver = async (body: Readonly<Record<string, unknown>>): Promise<boolean> => {
       const released = await client.postServiceDocument(
         service.url,
         HARNESS_EGRESS_ENROLLMENT_PATH,
@@ -4083,11 +4082,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       await this.openShellGit!.releasePreview(
         context.revision.id,
         startupId,
-        deliver,
+        { prepare: () => release(startupId), deliver },
         context.signal,
       );
     } else {
-      await deliver();
+      await deliver(await release(startupId));
     }
   }
 

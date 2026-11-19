@@ -1028,30 +1028,35 @@ async function repositoryGitJourney(
     assert.equal(runtime.previewReleased(revision.id), false);
     const blocked = await evaluate(probe);
     assert.equal(blocked.decision, 2, "no request can use installed material before launcher ACK");
-    await runtime.releasePreview(revision.id, startupId, async () => {
-      assert.ok(lastCustody);
-      const installed = await release.current(context, lastCustody, async () => true);
-      assert.ok(state.installed, "the launcher cannot start before material installation");
-      const value = signComputeExecutionRelease(keys.privateKey, startupId, installed);
-      assert.deepEqual(value.challenge, { ...challenge, startupId });
-      assert.ok(
-        verify(
-          null,
-          Buffer.from(JSON.stringify([value.challenge, value.installation, value.expiresAt])),
-          keys.publicKey,
-          Buffer.from(value.signature, "base64url"),
-        ),
-      );
-      assert.ok(value.expiresAt > Date.now());
-      if (launching) {
-        signed = true;
-        nativeRelease.resolve(value);
-        askModel = await launching;
-      }
-      assert.equal(acked, false);
-      acked = true;
-      order.push("launcher-ack");
-      return true;
+    await runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {
+        assert.ok(lastCustody);
+        const installed = await release.current(context, lastCustody, async () => true);
+        assert.ok(state.installed, "the launcher cannot start before material installation");
+        const value = signComputeExecutionRelease(keys.privateKey, startupId, installed);
+        assert.deepEqual(value.challenge, { ...challenge, startupId });
+        assert.ok(
+          verify(
+            null,
+            Buffer.from(JSON.stringify([value.challenge, value.installation, value.expiresAt])),
+            keys.publicKey,
+            Buffer.from(value.signature, "base64url"),
+          ),
+        );
+        assert.ok(value.expiresAt > Date.now());
+        return value;
+      },
+      deliver: async (value) => {
+        if (launching) {
+          signed = true;
+          nativeRelease.resolve(value);
+          askModel = await launching;
+        }
+        assert.equal(acked, false);
+        acked = true;
+        order.push("launcher-ack");
+        return true;
+      },
     });
     assert.equal(acked, true);
     assert.ok(state.installed, "production owner material reached the authenticated recipient");

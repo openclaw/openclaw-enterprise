@@ -97,6 +97,58 @@ export async function verifyLegacyPackedSandboxAdoption(): Promise<void> {
   assert.equal(creates, 1);
 }
 
+/** The base Driver's profile ownership digest includes the original field order. */
+export async function verifyLegacyRuntimeProfileAdoption(
+  harnessId: "codex" | "openclaw",
+  ownershipDigest: string,
+): Promise<void> {
+  const gateway = workspaceGatewayClient();
+  const profileId = `oce-${harnessId}-runtime`;
+  gateway.profiles.set(profileId, {
+    id: profileId,
+    resourceVersion: "27",
+    annotations: { "openclaw.dev/managed-by": `openclaw-enterprise:${ownershipDigest}` },
+  });
+  let updates = 0;
+  let imports = 0;
+  const update = gateway.updateProviderProfile;
+  gateway.updateProviderProfile = async (...args) => {
+    updates++;
+    return update(...args);
+  };
+  const importProfile = gateway.importProviderProfile;
+  gateway.importProviderProfile = async (...args) => {
+    imports++;
+    return importProfile(...args);
+  };
+  const serviceUrl = "http://native.example.test:8080/";
+  let creates = 0;
+  gateway.createSandbox = async (request) => {
+    creates++;
+    const sandbox = storedSandbox(request, {
+      serviceUrls: harnessId === "codex" ? { "": serviceUrl } : {},
+    });
+    gateway.sandboxes.set(sandbox.name, sandbox);
+    return sandbox;
+  };
+  gateway.getService = async (_workspace, name, service) =>
+    harnessService(name, service, harnessId === "codex" ? serviceUrl : undefined);
+  const driver = openShellDriver(gateway);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, { harnessId });
+  await driver.ensureNamespace(context);
+  const workload = { ...context, revision: completeSandboxRevision(revision), requirements };
+  const installed = await driver.provisionHarness(workload);
+  assert.deepEqual(await driver.provisionHarness(workload), installed);
+  assert.equal(creates, 1);
+  assert.equal(imports, 0);
+  assert.equal(
+    updates,
+    0,
+    "adopting the shared runtime-files Provider profile must not rewrite it",
+  );
+  assert.equal(gateway.profiles.get(profileId)?.resourceVersion, "27");
+}
+
 export async function verifyNativeOpenClawProvisioning(): Promise<void> {
   const requests: OpenShellSandboxCreateRequest[] = [];
   let sandboxResponse: OpenShellSandboxResponse | undefined;

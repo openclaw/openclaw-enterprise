@@ -514,14 +514,19 @@ for (const fault of ["before write", "after commit", "during worker replacement"
         revision,
         fence: 1,
         preview: { hook },
+        // This older preview has no admitted repository network policy.
+        authorization: {},
         installed: { observedHook: hook },
       } as Parameters<OpenShellGitRuntime["reconcile"]>[0];
       runtime["states"].set(id, { entry });
       let deliveries = 0;
       const release = () =>
-        runtime.releasePreview(id, hook.startupId, async () => {
-          deliveries++;
-          throw new Error("lost release acknowledgement");
+        runtime.releasePreview(id, hook.startupId, {
+          prepare: async () => {},
+          deliver: async () => {
+            deliveries++;
+            throw new Error("lost release acknowledgement");
+          },
         });
       await assert.rejects(release(), /lost release acknowledgement/);
       await pending;

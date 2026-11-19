@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/a3db59dd-60f7-43de-ae03-81615db94f35"
+last_updated_session: "authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -227,8 +227,9 @@ After login, `agentRuntimeEntrypoint` calls
 Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
 Readiness does not attest HMAC plugin status.
 
-`oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
-Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` validates Secret ownership and setup without further reads.
+`oce-codex-runtime`/`oce-openclaw-runtime` supply read-only setup and Gateway CA.
+Only Codex accepts `runtime.json`/`config.toml`. Matching digests preserve
+shared profile versions. `harnessRuntimeCredentials` checks Secret ownership and setup.
 The Provider stores `bootstrapToken` in private `node-setup.json`.
 Invalid input returns `OpenShellSandboxConfigurationFailure`. TLS-pinned setup
 requires `wss://` at admission and replacement. Device proofs sign the literal token.
@@ -351,11 +352,11 @@ fit its repository scope and contents permission.
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
 reads the loaded bootstrap policy, then sends upload-pack discovery for the
 first canonical grant with a fresh nonce and no credentials. Compute binds the
-path to trusted enrollment and release. Only the exact middleware denial permits
-credential installation. The supervisor's 15-second observation lease covers
-recipient reads and must still be valid when the worker selects material, writes
-the Provider, and sends the signed launcher release. Sibling routes that disable
-TLS inspection or allow uninspected credentials block qualification.
+path to enrollment and release. The exact denial permits installation. The
+supervisor's 15-second lease covers recipient reads, material selection, Provider
+writes, and release. If Compute's final verification fails before the release
+POST, a fresh observation can retry. A lost acknowledgment after sending blocks
+the route. Disabled TLS inspection or uninspected credentials block qualification.
 See [credential egress](credential-source-egress.md).
 
 For existing profiles without explicit grants, the runtime arms a one-use denial.
@@ -432,8 +433,8 @@ setup, retry and restart under setgid parents.
 
 ## Changelog
 
-- 2026-11-19 04:29: Verify the loaded repository policy and challenge before releasing selected Git. (authoring-run/a3db59dd-60f7-43de-ae03-81615db94f35 - a2d2cfb139953c1d1675e46c2a65279279726789)
+- 2026-11-19 05:56: Retry before dispatch and preserve profile ownership. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
 
-- 2026-11-19 03:46: Bind prepared Git providers to admitted repository grants. (authoring-run/46f2e1fe-81ba-4e99-88e7-53e8acde8687 - 57bef798f650b78f42f279c936a80f705f3450c7)
+- 2026-11-19 04:29: Verify the loaded repository policy and challenge before releasing selected Git. (authoring-run/a3db59dd-60f7-43de-ae03-81615db94f35 - a2d2cfb139953c1d1675e46c2a65279279726789)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.
